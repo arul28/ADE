@@ -28,7 +28,7 @@ import {
   isRecord,
   asString,
   readFileIfExists
-} from "./packUtils";
+} from "../shared/packLegacyUtils";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 

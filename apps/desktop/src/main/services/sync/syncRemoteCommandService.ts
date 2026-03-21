@@ -1,19 +1,69 @@
 import type {
+  AgentChatCreateArgs,
+  AgentChatGetSummaryArgs,
+  AgentChatListArgs,
+  AgentChatProvider,
+  AgentChatSendArgs,
+  ApplyLaneTemplateArgs,
   ArchiveLaneArgs,
+  AttachLaneArgs,
   ClosePrArgs,
+  CreateChildLaneArgs,
   CreateLaneArgs,
   CreatePrFromLaneArgs,
+  DeleteLaneArgs,
+  GetDiffChangesArgs,
+  GetFileDiffArgs,
+  GitBatchFileActionArgs,
+  GitCherryPickArgs,
+  GitCommitArgs,
+  GitFileActionArgs,
+  GitGenerateCommitMessageArgs,
+  GitGetCommitMessageArgs,
+  GitListBranchesArgs,
+  GitListCommitFilesArgs,
+  GitPushArgs,
+  GitRevertArgs,
+  GitStashPushArgs,
+  GitStashRefArgs,
+  GitSyncArgs,
   LandPrArgs,
+  LaneEnvInitConfig,
+  LaneEnvInitProgress,
+  LaneDetailPayload,
+  LaneListSnapshot,
+  LaneOverlayOverrides,
+  LaneStateSnapshotSummary,
   ListLanesArgs,
   ListSessionsArgs,
+  RebasePushArgs,
+  RebaseStartArgs,
+  RenameLaneArgs,
+  ReopenPrArgs,
+  ReparentLaneArgs,
   RequestPrReviewersArgs,
   SyncCommandPayload,
   SyncRemoteCommandAction,
+  SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
   SyncRunQuickCommandArgs,
   TerminalToolType,
+  UpdateLaneAppearanceArgs,
+  WriteTextAtomicArgs,
 } from "../../../shared/types";
+import type { createAgentChatService } from "../chat/agentChatService";
+import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
+import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createConflictService } from "../conflicts/conflictService";
+import type { createDiffService } from "../diffs/diffService";
+import type { createFileService } from "../files/fileService";
+import type { createGitOperationsService } from "../git/gitOperationsService";
+import type { createAutoRebaseService } from "../lanes/autoRebaseService";
+import type { createLaneEnvironmentService } from "../lanes/laneEnvironmentService";
 import type { createLaneService } from "../lanes/laneService";
+import type { createLaneTemplateService } from "../lanes/laneTemplateService";
+import type { createPortAllocationService } from "../lanes/portAllocationService";
+import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { Logger } from "../logging/logger";
 import type { createPrService } from "../prs/prService";
 import type { createPtyService } from "../pty/ptyService";
@@ -24,11 +74,22 @@ type SyncRemoteCommandServiceArgs = {
   prService: ReturnType<typeof createPrService>;
   ptyService: ReturnType<typeof createPtyService>;
   sessionService: ReturnType<typeof createSessionService>;
+  fileService: ReturnType<typeof createFileService>;
+  gitService?: ReturnType<typeof createGitOperationsService>;
+  diffService?: ReturnType<typeof createDiffService>;
+  conflictService?: ReturnType<typeof createConflictService>;
+  agentChatService?: ReturnType<typeof createAgentChatService>;
+  projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  portAllocationService?: ReturnType<typeof createPortAllocationService> | null;
+  laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService> | null;
+  laneTemplateService?: ReturnType<typeof createLaneTemplateService> | null;
+  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
+  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   logger: Logger;
 };
 
 type RegisteredRemoteCommand = {
-  policy: SyncRemoteCommandPolicy;
+  descriptor: SyncRemoteCommandDescriptor;
   handler: (args: Record<string, unknown>) => Promise<unknown>;
 };
 
@@ -53,6 +114,23 @@ function asStringArray(value: unknown): string[] {
   return value.map((entry) => asTrimmedString(entry)).filter((entry): entry is string => Boolean(entry));
 }
 
+function requireString(value: unknown, message: string): string {
+  const parsed = asTrimmedString(value);
+  if (!parsed) throw new Error(message);
+  return parsed;
+}
+
+function requireStringArray(value: unknown, message: string): string[] {
+  const parsed = asStringArray(value);
+  if (parsed.length === 0) throw new Error(message);
+  return parsed;
+}
+
+function requireService<T>(value: T | null | undefined, message: string): T {
+  if (value == null) throw new Error(message);
+  return value;
+}
+
 function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
   return {
     includeArchived: asOptionalBoolean(value.includeArchived),
@@ -61,21 +139,98 @@ function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
 }
 
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
-  const name = asTrimmedString(value.name);
-  if (!name) throw new Error("lanes.create requires name.");
-  const description = asTrimmedString(value.description);
-  const parentLaneId = asTrimmedString(value.parentLaneId);
   return {
-    name,
-    ...(description ? { description } : {}),
-    ...(parentLaneId ? { parentLaneId } : {}),
+    name: requireString(value.name, "lanes.create requires name."),
+    ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
+    ...(asTrimmedString(value.parentLaneId) ? { parentLaneId: asTrimmedString(value.parentLaneId)! } : {}),
+    ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
   };
 }
 
-function parseArchiveLaneArgs(value: Record<string, unknown>): ArchiveLaneArgs {
-  const laneId = asTrimmedString(value.laneId);
-  if (!laneId) throw new Error("lanes.archive requires laneId.");
-  return { laneId };
+function parseCreateChildLaneArgs(value: Record<string, unknown>): CreateChildLaneArgs {
+  return {
+    name: requireString(value.name, "lanes.createChild requires name."),
+    parentLaneId: requireString(value.parentLaneId, "lanes.createChild requires parentLaneId."),
+    ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
+    ...(asTrimmedString(value.folder) ? { folder: asTrimmedString(value.folder)! } : {}),
+  };
+}
+
+function parseAttachLaneArgs(value: Record<string, unknown>): AttachLaneArgs {
+  return {
+    name: requireString(value.name, "lanes.attach requires name."),
+    attachedPath: requireString(value.attachedPath, "lanes.attach requires attachedPath."),
+    ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
+  };
+}
+
+function parseArchiveLaneArgs(value: Record<string, unknown>, action: string): ArchiveLaneArgs {
+  return {
+    laneId: requireString(value.laneId, `${action} requires laneId.`),
+  };
+}
+
+function parseDeleteLaneArgs(value: Record<string, unknown>): DeleteLaneArgs {
+  return {
+    laneId: requireString(value.laneId, "lanes.delete requires laneId."),
+    deleteBranch: asOptionalBoolean(value.deleteBranch),
+    deleteRemoteBranch: asOptionalBoolean(value.deleteRemoteBranch),
+    ...(asTrimmedString(value.remoteName) ? { remoteName: asTrimmedString(value.remoteName)! } : {}),
+    force: asOptionalBoolean(value.force),
+  };
+}
+
+function parseRenameLaneArgs(value: Record<string, unknown>): RenameLaneArgs {
+  return {
+    laneId: requireString(value.laneId, "lanes.rename requires laneId."),
+    name: requireString(value.name, "lanes.rename requires name."),
+  };
+}
+
+function parseReparentLaneArgs(value: Record<string, unknown>): ReparentLaneArgs {
+  return {
+    laneId: requireString(value.laneId, "lanes.reparent requires laneId."),
+    newParentLaneId: requireString(value.newParentLaneId, "lanes.reparent requires newParentLaneId."),
+  };
+}
+
+function parseUpdateLaneAppearanceArgs(value: Record<string, unknown>): UpdateLaneAppearanceArgs {
+  const parsed: UpdateLaneAppearanceArgs = {
+    laneId: requireString(value.laneId, "lanes.updateAppearance requires laneId."),
+  };
+  if ("color" in value) {
+    parsed.color = value.color == null ? null : asTrimmedString(value.color) ?? null;
+  }
+  if ("icon" in value) {
+    parsed.icon = value.icon == null ? null : (asTrimmedString(value.icon) as UpdateLaneAppearanceArgs["icon"]);
+  }
+  if ("tags" in value) {
+    parsed.tags = value.tags == null ? null : asStringArray(value.tags);
+  }
+  return parsed;
+}
+
+function parseRebaseStartArgs(value: Record<string, unknown>): RebaseStartArgs {
+  return {
+    laneId: requireString(value.laneId, "lanes.rebaseStart requires laneId."),
+    ...(asTrimmedString(value.scope) ? { scope: value.scope as RebaseStartArgs["scope"] } : {}),
+    ...(asTrimmedString(value.pushMode) ? { pushMode: value.pushMode as RebaseStartArgs["pushMode"] } : {}),
+    ...(asTrimmedString(value.actor) ? { actor: asTrimmedString(value.actor)! } : {}),
+    ...(asTrimmedString(value.reason) ? { reason: asTrimmedString(value.reason)! } : {}),
+  };
+}
+
+function parseRebasePushArgs(value: Record<string, unknown>): RebasePushArgs {
+  return {
+    runId: requireString(value.runId, "lanes.rebasePush requires runId."),
+    laneIds: requireStringArray(value.laneIds, "lanes.rebasePush requires laneIds."),
+  };
+}
+
+function parseRunIdArgs(value: Record<string, unknown>, action: string): { runId: string } {
+  return {
+    runId: requireString(value.runId, `${action} requires runId.`),
+  };
 }
 
 function parseListSessionsArgs(value: Record<string, unknown>): ListSessionsArgs {
@@ -90,26 +245,220 @@ function parseListSessionsArgs(value: Record<string, unknown>): ListSessionsArgs
 }
 
 function parseQuickCommandArgs(value: Record<string, unknown>): SyncRunQuickCommandArgs {
-  const laneId = asTrimmedString(value.laneId);
-  const title = asTrimmedString(value.title);
+  const laneId = requireString(value.laneId, "work.runQuickCommand requires laneId.");
+  const title = requireString(value.title, "work.runQuickCommand requires title.");
+  const toolType = asTrimmedString(value.toolType);
   const startupCommand = asTrimmedString(value.startupCommand);
-  if (!laneId || !title || !startupCommand) {
-    throw new Error("work.runQuickCommand requires laneId, title, and startupCommand.");
+  if (!startupCommand && toolType !== "shell") {
+    throw new Error("work.runQuickCommand requires startupCommand unless toolType is shell.");
   }
   return {
     laneId,
     title,
-    startupCommand,
+    ...(startupCommand ? { startupCommand } : {}),
     cols: asOptionalNumber(value.cols),
     rows: asOptionalNumber(value.rows),
-    toolType: asTrimmedString(value.toolType),
+    toolType,
+    tracked: asOptionalBoolean(value.tracked),
+  };
+}
+
+function parseCloseSessionArgs(value: Record<string, unknown>): { sessionId: string } {
+  return {
+    sessionId: requireString(value.sessionId, "work.closeSession requires sessionId."),
+  };
+}
+
+function parseAgentChatListArgs(value: Record<string, unknown>): AgentChatListArgs {
+  return {
+    ...(asTrimmedString(value.laneId) ? { laneId: asTrimmedString(value.laneId)! } : {}),
+    includeAutomation: asOptionalBoolean(value.includeAutomation),
+  };
+}
+
+function parseAgentChatGetSummaryArgs(value: Record<string, unknown>): AgentChatGetSummaryArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.getSummary requires sessionId."),
+  };
+}
+
+function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCreateArgs {
+  return {
+    laneId: requireString(value.laneId, "chat.create requires laneId."),
+    provider: (asTrimmedString(value.provider) ?? "codex") as AgentChatCreateArgs["provider"],
+    model: asTrimmedString(value.model) ?? "",
+    ...(asTrimmedString(value.modelId) ? { modelId: asTrimmedString(value.modelId)! } : {}),
+    ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
+  };
+}
+
+function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.send requires sessionId."),
+    text: requireString(value.text, "chat.send requires text."),
+  };
+}
+
+function parseGetTranscriptArgs(value: Record<string, unknown>): {
+  sessionId: string;
+  limit?: number;
+  maxChars?: number;
+} {
+  return {
+    sessionId: requireString(value.sessionId, "chat.getTranscript requires sessionId."),
+    limit: asOptionalNumber(value.limit),
+    maxChars: asOptionalNumber(value.maxChars),
+  };
+}
+
+function parseGitFileActionArgs(value: Record<string, unknown>, action: string): GitFileActionArgs {
+  return {
+    laneId: requireString(value.laneId, `${action} requires laneId.`),
+    path: requireString(value.path, `${action} requires path.`),
+  };
+}
+
+function parseGitBatchFileActionArgs(value: Record<string, unknown>, action: string): GitBatchFileActionArgs {
+  return {
+    laneId: requireString(value.laneId, `${action} requires laneId.`),
+    paths: requireStringArray(value.paths, `${action} requires paths.`),
+  };
+}
+
+function parseWriteTextAtomicArgs(value: Record<string, unknown>): WriteTextAtomicArgs {
+  if (typeof value.text !== "string") {
+    throw new Error("files.writeTextAtomic requires text.");
+  }
+  return {
+    laneId: requireString(value.laneId, "files.writeTextAtomic requires laneId."),
+    path: requireString(value.path, "files.writeTextAtomic requires path."),
+    text: value.text,
+  };
+}
+
+function parseGitCommitArgs(value: Record<string, unknown>): GitCommitArgs {
+  return {
+    laneId: requireString(value.laneId, "git.commit requires laneId."),
+    message: requireString(value.message, "git.commit requires message."),
+    amend: asOptionalBoolean(value.amend),
+  };
+}
+
+function parseGitGenerateCommitMessageArgs(value: Record<string, unknown>): GitGenerateCommitMessageArgs {
+  return {
+    laneId: requireString(value.laneId, "git.generateCommitMessage requires laneId."),
+    amend: asOptionalBoolean(value.amend),
+  };
+}
+
+function parseGitListRecentCommitsArgs(value: Record<string, unknown>): { laneId: string; limit?: number } {
+  return {
+    laneId: requireString(value.laneId, "git.listRecentCommits requires laneId."),
+    limit: asOptionalNumber(value.limit),
+  };
+}
+
+function parseGitListCommitFilesArgs(value: Record<string, unknown>): GitListCommitFilesArgs {
+  return {
+    laneId: requireString(value.laneId, "git.listCommitFiles requires laneId."),
+    commitSha: requireString(value.commitSha, "git.listCommitFiles requires commitSha."),
+  };
+}
+
+function parseGitGetCommitMessageArgs(value: Record<string, unknown>): GitGetCommitMessageArgs {
+  return {
+    laneId: requireString(value.laneId, "git.getCommitMessage requires laneId."),
+    commitSha: requireString(value.commitSha, "git.getCommitMessage requires commitSha."),
+  };
+}
+
+function parseGitRevertArgs(value: Record<string, unknown>): GitRevertArgs {
+  return {
+    laneId: requireString(value.laneId, "git.revertCommit requires laneId."),
+    commitSha: requireString(value.commitSha, "git.revertCommit requires commitSha."),
+  };
+}
+
+function parseGitCherryPickArgs(value: Record<string, unknown>): GitCherryPickArgs {
+  return {
+    laneId: requireString(value.laneId, "git.cherryPickCommit requires laneId."),
+    commitSha: requireString(value.commitSha, "git.cherryPickCommit requires commitSha."),
+  };
+}
+
+function parseGitStashPushArgs(value: Record<string, unknown>): GitStashPushArgs {
+  return {
+    laneId: requireString(value.laneId, "git.stashPush requires laneId."),
+    ...(asTrimmedString(value.message) ? { message: asTrimmedString(value.message)! } : {}),
+    includeUntracked: asOptionalBoolean(value.includeUntracked),
+  };
+}
+
+function parseGitStashRefArgs(value: Record<string, unknown>, action: string): GitStashRefArgs {
+  return {
+    laneId: requireString(value.laneId, `${action} requires laneId.`),
+    stashRef: requireString(value.stashRef, `${action} requires stashRef.`),
+  };
+}
+
+function parseGitSyncArgs(value: Record<string, unknown>): GitSyncArgs {
+  return {
+    laneId: requireString(value.laneId, "git.sync requires laneId."),
+    ...(asTrimmedString(value.mode) ? { mode: value.mode as GitSyncArgs["mode"] } : {}),
+    ...(asTrimmedString(value.baseRef) ? { baseRef: asTrimmedString(value.baseRef)! } : {}),
+  };
+}
+
+function parseGitPushArgs(value: Record<string, unknown>): GitPushArgs {
+  return {
+    laneId: requireString(value.laneId, "git.push requires laneId."),
+    forceWithLease: asOptionalBoolean(value.forceWithLease),
+  };
+}
+
+function parseGetDiffChangesArgs(value: Record<string, unknown>): GetDiffChangesArgs {
+  return {
+    laneId: requireString(value.laneId, "git.getChanges requires laneId."),
+  };
+}
+
+function parseGetFileDiffArgs(value: Record<string, unknown>): GetFileDiffArgs {
+  return {
+    laneId: requireString(value.laneId, "git.getFile requires laneId."),
+    path: requireString(value.path, "git.getFile requires path."),
+    mode: requireString(value.mode, "git.getFile requires mode.") as GetFileDiffArgs["mode"],
+    ...(asTrimmedString(value.compareRef) ? { compareRef: asTrimmedString(value.compareRef)! } : {}),
+    ...(asTrimmedString(value.compareTo) ? { compareTo: value.compareTo as GetFileDiffArgs["compareTo"] } : {}),
+  };
+}
+
+function parseGitListBranchesArgs(value: Record<string, unknown>): GitListBranchesArgs {
+  return {
+    laneId: requireString(value.laneId, "git.listBranches requires laneId."),
+  };
+}
+
+function parseGitCheckoutBranchArgs(value: Record<string, unknown>): { laneId: string; branchName: string } {
+  return {
+    laneId: requireString(value.laneId, "git.checkoutBranch requires laneId."),
+    branchName: requireString(value.branchName, "git.checkoutBranch requires branchName."),
+  };
+}
+
+function parseConflictLaneArgs(value: Record<string, unknown>, action: string): { laneId: string } {
+  return {
+    laneId: requireString(value.laneId, `${action} requires laneId.`),
+  };
+}
+
+function parseChatModelsArgs(value: Record<string, unknown>): { provider: AgentChatProvider } {
+  return {
+    provider: (asTrimmedString(value.provider) ?? "codex") as AgentChatProvider,
   };
 }
 
 function requirePrId(value: Record<string, unknown>, action: string): string {
-  const prId = asTrimmedString(value.prId);
-  if (!prId) throw new Error(`${action} requires prId.`);
-  return prId;
+  return requireString(value.prId, `${action} requires prId.`);
 }
 
 function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs {
@@ -139,10 +488,15 @@ function parseLandPrArgs(value: Record<string, unknown>): LandPrArgs {
 }
 
 function parseClosePrArgs(value: Record<string, unknown>): ClosePrArgs {
-  const prId = requirePrId(value, "prs.close");
   return {
-    prId,
+    prId: requirePrId(value, "prs.close"),
     ...(typeof value.comment === "string" ? { comment: value.comment } : {}),
+  };
+}
+
+function parseReopenPrArgs(value: Record<string, unknown>): ReopenPrArgs {
+  return {
+    prId: requirePrId(value, "prs.reopen"),
   };
 }
 
@@ -153,119 +507,542 @@ function parseRequestReviewersArgs(value: Record<string, unknown>): RequestPrRev
   return { prId, reviewers };
 }
 
-export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {
-  const registry = new Map<SyncRemoteCommandAction, RegisteredRemoteCommand>([
-    ["lanes.list", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => args.laneService.list(parseListLanesArgs(payload)),
-    }],
-    ["lanes.refreshSnapshots", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => args.laneService.refreshSnapshots(parseListLanesArgs(payload)),
-    }],
-    ["lanes.create", {
-      policy: { viewerAllowed: true, queueable: true },
-      handler: async (payload) => args.laneService.create(parseCreateLaneArgs(payload)),
-    }],
-    ["lanes.archive", {
-      policy: { viewerAllowed: true, queueable: true },
-      handler: async (payload) => {
-        await args.laneService.archive(parseArchiveLaneArgs(payload));
-        return { ok: true };
-      },
-    }],
-    ["lanes.unarchive", {
-      policy: { viewerAllowed: true, queueable: true },
-      handler: async (payload) => {
-        await args.laneService.unarchive(parseArchiveLaneArgs(payload));
-        return { ok: true };
-      },
-    }],
-    ["work.listSessions", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => args.sessionService.list(parseListSessionsArgs(payload)),
-    }],
-    ["work.runQuickCommand", {
-      policy: { viewerAllowed: true, queueable: true },
-      handler: async (payload) => {
-        const parsed = parseQuickCommandArgs(payload);
-        return await args.ptyService.create({
-          laneId: parsed.laneId,
-          title: parsed.title,
-          startupCommand: parsed.startupCommand,
-          tracked: true,
-          cols: parsed.cols ?? 120,
-          rows: parsed.rows ?? 36,
-          toolType: (parsed.toolType ?? "run-shell") as TerminalToolType,
-        });
-      },
-    }],
-    ["prs.list", {
-      policy: { viewerAllowed: true },
-      handler: async () => args.prService.listAll(),
-    }],
-    ["prs.refresh", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => {
-        const prId = asTrimmedString(payload.prId);
-        return await args.prService.refreshSnapshots(prId ? { prId } : {});
-      },
-    }],
-    ["prs.getDetail", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")),
-    }],
-    ["prs.getStatus", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")),
-    }],
-    ["prs.getChecks", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => args.prService.getChecks(requirePrId(payload, "prs.getChecks")),
-    }],
-    ["prs.getReviews", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")),
-    }],
-    ["prs.getComments", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => args.prService.getComments(requirePrId(payload, "prs.getComments")),
-    }],
-    ["prs.getFiles", {
-      policy: { viewerAllowed: true },
-      handler: async (payload) => args.prService.getFiles(requirePrId(payload, "prs.getFiles")),
-    }],
-    ["prs.createFromLane", {
-      policy: { viewerAllowed: true, queueable: true },
-      handler: async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)),
-    }],
-    ["prs.land", {
-      policy: { viewerAllowed: true, queueable: true },
-      handler: async (payload) => args.prService.land(parseLandPrArgs(payload)),
-    }],
-    ["prs.close", {
-      policy: { viewerAllowed: true, queueable: true },
-      handler: async (payload) => {
-        await args.prService.closePr(parseClosePrArgs(payload));
-        return { ok: true };
-      },
-    }],
-    ["prs.requestReviewers", {
-      policy: { viewerAllowed: true, queueable: true },
-      handler: async (payload) => {
-        await args.prService.requestReviewers(parseRequestReviewersArgs(payload));
-        return { ok: true };
-      },
-    }],
+function mergeLaneDockerConfig(
+  current: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
+  next: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
+) {
+  if (!current && !next) return undefined;
+  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
+  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
+  return {
+    ...current,
+    ...next,
+    ...(next.services != null
+      ? { services: [...next.services] }
+      : current.services != null
+        ? { services: [...current.services] }
+        : {}),
+  };
+}
+
+function mergeLaneEnvInitConfig(
+  current: LaneEnvInitConfig | undefined,
+  next: LaneEnvInitConfig | undefined,
+): LaneEnvInitConfig | undefined {
+  if (!current && !next) return undefined;
+  if (!current) {
+    return next
+      ? {
+          ...(next.envFiles ? { envFiles: [...next.envFiles] } : {}),
+          ...(mergeLaneDockerConfig(undefined, next.docker) ? { docker: mergeLaneDockerConfig(undefined, next.docker) } : {}),
+          ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
+          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {}),
+          ...(next.copyPaths ? { copyPaths: [...next.copyPaths] } : {}),
+        }
+      : undefined;
+  }
+  if (!next) {
+    return {
+      ...(current.envFiles ? { envFiles: [...current.envFiles] } : {}),
+      ...(mergeLaneDockerConfig(undefined, current.docker) ? { docker: mergeLaneDockerConfig(undefined, current.docker) } : {}),
+      ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
+      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {}),
+      ...(current.copyPaths ? { copyPaths: [...current.copyPaths] } : {}),
+    };
+  }
+  return {
+    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
+    ...(mergeLaneDockerConfig(current.docker, next.docker) ? { docker: mergeLaneDockerConfig(current.docker, next.docker) } : {}),
+    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
+    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
+    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])],
+  };
+}
+
+function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverlayOverrides>): LaneOverlayOverrides {
+  return {
+    ...base,
+    ...next,
+    ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
+    ...(base.processIds || next.processIds ? { processIds: [...(next.processIds ?? base.processIds ?? [])] } : {}),
+    ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
+    ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {}),
+  };
+}
+
+function applyLeaseToOverrides(
+  overrides: LaneOverlayOverrides,
+  lease: { status: string; rangeStart: number; rangeEnd: number } | null,
+): LaneOverlayOverrides {
+  if (!lease || lease.status !== "active" || overrides.portRange) {
+    return { ...overrides };
+  }
+  return {
+    ...overrides,
+    portRange: { start: lease.rangeStart, end: lease.rangeEnd },
+  };
+}
+
+async function resolveLaneOverlayContext(args: SyncRemoteCommandServiceArgs, laneId: string) {
+  const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
+  const lanes = await args.laneService.list({ includeStatus: false });
+  const lane = lanes.find((entry) => entry.id === laneId);
+  if (!lane) throw new Error(`Lane not found: ${laneId}`);
+
+  const config = projectConfigService.getEffective();
+  const overlayOverrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
+  const lease = args.portAllocationService?.getLease(lane.id) ?? null;
+  const overrides = applyLeaseToOverrides(overlayOverrides, lease);
+  const envInitConfig = args.laneEnvironmentService?.resolveEnvInitConfig(config.laneEnvInit, overrides);
+
+  return {
+    lane,
+    overrides,
+    envInitConfig,
+  };
+}
+
+async function resolveChatCreateArgs(
+  service: ReturnType<typeof createAgentChatService>,
+  payload: AgentChatCreateArgs,
+): Promise<AgentChatCreateArgs> {
+  if (payload.model.trim().length > 0) return payload;
+  const available = await service.getAvailableModels({ provider: payload.provider });
+  const chosen = available[0];
+  if (!chosen) {
+    throw new Error(`No configured ${payload.provider} chat model is available on the host.`);
+  }
+  return {
+    ...payload,
+    model: chosen.id,
+    ...(!payload.modelId && chosen.modelId ? { modelId: chosen.modelId } : {}),
+  };
+}
+
+function sessionStatusBucket(argsIn: {
+  status: string;
+  lastOutputPreview: string | null | undefined;
+  runtimeState?: string | null;
+}): "running" | "awaiting-input" | "ended" {
+  if (argsIn.status === "running") {
+    if (argsIn.runtimeState === "waiting-input") return "awaiting-input";
+    const preview = argsIn.lastOutputPreview ?? "";
+    if (/\b(?:waiting|awaiting)\b.{0,28}\b(?:input|confirmation|response|prompt)\b/i.test(preview)) {
+      return "awaiting-input";
+    }
+    if (/\((?:y\/n|yes\/no)\)/i.test(preview) || /\[(?:y\/n|yes\/no)\]/i.test(preview)) {
+      return "awaiting-input";
+    }
+    return "running";
+  }
+  return "ended";
+}
+
+function summarizeLaneRuntime(
+  laneId: string,
+  sessions: Array<{
+    laneId: string;
+    status: string;
+    lastOutputPreview: string | null;
+    runtimeState?: string | null;
+  }>,
+): LaneListSnapshot["runtime"] {
+  let runningCount = 0;
+  let awaitingInputCount = 0;
+  let endedCount = 0;
+  let sessionCount = 0;
+  for (const session of sessions) {
+    if (session.laneId !== laneId) continue;
+    sessionCount += 1;
+    const bucket = sessionStatusBucket(session);
+    if (bucket === "running") runningCount += 1;
+    else if (bucket === "awaiting-input") awaitingInputCount += 1;
+    else endedCount += 1;
+  }
+  const bucket = runningCount > 0
+    ? "running"
+    : awaitingInputCount > 0
+      ? "awaiting-input"
+      : endedCount > 0
+        ? "ended"
+        : "none";
+  return {
+    bucket,
+    runningCount,
+    awaitingInputCount,
+    endedCount,
+    sessionCount,
+  };
+}
+
+async function buildLaneListSnapshots(
+  args: SyncRemoteCommandServiceArgs,
+  lanes: Awaited<ReturnType<ReturnType<typeof createLaneService>["list"]>>,
+): Promise<LaneListSnapshot[]> {
+  const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
+    Promise.resolve(args.sessionService.list({ limit: 500 })),
+    Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []),
+    Promise.resolve(args.autoRebaseService?.listStatuses() ?? []),
+    Promise.resolve(args.laneService.listStateSnapshots()),
+    args.conflictService?.getBatchAssessment().catch(() => null) ?? Promise.resolve(null),
   ]);
+
+  const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
+  const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
+  const stateByLaneId = new Map(stateSnapshots.map((entry) => [entry.laneId, entry] as const));
+  const conflictByLaneId = new Map((batchAssessment?.lanes ?? []).map((entry) => [entry.laneId, entry] as const));
+
+  return lanes.map((lane) => ({
+    lane,
+    runtime: summarizeLaneRuntime(lane.id, sessions),
+    rebaseSuggestion: rebaseByLaneId.get(lane.id) ?? null,
+    autoRebaseStatus: autoRebaseByLaneId.get(lane.id) ?? null,
+    conflictStatus: conflictByLaneId.get(lane.id) ?? null,
+    stateSnapshot: stateByLaneId.get(lane.id) ?? null,
+    adoptableAttached: lane.laneType === "attached" && lane.archivedAt == null,
+  }));
+}
+
+async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId: string): Promise<LaneDetailPayload> {
+  const lane = (await args.laneService.list({ includeArchived: true, includeStatus: true })).find((entry) => entry.id === laneId) ?? null;
+  if (!lane) throw new Error(`Lane not found: ${laneId}`);
+
+  const [
+    stackChain,
+    children,
+    sessions,
+    chatSessions,
+    rebaseSuggestions,
+    autoRebaseStatuses,
+    stateSnapshot,
+    recentCommits,
+    diffChanges,
+    stashes,
+    syncStatus,
+    conflictState,
+    conflictStatus,
+    overlaps,
+    envInitProgress,
+  ] = await Promise.all([
+    args.laneService.getStackChain(laneId),
+    args.laneService.getChildren(laneId),
+    Promise.resolve(args.sessionService.list({ laneId, limit: 200 })),
+    args.agentChatService?.listSessions(laneId, { includeAutomation: true }) ?? Promise.resolve([]),
+    Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []),
+    Promise.resolve(args.autoRebaseService?.listStatuses() ?? []),
+    Promise.resolve(args.laneService.getStateSnapshot(laneId)),
+    args.gitService?.listRecentCommits({ laneId, limit: 20 }) ?? Promise.resolve([]),
+    args.diffService?.getChanges(laneId).catch(() => null) ?? Promise.resolve(null),
+    args.gitService?.listStashes({ laneId }) ?? Promise.resolve([]),
+    args.gitService?.getSyncStatus({ laneId }).catch(() => null) ?? Promise.resolve(null),
+    args.gitService?.getConflictState({ laneId }).catch(() => null) ?? Promise.resolve(null),
+    args.conflictService?.getLaneStatus({ laneId }).catch(() => null) ?? Promise.resolve(null),
+    args.conflictService?.listOverlaps({ laneId }).catch(() => []) ?? Promise.resolve([]),
+    Promise.resolve(args.laneEnvironmentService?.getProgress(laneId) ?? null),
+  ]);
+
+  return {
+    lane,
+    runtime: summarizeLaneRuntime(laneId, sessions),
+    stackChain,
+    children,
+    stateSnapshot: stateSnapshot as LaneStateSnapshotSummary | null,
+    rebaseSuggestion: rebaseSuggestions.find((entry) => entry.laneId === laneId) ?? null,
+    autoRebaseStatus: autoRebaseStatuses.find((entry) => entry.laneId === laneId) ?? null,
+    conflictStatus,
+    overlaps,
+    syncStatus,
+    conflictState,
+    recentCommits,
+    diffChanges,
+    stashes,
+    envInitProgress,
+    sessions,
+    chatSessions,
+  };
+}
+
+export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {
+  const registry = new Map<SyncRemoteCommandAction, RegisteredRemoteCommand>();
+
+  const register = (
+    action: SyncRemoteCommandAction,
+    policy: SyncRemoteCommandPolicy,
+    handler: (payload: Record<string, unknown>) => Promise<unknown>,
+  ) => {
+    registry.set(action, {
+      descriptor: { action, policy },
+      handler,
+    });
+  };
+
+  register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
+  register("lanes.refreshSnapshots", { viewerAllowed: true }, async (payload) => {
+    const refreshed = await args.laneService.refreshSnapshots(parseListLanesArgs(payload));
+    return {
+      ...refreshed,
+      snapshots: await buildLaneListSnapshots(args, refreshed.lanes),
+    };
+  });
+  register("lanes.getDetail", { viewerAllowed: true }, async (payload) =>
+    buildLaneDetailPayload(args, requireString(payload.laneId, "lanes.getDetail requires laneId.")));
+  register("lanes.create", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.create(parseCreateLaneArgs(payload)));
+  register("lanes.createChild", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.createChild(parseCreateChildLaneArgs(payload)));
+  register("lanes.attach", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.attach(parseAttachLaneArgs(payload)));
+  register("lanes.adoptAttached", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.adoptAttached({ laneId: requireString(payload.laneId, "lanes.adoptAttached requires laneId.") }));
+  register("lanes.rename", { viewerAllowed: true, queueable: true }, async (payload) => {
+    args.laneService.rename(parseRenameLaneArgs(payload));
+    return { ok: true };
+  });
+  register("lanes.reparent", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.reparent(parseReparentLaneArgs(payload)));
+  register("lanes.updateAppearance", { viewerAllowed: true, queueable: true }, async (payload) => {
+    args.laneService.updateAppearance(parseUpdateLaneAppearanceArgs(payload));
+    return { ok: true };
+  });
+  register("lanes.archive", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.laneService.archive(parseArchiveLaneArgs(payload, "lanes.archive"));
+    return { ok: true };
+  });
+  register("lanes.unarchive", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.laneService.unarchive(parseArchiveLaneArgs(payload, "lanes.unarchive"));
+    return { ok: true };
+  });
+  register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.laneService.delete(parseDeleteLaneArgs(payload));
+    return { ok: true };
+  });
+  register("lanes.getStackChain", { viewerAllowed: true }, async (payload) =>
+    args.laneService.getStackChain(requireString(payload.laneId, "lanes.getStackChain requires laneId.")));
+  register("lanes.getChildren", { viewerAllowed: true }, async (payload) =>
+    args.laneService.getChildren(requireString(payload.laneId, "lanes.getChildren requires laneId.")));
+  register("lanes.rebaseStart", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseStart(parseRebaseStartArgs(payload)));
+  register("lanes.rebasePush", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebasePush(parseRebasePushArgs(payload)));
+  register("lanes.rebaseRollback", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseRollback(parseRunIdArgs(payload, "lanes.rebaseRollback")));
+  register("lanes.rebaseAbort", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseAbort(parseRunIdArgs(payload, "lanes.rebaseAbort")));
+  register("lanes.listRebaseSuggestions", { viewerAllowed: true }, async () => args.rebaseSuggestionService?.listSuggestions() ?? []);
+  register("lanes.dismissRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.rebaseSuggestionService) return { ok: true };
+    await args.rebaseSuggestionService.dismiss({ laneId: requireString(payload.laneId, "lanes.dismissRebaseSuggestion requires laneId.") });
+    return { ok: true };
+  });
+  register("lanes.deferRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.rebaseSuggestionService) return { ok: true };
+    await args.rebaseSuggestionService.defer({
+      laneId: requireString(payload.laneId, "lanes.deferRebaseSuggestion requires laneId."),
+      minutes: asOptionalNumber(payload.minutes) ?? 60,
+    });
+    return { ok: true };
+  });
+  register("lanes.listAutoRebaseStatuses", { viewerAllowed: true }, async () => args.autoRebaseService?.listStatuses() ?? []);
+  register("lanes.listTemplates", { viewerAllowed: true }, async () => args.laneTemplateService?.listTemplates() ?? []);
+  register("lanes.getDefaultTemplate", { viewerAllowed: true }, async () => args.laneTemplateService?.getDefaultTemplateId() ?? null);
+  register("lanes.getEnvStatus", { viewerAllowed: true }, async (payload) => args.laneEnvironmentService?.getProgress(requireString(payload.laneId, "lanes.getEnvStatus requires laneId.")) ?? null);
+  register("lanes.initEnv", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const laneEnvironmentService = requireService(args.laneEnvironmentService, "Lane environment service not available.");
+    const laneId = requireString(payload.laneId, "lanes.initEnv requires laneId.");
+    const context = await resolveLaneOverlayContext(args, laneId);
+    if (!context.envInitConfig) {
+      const now = new Date().toISOString();
+      return {
+        laneId,
+        steps: [],
+        startedAt: now,
+        completedAt: now,
+        overallStatus: "completed",
+      } satisfies LaneEnvInitProgress;
+    }
+    return await laneEnvironmentService.initLaneEnvironment(context.lane, context.envInitConfig, context.overrides);
+  });
+  register("lanes.applyTemplate", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const laneTemplateService = requireService(args.laneTemplateService, "Lane template service not available.");
+    const laneEnvironmentService = requireService(args.laneEnvironmentService, "Lane environment service not available.");
+    const parsed = {
+      laneId: requireString(payload.laneId, "lanes.applyTemplate requires laneId."),
+      templateId: requireString(payload.templateId, "lanes.applyTemplate requires templateId."),
+    } satisfies ApplyLaneTemplateArgs;
+    const context = await resolveLaneOverlayContext(args, parsed.laneId);
+    const template = laneTemplateService.getTemplate(parsed.templateId);
+    if (!template) throw new Error(`Template not found: ${parsed.templateId}`);
+    const templateEnvInit = laneTemplateService.resolveTemplateAsEnvInit(template);
+    const mergedOverrides = mergeLaneOverrides(context.overrides, {
+      ...(template.envVars ? { env: template.envVars } : {}),
+      ...(!context.overrides.portRange && template.portRange ? { portRange: template.portRange } : {}),
+      envInit: templateEnvInit,
+    });
+    const mergedEnvInitConfig = mergeLaneEnvInitConfig(context.envInitConfig, templateEnvInit) ?? templateEnvInit;
+    return await laneEnvironmentService.initLaneEnvironment(context.lane, mergedEnvInitConfig, mergedOverrides);
+  });
+
+  register("work.listSessions", { viewerAllowed: true }, async (payload) => args.sessionService.list(parseListSessionsArgs(payload)));
+  register("work.runQuickCommand", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const parsed = parseQuickCommandArgs(payload);
+    return await args.ptyService.create({
+      laneId: parsed.laneId,
+      title: parsed.title,
+      ...(parsed.toolType === "shell" || !parsed.startupCommand ? {} : { startupCommand: parsed.startupCommand }),
+      tracked: parsed.tracked ?? true,
+      cols: parsed.cols ?? 120,
+      rows: parsed.rows ?? 36,
+      toolType: (parsed.toolType ?? "run-shell") as TerminalToolType,
+    });
+  });
+  register("work.closeSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const { sessionId } = parseCloseSessionArgs(payload);
+    const session = args.sessionService.get(sessionId);
+    if (session?.ptyId) {
+      await args.ptyService.dispose({ ptyId: session.ptyId, sessionId });
+    }
+    return { ok: true };
+  });
+
+  register("chat.listSessions", { viewerAllowed: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const parsed = parseAgentChatListArgs(payload);
+    return agentChatService.listSessions(parsed.laneId, { includeAutomation: parsed.includeAutomation });
+  });
+  register("chat.getSummary", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getSessionSummary(parseAgentChatGetSummaryArgs(payload).sessionId));
+  register("chat.getTranscript", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getChatTranscript(parseGetTranscriptArgs(payload)));
+  register("chat.create", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const parsed = parseAgentChatCreateArgs(payload);
+    return await agentChatService.createSession(await resolveChatCreateArgs(agentChatService, parsed));
+  });
+  register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(parseAgentChatSendArgs(payload));
+    return { ok: true };
+  });
+  register("chat.models", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getAvailableModels(parseChatModelsArgs(payload)));
+
+  register("git.getChanges", { viewerAllowed: true }, async (payload) =>
+    requireService(args.diffService, "Diff service not available.").getChanges(parseGetDiffChangesArgs(payload).laneId));
+  register("git.getFile", { viewerAllowed: true }, async (payload) => {
+    const diffService = requireService(args.diffService, "Diff service not available.");
+    const parsed = parseGetFileDiffArgs(payload);
+    return await diffService.getFileDiff({
+      laneId: parsed.laneId,
+      filePath: parsed.path,
+      mode: parsed.mode,
+      compareRef: parsed.compareRef,
+      compareTo: parsed.compareTo,
+    });
+  });
+  register("files.writeTextAtomic", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const parsed = parseWriteTextAtomicArgs(payload);
+    args.fileService.writeTextAtomic({ laneId: parsed.laneId, relPath: parsed.path, text: parsed.text });
+    return { ok: true };
+  });
+  register("git.stageFile", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").stageFile(parseGitFileActionArgs(payload, "git.stageFile")));
+  register("git.stageAll", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").stageAll(parseGitBatchFileActionArgs(payload, "git.stageAll")));
+  register("git.unstageFile", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").unstageFile(parseGitFileActionArgs(payload, "git.unstageFile")));
+  register("git.unstageAll", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").unstageAll(parseGitBatchFileActionArgs(payload, "git.unstageAll")));
+  register("git.discardFile", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").discardFile(parseGitFileActionArgs(payload, "git.discardFile")));
+  register("git.restoreStagedFile", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").restoreStagedFile(parseGitFileActionArgs(payload, "git.restoreStagedFile")));
+  register("git.commit", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").commit(parseGitCommitArgs(payload)));
+  register("git.generateCommitMessage", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").generateCommitMessage(parseGitGenerateCommitMessageArgs(payload)));
+  register("git.listRecentCommits", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").listRecentCommits(parseGitListRecentCommitsArgs(payload)));
+  register("git.listCommitFiles", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").listCommitFiles(parseGitListCommitFilesArgs(payload)));
+  register("git.getCommitMessage", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").getCommitMessage(parseGitGetCommitMessageArgs(payload)));
+  register("git.revertCommit", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").revertCommit(parseGitRevertArgs(payload)));
+  register("git.cherryPickCommit", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").cherryPickCommit(parseGitCherryPickArgs(payload)));
+  register("git.stashPush", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").stashPush(parseGitStashPushArgs(payload)));
+  register("git.stashList", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").listStashes(parseConflictLaneArgs(payload, "git.stashList")));
+  register("git.stashApply", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").stashApply(parseGitStashRefArgs(payload, "git.stashApply")));
+  register("git.stashPop", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").stashPop(parseGitStashRefArgs(payload, "git.stashPop")));
+  register("git.stashDrop", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").stashDrop(parseGitStashRefArgs(payload, "git.stashDrop")));
+  register("git.fetch", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").fetch(parseConflictLaneArgs(payload, "git.fetch")));
+  register("git.pull", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").pull(parseConflictLaneArgs(payload, "git.pull")));
+  register("git.getSyncStatus", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").getSyncStatus(parseConflictLaneArgs(payload, "git.getSyncStatus")));
+  register("git.sync", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").sync(parseGitSyncArgs(payload)));
+  register("git.push", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").push(parseGitPushArgs(payload)));
+  register("git.getConflictState", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").getConflictState(parseConflictLaneArgs(payload, "git.getConflictState")));
+  register("git.rebaseContinue", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").rebaseContinue(parseConflictLaneArgs(payload, "git.rebaseContinue")));
+  register("git.rebaseAbort", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").rebaseAbort(parseConflictLaneArgs(payload, "git.rebaseAbort")));
+  register("git.listBranches", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").listBranches(parseGitListBranchesArgs(payload)));
+  register("git.checkoutBranch", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").checkoutBranch(parseGitCheckoutBranchArgs(payload)));
+
+  register("conflicts.getLaneStatus", { viewerAllowed: true }, async (payload) =>
+    requireService(args.conflictService, "Conflict service not available.").getLaneStatus(parseConflictLaneArgs(payload, "conflicts.getLaneStatus")));
+  register("conflicts.listOverlaps", { viewerAllowed: true }, async (payload) =>
+    requireService(args.conflictService, "Conflict service not available.").listOverlaps(parseConflictLaneArgs(payload, "conflicts.listOverlaps")));
+  register("conflicts.getBatchAssessment", { viewerAllowed: true }, async () =>
+    requireService(args.conflictService, "Conflict service not available.").getBatchAssessment());
+
+  register("prs.list", { viewerAllowed: true }, async () => args.prService.listAll());
+  register("prs.refresh", { viewerAllowed: true }, async (payload) => {
+    const prId = asTrimmedString(payload.prId);
+    await args.prService.refresh(prId ? { prId } : {});
+    const prs = await args.prService.listAll();
+    return {
+      refreshedCount: prId ? 1 : prs.length,
+      prs,
+      snapshots: args.prService.listSnapshots(),
+    };
+  });
+  register("prs.getDetail", { viewerAllowed: true }, async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")));
+  register("prs.getStatus", { viewerAllowed: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));
+  register("prs.getChecks", { viewerAllowed: true }, async (payload) => args.prService.getChecks(requirePrId(payload, "prs.getChecks")));
+  register("prs.getReviews", { viewerAllowed: true }, async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")));
+  register("prs.getComments", { viewerAllowed: true }, async (payload) => args.prService.getComments(requirePrId(payload, "prs.getComments")));
+  register("prs.getFiles", { viewerAllowed: true }, async (payload) => args.prService.getFiles(requirePrId(payload, "prs.getFiles")));
+  register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
+  register("prs.land", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.land(parseLandPrArgs(payload)));
+  register("prs.close", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.closePr(parseClosePrArgs(payload));
+    return { ok: true };
+  });
+  register("prs.reopen", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.reopenPr(parseReopenPrArgs(payload));
+    return { ok: true };
+  });
+  register("prs.requestReviewers", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.requestReviewers(parseRequestReviewersArgs(payload));
+    return { ok: true };
+  });
 
   return {
     getSupportedActions(): SyncRemoteCommandAction[] {
       return [...registry.keys()];
     },
 
+    getDescriptors(): SyncRemoteCommandDescriptor[] {
+      return [...registry.values()].map((entry) => entry.descriptor);
+    },
+
     getPolicy(action: string): SyncRemoteCommandPolicy | null {
-      return registry.get(action as SyncRemoteCommandAction)?.policy ?? null;
+      return registry.get(action as SyncRemoteCommandAction)?.descriptor.policy ?? null;
     },
 
     async execute(payload: SyncCommandPayload): Promise<unknown> {
@@ -276,7 +1053,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       const commandArgs = isRecord(payload.args) ? payload.args : {};
       args.logger.debug?.("sync.remote_command.execute", {
         action: payload.action,
-        policy: handler.policy,
+        policy: handler.descriptor.policy,
       });
       return await handler.handler(commandArgs);
     },

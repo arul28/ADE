@@ -1,3 +1,15 @@
+import type { AgentChatSessionSummary } from "./chat";
+import type { LaneEnvInitProgress } from "./config";
+import type { ConflictOverlap, ConflictStatus } from "./conflicts";
+import type {
+  DiffChanges,
+  GitCommitSummary,
+  GitConflictState,
+  GitStashSummary,
+  GitUpstreamSyncStatus,
+} from "./git";
+import type { TerminalSessionSummary } from "./sessions";
+
 // ---------------------------------------------------------------------------
 // Lane types
 // ---------------------------------------------------------------------------
@@ -37,6 +49,53 @@ export type LaneSummary = {
   archivedAt?: string | null;
 };
 
+export type LaneRuntimeBucket = "running" | "awaiting-input" | "ended" | "none";
+
+export type LaneRuntimeSummary = {
+  bucket: LaneRuntimeBucket;
+  runningCount: number;
+  awaitingInputCount: number;
+  endedCount: number;
+  sessionCount: number;
+};
+
+export type LaneStateSnapshotSummary = {
+  laneId: string;
+  agentSummary: Record<string, unknown> | null;
+  missionSummary: Record<string, unknown> | null;
+  updatedAt: string | null;
+};
+
+export type LaneListSnapshot = {
+  lane: LaneSummary;
+  runtime: LaneRuntimeSummary;
+  rebaseSuggestion: RebaseSuggestion | null;
+  autoRebaseStatus: AutoRebaseLaneStatus | null;
+  conflictStatus: ConflictStatus | null;
+  stateSnapshot: LaneStateSnapshotSummary | null;
+  adoptableAttached: boolean;
+};
+
+export type LaneDetailPayload = {
+  lane: LaneSummary;
+  runtime: LaneRuntimeSummary;
+  stackChain: StackChainItem[];
+  children: LaneSummary[];
+  stateSnapshot: LaneStateSnapshotSummary | null;
+  rebaseSuggestion: RebaseSuggestion | null;
+  autoRebaseStatus: AutoRebaseLaneStatus | null;
+  conflictStatus: ConflictStatus | null;
+  overlaps: ConflictOverlap[];
+  syncStatus: GitUpstreamSyncStatus | null;
+  conflictState: GitConflictState | null;
+  recentCommits: GitCommitSummary[];
+  diffChanges: DiffChanges | null;
+  stashes: GitStashSummary[];
+  envInitProgress: LaneEnvInitProgress | null;
+  sessions: TerminalSessionSummary[];
+  chatSessions: AgentChatSessionSummary[];
+};
+
 export type LaneIcon = "star" | "flag" | "bolt" | "shield" | "tag" | null;
 
 export type ListLanesArgs = {
@@ -48,6 +107,7 @@ export type CreateLaneArgs = {
   name: string;
   description?: string;
   parentLaneId?: string;
+  baseBranch?: string;
 };
 
 export type CreateChildLaneArgs = {

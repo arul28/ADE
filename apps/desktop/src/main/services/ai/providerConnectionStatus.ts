@@ -38,23 +38,72 @@ export async function buildProviderConnections(
   const claudeRuntimeHealth = getProviderRuntimeHealth("claude");
   const codexRuntimeHealth = getProviderRuntimeHealth("codex");
 
-  const claudeRuntimeDetected = Boolean(claudeCli?.installed);
-  const claudeCliAuthenticated = Boolean(claudeCli?.installed && claudeCli.authenticated);
-  const claudeAuthAvailable = Boolean(claudeLocalCreds || claudeCliAuthenticated);
-  // Connected = we have auth credentials + the CLI is installed.
-  // The runtime probe can only DOWNGRADE this to false on explicit auth failure.
-  const claudeRuntimeAvailable = Boolean(claudeAuthAvailable && claudeRuntimeDetected);
+  const deriveProviderFlags = (
+    cli: CliAuthStatus | null,
+    localCreds: Awaited<ReturnType<typeof readClaudeCredentials>> | Awaited<ReturnType<typeof readCodexCredentials>>,
+  ) => {
+    const runtimeDetected = Boolean(cli?.installed);
+    const cliAuthenticated = Boolean(cli?.installed && cli.authenticated);
+    const cliExplicitlyUnauthenticated = Boolean(cli?.installed && cli.verified && !cli.authenticated);
+    const localCredsDetected = Boolean(localCreds);
+    const authAvailable = Boolean(localCreds || cliAuthenticated);
+    // Local credential artifacts are only a fallback signal. If the CLI itself
+    // has already verified that the user is signed out, do not promote the
+    // provider to runtime-ready until the user logs in again.
+    const runtimeAvailable = Boolean(authAvailable && runtimeDetected && !cliExplicitlyUnauthenticated);
+    return { runtimeDetected, cliAuthenticated, cliExplicitlyUnauthenticated, localCredsDetected, authAvailable, runtimeAvailable };
+  };
 
-  const codexRuntimeDetected = Boolean(codexCli?.installed);
-  const codexCliAuthenticated = Boolean(codexCli?.installed && codexCli.authenticated);
+  const claudeFlags = deriveProviderFlags(claudeCli, claudeLocalCreds);
+  const codexFlags = deriveProviderFlags(codexCli, codexLocalCreds);
   const codexUsageAvailable = Boolean(codexLocalCreds && !isCodexTokenStale(codexLocalCreds));
-  const codexAuthAvailable = Boolean(codexLocalCreds || codexCliAuthenticated);
-  const codexRuntimeAvailable = Boolean(codexAuthAvailable && codexRuntimeDetected);
+
+  function resolveBlocker(
+    providerLabel: string,
+    loginHint: string,
+    flags: ReturnType<typeof deriveProviderFlags>,
+    extraBlocker?: string | null,
+  ): string | null {
+    if (!flags.authAvailable && !flags.runtimeDetected) {
+      return `No ${providerLabel} authentication or CLI was found locally.`;
+    }
+    if (flags.cliExplicitlyUnauthenticated) {
+      return flags.localCredsDetected
+        ? `Local ${providerLabel} credentials were found, but ${providerLabel} CLI reports no active login. Run: ${loginHint}`
+        : `${providerLabel} CLI is installed but no login was detected. Run: ${loginHint}`;
+    }
+    if (!flags.authAvailable) {
+      return `${providerLabel} CLI is installed but no login was detected. Run: ${loginHint}`;
+    }
+    if (!flags.runtimeDetected) {
+      return `Local credentials exist but the ${providerLabel} CLI is not on ADE's PATH.`;
+    }
+    if (extraBlocker) return extraBlocker;
+    return null;
+  }
+
+  // Apply runtime health overrides.
+  // Only an explicit auth failure should downgrade status. Transient probe
+  // failures (process abort, timeout) should not block a user with valid creds.
+  function applyRuntimeHealth(
+    status: AiProviderConnectionStatus,
+    health: ReturnType<typeof getProviderRuntimeHealth>,
+  ): void {
+    if (health?.state === "auth-failed") {
+      status.runtimeAvailable = false;
+      status.blocker = health.message
+        ?? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`;
+    } else if (health?.state === "ready") {
+      status.runtimeAvailable = true;
+      status.authAvailable = true;
+      status.blocker = null;
+    }
+  }
 
   const claude = createUnavailableStatus("claude", checkedAt);
-  claude.authAvailable = claudeAuthAvailable;
-  claude.runtimeDetected = claudeRuntimeDetected;
-  claude.runtimeAvailable = claudeRuntimeAvailable;
+  claude.authAvailable = claudeFlags.authAvailable;
+  claude.runtimeDetected = claudeFlags.runtimeDetected;
+  claude.runtimeAvailable = claudeFlags.runtimeAvailable;
   claude.usageAvailable = Boolean(claudeLocalCreds);
   claude.path = claudeCli?.path ?? null;
   claude.sources = [
@@ -71,34 +120,13 @@ export async function buildProviderConnections(
       path: claudeCli?.path ?? null,
     },
   ];
-  if (!claudeAuthAvailable && !claudeRuntimeDetected) {
-    claude.blocker = "No Claude authentication or CLI was found locally.";
-  } else if (!claudeAuthAvailable) {
-    claude.blocker = "Claude CLI is installed but no login was detected. Run: claude auth login";
-  } else if (!claudeRuntimeDetected) {
-    claude.blocker = "Local credentials exist but the Claude CLI is not on ADE's PATH.";
-  } else {
-    claude.blocker = null;
-  }
-  // Only an explicit auth failure from the runtime probe should downgrade status.
-  // Transient failures (aborted, timeout, exit code 1) should NOT override
-  // the presence of valid local credentials + installed CLI.
-  if (claudeRuntimeHealth?.state === "auth-failed") {
-    claude.runtimeAvailable = false;
-    claude.blocker = claudeRuntimeHealth.message
-      ?? "Claude runtime was detected, but ADE chat reported that login is still required.";
-  } else if (claudeRuntimeHealth?.state === "ready") {
-    claude.runtimeAvailable = true;
-    claude.authAvailable = true;
-    claude.blocker = null;
-  }
-  // Note: "runtime-failed" is deliberately ignored — transient probe failures
-  // (process abort, timeout) should not block a user who has valid credentials.
+  claude.blocker = resolveBlocker("Claude", "claude auth login", claudeFlags);
+  applyRuntimeHealth(claude, claudeRuntimeHealth);
 
   const codex = createUnavailableStatus("codex", checkedAt);
-  codex.authAvailable = codexAuthAvailable;
-  codex.runtimeDetected = codexRuntimeDetected;
-  codex.runtimeAvailable = codexRuntimeAvailable;
+  codex.authAvailable = codexFlags.authAvailable;
+  codex.runtimeDetected = codexFlags.runtimeDetected;
+  codex.runtimeAvailable = codexFlags.runtimeAvailable;
   codex.usageAvailable = codexUsageAvailable;
   codex.path = codexCli?.path ?? null;
   codex.sources = [
@@ -116,26 +144,15 @@ export async function buildProviderConnections(
       path: codexCli?.path ?? null,
     },
   ];
-  if (!codexAuthAvailable && !codexRuntimeDetected) {
-    codex.blocker = "No Codex authentication or CLI was found locally.";
-  } else if (!codexAuthAvailable) {
-    codex.blocker = "Codex CLI is installed but no login was detected. Run: codex login";
-  } else if (!codexRuntimeDetected) {
-    codex.blocker = "Local credentials exist but the Codex CLI is not on ADE's PATH.";
-  } else if (codexLocalCreds && isCodexTokenStale(codexLocalCreds)) {
-    codex.blocker = "Codex local auth exists, but the stored token looks stale for usage polling.";
-  } else {
-    codex.blocker = null;
-  }
-  if (codexRuntimeHealth?.state === "auth-failed") {
-    codex.runtimeAvailable = false;
-    codex.blocker = codexRuntimeHealth.message
-      ?? "Codex runtime was detected, but ADE chat reported that login is still required.";
-  } else if (codexRuntimeHealth?.state === "ready") {
-    codex.runtimeAvailable = true;
-    codex.authAvailable = true;
-    codex.blocker = null;
-  }
+  codex.blocker = resolveBlocker(
+    "Codex",
+    "codex login",
+    codexFlags,
+    codexLocalCreds && isCodexTokenStale(codexLocalCreds)
+      ? "Codex local auth exists, but the stored token looks stale for usage polling."
+      : null,
+  );
+  applyRuntimeHealth(codex, codexRuntimeHealth);
 
   return { claude, codex };
 }

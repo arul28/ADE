@@ -43,7 +43,6 @@ function buildExport(packKey: string, packType: PackType, level: "lite" | "stand
 
 async function createFixture(args: {
   conflictService?: any;
-  packService?: Record<string, unknown>;
   projectConfigService?: Record<string, unknown> | null;
   aiIntegrationService?: Record<string, unknown> | null;
   memoryService?: Record<string, unknown> | null;
@@ -147,34 +146,10 @@ async function createFixture(args: {
     }
   } as any;
 
-  const packService = {
-    getLaneExport: async ({ laneId: targetLaneId, level }: { laneId: string; level: "lite" | "standard" | "deep" }) =>
-      buildExport(`lane:${targetLaneId}`, "lane", level),
-    getProjectExport: async ({ level }: { level: "lite" | "standard" | "deep" }) => buildExport("project", "project", level),
-    refreshMissionPack: async ({ missionId: targetMissionId }: { missionId: string }) => ({
-      packKey: `mission:${targetMissionId}`,
-      packType: "mission",
-      path: path.join(projectRoot, ".ade", "packs", "missions", targetMissionId, "mission_pack.md"),
-      exists: true,
-      deterministicUpdatedAt: now,
-      narrativeUpdatedAt: null,
-      lastHeadSha: null,
-      versionId: `mission-${targetMissionId}-v1`,
-      versionNumber: 1,
-      contentHash: `hash-mission-${targetMissionId}`,
-      metadata: null,
-      body: "# Mission Pack"
-    })
-  } as any;
-
   const service = createOrchestratorService({
     db,
     projectId,
     projectRoot,
-    packService: {
-      ...packService,
-      ...(args.packService ?? {})
-    } as any,
     conflictService: args.conflictService,
     ptyService,
     projectConfigService: (args.projectConfigService ?? null) as any,
@@ -3373,43 +3348,6 @@ describe("orchestratorService", () => {
       expect(snapshot?.cursor.missionHandoffDigest?.summarizedCount).toBe(8);
       expect(snapshot?.cursor.missionHandoffDigest?.byType?.attempt_failed).toBeGreaterThan(0);
       expect(snapshot?.cursor.missionHandoffDigest?.byType?.attempt_succeeded).toBeGreaterThan(0);
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it("creates context snapshots without lane pack bootstrap refresh", async () => {
-    let laneExportCalls = 0;
-    const fixture = await createFixture({
-      packService: {
-        getLaneExport: async ({ laneId, level }: { laneId: string; level: "lite" | "standard" | "deep" }) => {
-          laneExportCalls += 1;
-          return buildExport(`lane:${laneId}`, "lane", level);
-        },
-        refreshLanePack: async () => {
-          throw new Error("refreshLanePack should not be used for live context exports");
-        }
-      }
-    });
-    try {
-      const started = fixture.service.startRun({
-        missionId: fixture.missionId,
-        steps: [{ stepKey: "bootstrap-pack", title: "Bootstrap pack", stepIndex: 0, laneId: fixture.laneId }]
-      });
-      const step = fixture.service.listSteps(started.run.id)[0];
-      if (!step) throw new Error("Missing step");
-      const attempt = await fixture.service.startAttempt({
-        runId: started.run.id,
-        stepId: step.id,
-        ownerId: "owner"
-      });
-      const snapshot = fixture.service
-        .listContextSnapshots({ runId: started.run.id })
-        .find((entry) => entry.id === attempt.contextSnapshotId);
-      expect(attempt.contextSnapshotId).toBeTruthy();
-      expect(laneExportCalls).toBe(1);
-      expect(snapshot?.cursor.contextSources?.some((source) => source.startsWith("context_export:project:"))).toBe(true);
-      expect(snapshot?.cursor.contextSources?.some((source) => source.startsWith("context_export:lane:"))).toBe(true);
     } finally {
       fixture.dispose();
     }

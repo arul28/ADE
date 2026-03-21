@@ -334,6 +334,7 @@ describe("memoryLifecycleService", () => {
   it("enforces the project scope hard limit by archiving the lowest-scoring tier 3 entry", async () => {
     const fixture = await createFixture();
     let lowestId = "";
+    fixture.db.run("BEGIN");
     for (let index = 0; index < 2001; index += 1) {
       const id = insertMemory(fixture.db, fixture.now, {
         scope: "project",
@@ -346,17 +347,19 @@ describe("memoryLifecycleService", () => {
       });
       if (index === 0) lowestId = id;
     }
+    fixture.db.run("COMMIT");
 
     const result = await fixture.service.runSweep();
 
     expect(result.entriesArchived).toBe(1);
     expect(getActiveScopeCount(fixture.db, "project")).toBe(2000);
     expect(getMemory(fixture.db, lowestId)?.status).toBe("archived");
-  });
+  }, 60_000);
 
   it("enforces the agent scope hard limit per scope owner", async () => {
     const fixture = await createFixture();
     let lowestId = "";
+    fixture.db.run("BEGIN");
     for (let index = 0; index < 501; index += 1) {
       const id = insertMemory(fixture.db, fixture.now, {
         scope: "agent",
@@ -367,6 +370,7 @@ describe("memoryLifecycleService", () => {
       });
       if (index === 0) lowestId = id;
     }
+    fixture.db.run("COMMIT");
 
     await fixture.service.runSweep();
 

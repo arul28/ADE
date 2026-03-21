@@ -80,7 +80,6 @@ function createRuntime() {
       testLogsDir: path.join(projectRoot, ".ade", "logs", "tests"),
       transcriptsDir: path.join(projectRoot, ".ade", "transcripts"),
       worktreesDir: path.join(projectRoot, ".ade", "worktrees"),
-      packsDir: path.join(projectRoot, ".ade", "packs"),
       dbPath: path.join(projectRoot, ".ade", "ade.db")
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -159,14 +158,6 @@ function createRuntime() {
       finish: operationFinish
     },
     projectConfigService: {} as any,
-    packService: {
-      getProjectExport: vi.fn(async () => ({ header: { scope: "project" }, content: "project", warnings: [] })),
-      getLaneExport: vi.fn(async ({ laneId }: { laneId: string }) => ({ header: { scope: "lane", laneId }, content: "lane", warnings: [] })),
-      getFeatureExport: vi.fn(async ({ featureKey }: { featureKey: string }) => ({ header: { scope: "feature", featureKey }, content: "feature", warnings: [] })),
-      getConflictExport: vi.fn(async ({ laneId, peerLaneId }: { laneId: string; peerLaneId?: string }) => ({ header: { scope: "conflict", laneId, peerLaneId: peerLaneId ?? null }, content: "conflict", warnings: [] })),
-      getPlanExport: vi.fn(async ({ laneId }: { laneId: string }) => ({ header: { scope: "plan", laneId }, content: "plan", warnings: [] })),
-      getMissionExport: vi.fn(async ({ missionId }: { missionId: string }) => ({ header: { scope: "mission", missionId }, content: "mission", warnings: [] }))
-    },
     conflictService: {
       runPrediction: vi.fn(async () => ({ lanes: [], matrix: [], overlaps: [] })),
       getLaneStatus: vi.fn(async ({ laneId }: { laneId: string }) => ({ laneId, status: "merge-ready" })),
@@ -218,6 +209,78 @@ function createRuntime() {
       getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
       landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" }))
     },
+    agentChatService: {
+      listSessions: vi.fn(async () => [
+        {
+          sessionId: "chat-1",
+          laneId: "lane-1",
+          title: "CTO Work Chat",
+          provider: "codex",
+          model: "gpt-5.4-codex",
+          status: "idle",
+          lastActivityAt: "2026-03-17T19:00:00.000Z",
+          createdAt: "2026-03-17T19:00:00.000Z",
+        },
+      ]),
+      getSessionSummary: vi.fn(async (sessionId: string) => ({
+        sessionId,
+        laneId: "lane-1",
+        title: "CTO Work Chat",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+        status: "idle",
+        lastActivityAt: "2026-03-17T19:00:00.000Z",
+        createdAt: "2026-03-17T19:00:00.000Z",
+      })),
+      getChatTranscript: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
+        sessionId,
+        entries: [{ role: "assistant", text: "hello", timestamp: "2026-03-17T19:00:00.000Z" }],
+        truncated: false,
+        totalEntries: 1,
+      })),
+      createSession: vi.fn(async ({ laneId, title }: { laneId: string; title?: string }) => ({
+        id: "chat-new",
+        laneId,
+        provider: "codex",
+        model: "gpt-5.4-codex",
+        title: title ?? "Codex Chat",
+        status: "idle",
+        createdAt: "2026-03-17T19:10:00.000Z",
+        lastActivityAt: "2026-03-17T19:10:00.000Z",
+      })),
+      updateSession: vi.fn(async ({ sessionId, title }: { sessionId: string; title?: string | null }) => ({
+        id: sessionId,
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+        title: title ?? "Updated Chat",
+        status: "idle",
+        createdAt: "2026-03-17T19:10:00.000Z",
+        lastActivityAt: "2026-03-17T19:10:00.000Z",
+      })),
+      sendMessage: vi.fn(async () => {}),
+      interrupt: vi.fn(async () => {}),
+      resumeSession: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
+        id: sessionId,
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+        status: "idle",
+        createdAt: "2026-03-17T19:10:00.000Z",
+        lastActivityAt: "2026-03-17T19:10:00.000Z",
+      })),
+      dispose: vi.fn(async () => {}),
+      ensureIdentitySession: vi.fn(async ({ laneId }: { laneId: string }) => ({
+        id: "cto-session",
+        laneId,
+        provider: "codex",
+        model: "gpt-5.4-codex",
+        status: "idle",
+        createdAt: "2026-03-17T19:10:00.000Z",
+        lastActivityAt: "2026-03-17T19:10:00.000Z",
+      })),
+    } as any,
+    fileService: null,
     memoryService: {
       addMemory: vi.fn(() => ({
         id: "memory-1",
@@ -243,6 +306,56 @@ function createRuntime() {
       searchMemories: vi.fn(() => [])
     } as any,
     ctoStateService: {
+      getIdentity: vi.fn(() => ({
+        name: "CTO",
+        version: 1,
+        persona: "test",
+        modelPreferences: { provider: "codex", model: "gpt-5.4-codex", modelId: "openai/gpt-5.4-codex" },
+        memoryPolicy: {
+          autoCompact: true,
+          compactionThreshold: 0.7,
+          preCompactionFlush: true,
+          temporalDecayHalfLifeDays: 30
+        },
+        updatedAt: new Date().toISOString()
+      })),
+      getSnapshot: vi.fn((recentLimit = 10) => ({
+        identity: {
+          name: "CTO",
+          version: 1,
+          persona: "test",
+          modelPreferences: { provider: "claude", model: "sonnet" },
+          memoryPolicy: {
+            autoCompact: true,
+            compactionThreshold: 0.7,
+            preCompactionFlush: true,
+            temporalDecayHalfLifeDays: 30
+          },
+          updatedAt: new Date().toISOString()
+        },
+        coreMemory: {
+          version: 3,
+          updatedAt: "2026-03-05T12:00:00.000Z",
+          projectSummary: "summary",
+          criticalConventions: [],
+          userPreferences: [],
+          activeFocus: [],
+          notes: []
+        },
+        recentSessions: Array.from({ length: recentLimit }, (_, index) => ({
+          id: `session-${index + 1}`,
+          sessionId: `chat-${index + 1}`,
+          summary: `summary-${index + 1}`,
+          startedAt: "2026-03-17T19:00:00.000Z",
+          endedAt: null,
+          provider: "codex",
+          modelId: "gpt-5.4-codex",
+          capabilityMode: "full_mcp",
+          createdAt: "2026-03-17T19:00:00.000Z",
+          prevHash: null,
+        })),
+        recentSubordinateActivity: [],
+      })),
       updateCoreMemory: vi.fn((patch: Record<string, unknown>) => ({
         identity: {
           name: "CTO",
@@ -282,6 +395,50 @@ function createRuntime() {
         notes: []
       }))
     } as any,
+    flowPolicyService: {
+      getPolicy: vi.fn(() => ({ workflows: [], legacyConfig: { projects: [] } })),
+      savePolicy: vi.fn((policy: Record<string, unknown>) => policy),
+    } as any,
+    linearDispatcherService: {
+      listActiveRuns: vi.fn(() => [{ id: "run-active", status: "in_progress" }]),
+      listQueue: vi.fn(() => [{ id: "run-queued", status: "queued" }]),
+      getRunDetail: vi.fn(async (runId: string) => ({ run: { id: runId, status: "queued" }, issue: { id: "issue-1" } })),
+      resolveRunAction: vi.fn(async (runId: string, action: string) => ({ id: runId, status: action })),
+      cancelRun: vi.fn(async () => {}),
+    } as any,
+    linearIssueTracker: {
+      fetchIssueById: vi.fn(async (issueId: string) => ({
+        id: issueId,
+        identifier: "LIN-1",
+        title: "Issue",
+        description: "Desc",
+        url: "https://linear.app/issue/LIN-1",
+        projectSlug: "proj",
+        stateName: "Todo",
+        priorityLabel: "normal",
+        labels: [],
+        assigneeName: null,
+      })),
+      createComment: vi.fn(async () => ({ id: "comment-1" })),
+      fetchWorkflowStates: vi.fn(async () => [{ id: "state-done", name: "Done" }]),
+      updateIssueState: vi.fn(async () => {}),
+    } as any,
+    linearSyncService: {
+      getDashboard: vi.fn(() => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: null, lastSuccessAt: null, lastError: null, queue: { queued: 1, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
+      runSyncNow: vi.fn(async () => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: "2026-03-17T19:11:00.000Z", lastSuccessAt: "2026-03-17T19:11:00.000Z", lastError: null, queue: { queued: 0, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
+      listQueue: vi.fn(() => [{ id: "run-queued", status: "queued" }]),
+      resolveQueueItem: vi.fn(async ({ queueItemId, action }: { queueItemId: string; action: string }) => ({ id: queueItemId, status: action })),
+      getRunDetail: vi.fn(async ({ runId }: { runId: string }) => ({ run: { id: runId, status: "queued" }, issue: { id: "issue-1" } })),
+    } as any,
+    linearIngressService: {
+      getStatus: vi.fn(() => ({ configured: true, relayUrl: "https://example.com/webhook", webhookUrl: "https://example.com/webhook", lastReceivedAt: null, lastError: null })),
+      listRecentEvents: vi.fn(() => [{ id: "event-1", source: "webhook", summary: "received", createdAt: "2026-03-17T19:11:00.000Z" }]),
+      ensureRelayWebhook: vi.fn(async () => {}),
+    } as any,
+    linearRoutingService: {
+      simulateRoute: vi.fn(({ issue }: { issue: Record<string, unknown> }) => ({ decision: "cto", reason: "test", issue })),
+    } as any,
+    processService: null,
     externalMcpService: {
       listToolsForIdentity: vi.fn(async () => []),
       callTool: vi.fn(async () => ({
@@ -529,7 +686,6 @@ describe("mcpServer", () => {
     expect(names).toEqual(
       expect.arrayContaining([
         "spawn_agent",
-        "read_context",
         "create_lane",
         "check_conflicts",
         "merge_lane",
@@ -631,6 +787,79 @@ describe("mcpServer", () => {
         "message_worker",
         "update_tool_profiles",
       ])
+    );
+  });
+
+  it("lists CTO operator and Linear sync tools for cto callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = (await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" })) as any;
+
+    const names = (result.tools ?? []).map((tool: any) => tool.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "get_cto_state",
+        "listChats",
+        "spawnChat",
+        "getChatStatus",
+        "readChatTranscript",
+        "listLinearWorkflows",
+        "getLinearRunStatus",
+        "getLinearSyncDashboard",
+        "runLinearSyncNow",
+        "listLinearSyncQueue",
+        "getLinearIngressStatus",
+      ]),
+    );
+    expect(names).not.toContain("spawn_worker");
+  });
+
+  it("creates a work chat for cto callers and returns a work navigation suggestion", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = await callTool(handler, "spawnChat", {
+      laneId: "lane-1",
+      title: "Fresh work chat",
+      openInUi: true,
+    });
+
+    expect((runtime.agentChatService as any).createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        sessionProfile: "workflow",
+        surface: "work",
+        provider: "codex",
+      }),
+    );
+    expect(result.structuredContent).toEqual(
+      expect.objectContaining({
+        success: true,
+        sessionId: "chat-new",
+        navigation: expect.objectContaining({
+          surface: "work",
+          sessionId: "chat-new",
+        }),
+      }),
+    );
+  });
+
+  it("returns the Linear sync dashboard for cto callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = await callTool(handler, "getLinearSyncDashboard", {});
+
+    expect((runtime.linearSyncService as any).getDashboard).toHaveBeenCalled();
+    expect(result.structuredContent).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        ingressMode: "webhook-first",
+      }),
     );
   });
 
@@ -1128,28 +1357,6 @@ describe("mcpServer", () => {
       expect.objectContaining({ limit: 100 })
     );
     expect(Array.isArray(patternStatsResponse.structuredContent.patternStats)).toBe(true);
-  });
-
-  it("supports read_context contracts for all pack scopes", async () => {
-    const { runtime } = createRuntime();
-    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler);
-
-    const scopes: Array<{ scope: string; args: Record<string, unknown> }> = [
-      { scope: "project", args: {} },
-      { scope: "lane", args: { laneId: "lane-1" } },
-      { scope: "feature", args: { featureKey: "auth" } },
-      { scope: "conflict", args: { laneId: "lane-1", peerLaneId: "lane-2" } },
-      { scope: "plan", args: { laneId: "lane-1" } },
-      { scope: "mission", args: { missionId: "mission-1" } }
-    ];
-
-    for (const item of scopes) {
-      const response = await callTool(handler, "read_context", { scope: item.scope, level: "standard", ...item.args });
-      expect(response?.isError).toBeUndefined();
-      expect(response?.structuredContent?.export).toBeTruthy();
-    }
   });
 
   it("routes spawn_agent to lane-scoped tracked pty sessions", async () => {
@@ -1958,10 +2165,6 @@ describe("mcpServer", () => {
       prompt: "Investigate failing CI and propose a fix plan before editing.",
       context: {
         profile: "orchestrator_deterministic_v1",
-        packs: [
-          { scope: "project", packKey: "project", level: "lite", approxTokens: 850, summary: "Project pack summary" },
-          { scope: "lane", packKey: "lane:lane-1", level: "standard", approxTokens: 1200, summary: "Lane summary" }
-        ],
         docs: [{ path: "docs/PRD.md", sha256: "abc", bytes: 1024 }],
         handoffDigest: { summarizedCount: 4, byType: { attempt_succeeded: 3, attempt_failed: 1 } }
       }
@@ -1981,8 +2184,6 @@ describe("mcpServer", () => {
     const manifest = JSON.parse(fs.readFileSync(contextPath, "utf8"));
     expect(manifest.schema).toBe("ade.mcp.spawnAgentContext.v1");
     expect(manifest.mission.runId).toBe("run-123");
-    expect(Array.isArray(manifest.context.packs)).toBe(true);
-    expect(response.structuredContent.contextRef?.approxTokens).toBeGreaterThan(0);
   });
 
   it("routes run_tests for suite and ad-hoc command contracts", async () => {
@@ -2172,7 +2373,7 @@ describe("mcpServer", () => {
     expect(response.structuredContent.commit.sha).toBe("abc123");
   });
 
-  it("returns resources for packs, lane status/conflicts, and mission/feature contexts", async () => {
+  it("returns resources for lane status/conflicts", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
@@ -2180,13 +2381,9 @@ describe("mcpServer", () => {
     const result = (await handler({ jsonrpc: "2.0", id: 4, method: "resources/list", params: {} })) as any;
     const uris = (result.resources ?? []).map((entry: any) => entry.uri);
 
-    expect(uris).toContain("ade://pack/project/standard");
-    expect(uris).toContain("ade://pack/lane/lane-1/standard");
-    expect(uris).toContain("ade://pack/plan/lane-1/standard");
-    expect(uris).toContain("ade://pack/feature/auth/standard");
-    expect(uris).toContain("ade://pack/mission/mission-1/standard");
     expect(uris).toContain("ade://lane/lane-1/status");
     expect(uris).toContain("ade://lane/lane-1/conflicts");
+    expect(uris.some((u: string) => u.startsWith("ade://pack/"))).toBe(false);
   });
 
   it("reads lane/status resource with the correct URI parser semantics", async () => {
@@ -2204,37 +2401,6 @@ describe("mcpServer", () => {
     const payload = JSON.parse(result.contents[0].text);
     expect(payload.lane.id).toBe("lane-1");
     expect(payload.rebaseStatus).toBe("idle");
-  });
-
-  it("reads feature/plan/mission pack resources", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler);
-
-    const feature = (await handler({
-      jsonrpc: "2.0",
-      id: 6,
-      method: "resources/read",
-      params: { uri: "ade://pack/feature/auth/standard" }
-    })) as any;
-    expect(feature.contents[0].text).toContain("feature");
-
-    const plan = (await handler({
-      jsonrpc: "2.0",
-      id: 7,
-      method: "resources/read",
-      params: { uri: "ade://pack/plan/lane-1/standard" }
-    })) as any;
-    expect(plan.contents[0].text).toContain("plan");
-
-    const mission = (await handler({
-      jsonrpc: "2.0",
-      id: 8,
-      method: "resources/read",
-      params: { uri: "ade://pack/mission/mission-1/standard" }
-    })) as any;
-    expect(mission.contents[0].text).toContain("mission");
   });
 
   it("records succeeded audit metadata for read-only tools", async () => {

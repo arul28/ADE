@@ -18,12 +18,12 @@ Roadmap source of truth: `docs/final-plan/README.md` (this PRD captures product 
    - 7.1 [Run](#71-run-)
    - 7.2 [Lanes](#72-lanes)
    - 7.3 [Files](#73-files)
-   - 7.4 [Terminals](#74-terminals)
-   - 7.5 [Conflicts](#75-conflicts)
-   - 7.6 [Context](#76-context)
-   - 7.7 [Graph](#77-graph)
-   - 7.8 [PRs](#78-prs)
-   - 7.9 [History](#79-history)
+   - 7.4 [Work](#74-work)
+   - 7.5 [Graph & Conflict Intelligence](#75-graph--conflict-intelligence)
+   - 7.6 [Graph](#76-graph)
+   - 7.7 [PRs](#77-prs)
+   - 7.8 [History](#78-history)
+   - 7.9 [Automations](#79-automations)
    - 7.10 [CTO](#710-cto)
    - 7.11 [Missions](#711-missions)
    - 7.12 [Settings](#712-settings)
@@ -321,9 +321,9 @@ The Files tab provides an IDE-style file explorer and editor workbench inspired 
 
 See: [features/FILES_AND_EDITOR.md](features/FILES_AND_EDITOR.md)
 
-### 7.4 Terminals
+### 7.4 Work
 
-The Terminals tab is a global session list optimized for high session volume. It displays PTY and agent chat sessions across lanes with unified metadata, transcript integration, delta tracking, and jump-to-lane navigation. The current renderer uses shared session-list caching and route-scoped polling so session-derived UI state remains fresh without every surface hammering `ade.sessions.list` independently. Lane-level terminal panels still track live sessions closely, but they now keep polling only while the lane actually has live work to watch.
+The Work tab is a global session list optimized for high session volume. It displays PTY and agent chat sessions across lanes with unified metadata, transcript integration, delta tracking, and jump-to-lane navigation. The current renderer uses shared session-list caching and route-scoped polling so session-derived UI state remains fresh without every surface hammering `ade.sessions.list` independently. Lane-level terminal panels still track live sessions closely, but they now keep polling only while the lane actually has live work to watch.
 
 See: [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md)
 
@@ -333,29 +333,29 @@ Conflict intelligence no longer lives in a dedicated tab. The global risk matrix
 
 See: [features/CONFLICTS.md](features/CONFLICTS.md)
 
-### 7.6 Context
-
-The Context tab is the documentation and context-inventory surface. It shows project/lane context health, generates and installs `.ade/context/PRD.ade.md` + `.ade/context/ARCHITECTURE.ade.md` from ranked repository docs, and provides a real-time sectioned inventory of tracked context primitives (packs by type, checkpoints, tracked session deltas, mission handoffs, and orchestrator runtime state). Doc generation is AI-assisted when available and falls back to deterministic digests when AI output is unavailable or invalid.
-
-See: [features/PACKS.md](features/PACKS.md)
-
-### 7.7 Graph
+### 7.6 Graph
 
 The Graph tab visualizes lane topology, stack relationships, activity/risk overlays, and PR linkage on a canvas. It is optimized for quickly understanding cross-lane dependencies and integration risk across a large workspace.
 
 See: [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md)
 
-### 7.8 PRs
+### 7.7 PRs
 
 The PRs tab manages GitHub pull request workflows. It displays stacked PR chains aligned to the lane stack graph on the left, and parallel (non-stacked) PRs in a separate list. The right side shows selected PR detail including checks, review status, and description. Per-lane PR operations (create, link, push, update description from packs) are available in the lane inspector PR sub-tab. The tab supports the "land stack" guided flow for merging stacked PRs in dependency order with checks gating. GitHub integration uses the local `gh` CLI or personal access tokens.
 
 See: [features/PULL_REQUESTS.md](features/PULL_REQUESTS.md)
 
-### 7.9 History
+### 7.8 History
 
 The History tab provides an ADE-native operations timeline (distinct from `git log`). It shows a chronological event stream covering terminal sessions ended, checkpoints created, lane sync operations, conflict predictions, plan version changes, proposal applications, orchestrator runs, and PR events. Events are filterable by lane, feature key, and event type. Each event detail panel shows links to affected lanes, packs, checkpoints, plan versions, and proposals, with "replay context" and "undo" actions where applicable. A feature history view aggregates all sessions, checkpoints, and plan revisions for a given issue or feature key.
 
 See: [features/HISTORY.md](features/HISTORY.md)
+
+### 7.9 Automations
+
+The Automations tab provides a visual automation builder and execution dashboard. Automations support time-based triggers (cron/interval schedules) and action-based triggers (git events, mission events, Linear events) with configurable execution routing through agent sessions, missions, or built-in tasks. The tab shows active automations with status indicators, execution history, and a creation/editing interface for defining triggers and actions.
+
+See: [features/AUTOMATIONS.md](features/AUTOMATIONS.md)
 
 ### 7.10 CTO
 

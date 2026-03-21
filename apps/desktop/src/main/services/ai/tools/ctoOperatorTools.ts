@@ -11,15 +11,19 @@ import type {
   AgentUpsertInput,
   CtoTriggerAgentWakeupArgs,
   LinearWorkflowConfig,
+  OperatorNavigationSuggestion,
 } from "../../../../shared/types";
 import type { IssueTracker } from "../../cto/issueTracker";
 import type { createLinearDispatcherService } from "../../cto/linearDispatcherService";
 import type { createWorkerAgentService } from "../../cto/workerAgentService";
 import type { createWorkerHeartbeatService } from "../../cto/workerHeartbeatService";
 import type { createFlowPolicyService } from "../../cto/flowPolicyService";
+import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createMissionService } from "../../missions/missionService";
 import type { createAiOrchestratorService } from "../../orchestrator/aiOrchestratorService";
+import type { createPrService } from "../../prs/prService";
+import type { createProcessService } from "../../processes/processService";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
@@ -33,6 +37,9 @@ export interface CtoOperatorToolDeps {
   workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
   linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  prService?: ReturnType<typeof createPrService> | null;
+  fileService?: ReturnType<typeof createFileService> | null;
+  processService?: ReturnType<typeof createProcessService> | null;
   issueTracker?: IssueTracker | null;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
@@ -58,20 +65,15 @@ export interface CtoOperatorToolDeps {
   }) => Promise<AgentChatSession>;
   sendChatMessage: (args: AgentChatSendArgs) => Promise<void>;
   interruptChat: (args: AgentChatInterruptArgs) => Promise<void>;
+  resumeChat: (args: { sessionId: string }) => Promise<AgentChatSession>;
+  disposeChat: (args: { sessionId: string }) => Promise<void>;
   ensureCtoSession: (args: {
     laneId: string;
     modelId?: string | null;
     reasoningEffort?: string | null;
     reuseExisting?: boolean;
   }) => Promise<AgentChatSession>;
-  fetchMissionContext?: (missionId: string) => Promise<{ content: string; truncated: boolean }>;
 }
-
-type ChatNavigationHint = {
-  surface: "lanes";
-  laneId: string;
-  sessionId: string;
-};
 
 const ACTIVE_LINEAR_RUN_STATUSES = new Set([
   "queued",
@@ -128,12 +130,97 @@ function summarizeWorkerStatus(status: AgentStatus): string {
   }
 }
 
-function buildChatNavigationHint(session: Pick<AgentChatSession, "id" | "laneId">): ChatNavigationHint {
+function buildNavigationSuggestion(args: {
+  surface: OperatorNavigationSuggestion["surface"];
+  laneId?: string | null;
+  sessionId?: string | null;
+  missionId?: string | null;
+}): OperatorNavigationSuggestion {
+  const laneId = args.laneId?.trim() || null;
+  const sessionId = args.sessionId?.trim() || null;
+  const missionId = args.missionId?.trim() || null;
+  if (args.surface === "work") {
+    const search = new URLSearchParams();
+    if (laneId) search.set("laneId", laneId);
+    if (sessionId) search.set("sessionId", sessionId);
+    return {
+      surface: "work",
+      label: "Open in Work",
+      href: `/work${search.size ? `?${search.toString()}` : ""}`,
+      laneId,
+      sessionId,
+    };
+  }
+  if (args.surface === "missions") {
+    const search = new URLSearchParams();
+    if (missionId) search.set("missionId", missionId);
+    if (laneId) search.set("laneId", laneId);
+    return {
+      surface: "missions",
+      label: "Open mission",
+      href: `/missions${search.size ? `?${search.toString()}` : ""}`,
+      laneId,
+      missionId,
+    };
+  }
+  if (args.surface === "cto") {
+    return {
+      surface: "cto",
+      label: "Open CTO",
+      href: "/cto",
+      laneId,
+      sessionId,
+    };
+  }
+  const search = new URLSearchParams();
+  if (laneId) search.set("laneId", laneId);
+  if (sessionId) search.set("sessionId", sessionId);
   return {
     surface: "lanes",
-    laneId: session.laneId,
-    sessionId: session.id,
+    label: "Open lane",
+    href: `/lanes${search.size ? `?${search.toString()}` : ""}`,
+    laneId,
+    sessionId,
   };
+}
+
+function buildNavigationPayload(
+  suggestion: OperatorNavigationSuggestion | null,
+  includeSuggestions = true,
+): {
+  navigation?: OperatorNavigationSuggestion;
+  navigationSuggestions?: OperatorNavigationSuggestion[];
+} {
+  if (!includeSuggestions || !suggestion) return {};
+  return {
+    navigation: suggestion,
+    navigationSuggestions: [suggestion],
+  };
+}
+
+function resolveWorkspaceIdForLane(
+  deps: Pick<CtoOperatorToolDeps, "fileService" | "defaultLaneId">,
+  args: { workspaceId?: string | null; laneId?: string | null },
+): string {
+  if (!deps.fileService) {
+    throw new Error("File service is not available.");
+  }
+  const allWorkspaces = deps.fileService.listWorkspaces({ includeArchived: true });
+  const explicitWorkspaceId = args.workspaceId?.trim() || "";
+  if (explicitWorkspaceId) {
+    const workspace = allWorkspaces.find((entry) => entry.id === explicitWorkspaceId) ?? null;
+    if (!workspace) throw new Error(`Workspace not found: ${explicitWorkspaceId}`);
+    return workspace.id;
+  }
+  const laneId = args.laneId?.trim() || deps.defaultLaneId;
+  // Prefer active workspaces; fall back to archived only if no active match.
+  const activeWorkspaces = deps.fileService.listWorkspaces({ includeArchived: false });
+  const laneWorkspace =
+    activeWorkspaces.find((entry) => entry.laneId === laneId) ??
+    allWorkspaces.find((entry) => entry.laneId === laneId) ??
+    null;
+  if (laneWorkspace) return laneWorkspace.id;
+  throw new Error(`Workspace not found for lane ${laneId}.`);
 }
 
 export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string, Tool> {
@@ -169,7 +256,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     return {
       success: true as const,
       sessionId: session.id,
-      navigation: buildChatNavigationHint(session),
+      ...buildNavigationPayload(buildNavigationSuggestion({
+        surface: "cto",
+        laneId: session.laneId,
+        sessionId: session.id,
+      })),
       reusedCurrentSession: session.id === deps.currentSessionId,
       issue: {
         id: issue.id,
@@ -213,7 +304,16 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           },
         });
       }
-      return { success: true as const, mission, run };
+      return {
+        success: true as const,
+        mission,
+        run,
+        ...buildNavigationPayload(buildNavigationSuggestion({
+          surface: "missions",
+          laneId: mission.laneId ?? (args.laneId?.trim() || deps.defaultLaneId),
+          missionId: mission.id,
+        })),
+      };
     } catch (error) {
       return { success: false as const, error: error instanceof Error ? error.message : String(error) };
     }
@@ -286,7 +386,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       if (!lane) {
         return { success: false, error: `Lane not found: ${laneId}` };
       }
-      return { success: true, lane };
+      return {
+        success: true,
+        lane,
+        ...buildNavigationPayload(buildNavigationSuggestion({
+          surface: "lanes",
+          laneId: lane.id,
+        })),
+      };
     },
   });
 
@@ -300,7 +407,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ name, description, parentLaneId }) => {
       try {
         const lane = await deps.laneService.create({ name, description, parentLaneId });
-        return { success: true, lane };
+        return {
+          success: true,
+          lane,
+          ...buildNavigationPayload(buildNavigationSuggestion({
+            surface: "lanes",
+            laneId: lane.id,
+          })),
+        };
       } catch (error) {
         return { success: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -365,7 +479,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           sessionId: session.id,
           laneId: session.laneId,
           requestedTitle: title?.trim() || null,
-          navigation: buildChatNavigationHint(session),
+          ...buildNavigationPayload(buildNavigationSuggestion({
+            surface: "work",
+            laneId: session.laneId,
+            sessionId: session.id,
+          }), openInUi),
           provider: session.provider,
           model: session.model,
           modelId: session.modelId ?? null,
@@ -379,8 +497,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.sendChatMessage = tool({
     description: "Send a message to an ADE chat session you are supervising.",
     inputSchema: z.object({
-      sessionId: z.string(),
-      text: z.string(),
+      sessionId: z.string().trim().min(1),
+      text: z.string().trim().min(1),
     }),
     execute: async ({ sessionId, text }) => {
       try {
@@ -395,7 +513,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.interruptChat = tool({
     description: "Interrupt a running ADE chat turn.",
     inputSchema: z.object({
-      sessionId: z.string(),
+      sessionId: z.string().trim().min(1),
     }),
     execute: async ({ sessionId }) => {
       try {
@@ -407,10 +525,50 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     },
   });
 
+  tools.resumeChat = tool({
+    description: "Resume a previously ended ADE chat session so it can continue work.",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1),
+    }),
+    execute: async ({ sessionId }) => {
+      try {
+        const session = await deps.resumeChat({ sessionId });
+        return {
+          success: true,
+          sessionId: session.id,
+          laneId: session.laneId,
+          status: session.status,
+          ...buildNavigationPayload(buildNavigationSuggestion({
+            surface: "work",
+            laneId: session.laneId,
+            sessionId: session.id,
+          })),
+        };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.endChat = tool({
+    description: "End and archive an ADE chat session.",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1),
+    }),
+    execute: async ({ sessionId }) => {
+      try {
+        await deps.disposeChat({ sessionId });
+        return { success: true, sessionId };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
   tools.getChatStatus = tool({
     description: "Get the current status for an ADE chat session.",
     inputSchema: z.object({
-      sessionId: z.string(),
+      sessionId: z.string().trim().min(1),
     }),
     execute: async ({ sessionId }) => {
       const session = await deps.getChatStatus(sessionId);
@@ -489,7 +647,16 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
             },
           });
         }
-        return { success: true, mission, run };
+        return {
+          success: true,
+          mission,
+          run,
+          ...buildNavigationPayload(buildNavigationSuggestion({
+            surface: "missions",
+            laneId: mission.laneId ?? (laneId?.trim() || deps.defaultLaneId),
+            missionId: mission.id,
+          })),
+        };
       } catch (error) {
         return { success: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -505,7 +672,15 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       if (!deps.missionService) return { success: false, error: "Mission service is not available." };
       const mission = deps.missionService.get(missionId);
       if (!mission) return { success: false, error: `Mission not found: ${missionId}` };
-      return { success: true, mission };
+      return {
+        success: true,
+        mission,
+        ...buildNavigationPayload(buildNavigationSuggestion({
+          surface: "missions",
+          laneId: mission.laneId ?? null,
+          missionId: mission.id,
+        })),
+      };
     },
   });
 
@@ -532,7 +707,15 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           ...(priority ? { priority } : {}),
           ...(outcomeSummary !== undefined ? { outcomeSummary } : {}),
         });
-        return { success: true, mission };
+        return {
+          success: true,
+          mission,
+          ...buildNavigationPayload(buildNavigationSuggestion({
+            surface: "missions",
+            laneId: mission.laneId ?? null,
+            missionId: mission.id,
+          })),
+        };
       } catch (error) {
         return { success: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -563,7 +746,16 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
             launchSource: "cto_operator_tools.launchMissionRun",
           },
         });
-        return { success: true, mission, run };
+        return {
+          success: true,
+          mission,
+          run,
+          ...buildNavigationPayload(buildNavigationSuggestion({
+            surface: "missions",
+            laneId: mission.laneId ?? null,
+            missionId: mission.id,
+          })),
+        };
       } catch (error) {
         return { success: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -699,22 +891,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     },
   });
 
-  tools.openMissionContext = tool({
-    description: "Open the generated mission context pack so you can review the mission's live execution context.",
-    inputSchema: z.object({
-      missionId: z.string(),
-    }),
-    execute: async ({ missionId }) => {
-      if (!deps.fetchMissionContext) return { success: false, error: "Mission context export is not available." };
-      try {
-        const result = await deps.fetchMissionContext(missionId);
-        return { success: true, missionId, ...result };
-      } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
-      }
-    },
-  });
-
   tools.listWorkers = tool({
     description: "List worker agents in the CTO org.",
     inputSchema: z.object({
@@ -816,6 +992,268 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         coreMemory,
         recentRuns,
       };
+    },
+  });
+
+  tools.listPullRequests = tool({
+    description: "List ADE-managed pull requests so the CTO can inspect active review state.",
+    inputSchema: z.object({
+      refresh: z.boolean().optional().default(true),
+    }),
+    execute: async ({ refresh }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        const prs = refresh ? await deps.prService.refresh() : deps.prService.listAll();
+        return { success: true, count: prs.length, prs };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.getPullRequestStatus = tool({
+    description: "Inspect pull request status, checks, reviews, and comments through ADE's PR service.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      includeChecks: z.boolean().optional().default(true),
+      includeReviews: z.boolean().optional().default(true),
+      includeComments: z.boolean().optional().default(false),
+    }),
+    execute: async ({ prId, includeChecks, includeReviews, includeComments }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        const summary = deps.prService.listAll().find((entry) => entry.id === prId) ?? null;
+        const [status, checks, reviews, comments] = await Promise.all([
+          deps.prService.getStatus(prId),
+          includeChecks ? deps.prService.getChecks(prId) : Promise.resolve([]),
+          includeReviews ? deps.prService.getReviews(prId) : Promise.resolve([]),
+          includeComments ? deps.prService.getComments(prId) : Promise.resolve([]),
+        ]);
+        return {
+          success: true,
+          prId,
+          summary,
+          status,
+          checks,
+          reviews,
+          comments,
+        };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.commentOnPullRequest = tool({
+    description: "Post a comment to a pull request through ADE's PR service.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      body: z.string().trim().min(1),
+    }),
+    execute: async ({ prId, body }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        const comment = await deps.prService.addComment({ prId, body });
+        return { success: true, comment };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.updatePullRequestTitle = tool({
+    description: "Update a pull request title through ADE's PR service.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      title: z.string().trim().min(1),
+    }),
+    execute: async ({ prId, title }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        await deps.prService.updateTitle({ prId, title });
+        return { success: true, prId, title };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.updatePullRequestBody = tool({
+    description: "Update a pull request body through ADE's PR service.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      body: z.string().min(1),
+    }),
+    execute: async ({ prId, body }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        await deps.prService.updateDescription({ prId, body });
+        return { success: true, prId };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.listFileWorkspaces = tool({
+    description: "List ADE file workspaces so the CTO can inspect files by lane or attached workspace.",
+    inputSchema: z.object({
+      includeArchived: z.boolean().optional().default(true),
+    }),
+    execute: async ({ includeArchived }) => {
+      if (!deps.fileService) return { success: false, error: "File service is not available." };
+      const workspaces = deps.fileService.listWorkspaces({ includeArchived });
+      return { success: true, count: workspaces.length, workspaces };
+    },
+  });
+
+  tools.readWorkspaceFile = tool({
+    description: "Read a file from an ADE workspace or lane without opening the renderer editor.",
+    inputSchema: z.object({
+      workspaceId: z.string().trim().min(1).optional(),
+      laneId: z.string().trim().min(1).optional(),
+      path: z.string().trim().min(1),
+    }),
+    execute: async ({ workspaceId, laneId, path }) => {
+      if (!deps.fileService) return { success: false, error: "File service is not available." };
+      try {
+        const resolvedWorkspaceId = resolveWorkspaceIdForLane(deps, {
+          workspaceId,
+          laneId,
+        });
+        const file = deps.fileService.readFile({ workspaceId: resolvedWorkspaceId, path });
+        return {
+          success: true,
+          workspaceId: resolvedWorkspaceId,
+          path,
+          file,
+        };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.searchWorkspaceText = tool({
+    description: "Search indexed text inside an ADE workspace or lane.",
+    inputSchema: z.object({
+      workspaceId: z.string().trim().min(1).optional(),
+      laneId: z.string().trim().min(1).optional(),
+      query: z.string().trim().min(1),
+      limit: z.number().int().positive().max(200).optional().default(50),
+    }),
+    execute: async ({ workspaceId, laneId, query, limit }) => {
+      if (!deps.fileService) return { success: false, error: "File service is not available." };
+      try {
+        const resolvedWorkspaceId = resolveWorkspaceIdForLane(deps, {
+          workspaceId,
+          laneId,
+        });
+        const matches = await deps.fileService.searchText({
+          workspaceId: resolvedWorkspaceId,
+          query,
+          limit,
+        });
+        return {
+          success: true,
+          workspaceId: resolvedWorkspaceId,
+          count: matches.length,
+          matches,
+        };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.listManagedProcesses = tool({
+    description: "Inspect ADE-managed processes for a lane, including configured definitions and current runtime state.",
+    inputSchema: z.object({
+      laneId: z.string().optional(),
+    }),
+    execute: async ({ laneId }) => {
+      if (!deps.processService) return { success: false, error: "Process service is not available." };
+      const resolvedLaneId = laneId?.trim() || deps.defaultLaneId;
+      try {
+        const [definitions, runtime] = await Promise.all([
+          Promise.resolve(deps.processService.listDefinitions()),
+          Promise.resolve(deps.processService.listRuntime(resolvedLaneId)),
+        ]);
+        return {
+          success: true,
+          laneId: resolvedLaneId,
+          definitions,
+          runtime,
+          ...buildNavigationPayload(buildNavigationSuggestion({
+            surface: "lanes",
+            laneId: resolvedLaneId,
+          })),
+        };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.startManagedProcess = tool({
+    description: "Start an ADE-managed lane process.",
+    inputSchema: z.object({
+      laneId: z.string().trim().min(1).optional(),
+      processId: z.string().trim().min(1),
+    }),
+    execute: async ({ laneId, processId }) => {
+      if (!deps.processService) return { success: false, error: "Process service is not available." };
+      try {
+        const runtime = await deps.processService.start({
+          laneId: laneId?.trim() || deps.defaultLaneId,
+          processId,
+        });
+        return { success: true, runtime };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.stopManagedProcess = tool({
+    description: "Stop an ADE-managed lane process.",
+    inputSchema: z.object({
+      laneId: z.string().trim().min(1).optional(),
+      processId: z.string().trim().min(1),
+    }),
+    execute: async ({ laneId, processId }) => {
+      if (!deps.processService) return { success: false, error: "Process service is not available." };
+      try {
+        const runtime = await deps.processService.stop({
+          laneId: laneId?.trim() || deps.defaultLaneId,
+          processId,
+        });
+        return { success: true, runtime };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  tools.getManagedProcessLog = tool({
+    description: "Read the bounded tail of an ADE-managed process log.",
+    inputSchema: z.object({
+      laneId: z.string().trim().min(1).optional(),
+      processId: z.string().trim().min(1),
+      maxBytes: z.number().int().positive().max(500_000).optional().default(40_000),
+    }),
+    execute: async ({ laneId, processId, maxBytes }) => {
+      if (!deps.processService) return { success: false, error: "Process service is not available." };
+      try {
+        const content = deps.processService.getLogTail({
+          laneId: laneId?.trim() || deps.defaultLaneId,
+          processId,
+          maxBytes,
+        });
+        return { success: true, laneId: laneId?.trim() || deps.defaultLaneId, processId, content };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
     },
   });
 

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useNavigate } from "react-router-dom";
 import {
   CaretDown,
   CaretRight,
@@ -19,6 +20,9 @@ import {
   ChatCircleText,
   Info,
   Lightning,
+  MagnifyingGlass,
+  Globe,
+  ShieldCheck,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -27,6 +31,7 @@ import type {
   ChatSurfaceChipTone,
   ChatSurfaceProfile,
   ChatSurfaceMode,
+  OperatorNavigationSuggestion,
 } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
@@ -52,6 +57,38 @@ function readRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
+
+function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSuggestion | null {
+  const record = readRecord(value);
+  if (!record) return null;
+  const surface = typeof record.surface === "string" ? record.surface : "";
+  const href = typeof record.href === "string" ? record.href : "";
+  const label = typeof record.label === "string" ? record.label : "";
+  if (!NAVIGATION_SURFACES.has(surface) || !href.trim() || !label.trim()) return null;
+  const result: OperatorNavigationSuggestion = { surface: surface as OperatorNavigationSuggestion["surface"], href, label };
+  if (typeof record.laneId === "string") result.laneId = record.laneId;
+  if (typeof record.sessionId === "string") result.sessionId = record.sessionId;
+  if (typeof record.missionId === "string") result.missionId = record.missionId;
+  return result;
+}
+
+function readNavigationSuggestions(value: unknown): OperatorNavigationSuggestion[] {
+  const record = readRecord(value);
+  if (!record) return [];
+  const suggestions: OperatorNavigationSuggestion[] = [];
+  const navigationSuggestions = Array.isArray(record.navigationSuggestions)
+    ? record.navigationSuggestions
+    : [];
+  for (const candidate of navigationSuggestions) {
+    const parsed = readOperatorNavigationSuggestion(candidate);
+    if (parsed) suggestions.push(parsed);
+  }
+  if (suggestions.length > 0) return suggestions;
+  const fallback = readOperatorNavigationSuggestion(record.navigation);
+  return fallback ? [fallback] : [];
+}
+
 function summarizeStructuredValue(value: unknown, maxChars = 160): string {
   const text = formatStructuredValue(value).replace(/\s+/g, " ").trim();
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
@@ -68,6 +105,27 @@ function formatTokenCount(value: number | null | undefined): string | null {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(Math.round(value));
+}
+
+function renderSubagentUsage(usage: {
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+} | undefined): React.ReactNode {
+  if (!usage) return null;
+  return (
+    <div className="flex flex-wrap gap-3 border-t border-violet-500/8 pt-2.5 font-mono text-[10px] text-muted-fg/45">
+      {usage.totalTokens != null ? (
+        <span>{formatTokenCount(usage.totalTokens)} tokens</span>
+      ) : null}
+      {usage.toolUses != null ? (
+        <span>{usage.toolUses} tool use{usage.toolUses === 1 ? "" : "s"}</span>
+      ) : null}
+      {usage.durationMs != null ? (
+        <span>{(usage.durationMs / 1000).toFixed(1)}s</span>
+      ) : null}
+    </div>
+  );
 }
 
 const GLASS_CARD_CLASS =
@@ -95,7 +153,7 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
   return null;
 }
 
-function messageCardStyle(_accentAlpha = 0.18): React.CSSProperties {
+function messageCardStyle(): React.CSSProperties {
   return {
     borderColor: "rgba(245, 158, 11, 0.16)",
     background: "#171412",
@@ -152,8 +210,10 @@ type RenderEnvelope = {
   };
 };
 
+const ABSTRACT_ACTIVITIES = new Set(["thinking", "working", "searching", "reading", "web_searching", "spawning_agent"]);
+
 function isAbstractActivity(activity: string): boolean {
-  return activity === "thinking" || activity === "working" || activity === "searching" || activity === "reading";
+  return ABSTRACT_ACTIVITIES.has(activity);
 }
 
 function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnvelope, sequence: number): void {
@@ -336,14 +396,75 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     return;
   }
 
-  // structured_question, tool_use_summary, context_compact, system_notice: push normally
+  if (event.type === "subagent_progress") {
+    const matchIndex = [...out]
+      .reverse()
+      .findIndex((candidate) =>
+        candidate.event.type === "subagent_progress"
+        && candidate.event.taskId === event.taskId
+        && (candidate.event.turnId ?? null) === (event.turnId ?? null),
+      );
+    if (matchIndex >= 0) {
+      const actualIndex = out.length - 1 - matchIndex;
+      out[actualIndex] = {
+        ...out[actualIndex]!,
+        timestamp: envelope.timestamp,
+        event,
+      };
+      return;
+    }
+    out.push({
+      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    return;
+  }
+
+  // structured_question, tool_use_summary, context_compact, system_notice, web_search, auto_approval_review: push normally
   if (
     event.type === "structured_question"
     || event.type === "tool_use_summary"
     || event.type === "context_compact"
     || event.type === "system_notice"
     || event.type === "completion_report"
+    || event.type === "web_search"
+    || event.type === "auto_approval_review"
   ) {
+    out.push({
+      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    return;
+  }
+
+  // plan_text: merge consecutive deltas by turnId/itemId (like text merging)
+  if (event.type === "plan_text") {
+    const nextTurn = event.turnId ?? null;
+    const nextItem = event.itemId ?? null;
+    const matchIndex = [...out]
+      .reverse()
+      .findIndex((candidate) =>
+        candidate.event.type === "plan_text"
+        && (candidate.event.turnId ?? null) === nextTurn
+        && (candidate.event.itemId ?? null) === nextItem,
+      );
+    if (matchIndex >= 0) {
+      const actualIndex = out.length - 1 - matchIndex;
+      const existing = out[actualIndex];
+      if (existing?.event.type === "plan_text") {
+        out[actualIndex] = {
+          ...existing,
+          timestamp: envelope.timestamp,
+          event: {
+            ...existing.event,
+            text: `${existing.event.text}${event.text}`,
+          },
+        };
+        return;
+      }
+    }
     out.push({
       key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
       timestamp: envelope.timestamp,
@@ -496,6 +617,28 @@ function PlanStepIcon({ status }: { status: string }) {
   if (status === "failed") return <XCircle size={13} weight="bold" className="text-red-400" />;
   if (status === "in_progress") return <SpinnerGap size={13} weight="bold" className="animate-spin text-accent" />;
   return <Circle size={11} weight="regular" className="text-muted-fg/40" />;
+}
+
+function todoItemStatusClass(status: string): string {
+  switch (status) {
+    case "completed":
+      return "border-emerald-400/18 bg-emerald-500/[0.08] text-emerald-300/80";
+    case "in_progress":
+      return "border-sky-400/18 bg-sky-500/[0.08] text-sky-300/80";
+    default:
+      return "border-amber-400/18 bg-amber-500/[0.08] text-amber-300/80";
+  }
+}
+
+function statusColorClass(status: string | undefined): string {
+  switch (status) {
+    case "completed":
+      return "text-emerald-400/70";
+    case "failed":
+      return "text-red-400/70";
+    default:
+      return "text-accent/70";
+  }
 }
 
 /* ── Markdown renderer ── */
@@ -667,11 +810,13 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
 const TOOL_RESULT_TRUNCATE_LIMIT = 500;
 
 function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "tool_result" }> }) {
+  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const meta = getToolMeta(event.tool);
   const ToolIcon = meta.icon;
   const toolDisplay = describeToolIdentifier(event.tool);
   const sourceChip = toolSourceChip(event.tool);
+  const navigationSuggestions = readNavigationSuggestions(event.result);
   const resultStr = formatStructuredValue(event.result);
   const isTruncated = resultStr.length > TOOL_RESULT_TRUNCATE_LIMIT;
   const displayStr = !expanded && isTruncated ? `${resultStr.slice(0, TOOL_RESULT_TRUNCATE_LIMIT)}...` : resultStr;
@@ -679,7 +824,6 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
 
   return (
     <CollapsibleCard
-      defaultOpen={false}
       summary={
         <div className="flex items-center gap-2 font-mono text-[11px]">
           <StatusIcon status={event.status ?? "completed"} />
@@ -697,17 +841,29 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           ) : null}
           {preview.length ? <span className="max-w-[360px] truncate text-[10px] text-fg/40">{preview}</span> : null}
           {event.status ? (
-            <span className={cn(
-              "text-[10px] uppercase tracking-wider",
-              event.status === "completed" ? "text-emerald-400/70" : event.status === "failed" ? "text-red-400/70" : "text-accent/70"
-            )}>
+            <span className={cn("text-[10px] uppercase tracking-wider", statusColorClass(event.status))}>
               {event.status}
             </span>
           ) : null}
         </div>
       }
+      defaultOpen={navigationSuggestions.length > 0}
       className="border-transparent"
     >
+      {navigationSuggestions.length > 0 ? (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {navigationSuggestions.map((suggestion) => (
+            <button
+              key={`${suggestion.surface}:${suggestion.href}`}
+              type="button"
+              className="rounded-[8px] border border-accent/20 bg-accent/[0.08] px-2.5 py-1 font-mono text-[10px] font-semibold text-accent/85 transition-colors hover:bg-accent/[0.14] hover:text-accent"
+              onClick={() => navigate(suggestion.href)}
+            >
+              {suggestion.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
         {displayStr}
       </pre>
@@ -740,11 +896,8 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
 }
 
 function resolveModelMeta(modelId?: string, model?: string): { label: string | null; family: string | null; cliCommand: string | null } {
-  const descriptor = modelId
-    ? getModelById(modelId) ?? resolveModelDescriptor(modelId)
-    : model
-      ? getModelById(model) ?? resolveModelDescriptor(model)
-      : undefined;
+  const key = modelId ?? model;
+  const descriptor = key ? (getModelById(key) ?? resolveModelDescriptor(key)) : undefined;
   return {
     label: resolveModelLabel(modelId, model),
     family: descriptor?.family ?? null,
@@ -793,7 +946,7 @@ function renderEvent(
     const deliveryChip = describeUserDeliveryState(event);
     return (
       <div className="flex justify-end">
-        <div className={cn(GLASS_CARD_CLASS, "max-w-[82%] px-4 py-3")} style={messageCardStyle(0.18)}>
+        <div className={cn(GLASS_CARD_CLASS, "max-w-[82%] px-4 py-3")} style={messageCardStyle()}>
           <div className="mb-2 flex items-center gap-2">
             <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-amber-300/20 bg-amber-400/[0.10]">
               <User size={10} weight="regular" className="text-amber-200/90" />
@@ -848,11 +1001,17 @@ function renderEvent(
     const outputTrimmed = event.output.trim();
     const isLong = outputTrimmed.split("\n").length > 12;
 
-    const statusBadgeCls = event.status === "completed"
-      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-400"
-      : event.status === "failed"
-        ? "border-red-500/25 bg-red-500/10 text-red-400"
-        : "border-amber-500/25 bg-amber-500/10 text-amber-400";
+    let statusBadgeCls: string;
+    switch (event.status) {
+      case "completed":
+        statusBadgeCls = "border-emerald-500/25 bg-emerald-500/10 text-emerald-400";
+        break;
+      case "failed":
+        statusBadgeCls = "border-red-500/25 bg-red-500/10 text-red-400";
+        break;
+      default:
+        statusBadgeCls = "border-amber-500/25 bg-amber-500/10 text-amber-400";
+    }
 
     const commandHeader = (
       <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
@@ -1005,11 +1164,7 @@ function renderEvent(
                 </div>
                 <span className={cn(
                   "inline-flex shrink-0 items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]",
-                  item.status === "completed"
-                    ? "border-emerald-400/18 bg-emerald-500/[0.08] text-emerald-300/80"
-                    : item.status === "in_progress"
-                      ? "border-sky-400/18 bg-sky-500/[0.08] text-sky-300/80"
-                      : "border-amber-400/18 bg-amber-500/[0.08] text-amber-300/80",
+                  todoItemStatusClass(item.status),
                 )}>
                   {item.status.replace("_", " ")}
                 </span>
@@ -1033,6 +1188,109 @@ function renderEvent(
     );
   }
 
+  /* ── Web Search ── */
+  if (event.type === "web_search") {
+    const isRunning = event.status === "running";
+    const isFailed = event.status === "failed";
+    return (
+      <div
+        className={cn(
+          "group relative overflow-hidden rounded-xl border p-0",
+          isFailed
+            ? "border-red-500/12 bg-gradient-to-br from-red-950/20 to-red-950/5"
+            : "border-cyan-500/10 bg-gradient-to-br from-cyan-950/25 via-[#0a0e14] to-[#0d0d10]",
+        )}
+      >
+        {/* Subtle top accent line */}
+        <div className={cn(
+          "h-px w-full",
+          isFailed ? "bg-gradient-to-r from-transparent via-red-500/30 to-transparent"
+            : "bg-gradient-to-r from-transparent via-cyan-400/25 to-transparent",
+        )} />
+        <div className="flex items-start gap-3 px-4 py-3.5">
+          <div className={cn(
+            "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
+            isFailed ? "bg-red-500/10" : "bg-cyan-500/10",
+          )}>
+            {isRunning ? (
+              <SpinnerGap size={15} weight="bold" className="animate-spin text-cyan-400/80" />
+            ) : isFailed ? (
+              <XCircle size={15} weight="bold" className="text-red-400/80" />
+            ) : (
+              <Globe size={15} weight="bold" className="text-cyan-400/70" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className={cn(
+                "font-mono text-[9px] font-bold uppercase tracking-[0.18em]",
+                isFailed ? "text-red-300/60" : "text-cyan-300/50",
+              )}>
+                Web Search
+              </span>
+              {event.action ? (
+                <span className="font-mono text-[9px] text-fg/25">{event.action}</span>
+              ) : null}
+              {isRunning ? (
+                <span className="font-mono text-[9px] text-cyan-400/40">searching...</span>
+              ) : null}
+            </div>
+            <div className={cn(
+              "mt-1.5 text-[13px] leading-relaxed",
+              isFailed ? "text-red-200/70" : "text-fg/80",
+            )}>
+              <MagnifyingGlass size={12} weight="bold" className="mr-1.5 inline text-fg/30" />
+              {event.query}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Auto Approval Review (Guardian) ── */
+  if (event.type === "auto_approval_review") {
+    const isStarted = event.reviewStatus === "started";
+    return (
+      <div className="flex items-center gap-2.5 rounded-lg border border-indigo-500/10 bg-indigo-500/[0.04] px-3.5 py-2">
+        {isStarted ? (
+          <SpinnerGap size={13} weight="bold" className="animate-spin text-indigo-400/60" />
+        ) : (
+          <ShieldCheck size={13} weight="bold" className="text-indigo-400/60" />
+        )}
+        <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-indigo-300/55">
+          {isStarted ? "Guardian reviewing" : "Guardian approved"}
+        </span>
+        {event.action ? (
+          <span className="font-mono text-[9px] text-fg/30">{event.action}</span>
+        ) : null}
+        {event.review ? (
+          <span className="flex-1 truncate text-[11px] text-fg/45">{event.review}</span>
+        ) : null}
+      </div>
+    );
+  }
+
+  /* ── Plan Text (streaming plan delta) ── */
+  if (event.type === "plan_text") {
+    return (
+      <div className="relative overflow-hidden rounded-xl border border-amber-500/8 bg-gradient-to-br from-amber-950/15 via-[#0d0d10] to-[#0d0d10]">
+        <div className="h-px w-full bg-gradient-to-r from-transparent via-amber-400/20 to-transparent" />
+        <div className="px-4 py-3">
+          <div className="mb-2 flex items-center gap-2">
+            <ListChecks size={13} weight="bold" className="text-amber-400/50" />
+            <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-amber-300/45">
+              Plan
+            </span>
+          </div>
+          <div className="prose prose-invert prose-sm max-w-none text-[12px] leading-relaxed text-fg/70">
+            <MarkdownBlock markdown={event.text} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   /* ── Subagent Started ── */
   if (event.type === "subagent_started") {
     return (
@@ -1042,6 +1300,38 @@ function renderEvent(
           Subagent: {event.description}
         </span>
       </div>
+    );
+  }
+
+  /* ── Subagent Progress ── */
+  if (event.type === "subagent_progress") {
+    const summaryText = summarizeInlineText(event.summary, 140);
+    return (
+      <CollapsibleCard
+        defaultOpen={false}
+        summary={
+          <div className="flex items-center gap-2 font-mono text-[11px]">
+            <SpinnerGap size={13} weight="bold" className="animate-spin text-violet-300/80" />
+            <span className="inline-flex items-center border border-violet-400/18 bg-violet-500/[0.08] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-300/80">
+              Subagent running
+            </span>
+            {summaryText ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryText}</span> : null}
+          </div>
+        }
+        className="border-violet-500/12"
+      >
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-muted-fg/45">
+            <span>Task {event.taskId}</span>
+            {event.description?.trim() ? <span>{event.description.trim()}</span> : null}
+            {event.lastToolName?.trim() ? <span>Tool {event.lastToolName.trim()}</span> : null}
+          </div>
+          <div className="text-[12px] leading-relaxed text-fg/70">
+            {event.summary.trim() || "Waiting for the next progress update."}
+          </div>
+          {renderSubagentUsage(event.usage)}
+        </div>
+      </CollapsibleCard>
     );
   }
 
@@ -1070,19 +1360,7 @@ function renderEvent(
       >
         <div className="space-y-3">
           <div className="text-[12px] leading-relaxed text-fg/70">{event.summary}</div>
-          {event.usage ? (
-            <div className="flex flex-wrap gap-3 border-t border-violet-500/8 pt-2.5 font-mono text-[10px] text-muted-fg/45">
-              {event.usage.totalTokens != null ? (
-                <span>{formatTokenCount(event.usage.totalTokens)} tokens</span>
-              ) : null}
-              {event.usage.toolUses != null ? (
-                <span>{event.usage.toolUses} tool use{event.usage.toolUses === 1 ? "" : "s"}</span>
-              ) : null}
-              {event.usage.durationMs != null ? (
-                <span>{(event.usage.durationMs / 1000).toFixed(1)}s</span>
-              ) : null}
-            </div>
-          ) : null}
+          {renderSubagentUsage(event.usage)}
         </div>
       </CollapsibleCard>
     );
@@ -1091,7 +1369,7 @@ function renderEvent(
   /* ── Structured Question ── */
   if (event.type === "structured_question") {
     return (
-      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={messageCardStyle(0.14)}>
+      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={messageCardStyle()}>
         <div className="mb-2 flex items-center gap-2">
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
             <ChatCircleText size={13} weight="bold" className="text-[var(--chat-accent)]" />
@@ -1154,16 +1432,32 @@ function renderEvent(
     if (hideInternalExecution) {
       return null;
     }
-    const suffix = event.trigger === "auto" ? "(auto)" : "(manual)";
-    const freedLabel = event.preTokens != null ? ` · ~${formatTokenCount(event.preTokens)} tokens freed` : "";
+    const isAuto = event.trigger === "auto";
+    const freedLabel = event.preTokens != null ? `~${formatTokenCount(event.preTokens)} tokens freed` : null;
     return (
-      <div className="flex items-center gap-3 py-0.5">
-        <div className="h-px flex-1 border-t border-dashed border-white/8" />
-        <span className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border border-dashed border-white/8 bg-white/[0.02] px-2.5 py-1 font-mono text-[9px] text-muted-fg/40">
-          <Lightning size={10} weight="bold" className="text-muted-fg/35" />
-          Context compacted {suffix}{freedLabel}
-        </span>
-        <div className="h-px flex-1 border-t border-dashed border-white/8" />
+      <div className="my-2 flex items-center gap-3 py-1">
+        <div className="h-px flex-1 bg-gradient-to-r from-transparent via-amber-400/15 to-transparent" />
+        <div className="inline-flex items-center gap-2 rounded-lg border border-amber-400/12 bg-amber-500/[0.04] px-3 py-1.5 shadow-[0_0_12px_-4px_rgba(245,158,11,0.08)]">
+          <div className="flex h-4 w-4 items-center justify-center rounded-full bg-amber-400/10">
+            <Lightning size={9} weight="fill" className="text-amber-400/70" />
+          </div>
+          <span className="font-mono text-[10px] font-medium tracking-wide text-amber-300/60">
+            Context compacted
+          </span>
+          {freedLabel ? (
+            <>
+              <span className="text-amber-400/20">&middot;</span>
+              <span className="font-mono text-[9px] text-amber-300/40">{freedLabel}</span>
+            </>
+          ) : null}
+          <span className={cn(
+            "rounded-md px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-widest",
+            isAuto ? "bg-amber-500/8 text-amber-300/35" : "bg-violet-500/8 text-violet-300/40",
+          )}>
+            {isAuto ? "auto" : "manual"}
+          </span>
+        </div>
+        <div className="h-px flex-1 bg-gradient-to-r from-transparent via-amber-400/15 to-transparent" />
       </div>
     );
   }

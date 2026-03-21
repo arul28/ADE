@@ -10,8 +10,8 @@ ADE has two distinct memory systems:
 2026-03-15 portability clarification:
 
 - live memory state still flows through ADE sync when devices are connected to the same cluster
-- this W3 pass does **not** make unified memory or CTO/worker runtime memory Git-tracked
-- Git-tracked ADE portability in W3 is intentionally limited to the shared scaffold/config/identity layer
+- this Phase 6 W3 (portability) pass does **not** make unified memory or CTO/worker runtime memory Git-tracked
+- Git-tracked ADE portability in the Phase 6 W3 pass is intentionally limited to the shared scaffold/config/identity layer
 
 ## Unified Memory Service
 
@@ -122,7 +122,7 @@ type CtoCoreMemory = {
 
 On startup, `ctoStateService.ts` reads both sources and reconciles by version number. The higher version wins. On write, both are updated atomically.
 
-This dual-persistence pattern is currently used for runtime robustness and connected-cluster behavior. In this narrowed W3 pass, it should not be interpreted as "file means Git-tracked". `cto/core-memory.json` remains local/generated even though it is file-backed.
+This dual-persistence pattern is currently used for runtime robustness and connected-cluster behavior. In this narrowed Phase 6 W3 (portability) pass, it should not be interpreted as "file means Git-tracked". `cto/core-memory.json` remains local/generated even though it is file-backed.
 
 ### Daily Logs
 
@@ -144,7 +144,7 @@ When a CTO or worker identity session undergoes context compaction, `refreshReco
 
 Worker agents follow the same pattern via `AgentCoreMemory` (defined in `apps/desktop/src/shared/types/agents.ts`), with identical fields to `CtoCoreMemory`. Persisted in `.ade/agents/<slug>/core-memory.json`. Injected via `buildReconstructionContext()` in `workerAgentService.ts`.
 
-That worker core-memory file remains local/runtime state in this W3 pass. Another desktop learns live worker memory by connecting to the host, not by pulling it from Git.
+That worker core-memory file remains local/runtime state in this Phase 6 W3 (portability) pass. Another desktop learns live worker memory by connecting to the host, not by pulling it from Git.
 
 ## Portability contract
 
@@ -154,7 +154,7 @@ Memory-related ADE state now has three buckets:
 - **ADE-sync memory/runtime state**: connected-cluster DB state such as live mission-scoped memories, access scores, and other runtime records that benefit from real-time replication
 - **Local-only operational logs**: raw session logs, append-only runtime traces, caches, embeddings artifacts, and other machine-bound byproducts
 
-Future workstreams must choose one bucket explicitly. This narrowed W3 pass intentionally leaves memory portability out of the Git-tracked layer.
+Future workstreams must choose one bucket explicitly. This narrowed Phase 6 W3 (portability) pass intentionally leaves memory portability out of the Git-tracked layer.
 
 ## Memory Briefing Service
 

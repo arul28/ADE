@@ -2,7 +2,7 @@
 
 ## Phase 7 -- Full iOS & Advanced Remote (6-8 weeks)
 
-Goal: Complete the iOS app by adding all remaining desktop tabs (Missions, CTO/Chat, Automations, Graph, History, Settings) and ship advanced multi-device features. Phase 6 proved the sync architecture and delivered project management from the phone — Phase 7 brings the full AI orchestration experience to mobile and adds VPS provider integrations and advanced notification routing.
+Goal: Complete the iOS app by adding all remaining desktop tabs (Missions, CTO/Chat, Automations, Graph, History) and deepening the existing Settings surface to desktop parity, while shipping advanced multi-device features. Phase 6 proved the sync architecture, shipped the W5 hardening baseline for Lanes / Files / Work / PRs plus the sync-focused Settings tab, and shipped W6 full live-desktop parity for the iPhone Lanes tab. Phase 7 brings the remaining AI orchestration surfaces to mobile and adds VPS provider integrations and advanced notification routing.
 
 Phase 7 continues the two operating modes established in Phase 6:
 
@@ -21,15 +21,15 @@ Phase 7 is primarily about deepening the controller-to-host story on iOS and VPS
 
 ### Dependencies
 
-- Phase 6 complete (multi-device sync, iOS Lanes/Files/Work/PRs tabs working end-to-end).
+- Phase 6 complete (multi-device sync on desktop, W5 iPhone hardening baseline for Lanes / Files / Work / PRs + Settings, and W6 full iPhone Lanes parity shipped).
 
 ---
 
 ### Architecture Overview
 
-Phase 7 does not introduce new sync infrastructure. All 103 tables already sync to iOS from Phase 6 — the data is on the device. Phase 7 is pure feature work:
+Phase 7 does not introduce new sync infrastructure. The Phase 6 W5 hardening pass already owns sync correctness, authoritative iPhone hydration for the four shipped tabs, reconnect/revoke clarity, persisted work-session lane names, lane-backed Files read-only parity, and the baseline desktop-theme parity pass. Phase 6 W6 then expanded the iPhone Lanes tab to the full live desktop surface, including stack, git, diff, rebase/conflict, manage, and lane-scoped work/chat flows. Phase 7 is pure feature work beyond that shipped baseline:
 
-1. **Remaining iOS tabs** — Missions, CTO/Chat, Automations, Graph, History, full Settings. Each tab reads from the already-synced local SQLite database and sends commands to the host via the existing WebSocket protocol.
+1. **Remaining iOS tabs** — Missions, CTO/Chat, Automations, Graph, History, plus full Settings parity beyond the Phase 6 sync shell. Each tab reads from the already-synced local SQLite database and sends commands to the host via the existing WebSocket protocol.
 2. **VPS provider integrations** — one-click host provisioning on Hetzner, DigitalOcean, or any SSH-accessible machine.
 3. **Advanced remote workflows** — mobile automation controls, push notifications for AI events, computer-use artifact viewing, and cross-device notification routing.
 4. **iOS polish** — animations, dark mode, iPad support, widgets, Spotlight integration.
@@ -97,7 +97,7 @@ Remaining desktop tabs brought to iOS.
 
 #### W4: iOS Full Settings Tab
 
-Complete Settings implementation for iOS (Phase 6 shipped minimal connection settings only).
+Complete Settings implementation for iOS beyond the Phase 6 sync shell.
 
 - **Devices**: full device management — add, remove, configure, transfer host. Same as desktop Settings > Devices.
 - **AI Providers**: view configured providers. Add/edit API keys (stored in iOS Keychain, synced as encrypted blobs or entered per-device).
@@ -241,9 +241,9 @@ Phase 6 shipped basic offline state and command queuing. This workstream hardens
 W1 (Missions tab) ──────────────┐
 W2 (CTO/Chat tab) ──────────────┤
 W3 (Automations/Graph/History) ──┼──► W5 (push notifications) ──► W9 (offline resilience)
-W4 (full Settings tab) ──────────┘          │
+W4 (full Settings parity) ───────┘          │
                                             ▼
-W6 (VPS providers) ◄── W4 (Settings)   W7 (mobile automations)
+W6 (VPS providers) ◄── W4 (Settings parity)   W7 (mobile automations)
                                             │
 W8 (computer-use artifacts)                 ▼
                                        W10 (polish)
@@ -300,7 +300,7 @@ Animations, dark mode, iPad adaptive layout, widgets, Spotlight, haptics, and co
 3. iOS Automations tab allows viewing and toggling automation rules.
 4. iOS Graph tab renders workspace topology with interactive overlays.
 5. iOS History tab provides searchable operation history.
-6. iOS Settings tab covers devices, providers, notifications, general, context, and usage.
+6. iOS Settings reaches desktop parity for devices, providers, notifications, general, context, and usage.
 7. Push notifications reliably deliver across all app states with deep links.
 8. Cross-device notification routing suppresses duplicates when desktop is active.
 9. DND schedule works with priority-based notification levels.

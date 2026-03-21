@@ -82,27 +82,6 @@ async function createFixture() {
     ]
   );
 
-  const packService = {
-    getLaneExport: async ({ laneId: lid, level }: { laneId: string; level: string }) =>
-      buildExport(`lane:${lid}`, "lane", level as any),
-    getProjectExport: async ({ level }: { level: string }) =>
-      buildExport("project", "project", level as any),
-    refreshMissionPack: async () => ({
-      packKey: "mission:pack",
-      packType: "mission",
-      path: path.join(projectRoot, ".ade", "mission_pack.md"),
-      exists: true,
-      deterministicUpdatedAt: now,
-      narrativeUpdatedAt: null,
-      lastHeadSha: null,
-      versionId: "v1",
-      versionNumber: 1,
-      contentHash: "hash",
-      metadata: null,
-      body: "# Mission Pack",
-    }),
-  } as any;
-
   const ptyService = {
     create: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
   } as any;
@@ -111,7 +90,6 @@ async function createFixture() {
     db,
     projectId,
     projectRoot,
-    packService,
     ptyService,
     projectConfigService: null as any,
     aiIntegrationService: null as any,

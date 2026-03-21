@@ -13,6 +13,7 @@ import type {
   CreateLaneArgs,
   DeleteLaneArgs,
   LaneIcon,
+  LaneStateSnapshotSummary,
   LaneStatus,
   LaneSummary,
   LaneType,
@@ -53,6 +54,13 @@ type LaneRow = {
   created_at: string;
   archived_at: string | null;
   status: string;
+};
+
+type LaneStateSnapshotRow = {
+  lane_id: string;
+  agent_summary_json: string | null;
+  mission_summary_json: string | null;
+  updated_at: string | null;
 };
 
 const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
@@ -110,6 +118,18 @@ function parseLaneTags(raw: string | null): string[] {
       .slice(0, 24);
   } catch {
     return [];
+  }
+}
+
+function parseSummaryRecord(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
   }
 }
 
@@ -721,19 +741,61 @@ export function createLaneService({
       return await listLanes(args);
     },
 
-    async refreshSnapshots(args: ListLanesArgs = {}): Promise<{ refreshedCount: number }> {
+    getStateSnapshot(laneId: string): LaneStateSnapshotSummary | null {
+      const row = db.get<LaneStateSnapshotRow>(
+        `
+          select s.lane_id, s.agent_summary_json, s.mission_summary_json, s.updated_at
+          from lane_state_snapshots s
+          join lanes l on l.id = s.lane_id
+          where s.lane_id = ?
+            and l.project_id = ?
+          limit 1
+        `,
+        [laneId, projectId],
+      );
+      if (!row) return null;
+      return {
+        laneId: row.lane_id,
+        agentSummary: parseSummaryRecord(row.agent_summary_json),
+        missionSummary: parseSummaryRecord(row.mission_summary_json),
+        updatedAt: row.updated_at ?? null,
+      };
+    },
+
+    listStateSnapshots(): LaneStateSnapshotSummary[] {
+      return db.all<LaneStateSnapshotRow>(
+        `
+          select s.lane_id, s.agent_summary_json, s.mission_summary_json, s.updated_at
+          from lane_state_snapshots s
+          join lanes l on l.id = s.lane_id
+          where l.project_id = ?
+        `,
+        [projectId],
+      ).map((row) => ({
+        laneId: row.lane_id,
+        agentSummary: parseSummaryRecord(row.agent_summary_json),
+        missionSummary: parseSummaryRecord(row.mission_summary_json),
+        updatedAt: row.updated_at ?? null,
+      }));
+    },
+
+    async refreshSnapshots(args: ListLanesArgs = {}): Promise<{ refreshedCount: number; lanes: LaneSummary[] }> {
+      invalidateLaneListCache();
       const summaries = await listLanes({
         includeArchived: args.includeArchived ?? true,
         includeStatus: true,
       });
-      return { refreshedCount: summaries.length };
+      return {
+        refreshedCount: summaries.length,
+        lanes: summaries,
+      };
     },
 
     invalidateListCache(): void {
       invalidateLaneListCache();
     },
 
-    async create({ name, description, parentLaneId }: CreateLaneArgs): Promise<LaneSummary> {
+    async create({ name, description, parentLaneId, baseBranch }: CreateLaneArgs): Promise<LaneSummary> {
       if (parentLaneId) {
         const parent = getLaneRow(parentLaneId);
         if (!parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
@@ -759,27 +821,41 @@ export function createLaneService({
           }
         }
 
-        const parentHeadSha = await getHeadSha(parent.worktree_path);
+        const trimmedBaseBranch = baseBranch?.trim() ?? "";
+        const useCustomBase = parent.lane_type === "primary" && trimmedBaseBranch.length > 0;
+        const requestedBaseRef = useCustomBase ? trimmedBaseBranch : parent.branch_ref;
+        let parentHeadSha: string | null;
+        if (useCustomBase) {
+          const result = await runGit(["rev-parse", requestedBaseRef], { cwd: parent.worktree_path, timeoutMs: 10_000 });
+          if (result.exitCode !== 0 || !result.stdout.trim().length) {
+            throw new Error(`Base branch not found on primary lane: ${requestedBaseRef}`);
+          }
+          parentHeadSha = result.stdout.trim();
+        } else {
+          parentHeadSha = await getHeadSha(parent.worktree_path);
+        }
         if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
         return await createWorktreeLane({
           name,
           description,
-          baseRef: parent.branch_ref,
+          baseRef: requestedBaseRef,
           startPoint: parentHeadSha,
           parentLaneId: parent.id
         });
       }
 
       // No parent specified: branch from defaultBaseRef. Resolve the exact SHA to avoid stale refs.
-      const headRes = await runGit(["rev-parse", defaultBaseRef], { cwd: projectRoot, timeoutMs: 10_000 });
+      const trimmedBase = baseBranch?.trim() ?? "";
+      const requestedBaseRef = trimmedBase.length > 0 ? trimmedBase : defaultBaseRef;
+      const headRes = await runGit(["rev-parse", requestedBaseRef], { cwd: projectRoot, timeoutMs: 10_000 });
       const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
         ? headRes.stdout.trim()
-        : defaultBaseRef;
+        : requestedBaseRef;
 
       return await createWorktreeLane({
         name,
         description,
-        baseRef: defaultBaseRef,
+        baseRef: requestedBaseRef,
         startPoint,
         parentLaneId: null
       });

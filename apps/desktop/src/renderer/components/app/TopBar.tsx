@@ -15,6 +15,31 @@ import type { ProcessRuntime, RecentProjectSummary, SyncRoleSnapshot } from "../
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
 
+function syncDotClass(snapshot: SyncRoleSnapshot): string {
+  if (snapshot.client.state === "error") return "ade-status-dot-error";
+  if (snapshot.client.state === "connected" || snapshot.mode === "brain") return "ade-status-dot-active";
+  return "ade-status-dot-warning";
+}
+
+function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
+  if (!snapshot) return null;
+  if (snapshot.mode === "brain") {
+    const count = snapshot.connectedPeers.length;
+    return `Hosting locally · ${count} controller${count === 1 ? "" : "s"}`;
+  }
+  if (snapshot.mode === "standalone") return "Phone pairing ready";
+  switch (snapshot.client.state) {
+    case "connected":
+      return `Connected to host · ${snapshot.currentBrain?.name ?? "host"}`;
+    case "connecting":
+      return "Connecting to host…";
+    case "error":
+      return "Host link error";
+    default:
+      return "No host link";
+  }
+}
+
 export function TopBar() {
   const project = useAppStore((s) => s.project);
   const closeProject = useAppStore((s) => s.closeProject);
@@ -226,15 +251,7 @@ export function TopBar() {
     setDropIdx(null);
   }, []);
 
-  const syncLabel = syncSnapshot
-    ? syncSnapshot.mode === "brain"
-      ? `Hosting locally · ${syncSnapshot.connectedPeers.length} controller${syncSnapshot.connectedPeers.length === 1 ? "" : "s"}`
-      : syncSnapshot.client.state === "connected"
-        ? `Connected to host · ${syncSnapshot.currentBrain?.name ?? "host"}`
-        : syncSnapshot.client.state === "connecting"
-          ? "Syncing…"
-          : "Offline"
-    : null;
+  const syncLabel = deriveSyncLabel(syncSnapshot);
 
   return (
     <header
@@ -433,11 +450,7 @@ export function TopBar() {
           <span
             className={cn(
               "ade-status-dot h-1.5 w-1.5 shrink-0",
-              syncSnapshot.client.state === "error"
-                ? "ade-status-dot-error"
-                : syncSnapshot.client.state === "connected" || syncSnapshot.mode === "brain"
-                  ? "ade-status-dot-active"
-                  : "ade-status-dot-warning"
+              syncDotClass(syncSnapshot),
             )}
           />
           {syncLabel}

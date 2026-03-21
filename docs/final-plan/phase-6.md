@@ -4,13 +4,14 @@
 
 Goal: Ship end-to-end multi-device ADE with a polished iOS app for project management. One desktop-class machine acts as the live host for a session, and phones or other desktops can attach as controllers. Independent desktop-to-desktop work still happens through Git plus the tracked ADE scaffold/config layer. Sync is peer-to-peer via cr-sqlite CRDTs over WebSocket — no cloud. By the end of this phase a user can pick up their iPhone and manage their project with high-parity Lanes, Files, Work, and PRs tabs while their Mac Studio runs agents in the background.
 
-Important 2026-03-16 status update:
+Important 2026-03-19 status update:
 
-- W4 now includes the iOS local replicated-state foundation, not just desktop pairing/network work.
-- `apps/ios/` exists, the app shell exists, and the data layer has been rewritten around a real local replicated database contract instead of a cache DB.
-- The current phone pairing UX is manual host/port + numeric code entry. QR pairing, discovery, Tailscale selection, and broader network hardening remain follow-on W5 work.
-- The current blocker is the vendored iOS `crsqlite.xcframework`. It is packaged like a SQLite loadable extension, not an embeddable iOS-safe initializer, so the rewritten local-sync path cannot boot yet on iOS.
-- Practically: W5 must start by replacing or wrapping the iOS `crsqlite` artifact, then finish the expected dogfooding/pairing polish. The app shell is present, but the current iOS build is not yet a valid dogfood target until that blocker is removed.
+- W4 delivered the iOS local replicated-state foundation, pairing shell, offline queueing, and the initial four-tab scaffold.
+- W5 is complete. It shipped the hardening baseline that makes the phone trustworthy every day: persistent host pairing, reconnect without rescanning, authoritative revoke/forget behavior, honest disconnected/hydrating/error states, explicit host hydration for Lanes / Work / PRs, protected-workspace Files behavior, and the sync-focused Settings tab.
+- The iPhone path no longer depends on CRR metadata alone for the dogfood-critical surfaces. Lanes, Work, and PRs now hydrate through authoritative host payloads so the phone does not silently render partial replicated state.
+- Desktop W5 also shipped CRR integrity repair for the phone-critical tables so old host rows that predate CRR enablement do not strand the phone in misleading empty states.
+- W6 is complete for Lanes parity. The iPhone Lanes tab now ships the desktop lane-management baseline: rich lane list/detail, create and attach flows, archive/unarchive, stack and Git surfaces, lane-scoped work/chat entry points, search/filter, and mobile-native quick actions.
+- Files, Work, and PRs remain on the W5 dogfood baseline. Their broader parity expansion stays in the later Phase 6 workstreams.
 
 Important 2026-03-15 scope clarification:
 
@@ -189,11 +190,11 @@ Examples that remain ADE-sync-only:
 
 #### iOS App Scope (Phase 6)
 
-The Phase 6 iOS app ships **four high-parity tabs** that provide complete project management from the phone:
+The Phase 6 iOS app ships four project-management tabs plus a sync-focused Settings tab. W6 completed Lanes parity; Files, Work, and PRs remain at the W5 dogfood baseline:
 
 | Tab | Desktop equivalent | What it does on iOS |
 |-----|-------------------|---------------------|
-| **Lanes** | `/lanes` | Full lane list with status, branch info, agent assignment, dirty/ahead/behind indicators. Create and archive lanes. View lane details. On non-host: lane availability states (Local/Behind/Live/Remote only). |
+| **Lanes** | `/lanes` | Full lane list and detail, create/attach/archive flows, availability states, stack/Git/work surfaces, agent status, search/filter, and mobile quick actions. |
 | **Files** | `/files` | Full file browser with directory tree, syntax-highlighted file viewer, file search, basic file editing (sends edits to host). High parity with desktop file explorer. |
 | **Work** | `/work` | Terminal session list, read-only terminal output viewing (streamed from host via WebSocket), session metadata. Quick-launch actions that route to host. |
 | **PRs** | `/prs` | PR list with status, merge readiness, CI checks. PR detail view with diff. Create PR (routes to host). Merge/close actions. Stacked PR visualization. |
@@ -276,7 +277,7 @@ Status: Implemented on desktop + headless MCP.
 - Heartbeat ping/pong (30s interval) for connection health monitoring.
 - **File access sub-protocol**: request/response for on-demand file reads, directory listings, and file writes. Used by iOS Files tab, desktop remote file viewing, and media/artifact retrieval. Supports any file type — source code, images, videos, logs — by path. Content-type is inferred from file extension. This single sub-protocol is the transport for all file-like data including computer use screenshots and screen recordings (no separate media backend needed).
 - **Terminal stream sub-protocol**: subscribe to terminal session output from host. Used by iOS Work tab for read-only terminal viewing and by agent chat sessions for inline terminal output.
-- Validation scaffolding pulled forward from W10: W2 also carries one narrow command path, `work.runQuickCommand`, so remote terminal launch and stream round-trips can be proven before full command routing ships. All other execution commands remain W10 work.
+- Validation scaffolding pulled forward from W10: W2 carried `work.runQuickCommand` as the first seed execution path. By W6, lane lifecycle, lane Git/rebase, and quick-run actions all route through the host. W10 remains the broader consistency pass, not the first arrival of remote execution commands.
 
 #### W3: Device Registry, Host Management, and portable desktop state
 
@@ -333,48 +334,46 @@ Status: Implemented on desktop + headless MCP.
 
 #### W5: iOS App Shell & Core Navigation
 
-- Native **SwiftUI** application targeting iOS 17+.
-- Native `SQLite3` integration with per-connection `sqlite3_crsqlite_init(...)`, currently blocked until the vendored iOS `crsqlite` artifact is replaced or wrapped with an iOS-safe embedding path.
+- Native **SwiftUI** application targeting iOS 26+.
+- Native `SQLite3` integration backing the local replicated store on iPhone, with W5 hardening focused on authoritative host hydration and host-side CRR integrity repair for the phone-critical tables.
 - WebSocket client for host connection — reuses the same protocol from W2.
 - Local SQLite database as a cr-sqlite peer — all tables synced, full state available offline.
 - Before or alongside W5, revisit sync hot-path performance in the `node:sqlite` adapter. Statement caching is deferred in W3/W4, but it becomes more important once phone peers and heavier multi-peer polling are in the loop.
 - Pairing flow today: open iOS app → enter host/port + pairing code shown by the host → paired secret stored locally → connected.
-- W5 carry-forward: add QR presentation/scanning and make the pairing UX shippable without Xcode/manual engineering steps.
-- **Four-tab navigation**: Lanes, Files, Work, PRs.
-- Persistent connection status header: host name, connection state, sync indicator.
+- W5 now includes QR scan support on iPhone and a first-class Settings tab for pairing, reconnect, revoke/forget follow-through, and per-domain sync status.
+- **Navigation**: four work tabs (Lanes, Files, Work, PRs) plus a dedicated Settings tab for sync/pairing state.
 - Pull-to-refresh triggers manual sync check.
 - Background app refresh for periodic state sync when app is backgrounded.
-- Basic Settings screen (accessible from profile/gear icon): paired devices list, connection info, disconnect.
+- Settings tab baseline: host status, domain hydration status, QR/manual pairing, reconnect, disconnect, forget.
 
-W5 handoff target as of 2026-03-16:
+W5 delivered the dogfood baseline:
 
-- Treat the app shell + four Phase 6 tabs as already present.
-- Use W5 to close the gap between "engineering-ready" and "reliably dogfoodable":
-  - first replace or wrap the vendored iOS `crsqlite` artifact so the replicated database can boot on iOS
-  - then do physical-device install/build validation on a healthy Xcode setup
-  - QR pairing UX
-  - discovery / Tailscale / host hardening
-  - end-to-end manual phone validation against a live host after the database blocker is removed
+- keep the desktop CRR source-of-truth healthy for the phone-critical tables (`lanes`, `lane_state_snapshots`, `terminal_sessions`, `pull_requests`, `pull_request_snapshots`)
+- add authoritative hydration paths for Lanes, Work, and PRs so iPhone never shows misleading partial state when CRR metadata is incomplete
+- hydrate the full lane/workspace metadata contract on iPhone (`attachedRootPath`, `parentStatus`, `isEditProtected`, `color`, `icon`, `tags`, `folder`) so Files reflects the host truth instead of inferring it
+- persist host-provided `laneName` on hydrated work sessions so the Work tab does not depend on a fragile `terminal_sessions -> lanes` join
+- make reconnect, rehydrate, relaunch, revoke, and forget behavior trustworthy on phone
+- make Files remain stable through the lane-backed workspace model, with read-only parity for protected workspaces and no live-only affordances while disconnected
+- keep baseline PR action parity honest on phone, including reopen for closed PRs and state-gated merge/close/request-reviewer controls
+- ship the sync-focused Settings tab, QR pairing UX, and the shell/theme pass that makes the controller coherent with desktop ADE while staying native SwiftUI
 
 #### W6: iOS Lanes Tab
 
-High-parity SwiftUI implementation of the desktop Lanes page.
+W6 is complete. The iPhone Lanes tab now matches the live desktop lane-management baseline with a mobile-native information architecture.
 
-- **Lane list**: all lanes with name, branch, dirty/ahead/behind indicators, agent assignment badge, mission link.
-- **Lane detail view**: full lane info — branch, status, recent commits, assigned agent and status, linked mission/step.
-- **Create lane**: name + base branch input → command routes to host → host creates worktree → metadata syncs back.
-- **Archive/unarchive lane**: swipe action or detail view button.
-- **Lane availability states** (when connected to host from a non-host device):
-  - Local, Behind, Live on [device], Remote only, Push pending, Offline
-  - Computed from cr-sqlite metadata + host status
-  - "Sync to this Mac" not applicable on iOS (no worktrees), but state is displayed for awareness
-- **Agent status per lane**: if an agent is running on a lane, show provider, model, current step, duration.
-- **Search and filter**: filter by status (active/archived), search by name.
+- **Lane list**: all lanes with status, branch info, dirty/ahead/behind indicators, runtime chips, agent/mission summaries, primary-branch controls, search, and filter tokens.
+- **Lane detail view**: overview, Git, Work, and Manage sections covering branch/status metadata, stack hierarchy, conflict/rebase attention, recent commits, changed files, stashes, sessions, and chats.
+- **Create / attach flows**: create lane, create child lane, attach existing worktree, template selection, and environment bootstrap/apply-template progress.
+- **Manage flows**: rename, reparent, appearance updates, adopt attached lanes, archive/unarchive, and delete/detach modes including remote-branch deletion.
+- **Lane availability and agent state**: lane availability, runtime state, auto-rebase/rebase suggestion banners, conflict summaries, agent state, and mission linkage are all visible from iPhone.
+- **Open-lane and quick actions**: open-lane tray, mobile context menus, swipe actions, batch manage for visible lanes, Files deep-links, and lane-scoped work/chat launchers.
 - **Swipe gestures**: swipe to archive, long-press for quick actions.
 
 #### W7: iOS Files Tab
 
 High-parity SwiftUI implementation of the desktop Files page.
+
+W5 already owns lane-backed workspace correctness, hydrated host metadata parity, protected-workspace read-only behavior, honest disconnected/hydrating/error states, and the baseline desktop-theme parity pass. W7 is only for the richer file-controller capabilities below.
 
 - **File tree browser**: hierarchical project directory tree fetched on-demand from host via file access sub-protocol. Lazy-loaded — only expanded directories fetch contents.
 - **Syntax-highlighted file viewer**: full syntax highlighting for common languages (Swift, TypeScript, Python, Rust, Go, Java, HTML/CSS, JSON, YAML, Markdown). Line numbers, word wrap toggle.
@@ -387,6 +386,8 @@ High-parity SwiftUI implementation of the desktop Files page.
 #### W8: iOS Work Tab
 
 High-parity SwiftUI implementation of the desktop Work page, including agent activity visibility.
+
+W5 already owns authoritative host session hydration, persisted lane-name parity for hydrated sessions, reconnect-safe cached history, quick-run viability, and the baseline desktop-theme parity pass. W8 is only for the richer session exploration and agent-proof surfaces below.
 
 - **Terminal session list**: all active and recent terminal sessions from the host, showing session name, lane, status (running/exited), last output timestamp.
 - **Read-only terminal output**: tap a session to view its output streamed in real-time from the host via the terminal stream sub-protocol. Monospace rendering with ANSI color support.
@@ -401,6 +402,8 @@ High-parity SwiftUI implementation of the desktop Work page, including agent act
 #### W9: iOS PRs Tab
 
 High-parity SwiftUI implementation of the desktop PRs page.
+
+W5 already owns authoritative PR hydration, reconnect-safe cached PR state, baseline action parity including reopen/state-gated controls, and the baseline desktop-theme parity pass. W9 is only for the deeper PR review/diff/CI surfaces below.
 
 - **PR list**: all open PRs with title, branch, status (open/merged/closed), CI check status (pass/fail/pending), review status, merge readiness indicator.
 - **PR detail view**: full PR info — title, description, branch, base, commits, file changes, CI checks, reviewers.
@@ -423,7 +426,7 @@ High-parity SwiftUI implementation of the desktop PRs page.
 - Command acknowledgment: host confirms receipt and execution start.
 - Command failure: host returns error, originating device shows actionable error with retry option.
 - Offline command queue: if device is disconnected, execution commands queue locally and replay on reconnect (in order, with conflict detection).
-- W2 pull-forward note: the transport now supports one seed execution command, `work.runQuickCommand`, to validate remote PTY launch plus terminal streaming. That seed path is test scaffolding, not the completion of W10. The rest of command routing and UI connection-state work remains in this workstream.
+- W2 pull-forward note: the transport first shipped `work.runQuickCommand` to validate remote PTY launch plus terminal streaming. By W6, the same command-routing layer also exposes lane create/archive/manage flows and the lane Git/rebase surface. W10 still owns broader consistency and remaining-action coverage.
 
 **Connection status (desktop):**
 - Always-visible status indicator in the top bar:
@@ -435,9 +438,9 @@ High-parity SwiftUI implementation of the desktop PRs page.
 - Connection quality indicator (latency, sync lag, last changeset timestamp).
 
 **Connection status (iOS):**
-- Persistent connection indicator in the header across all tabs.
-- Same four states as desktop, adapted for mobile UI.
-- Connection lost → banner with "Reconnecting..." and auto-retry.
+- Sync/pairing lives in a dedicated Settings tab instead of a floating global header.
+- Each work tab still owns its own disconnected / hydrating / failed notice so hidden sync failures do not get masked by chrome.
+- The Settings tab shows the same four connection states as desktop plus per-domain hydration state.
 
 #### W11: Lane Portability (Desktop-to-Desktop)
 
@@ -528,7 +531,7 @@ Lane portability makes multi-device desktop development seamless. This workstrea
 - Pairing flow: QR scan → token storage → auto-reconnect.
 - Offline: view cached state, queue commands, reconnect and replay.
 - Background refresh keeps state fresh.
-- Design audit: all screens use SF Pro, SF Symbols, project purple accent, native SwiftUI components. No web views, no custom fonts, no generic AI aesthetics.
+- Design audit: all screens use SF Pro, SF Symbols, ADE brand treatment, the shared violet accent, native SwiftUI components, and a dedicated Settings tab for sync/pairing instead of a floating connection shell. No web views, no custom fonts, no generic AI aesthetics.
 
 **Desktop-to-desktop:**
 - Lane availability state computation for all 6 states.
@@ -585,9 +588,9 @@ Key dependencies:
 
 The foundation. cr-sqlite integration, WebSocket protocol, device registry, pairing, and the narrow shared ADE scaffold/config portability layer. Nothing else can start until this wave proves the sync architecture works. W1-W3 are now implemented on desktop using Node.js native `node:sqlite` with a vendored cr-sqlite extension (not WASM).
 
-**Wave 2: iOS Shell (W5) -- ~1-2 weeks**
+**Wave 2: iOS Hardening & Dogfooding (W5) -- ~1-2 weeks**
 
-Historically this wave was "first iOS shell". In practice, most of that shell work has already landed during W4 implementation: Xcode project setup, WebSocket client, manual pairing, tab navigation scaffold, and local-first reads for Lanes / Files / Work / PRs. W5 now starts with the iOS `crsqlite` embedding fix, because the current vendored artifact still blocks the replicated database from booting. Only after that blocker is removed should W5 proceed to device validation, pairing/discovery polish, and broader phone dogfooding. W11 (lane portability) can still run in parallel since it only needs desktop sync infrastructure.
+Historically this wave was "first iOS shell". In practice, most of that shell work already landed during W4 implementation: Xcode project setup, WebSocket client, manual pairing, tab navigation scaffold, and local-first reads for Lanes / Files / Work / PRs. W5 therefore owns the hardening pass that makes those existing tabs safe to dogfood every day: the iOS `crsqlite` embedding fix, desktop CRR integrity repair for the phone-critical tables, explicit iPhone hydration for Lanes / Work / PRs, reconnect/revoke/forget correctness, a dedicated Settings tab for sync and pairing, clearer tab-level sync state, Files stability through the lane graph, and the selective desktop-theme parity pass. W11 (lane portability) can still run in parallel since it only needs desktop sync infrastructure.
 
 **Wave 3: iOS Tabs (W6-W9) in Parallel -- ~3-4 weeks**
 
@@ -638,14 +641,14 @@ Before or during W4, keep these explicit carry-overs in scope:
 
 ### Current validation posture
 
-Not yet on iOS. The rewritten local-sync code is in place, but the current vendored `crsqlite.xcframework` blocks the replicated database from initializing.
+The iPhone replicated database now boots on-device. Validation focus is live-host regression across the W5 baseline and W6 Lanes parity, plus remaining Files / Work / PR and desktop portability coverage.
 
-Current manual validation path after the artifact is fixed:
+Current manual validation path:
 
 1. Run the desktop app as the host on a machine using Node 22.13.1.
-2. Open desktop Sync/Devices settings and start a pairing session to get the numeric code.
+2. Open desktop Sync/Devices settings and start a pairing session to get the numeric code or QR payload.
 3. Build and install `apps/ios/ADE.xcodeproj` onto a physical iPhone.
-4. In the iOS app connection screen, enter the host, port, and pairing code.
+4. In the iOS app Settings tab, scan the host QR code or enter the host, port, and pairing code.
 5. Verify that Lanes / Files / Work / PRs populate from local synced state and that execution actions still route to the host.
 
 Current blockers:
@@ -670,7 +673,7 @@ Current blockers:
 11. iOS PRs tab has high parity with desktop: PR list, detail, diff viewer, create, merge, close.
 12. Commands from any non-host device route to host and execute correctly.
 13. Offline command queue replays correctly on reconnect.
-14. Connection status visible on both desktop (status bar) and iOS (header).
+14. Connection status visible on both desktop (status bar) and iOS (Settings tab plus tab-level sync notices).
 15. Device management UI in Settings shows all paired devices with type, role, status, and sync lag.
 16. Lane availability states computed and displayed correctly on non-host Macs.
 17. Auto-push policy works with all three modes.

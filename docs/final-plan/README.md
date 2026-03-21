@@ -25,7 +25,7 @@ The following phase files are superseded by the new roadmap and should be consid
 
 ---
 
-Last updated: 2026-03-14
+Last updated: 2026-03-19
 Owner: ADE
 Status: Active
 
@@ -136,7 +136,7 @@ Baseline derived from code in `apps/desktop`.
   - Memory architecture: agent identities table, promotion flow (candidate/promoted/archived), auto-promotion, Context Budget Panel
   - Activity narrative: Run Narrative section in Activity tab
   - UI bug fixes: removed `ExecutionPlanPreview`, fixed duplicate progress bar, fixed DAG SVG spinning animation, tab renames (usage->details, channels->chat)
-- **Codebase Refactoring & Modularization (shipped 2026-03-02):** AI orchestrator decomposed (`aiOrchestratorService.ts` 13.2K -> 7.7K lines + 9 extracted modules). Pack service decomposed (`packService.ts` 5.7K -> 3.2K lines + 4 builder modules). Type system modernized (monolithic `types.ts` replaced by `src/shared/types/` with 17 domain modules). Frontend decomposed (`MissionsPage.tsx` 60% reduction, `WorkspaceGraphPage.tsx` 11 extracted files). Shared backend/frontend utilities consolidated. Net -14,370 lines, 0 TypeScript errors.
+- **Codebase Refactoring & Modularization (shipped 2026-03-02):** AI orchestrator decomposed (`aiOrchestratorService.ts` 13.2K -> 7.7K lines + 9 extracted modules). Pack service decomposed (`packService.ts` 5.7K -> 3.2K lines + 4 builder modules). Type system modernized (monolithic `types.ts` replaced by `src/shared/types/` with 17 initial domain modules, later expanded to 27). Frontend decomposed (`MissionsPage.tsx` 60% reduction, `WorkspaceGraphPage.tsx` 11 extracted files). Shared backend/frontend utilities consolidated. Net -14,370 lines, 0 TypeScript errors.
 - **Memory Consolidation Overhaul (shipped 2026-03-13):** Unified memory system fully operational. Single UI surface (Settings > Memory) replaces the previous split across CTO and Settings tabs. Improved agent prompt guidance for memory writes. Quality controls on write sources (garbage-source filtering). 3-scope model (project/agent/mission) with CTO core memory coexisting as a separate always-in-context system. Feature docs (`features/MEMORY.md`, `features/CHAT.md`, `features/LINEAR.md`) and architecture doc (`architecture/MEMORY.md`) added to PRD.
 - **V1 Closeout (shipped 2026-03-13):** Final integration pass making Phases 1-5 tester-ready. Workflow tools for chat agents (lane/PR/screenshot/completion). Coordinator finalization awareness (check_finalization_status tool + queue landing events). Memory pipeline fully wired (compaction flush, human work digest, failure knowledge capture, procedural export). Linear dispatcher hardening (snapshot refresh, employee fallback, PR null-check, closure notifications). Embedding health monitoring. UI error states and IDE deep-linking. System prompt agent capability boundaries.
 - **Post-v1 Incremental (2026-03-14):** Claude V2 inline image attachments (`buildClaudeV2Message`, MIME validation, `saveTempAttachment` IPC). CTO identity enhancement (rich persona, baked-in Memory Protocol / Daily Context / Decision Framework, post-compaction identity re-injection). CTO daily logs (`appendDailyLog`/`readDailyLog`/`listDailyLogs`). Context doc preferences (`ContextDocPrefs` type, inline settings, GenerateDocsModal removed). Dev stability (hardware accel no longer auto-disabled in dev). Identity session filtering (CTO/worker sessions excluded from Work tab).
@@ -150,7 +150,7 @@ Baseline derived from code in `apps/desktop`.
 - Orchestrator runtime (deterministic kernel) is shipped infrastructure; AI orchestration sits on top.
 - Runtime execution flow is single-path (`aiIntegrationService` -> executor/unified runtime); no legacy hosted/BYOK migration branch remains in call flow.
 - Developer baseline assumes modern Git CLI semantics (worktrees, `restore`, `merge-tree --write-tree`, `--ignore-other-worktrees`).
-- **Codebase modularized (2026-03-02)**: AI orchestrator decomposed into 9 domain modules (42% size reduction), pack service decomposed into 4 builder modules (45% reduction), type system split into 17 domain files, frontend components decomposed (MissionsPage 60% reduction). Shared utilities consolidated. This decomposition directly enables Phase 8 core extraction if needed.
+- **Codebase modularized (2026-03-02)**: AI orchestrator decomposed into 9 domain modules (42% size reduction), pack service decomposed into 4 builder modules (45% reduction), type system split into 27 domain files, frontend components decomposed (MissionsPage 60% reduction). Shared utilities consolidated. This decomposition directly enables Phase 8 core extraction if needed.
 - **cr-sqlite integration (Phase 6 W1-W3 shipped)**: Multi-device sync uses Node.js native `node:sqlite` + vendored cr-sqlite extension for CRDT-based state replication. W1 (cr-sqlite integration), W2 (WebSocket sync protocol), and W3 (device registry + host management) are implemented on desktop. If cr-sqlite proves insufficient long-term, Phase 8 evaluates SpacetimeDB as an alternative.
 
 ### 2.4 Confirmed gaps
@@ -158,10 +158,9 @@ Baseline derived from code in `apps/desktop`.
 Not fully implemented yet:
 
 - Automatic PR proof embedding still needs follow-through, but ADE-local proof capture now auto-ingests and links `screenshot_environment` / `record_environment` artifacts at creation time
-- Multi-device sync (cr-sqlite + WebSocket real-time replication) — Phase 6
-- Device registry and host management (which machine runs agents) — Phase 6
-- iOS companion app (agent chat, mission management, push notifications) — Phase 6
-- VPS headless deployment (headless ADE on remote machines) — Phase 6
+- Desktop portability expansion beyond the current tracked ADE intelligence contract — Phase 6 follow-through
+- Tailscale integration and VPS headless deployment — Phase 6 follow-through
+- Remaining iOS tabs and advanced remote workflows (Missions, CTO/Chat, Automations, Graph, History, push notifications) — Phase 7
 - Provider usage telemetry parity (CLI/API/local) and budget UX refinements
 
 ### 2.5 Phase 3 Status Snapshot (Complete)
@@ -242,20 +241,20 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Device registry & host management | Phase 6 | Phases 1-5 | Implemented on desktop |
 | Tailscale integration | Phase 6 | Phases 1-5 | Planned |
 | WebSocket sync server & protocol | Phase 6 | Phases 1-5 | Implemented on desktop |
-| Device pairing & configuration | Phase 6 | Phases 1-5 | Planned |
-| File access & terminal stream protocols | Phase 6 | Phases 1-5 | Planned |
+| Device pairing & configuration | Phase 6 | Phases 1-5 | Implemented on desktop + iPhone; W5 hardening baseline shipped |
+| File access & terminal stream protocols | Phase 6 | Phases 1-5 | Implemented baseline for the iPhone controller path |
 | VPS headless deployment | Phase 6 | Phases 1-5 | Planned |
-| iOS app shell & navigation | Phase 6 | Phases 1-5 | Planned |
-| iOS Lanes tab (high parity) | Phase 6 | Phases 1-5 | Planned |
-| iOS Files tab (high parity) | Phase 6 | Phases 1-5 | Planned |
-| iOS Work tab (high parity) | Phase 6 | Phases 1-5 | Planned |
-| iOS PRs tab (high parity) | Phase 6 | Phases 1-5 | Planned |
+| iOS app shell & navigation | Phase 6 | Phases 1-5 | Implemented; W5 hardening baseline shipped |
+| iOS Lanes tab (high parity) | Phase 6 | Phases 1-5 | Implemented to live desktop parity on iPhone; W6 shipped |
+| iOS Files tab (high parity) | Phase 6 | Phases 1-5 | Implemented to W5 dogfood baseline |
+| iOS Work tab (high parity) | Phase 6 | Phases 1-5 | Implemented to W5 dogfood baseline |
+| iOS PRs tab (high parity) | Phase 6 | Phases 1-5 | Implemented to W5 dogfood baseline |
 | Lane portability (desktop-to-desktop) | Phase 6 | Phases 1-5 | Planned |
-| Command routing & connection status | Phase 6 | Phases 1-5 | Planned |
+| Command routing & connection status | Phase 6 | Phases 1-5 | Implemented for W5 baseline and W6 lane parity surfaces; broader Phase 7 expansion still planned |
 | iOS Missions tab | Phase 7 | Phase 6 | Planned |
 | iOS CTO & Agent Chat tab | Phase 7 | Phase 6 | Planned |
 | iOS Automations, Graph, History tabs | Phase 7 | Phase 6 | Planned |
-| iOS full Settings tab | Phase 7 | Phase 6 | Planned |
+| iOS full Settings parity | Phase 7 | Phase 6 | Planned |
 | Push notifications & notification routing | Phase 7 | Phase 6 | Planned |
 | VPS provider integrations (Hetzner, DO, SSH) | Phase 7 | Phase 6 | Planned |
 | Mobile automations execution + digest | Phase 7 | Phase 6 | Planned |

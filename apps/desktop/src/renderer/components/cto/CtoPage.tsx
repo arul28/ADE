@@ -125,15 +125,17 @@ export function CtoPage() {
     [agents, selectedAgentId],
   );
 
+  const onboardingComplete = Boolean(onboardingState?.completedAt)
+    || Boolean(onboardingState?.completedSteps.includes("identity"));
+
   // Onboarding detection
   const needsOnboarding = onboardingState
-    && onboardingState.completedSteps.length === 0
-    && !onboardingState.dismissedAt
-    && !onboardingState.completedAt;
+    && !onboardingComplete
+    && !onboardingState.dismissedAt;
 
   const showBanner = onboardingState
     && !needsOnboarding
-    && !onboardingState.completedAt
+    && !onboardingComplete
     && Boolean(onboardingState.dismissedAt)
     && !showOnboarding;
 
@@ -149,8 +151,7 @@ export function CtoPage() {
       setCtoIdentity(snapshot.identity);
       setCoreMemory(snapshot.coreMemory);
       setOnboardingState(obState);
-      // Auto-show onboarding if first run
-      if (obState.completedSteps.length === 0 && !obState.dismissedAt && !obState.completedAt) {
+      if (!obState.completedAt && !obState.completedSteps.includes("identity") && !obState.dismissedAt) {
         setShowOnboarding(true);
       }
     } catch { /* non-fatal */ }
@@ -491,7 +492,7 @@ export function CtoPage() {
   const handleOnboardingComplete = useCallback(async () => {
     const completedAt = new Date().toISOString();
     setOnboardingState((current) => ({
-      completedSteps: Array.from(new Set([...(current?.completedSteps ?? []), "identity", "project", "integrations"])),
+      completedSteps: Array.from(new Set([...(current?.completedSteps ?? []), "identity"])),
       completedAt: current?.completedAt ?? completedAt,
       dismissedAt: current?.dismissedAt,
     }));
@@ -645,7 +646,6 @@ export function CtoPage() {
         <OnboardingWizard
           onComplete={handleOnboardingComplete}
           onSkip={handleDismissOnboarding}
-          completedSteps={onboardingState?.completedSteps ?? []}
         />
       )}
 

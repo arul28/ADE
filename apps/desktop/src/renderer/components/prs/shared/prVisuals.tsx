@@ -36,9 +36,6 @@ export function getPrReviewsBadge(status: PrReviewStatus): PrBadgeSpec {
   return { label: "NONE", ...colorBadge(COLORS.textMuted) };
 }
 
-/** @deprecated Use getPrReviewsBadge instead */
-export const getPrReviewBadge = getPrReviewsBadge;
-
 export function getPrEdgeColor(args: {
   state: PrState;
   checksStatus: PrChecksStatus;
@@ -95,5 +92,3 @@ export function InlinePrBadge(props: { label: string; color: string; bg: string;
   return <span style={inlineBadge(color, { background: bg, border: `1px solid ${border}` })}>{label}</span>;
 }
 
-/** @deprecated Use InlinePrBadge instead */
-export const PrInlineBadge = InlinePrBadge;

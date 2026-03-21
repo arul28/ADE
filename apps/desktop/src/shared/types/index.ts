@@ -28,7 +28,5 @@ export * from "./memory";
 export * from "./projectState";
 export * from "./sync";
 export * from "./devTools";
-export * from "./externalMcp";
 
 export * from "./linearSync";
-export * from "./externalMcp";

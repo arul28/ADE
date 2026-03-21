@@ -521,6 +521,7 @@ describe("ctoStateService", () => {
     });
 
     expect(reloaded.getOnboardingState().completedSteps).toEqual(["identity"]);
+    expect(reloaded.getOnboardingState().completedAt).toBeTruthy();
     expect(reloaded.getIdentity().personality).toBe("casual");
     expect(reloaded.getIdentity().constraints).toEqual(["no force push", "write tests"]);
     expect(reloaded.getIdentity().systemPromptExtension).toBe("Stay calm under pressure.");
@@ -542,12 +543,17 @@ describe("ctoStateService", () => {
     });
 
     const preview = service.previewSystemPrompt();
-    expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "personality", "memory"]);
+    expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "personality", "memory", "capabilities"]);
     expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside ADE.");
     expect(preview.sections[1]?.content).toContain("Operate as a strategic CTO.");
     expect(preview.sections[2]?.content).toContain("Immutable doctrine");
+    expect(preview.sections[2]?.content).toContain("Use memoryUpdateCore only when the standing project brief changes");
+    expect(preview.sections[2]?.content).toContain("Do not write ephemeral turn-by-turn status");
+    expect(preview.sections[3]?.content).toContain("ADE operator capability manifest");
+    expect(preview.sections[3]?.content).toContain("UI navigation is suggestion-only.");
     expect(preview.prompt).toContain("Immutable ADE doctrine");
     expect(preview.prompt).toContain("Selected personality overlay");
+    expect(preview.prompt).toContain("ADE operator capability manifest");
 
     fixture.db.close();
   });

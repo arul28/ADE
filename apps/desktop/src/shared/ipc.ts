@@ -105,8 +105,6 @@ export const IPC = {
   agentChatModels: "ade.agentChat.models",
   agentChatDispose: "ade.agentChat.dispose",
   agentChatEvent: "ade.agentChat.event",
-  agentChatListContextPacks: "ade.agentChat.listContextPacks",
-  agentChatFetchContextPack: "ade.agentChat.fetchContextPack",
   agentChatChangePermissionMode: "ade.agentChat.changePermissionMode",
   agentChatUpdateSession: "ade.agentChat.updateSession",
   agentChatWarmupModel: "ade.agentChat.warmupModel",
@@ -519,7 +517,6 @@ export const IPC = {
   ctoGetLinearOAuthSession: "ade.cto.getLinearOAuthSession",
   ctoRunProjectScan: "ade.cto.runProjectScan",
   updateCheckForUpdates: "ade.update.checkForUpdates",
-  updateGetStatus: "ade.update.getStatus",
   updateQuitAndInstall: "ade.update.quitAndInstall",
   updateEvent: "ade.update.event",
 } as const;

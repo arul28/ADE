@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   CheckCircle,
   ClockCounterClockwise,
   Copy,
   SpinnerGap,
   XCircle,
+  TreeStructure,
+  ArrowsOutSimple,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
@@ -28,38 +30,48 @@ function summarizeRuntime(snapshot: ChatSubagentSnapshot): string | null {
     snapshot.usage?.toolUses ? `${snapshot.usage.toolUses} tool${snapshot.usage.toolUses === 1 ? "" : "s"}` : null,
     formatTokenCount(snapshot.usage?.totalTokens),
   ].filter((part): part is string => Boolean(part));
-  return parts.length ? parts.join(" • ") : null;
+  return parts.length ? parts.join(" \u00b7 ") : null;
 }
 
 function statusMeta(status: ChatSubagentSnapshot["status"]): {
   label: string;
   chipClassName: string;
+  dotClassName: string;
   icon: JSX.Element;
+  accentColor: string;
 } {
   switch (status) {
     case "completed":
       return {
-        label: "Completed",
-        chipClassName: "border-emerald-400/18 bg-emerald-500/[0.08] text-emerald-200",
-        icon: <CheckCircle size={12} weight="bold" className="text-emerald-300" />,
+        label: "Done",
+        chipClassName: "border-emerald-400/15 bg-emerald-500/[0.06] text-emerald-300/90",
+        dotClassName: "bg-emerald-400",
+        icon: <CheckCircle size={12} weight="fill" className="text-emerald-400" />,
+        accentColor: "emerald",
       };
     case "failed":
       return {
         label: "Failed",
-        chipClassName: "border-red-500/18 bg-red-500/[0.08] text-red-200",
-        icon: <XCircle size={12} weight="bold" className="text-red-300" />,
+        chipClassName: "border-red-500/15 bg-red-500/[0.06] text-red-300/90",
+        dotClassName: "bg-red-400",
+        icon: <XCircle size={12} weight="fill" className="text-red-400" />,
+        accentColor: "red",
       };
     case "stopped":
       return {
         label: "Stopped",
-        chipClassName: "border-amber-400/18 bg-amber-500/[0.08] text-amber-200",
-        icon: <ClockCounterClockwise size={12} weight="bold" className="text-amber-300" />,
+        chipClassName: "border-amber-400/15 bg-amber-500/[0.06] text-amber-300/90",
+        dotClassName: "bg-amber-400",
+        icon: <ClockCounterClockwise size={12} weight="bold" className="text-amber-400" />,
+        accentColor: "amber",
       };
     default:
       return {
         label: "Running",
-        chipClassName: "border-sky-400/18 bg-sky-500/[0.08] text-sky-200",
-        icon: <SpinnerGap size={12} weight="bold" className="animate-spin text-sky-300" />,
+        chipClassName: "border-violet-400/15 bg-violet-500/[0.06] text-violet-300/90",
+        dotClassName: "bg-violet-400 animate-pulse",
+        icon: <SpinnerGap size={12} weight="bold" className="animate-spin text-violet-400" />,
+        accentColor: "violet",
       };
   }
 }
@@ -67,7 +79,10 @@ function statusMeta(status: ChatSubagentSnapshot["status"]): {
 function previewText(snapshot: ChatSubagentSnapshot): string {
   if (snapshot.summary?.trim()) return snapshot.summary.trim();
   if (snapshot.status === "running") {
-    return "Live subagent transcript is not exposed by the current runtime yet. The parent turn can still be interrupted from the composer.";
+    if (snapshot.lastToolName?.trim()) {
+      return `Running. Last tool: ${snapshot.lastToolName.trim()}.`;
+    }
+    return "Running. Waiting for the next progress update.";
   }
   return "No summary was returned for this subagent.";
 }
@@ -83,64 +98,113 @@ function PreviewCard({
 }) {
   const meta = statusMeta(snapshot.status);
   const runtimeSummary = summarizeRuntime(snapshot);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      void navigator.clipboard.writeText(snapshot.taskId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  }, [snapshot.taskId]);
 
   return (
-    <div className="w-[min(28rem,calc(100vw-3rem))] rounded-xl border border-white/[0.08] bg-[#111114] shadow-[0_20px_60px_-28px_rgba(0,0,0,0.8)]">
-      <div className="flex items-start justify-between gap-3 border-b border-white/[0.05] px-3.5 py-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
+    <div className="w-[min(30rem,calc(100vw-3rem))] overflow-hidden rounded-xl border border-white/[0.06] bg-[#0c0c0f] shadow-[0_24px_80px_-20px_rgba(0,0,0,0.9)]">
+      {/* Accent top bar */}
+      <div className={cn(
+        "h-px w-full",
+        meta.accentColor === "emerald" && "bg-gradient-to-r from-transparent via-emerald-400/30 to-transparent",
+        meta.accentColor === "red" && "bg-gradient-to-r from-transparent via-red-400/30 to-transparent",
+        meta.accentColor === "amber" && "bg-gradient-to-r from-transparent via-amber-400/30 to-transparent",
+        meta.accentColor === "violet" && "bg-gradient-to-r from-transparent via-violet-400/30 to-transparent",
+      )} />
+
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3 px-4 py-3.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2.5">
             {meta.icon}
-            <span className="truncate text-[12px] font-medium text-fg/86">{snapshot.description}</span>
+            <span className="truncate text-[13px] font-medium tracking-[-0.01em] text-fg/90">
+              {snapshot.description}
+            </span>
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className={cn("inline-flex items-center rounded-md border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em]", meta.chipClassName)}>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className={cn(
+              "inline-flex items-center rounded-md border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.14em]",
+              meta.chipClassName,
+            )}>
               {meta.label}
             </span>
+            {snapshot.background ? (
+              <span className="inline-flex items-center rounded-md border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-sky-300/60">
+                Background
+              </span>
+            ) : null}
             {runtimeSummary ? (
-              <span className="font-mono text-[10px] text-fg/44">{runtimeSummary}</span>
+              <span className="font-mono text-[10px] text-fg/35">{runtimeSummary}</span>
             ) : null}
           </div>
         </div>
         {onDismiss ? (
           <button
             type="button"
-            className="rounded-md border border-white/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.16em] text-fg/40 transition-colors hover:text-fg/72"
+            className="rounded-md border border-white/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-fg/35 transition-all hover:border-white/[0.12] hover:text-fg/65"
             onClick={onDismiss}
           >
             Close
           </button>
         ) : null}
       </div>
-      <div className="space-y-3 px-3.5 py-3">
-        <div className="rounded-lg border border-white/[0.05] bg-black/20 px-3 py-2.5 text-[12px] leading-[1.6] text-fg/72">
+
+      {/* Body */}
+      <div className="border-t border-white/[0.04] px-4 py-3.5">
+        <div className="rounded-lg border border-white/[0.04] bg-black/30 px-3.5 py-3 text-[12px] leading-[1.7] text-fg/65">
           {previewText(snapshot)}
         </div>
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-fg/42">
-          <span>Task {snapshot.taskId}</span>
+      </div>
+
+      {/* Footer */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.04] px-4 py-2.5">
+        <span className="font-mono text-[9px] text-fg/25 select-all">{snapshot.taskId}</span>
+        {snapshot.status === "running" && snapshot.lastToolName?.trim() ? (
+          <span className="rounded-md border border-white/[0.05] bg-white/[0.02] px-1.5 py-0.5 font-mono text-[9px] text-fg/35">
+            {snapshot.lastToolName.trim()}
+          </span>
+        ) : null}
+        <div className="ml-auto flex items-center gap-1.5">
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-md border border-white/[0.06] px-2 py-1 transition-colors hover:text-fg/70"
-            onClick={() => {
-              if (typeof navigator !== "undefined" && navigator.clipboard) {
-                void navigator.clipboard.writeText(snapshot.taskId);
-              }
-            }}
-            title="Copy subagent id"
+            className="inline-flex items-center gap-1 rounded-md border border-white/[0.06] px-2 py-1 font-mono text-[9px] text-fg/35 transition-all hover:border-white/[0.12] hover:text-fg/60"
+            onClick={handleCopy}
+            title="Copy agent id"
           >
             <Copy size={10} />
-            Copy id
+            {copied ? "Copied" : "Copy id"}
           </button>
           {snapshot.status === "running" && onInterruptTurn ? (
             <button
               type="button"
-              className="inline-flex items-center gap-1 rounded-md border border-red-500/18 bg-red-500/[0.05] px-2 py-1 text-red-200 transition-colors hover:bg-red-500/[0.1]"
+              className="inline-flex items-center gap-1 rounded-md border border-red-500/15 bg-red-500/[0.04] px-2 py-1 font-mono text-[9px] text-red-300/70 transition-all hover:bg-red-500/[0.08] hover:text-red-200"
               onClick={onInterruptTurn}
             >
               <XCircle size={10} />
-              Interrupt turn
+              Stop
             </button>
           ) : null}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Miniature agent dot for compact view */
+function AgentDot({ snapshot }: { snapshot: ChatSubagentSnapshot }) {
+  const meta = statusMeta(snapshot.status);
+  return (
+    <div className="group relative">
+      <div className={cn("h-2 w-2 rounded-full transition-transform group-hover:scale-125", meta.dotClassName)} />
+      <div className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-white/[0.08] bg-[#0c0c0f] px-2 py-1 font-mono text-[9px] text-fg/60 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
+        {snapshot.description}
       </div>
     </div>
   );
@@ -159,31 +223,106 @@ export function ChatSubagentStrip({
 }) {
   const [hoveredTaskId, setHoveredTaskId] = useState<string | null>(null);
   const [pinnedTaskId, setPinnedTaskId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
-  const visibleSnapshots = useMemo(() => snapshots.slice(0, 8), [snapshots]);
-  const activeCount = useMemo(() => snapshots.filter((snapshot) => snapshot.status === "running").length, [snapshots]);
-  const pinned = useMemo(() => snapshots.find((snapshot) => snapshot.taskId === pinnedTaskId) ?? null, [pinnedTaskId, snapshots]);
-  const hovered = useMemo(() => snapshots.find((snapshot) => snapshot.taskId === hoveredTaskId) ?? null, [hoveredTaskId, snapshots]);
+  const visibleSnapshots = useMemo(
+    () => (expanded ? snapshots : snapshots.slice(0, 6)),
+    [snapshots, expanded],
+  );
+  const { activeCount, completedCount, failedCount, backgroundRunningCount } = useMemo(() => {
+    let active = 0;
+    let completed = 0;
+    let failed = 0;
+    let bgRunning = 0;
+    for (const s of snapshots) {
+      if (s.status === "running") {
+        active++;
+        if (s.background) bgRunning++;
+      } else if (s.status === "completed") completed++;
+      else if (s.status === "failed") failed++;
+    }
+    return { activeCount: active, completedCount: completed, failedCount: failed, backgroundRunningCount: bgRunning };
+  }, [snapshots]);
+  const pinned = useMemo(
+    () => snapshots.find((s) => s.taskId === pinnedTaskId) ?? null,
+    [pinnedTaskId, snapshots],
+  );
+  const hovered = useMemo(
+    () => snapshots.find((s) => s.taskId === hoveredTaskId) ?? null,
+    [hoveredTaskId, snapshots],
+  );
 
   if (!snapshots.length) return null;
 
   return (
-    <div className={cn("relative space-y-2", className)}>
-      <div className="flex items-center gap-2 px-3 pt-2">
-        <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-fg/34">
-          Subagents
+    <div className={cn("relative", className)}>
+      {/* Header bar */}
+      <div className="flex items-center gap-3 px-3 pb-1.5 pt-2.5">
+        <div className="flex items-center gap-1.5">
+          <TreeStructure size={12} weight="bold" className="text-violet-400/50" />
+          <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-fg/30">
+            Agents
+          </span>
         </div>
-        <div className="font-mono text-[10px] text-fg/42">
-          {activeCount > 0 ? `${activeCount} running` : `${snapshots.length} recent`}
+
+        {/* Status capsules */}
+        <div className="flex items-center gap-1.5">
+          {activeCount > 0 ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-violet-400/12 bg-violet-500/[0.06] px-2 py-0.5 font-mono text-[9px] text-violet-300/70">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+              {activeCount}
+            </span>
+          ) : null}
+          {completedCount > 0 ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/10 bg-emerald-500/[0.04] px-2 py-0.5 font-mono text-[9px] text-emerald-300/60">
+              {completedCount}
+            </span>
+          ) : null}
+          {failedCount > 0 ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-red-400/10 bg-red-500/[0.04] px-2 py-0.5 font-mono text-[9px] text-red-300/60">
+              {failedCount}
+            </span>
+          ) : null}
+          {backgroundRunningCount > 0 ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-sky-400/10 bg-sky-500/[0.04] px-2 py-0.5 font-mono text-[9px] text-sky-300/55">
+              {backgroundRunningCount} bg
+            </span>
+          ) : null}
         </div>
+
+        {/* Overflow dots for hidden agents */}
+        {!expanded && snapshots.length > 6 ? (
+          <div className="flex items-center gap-1">
+            {snapshots.slice(6).map((s) => (
+              <AgentDot key={s.taskId} snapshot={s} />
+            ))}
+          </div>
+        ) : null}
+
+        {snapshots.length > 6 ? (
+          <button
+            type="button"
+            className="ml-auto inline-flex items-center gap-1 font-mono text-[9px] text-fg/25 transition-colors hover:text-fg/50"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <ArrowsOutSimple size={10} />
+            {expanded ? "Collapse" : `+${snapshots.length - 6} more`}
+          </button>
+        ) : null}
       </div>
-      <div className="relative px-3 pb-1">
+
+      {/* Agent cards */}
+      <div className="relative px-3 pb-2">
         {hovered && !pinned ? (
-          <div className={cn("absolute left-3 z-20", placement === "composer" ? "bottom-full mb-2" : "top-full mt-2")}>
+          <div className={cn(
+            "absolute left-3 z-30",
+            placement === "composer" ? "bottom-full mb-2" : "top-full mt-2",
+          )}>
             <PreviewCard snapshot={hovered} onInterruptTurn={onInterruptTurn} />
           </div>
         ) : null}
-        <div className="flex flex-wrap items-center gap-2">
+
+        <div className="flex flex-wrap items-center gap-1.5">
           {visibleSnapshots.map((snapshot) => {
             const meta = statusMeta(snapshot.status);
             const runtimeSummary = summarizeRuntime(snapshot);
@@ -194,24 +333,35 @@ export function ChatSubagentStrip({
                 key={snapshot.taskId}
                 type="button"
                 className={cn(
-                  "inline-flex max-w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors",
-                  active ? "border-white/[0.14] bg-white/[0.06]" : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.12] hover:bg-white/[0.04]",
+                  "group inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-all",
+                  active
+                    ? "border-white/[0.12] bg-white/[0.06] shadow-[0_0_12px_-4px_rgba(255,255,255,0.06)]"
+                    : "border-white/[0.05] bg-white/[0.015] hover:border-white/[0.1] hover:bg-white/[0.035]",
                 )}
                 onMouseEnter={() => setHoveredTaskId(snapshot.taskId)}
-                onMouseLeave={() => setHoveredTaskId((current) => (current === snapshot.taskId ? null : current))}
-                onClick={() => setPinnedTaskId((current) => (current === snapshot.taskId ? null : snapshot.taskId))}
+                onMouseLeave={() => setHoveredTaskId((cur) => (cur === snapshot.taskId ? null : cur))}
+                onClick={() => setPinnedTaskId((cur) => (cur === snapshot.taskId ? null : snapshot.taskId))}
                 title={snapshot.description}
               >
                 {meta.icon}
-                <span className="max-w-[16rem] truncate text-[11px] text-fg/74">{snapshot.description}</span>
+                {snapshot.background ? (
+                  <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1 py-px font-mono text-[7px] font-bold uppercase tracking-widest text-sky-300/50">bg</span>
+                ) : null}
+                <span className="max-w-[14rem] truncate text-[11px] text-fg/70 group-hover:text-fg/85">
+                  {snapshot.description}
+                </span>
                 {runtimeSummary ? (
-                  <span className="font-mono text-[9px] text-fg/35">{runtimeSummary}</span>
+                  <span className="font-mono text-[9px] text-fg/25 group-hover:text-fg/35">
+                    {runtimeSummary}
+                  </span>
                 ) : null}
               </button>
             );
           })}
         </div>
       </div>
+
+      {/* Pinned preview */}
       {pinned ? (
         <div className="px-3 pb-2">
           <PreviewCard

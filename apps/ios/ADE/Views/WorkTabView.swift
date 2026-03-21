@@ -7,56 +7,94 @@ struct WorkTabView: View {
   @State private var errorMessage: String?
   @State private var quickRunPresented = false
 
+  private var workStatus: SyncDomainStatus {
+    syncService.status(for: .work)
+  }
+
+  private var canRunQuickCommands: Bool {
+    workStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing) && !lanes.isEmpty
+  }
+
+  private var needsRepairing: Bool {
+    syncService.activeHostProfile == nil && !sessions.isEmpty
+  }
+
   var body: some View {
     NavigationStack {
       List {
-        if let errorMessage {
-          Text(errorMessage).foregroundStyle(.red)
+        if let notice = statusNotice {
+          notice
+            .listRowBackground(Color.clear)
         }
 
-        Section("Activity") {
-          ForEach(sessions.filter { $0.status == "running" }) { session in
-            HStack {
-              Image(systemName: "waveform.path.ecg")
-                .foregroundStyle(.orange)
-              VStack(alignment: .leading) {
-                Text(session.title)
-                Text("\(session.laneName) · \(session.toolType ?? "session")")
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
+        if let errorMessage, workStatus.phase == .ready {
+          ADENoticeCard(
+            title: "Work view error",
+            message: errorMessage,
+            icon: "exclamationmark.triangle.fill",
+            tint: ADEPalette.danger,
+            actionTitle: "Retry",
+            action: { Task { await reload(refreshRemote: true) } }
+          )
+          .listRowBackground(Color.clear)
+        }
+
+        if sessions.contains(where: { $0.status == "running" }) {
+          Section("Activity") {
+            ForEach(sessions.filter { $0.status == "running" }) { session in
+              HStack(spacing: 12) {
+                Image(systemName: "waveform.path.ecg")
+                  .foregroundStyle(ADEPalette.warning)
+                  .symbolEffect(.variableColor.iterative, isActive: true)
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(session.title)
+                    .font(.subheadline.weight(.medium))
+                  Text("\(session.laneName) \u{00B7} \(session.toolType ?? "session")")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(ADEPalette.textSecondary)
+                }
+                Spacer()
+                ProgressView()
+                  .controlSize(.mini)
               }
+              .accessibilityLabel("\(session.title), running on \(session.laneName)")
             }
           }
         }
 
-        Section("Sessions") {
-          ForEach(sessions) { session in
-            NavigationLink {
-              TerminalSessionView(session: session)
-            } label: {
-              VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                  Text(session.title)
-                    .font(.headline)
-                  Spacer()
-                  Text(session.status)
-                    .font(.caption)
-                    .foregroundStyle(session.status == "running" ? .green : .secondary)
-                }
-                Text(session.laneName)
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
-                if let preview = session.lastOutputPreview {
-                  Text(preview)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        if !sessions.isEmpty {
+          Section("Sessions") {
+            ForEach(sessions) { session in
+              NavigationLink {
+                TerminalSessionView(session: session)
+              } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                  HStack {
+                    Text(session.title)
+                      .font(.headline)
+                    Spacer()
+                    ADEStatusPill(
+                      text: session.status.uppercased(),
+                      tint: session.status == "running" ? ADEPalette.success : ADEPalette.textSecondary
+                    )
+                  }
+                  Text(session.laneName)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(ADEPalette.textSecondary)
+                  if let preview = session.lastOutputPreview {
+                    Text(preview)
+                      .font(.caption.monospaced())
+                      .foregroundStyle(ADEPalette.textMuted)
+                      .lineLimit(1)
+                  }
                 }
               }
             }
           }
         }
       }
+      .scrollContentBackground(.hidden)
+      .background(ADEPalette.pageBackground.ignoresSafeArea())
       .navigationTitle("Work")
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
@@ -65,6 +103,7 @@ struct WorkTabView: View {
           } label: {
             Image(systemName: "play.fill")
           }
+          .disabled(!canRunQuickCommands)
         }
       }
       .task {
@@ -74,12 +113,13 @@ struct WorkTabView: View {
         await reload()
       }
       .refreshable {
-        await reload()
+        await reload(refreshRemote: true)
       }
       .sheet(isPresented: $quickRunPresented) {
         QuickRunView(lanes: lanes) { laneId, title, command in
           Task {
             try? await syncService.runQuickCommand(laneId: laneId, title: title, startupCommand: command)
+            try? await syncService.refreshWorkSessions()
             quickRunPresented = false
             await reload()
           }
@@ -89,8 +129,11 @@ struct WorkTabView: View {
   }
 
   @MainActor
-  private func reload() async {
+  private func reload(refreshRemote: Bool = false) async {
     do {
+      if refreshRemote {
+        try? await syncService.refreshWorkSessions()
+      }
       async let sessionsTask = syncService.fetchSessions()
       async let lanesTask = syncService.fetchLanes()
       sessions = try await sessionsTask
@@ -98,6 +141,63 @@ struct WorkTabView: View {
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
+    }
+  }
+
+  private var statusNotice: ADENoticeCard? {
+    switch workStatus.phase {
+    case .disconnected:
+      return ADENoticeCard(
+        title: sessions.isEmpty ? "Host disconnected" : "Showing cached sessions",
+        message: sessions.isEmpty
+          ? (syncService.activeHostProfile == nil
+              ? "Pair with a host to hydrate host session history and active work."
+              : "Reconnect to hydrate host session history and active work.")
+          : (needsRepairing
+              ? "Cached session history is still visible, but the previous host trust was cleared. Pair again before trusting active work state."
+              : "Cached session history is available. Reconnect to refresh active host work and stream new output."),
+        icon: "terminal",
+        tint: ADEPalette.warning,
+        actionTitle: syncService.activeHostProfile == nil ? (needsRepairing ? "Pair again" : "Pair with host") : "Reconnect",
+        action: {
+          if syncService.activeHostProfile == nil {
+            syncService.settingsPresented = true
+          } else {
+            Task {
+              await syncService.reconnectIfPossible()
+              await reload(refreshRemote: true)
+            }
+          }
+        }
+      )
+    case .hydrating:
+      return ADENoticeCard(
+        title: "Hydrating host sessions",
+        message: "Pulling tracked terminal sessions from the host so Work reflects real session history.",
+        icon: "arrow.trianglehead.2.clockwise.rotate.90",
+        tint: ADEPalette.accent,
+        actionTitle: nil,
+        action: nil
+      )
+    case .failed:
+      return ADENoticeCard(
+        title: "Session hydration failed",
+        message: workStatus.lastError ?? "The host session list did not hydrate cleanly.",
+        icon: "exclamationmark.triangle.fill",
+        tint: ADEPalette.danger,
+        actionTitle: "Retry",
+        action: { Task { await reload(refreshRemote: true) } }
+      )
+    case .ready:
+      guard sessions.isEmpty else { return nil }
+      return ADENoticeCard(
+        title: "No work sessions yet",
+        message: "Quick runs and tracked host sessions will appear here when the host has session history to show.",
+        icon: "terminal",
+        tint: ADEPalette.textSecondary,
+        actionTitle: nil,
+        action: nil
+      )
     }
   }
 }
@@ -113,6 +213,7 @@ private struct TerminalSessionView: View {
         .padding()
         .font(.system(.footnote, design: .monospaced))
     }
+    .background(ADEPalette.pageBackground.ignoresSafeArea())
     .navigationTitle(session.title)
     .task {
       try? await syncService.subscribeTerminal(sessionId: session.id)
@@ -142,6 +243,8 @@ private struct QuickRunView: View {
           .textInputAutocapitalization(.never)
           .autocorrectionDisabled()
       }
+      .scrollContentBackground(.hidden)
+      .background(ADEPalette.pageBackground.ignoresSafeArea())
       .navigationTitle("Quick run")
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {

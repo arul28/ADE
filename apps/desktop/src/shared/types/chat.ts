@@ -18,6 +18,17 @@ export type ChatModelSwitchPolicy = "same-family-after-launch" | "any-after-laun
 
 export type ChatSurfaceChipTone = "accent" | "success" | "warning" | "danger" | "info" | "muted";
 
+export type OperatorNavigationSurface = "work" | "missions" | "lanes" | "cto";
+
+export type OperatorNavigationSuggestion = {
+  surface: OperatorNavigationSurface;
+  label: string;
+  href: string;
+  laneId?: string | null;
+  sessionId?: string | null;
+  missionId?: string | null;
+};
+
 export type ChatSurfaceChip = {
   label: string;
   tone?: ChatSurfaceChipTone;
@@ -199,7 +210,7 @@ export type AgentChatEvent =
     }
   | {
       type: "activity";
-      activity: "thinking" | "working" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling";
+      activity: "thinking" | "working" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling" | "web_searching" | "spawning_agent";
       detail?: string;
       turnId?: string;
     }
@@ -221,6 +232,20 @@ export type AgentChatEvent =
       type: "subagent_started";
       taskId: string;
       description: string;
+      background?: boolean;
+      turnId?: string;
+    }
+  | {
+      type: "subagent_progress";
+      taskId: string;
+      description?: string;
+      summary: string;
+      usage?: {
+        totalTokens?: number;
+        toolUses?: number;
+        durationMs?: number;
+      };
+      lastToolName?: string;
       turnId?: string;
     }
   | {
@@ -265,6 +290,33 @@ export type AgentChatEvent =
       type: "completion_report";
       report: AgentChatCompletionReport;
       turnId?: string;
+    }
+  | {
+      type: "web_search";
+      query: string;
+      action?: string;
+      itemId: string;
+      turnId?: string;
+      status: "running" | "completed" | "failed";
+    }
+  | {
+      type: "auto_approval_review";
+      targetItemId: string;
+      reviewStatus: "started" | "completed";
+      action?: string;
+      review?: string;
+      turnId?: string;
+    }
+  | {
+      type: "prompt_suggestion";
+      suggestion: string;
+      turnId?: string;
+    }
+  | {
+      type: "plan_text";
+      text: string;
+      turnId?: string;
+      itemId?: string;
     };
 
 export type AgentChatEventEnvelope = {
@@ -340,6 +392,13 @@ export type AgentChatSessionSummary = {
   threadId?: string;
 };
 
+export type AgentChatTranscriptEntry = {
+  role: "user" | "assistant";
+  text: string;
+  timestamp: string;
+  turnId?: string;
+};
+
 export type AgentChatSubagentSnapshot = {
   taskId: string;
   description: string;
@@ -348,6 +407,7 @@ export type AgentChatSubagentSnapshot = {
   startTimestamp?: string;
   endTimestamp?: string;
   summary?: string;
+  lastToolName?: string;
   usage?: {
     totalTokens?: number;
     toolUses?: number;
@@ -457,36 +517,6 @@ export type AgentChatUpdateSessionArgs = {
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
   computerUse?: ComputerUsePolicy | null;
-};
-
-export type ContextPackScope = "project" | "lane" | "conflict" | "plan" | "mission" | "feature";
-
-export type ContextPackOption = {
-  scope: ContextPackScope;
-  label: string;
-  description: string;
-  available: boolean;
-  laneId?: string;
-  featureKey?: string;
-  missionId?: string;
-};
-
-export type ContextPackFetchArgs = {
-  scope: ContextPackScope;
-  laneId?: string;
-  featureKey?: string;
-  missionId?: string;
-  level?: "brief" | "standard" | "detailed";
-};
-
-export type ContextPackFetchResult = {
-  scope: ContextPackScope;
-  content: string;
-  truncated: boolean;
-};
-
-export type ContextPackListArgs = {
-  laneId?: string;
 };
 
 export type AgentChatSlashCommand = {

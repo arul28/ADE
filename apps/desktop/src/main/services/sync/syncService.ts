@@ -2,8 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
+  SyncAddressCandidate,
   SyncDesktopConnectionDraft,
   SyncDeviceRuntimeState,
+  SyncPairingConnectInfo,
+  SyncPairingQrPayload,
   SyncRoleSnapshot,
   SyncTransferBlocker,
   SyncTransferReadiness,
@@ -11,8 +14,17 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createFileService } from "../files/fileService";
+import type { createDiffService } from "../diffs/diffService";
+import type { createGitOperationsService } from "../git/gitOperationsService";
+import type { createConflictService } from "../conflicts/conflictService";
+import type { createLaneEnvironmentService } from "../lanes/laneEnvironmentService";
 import type { createLaneService } from "../lanes/laneService";
+import type { createLaneTemplateService } from "../lanes/laneTemplateService";
+import type { createAutoRebaseService } from "../lanes/autoRebaseService";
+import type { createPortAllocationService } from "../lanes/portAllocationService";
+import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createMissionService } from "../missions/missionService";
 import type { createProcessService } from "../processes/processService";
 import type { createPrService } from "../prs/prService";
@@ -31,9 +43,18 @@ type SyncServiceArgs = {
   projectRoot: string;
   fileService: ReturnType<typeof createFileService>;
   laneService: ReturnType<typeof createLaneService>;
+  gitService?: ReturnType<typeof createGitOperationsService>;
+  diffService?: ReturnType<typeof createDiffService>;
+  conflictService?: ReturnType<typeof createConflictService>;
   prService: ReturnType<typeof createPrService>;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
+  projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  portAllocationService?: ReturnType<typeof createPortAllocationService>;
+  laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
+  laneTemplateService?: ReturnType<typeof createLaneTemplateService>;
+  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
+  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   missionService: ReturnType<typeof createMissionService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
@@ -60,6 +81,64 @@ function sanitizeDraft(raw: unknown, token: string | null): SyncDesktopConnectio
     pairedDeviceId: typeof row.pairedDeviceId === "string" ? row.pairedDeviceId : null,
     lastRemoteDbVersion: Number.isFinite(row.lastRemoteDbVersion) ? Number(row.lastRemoteDbVersion) : 0,
     lastBrainDeviceId: typeof row.lastBrainDeviceId === "string" ? row.lastBrainDeviceId : null,
+  };
+}
+
+function normalizeHost(host: string | null | undefined): string | null {
+  if (!host) return null;
+  const normalized = host.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function buildAddressCandidates(localDevice: SyncRoleSnapshot["localDevice"]): SyncAddressCandidate[] {
+  const candidates: SyncAddressCandidate[] = [];
+  const seen = new Set<string>();
+  const append = (host: string | null | undefined, kind: SyncAddressCandidate["kind"]) => {
+    const normalized = normalizeHost(host);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    candidates.push({ host: normalized, kind });
+  };
+  for (const lanAddress of localDevice.ipAddresses) {
+    append(lanAddress, "lan");
+  }
+  append(localDevice.lastHost, "saved");
+  append(localDevice.tailscaleIp, "tailscale");
+  return candidates;
+}
+
+function buildPairingConnectInfo(argsIn: {
+  localDevice: SyncRoleSnapshot["localDevice"];
+  pairingSession: SyncRoleSnapshot["pairingSession"];
+}): SyncPairingConnectInfo | null {
+  const pairingSession = argsIn.pairingSession;
+  if (!pairingSession) return null;
+  const port = argsIn.localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
+  const addressCandidates = buildAddressCandidates(argsIn.localDevice);
+  const hostIdentity = {
+    deviceId: argsIn.localDevice.deviceId,
+    siteId: argsIn.localDevice.siteId,
+    name: argsIn.localDevice.name,
+    platform: argsIn.localDevice.platform,
+    deviceType: argsIn.localDevice.deviceType,
+  };
+  const qrPayload: SyncPairingQrPayload = {
+    version: 1,
+    hostIdentity,
+    port,
+    pairingCode: pairingSession.code,
+    expiresAt: pairingSession.expiresAt,
+    addressCandidates,
+  };
+  const qrPayloadText = `ade-sync://pair?payload=${encodeURIComponent(JSON.stringify(qrPayload))}`;
+  return {
+    hostIdentity,
+    port,
+    pairingCode: pairingSession.code,
+    expiresAt: pairingSession.expiresAt,
+    addressCandidates,
+    qrPayload,
+    qrPayloadText,
   };
 }
 
@@ -169,9 +248,19 @@ export function createSyncService(args: SyncServiceArgs) {
       projectRoot: args.projectRoot,
       fileService: args.fileService,
       laneService: args.laneService,
+      gitService: args.gitService,
+      diffService: args.diffService,
+      conflictService: args.conflictService,
       prService: args.prService,
       sessionService: args.sessionService,
       ptyService: args.ptyService,
+      agentChatService: args.agentChatService,
+      projectConfigService: args.projectConfigService,
+      portAllocationService: args.portAllocationService,
+      laneEnvironmentService: args.laneEnvironmentService,
+      laneTemplateService: args.laneTemplateService,
+      rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
+      autoRebaseService: args.autoRebaseService ?? undefined,
       computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
       bootstrapTokenPath: tokenPath,
       port: localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT,
@@ -271,7 +360,7 @@ export function createSyncService(args: SyncServiceArgs) {
         ...device,
         isLocal,
         isBrain: device.deviceId === currentBrainId,
-        connectionState: isLocal ? "self" : peer ? "connected" : "disconnected",
+        connectionState: isLocal ? "self" : (peer ? "connected" : "disconnected"),
         connectedAt: peer?.connectedAt ?? null,
         lastAppliedAt: peer?.lastAppliedAt ?? null,
         remoteAddress: peer?.remoteAddress ?? null,
@@ -354,20 +443,23 @@ export function createSyncService(args: SyncServiceArgs) {
       const cluster = deviceRegistryService.getClusterState();
       const savedDraft = readSavedDraft();
       const currentBrain = cluster ? deviceRegistryService.getDevice(cluster.brainDeviceId) : localDevice;
-      const role = cluster
-        ? (cluster.brainDeviceId !== localDevice.deviceId ? "viewer" : "brain")
-        : (savedDraft || syncPeerService.isConnected() ? "viewer" : "brain");
+      const isLocalBrain = cluster
+        ? cluster.brainDeviceId === localDevice.deviceId
+        : !savedDraft && !syncPeerService.isConnected();
+      const role = isLocalBrain ? "brain" : "viewer";
       const client = syncPeerService.getStatus();
+      const pairingSession = role === "brain" && hostService ? hostService.getPairingSession() : null;
+      const mode = role === "viewer" ? "viewer"
+        : (client.state === "connected" ? "brain" : "standalone");
       return {
-        mode: role === "brain"
-          ? (client.state === "connected" ? "brain" : "standalone")
-          : "viewer",
+        mode,
         role,
         localDevice,
         currentBrain,
         clusterState: cluster,
         bootstrapToken: role === "brain" ? readToken() : null,
-        pairingSession: role === "brain" && hostService ? hostService.getPairingSession() : null,
+        pairingSession,
+        pairingConnectInfo: role === "brain" ? buildPairingConnectInfo({ localDevice, pairingSession }) : null,
         connectedPeers: hostService
           ? hostService.getPeerStates()
           : (syncPeerService.getLatestBrainStatus()?.connectedPeers ?? []),

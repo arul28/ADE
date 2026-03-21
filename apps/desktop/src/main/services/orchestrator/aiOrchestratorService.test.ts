@@ -1050,7 +1050,6 @@ async function createFixture(args: {
     db,
     projectId,
     projectRoot,
-    packService,
     projectConfigService
   });
   const defaultUnifiedModelId = "anthropic/claude-sonnet-4-6";

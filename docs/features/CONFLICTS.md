@@ -514,7 +514,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 |----|------|--------|
 | CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | DONE — Phase 7 (rebase suggestions + merge-plan workflows with stack-aware ordering) |
 | CONF-023 | Batch conflict assessment (all-lanes report) | DONE (batch conflict assessment implemented) |
-| CONF-024 | Conflict notification/alerts (in-app and system) | TODO — **moved to Phase 9** |
+| CONF-024 | Conflict notification/alerts (in-app and system) | TODO — **deferred to backlog** |
 
 ### Phase 8 — Active Conflict Management & External Resolution
 
@@ -546,7 +546,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 **Phase 8 (Active Conflict Management) completed**: CONF-025 through CONF-038. Active merge/rebase conflict detection and management, external CLI resolution (Codex/Claude) with context validation and commit workflow, merge-plan sequential merge UI, integration lane creation, rebase suggestions, proposal apply modes, batch progress tracking, and risk matrix animations are all operational across Graph, Lanes, and PRs.
 
 **Remaining tasks** are scheduled as follows:
-- **Phase 9 (Advanced Features)**: CONF-024 (conflict notifications)
+- **Deferred to backlog**: CONF-024 (conflict notifications)
 
 ---
 
@@ -628,12 +628,12 @@ Conflict resolution generation now defaults to **external local CLIs** (Codex or
 
 ---
 
-### Phase 3: Orchestrator Conflict Handling
+### Phase 3: Orchestrator Conflict Handling (Shipped)
 
-The Phase 3 missions overhaul changes how conflicts are managed:
+The Phase 3 missions overhaul changed how conflicts are managed:
 
 - **Merge Phase Removed**: The previous merge phase (which attempted automatic conflict resolution) has been completely removed from the mission lifecycle
 - **PR Strategy**: Conflicts are now handled at PR time, controlled by the selected PR strategy (integration/per-lane/queue/manual)
 - **Integration Phase**: For `integration` strategy, lanes merge into an integration branch where conflicts are surfaced for resolution
-- **Pre-Merge Checking** (Planned): The orchestrator will perform dry-run merges to detect conflicts before PR creation, allowing proactive conflict resolution
-- **File Conflict Prevention** (Planned): During mission planning, the orchestrator will assign files to lanes to minimize overlap and reduce merge conflicts
+- **Pre-Merge Checking**: The orchestrator performs dry-run merges to detect conflicts before PR creation, allowing proactive conflict resolution (shipped as part of the conflict prediction engine integration with the orchestrator)
+- **File Conflict Prevention**: During mission planning, the orchestrator assigns files to lanes to minimize overlap and reduce merge conflicts (shipped as part of the coordinator planning phase)

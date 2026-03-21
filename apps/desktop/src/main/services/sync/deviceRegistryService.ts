@@ -78,7 +78,7 @@ function mapDeviceRow(row: DeviceRow | null): SyncDeviceRecord | null {
     updatedAt: String(row.updated_at),
     lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : null,
     lastHost: row.last_host ? String(row.last_host) : null,
-    lastPort: typeof row.last_port === "number" ? row.last_port : row.last_port == null ? null : Number(row.last_port),
+    lastPort: row.last_port == null ? null : Number(row.last_port),
     tailscaleIp: row.tailscale_ip ? String(row.tailscale_ip) : null,
     ipAddresses: readJsonArray(row.ip_addresses_json),
     metadata: safeJsonParse<Record<string, unknown>>(row.metadata_json, {}),
@@ -96,16 +96,38 @@ function mapClusterStateRow(row: ClusterStateRow | null): SyncClusterState | nul
   };
 }
 
-function listLocalIpAddresses(): string[] {
+type LocalNetworkMetadata = {
+  lanIpAddresses: string[];
+  tailscaleIp: string | null;
+};
+
+function isTailscaleAddress(ipAddress: string): boolean {
+  const parts = ipAddress.split(".");
+  if (parts.length !== 4) return false;
+  const octets = parts.map((part) => Number(part));
+  if (octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return false;
+  return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
+}
+
+function readLocalNetworkMetadata(): LocalNetworkMetadata {
   const interfaces = os.networkInterfaces();
-  const values: string[] = [];
-  for (const entries of Object.values(interfaces)) {
+  const lan: string[] = [];
+  const tailscale: string[] = [];
+  for (const [interfaceName, entries] of Object.entries(interfaces)) {
+    const isLikelyTailscaleInterface = /tailscale|utun|tun/i.test(interfaceName);
     for (const entry of entries ?? []) {
       if (!entry || entry.internal || entry.family !== "IPv4") continue;
-      values.push(entry.address);
+      if (isLikelyTailscaleInterface || isTailscaleAddress(entry.address)) {
+        tailscale.push(entry.address);
+      } else {
+        lan.push(entry.address);
+      }
     }
   }
-  return uniqueStrings(values);
+  return {
+    lanIpAddresses: uniqueStrings(lan),
+    tailscaleIp: uniqueStrings(tailscale)[0] ?? null,
+  };
 }
 
 function firstPreferredHost(ipAddresses: string[]): string {
@@ -129,13 +151,14 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   const localSiteId = args.db.sync.getSiteId();
 
   const getLocalDefaults = () => {
-    const ipAddresses = listLocalIpAddresses();
+    const network = readLocalNetworkMetadata();
     return {
       name: os.hostname(),
       platform: mapPlatform(process.platform),
       deviceType: "desktop" as SyncPeerDeviceType,
-      ipAddresses,
-      lastHost: firstPreferredHost(ipAddresses),
+      ipAddresses: network.lanIpAddresses,
+      tailscaleIp: network.tailscaleIp,
+      lastHost: firstPreferredHost(network.lanIpAddresses),
     };
   };
 
@@ -203,17 +226,21 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   };
 
   const ensureLocalDevice = (): SyncDeviceRecord => {
+    const existing = mapDeviceRow(args.db.get<DeviceRow>("select * from devices where device_id = ? limit 1", [localDeviceId]));
     const defaults = getLocalDefaults();
     return upsertDeviceRecord({
       deviceId: localDeviceId,
       siteId: localSiteId,
-      name: defaults.name,
-      platform: defaults.platform,
-      deviceType: defaults.deviceType,
+      name: existing?.name ?? defaults.name,
+      platform: existing?.platform ?? defaults.platform,
+      deviceType: existing?.deviceType ?? defaults.deviceType,
       lastSeenAt: nowIso(),
-      lastHost: defaults.lastHost,
+      lastHost: existing?.lastHost ?? defaults.lastHost,
+      lastPort: existing?.lastPort ?? null,
+      tailscaleIp: defaults.tailscaleIp,
       ipAddresses: defaults.ipAddresses,
       metadata: {
+        ...(existing?.metadata ?? {}),
         hostname: os.hostname(),
       },
     });
@@ -303,6 +330,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     metadata?: Record<string, unknown>;
   } = {}): SyncDeviceRecord => {
     const current = ensureLocalDevice();
+    const network = readLocalNetworkMetadata();
     return upsertDeviceRecord({
       deviceId: current.deviceId,
       siteId: current.siteId,
@@ -310,10 +338,10 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       platform: current.platform,
       deviceType: current.deviceType,
       lastSeenAt: argsIn.lastSeenAt ?? nowIso(),
-      lastHost: argsIn.lastHost ?? current.lastHost,
+      lastHost: argsIn.lastHost ?? current.lastHost ?? firstPreferredHost(network.lanIpAddresses),
       lastPort: argsIn.lastPort ?? current.lastPort,
-      tailscaleIp: current.tailscaleIp,
-      ipAddresses: current.ipAddresses,
+      tailscaleIp: network.tailscaleIp ?? current.tailscaleIp,
+      ipAddresses: network.lanIpAddresses.length > 0 ? network.lanIpAddresses : current.ipAddresses,
       metadata: {
         ...current.metadata,
         ...(argsIn.metadata ?? {}),

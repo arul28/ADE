@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { Tool } from "ai";
+import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import { createCoordinatorToolSet } from "../../desktop/src/main/services/orchestrator/coordinatorTools";
 import {
   createComputerUseArtifactPath,
@@ -13,13 +14,14 @@ import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPaylo
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { runGit } from "../../desktop/src/main/services/git/git";
+import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import {
   createDefaultComputerUsePolicy,
   isComputerUseModeEnabled,
   normalizeComputerUsePolicy,
+  type LinearWorkflowConfig,
   type ComputerUseArtifactOwner,
   type ComputerUsePolicy,
-  type ContextExportLevel,
   type MergeMethod,
 } from "../../desktop/src/shared/types";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
@@ -34,7 +36,7 @@ type ToolSpec = {
 
 type SessionIdentity = {
   callerId: string;
-  role: "orchestrator" | "agent" | "external" | "evaluator";
+  role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
   missionId: string | null;
   runId: string | null;
   stepId: string | null;
@@ -68,7 +70,6 @@ const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_PTY_COLS = 120;
 const DEFAULT_PTY_ROWS = 36;
 
-const RESOURCE_MIME_MARKDOWN = "text/markdown";
 const RESOURCE_MIME_JSON = "application/json";
 
 const TOOL_SPECS: ToolSpec[] = [
@@ -97,20 +98,6 @@ const TOOL_SPECS: ToolSpec[] = [
           additionalProperties: false,
           properties: {
             profile: { type: "string" },
-            packs: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  scope: { type: "string" },
-                  packKey: { type: "string" },
-                  level: { type: "string" },
-                  approxTokens: { type: "number" },
-                  summary: { type: "string" }
-                }
-              }
-            },
             docs: {
               type: "array",
               items: {
@@ -135,26 +122,6 @@ const TOOL_SPECS: ToolSpec[] = [
             }
           }
         }
-      }
-    }
-  },
-  {
-    name: "read_context",
-    description: "Read project/lane/feature/conflict/plan/mission context packs for orchestration.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        scope: {
-          type: "string",
-          enum: ["project", "lane", "feature", "conflict", "plan", "mission"],
-          default: "project"
-        },
-        laneId: { type: "string" },
-        featureKey: { type: "string" },
-        peerLaneId: { type: "string" },
-        missionId: { type: "string" },
-        level: { type: "string", enum: ["lite", "standard", "deep"], default: "standard" }
       }
     }
   },
@@ -941,6 +908,332 @@ const TOOL_SPECS: ToolSpec[] = [
   }
 ];
 
+const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
+  {
+    name: "get_cto_state",
+    description: "Read the reconstructed CTO identity, memory, and recent continuity state maintained by ADE. Prefer this over shell-reading .ade/cto files from the workspace.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        recentLimit: { type: "number", minimum: 0, maximum: 50 }
+      }
+    }
+  },
+  {
+    name: "listChats",
+    description: "List ADE Work chat sessions available to the CTO.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        includeIdentity: { type: "boolean" }
+      }
+    }
+  },
+  {
+    name: "spawnChat",
+    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        modelId: { type: "string" },
+        reasoningEffort: { type: "string" },
+        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto"] },
+        title: { type: "string" },
+        initialPrompt: { type: "string" },
+        openInUi: { type: "boolean" }
+      }
+    }
+  },
+  {
+    name: "getChatStatus",
+    description: "Inspect the status of an ADE Work chat session.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId"],
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "readChatTranscript",
+    description: "Read a bounded transcript slice from an ADE Work chat session.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId"],
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        limit: { type: "number", minimum: 1, maximum: 200 },
+        maxChars: { type: "number", minimum: 200, maximum: 120000 }
+      }
+    }
+  },
+  {
+    name: "sendChatMessage",
+    description: "Send a follow-up message to an ADE Work chat session.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId", "text"],
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        text: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "interruptChat",
+    description: "Interrupt an active ADE Work chat turn.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId"],
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "resumeChat",
+    description: "Resume an ended ADE Work chat session.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId"],
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "endChat",
+    description: "End an ADE Work chat session.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId"],
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "listLinearWorkflows",
+    description: "List active and queued Linear workflow runs managed by ADE.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
+    name: "getLinearRunStatus",
+    description: "Inspect a Linear workflow run in detail.",
+    inputSchema: {
+      type: "object",
+      required: ["runId"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "resolveLinearRunAction",
+    description: "Approve, reject, retry, or explicitly complete a Linear workflow run.",
+    inputSchema: {
+      type: "object",
+      required: ["runId", "action"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 },
+        action: { type: "string", enum: ["approve", "reject", "retry", "complete"] },
+        note: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "cancelLinearRun",
+    description: "Cancel a Linear workflow run and record the operator reason.",
+    inputSchema: {
+      type: "object",
+      required: ["runId", "reason"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 },
+        reason: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "routeLinearIssueToCto",
+    description: "Route a Linear issue into the persistent CTO session.",
+    inputSchema: {
+      type: "object",
+      required: ["issueId"],
+      additionalProperties: false,
+      properties: {
+        issueId: { type: "string", minLength: 1 },
+        laneId: { type: "string" },
+        reuseExisting: { type: "boolean" }
+      }
+    }
+  },
+  {
+    name: "routeLinearIssueToMission",
+    description: "Create a mission from a Linear issue and optionally launch it.",
+    inputSchema: {
+      type: "object",
+      required: ["issueId"],
+      additionalProperties: false,
+      properties: {
+        issueId: { type: "string", minLength: 1 },
+        laneId: { type: "string" },
+        launch: { type: "boolean" },
+        runMode: { type: "string", enum: ["autopilot", "manual"] }
+      }
+    }
+  },
+  {
+    name: "routeLinearIssueToWorker",
+    description: "Wake a worker agent with a Linear issue as the task context.",
+    inputSchema: {
+      type: "object",
+      required: ["issueId", "agentId"],
+      additionalProperties: false,
+      properties: {
+        issueId: { type: "string", minLength: 1 },
+        agentId: { type: "string", minLength: 1 },
+        taskKey: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "rerouteLinearRun",
+    description: "Recover a Linear workflow run by canceling it if needed and re-routing its issue.",
+    inputSchema: {
+      type: "object",
+      required: ["runId", "target", "reason"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 },
+        target: { type: "string", enum: ["cto", "mission", "worker"] },
+        reason: { type: "string", minLength: 1 },
+        laneId: { type: "string" },
+        reuseExisting: { type: "boolean" },
+        launch: { type: "boolean" },
+        runMode: { type: "string", enum: ["autopilot", "manual"] },
+        agentId: { type: "string" },
+        taskKey: { type: "string" }
+      }
+    }
+  },
+];
+
+const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
+  {
+    name: "getLinearSyncDashboard",
+    description: "Read the ADE Linear sync dashboard.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
+    name: "runLinearSyncNow",
+    description: "Trigger a Linear sync run now and return the updated dashboard.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
+    name: "listLinearSyncQueue",
+    description: "List queued Linear sync items managed by ADE.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
+    name: "resolveLinearSyncQueueItem",
+    description: "Resolve a Linear sync queue item through ADE.",
+    inputSchema: {
+      type: "object",
+      required: ["queueItemId", "action"],
+      additionalProperties: false,
+      properties: {
+        queueItemId: { type: "string", minLength: 1 },
+        action: { type: "string", enum: ["approve", "reject", "retry", "complete"] },
+        note: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "getLinearWorkflowRunDetail",
+    description: "Read a detailed Linear workflow run record from ADE sync state.",
+    inputSchema: {
+      type: "object",
+      required: ["runId"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "getLinearIngressStatus",
+    description: "Read the ADE Linear ingress/webhook status.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
+    name: "listLinearIngressEvents",
+    description: "List recent ADE Linear ingress events.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        limit: { type: "number", minimum: 1, maximum: 100 }
+      }
+    }
+  },
+  {
+    name: "ensureLinearWebhook",
+    description: "Ensure the ADE Linear relay webhook exists and return ingress status.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        force: { type: "boolean" }
+      }
+    }
+  },
+  {
+    name: "getFlowPolicy",
+    description: "Read the current ADE Linear flow policy.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
+    name: "saveFlowPolicy",
+    description: "Update the ADE Linear flow policy.",
+    inputSchema: {
+      type: "object",
+      required: ["policy"],
+      additionalProperties: false,
+      properties: {
+        policy: { type: "object" },
+        actor: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "simulateFlowRoute",
+    description: "Simulate ADE Linear routing for a candidate issue payload.",
+    inputSchema: {
+      type: "object",
+      required: ["issue"],
+      additionalProperties: false,
+      properties: {
+        issue: { type: "object" }
+      }
+    }
+  },
+];
+
 const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
   {
     name: "spawn_worker",
@@ -1013,6 +1306,9 @@ const AGENT_VISIBLE_COORDINATOR_TOOL_SPECS = COORDINATOR_TOOL_SPECS.filter((tool
   AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(tool.name)
 );
 
+const CTO_OPERATOR_TOOL_NAMES = new Set(CTO_OPERATOR_TOOL_SPECS.map((tool) => tool.name));
+const CTO_LINEAR_SYNC_TOOL_NAMES = new Set(CTO_LINEAR_SYNC_TOOL_SPECS.map((tool) => tool.name));
+
 const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
   "get_environment_info",
   "launch_app",
@@ -1021,17 +1317,34 @@ const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
   "record_environment",
 ]);
 
-const ALL_TOOL_SPECS: ToolSpec[] = [...TOOL_SPECS, ...COORDINATOR_TOOL_SPECS];
+const ALL_TOOL_SPECS: ToolSpec[] = [
+  ...TOOL_SPECS,
+  ...CTO_OPERATOR_TOOL_SPECS,
+  ...CTO_LINEAR_SYNC_TOOL_SPECS,
+  ...COORDINATOR_TOOL_SPECS,
+];
 const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
 
 const READ_ONLY_TOOLS = new Set([
-  "read_context",
   "check_conflicts",
   "get_lane_status",
   "list_lanes",
   "simulate_integration",
   "get_pr_health",
   "memory_search",
+  "get_cto_state",
+  "listChats",
+  "getChatStatus",
+  "readChatTranscript",
+  "listLinearWorkflows",
+  "getLinearRunStatus",
+  "getLinearSyncDashboard",
+  "listLinearSyncQueue",
+  "getLinearWorkflowRunDetail",
+  "getLinearIngressStatus",
+  "listLinearIngressEvents",
+  "getFlowPolicy",
+  "simulateFlowRoute",
   "get_environment_info",
   "list_computer_use_artifacts",
   "get_computer_use_backend_status",
@@ -1050,6 +1363,21 @@ const MUTATION_TOOLS = new Set([
   "memory_pin",
   "memory_update_core",
   "reflection_add",
+  "spawnChat",
+  "sendChatMessage",
+  "interruptChat",
+  "resumeChat",
+  "endChat",
+  "resolveLinearRunAction",
+  "cancelLinearRun",
+  "routeLinearIssueToCto",
+  "routeLinearIssueToMission",
+  "routeLinearIssueToWorker",
+  "rerouteLinearRun",
+  "runLinearSyncNow",
+  "resolveLinearSyncQueueItem",
+  "ensureLinearWebhook",
+  "saveFlowPolicy",
   "launch_app",
   "interact_gui",
   "screenshot_environment",
@@ -1179,11 +1507,6 @@ function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string
   return owners;
 }
 
-function normalizeExportLevel(value: unknown, fallback: ContextExportLevel = "standard"): ContextExportLevel {
-  if (value === "lite" || value === "standard" || value === "deep") return value;
-  return fallback;
-}
-
 type MemoryToolCategory = "fact" | "preference" | "pattern" | "decision" | "gotcha" | "convention";
 type MemoryToolImportance = "low" | "medium" | "high";
 type MemoryToolScope = "project" | "mission" | "agent";
@@ -1309,6 +1632,112 @@ function requirePrService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["pr
   return runtime.prService;
 }
 
+function requireAgentChatService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["agentChatService"]> {
+  if (!runtime.agentChatService) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.internalError,
+      "agentChatService is not available in this MCP runtime configuration",
+    );
+  }
+  return runtime.agentChatService;
+}
+
+function requireLinearSyncService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["linearSyncService"]> {
+  if (!runtime.linearSyncService) {
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearSyncService is not available in this MCP runtime configuration");
+  }
+  return runtime.linearSyncService;
+}
+
+function requireLinearIngressService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["linearIngressService"]> {
+  if (!runtime.linearIngressService) {
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearIngressService is not available in this MCP runtime configuration");
+  }
+  return runtime.linearIngressService;
+}
+
+function requireFlowPolicyService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["flowPolicyService"]> {
+  if (!runtime.flowPolicyService) {
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "flowPolicyService is not available in this MCP runtime configuration");
+  }
+  return runtime.flowPolicyService;
+}
+
+function requireLinearRoutingService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["linearRoutingService"]> {
+  if (!runtime.linearRoutingService) {
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearRoutingService is not available in this MCP runtime configuration");
+  }
+  return runtime.linearRoutingService;
+}
+
+async function resolveDefaultLaneId(runtime: AdeMcpRuntime): Promise<string> {
+  const lanes = await runtime.laneService.list({ includeArchived: false });
+  const laneId = lanes[0]?.id?.trim?.() || "";
+  if (!laneId) {
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "No active lane is available for CTO operator actions.");
+  }
+  return laneId;
+}
+
+async function runCtoOperatorBridgeTool(
+  runtime: AdeMcpRuntime,
+  session: SessionState,
+  name: string,
+  toolArgs: Record<string, unknown>,
+): Promise<unknown> {
+  const agentChatService = requireAgentChatService(runtime);
+  const defaultLaneId = (extractLaneId(toolArgs) ?? await resolveDefaultLaneId(runtime)).trim();
+  const ctoIdentity = runtime.ctoStateService.getIdentity();
+  const preferredProvider = ctoIdentity.modelPreferences.provider.trim().toLowerCase();
+  const fallbackModelId = preferredProvider.includes("claude")
+    ? (getDefaultModelDescriptor("claude")?.id ?? null)
+    : (getDefaultModelDescriptor("codex")?.id ?? null);
+  const defaultModelId =
+    (typeof ctoIdentity.modelPreferences.modelId === "string" && ctoIdentity.modelPreferences.modelId.trim().length
+      ? ctoIdentity.modelPreferences.modelId.trim()
+      : null)
+    ?? fallbackModelId;
+  const tools = createCtoOperatorTools({
+    currentSessionId: session.identity.callerId || "mcp-cto",
+    defaultLaneId,
+    defaultModelId,
+    laneService: runtime.laneService,
+    missionService: runtime.missionService,
+    aiOrchestratorService: runtime.aiOrchestratorService,
+    workerAgentService: runtime.workerAgentService,
+    linearDispatcherService: runtime.linearDispatcherService ?? null,
+    flowPolicyService: runtime.flowPolicyService ?? null,
+    prService: runtime.prService ?? null,
+    fileService: runtime.fileService ?? null,
+    processService: runtime.processService ?? null,
+    issueTracker: runtime.linearIssueTracker ?? null,
+    listChats: agentChatService.listSessions,
+    getChatStatus: agentChatService.getSessionSummary,
+    getChatTranscript: agentChatService.getChatTranscript,
+    createChat: agentChatService.createSession,
+    updateChatSession: agentChatService.updateSession,
+    sendChatMessage: agentChatService.sendMessage,
+    interruptChat: agentChatService.interrupt,
+    resumeChat: agentChatService.resumeSession,
+    disposeChat: agentChatService.dispose,
+    ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
+      agentChatService.ensureIdentitySession({
+        identityKey: "cto",
+        laneId,
+        modelId,
+        reasoningEffort,
+        reuseExisting,
+        permissionMode: "full-auto",
+      }),
+  });
+  const toolEntry = (tools as Record<string, Tool>)[name];
+  const executable = toolEntry as unknown as { execute?: (args: Record<string, unknown>) => Promise<unknown> };
+  if (!toolEntry || typeof executable.execute !== "function") {
+    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported CTO operator tool: ${name}`);
+  }
+  return await executable.execute(toolArgs);
+}
+
 function extractLaneId(args: Record<string, unknown>): string | null {
   const fromPrimary = asOptionalTrimmedString(args.laneId);
   if (fromPrimary) return fromPrimary;
@@ -1363,14 +1792,9 @@ function resolveSpawnContextFile(args: {
   contextFilePathRaw: string | null;
 }): { contextFilePath: string | null; contextDigest: string | null; contextBytes: number | null; approxTokens: number } {
   const contextFilePathRaw = args.contextFilePathRaw?.trim() ?? "";
-  const packList = Array.isArray(args.context.packs) ? args.context.packs : [];
   const docsList = Array.isArray(args.context.docs) ? args.context.docs : [];
-  const hasContextPayload = packList.length > 0 || docsList.length > 0 || Object.keys(args.context).length > 0;
-  const approxTokens = packList.reduce((sum, item) => {
-    const record = safeObject(item);
-    const raw = Number(record.approxTokens ?? 0);
-    return sum + (Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0);
-  }, 0);
+  const hasContextPayload = docsList.length > 0 || Object.keys(args.context).length > 0;
+  const approxTokens = 0;
 
   if (!contextFilePathRaw && !hasContextPayload) {
     return { contextFilePath: null, contextDigest: null, contextBytes: null, approxTokens };
@@ -1419,16 +1843,6 @@ function resolveSpawnContextFile(args: {
     promptPreview: args.userPrompt ? clipText(args.userPrompt, 2000) : null,
     context: {
       profile: asOptionalTrimmedString(args.context.profile),
-      packs: packList.slice(0, 24).map((item) => {
-        const record = safeObject(item);
-        return {
-          scope: asOptionalTrimmedString(record.scope),
-          packKey: asOptionalTrimmedString(record.packKey),
-          level: asOptionalTrimmedString(record.level),
-          approxTokens: Number.isFinite(Number(record.approxTokens)) ? Number(record.approxTokens) : null,
-          summary: clipText(asTrimmedString(record.summary), 800)
-        };
-      }),
       docs: docsList.slice(0, 40).map((item) => {
         const record = safeObject(item);
         return {
@@ -1484,7 +1898,11 @@ type CallerContext = {
 function resolveEnvCallerContext(): CallerContext {
   const envRoleRaw = process.env.ADE_DEFAULT_ROLE?.trim() ?? "";
   const envRole: SessionIdentity["role"] | null =
-    envRoleRaw === "orchestrator" || envRoleRaw === "agent" || envRoleRaw === "external" || envRoleRaw === "evaluator"
+    envRoleRaw === "cto"
+    || envRoleRaw === "orchestrator"
+    || envRoleRaw === "agent"
+    || envRoleRaw === "external"
+    || envRoleRaw === "evaluator"
       ? envRoleRaw
       : null;
   const envComputerUseMode = process.env.ADE_COMPUTER_USE_MODE?.trim();
@@ -1570,6 +1988,9 @@ async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionS
   if (callerCtx.role === "agent") {
     return [...visibleBaseTools, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS, ...externalToolSpecs];
   }
+  if (callerCtx.role === "cto") {
+    return [...visibleBaseTools, ...CTO_OPERATOR_TOOL_SPECS, ...CTO_LINEAR_SYNC_TOOL_SPECS, ...externalToolSpecs];
+  }
   const visibleCoordinatorTools = shouldHideLocalComputerUse
     ? COORDINATOR_TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
     : COORDINATOR_TOOL_SPECS;
@@ -1584,7 +2005,10 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
   const validRole: SessionIdentity["role"] =
     envContext.role
       ?? (
-        requestedRole === "orchestrator" || requestedRole === "agent" || requestedRole === "evaluator"
+        requestedRole === "cto"
+        || requestedRole === "orchestrator"
+        || requestedRole === "agent"
+        || requestedRole === "evaluator"
           ? requestedRole
           : "external"
       );
@@ -1617,40 +2041,12 @@ function parseMcpUri(uriRaw: string): { path: string[] } {
 }
 
 function resourceListFromLanes(lanes: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-  const resources: Array<Record<string, unknown>> = [
-    {
-      uri: "ade://pack/project/lite",
-      name: "Project Pack (Lite)",
-      description: "Project context export (lite)",
-      mimeType: RESOURCE_MIME_MARKDOWN
-    },
-    {
-      uri: "ade://pack/project/standard",
-      name: "Project Pack (Standard)",
-      description: "Project context export (standard)",
-      mimeType: RESOURCE_MIME_MARKDOWN
-    },
-    {
-      uri: "ade://pack/project/deep",
-      name: "Project Pack (Deep)",
-      description: "Project context export (deep)",
-      mimeType: RESOURCE_MIME_MARKDOWN
-    }
-  ];
+  const resources: Array<Record<string, unknown>> = [];
 
   for (const lane of lanes) {
     const laneId = asTrimmedString(lane.id);
     const laneName = asTrimmedString(lane.name) || laneId;
     if (!laneId) continue;
-
-    for (const level of ["lite", "standard", "deep"] as const) {
-      resources.push({
-        uri: `ade://pack/lane/${encodeURIComponent(laneId)}/${level}`,
-        name: `${laneName} Pack (${level})`,
-        description: `Lane context export for '${laneName}' (${level})`,
-        mimeType: RESOURCE_MIME_MARKDOWN
-      });
-    }
 
     resources.push({
       uri: `ade://lane/${encodeURIComponent(laneId)}/status`,
@@ -1670,100 +2066,10 @@ function resourceListFromLanes(lanes: Array<Record<string, unknown>>): Array<Rec
   return resources;
 }
 
-function appendPackResource(
-  resources: Array<Record<string, unknown>>,
-  args: {
-    uri: string;
-    name: string;
-    description: string;
-  }
-): void {
-  resources.push({
-    uri: args.uri,
-    name: args.name,
-    description: args.description,
-    mimeType: RESOURCE_MIME_MARKDOWN
-  });
-}
-
-function listFeatureKeysFromLanes(lanes: Array<Record<string, unknown>>): string[] {
-  const keys = new Set<string>();
-
-  for (const lane of lanes) {
-    const rawTags = Array.isArray(lane.tags) ? lane.tags : [];
-    for (const tag of rawTags) {
-      const key = asTrimmedString(tag);
-      if (key.length) keys.add(key);
-    }
-  }
-
-  return [...keys].sort((a, b) => a.localeCompare(b));
-}
-
-function listMissionIds(runtime: AdeMcpRuntime): string[] {
-  const rows = runtime.db.all<{ id: string }>(
-    `
-      select id
-      from missions
-      where project_id = ?
-      order by updated_at desc
-      limit 120
-    `,
-    [runtime.projectId]
-  );
-
-  return rows
-    .map((row) => asTrimmedString(row.id))
-    .filter((entry) => entry.length > 0);
-}
-
 function buildResourceList(args: {
   lanes: Array<Record<string, unknown>>;
-  featureKeys: string[];
-  missionIds: string[];
 }): Array<Record<string, unknown>> {
-  const resources = resourceListFromLanes(args.lanes);
-
-  for (const lane of args.lanes) {
-    const laneId = asTrimmedString(lane.id);
-    const laneName = asTrimmedString(lane.name) || laneId;
-    if (!laneId) continue;
-
-    for (const level of ["lite", "standard", "deep"] as const) {
-      appendPackResource(resources, {
-        uri: `ade://pack/plan/${encodeURIComponent(laneId)}/${level}`,
-        name: `${laneName} Plan Pack (${level})`,
-        description: `Plan pack export for lane '${laneName}' (${level})`
-      });
-      appendPackResource(resources, {
-        uri: `ade://pack/conflict/${encodeURIComponent(laneId)}/base/${level}`,
-        name: `${laneName} Conflict Pack (${level})`,
-        description: `Conflict pack export anchored to lane '${laneName}' (${level})`
-      });
-    }
-  }
-
-  for (const featureKey of args.featureKeys) {
-    for (const level of ["lite", "standard", "deep"] as const) {
-      appendPackResource(resources, {
-        uri: `ade://pack/feature/${encodeURIComponent(featureKey)}/${level}`,
-        name: `Feature Pack: ${featureKey} (${level})`,
-        description: `Feature pack export for '${featureKey}' (${level})`
-      });
-    }
-  }
-
-  for (const missionId of args.missionIds) {
-    for (const level of ["lite", "standard", "deep"] as const) {
-      appendPackResource(resources, {
-        uri: `ade://pack/mission/${encodeURIComponent(missionId)}/${level}`,
-        name: `Mission Pack: ${missionId} (${level})`,
-        description: `Mission pack export for mission '${missionId}' (${level})`
-      });
-    }
-  }
-
-  return resources;
+  return resourceListFromLanes(args.lanes);
 }
 
 async function waitForTestRunCompletion(args: {
@@ -2674,7 +2980,7 @@ async function runTool(args: {
   session: SessionState;
   name: string;
   toolArgs: Record<string, unknown>;
-}): Promise<Record<string, unknown>> {
+}): Promise<unknown> {
   const { runtime, session, name, toolArgs } = args;
   const callerCtx = resolveCallerContext(session);
   const runLocalCommand = (
@@ -2796,6 +3102,78 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
     return await runtime.externalMcpService.callTool(session.identity, name, toolArgs);
+  }
+
+  if (CTO_OPERATOR_TOOL_NAMES.has(name)) {
+    if (callerCtx.role !== "cto") {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    if (name === "get_cto_state") {
+      const recentLimit = Math.max(0, Math.min(50, Math.floor(asNumber(toolArgs.recentLimit, 10))));
+      return runtime.ctoStateService.getSnapshot(recentLimit);
+    }
+    return await runCtoOperatorBridgeTool(runtime, session, name, toolArgs);
+  }
+
+  if (CTO_LINEAR_SYNC_TOOL_NAMES.has(name)) {
+    if (callerCtx.role !== "cto") {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+
+    if (name === "getLinearSyncDashboard") {
+      return requireLinearSyncService(runtime).getDashboard();
+    }
+
+    if (name === "runLinearSyncNow") {
+      return await requireLinearSyncService(runtime).runSyncNow();
+    }
+
+    if (name === "listLinearSyncQueue") {
+      return requireLinearSyncService(runtime).listQueue({ limit: 300 });
+    }
+
+    if (name === "resolveLinearSyncQueueItem") {
+      return await requireLinearSyncService(runtime).resolveQueueItem({
+        queueItemId: assertNonEmptyString(toolArgs.queueItemId, "queueItemId"),
+        action: assertNonEmptyString(toolArgs.action, "action") as "approve" | "reject" | "retry" | "complete",
+        note: asOptionalTrimmedString(toolArgs.note) ?? undefined,
+      });
+    }
+
+    if (name === "getLinearWorkflowRunDetail") {
+      const runId = assertNonEmptyString(toolArgs.runId, "runId");
+      return await requireLinearSyncService(runtime).getRunDetail({ runId });
+    }
+
+    if (name === "getLinearIngressStatus") {
+      return requireLinearIngressService(runtime).getStatus();
+    }
+
+    if (name === "listLinearIngressEvents") {
+      return requireLinearIngressService(runtime).listRecentEvents(asNumber(toolArgs.limit, 20) ?? 20);
+    }
+
+    if (name === "ensureLinearWebhook") {
+      const ingress = requireLinearIngressService(runtime);
+      await ingress.ensureRelayWebhook(asBoolean(toolArgs.force, false));
+      return ingress.getStatus();
+    }
+
+    if (name === "getFlowPolicy") {
+      return requireFlowPolicyService(runtime).getPolicy();
+    }
+
+    if (name === "saveFlowPolicy") {
+      const policy = safeObject(toolArgs.policy) as unknown as LinearWorkflowConfig;
+      return requireFlowPolicyService(runtime).savePolicy(policy, asOptionalTrimmedString(toolArgs.actor) ?? "user");
+    }
+
+    if (name === "simulateFlowRoute") {
+      const issue = safeObject(toolArgs.issue);
+      return requireLinearRoutingService(runtime).simulateRoute({ issue: issue as any });
+    }
+
+    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
   }
 
   if (COORDINATOR_TOOL_NAMES.has(name)) {
@@ -3712,53 +4090,6 @@ async function runTool(args: {
     return result;
   }
 
-  if (name === "read_context") {
-    const scope = asTrimmedString(toolArgs.scope) || "project";
-    const level = normalizeExportLevel(toolArgs.level, "standard");
-
-    if (scope === "project") {
-      const exportData = await runtime.packService.getProjectExport({ level });
-      return { export: exportData };
-    }
-
-    if (scope === "lane") {
-      const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-      const exportData = await runtime.packService.getLaneExport({ laneId, level });
-      return { export: exportData };
-    }
-
-    if (scope === "feature") {
-      const featureKey = assertNonEmptyString(toolArgs.featureKey, "featureKey");
-      const exportData = await runtime.packService.getFeatureExport({ featureKey, level });
-      return { export: exportData };
-    }
-
-    if (scope === "conflict") {
-      const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-      const peerLaneId = asOptionalTrimmedString(toolArgs.peerLaneId);
-      const exportData = await runtime.packService.getConflictExport({
-        laneId,
-        ...(peerLaneId ? { peerLaneId } : {}),
-        level
-      });
-      return { export: exportData };
-    }
-
-    if (scope === "plan") {
-      const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-      const exportData = await runtime.packService.getPlanExport({ laneId, level });
-      return { export: exportData };
-    }
-
-    if (scope === "mission") {
-      const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
-      const exportData = await runtime.packService.getMissionExport({ missionId, level });
-      return { export: exportData };
-    }
-
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported read_context scope '${scope}'.`);
-  }
-
   if (name === "spawn_agent") {
 
 
@@ -4392,104 +4723,6 @@ async function readResource(runtime: AdeMcpRuntime, uri: string): Promise<Record
   const parsed = parseMcpUri(uri);
   const [head, ...tail] = parsed.path;
 
-  if (head === "pack") {
-    const [scope, a, b, c] = tail;
-
-    if (scope === "project" && a) {
-      const level = normalizeExportLevel(a, "standard");
-      const exportData = await runtime.packService.getProjectExport({ level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "lane" && a && b) {
-      const laneId = a;
-      const level = normalizeExportLevel(b, "standard");
-      const exportData = await runtime.packService.getLaneExport({ laneId, level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "feature" && a && b) {
-      const featureKey = a;
-      const level = normalizeExportLevel(b, "standard");
-      const exportData = await runtime.packService.getFeatureExport({ featureKey, level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "plan" && a && b) {
-      const laneId = a;
-      const level = normalizeExportLevel(b, "standard");
-      const exportData = await runtime.packService.getPlanExport({ laneId, level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "mission" && a && b) {
-      const missionId = a;
-      const level = normalizeExportLevel(b, "standard");
-      const exportData = await runtime.packService.getMissionExport({ missionId, level });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-
-    if (scope === "conflict" && a && b && c) {
-      const laneId = a;
-      const peerLaneId = b === "base" ? null : b;
-      const level = normalizeExportLevel(c, "standard");
-      const exportData = await runtime.packService.getConflictExport({
-        laneId,
-        ...(peerLaneId ? { peerLaneId } : {}),
-        level
-      });
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: RESOURCE_MIME_MARKDOWN,
-            text: `\`\`\`json\n${jsonText(exportData.header)}\n\`\`\`\n\n${exportData.content}`
-          }
-        ]
-      };
-    }
-  }
-
   if (head === "lane") {
     const [laneId, scope] = tail;
     if (laneId && scope === "status") {
@@ -4576,8 +4809,8 @@ export function createMcpRequestHandler(args: {
   const auditToolCall = async (
     toolName: string,
     toolArgs: Record<string, unknown>,
-    runner: () => Promise<Record<string, unknown>>
-  ): Promise<Record<string, unknown>> => {
+    runner: () => Promise<unknown>
+  ): Promise<unknown> => {
     const startedAt = Date.now();
     const laneId = extractLaneId(toolArgs);
     const operation = runtime.operationService.start({
@@ -4724,13 +4957,9 @@ export function createMcpRequestHandler(args: {
     if (method === "resources/list") {
       const lanes = await runtime.laneService.list({ includeArchived: false });
       const laneRecords = lanes as unknown as Array<Record<string, unknown>>;
-      const featureKeys = listFeatureKeysFromLanes(laneRecords);
-      const missionIds = listMissionIds(runtime);
       return {
         resources: buildResourceList({
-          lanes: laneRecords,
-          featureKeys,
-          missionIds
+          lanes: laneRecords
         })
       };
     }

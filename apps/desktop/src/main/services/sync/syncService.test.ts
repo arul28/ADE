@@ -1,9 +1,30 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
+
+// Prevent real WebSocket servers from binding to port 8787 during tests.
+// Tests only exercise role/transfer/pairing logic, not the sync transport.
+vi.mock("./syncHostService", () => ({
+  createSyncHostService: () => ({
+    async waitUntilListening() { return 8787; },
+    getPort() { return 8787; },
+    getBootstrapToken() { return "test-bootstrap-token"; },
+    getPairingSession() {
+      const expires = new Date(Date.now() + 600_000).toISOString();
+      return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
+    },
+    revokePairedDevice() {},
+    getPeerStates() { return []; },
+    getBrainStatusSnapshot() { return {}; },
+    handlePtyData() {},
+    handlePtyExit() {},
+    async dispose() {},
+  }),
+}));
 
 function createLogger() {
   return {
@@ -64,7 +85,7 @@ afterEach(async () => {
   }
 });
 
-describe("syncService", () => {
+describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
   it("reports W3 transfer blockers while keeping paused and idle state survivable", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-blockers-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
@@ -250,5 +271,87 @@ describe("syncService", () => {
     expect(transferred.clusterState?.brainEpoch).toBe(4);
     expect(transferred.currentBrain?.deviceId).toBe(localDevice.deviceId);
     expect(transferred.transferReadiness.ready).toBe(true);
-  });
+  }, 30_000);
+
+  it("builds pairing QR payloads with LAN-first address candidates and tailscale fallback", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-pairing-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [], create: async () => ({}), archive: async () => {} } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    const initialStatus = await service.getStatus();
+    const localDeviceId = initialStatus.localDevice.deviceId;
+    const now = "2026-03-17T00:00:00.000Z";
+    db.run(
+      `update devices
+         set ip_addresses_json = ?,
+             last_host = ?,
+             last_port = ?,
+             tailscale_ip = ?,
+             updated_at = ?,
+             last_seen_at = ?
+       where device_id = ?`,
+      [
+        JSON.stringify(["192.168.0.5", "192.168.0.8"]),
+        "192.168.0.20",
+        8787,
+        "100.100.12.4",
+        now,
+        now,
+        localDeviceId,
+      ],
+    );
+
+    const status = await service.getStatus();
+    expect(status.mode === "brain" || status.mode === "standalone").toBe(true);
+    expect(status.pairingSession).toBeTruthy();
+    expect(status.pairingConnectInfo).toBeTruthy();
+    const addressCandidates = status.pairingConnectInfo?.addressCandidates ?? [];
+    const savedCandidateIndex = addressCandidates.findIndex((entry) => entry.kind === "saved" && entry.host === "192.168.0.20");
+    const tailscaleCandidateIndex = addressCandidates.findIndex((entry) => entry.kind === "tailscale" && entry.host === "100.100.12.4");
+    expect(savedCandidateIndex).toBeGreaterThanOrEqual(0);
+    expect(tailscaleCandidateIndex).toBeGreaterThan(savedCandidateIndex);
+    expect(addressCandidates.slice(0, Math.max(savedCandidateIndex, 0)).every((entry) => entry.kind === "lan")).toBe(true);
+
+    const encodedPayload = status.pairingConnectInfo?.qrPayloadText.split("payload=")[1] ?? "";
+    const parsedPayload = JSON.parse(decodeURIComponent(encodedPayload)) as {
+      hostIdentity: { deviceId: string };
+      pairingCode: string;
+      expiresAt: string;
+    };
+    expect(parsedPayload.hostIdentity.deviceId).toBe(localDeviceId);
+    expect(parsedPayload.pairingCode).toBe(status.pairingSession?.code);
+    expect(parsedPayload.expiresAt).toBe(status.pairingSession?.expiresAt);
+  }, 30_000);
 });

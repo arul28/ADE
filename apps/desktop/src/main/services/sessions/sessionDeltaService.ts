@@ -6,7 +6,7 @@ import {
   parseNumStat,
   parsePorcelainPaths,
   rowToSessionDelta,
-} from "../packs/packUtils";
+} from "../shared/packLegacyUtils";
 import type { createSessionService } from "./sessionService";
 import { runGit } from "../git/git";
 import type { AdeDb } from "../state/kvDb";

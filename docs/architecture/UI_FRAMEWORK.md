@@ -102,7 +102,7 @@ Primary left-rail nav (`TabNav`) exposes 11 tabs:
 6. Graph
 7. PRs
 8. History
-9. Agents
+9. CTO
 10. Missions
 11. Settings
 

@@ -1,8 +1,42 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
+
+type DatabaseSyncLike = {
+  exec: (sql: string) => void;
+  close: () => void;
+};
+
+type DatabaseSyncCtor = new (path: string) => DatabaseSyncLike;
+
+function loadDatabaseSync(): DatabaseSyncCtor | null {
+  try {
+    const req = createRequire(import.meta.url);
+    return (req("node:sqlite") as { DatabaseSync?: DatabaseSyncCtor }).DatabaseSync ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function hasFts(): boolean {
+  const DatabaseSync = loadDatabaseSync();
+  if (!DatabaseSync) return false;
+  let tmp: DatabaseSyncLike | null = null;
+  try {
+    tmp = new DatabaseSync(":memory:");
+    tmp.exec("create virtual table _fts_probe using fts4(content)");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    tmp?.close();
+  }
+}
+
+const ftsAvailable = hasFts();
 import { DEFAULT_EMBEDDING_MODEL_ID, EXPECTED_EMBEDDING_DIMENSIONS } from "./embeddingService";
 import { createEmbeddingWorkerService } from "./embeddingWorkerService";
 import {
@@ -193,7 +227,7 @@ function encodeMatchInfo(values: number[]): Uint8Array {
 }
 
 describe("hybridSearchService", () => {
-  it("keeps the FTS3 index in sync across insert, update, and delete", async () => {
+  it.skipIf(!ftsAvailable)("keeps the FTS3 index in sync across insert, update, and delete", async () => {
     const { db, memoryService, timestamp } = await createFixture({ attachQueueHook: false });
 
     const memory = memoryService.addMemory({
@@ -274,7 +308,7 @@ describe("hybridSearchService", () => {
     expect(score).toBeCloseTo(2.8693045687, 5);
   });
 
-  it("normalizes BM25 scores to [0, 1] and ranks denser keyword hits higher", async () => {
+  it.skipIf(!ftsAvailable)("normalizes BM25 scores to [0, 1] and ranks denser keyword hits higher", async () => {
     const { memoryService, worker, hybridSearchService } = await createFixture();
 
     memoryService.addMemory({
@@ -360,7 +394,7 @@ describe("hybridSearchService", () => {
     expect(compositeScore).toBeCloseTo(0.816, 6);
   });
 
-  it("re-ranks near-duplicates with MMR to favor diversity", async () => {
+  it.skipIf(!ftsAvailable)("re-ranks near-duplicates with MMR to favor diversity", async () => {
     const { memoryService, worker, hybridSearchService } = await createFixture();
 
     const first = memoryService.addMemory({
@@ -398,7 +432,7 @@ describe("hybridSearchService", () => {
     expect(rankedIds.indexOf(diverse.id)).toBeLessThan(rankedIds.indexOf(duplicate.id));
   });
 
-  it("embeds the query string at search time", async () => {
+  it.skipIf(!ftsAvailable)("embeds the query string at search time", async () => {
     const { embeddingService, hybridSearchService } = await createFixture({ attachQueueHook: false });
 
     await hybridSearchService.search({
@@ -410,7 +444,7 @@ describe("hybridSearchService", () => {
     expect(embeddingService.embed).toHaveBeenCalledWith("automobile");
   });
 
-  it("post-filters vector candidates by project, scope, and scope owner for isolation", async () => {
+  it.skipIf(!ftsAvailable)("post-filters vector candidates by project, scope, and scope owner for isolation", async () => {
     const { db, memoryService, worker, hybridSearchService } = await createFixture();
 
     const projectMemory = memoryService.addMemory({
@@ -489,7 +523,7 @@ describe("hybridSearchService", () => {
     expect(hits.map((hit) => hit.memory.id)).toEqual([projectMemory.id]);
   });
 
-  it("excludes archived entries from hybrid results even when embeddings exist", async () => {
+  it.skipIf(!ftsAvailable)("excludes archived entries from hybrid results even when embeddings exist", async () => {
     const { memoryService, worker, hybridSearchService } = await createFixture();
 
     const archived = memoryService.addMemory({
@@ -519,7 +553,7 @@ describe("hybridSearchService", () => {
     expect(hits.map((hit) => hit.memory.id)).not.toContain(archived.id);
   });
 
-  it("keeps lexical matches without embeddings by using BM25-only hybrid scoring", async () => {
+  it.skipIf(!ftsAvailable)("keeps lexical matches without embeddings by using BM25-only hybrid scoring", async () => {
     const { hybridSearchService, memoryService } = await createFixture({ attachQueueHook: false });
 
     const memory = memoryService.addMemory({
@@ -581,7 +615,7 @@ describe("hybridSearchService", () => {
     expect(fallback.map((entry) => entry.compositeScore)).toEqual(lexical.map((entry) => entry.compositeScore));
   });
 
-  it("finds synonym matches through semantic search", async () => {
+  it.skipIf(!ftsAvailable)("finds synonym matches through semantic search", async () => {
     const { memoryService, worker } = await createFixture();
 
     memoryService.addMemory({
@@ -599,7 +633,7 @@ describe("hybridSearchService", () => {
     expect(hits[0]!.content).toContain("car repair handbook");
   });
 
-  it("makes consolidated entries searchable after the embedding worker processes them", async () => {
+  it.skipIf(!ftsAvailable)("makes consolidated entries searchable after the embedding worker processes them", async () => {
     const { db, memoryService, worker } = await createFixture();
 
     const memory = memoryService.writeMemory({
@@ -626,7 +660,7 @@ describe("hybridSearchService", () => {
     expect(hits.map((entry) => entry.id)).toContain(memory?.id);
   });
 
-  it("supports the full write to queue to embed to search flow", async () => {
+  it.skipIf(!ftsAvailable)("supports the full write to queue to embed to search flow", async () => {
     const { db, memoryService, worker } = await createFixture();
 
     const memory = memoryService.addMemory({

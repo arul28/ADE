@@ -42,6 +42,9 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
     workerHeartbeatService: null,
     linearDispatcherService: null,
     flowPolicyService: null,
+    prService: null,
+    fileService: null,
+    processService: null,
     issueTracker: null,
     listChats: vi.fn().mockResolvedValue([]),
     getChatStatus: vi.fn().mockResolvedValue(null),
@@ -55,8 +58,9 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
     updateChatSession: vi.fn().mockResolvedValue(baseSession),
     sendChatMessage: vi.fn().mockResolvedValue(undefined),
     interruptChat: vi.fn().mockResolvedValue(undefined),
+    resumeChat: vi.fn().mockResolvedValue(baseSession),
+    disposeChat: vi.fn().mockResolvedValue(undefined),
     ensureCtoSession: vi.fn().mockResolvedValue({ ...baseSession, id: "cto-session" }),
-    fetchMissionContext: vi.fn().mockResolvedValue({ content: "ctx", truncated: false }),
     ...overrides,
   };
 }
@@ -103,7 +107,8 @@ describe("createCtoOperatorTools", () => {
     expect(result).toMatchObject({
       success: true,
       sessionId: "chat-1",
-      navigation: { surface: "lanes", laneId: "lane-1", sessionId: "chat-1" },
+      navigation: { surface: "work", laneId: "lane-1", sessionId: "chat-1", href: "/work?laneId=lane-1&sessionId=chat-1" },
+      navigationSuggestions: [{ surface: "work", laneId: "lane-1", sessionId: "chat-1", href: "/work?laneId=lane-1&sessionId=chat-1" }],
       requestedTitle: "Backend follow-up",
     });
   });
@@ -164,6 +169,39 @@ describe("createCtoOperatorTools", () => {
     expect(updated).toMatchObject({ success: true, mission });
     expect(launched).toMatchObject({ success: true, mission });
     expect(resolved).toMatchObject({ success: true, intervention });
+  });
+
+  it("returns lane and mission navigation suggestions for operator-created ADE objects", async () => {
+    const lane = { id: "lane-2", name: "ops", branchRef: "refs/heads/ops" };
+    const mission = { id: "mission-7", title: "Mission", laneId: "lane-2" };
+    const deps = buildDeps({
+      laneService: {
+        list: vi.fn().mockResolvedValue([lane]),
+        create: vi.fn().mockResolvedValue(lane),
+      } as any,
+      missionService: {
+        create: vi.fn().mockReturnValue(mission),
+      } as any,
+    });
+    const tools = createCtoOperatorTools(deps);
+
+    const createdLane = await (tools.createLane as any).execute({
+      name: "ops",
+    });
+    const startedMission = await (tools.startMission as any).execute({
+      prompt: "Investigate the failing deploy path.",
+      laneId: "lane-2",
+      launch: false,
+    });
+
+    expect(createdLane).toMatchObject({
+      success: true,
+      navigation: { surface: "lanes", laneId: "lane-2", href: "/lanes?laneId=lane-2" },
+    });
+    expect(startedMission).toMatchObject({
+      success: true,
+      navigation: { surface: "missions", laneId: "lane-2", missionId: "mission-7", href: "/missions?missionId=mission-7&laneId=lane-2" },
+    });
   });
 
   it("surfaces mission runtime view, logs, worker digests, and steering through aiOrchestratorService", async () => {
@@ -328,7 +366,7 @@ describe("createCtoOperatorTools", () => {
       cancelledExistingRun: false,
       rerouted: {
         success: true,
-        navigation: { surface: "lanes", laneId: "lane-1", sessionId: "cto-recovery" },
+        navigation: { surface: "cto", laneId: "lane-1", sessionId: "cto-recovery", href: "/cto" },
       },
     });
   });

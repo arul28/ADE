@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { At, Image, Paperclip, Square, X, Hash, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
+import { At, Image, Paperclip, Square, X, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -11,7 +11,6 @@ import {
   type ChatSurfaceProfile,
   type ChatSurfaceMode,
   type ComputerUsePolicy,
-  type ContextPackOption,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
@@ -332,7 +331,6 @@ export function AgentChatComposer({
   turnActive,
   sendOnEnter,
   busy,
-  selectedContextPacks,
   laneId,
   permissionMode,
   sessionProvider,
@@ -356,7 +354,6 @@ export function AgentChatComposer({
   onAddAttachment,
   onRemoveAttachment,
   onSearchAttachments,
-  onContextPacksChange,
   onExecutionModeChange,
   onPermissionModeChange,
   includeProjectDocs,
@@ -364,6 +361,7 @@ export function AgentChatComposer({
   onComputerUsePolicyChange,
   onToggleProof,
   onClearEvents,
+  promptSuggestion,
   subagentSnapshots = [],
 }: {
   surfaceMode?: ChatSurfaceMode;
@@ -382,7 +380,6 @@ export function AgentChatComposer({
   turnActive: boolean;
   sendOnEnter: boolean;
   busy: boolean;
-  selectedContextPacks: ContextPackOption[];
   laneId?: string;
   permissionMode?: AgentChatPermissionMode;
   sessionProvider?: string;
@@ -406,7 +403,6 @@ export function AgentChatComposer({
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   onRemoveAttachment: (path: string) => void;
   onSearchAttachments: (query: string) => Promise<AgentChatFileRef[]>;
-  onContextPacksChange: (packs: ContextPackOption[]) => void;
   onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
   onPermissionModeChange?: (mode: AgentChatPermissionMode) => void;
   includeProjectDocs?: boolean;
@@ -414,6 +410,7 @@ export function AgentChatComposer({
   onComputerUsePolicyChange: (policy: ComputerUsePolicy) => void;
   onToggleProof?: () => void;
   onClearEvents?: () => void;
+  promptSuggestion?: string | null;
   subagentSnapshots?: ChatSubagentSnapshot[];
 }) {
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
@@ -426,10 +423,6 @@ export function AgentChatComposer({
   const [slashPickerOpen, setSlashPickerOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [slashCursor, setSlashCursor] = useState(0);
-
-  const [contextPickerOpen, setContextPickerOpen] = useState(false);
-  const [contextPacks, setContextPacks] = useState<ContextPackOption[]>([]);
-  const [contextCursor, setContextCursor] = useState(0);
 
   const [hoveredMode, setHoveredMode] = useState<AgentChatPermissionMode | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -510,18 +503,6 @@ export function AgentChatComposer({
     return () => { cancelled = true; window.clearTimeout(timeout); };
   }, [attachmentPickerOpen, attachmentQuery, attachedPaths, onSearchAttachments]);
 
-  /* ── Context pack picker ── */
-  useEffect(() => {
-    if (!contextPickerOpen) { setContextCursor(0); return; }
-    if (!laneId) return;
-    let cancelled = false;
-    window.ade.agentChat
-      .listContextPacks({ laneId })
-      .then((packs) => { if (!cancelled) { setContextPacks(packs); setContextCursor(0); } })
-      .catch(() => { if (!cancelled) setContextPacks([]); });
-    return () => { cancelled = true; };
-  }, [contextPickerOpen, laneId]);
-
   const selectAttachment = (attachment: AgentChatFileRef) => {
     onAddAttachment(attachment);
     setAttachmentPickerOpen(false);
@@ -565,22 +546,6 @@ export function AgentChatComposer({
     onDraftChange(`${cmd.command}${hint}`);
   };
 
-  const packMatches = (a: ContextPackOption, b: ContextPackOption) =>
-    a.scope === b.scope && a.featureKey === b.featureKey && a.missionId === b.missionId;
-
-  const toggleContextPack = (pack: ContextPackOption) => {
-    const isSelected = selectedContextPacks.some((p) => packMatches(p, pack));
-    if (isSelected) {
-      onContextPacksChange(selectedContextPacks.filter((p) => !packMatches(p, pack)));
-    } else {
-      onContextPacksChange([...selectedContextPacks, pack]);
-    }
-  };
-
-  const removeContextPack = (pack: ContextPackOption) => {
-    onContextPacksChange(selectedContextPacks.filter((p) => !packMatches(p, pack)));
-  };
-
   const permissionOptions = getPermissionOptions({
     family: selectedModel?.family ?? sessionProvider ?? "unified",
     isCliWrapped: sessionIsCliWrapped ?? false,
@@ -601,17 +566,6 @@ export function AgentChatComposer({
       }
     }
 
-    /* Context picker keyboard */
-    if (contextPickerOpen) {
-      if (event.key === "Escape") { event.preventDefault(); setContextPickerOpen(false); return; }
-      if (event.key === "ArrowDown") { event.preventDefault(); setContextCursor((v) => Math.min(v + 1, Math.max(contextPacks.length - 1, 0))); return; }
-      if (event.key === "ArrowUp") { event.preventDefault(); setContextCursor((v) => Math.max(v - 1, 0)); return; }
-      if (event.key === "Enter") {
-        const pack = contextPacks[contextCursor];
-        if (pack && pack.available) { event.preventDefault(); toggleContextPack(pack); return; }
-      }
-    }
-
     /* Trigger pickers — let "/" be typed so onChange can filter */
     if (event.key === "/" && draft.length === 0 && !commandModified && !event.altKey) {
       setSlashPickerOpen(true);
@@ -619,12 +573,6 @@ export function AgentChatComposer({
       setSlashCursor(0);
       // Don't preventDefault — the "/" will appear in the textarea and onChange will
       // see val.startsWith("/"), keeping the picker open and enabling type-to-filter.
-    }
-    if (event.key === "#" && !commandModified && !event.altKey) {
-      event.preventDefault();
-      setContextPickerOpen(true);
-      setContextCursor(0);
-      return;
     }
     if (event.key === "@" && !commandModified && !event.altKey) {
       if (!canAttach) return;
@@ -642,6 +590,13 @@ export function AgentChatComposer({
     }
 
     if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(); return; }
+
+    /* Tab to accept prompt suggestion */
+    if (event.key === "Tab" && !event.shiftKey && !commandModified && promptSuggestion && !draft.length && !turnActive) {
+      event.preventDefault();
+      onDraftChange(promptSuggestion);
+      return;
+    }
 
     if (event.key !== "Enter" || event.shiftKey) return;
     const commandEnter = commandModified;
@@ -703,7 +658,7 @@ export function AgentChatComposer({
         </div>
       ) : undefined}
       trays={
-        attachments.length || selectedContextPacks.length || subagentSnapshots.length ? (
+        attachments.length || subagentSnapshots.length ? (
           <div className="space-y-2 px-1 py-2">
             {subagentSnapshots.length ? (
               <ChatSubagentStrip
@@ -718,19 +673,6 @@ export function AgentChatComposer({
               onRemove={onRemoveAttachment}
               className="px-3 py-0"
             />
-            {selectedContextPacks.length ? (
-              <div className="flex flex-wrap items-center gap-1.5 px-4 pb-1">
-                {selectedContextPacks.map((pack) => (
-                  <span key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`} className="inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-violet-500/18 bg-violet-500/10 px-2 py-1 font-mono text-[9px] text-fg/65">
-                    <Hash size={9} weight="bold" className="text-violet-300" />
-                    <span className="max-w-[180px] truncate">{pack.label}</span>
-                    <button type="button" className="ml-0.5 text-fg/30 hover:text-fg/70" title={`Remove ${pack.label}`} onClick={() => removeContextPack(pack)}>
-                      <X size={8} weight="bold" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : null}
           </div>
         ) : undefined
       }
@@ -770,51 +712,6 @@ export function AgentChatComposer({
                     ) : null}
                   </button>
                 ))}
-              </div>
-            </div>
-          ) : null}
-
-          {contextPickerOpen ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
-              <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
-                Context Packs
-              </div>
-              <div className="max-h-52 overflow-auto py-1">
-                {contextPacks.length ? (
-                  contextPacks.map((pack, index) => {
-                    const isSelected = selectedContextPacks.some((p) => packMatches(p, pack));
-                    return (
-                      <button
-                        key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`}
-                        type="button"
-                        className={cn(
-                          "flex w-full items-center gap-3 px-3 py-2 text-left font-mono text-[10px]",
-                          index === contextCursor ? "bg-accent/10" : "hover:bg-border/6",
-                          !pack.available && "opacity-30",
-                        )}
-                        disabled={!pack.available}
-                        onMouseEnter={() => setContextCursor(index)}
-                        onClick={() => toggleContextPack(pack)}
-                      >
-                        <span className={cn(
-                          "flex h-4 w-4 items-center justify-center rounded-[var(--chat-radius-pill)] border text-[9px]",
-                          isSelected ? "border-violet-400/40 bg-violet-500/12 text-violet-300" : "border-border/20 text-transparent",
-                        )}>
-                          {isSelected ? "\u2713" : ""}
-                        </span>
-                        <div className="flex-1">
-                          <div className="text-fg/72">{pack.label}</div>
-                          <div className="text-[9px] text-muted-fg/30">{pack.description}</div>
-                        </div>
-                      </button>
-                    );
-                  })
-                ) : (
-                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/30">No context packs available.</div>
-                )}
-              </div>
-              <div className="border-t border-white/[0.04] px-3 py-2">
-                <button type="button" className="font-mono text-[10px] text-accent/60 hover:text-accent" onClick={() => setContextPickerOpen(false)}>Done</button>
               </div>
             </div>
           ) : null}
@@ -1025,12 +922,6 @@ export function AgentChatComposer({
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                onClick={() => setContextPickerOpen((o) => !o)}
-                title="Context packs (#)"
-              >#</button>
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
                 onClick={() => { onDraftChange("/"); setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); textareaRef.current?.focus(); }}
                 title="Commands (/)"
               >/</button>
@@ -1105,23 +996,39 @@ export function AgentChatComposer({
           </div>
         ) : null}
 
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          onChange={(event) => {
-            const val = event.target.value;
-            onDraftChange(val);
-            if (slashPickerOpen && !val.startsWith("/")) { setSlashPickerOpen(false); setSlashQuery(""); }
-            if (slashPickerOpen && val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
-          }}
-          className={cn(
-            "min-h-[40px] max-h-[160px] w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
-            dragActive ? "opacity-30" : "",
-          )}
-          placeholder={turnActive ? "Steer the active turn..." : (messagePlaceholder ?? "Message the agent...")}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-        />
+        <div className="relative">
+          {/* Ghost suggestion overlay */}
+          {promptSuggestion && !draft.length && !turnActive ? (
+            <div
+              className="pointer-events-none absolute inset-0 flex items-start px-4 py-3"
+              aria-hidden="true"
+            >
+              <span className="text-[13px] leading-[1.6] text-fg/18 italic">
+                {promptSuggestion}
+                <span className="ml-2 inline-flex items-center rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-mono text-[9px] not-italic text-fg/20">
+                  Tab
+                </span>
+              </span>
+            </div>
+          ) : null}
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            onChange={(event) => {
+              const val = event.target.value;
+              onDraftChange(val);
+              if (slashPickerOpen && !val.startsWith("/")) { setSlashPickerOpen(false); setSlashQuery(""); }
+              if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
+            }}
+            className={cn(
+              "min-h-[40px] max-h-[160px] w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+              dragActive ? "opacity-30" : "",
+            )}
+            placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Message the agent..."))}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+          />
+        </div>
       </div>
       </ChatComposerShell>
       <ComputerUseSettingsModal

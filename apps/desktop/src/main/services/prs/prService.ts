@@ -118,6 +118,17 @@ type PullRequestRow = {
   updated_at: string;
 };
 
+type PullRequestSnapshotHydration = {
+  prId: string;
+  detail: PrDetail | null;
+  status: PrStatus | null;
+  checks: PrCheck[];
+  reviews: PrReview[];
+  comments: PrComment[];
+  files: PrFile[];
+  updatedAt: string | null;
+};
+
 type IntegrationProposalRow = {
   id: string;
   source_lane_ids_json: string;
@@ -630,7 +641,9 @@ export function createPrService({
       [args.prId],
     );
 
-    const encode = (next: unknown, fallback: string | null | undefined): string | null => {
+    // If the caller provides a value, serialize it. If undefined, keep the
+    // existing DB value. If explicitly null, store null.
+    const jsonOrFallback = (next: unknown, fallback: string | null | undefined): string | null => {
       if (next === undefined) return fallback ?? null;
       if (next == null) return null;
       return JSON.stringify(next);
@@ -652,15 +665,57 @@ export function createPrService({
       `,
       [
         args.prId,
-        encode(args.detail, existing?.detail_json),
-        encode(args.status, existing?.status_json),
-        encode(args.checks, existing?.checks_json),
-        encode(args.reviews, existing?.reviews_json),
-        encode(args.comments, existing?.comments_json),
-        encode(args.files, existing?.files_json),
+        jsonOrFallback(args.detail, existing?.detail_json),
+        jsonOrFallback(args.status, existing?.status_json),
+        jsonOrFallback(args.checks, existing?.checks_json),
+        jsonOrFallback(args.reviews, existing?.reviews_json),
+        jsonOrFallback(args.comments, existing?.comments_json),
+        jsonOrFallback(args.files, existing?.files_json),
         args.updatedAt ?? nowIso(),
       ],
     );
+  };
+
+  const decodeSnapshotJson = <T>(raw: string | null): T | null => {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const listSnapshotRows = (args: { prId?: string } = {}): PullRequestSnapshotHydration[] => {
+    const rows = db.all<{
+      pr_id: string;
+      detail_json: string | null;
+      status_json: string | null;
+      checks_json: string | null;
+      reviews_json: string | null;
+      comments_json: string | null;
+      files_json: string | null;
+      updated_at: string | null;
+    }>(
+      `
+        select s.pr_id, s.detail_json, s.status_json, s.checks_json, s.reviews_json, s.comments_json, s.files_json, s.updated_at
+          from pull_request_snapshots s
+          join pull_requests p on p.id = s.pr_id and p.project_id = ?
+         ${args.prId ? "where s.pr_id = ?" : ""}
+         order by p.updated_at desc
+      `,
+      args.prId ? [projectId, args.prId] : [projectId],
+    );
+
+    return rows.map((row) => ({
+      prId: row.pr_id,
+      detail: decodeSnapshotJson<PrDetail>(row.detail_json),
+      status: decodeSnapshotJson<PrStatus>(row.status_json),
+      checks: decodeSnapshotJson<PrCheck[]>(row.checks_json) ?? [],
+      reviews: decodeSnapshotJson<PrReview[]>(row.reviews_json) ?? [],
+      comments: decodeSnapshotJson<PrComment[]>(row.comments_json) ?? [],
+      files: decodeSnapshotJson<PrFile[]>(row.files_json) ?? [],
+      updatedAt: row.updated_at,
+    }));
   };
 
   const upsertRow = (summary: Omit<PrSummary, "projectId"> & { projectId?: string }): void => {
@@ -3733,6 +3788,10 @@ export function createPrService({
         await refreshSnapshotData(row.id);
       }
       return { refreshedCount: rows.length };
+    },
+
+    listSnapshots(args: { prId?: string } = {}): PullRequestSnapshotHydration[] {
+      return listSnapshotRows(args);
     },
 
     // ------------------------------------------------------------------

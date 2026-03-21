@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { openKvDb } from "./kvDb";
+import { isCrsqliteAvailable } from "./crsqliteExtension";
 
 const require = createRequire(import.meta.url);
 
@@ -21,7 +22,7 @@ function makeDbPath(prefix: string): string {
   return path.join(root, ".ade", "kv.sqlite");
 }
 
-describe("kvDb sync foundation", () => {
+describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
   it("persists a stable local site id and marks CRR tables", async () => {
     const dbPath = makeDbPath("ade-kvdb-sync-site-");
     const db = await openKvDb(dbPath, createLogger() as any);
@@ -259,11 +260,28 @@ describe("kvDb sync foundation", () => {
     const result = db2.sync.applyChanges(db1.sync.exportChangesSince(0));
     expect(result.rebuiltFts).toBe(true);
 
-    const match = db2.get<{ count: number }>(
-      "select count(*) as count from unified_memories_fts where unified_memories_fts match ?",
-      ["ios"]
+    // FTS4/5 may not be available (e.g. node:sqlite without fts modules).
+    // When unavailable, the fallback plain table is used — verify with LIKE.
+    const isFts = Boolean(
+      db2.get<{ type: string }>(
+        "select type from sqlite_master where name = 'unified_memories_fts' and type = 'table' limit 1"
+      )
     );
-    expect(Number(match?.count ?? 0)).toBeGreaterThan(0);
+    if (isFts) {
+      // Real FTS virtual table — query with MATCH
+      const match = db2.get<{ count: number }>(
+        "select count(*) as count from unified_memories_fts where unified_memories_fts match ?",
+        ["ios"]
+      );
+      expect(Number(match?.count ?? 0)).toBeGreaterThan(0);
+    } else {
+      // Fallback plain table — verify content was copied with LIKE
+      const match = db2.get<{ count: number }>(
+        "select count(*) as count from unified_memories_fts where content like ?",
+        ["%ios%"]
+      );
+      expect(Number(match?.count ?? 0)).toBeGreaterThan(0);
+    }
 
     db1.close();
     db2.close();

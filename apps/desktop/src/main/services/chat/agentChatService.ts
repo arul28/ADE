@@ -27,7 +27,8 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import type { createPackService } from "../packs/packService";
+import type { createFileService } from "../files/fileService";
+import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { nowIso, fileSizeOrZero } from "../shared/utils";
@@ -196,6 +197,8 @@ type ClaudeRuntime = {
   v2StreamGen: AsyncGenerator<any, void> | null;
   /** Resolves when the subprocess is initialized (system:init received). */
   v2WarmupDone: Promise<void> | null;
+  /** Resolves the current warmup race so waiters can stop blocking immediately. */
+  v2WarmupCancel: (() => void) | null;
   /** Set to true when teardown runs to cancel an in-flight warmup. */
   v2WarmupCancelled: boolean;
   activeSubagents: Map<string, { taskId: string; description: string }>;
@@ -205,6 +208,8 @@ type ClaudeRuntime = {
   pendingSteers: string[];
   approvals: Map<string, PendingClaudeApproval>;
   interrupted: boolean;
+  /** Set when a reasoning effort change is requested mid-turn; flushed when idle. */
+  pendingSessionReset?: boolean;
 };
 
 type PendingUnifiedApproval = {
@@ -300,6 +305,15 @@ type SessionTurnCollector = {
   timeout: NodeJS.Timeout;
 };
 
+type PreparedSendMessage = {
+  sessionId: string;
+  managed: ManagedChatSession;
+  promptText: string;
+  visibleText: string;
+  attachments: AgentChatFileRef[];
+  reasoningEffort?: string | null;
+};
+
 type ResolvedChatConfig = {
   codexApprovalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
   codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
@@ -350,6 +364,7 @@ const CLAUDE_REASONING_EFFORTS: Array<{ effort: string; description: string }> =
   { effort: "low", description: "Quick responses with minimal reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
   { effort: "high", description: "Deep reasoning for complex tasks." },
+  { effort: "max", description: "Maximum reasoning depth. Best for Opus on hard problems." },
 ];
 
 const CLAUDE_EFFORT_TO_TOKENS: Record<string, number> = {
@@ -445,7 +460,7 @@ const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort)
 
 const EFFORT_ALIASES: Record<string, Record<string, string>> = {
   codex: { minimal: "low", max: "xhigh", none: "low" },
-  claude: { max: "high" },
+  claude: {},
 };
 
 function validateReasoningEffort(provider: "codex" | "claude", effort: string | null | undefined): string | null {
@@ -539,6 +554,10 @@ function isPlanningApprovalGuarded(managed: ManagedChatSession): boolean {
 
 function buildPlanningApprovalViolation(toolName: string): string {
   return `PLANNER CONTRACT VIOLATION: '${toolName}' requested a provider-native approval flow during a planning step. Planning workers must stay inspect-only and return the plan via report_result instead.`;
+}
+
+function isBackgroundTask(item: Record<string, unknown>): boolean {
+  return !!(item.run_in_background || item.background);
 }
 
 function normalizePreview(text: string, maxChars = 220): string | null {
@@ -987,7 +1006,7 @@ export function createAgentChatService(args: {
   transcriptsDir: string;
   projectId?: string;
   memoryService?: ReturnType<typeof createMemoryService> | null;
-  packService?: ReturnType<typeof createPackService> | null;
+  fileService?: ReturnType<typeof createFileService> | null;
   episodicSummaryService?: EpisodicSummaryService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
@@ -1000,6 +1019,7 @@ export function createAgentChatService(args: {
   linearClient?: import("../cto/linearClient").LinearClient | null;
   linearCredentials?: import("../cto/linearCredentialService").LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
+  processService?: ReturnType<typeof createProcessService> | null;
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -1014,7 +1034,7 @@ export function createAgentChatService(args: {
     transcriptsDir,
     projectId,
     memoryService,
-    packService,
+    fileService,
     episodicSummaryService,
     ctoStateService,
     workerAgentService,
@@ -1027,6 +1047,7 @@ export function createAgentChatService(args: {
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
+    processService,
     computerUseArtifactBrokerService,
     laneService,
     sessionService,
@@ -1064,7 +1085,7 @@ export function createAgentChatService(args: {
   };
 
   const trackSubagentEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
-    if (event.type !== "subagent_started" && event.type !== "subagent_result") return;
+    if (event.type !== "subagent_started" && event.type !== "subagent_progress" && event.type !== "subagent_result") return;
     const map = ensureSubagentSnapshotMap(managed.session.id);
     if (event.type === "subagent_started") {
       map.set(event.taskId, {
@@ -1073,6 +1094,20 @@ export function createAgentChatService(args: {
         status: "running",
         turnId: event.turnId ?? undefined,
         startTimestamp: nowIso(),
+      });
+      return;
+    }
+    if (event.type === "subagent_progress") {
+      const previous = map.get(event.taskId);
+      map.set(event.taskId, {
+        taskId: event.taskId,
+        description: event.description?.trim() || previous?.description || "Subagent task",
+        status: "running",
+        turnId: event.turnId ?? previous?.turnId,
+        startTimestamp: previous?.startTimestamp ?? nowIso(),
+        summary: event.summary.trim() || previous?.summary,
+        lastToolName: event.lastToolName ?? previous?.lastToolName,
+        usage: event.usage ?? previous?.usage,
       });
       return;
     }
@@ -1090,6 +1125,7 @@ export function createAgentChatService(args: {
       startTimestamp: previous?.startTimestamp,
       endTimestamp: nowIso(),
       summary: event.summary ?? previous?.summary,
+      lastToolName: previous?.lastToolName,
       usage: event.usage ?? previous?.usage,
     });
   };
@@ -1948,7 +1984,7 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "claude") {
-      managed.runtime.v2WarmupCancelled = true;
+      cancelClaudeWarmup(managed, managed.runtime, "teardown");
       managed.runtime.activeQuery?.close();
       managed.runtime.activeQuery = null;
       try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
@@ -2432,6 +2468,19 @@ export function createAgentChatService(args: {
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
     let costUsd: number | null = null;
+    const turnStartedAt = Date.now();
+    let firstStreamEventLogged = false;
+    const markFirstStreamEvent = (kind: string): void => {
+      if (firstStreamEventLogged) return;
+      firstStreamEventLogged = true;
+      logger.info("agent_chat.turn_first_event", {
+        sessionId: managed.session.id,
+        provider: "claude",
+        turnId,
+        kind,
+        latencyMs: Date.now() - turnStartedAt,
+      });
+    };
 
     try {
       const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
@@ -2440,7 +2489,20 @@ export function createAgentChatService(args: {
       // ── V2 persistent session with background pre-warming ──
       // The pre-warm was kicked off in ensureClaudeSessionRuntime. Wait for it.
       if (runtime.v2WarmupDone) {
+        const warmupWaitStartedAt = Date.now();
+        logger.info("agent_chat.claude_v2_turn_waiting_for_warmup", {
+          sessionId: managed.session.id,
+          turnId,
+        });
         await runtime.v2WarmupDone;
+        logger.info("agent_chat.claude_v2_turn_warmup_wait_done", {
+          sessionId: managed.session.id,
+          turnId,
+          waitedMs: Date.now() - warmupWaitStartedAt,
+        });
+      }
+      if (runtime.interrupted) {
+        throw new Error("Claude turn interrupted during warmup.");
       }
       // Fallback: if pre-warm failed or didn't run, create session on the fly
       if (!runtime.v2Session) {
@@ -2467,6 +2529,7 @@ export function createAgentChatService(args: {
 
       for await (const msg of runtime.v2Session.stream()) {
         if (runtime.interrupted) break;
+        markFirstStreamEvent(msg.type);
 
         // Capture session_id from any message
         if (!runtime.sdkSessionId && (msg as any).session_id) {
@@ -2479,20 +2542,14 @@ export function createAgentChatService(args: {
           const initMsg = msg as any;
           runtime.sdkSessionId = initMsg.session_id ?? runtime.sdkSessionId;
           if (Array.isArray(initMsg.slash_commands)) {
-            runtime.slashCommands = initMsg.slash_commands
-              .filter((cmd: unknown) => typeof cmd === "string" && cmd.length > 0)
-              .map((cmd: string) => ({ name: cmd.startsWith("/") ? cmd : `/${cmd}`, description: "" }));
+            applyClaudeSlashCommands(runtime, initMsg.slash_commands);
           }
           try {
             const sessionImpl = runtime.v2Session as any;
             if (typeof sessionImpl?.supportedCommands === "function") {
               sessionImpl.supportedCommands().then((cmds: any[]) => {
                 if (Array.isArray(cmds) && cmds.length > 0) {
-                  runtime.slashCommands = cmds.map((c: any) => ({
-                    name: typeof c.name === "string" ? (c.name.startsWith("/") ? c.name : `/${c.name}`) : String(c),
-                    description: typeof c.description === "string" ? c.description : "",
-                    argumentHint: typeof c.argumentHint === "string" ? c.argumentHint : undefined,
-                  }));
+                  applyClaudeSlashCommands(runtime, cmds);
                 }
               }).catch(() => { /* not available */ });
             }
@@ -2606,6 +2663,30 @@ export function createAgentChatService(args: {
           continue;
         }
 
+        // system:task_progress — running subagent summary/usage
+        if (msg.type === "system" && (msg as any).subtype === "task_progress") {
+          const taskMsg = msg as any;
+          const taskId = String(taskMsg.task_id ?? "");
+          if (!taskId) continue;
+          const existing = runtime.activeSubagents.get(taskId);
+          const description = String(taskMsg.description ?? existing?.description ?? "");
+          runtime.activeSubagents.set(taskId, { taskId, description });
+          emitChatEvent(managed, {
+            type: "subagent_progress",
+            taskId,
+            description,
+            summary: String(taskMsg.summary ?? ""),
+            usage: taskMsg.usage ? {
+              totalTokens: typeof taskMsg.usage.total_tokens === "number" ? taskMsg.usage.total_tokens : undefined,
+              toolUses: typeof taskMsg.usage.tool_uses === "number" ? taskMsg.usage.tool_uses : undefined,
+              durationMs: typeof taskMsg.usage.duration_ms === "number" ? taskMsg.usage.duration_ms : undefined,
+            } : undefined,
+            lastToolName: typeof taskMsg.last_tool_name === "string" ? taskMsg.last_tool_name : undefined,
+            turnId,
+          });
+          continue;
+        }
+
         // system:task_started — subagent spawn
         if (msg.type === "system" && (msg as any).subtype === "task_started") {
           const taskMsg = msg as any;
@@ -2615,6 +2696,7 @@ export function createAgentChatService(args: {
             type: "subagent_started",
             taskId,
             description: String(taskMsg.description ?? ""),
+            background: isBackgroundTask(taskMsg as Record<string, unknown>),
             turnId,
           });
           continue;
@@ -2835,8 +2917,19 @@ export function createAgentChatService(args: {
           continue;
         }
 
-        // prompt_suggestion — follow-up suggestions (consume silently for now)
+        // prompt_suggestion — follow-up suggestions forwarded to the UI
         if ((msg as any).type === "prompt_suggestion") {
+          const suggestionMsg = msg as Record<string, unknown>;
+          const suggestionText =
+            [suggestionMsg.suggestion, suggestionMsg.prompt, suggestionMsg.text]
+              .find((v): v is string => typeof v === "string" && v.trim().length > 0)?.trim() ?? null;
+          if (suggestionText) {
+            emitChatEvent(managed, {
+              type: "prompt_suggestion",
+              suggestion: suggestionText,
+              turnId,
+            });
+          }
           continue;
         }
       }
@@ -2848,6 +2941,15 @@ export function createAgentChatService(args: {
       runtime.activeTurnId = null;
       managed.session.status = "idle";
       reportProviderRuntimeReady("claude");
+
+      // Flush deferred session reset from mid-turn reasoning effort change
+      if (runtime.pendingSessionReset) {
+        runtime.pendingSessionReset = false;
+        cancelClaudeWarmup(managed, runtime, "session_reset");
+        try { runtime.v2Session?.close(); } catch { /* ignore */ }
+        runtime.v2Session = null;
+        runtime.v2WarmupDone = null;
+      }
 
       const finalStatus = runtime.interrupted ? "interrupted" : "completed";
       emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
@@ -3031,6 +3133,19 @@ export function createAgentChatService(args: {
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
     let streamedStepCount = 0;
+    const turnStartedAt = Date.now();
+    let firstStreamEventLogged = false;
+    const markFirstStreamEvent = (kind: string): void => {
+      if (firstStreamEventLogged) return;
+      firstStreamEventLogged = true;
+      logger.info("agent_chat.turn_first_event", {
+        sessionId: managed.session.id,
+        provider: managed.session.provider,
+        turnId,
+        kind,
+        latencyMs: Date.now() - turnStartedAt,
+      });
+    };
 
     try {
       const lightweight = isLightweightSession(managed.session);
@@ -3168,6 +3283,9 @@ export function createAgentChatService(args: {
             workerHeartbeatService: workerHeartbeatService ?? null,
             linearDispatcherService: getLinearDispatcherService?.() ?? null,
             flowPolicyService: flowPolicyService ?? null,
+            prService: prService ?? null,
+            fileService: fileService ?? null,
+            processService: processService ?? null,
             issueTracker: linearIssueTracker ?? null,
             listChats: listSessions,
             getChatStatus: getSessionSummary,
@@ -3176,6 +3294,8 @@ export function createAgentChatService(args: {
             updateChatSession: updateSession,
             sendChatMessage: sendMessage,
             interruptChat: interrupt,
+            resumeChat: resumeSession,
+            disposeChat: dispose,
             ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
               ensureIdentitySession({
                 identityKey: "cto",
@@ -3185,13 +3305,6 @@ export function createAgentChatService(args: {
                 reuseExisting,
                 permissionMode: "full-auto",
               }),
-            fetchMissionContext: async (missionId) => {
-              const result = await fetchContextPack({ scope: "mission", missionId, level: "standard" });
-              return {
-                content: result.content,
-                truncated: result.truncated,
-              };
-            },
           }));
         }
       }
@@ -3237,6 +3350,7 @@ export function createAgentChatService(args: {
       const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
       for await (const part of stream.fullStream as AsyncIterable<any>) {
         if (!part || typeof part !== "object") continue;
+        markFirstStreamEvent(String(part.type ?? "unknown"));
 
         if (part.type === "start-step") {
           streamedStepCount += 1;
@@ -3670,6 +3784,7 @@ export function createAgentChatService(args: {
           type: "subagent_started",
           taskId: itemId,
           description: String(item.description ?? item.title ?? "Delegated task"),
+          background: isBackgroundTask(item as Record<string, unknown>),
           turnId,
         });
       }
@@ -3682,6 +3797,144 @@ export function createAgentChatService(args: {
           turnId,
         });
       }
+      return;
+    }
+
+    // collabToolCall items → subagent events (Codex parallel agents)
+    if (itemType === "collabToolCall") {
+      const tool = String(item.tool ?? "");
+      const prompt = typeof item.prompt === "string" ? item.prompt : "";
+      const agentsStates = Array.isArray(item.agentsStates) ? item.agentsStates : [];
+      const newThreadId = typeof item.newThreadId === "string" ? item.newThreadId : null;
+
+      if (tool === "spawn_agent" && eventKind === "started") {
+        emitChatEvent(managed, {
+          type: "activity",
+          activity: "spawning_agent",
+          detail: prompt.slice(0, 80) || "Spawning parallel agent",
+          turnId,
+        });
+        emitChatEvent(managed, {
+          type: "subagent_started",
+          taskId: newThreadId ?? itemId,
+          description: prompt.slice(0, 120) || "Parallel agent",
+          background: isBackgroundTask(item as Record<string, unknown>),
+          turnId,
+        });
+      }
+
+      if ((tool === "send_input" || tool === "resume_agent") && eventKind === "completed") {
+        const receiverIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
+        const targetId = typeof receiverIds[0] === "string" ? receiverIds[0] : itemId;
+        emitChatEvent(managed, {
+          type: "subagent_progress",
+          taskId: targetId,
+          summary: prompt || "Agent received input",
+          turnId,
+        });
+      }
+
+      if (tool === "wait" && eventKind === "completed") {
+        for (const agentState of agentsStates) {
+          if (!agentState || typeof agentState !== "object") continue;
+          const state = agentState as Record<string, unknown>;
+          const agentThreadId = typeof state.threadId === "string" ? state.threadId : itemId;
+          const summary = typeof state.summary === "string" ? state.summary
+            : typeof state.result === "string" ? state.result
+            : "";
+          const rawStatus = String(state.status ?? "completed");
+          const subagentStatus: "completed" | "failed" | "stopped" =
+            rawStatus === "failed" ? "failed"
+            : rawStatus === "stopped" ? "stopped"
+            : "completed";
+          emitChatEvent(managed, {
+            type: "subagent_result",
+            taskId: agentThreadId,
+            status: subagentStatus,
+            summary,
+            turnId,
+          });
+        }
+      }
+
+      if (tool === "close_agent" && eventKind === "completed") {
+        const receiverIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
+        const targetId = typeof receiverIds[0] === "string" ? receiverIds[0] : itemId;
+        emitChatEvent(managed, {
+          type: "subagent_result",
+          taskId: targetId,
+          status: "stopped",
+          summary: "Agent closed",
+          turnId,
+        });
+      }
+
+      return;
+    }
+
+    // dynamicToolCall items → tool_call/tool_result events
+    if (itemType === "dynamicToolCall") {
+      const toolName = String(item.tool ?? "dynamic_tool");
+      if (eventKind === "started") {
+        emitChatEvent(managed, {
+          type: "activity",
+          activity: "tool_calling",
+          detail: toolName,
+          turnId,
+        });
+        emitChatEvent(managed, {
+          type: "tool_call",
+          tool: toolName,
+          args: item.arguments,
+          itemId,
+          turnId,
+        });
+      }
+      if (eventKind === "completed") {
+        const success = item.success !== false;
+        const contentItems = Array.isArray(item.contentItems) ? item.contentItems : [];
+        const resultText = contentItems
+          .map((ci: unknown) => {
+            if (typeof ci === "string") return ci;
+            if (ci && typeof ci === "object" && typeof (ci as Record<string, unknown>).text === "string") {
+              return (ci as Record<string, unknown>).text as string;
+            }
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n");
+        emitChatEvent(managed, {
+          type: "tool_result",
+          tool: toolName,
+          result: resultText || (success ? "Completed" : "Failed"),
+          itemId,
+          turnId,
+          status: success ? "completed" : "failed",
+        });
+      }
+      return;
+    }
+
+    // webSearch items → web_search events
+    if (itemType === "webSearch") {
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "web_searching",
+        detail: String(item.query ?? "Searching the web"),
+        turnId,
+      });
+      let status: "running" | "completed" | "failed" = "running";
+      if (eventKind === "completed") {
+        status = String(item.status ?? "completed") === "failed" ? "failed" : "completed";
+      }
+      emitChatEvent(managed, {
+        type: "web_search",
+        query: String(item.query ?? ""),
+        action: typeof item.action === "string" ? item.action : undefined,
+        itemId,
+        turnId,
+        status,
+      });
       return;
     }
 
@@ -3961,6 +4214,54 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (method === "item/plan/delta") {
+      const delta = String((params.delta as string | undefined) ?? "");
+      if (!delta.length) return;
+      emitChatEvent(managed, {
+        type: "plan_text",
+        text: delta,
+        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        itemId: typeof params.itemId === "string" ? params.itemId : undefined,
+      });
+      return;
+    }
+
+    if (method === "item/reasoning/summaryPartAdded") {
+      // Summary part boundary — no additional handling needed since we already
+      // merge reasoning deltas by turnId/itemId/summaryIndex.
+      return;
+    }
+
+    if (method === "item/autoApprovalReview/started") {
+      const targetItemId = String((params.targetItemId as string | undefined) ?? "");
+      if (targetItemId) {
+        emitChatEvent(managed, {
+          type: "auto_approval_review",
+          targetItemId,
+          reviewStatus: "started",
+          turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        });
+      }
+      return;
+    }
+
+    if (method === "item/autoApprovalReview/completed") {
+      const targetItemId = String((params.targetItemId as string | undefined) ?? "");
+      const action = typeof params.action === "string" ? params.action : undefined;
+      const review = typeof params.review === "string" ? params.review : undefined;
+      if (targetItemId) {
+        emitChatEvent(managed, {
+          type: "auto_approval_review",
+          targetItemId,
+          reviewStatus: "completed",
+          action,
+          review,
+          turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        });
+      }
+      return;
+    }
+
     // Log unhandled notification methods for debugging
     if (method) {
       logger.warn("agent_chat.codex_unhandled_notification", {
@@ -4217,6 +4518,8 @@ export function createAgentChatService(args: {
       cwd: managed.laneWorktreePath,
       permissionMode: claudePermissionMode as any,
       includePartialMessages: true,
+      agentProgressSummaries: true,
+      promptSuggestions: true,
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
       model: resolveClaudeCliModel(managed.session.model),
     };
@@ -4241,6 +4544,14 @@ export function createAgentChatService(args: {
         managed.session.computerUse,
       ) as any;
       if (canUseTool) opts.canUseTool = canUseTool as any;
+
+      // Enable MCP tool search for sessions with many MCP tools.
+      // When enabled, the SDK defers tool definitions and loads them on-demand
+      // via the ToolSearch tool, keeping the context window lean.
+      opts.env = {
+        ...opts.env as Record<string, string> | undefined,
+        ENABLE_TOOL_SEARCH: "auto",
+      };
     }
     const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
@@ -4264,11 +4575,49 @@ export function createAgentChatService(args: {
     return { ...opts, model };
   };
 
+  const cancelClaudeWarmup = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    reason: "interrupt" | "teardown" | "session_reset",
+  ): void => {
+    if (!runtime.v2WarmupDone) return;
+    runtime.v2WarmupCancelled = true;
+    runtime.v2WarmupCancel?.();
+    logger.info("agent_chat.claude_v2_prewarm_cancel", {
+      sessionId: managed.session.id,
+      reason,
+    });
+  };
+
+  const applyClaudeSlashCommands = (
+    runtime: ClaudeRuntime,
+    commands: Array<string | { name?: string; description?: string; argumentHint?: string }>,
+  ): void => {
+    runtime.slashCommands = commands
+      .map((command) => {
+        if (typeof command === "string") {
+          const normalized = command.trim();
+          if (!normalized.length) return null;
+          return {
+            name: normalized.startsWith("/") ? normalized : `/${normalized}`,
+            description: "",
+          };
+        }
+        const normalized = typeof command.name === "string" ? command.name.trim() : "";
+        if (!normalized.length) return null;
+        return {
+          name: normalized.startsWith("/") ? normalized : `/${normalized}`,
+          description: typeof command.description === "string" ? command.description : "",
+          argumentHint: typeof command.argumentHint === "string" ? command.argumentHint : undefined,
+        };
+      })
+      .filter((command): command is { name: string; description: string; argumentHint?: string } => Boolean(command));
+  };
+
   /**
    * Pre-warm the Claude V2 session in the background.
-   * Creates the session and sends a warmup turn so the subprocess + MCP servers
-   * are fully initialized by the time the user sends their first real message.
-   * The warmup turn (~30s cold start) runs while the user is composing their message.
+   * Creates the persistent session and runs a silent warmup turn because the
+   * public V2 session API does not expose an init-only readiness handshake.
    */
   const prewarmClaudeV2Session = (managed: ManagedChatSession): void => {
     const runtime = managed.runtime;
@@ -4276,8 +4625,18 @@ export function createAgentChatService(args: {
     if (runtime.v2Session || runtime.v2WarmupDone) return;
 
     runtime.v2WarmupCancelled = false;
+    const warmupStartedAt = Date.now();
+    let settleWarmupWaiters: (() => void) | null = null;
+    const waitForCancel = new Promise<void>((resolve) => {
+      settleWarmupWaiters = resolve;
+    });
+    const cancelWarmup = () => {
+      settleWarmupWaiters?.();
+      settleWarmupWaiters = null;
+    };
+    runtime.v2WarmupCancel = cancelWarmup;
 
-    runtime.v2WarmupDone = (async () => {
+    const warmupTask = (async () => {
       try {
         const v2Opts = buildClaudeV2SessionOpts(managed, runtime);
         logger.info("agent_chat.claude_v2_prewarm_start", {
@@ -4300,9 +4659,6 @@ export function createAgentChatService(args: {
           return;
         }
 
-        // Send a warmup turn — this triggers the ~30s subprocess cold start.
-        // The response is consumed silently. By the time the user types and sends
-        // their first real message, the subprocess is already running.
         await runtime.v2Session.send("System initialization check. Respond with only the word READY.");
         for await (const msg of runtime.v2Session.stream()) {
           if (runtime.v2WarmupCancelled) break;
@@ -4313,20 +4669,14 @@ export function createAgentChatService(args: {
             const initMsg = msg as any;
             runtime.sdkSessionId = initMsg.session_id ?? runtime.sdkSessionId;
             if (Array.isArray(initMsg.slash_commands)) {
-              runtime.slashCommands = initMsg.slash_commands
-                .filter((cmd: unknown) => typeof cmd === "string" && cmd.length > 0)
-                .map((cmd: string) => ({ name: cmd.startsWith("/") ? cmd : `/${cmd}`, description: "" }));
+              applyClaudeSlashCommands(runtime, initMsg.slash_commands);
             }
             try {
               const sessionImpl = runtime.v2Session as any;
               if (typeof sessionImpl?.supportedCommands === "function") {
                 sessionImpl.supportedCommands().then((cmds: any[]) => {
                   if (Array.isArray(cmds) && cmds.length > 0) {
-                    runtime.slashCommands = cmds.map((c: any) => ({
-                      name: typeof c.name === "string" ? (c.name.startsWith("/") ? c.name : `/${c.name}`) : String(c),
-                      description: typeof c.description === "string" ? c.description : "",
-                      argumentHint: typeof c.argumentHint === "string" ? c.argumentHint : undefined,
-                    }));
+                    applyClaudeSlashCommands(runtime, cmds);
                   }
                 }).catch(() => { /* not available */ });
               }
@@ -4375,6 +4725,23 @@ export function createAgentChatService(args: {
         runtime.v2Session = null;
       }
     })();
+
+    const warmupPromise = Promise.race([warmupTask, waitForCancel]);
+    runtime.v2WarmupDone = warmupPromise;
+
+    void warmupPromise.finally(() => {
+      if (runtime.v2WarmupDone === warmupPromise) {
+        runtime.v2WarmupDone = null;
+      }
+      if (runtime.v2WarmupCancel === cancelWarmup) {
+        runtime.v2WarmupCancel = null;
+      }
+      logger.info("agent_chat.claude_v2_prewarm_settled", {
+        sessionId: managed.session.id,
+        cancelled: runtime.v2WarmupCancelled,
+        durationMs: Date.now() - warmupStartedAt,
+      });
+    });
   };
 
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
@@ -4389,6 +4756,7 @@ export function createAgentChatService(args: {
       v2Session: null,
       v2StreamGen: null,
       v2WarmupDone: null,
+      v2WarmupCancel: null,
       v2WarmupCancelled: false,
       activeSubagents: new Map(),
       slashCommands: [],
@@ -4721,16 +5089,16 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  const sendMessage = async ({
+  const prepareSendMessage = ({
     sessionId,
     text,
     displayText,
     attachments = [],
     reasoningEffort,
     executionMode,
-  }: AgentChatSendArgs): Promise<void> => {
+  }: AgentChatSendArgs): PreparedSendMessage | null => {
     const trimmed = text.trim();
-    if (!trimmed.length) return;
+    if (!trimmed.length) return null;
     const slashCommand = extractSlashCommand(trimmed);
     const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
 
@@ -4774,6 +5142,75 @@ export function createAgentChatService(args: {
     } else if (managed.session.executionMode == null) {
       managed.session.executionMode = "focused";
     }
+
+    return {
+      sessionId,
+      managed,
+      promptText,
+      visibleText,
+      attachments,
+      reasoningEffort,
+    };
+  };
+
+  const emitDispatchedSendFailure = (prepared: PreparedSendMessage, error: unknown): void => {
+    const { managed } = prepared;
+    if (managed.closed) return;
+
+    const message = error instanceof Error ? error.message : String(error);
+    const turnId = randomUUID();
+    managed.session.status = "idle";
+
+    if (managed.runtime?.kind === "codex") {
+      managed.runtime.activeTurnId = null;
+      managed.runtime.startedTurnId = null;
+    }
+    if (managed.runtime?.kind === "unified") {
+      managed.runtime.busy = false;
+      managed.runtime.activeTurnId = null;
+      managed.runtime.abortController = null;
+    }
+    if (managed.runtime?.kind === "claude") {
+      managed.runtime.busy = false;
+      managed.runtime.activeTurnId = null;
+      managed.runtime.activeQuery = null;
+    }
+
+    emitChatEvent(managed, {
+      type: "error",
+      message,
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "status",
+      turnStatus: "failed",
+      message,
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId,
+      status: "failed",
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+
+    appendWorkerActivityToCto(managed, {
+      activityType: "chat_turn",
+      summary: `Turn failed before execution: ${message}`,
+    });
+    persistChatState(managed);
+  };
+
+  const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => {
+    const {
+      sessionId,
+      managed,
+      promptText,
+      visibleText,
+      attachments,
+      reasoningEffort,
+    } = prepared;
 
     // Unified runtime dispatch
     if (managed.session.provider === "unified") {
@@ -4866,6 +5303,28 @@ export function createAgentChatService(args: {
     await runClaudeTurn(managed, { promptText, displayText: visibleText, attachments });
   };
 
+  const sendMessage = async (args: AgentChatSendArgs): Promise<void> => {
+    const dispatchStartedAt = Date.now();
+    const prepared = prepareSendMessage(args);
+    if (!prepared) return;
+
+    logger.info("agent_chat.turn_dispatch_ack", {
+      sessionId: prepared.sessionId,
+      provider: prepared.managed.session.provider,
+      model: prepared.managed.session.model,
+      durationMs: Date.now() - dispatchStartedAt,
+    });
+
+    void executePreparedSendMessage(prepared).catch((error) => {
+      logger.warn("agent_chat.turn_dispatch_failed", {
+        sessionId: prepared.sessionId,
+        provider: prepared.managed.session.provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      emitDispatchedSendFailure(prepared, error);
+    });
+  };
+
   const steer = async ({ sessionId, text }: AgentChatSteerArgs): Promise<void> => {
     const trimmed = text.trim();
     if (!trimmed.length) return;
@@ -4951,13 +5410,27 @@ export function createAgentChatService(args: {
     }
 
     const runtime = ensureClaudeSessionRuntime(managed);
+    logger.info("agent_chat.turn_interrupt_requested", {
+      sessionId,
+      provider: "claude",
+      turnId: runtime.activeTurnId,
+      busy: runtime.busy,
+      warmupInFlight: Boolean(runtime.v2WarmupDone),
+    });
     runtime.interrupted = true;
+    cancelClaudeWarmup(managed, runtime, "interrupt");
     runtime.activeQuery?.interrupt().catch(() => {});
     // Close the V2 session on interrupt — it will be recreated on the next turn
     try { runtime.v2Session?.close(); } catch { /* ignore */ }
     runtime.v2Session = null;
     runtime.v2StreamGen = null;
-    runtime.v2WarmupDone = null;
+    runtime.activeSubagents.clear();
+    logger.info("agent_chat.turn_interrupt_completed", {
+      sessionId,
+      provider: "claude",
+      turnId: runtime.activeTurnId,
+      busy: runtime.busy,
+    });
   };
 
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
@@ -5452,6 +5925,18 @@ export function createAgentChatService(args: {
         ensureClaudeSessionRuntime(managed);
         prewarmClaudeV2Session(managed);
       }
+
+      // If V2 session is alive and model changed, notify SDK
+      if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && modelId) {
+        const newCliModel = resolveClaudeCliModel(managed.session.model);
+        if (newCliModel && typeof (managed.runtime.v2Session as any).setModel === "function") {
+          try {
+            (managed.runtime.v2Session as any).setModel(newCliModel);
+          } catch (err) {
+            logger.warn("agent_chat.v2_set_model_failed", { sessionId: managed.session.id, error: String(err) });
+          }
+        }
+      }
     } else if (reasoningEffort !== undefined) {
       const prev = managed.session.reasoningEffort ?? null;
       managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
@@ -5459,10 +5944,17 @@ export function createAgentChatService(args: {
       // When reasoning effort changes on a Claude session with an active V2
       // session, invalidate the V2 session so it is recreated on the next turn
       // with the updated thinking configuration.
-      if (prev !== next && managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
-        managed.runtime.v2Session.close();
-        managed.runtime.v2Session = null;
-        managed.runtime.v2WarmupDone = null;
+      if (prev !== next && managed.runtime?.kind === "claude" && (managed.runtime.v2Session || managed.runtime.v2WarmupDone)) {
+        if (managed.runtime.busy) {
+          // Defer session reset until the current turn completes — tearing down
+          // a live session mid-turn would force the stream down the failure path.
+          managed.runtime.pendingSessionReset = true;
+        } else {
+          cancelClaudeWarmup(managed, managed.runtime, "session_reset");
+          try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
+          managed.runtime.v2Session = null;
+          managed.runtime.v2WarmupDone = null;
+        }
       }
     }
 
@@ -5514,7 +6006,7 @@ export function createAgentChatService(args: {
     if (!isAnthropicCli) return;
 
     // Only prewarm if the session is idle (not mid-turn) and not already warmed
-    if (managed.runtime?.kind === "claude" && managed.runtime.v2WarmupDone) return;
+    if (managed.runtime?.kind === "claude" && (managed.runtime.v2Session || managed.runtime.v2WarmupDone)) return;
 
     // Apply the selected model to the session so buildClaudeV2SessionOpts
     // picks up the correct model for warmup.
@@ -5525,78 +6017,6 @@ export function createAgentChatService(args: {
     // Ensure a Claude runtime exists and kick off pre-warming
     ensureClaudeSessionRuntime(managed);
     prewarmClaudeV2Session(managed);
-  };
-
-  const listContextPacks = async (args: { laneId?: string } = {}): Promise<import("../../../shared/types").ContextPackOption[]> => {
-    const packs: import("../../../shared/types").ContextPackOption[] = [
-      { scope: "project", label: "Project", description: "Live project context export", available: Boolean(packService) },
-    ];
-
-    if (args.laneId) {
-      packs.push(
-        { scope: "lane", label: "Lane", description: "Live lane context export", available: Boolean(packService), laneId: args.laneId },
-        { scope: "conflict", label: "Conflicts", description: "Live conflict context export", available: Boolean(packService), laneId: args.laneId },
-        { scope: "plan", label: "Plan", description: "Live plan context export", available: Boolean(packService), laneId: args.laneId }
-      );
-    }
-
-    packs.push(
-      {
-        scope: "mission",
-        label: "Mission",
-        description: "Mission-scoped export requires an explicit mission selection and is not wired into this picker yet",
-        available: false
-      }
-    );
-
-    return packs;
-  };
-
-  const fetchContextPack = async (args: import("../../../shared/types").ContextPackFetchArgs): Promise<import("../../../shared/types").ContextPackFetchResult> => {
-    const MAX_CHARS = 50_000;
-    let content = "";
-    let truncated = false;
-    const level = args.level === "brief" ? "lite" : args.level === "detailed" ? "deep" : "standard";
-
-    try {
-      if (!packService) {
-        throw new Error("Live context export service is unavailable.");
-      }
-
-      const exportResult = await (async () => {
-        if (args.scope === "project") return await packService.getProjectExport({ level });
-        if (args.scope === "lane") {
-          if (!args.laneId?.trim()) throw new Error("Lane context requires laneId.");
-          return await packService.getLaneExport({ laneId: args.laneId.trim(), level });
-        }
-        if (args.scope === "conflict") {
-          if (!args.laneId?.trim()) throw new Error("Conflict context requires laneId.");
-          return await packService.getConflictExport({ laneId: args.laneId.trim(), level });
-        }
-        if (args.scope === "plan") {
-          if (!args.laneId?.trim()) throw new Error("Plan context requires laneId.");
-          return await packService.getPlanExport({ laneId: args.laneId.trim(), level });
-        }
-        if (args.scope === "feature") {
-          if (!args.featureKey?.trim()) throw new Error("Feature context requires featureKey.");
-          return await packService.getFeatureExport({ featureKey: args.featureKey.trim(), level });
-        }
-        if (!args.missionId?.trim()) throw new Error("Mission context requires missionId.");
-        return await packService.getMissionExport({ missionId: args.missionId.trim(), level });
-      })();
-
-      content = exportResult.content;
-      truncated = exportResult.truncated;
-
-      if (content.length > MAX_CHARS) {
-        content = content.slice(0, MAX_CHARS);
-        truncated = true;
-      }
-    } catch (error) {
-      content = `Failed to fetch ${args.scope} context: ${error instanceof Error ? error.message : String(error)}`;
-    }
-
-    return { scope: args.scope, content, truncated };
   };
 
   const listSubagents = ({ sessionId }: AgentChatSubagentListArgs): AgentChatSubagentSnapshot[] => {
@@ -5721,8 +6141,40 @@ export function createAgentChatService(args: {
     threadId?: string;
     sdkSessionId?: string | null;
   }> => {
+    const managed = ensureManagedSession(sessionId);
+    const trimmed = text.trim();
+    if (!trimmed.length) {
+      return {
+        sessionId,
+        provider: managed.session.provider,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        outputText: "",
+        ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+        ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
+      };
+    }
     if (sessionTurnCollectors.has(sessionId)) {
       throw new Error(`Session '${sessionId}' already has an active background turn.`);
+    }
+    const prepared = prepareSendMessage({
+      sessionId,
+      text,
+      displayText,
+      attachments,
+      reasoningEffort,
+      executionMode,
+    });
+    if (!prepared) {
+      return {
+        sessionId,
+        provider: managed.session.provider,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        outputText: "",
+        ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+        ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
+      };
     }
 
     const safeTimeoutMs = Math.max(15_000, Math.floor(timeoutMs));
@@ -5740,14 +6192,7 @@ export function createAgentChatService(args: {
         timeout,
       });
 
-      void sendMessage({
-        sessionId,
-        text,
-        displayText,
-        attachments,
-        reasoningEffort,
-        executionMode,
-      }).catch((error) => {
+      void executePreparedSendMessage(prepared).catch((error) => {
         clearTimeout(timeout);
         sessionTurnCollectors.delete(sessionId);
         reject(error instanceof Error ? error : new Error(String(error)));
@@ -5774,8 +6219,6 @@ export function createAgentChatService(args: {
     disposeAll,
     updateSession,
     warmupModel,
-    listContextPacks,
-    fetchContextPack,
     changePermissionMode,
     listSubagents,
     getSessionCapabilities,

@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AgentChatEventEnvelope,
   AiApiKeyVerificationResult,
   AiProviderConnectionStatus,
   AiSettingsStatus,
@@ -85,10 +86,14 @@ function CliLogo({ cli }: { cli: CliName }) {
   return <CodexLogo size={24} className="text-zinc-100" />;
 }
 
+const SOURCE_BADGE_MAP: Record<ApiKeySource, { color: string; label: string }> = {
+  store: { color: COLORS.success, label: "Local Store" },
+  env: { color: COLORS.info, label: "Environment" },
+  config: { color: COLORS.warning, label: "Project Config" },
+};
+
 function SourceBadge({ source }: { source: ApiKeySource }) {
-  const color =
-    source === "store" ? COLORS.success : source === "env" ? COLORS.info : COLORS.warning;
-  const label = source === "store" ? "Local Store" : source === "env" ? "Environment" : "Project Config";
+  const { color, label } = SOURCE_BADGE_MAP[source];
   return (
     <span
       style={{
@@ -129,13 +134,49 @@ function buildCliMessage(tool: (typeof CLI_TOOLS)[number], connection: AiProvide
   if (connection?.runtimeAvailable) {
     return "Connection verified.";
   }
+  if (connection?.blocker) {
+    return connection.blocker;
+  }
   if (connection?.runtimeDetected && !connection.authAvailable) {
-    return connection.blocker ?? `CLI detected but not signed in. Run: ${tool.loginCmd}`;
+    return `CLI detected but not signed in. Run: ${tool.loginCmd}`;
   }
   if (connection?.authAvailable && !connection.runtimeDetected) {
     return `Local credentials exist but CLI not found in PATH. Install: ${tool.installHint}`;
   }
   return `CLI not found in PATH. Install: ${tool.installHint}. If already installed, ensure it is on your shell PATH and use Refresh.`;
+}
+
+const AUTH_ERROR_SIGNALS = [
+  "invalid authentication credentials",
+  "authentication error",
+  "authentication_error",
+  "authentication failed",
+  "not authenticated",
+  "not logged in",
+  "login required",
+  "sign in",
+  "invalid api key",
+  "api error: 401",
+  "status 401",
+  "claude auth login",
+  "codex login",
+  "/login",
+];
+
+function isAuthRelatedChatMessage(message: string | null | undefined): boolean {
+  const normalized = String(message ?? "").trim().toLowerCase();
+  if (!normalized.length) return false;
+  return AUTH_ERROR_SIGNALS.some((signal) => normalized.includes(signal));
+}
+
+function shouldRefreshProvidersForChatEvent(envelope: AgentChatEventEnvelope): boolean {
+  const event = envelope.event;
+  if (event.type === "system_notice" && event.noticeKind === "auth") return true;
+  if (event.type === "error") return isAuthRelatedChatMessage(event.message);
+  if (event.type === "status" && event.turnStatus === "failed") {
+    return isAuthRelatedChatMessage(event.message);
+  }
+  return false;
 }
 
 export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefreshOnMount?: boolean }) {
@@ -148,9 +189,12 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   const [error, setError] = useState<string | null>(null);
   const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
   const [verificationByProvider, setVerificationByProvider] = useState<Record<string, AiApiKeyVerificationResult>>({});
+  const pendingRefreshTimerRef = useRef<number | null>(null);
 
-  const refreshStatus = useCallback(async (options?: { force?: boolean }) => {
-    setLoading(true);
+  const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
+    if (!options?.silent) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [nextStatus, nextStoredProviders] = await Promise.all([
@@ -162,13 +206,33 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!options?.silent) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     void refreshStatus(forceRefreshOnMount ? { force: true } : undefined);
   }, [forceRefreshOnMount, refreshStatus]);
+
+  useEffect(() => {
+    const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
+      if (!shouldRefreshProvidersForChatEvent(envelope)) return;
+      if (pendingRefreshTimerRef.current != null) return;
+      pendingRefreshTimerRef.current = window.setTimeout(() => {
+        pendingRefreshTimerRef.current = null;
+        void refreshStatus({ silent: true });
+      }, 120);
+    });
+    return () => {
+      unsubscribe();
+      if (pendingRefreshTimerRef.current != null) {
+        window.clearTimeout(pendingRefreshTimerRef.current);
+        pendingRefreshTimerRef.current = null;
+      }
+    };
+  }, [refreshStatus]);
 
   const detectedAuth = status?.detectedAuth ?? [];
   const providerConnections = status?.providerConnections;

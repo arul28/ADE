@@ -64,7 +64,6 @@ export type CreateDraft = {
 };
 
 export type CreateMissionDefaults = {
-  plannerProvider?: "auto" | "claude" | "codex";
   orchestratorModel?: import("../../../shared/types").ModelConfig;
   permissionConfig?: MissionPermissionConfig;
 };
@@ -159,13 +158,10 @@ function buildDefaultModelConfig(
   builtInProfiles: typeof BUILT_IN_PROFILES = BUILT_IN_PROFILES,
 ): MissionModelConfig {
   void builtInProfiles;
-  const plannerProvider = defaults?.plannerProvider ?? "auto";
 
-  // Prefer explicit orchestratorModel from settings, fall back to provider-based default
+  // Prefer explicit orchestratorModel from settings, fall back to claude default
   const orchestratorModel = defaults?.orchestratorModel
-    ?? (plannerProvider === "claude" || plannerProvider === "codex"
-      ? DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER[plannerProvider]
-      : DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER.claude);
+    ?? DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER.claude;
 
   return {
     profileId: undefined,

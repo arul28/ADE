@@ -504,7 +504,6 @@ export type AutomationTriggerType = (typeof AUTOMATION_TRIGGER_TYPES)[number];
 export type AutomationActionType =
   | "agent-session"
   | "launch-mission"
-  | "update-packs"
   | "predict-conflicts"
   | "run-tests"
   | "run-command";
@@ -937,10 +936,7 @@ export type AiOrchestratorConfig = {
   maxTotalTokenBudget?: number;
   maxPerStepTokenBudget?: number;
   defaultExecutionPolicy?: Partial<MissionExecutionPolicy>;
-  /** Full model config for the orchestrator (preferred over defaultPlannerProvider). */
   defaultOrchestratorModel?: ModelConfig;
-  /** @deprecated Use defaultOrchestratorModel instead. Kept for backward compat. */
-  defaultPlannerProvider?: "auto" | "claude" | "codex";
   autoResolveInterventions?: boolean;
   interventionConfidenceThreshold?: number;
   hooks?: Partial<Record<AiOrchestratorHookEvent, AiOrchestratorHookConfig>>;

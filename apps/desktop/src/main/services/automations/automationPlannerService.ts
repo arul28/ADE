@@ -225,12 +225,6 @@ function buildPlannerSchema(): Record<string, unknown> {
             {
               type: "object",
               additionalProperties: false,
-              properties: { type: { const: "update-packs" }, ...baseActionProps },
-              required: ["type"]
-            },
-            {
-              type: "object",
-              additionalProperties: false,
               properties: { type: { const: "predict-conflicts" }, ...baseActionProps },
               required: ["type"]
             },
@@ -291,7 +285,6 @@ function buildPlannerPrompt(args: {
     "- linear.issue_status_changed",
     "",
     "Available actions:",
-    "- update-packs",
     "- predict-conflicts",
     "- run-tests (requires suite string; use a suite id or name below)",
     "- run-command (requires command string; keep it a single shell command)",
@@ -608,7 +601,6 @@ function normalizeDraft(args: {
     } satisfies Partial<AutomationAction>;
 
     if (
-      type !== "update-packs" &&
       type !== "predict-conflicts" &&
       type !== "run-tests" &&
       type !== "run-command"
@@ -1185,9 +1177,6 @@ export function createAutomationPlannerService({
             summary: suite ? `Run tests: ${suite.name || suite.id} (${suite.id})` : `Run tests: ${action.suiteId}`,
             warnings
           };
-        }
-        if (action.type === "update-packs") {
-          return { index, type: action.type, summary: "Refresh packs (lane packs + project pack)", warnings };
         }
         if (action.type === "predict-conflicts") {
           return { index, type: action.type, summary: "Run conflict prediction", warnings };

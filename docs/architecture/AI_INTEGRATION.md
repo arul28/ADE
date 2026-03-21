@@ -214,7 +214,7 @@ The service routes each AI task to the appropriate provider based on task type a
 | Task Type | Default Model | Rationale |
 |-----------|--------------|-----------|
 | `planning` | `anthropic/claude-sonnet-4-6` | Strong multi-step reasoning for mission decomposition |
-| `implementation` | `openai/gpt-5.4-codex` | Optimized code generation with sandbox isolation |
+| `implementation` | `openai/gpt-5.3-codex` | Optimized code generation with sandbox isolation |
 | `review` | `anthropic/claude-sonnet-4-6` | Detailed analysis with explanation capabilities |
 | `conflict_resolution` | `anthropic/claude-sonnet-4-6` | Reasoning over overlapping changes with full context |
 | `commit_message` | `anthropic/claude-haiku-4-5` | Short-form generation, low latency |
@@ -1139,13 +1139,15 @@ External MCP Request           User (CTO Tab)
 - The CTO classifies incoming requests into intents: `create_mission`, `run_task`, `review_code`, `query_state`, `relay_chat`
 - Routing decisions are informed by the CTO's persistent memory — it learns which request patterns map to which handlers over time
 - Complex requests that span multiple surfaces are decomposed into sub-requests and coordinated by the CTO
-- The CTO can proactively create missions, spin up lanes, and orchestrate work based on project context without explicit user direction
-- It maintains awareness of all active missions, lane states, and recent agent outputs
+- The CTO can proactively create work chats, missions, lanes, PR actions, file/context reads, and managed-process actions through stable ADE services without explicit renderer clicks
+- It maintains awareness of active missions, lane states, chat sessions, worker outputs, and workflow runs
+- UI navigation remains suggestion-only: tool results can include explicit ADE deeplinks like Work, Missions, Lanes, or CTO, but they do not silently switch tabs
 
-**CTO Identity and System Prompt**: The CTO system prompt is now assembled as three explicit sections by `previewSystemPrompt()` in `ctoStateService.ts`:
+**CTO Identity and System Prompt**: The CTO system prompt is now assembled as four explicit sections by `previewSystemPrompt()` in `ctoStateService.ts`:
 - **Immutable ADE doctrine**: ADE-owned identity and operating rules for the persistent CTO project operator. This is not user-editable.
 - **Personality overlay**: selected from presets or one custom personality field. This only changes the behavioral overlay.
 - **Memory and continuity model**: explains the long-term CTO brief, current working context, durable searchable memory, and compaction behavior.
+- **ADE operator capability manifest**: enumerates the stable ADE surfaces the CTO can operate internally and clarifies that UI navigation is returned as suggestions rather than implicit tab switches.
 
 Project-specific summary, conventions, active focus, session continuity, subordinate activity, and today's daily log are carried by the memory/continuity layers rather than by the immutable doctrine.
 

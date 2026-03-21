@@ -12,7 +12,7 @@ The current runtime is optimized around a simple rule: **make the CTO usable bef
 
 - the CTO is not only a live-brain runtime concept
 - a normal clone/pull should recover the shared CTO identity/config layer
-- raw runtime/session logs, generated docs, and CTO runtime memory remain local or ADE-sync-only in this W3 pass
+- raw runtime/session logs, generated docs, and CTO runtime memory remain local or ADE-sync-only in this Phase 6 W3 (portability) pass
 
 ---
 
@@ -195,7 +195,7 @@ Current system behavior separates:
 For desktop portability, treat these differently:
 
 - CTO identity is part of the shared Git-tracked ADE scaffold
-- CTO core memory and generated context docs remain local/generated in this W3 pass
+- CTO core memory and generated context docs remain local/generated in this Phase 6 W3 (portability) pass
 - recent subordinate activity and live session state are ADE-sync/runtime concerns
 - raw daily logs remain operational history unless promoted into portable summaries or memory
 
@@ -231,21 +231,24 @@ Memory browsing and management are consolidated in Settings > Memory tab. The CT
 
 ## CTO operator surface
 
-The CTO is now a persistent supervisor with a curated ADE operator tool layer in chat. It can inspect and act across:
+The CTO is a persistent ADE operator with a broad internal tool surface in chat. It can inspect and act across:
 
-- lanes
 - work chats
+- lanes
 - missions
+- managed processes
+- pull requests
+- files and context exports
 - worker agents
 - Linear workflow state
 
 Important boundary:
 
-- this is a curated operator surface backed by stable ADE services
-- it is not a raw dump of every internal IPC or mission-coordinator tool
-- orchestrator coordinator tools remain mission-run specific and separate from the CTO chat tool surface
+- the CTO operates through stable ADE services, not raw Electron IPC
+- mission coordinator internals remain mission-run specific and separate from the CTO chat tool surface
+- when the CTO wants to open something in the UI, it returns explicit navigation suggestions instead of silently switching tabs
 
-Today the CTO can supervise ADE directly, but it is still not a full "everything in ADE is model-callable" surface. Remaining expansion work should continue by adding stable operator tools rather than exposing raw internals.
+This is intentionally "full internal" in the ADE-service sense: the CTO can create and supervise ADE objects directly, while the renderer remains suggestion-driven.
 
 ---
 

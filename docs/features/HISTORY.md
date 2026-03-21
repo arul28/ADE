@@ -50,7 +50,7 @@ This timeline serves multiple purposes:
 - **Auditing**: The complete operation log provides accountability for changes,
   especially useful in team environments where understanding who did what matters.
 
-**Current status**: Implemented and working (Phases 2 + 8). The core operations timeline is recorded and browsable, and Phase 8 adds checkpoints + pack events as first-class history artifacts. The UI favors readable activity summaries with deep links into lanes and packs; raw metadata remains available but is de-emphasized to reduce noise. Advanced timeline features (graph view, undo, replay, export) remain planned for Phase 9.
+**Current status**: Implemented and working (Phases 2 + 8). The core operations timeline is recorded and browsable, and Phase 8 adds checkpoints + pack events as first-class history artifacts. The UI favors readable activity summaries with deep links into lanes and packs; raw metadata remains available but is de-emphasized to reduce noise. Advanced timeline features (graph view, undo, replay, export) remain deferred to backlog.
 
 Recent UI hardening keeps the page quieter under load: polling only runs while live operations exist, background refreshes stay silent, and focus/visibility return triggers catch-up refresh instead of constant foreground churn.
 

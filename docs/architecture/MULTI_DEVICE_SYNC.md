@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan/phase-6.md` is the canonical Phase 6 plan.
 
-> Last updated: 2026-03-16
+> Last updated: 2026-03-21
 
-> Status: **Phase 6 W1-W4 foundation is partially implemented. Desktop live host/controller sync is in place and desktop pairing exists. The iOS local replicated-state code path exists for Lanes / Files / Work / PRs, but the current vendored `crsqlite.xcframework` is not safely embeddable on iOS and blocks app startup until it is replaced or wrapped.**
+> Status: **Phase 6 W1-W5 foundation is in place. Desktop live host/controller sync, device pairing, and QR pairing UX are implemented. iOS uses a pure-SQL CRR emulation layer (trigger-based change tracking against system SQLite) instead of the native cr-sqlite extension, avoiding all dynamic-library and code-signing restrictions on iOS. The vendored `crsqlite.xcframework` has been removed.**
 
 This document describes ADE's multi-device sync architecture: cr-sqlite CRDT replication, the WebSocket sync protocol, the host/controller device model, and the security model for device communication.
 
@@ -51,9 +51,14 @@ Canonical note:
 
 ### Loading the Extension
 
-- Desktop and headless MCP load `cr-sqlite` through the shared `openKvDb(...)` path in [`apps/desktop/src/main/services/state/kvDb.ts`](/Users/arul/ADE/apps/desktop/src/main/services/state/kvDb.ts).
-- The current W1 implementation uses Node's native `node:sqlite` driver plus a vendored `crsqlite` loadable extension on desktop/macOS.
-- iOS is currently blocked on the vendored `apps/ios/Vendor/crsqlite/crsqlite.xcframework`. The binary exports `sqlite3_crsqlite_init` and `sqlite3_api`, which indicates a SQLite loadable-extension-style entrypoint rather than an iOS-safe embedded initializer. Direct `sqlite3_crsqlite_init(db, &err, nil)` crashes because the SQLite API thunk is nil. `sqlite3_auto_extension(...)` is deprecated and rejected on Apple platforms, and iOS system SQLite does not expose `sqlite3_load_extension(...)` as a usable fallback. The next W5 prerequisite is therefore to replace this artifact with an embeddable iOS build or add a native wrapper library that links cr-sqlite against SQLite.
+- **Desktop**: loads `cr-sqlite` as a native loadable extension (`.dylib`) through the shared `openKvDb(...)` path in [`apps/desktop/src/main/services/state/kvDb.ts`](/Users/arul/ADE/apps/desktop/src/main/services/state/kvDb.ts). The W1 implementation uses Node's native `node:sqlite` driver plus a vendored `crsqlite.dylib` on desktop/macOS.
+- **iOS**: uses a **pure-SQL CRR emulation layer** in [`apps/ios/ADE/Services/Database.swift`](/Users/arul/ADE/apps/ios/ADE/Services/Database.swift) instead of the native cr-sqlite extension. iOS system SQLite does not support `sqlite3_load_extension()`, `sqlite3_auto_extension()` is rejected on Apple platforms, and calling `sqlite3_crsqlite_init()` directly crashes because the SQLite API thunk pointer is nil in a loadable-extension-style binary. Rather than fighting these restrictions with a static-link wrapper, the iOS app implements the CRR contract entirely in SQL using triggers and custom SQLite functions registered via `sqlite3_create_function_v2()`:
+  - **Metadata tables**: `crsql_master`, `crsql_site_id`, `crsql_changes`, and per-table `<table>__crsql_clock` tables are created as regular SQLite tables matching the cr-sqlite schema.
+  - **Change tracking**: per-table INSERT/UPDATE/DELETE triggers automatically write to `crsql_changes` with Lamport-style versioning. Custom functions (`ade_next_db_version()`, `ade_local_site_id()`, `ade_capture_local_changes()`) provide the trigger context.
+  - **Changeset exchange**: `exportChangesSince(version:)` and `applyChanges(_:)` read/write the same `crsql_changes` table format that the desktop cr-sqlite extension uses, so changesets are wire-compatible.
+  - **CRR enablement**: `enableCrr(for:)` dynamically discovers tables from `sqlite_master` and installs triggers, matching desktop's dynamic CRR marking behavior.
+
+  The previously vendored `crsqlite.xcframework` (which contained a dynamic framework with `_sqlite3_crsqlite_init` entrypoint) has been removed from the project. It was never linked or embedded in any build phase.
 
 ### CRR Marking
 
@@ -308,8 +313,9 @@ Rule for future workstreams:
 
 | Component | Status | Notes |
 |---|---|---|
-| cr-sqlite extension loading | Implemented | Shared `openKvDb(...)` adapter |
-| CRR marking for eligible tables | Implemented | Dynamic startup migration |
+| cr-sqlite extension loading (desktop) | Implemented | Shared `openKvDb(...)` adapter with vendored `.dylib` |
+| Pure-SQL CRR emulation (iOS) | Implemented | Trigger-based change tracking in `Database.swift`, wire-compatible with desktop cr-sqlite changesets |
+| CRR marking for eligible tables | Implemented | Dynamic startup migration (desktop: `crsql_as_crr()`, iOS: `enableCrr(for:)` triggers) |
 | Changeset extraction/application | Implemented | `AdeDb.sync.exportChangesSince/applyChanges` |
 | WebSocket sync server | Implemented (desktop) | Phase 6 W2 |
 | Sync protocol (JSON + zlib) | Implemented (desktop) | Phase 6 W2 |
@@ -322,12 +328,12 @@ Rule for future workstreams:
 | Device pairing secrets + numeric-code pairing | Implemented (initial) | Phase 6 W4 |
 | iOS local replicated database peer | Implemented (initial) | Phase 6 W4 |
 | iOS Lanes / Files / Work / PRs local-first reads | Implemented (initial) | Phase 6 W4 |
-| QR pairing UX | Planned | Phase 6 W5 |
-| Tailscale integration | Planned | Phase 6 W5 |
+| QR pairing UX | Implemented (initial) | Phase 6 W5 |
+| Tailscale integration | Planned | Phase 6 W6+ |
 | Command routing | Implemented (allowlisted subset for current phone tabs) | Phase 6 W4-W10 |
 | Lane portability (desktop-to-desktop) | Planned | Phase 6 W11 |
 
-**Overall status**: W1-W4 foundation is now in place on desktop, and the iOS data/service code has been rewritten to match the real replicated-state contract. The remaining blocking gap is the vendored iOS `crsqlite` artifact: until it is replaced or wrapped, the phone app cannot initialize the replicated database. After that, W5 continues with pairing/discovery/network polish and real-device dogfooding.
+**Overall status**: W1-W5 foundation is in place on both desktop and iOS. Desktop uses the native cr-sqlite extension for CRDT replication. iOS uses a pure-SQL CRR emulation layer (trigger-based change tracking against system SQLite) that produces wire-compatible changesets. The previously vendored `crsqlite.xcframework` has been removed -- it was a dynamic framework binary that could not be loaded on iOS due to platform restrictions on `sqlite3_load_extension()` and `sqlite3_auto_extension()`. W6+ continues with Tailscale integration, network hardening, and real-device dogfooding.
 
 ### Deferred follow-up
 

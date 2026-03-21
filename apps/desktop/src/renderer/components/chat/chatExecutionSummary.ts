@@ -7,6 +7,8 @@ export type ChatSubagentSnapshot = {
   startedAt: string;
   updatedAt: string;
   summary: string | null;
+  lastToolName?: string;
+  background?: boolean;
   usage?: {
     totalTokens?: number;
     toolUses?: number;
@@ -32,7 +34,24 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: existing?.summary ?? null,
+        lastToolName: existing?.lastToolName,
+        background: event.background ?? existing?.background ?? false,
         usage: existing?.usage,
+      });
+      continue;
+    }
+
+    if (event.type === "subagent_progress") {
+      const existing = snapshots.get(event.taskId);
+      snapshots.set(event.taskId, {
+        taskId: event.taskId,
+        description: event.description?.trim() || existing?.description || "Subagent task",
+        status: "running",
+        startedAt: existing?.startedAt ?? envelope.timestamp,
+        updatedAt: envelope.timestamp,
+        summary: event.summary?.trim() || existing?.summary || null,
+        lastToolName: event.lastToolName ?? existing?.lastToolName,
+        usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
       continue;
     }
@@ -45,8 +64,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         status: event.status,
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
-        summary: event.summary.trim() || existing?.summary || null,
-        usage: event.usage ?? existing?.usage,
+        summary: event.summary?.trim() || existing?.summary || null,
+        lastToolName: existing?.lastToolName,
+        usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
     }
   }

@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
+import QRCode from "qrcode";
 import type {
   SyncDesktopConnectionDraft,
   SyncDeviceRuntimeState,
-  SyncPeerDeviceType,
   SyncRoleSnapshot,
 } from "../../../shared/types";
 import {
@@ -42,6 +42,45 @@ const helperTextStyle: React.CSSProperties = {
   lineHeight: 1.6,
 };
 
+const titleStyle: React.CSSProperties = {
+  color: COLORS.textPrimary,
+  fontFamily: SANS_FONT,
+  fontSize: 24,
+  fontWeight: 700,
+  lineHeight: 1.15,
+};
+
+const panelStyle: React.CSSProperties = {
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 10,
+  padding: 14,
+  display: "grid",
+  gap: 6,
+};
+
+const detailBlockStyle: React.CSSProperties = {
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 10,
+  padding: 14,
+  background: "rgba(255,255,255,0.015)",
+};
+
+const detailSummaryStyle: React.CSSProperties = {
+  cursor: "pointer",
+  color: COLORS.textPrimary,
+  fontFamily: SANS_FONT,
+  fontSize: 14,
+  fontWeight: 600,
+  listStyle: "none",
+};
+
+const codeValueStyle: React.CSSProperties = {
+  color: COLORS.textPrimary,
+  fontFamily: MONO_FONT,
+  fontSize: 12,
+  lineHeight: 1.8,
+};
+
 function formatTimestamp(value: string | null | undefined): string {
   if (!value) return "Never";
   try {
@@ -61,43 +100,20 @@ function formatLatency(value: number | null | undefined): string {
   return `${value} ms`;
 }
 
-function badgeStyle(color: string): React.CSSProperties {
+function tagStyle(color: string): React.CSSProperties {
   return {
     display: "inline-flex",
     alignItems: "center",
     padding: "4px 8px",
-    borderRadius: 999,
+    borderRadius: 8,
     border: `1px solid ${color}33`,
     background: `${color}14`,
     color,
     fontFamily: MONO_FONT,
     fontSize: 10,
     fontWeight: 700,
-    letterSpacing: "0.08em",
-    textTransform: "uppercase",
+    letterSpacing: "0.04em",
   };
-}
-
-function roleColor(mode: SyncRoleSnapshot["mode"]): string {
-  switch (mode) {
-    case "brain":
-      return COLORS.success;
-    case "viewer":
-      return COLORS.info;
-    default:
-      return COLORS.textMuted;
-  }
-}
-
-function modeLabel(mode: SyncRoleSnapshot["mode"]): string {
-  switch (mode) {
-    case "brain":
-      return "host";
-    case "viewer":
-      return "controller";
-    default:
-      return "independent";
-  }
 }
 
 function connectionColor(state: SyncDeviceRuntimeState["connectionState"]): string {
@@ -111,6 +127,72 @@ function connectionColor(state: SyncDeviceRuntimeState["connectionState"]): stri
   }
 }
 
+function deviceConnectionLabel(device: SyncDeviceRuntimeState): string {
+  switch (device.connectionState) {
+    case "self":
+      return "This desktop";
+    case "connected":
+      return "Connected";
+    default:
+      return "Disconnected";
+  }
+}
+
+function connectionStateLabel(status: SyncRoleSnapshot): string {
+  if (status.role === "brain") {
+    return status.connectedPeers.length > 0
+      ? `${status.connectedPeers.length} controller${status.connectedPeers.length === 1 ? "" : "s"} connected`
+      : "Ready for phone pairing";
+  }
+  switch (status.client.state) {
+    case "connected":
+      return "Connected to host";
+    case "connecting":
+      return "Connecting to host";
+    case "error":
+      return "Host link needs attention";
+    default:
+      return "Not linked to a host";
+  }
+}
+
+function summaryTitle(status: SyncRoleSnapshot): string {
+  if (status.role === "brain") {
+    return status.connectedPeers.length > 0 ? "This Mac is the current host" : "This Mac is ready to host";
+  }
+  if (status.client.state === "connected") {
+    return `This Mac is linked to ${status.currentBrain?.name ?? "the current host"}`;
+  }
+  if (status.client.state === "connecting") {
+    return "This Mac is connecting to a host";
+  }
+  if (status.client.state === "error") {
+    return "Desktop link needs attention";
+  }
+  return "This Mac is not linked to a host";
+}
+
+function summaryBody(status: SyncRoleSnapshot): string {
+  if (status.role === "brain") {
+    return "Use the phone pairing block below to connect ADE on your iPhone. Desktop-to-desktop linking and host handoff stay under advanced options.";
+  }
+  if (status.client.state === "connected") {
+    return "Phone pairing happens on the current host, not on this controller. Open Sync on the host Mac if you want to pair an iPhone.";
+  }
+  return "This screen can also link one desktop to another host, but that is an advanced fallback. It is separate from phone pairing.";
+}
+
+function connectionTagColor(status: SyncRoleSnapshot): string {
+  if (status.client.state === "error") return COLORS.danger;
+  if (status.role === "brain" || status.client.state === "connected") return COLORS.success;
+  return COLORS.textMuted;
+}
+
+function formatEndpoint(host: string | null | undefined, port: number | null | undefined): string {
+  if (!host) return "Not published yet";
+  return port ? `${host}:${port}` : host;
+}
+
 export function SyncDevicesSection() {
   const [status, setStatus] = useState<SyncRoleSnapshot | null>(null);
   const [devices, setDevices] = useState<SyncDeviceRuntimeState[]>([]);
@@ -119,10 +201,10 @@ export function SyncDevicesSection() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [localName, setLocalName] = useState("");
-  const [localType, setLocalType] = useState<SyncPeerDeviceType>("desktop");
   const [connectHost, setConnectHost] = useState("");
   const [connectPort, setConnectPort] = useState("8787");
   const [connectToken, setConnectToken] = useState("");
+  const [pairingQrDataUrl, setPairingQrDataUrl] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [nextStatus, nextDevices] = await Promise.all([
@@ -169,7 +251,6 @@ export function SyncDevicesSection() {
   useEffect(() => {
     if (!status) return;
     setLocalName(status.localDevice.name);
-    setLocalType(status.localDevice.deviceType);
     if (status.client.savedDraft?.host && !connectHost) {
       setConnectHost(status.client.savedDraft.host);
     }
@@ -177,6 +258,35 @@ export function SyncDevicesSection() {
       setConnectPort(String(status.client.savedDraft.port));
     }
   }, [connectHost, connectPort, status]);
+
+  const qrPayloadText = status?.pairingConnectInfo?.qrPayloadText ?? null;
+  useEffect(() => {
+    let cancelled = false;
+    if (!qrPayloadText) {
+      setPairingQrDataUrl(null);
+      return;
+    }
+    void QRCode.toDataURL(qrPayloadText, {
+      width: 240,
+      margin: 1,
+      errorCorrectionLevel: "M",
+      color: {
+        dark: "#F4F7FB",
+        light: "#11151A",
+      },
+    }).then((dataUrl) => {
+      if (!cancelled) {
+        setPairingQrDataUrl(dataUrl);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setPairingQrDataUrl(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [qrPayloadText]);
 
   const runAction = useCallback(async (work: () => Promise<void>) => {
     setBusy(true);
@@ -193,14 +303,15 @@ export function SyncDevicesSection() {
   }, [refresh]);
 
   const handleSaveLocal = useCallback(() => {
+    if (!status) return;
     void runAction(async () => {
       await window.ade.sync.updateLocalDevice({
         name: localName.trim(),
-        deviceType: localType,
+        deviceType: status.localDevice.deviceType,
       });
-      setNotice("Local device details updated.");
+      setNotice("Host name updated.");
     });
-  }, [localName, localType, runAction]);
+  }, [localName, runAction, status]);
 
   const handleConnect = useCallback(() => {
     void runAction(async () => {
@@ -212,7 +323,7 @@ export function SyncDevicesSection() {
         throw new Error("Enter a valid port.");
       }
       if (!connectToken.trim()) {
-        throw new Error("Enter the bootstrap token from the current host.");
+        throw new Error("Enter the bootstrap token from the host.");
       }
       const draft: SyncDesktopConnectionDraft = {
         host: connectHost.trim(),
@@ -220,28 +331,28 @@ export function SyncDevicesSection() {
         token: connectToken.trim(),
       };
       await window.ade.sync.connectToBrain(draft);
-      setNotice("Connected to the current host.");
+      setNotice("This desktop is now linked to the host.");
     });
   }, [connectHost, connectPort, connectToken, runAction]);
 
   const handleDisconnect = useCallback(() => {
     void runAction(async () => {
       await window.ade.sync.disconnectFromBrain();
-      setNotice("Disconnected. This desktop is now running in independent desktop mode.");
+      setNotice("This desktop is no longer linked to a remote host.");
     });
   }, [runAction]);
 
   const handleTransfer = useCallback(() => {
     void runAction(async () => {
       await window.ade.sync.transferBrainToLocal();
-      setNotice("This desktop is now the host machine.");
+      setNotice("Hosting moved to this desktop.");
     });
   }, [runAction]);
 
-  const handleForget = useCallback((deviceId: string) => {
+  const handleForget = useCallback((device: Pick<SyncDeviceRuntimeState, "deviceId" | "connectionState">) => {
     void runAction(async () => {
-      await window.ade.sync.forgetDevice(deviceId);
-      setNotice("Device removed from the local registry.");
+      await window.ade.sync.forgetDevice(device.deviceId);
+      setNotice(device.connectionState === "connected" ? "Device revoked." : "Device removed.");
     });
   }, [runAction]);
 
@@ -250,17 +361,22 @@ export function SyncDevicesSection() {
     const host = status.localDevice.lastHost ?? "127.0.0.1";
     const port = status.localDevice.lastPort ?? 8787;
     await window.ade.app.writeClipboardText(`Host: ${host}\nPort: ${port}\nToken: ${status.bootstrapToken}`);
-    setNotice("Manual connect details copied to the clipboard.");
+    setNotice("Desktop link details copied to the clipboard.");
   }, [status]);
 
   const handleCopyPairingInfo = useCallback(async () => {
-    if (!status?.pairingSession) return;
-    const host = status.localDevice.lastHost ?? "127.0.0.1";
-    const port = status.localDevice.lastPort ?? 8787;
+    if (!status?.pairingConnectInfo) return;
+    const addressHints = status.pairingConnectInfo.addressCandidates.map((entry) => `${entry.kind}:${entry.host}`).join(", ");
     await window.ade.app.writeClipboardText(
-      `Host: ${host}\nPort: ${port}\nPairing code: ${status.pairingSession.code}\nExpires: ${status.pairingSession.expiresAt}`,
+      `Pairing code: ${status.pairingConnectInfo.pairingCode}\nExpires: ${status.pairingConnectInfo.expiresAt}\nPort: ${status.pairingConnectInfo.port}\nAddress candidates: ${addressHints}`,
     );
-    setNotice("Pairing code copied to the clipboard.");
+    setNotice("Phone pairing details copied to the clipboard.");
+  }, [status]);
+
+  const handleCopyPairingPayload = useCallback(async () => {
+    if (!status?.pairingConnectInfo) return;
+    await window.ade.app.writeClipboardText(status.pairingConnectInfo.qrPayloadText);
+    setNotice("Phone QR payload copied to the clipboard.");
   }, [status]);
 
   if (loading) {
@@ -275,49 +391,70 @@ export function SyncDevicesSection() {
     return <div style={helperTextStyle}>Sync is unavailable for this project.</div>;
   }
 
+  const isLocalHost = status.role === "brain";
+  const currentHostName = status.currentBrain?.name ?? status.localDevice.name;
+  const currentHostEndpoint = status.role === "brain"
+    ? formatEndpoint(status.pairingConnectInfo?.addressCandidates[0]?.host ?? status.localDevice.lastHost, status.pairingConnectInfo?.port ?? status.localDevice.lastPort)
+    : formatEndpoint(status.currentBrain?.lastHost, status.currentBrain?.lastPort);
+  const otherDevices = devices.filter((device) => !device.isLocal);
+  const pairingInfo = status.pairingConnectInfo;
+  const primaryPairAddress = pairingInfo?.addressCandidates[0]?.host ?? status.localDevice.lastHost ?? "127.0.0.1";
+  const secondaryPairAddresses = pairingInfo?.addressCandidates.slice(1) ?? [];
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
       <section>
-        <div style={sectionLabelStyle}>HOST MACHINE</div>
+        <div style={sectionLabelStyle}>CURRENT SYNC STATE</div>
         <div style={{ ...cardStyle(), display: "grid", gap: 16 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-            <span style={badgeStyle(roleColor(status.mode))}>{modeLabel(status.mode)}</span>
-            <span style={badgeStyle(status.client.state === "connected" ? COLORS.success : status.client.state === "error" ? COLORS.danger : COLORS.textMuted)}>
-              link {status.client.state}
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={titleStyle}>{summaryTitle(status)}</div>
+            <div style={helperTextStyle}>{summaryBody(status)}</div>
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <span style={tagStyle(isLocalHost ? COLORS.success : COLORS.info)}>
+              {isLocalHost ? "Host mode" : "Controller mode"}
             </span>
-            {status.currentBrain ? (
-              <span style={badgeStyle(COLORS.textMuted)}>
-                host {status.currentBrain.name}
-              </span>
-            ) : null}
+            <span style={tagStyle(connectionTagColor(status))}>
+              {connectionStateLabel(status)}
+            </span>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-            <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 12 }}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Local device</div>
-              <div style={{ color: COLORS.textPrimary, fontWeight: 700, fontFamily: SANS_FONT }}>{status.localDevice.name}</div>
-              <div style={helperTextStyle}>{status.localDevice.platform} · {status.localDevice.deviceType}</div>
-              <div style={{ ...helperTextStyle, marginTop: 6 }}>Last seen: {formatTimestamp(status.localDevice.lastSeenAt)}</div>
+            <div style={panelStyle}>
+              <div style={LABEL_STYLE}>Current host</div>
+              <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 18, fontWeight: 700 }}>
+                {status.role === "brain" ? "This Mac" : currentHostName}
+              </div>
+              <div style={helperTextStyle}>{currentHostEndpoint}</div>
             </div>
-            <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 12 }}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Current host machine</div>
-              <div style={{ color: COLORS.textPrimary, fontWeight: 700, fontFamily: SANS_FONT }}>
-                {status.currentBrain?.name ?? "Not assigned yet"}
+            <div style={panelStyle}>
+              <div style={LABEL_STYLE}>This desktop</div>
+              <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 18, fontWeight: 700 }}>
+                {status.localDevice.name}
               </div>
               <div style={helperTextStyle}>
-                {status.currentBrain?.lastHost ?? "No host yet"}
-                {status.currentBrain?.lastPort ? `:${status.currentBrain.lastPort}` : ""}
-              </div>
-              <div style={{ ...helperTextStyle, marginTop: 6 }}>
-                Ownership epoch: {status.clusterState?.brainEpoch ?? 0}
+                {status.localDevice.platform} · {status.localDevice.deviceType}
               </div>
             </div>
-            <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 12 }}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Live execution ownership</div>
-              <div style={{ ...helperTextStyle, color: COLORS.textPrimary }}>{status.survivableStateText}</div>
-              <div style={{ ...helperTextStyle, marginTop: 6, color: COLORS.warning }}>{status.blockingStateText}</div>
+            <div style={panelStyle}>
+              <div style={LABEL_STYLE}>Connected controllers</div>
+              <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 18, fontWeight: 700 }}>
+                {isLocalHost ? status.connectedPeers.length : 0}
+              </div>
+              <div style={helperTextStyle}>
+                {isLocalHost ? "Phones or desktops currently linked to this host." : "Phone pairing happens on the host Mac."}
+              </div>
             </div>
           </div>
+
+          {(status.role === "viewer" || status.client.state === "connected") ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button type="button" style={outlineButton()} disabled={busy} onClick={handleDisconnect}>
+                Disconnect this desktop
+              </button>
+            </div>
+          ) : null}
 
           {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
           {error ? <div style={{ ...helperTextStyle, color: COLORS.danger }}>{error}</div> : null}
@@ -325,176 +462,117 @@ export function SyncDevicesSection() {
       </section>
 
       <section>
-        <div style={sectionLabelStyle}>LOCAL DEVICE</div>
+        <div style={sectionLabelStyle}>PHONE PAIRING</div>
         <div style={{ ...cardStyle(), display: "grid", gap: 16 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) 180px auto", gap: 12, alignItems: "end" }}>
-            <label style={{ display: "grid", gap: 6 }}>
-              <span style={LABEL_STYLE}>Device name</span>
-              <input value={localName} onChange={(event) => setLocalName(event.target.value)} style={inputStyle} placeholder="This desktop" />
-            </label>
-            <label style={{ display: "grid", gap: 6 }}>
-              <span style={LABEL_STYLE}>Device type</span>
-              <select value={localType} onChange={(event) => setLocalType(event.target.value as SyncPeerDeviceType)} style={inputStyle}>
-                <option value="desktop">desktop</option>
-                <option value="phone">phone</option>
-                <option value="vps">vps</option>
-                <option value="unknown">unknown</option>
-              </select>
-            </label>
-            <button
-              type="button"
-              style={primaryButton({ opacity: localName.trim() ? 1 : 0.5 })}
-              disabled={busy || !localName.trim()}
-              onClick={handleSaveLocal}
-            >
-              Save local device
-            </button>
-          </div>
-          <div style={helperTextStyle}>
-            Device identity is synced operational metadata. Pairing codes mint per-device secrets for controllers, while bootstrap tokens remain available for manual desktop controller connects. Legacy internal sync fields still use brain naming for compatibility.
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div style={sectionLabelStyle}>CONNECT CONTROLLER</div>
-        <div style={{ ...cardStyle(), display: "grid", gap: 16 }}>
-          <div style={helperTextStyle}>
-            Pair phones and other remote controllers with the short-lived code below. A second desktop can either connect as a controller to this host or stay independent and use Git plus the tracked ADE scaffold/config layer. Paused missions, CTO history, and idle or ended chats remain available after host handoff. Live missions, chats, terminals, or run processes must stop first.
-          </div>
-
-          {(status.mode === "brain" || status.mode === "standalone") && status.pairingSession ? (
-            <div style={{ border: `1px solid ${COLORS.info}33`, borderRadius: 12, padding: 12, background: `${COLORS.info}14` }}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Controller pairing code</div>
-              <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 12, lineHeight: 1.8 }}>
-                <div>Host: {status.localDevice.lastHost ?? "127.0.0.1"}</div>
-                <div>Port: {status.localDevice.lastPort ?? 8787}</div>
-                <div>Code: {status.pairingSession.code}</div>
-                <div>Expires: {formatTimestamp(status.pairingSession.expiresAt)}</div>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleCopyPairingInfo()}>
-                  Copy pairing details
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          {(status.mode === "brain" || status.mode === "standalone") && status.bootstrapToken ? (
-            <div style={{ border: `1px solid ${COLORS.accentBorder}`, borderRadius: 12, padding: 12, background: COLORS.accentSubtle }}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Current host connect details</div>
-              <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 12, lineHeight: 1.8 }}>
-                <div>Host: {status.localDevice.lastHost ?? "127.0.0.1"}</div>
-                <div>Port: {status.localDevice.lastPort ?? 8787}</div>
-                <div>Token: {status.bootstrapToken}</div>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleCopyConnectInfo()}>
-                  Copy connect details
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) 140px minmax(240px, 1fr)", gap: 12 }}>
-            <label style={{ display: "grid", gap: 6 }}>
-              <span style={LABEL_STYLE}>Host address or IP</span>
-              <input value={connectHost} onChange={(event) => setConnectHost(event.target.value)} style={inputStyle} placeholder="127.0.0.1" />
-            </label>
-            <label style={{ display: "grid", gap: 6 }}>
-              <span style={LABEL_STYLE}>Port</span>
-              <input value={connectPort} onChange={(event) => setConnectPort(event.target.value)} style={inputStyle} placeholder="8787" />
-            </label>
-            <label style={{ display: "grid", gap: 6 }}>
-              <span style={LABEL_STYLE}>Bootstrap token</span>
-              <input value={connectToken} onChange={(event) => setConnectToken(event.target.value)} style={inputStyle} placeholder="Paste token from the current host" />
-            </label>
-          </div>
-
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            <button type="button" style={primaryButton()} disabled={busy} onClick={handleConnect}>
-              Connect as controller
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div style={sectionLabelStyle}>ADVANCED DESKTOP OPTIONS</div>
-        <div style={{ ...cardStyle(), display: "grid", gap: 12 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {status.role === "viewer" || status.client.state === "connected" ? (
-              <button type="button" style={outlineButton()} disabled={busy} onClick={handleDisconnect}>
-                Disconnect controller
-              </button>
-            ) : null}
-            <button
-              type="button"
-              style={outlineButton({
-                color: status.transferReadiness.ready ? COLORS.textPrimary : COLORS.textMuted,
-                borderColor: status.transferReadiness.ready ? COLORS.accentBorder : COLORS.border,
-              })}
-              disabled={busy || status.role === "brain" || !status.transferReadiness.ready}
-              onClick={handleTransfer}
-            >
-              Take over host role
-            </button>
-          </div>
-
-          <div style={{ ...helperTextStyle, color: status.transferReadiness.ready ? COLORS.success : COLORS.warning }}>
-            {status.transferReadiness.ready
-              ? "This desktop is ready to take over the host role."
-              : "Stop the live work below before handing off the host role."}
-          </div>
-
-          <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 12 }}>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Durable state that survives host handoff</div>
-            <div style={{ display: "grid", gap: 6 }}>
-              {status.transferReadiness.survivableState.map((line) => (
-                <div key={line} style={helperTextStyle}>• {line}</div>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 12 }}>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Blocking live work</div>
-            {status.transferReadiness.blockers.length > 0 ? (
-              <div style={{ display: "grid", gap: 8 }}>
-                {status.transferReadiness.blockers.map((blocker) => (
-                  <div key={`${blocker.kind}:${blocker.id}`} style={{ borderBottom: `1px solid ${COLORS.borderMuted}`, paddingBottom: 8 }}>
-                    <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 700 }}>{blocker.label}</div>
-                    <div style={helperTextStyle}>{blocker.detail}</div>
+          {isLocalHost ? (
+            pairingInfo ? (
+              <>
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700 }}>
+                    Pair ADE on your iPhone
                   </div>
-                ))}
-              </div>
+                  <div style={helperTextStyle}>
+                    On the phone, open ADE, tap the connection controls, then scan this QR code or enter the code manually.
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "240px minmax(260px, 1fr)", gap: 16, alignItems: "start" }}>
+                  <div style={{ width: 240, height: 240, borderRadius: 10, overflow: "hidden", border: `1px solid ${COLORS.border}` }}>
+                    {pairingQrDataUrl
+                      ? <img src={pairingQrDataUrl} alt="Phone pairing QR code" style={{ display: "block", width: "100%", height: "100%" }} />
+                      : <div style={{ ...helperTextStyle, display: "grid", placeItems: "center", height: "100%" }}>Generating QR…</div>}
+                  </div>
+
+                  <div style={{ display: "grid", gap: 12 }}>
+                    <div style={panelStyle}>
+                      <div style={LABEL_STYLE}>Manual fallback</div>
+                      <div style={codeValueStyle}>
+                        <div>Code: {pairingInfo.pairingCode}</div>
+                        <div>Host: {primaryPairAddress}</div>
+                        <div>Port: {pairingInfo.port}</div>
+                        <div>Expires: {formatTimestamp(pairingInfo.expiresAt)}</div>
+                      </div>
+                    </div>
+
+                    {secondaryPairAddresses.length > 0 ? (
+                      <div style={panelStyle}>
+                        <div style={LABEL_STYLE}>Other addresses the phone can try</div>
+                        <div style={{ display: "grid", gap: 4 }}>
+                          {secondaryPairAddresses.map((entry) => (
+                            <div key={`${entry.kind}:${entry.host}`} style={helperTextStyle}>
+                              {entry.kind}: {entry.host}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div style={panelStyle}>
+                      <div style={LABEL_STYLE}>Fastest test path</div>
+                      <ol style={{ ...helperTextStyle, margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+                        <li>Open ADE on the phone.</li>
+                        <li>Tap the connection button.</li>
+                        <li>Scan the QR, or enter <code>{pairingInfo.pairingCode}</code> with host <code>{primaryPairAddress}</code> and port <code>{pairingInfo.port}</code>.</li>
+                      </ol>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleCopyPairingInfo()}>
+                    Copy phone setup details
+                  </button>
+                  <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleCopyPairingPayload()}>
+                    Copy raw QR payload
+                  </button>
+                </div>
+              </>
             ) : (
-              <div style={helperTextStyle}>No live blockers are active.</div>
-            )}
-          </div>
+              <div style={helperTextStyle}>Phone pairing is not available yet. Refresh this page or restart ADE if the host was just opened.</div>
+            )
+          ) : (
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700 }}>
+                Pair the phone on the host Mac
+              </div>
+              <div style={helperTextStyle}>
+                This desktop is acting as a controller, so it cannot mint phone pairing codes. Open Sync on the current host, then pair the phone there.
+              </div>
+              <div style={panelStyle}>
+                <div style={LABEL_STYLE}>Current host</div>
+                <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700 }}>{currentHostName}</div>
+                <div style={helperTextStyle}>{currentHostEndpoint}</div>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
       <section>
-        <div style={sectionLabelStyle}>REGISTERED DEVICES</div>
+        <div style={sectionLabelStyle}>PAIRED DEVICES</div>
         <div style={{ display: "grid", gap: 12 }}>
-          {devices.map((device) => {
-            const canForget = !device.isLocal && !device.isBrain && device.connectionState === "disconnected";
+          {otherDevices.length === 0 ? (
+            <div style={{ ...cardStyle({ padding: 16 }), ...helperTextStyle }}>
+              No phones or remote controllers are registered yet.
+            </div>
+          ) : otherDevices.map((device) => {
+            const canForget = !device.isBrain;
+            const forgetLabel = device.connectionState === "connected" ? "Revoke device" : "Forget device";
             return (
               <div key={device.deviceId} style={{ ...cardStyle({ padding: 16 }), display: "grid", gap: 10 }}>
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                  <div>
+                  <div style={{ display: "grid", gap: 4 }}>
                     <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 700 }}>
                       {device.name}
                     </div>
                     <div style={helperTextStyle}>
-                      {device.platform} · {device.deviceType} · {device.lastHost ?? "no host"}
-                      {device.lastPort ? `:${device.lastPort}` : ""}
+                      {device.platform} · {device.deviceType}
                     </div>
                   </div>
+
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {device.isLocal ? <span style={badgeStyle(COLORS.accent)}>local</span> : null}
-                    {device.isBrain ? <span style={badgeStyle(COLORS.success)}>host</span> : null}
-                    <span style={badgeStyle(connectionColor(device.connectionState))}>{device.connectionState}</span>
+                    {device.isBrain ? <span style={tagStyle(COLORS.success)}>Host</span> : null}
+                    <span style={tagStyle(connectionColor(device.connectionState))}>{deviceConnectionLabel(device)}</span>
                   </div>
                 </div>
 
@@ -507,14 +585,148 @@ export function SyncDevicesSection() {
 
                 {canForget ? (
                   <div>
-                    <button type="button" style={dangerButton()} disabled={busy} onClick={() => handleForget(device.deviceId)}>
-                      Forget device
+                    <button type="button" style={dangerButton()} disabled={busy} onClick={() => handleForget(device)}>
+                      {forgetLabel}
                     </button>
                   </div>
                 ) : null}
               </div>
             );
           })}
+        </div>
+      </section>
+
+      <section>
+        <div style={sectionLabelStyle}>ADVANCED</div>
+        <div style={{ display: "grid", gap: 12 }}>
+          <details style={detailBlockStyle}>
+            <summary style={detailSummaryStyle}>Name shown to phones during pairing</summary>
+            <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+              <div style={helperTextStyle}>
+                This is the device name the phone sees in discovery and pairing. It does not change ADE project data.
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) auto", gap: 12, alignItems: "end" }}>
+                <label style={{ display: "grid", gap: 6 }}>
+                  <span style={LABEL_STYLE}>Host name</span>
+                  <input value={localName} onChange={(event) => setLocalName(event.target.value)} style={inputStyle} placeholder="This Mac" />
+                </label>
+                <button
+                  type="button"
+                  style={primaryButton({ opacity: localName.trim() ? 1 : 0.5 })}
+                  disabled={busy || !localName.trim()}
+                  onClick={handleSaveLocal}
+                >
+                  Save host name
+                </button>
+              </div>
+            </div>
+          </details>
+
+          <details style={detailBlockStyle}>
+            <summary style={detailSummaryStyle}>
+              {isLocalHost ? "Connect another desktop manually" : "Connect this desktop to a host manually"}
+            </summary>
+            <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+              <div style={helperTextStyle}>
+                This is the desktop-to-desktop fallback. It uses the shared bootstrap token and is separate from normal phone pairing.
+              </div>
+
+              {isLocalHost && status.bootstrapToken ? (
+                <div style={panelStyle}>
+                  <div style={LABEL_STYLE}>Host link details</div>
+                  <div style={codeValueStyle}>
+                    <div>Host: {status.localDevice.lastHost ?? "127.0.0.1"}</div>
+                    <div>Port: {status.localDevice.lastPort ?? 8787}</div>
+                    <div>Token: {status.bootstrapToken}</div>
+                  </div>
+                  <div>
+                    <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleCopyConnectInfo()}>
+                      Copy desktop link details
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) 140px minmax(240px, 1fr)", gap: 12 }}>
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span style={LABEL_STYLE}>Host address or IP</span>
+                      <input value={connectHost} onChange={(event) => setConnectHost(event.target.value)} style={inputStyle} placeholder="127.0.0.1" />
+                    </label>
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span style={LABEL_STYLE}>Port</span>
+                      <input value={connectPort} onChange={(event) => setConnectPort(event.target.value)} style={inputStyle} placeholder="8787" />
+                    </label>
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span style={LABEL_STYLE}>Bootstrap token</span>
+                      <input value={connectToken} onChange={(event) => setConnectToken(event.target.value)} style={inputStyle} placeholder="Paste host bootstrap token" />
+                    </label>
+                  </div>
+
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <button type="button" style={primaryButton()} disabled={busy} onClick={handleConnect}>
+                      Connect this desktop
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </details>
+
+          {!isLocalHost ? (
+            <details style={detailBlockStyle}>
+              <summary style={detailSummaryStyle}>Move hosting to this desktop</summary>
+              <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+                <div style={helperTextStyle}>
+                  This is a host handoff. It does not move live processes. Running missions, chat turns, terminals, or managed processes must stop first.
+                </div>
+
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  <button
+                    type="button"
+                    style={outlineButton({
+                      color: status.transferReadiness.ready ? COLORS.textPrimary : COLORS.textMuted,
+                      borderColor: status.transferReadiness.ready ? COLORS.accentBorder : COLORS.border,
+                    })}
+                    disabled={busy || !status.transferReadiness.ready}
+                    onClick={handleTransfer}
+                  >
+                    Make this desktop the host
+                  </button>
+                </div>
+
+                <div style={{ ...helperTextStyle, color: status.transferReadiness.ready ? COLORS.success : COLORS.warning }}>
+                  {status.transferReadiness.ready
+                    ? "This desktop can take over hosting now."
+                    : "Stop the blocking live work below before moving hosting."}
+                </div>
+
+                <div style={panelStyle}>
+                  <div style={LABEL_STYLE}>State that survives the handoff</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {status.transferReadiness.survivableState.map((line) => (
+                      <div key={line} style={helperTextStyle}>• {line}</div>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={panelStyle}>
+                  <div style={LABEL_STYLE}>Blocking live work</div>
+                  {status.transferReadiness.blockers.length > 0 ? (
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {status.transferReadiness.blockers.map((blocker) => (
+                        <div key={`${blocker.kind}:${blocker.id}`} style={{ borderBottom: `1px solid ${COLORS.borderMuted}`, paddingBottom: 8 }}>
+                          <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 700 }}>{blocker.label}</div>
+                          <div style={helperTextStyle}>{blocker.detail}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={helperTextStyle}>No live blockers are active.</div>
+                  )}
+                </div>
+              </div>
+            </details>
+          ) : null}
         </div>
       </section>
     </div>

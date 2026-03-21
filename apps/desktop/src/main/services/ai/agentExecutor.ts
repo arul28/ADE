@@ -26,7 +26,6 @@ export type CodexProviderOverrides = {
 
 export type ExecutorOpts = {
   cwd: string;
-  contextPack?: unknown;
   systemPrompt?: string;
   jsonSchema?: unknown;
   model?: string;

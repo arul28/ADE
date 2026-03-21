@@ -168,7 +168,8 @@ export type OrchestratorHookCommandRunner = (args: {
 }) => Promise<OrchestratorHookExecutionResult>;
 
 export type ResolvedOrchestratorConfig = {
-  defaultPlannerProvider: string | null;
+  /** Resolved model ID for the orchestrator (from defaultOrchestratorModel). */
+  defaultOrchestratorModelId: string | null;
   defaultExecutionPolicy: Partial<MissionExecutionPolicy> | null;
   defaultMissionLevelSettings: MissionLevelSettings | null;
   hooks: ResolvedOrchestratorHooks;
@@ -901,9 +902,11 @@ export function readConfig(projectConfigService: ReturnType<typeof createProject
   const snapshot = projectConfigService?.get();
   const ai = snapshot?.effective?.ai;
   const orchestrator = isRecord(ai) && isRecord(ai.orchestrator) ? (ai.orchestrator as Record<string, unknown>) : {};
-  const defaultPlannerProviderRaw = asString(orchestrator.defaultPlannerProvider);
-  const defaultPlannerProvider: string | null =
-    defaultPlannerProviderRaw && defaultPlannerProviderRaw.trim().length > 0 ? defaultPlannerProviderRaw.trim() : null;
+  // Prefer defaultOrchestratorModel.modelId; fall back to legacy defaultPlannerProvider.
+  const orcModel = isRecord(orchestrator.defaultOrchestratorModel) ? orchestrator.defaultOrchestratorModel : null;
+  const orcModelId = orcModel && typeof orcModel.modelId === "string" ? orcModel.modelId.trim() : null;
+  const legacyProvider = asString(orchestrator.defaultPlannerProvider)?.trim() || null;
+  const defaultOrchestratorModelId = orcModelId || legacyProvider;
   const defaultExecutionPolicy = isRecord(orchestrator.defaultExecutionPolicy)
     ? (orchestrator.defaultExecutionPolicy as Partial<MissionExecutionPolicy>)
     : null;
@@ -912,7 +915,7 @@ export function readConfig(projectConfigService: ReturnType<typeof createProject
     : null;
   const hooks = readOrchestratorHooksConfig(orchestrator);
   return {
-    defaultPlannerProvider,
+    defaultOrchestratorModelId,
     defaultExecutionPolicy,
     defaultMissionLevelSettings,
     hooks
@@ -1143,7 +1146,7 @@ export function deriveRuntimeProfileFromPolicy(
   return {
     planning: {
       useAiPlanner: policy.planning.mode !== "off",
-      preferProvider: policy.planning.model ?? config.defaultPlannerProvider ?? null
+      preferProvider: policy.planning.model ?? config.defaultOrchestratorModelId ?? null
     },
     execution: {
       maxParallelWorkers,
@@ -1220,7 +1223,7 @@ export function deriveRuntimeProfileFromPhases(
   return {
     planning: {
       useAiPlanner: true,
-      preferProvider: config.defaultPlannerProvider ?? null
+      preferProvider: config.defaultOrchestratorModelId ?? null
     },
     execution: {
       maxParallelWorkers,
@@ -1237,7 +1240,7 @@ export function deriveRuntimeProfileFromPhases(
         hasStrictGates ? "high" : "medium"
       ),
       interventionReasoningEffort: normalizeReasoningEffort(
-        config.defaultPlannerProvider ?? null,
+        config.defaultOrchestratorModelId ?? null,
         hasStrictGates ? "high" : "medium"
       )
     },

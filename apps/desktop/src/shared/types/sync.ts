@@ -158,6 +158,7 @@ export type SyncRoleSnapshot = {
   clusterState: SyncClusterState | null;
   bootstrapToken: string | null;
   pairingSession: SyncPairingSession | null;
+  pairingConnectInfo: SyncPairingConnectInfo | null;
   connectedPeers: SyncPeerConnectionState[];
   client: SyncClientStatus;
   transferReadiness: SyncTransferReadiness;
@@ -181,6 +182,7 @@ export type SyncFeatureFlags = {
   commandRouting: {
     mode: "allowlisted";
     supportedActions: string[];
+    actions: SyncRemoteCommandDescriptor[];
   };
 };
 
@@ -212,6 +214,38 @@ export type SyncPairingSession = {
   code: string;
   issuedAt: string;
   expiresAt: string;
+};
+
+export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale";
+
+export type SyncAddressCandidate = {
+  host: string;
+  kind: SyncAddressCandidateKind;
+};
+
+export type SyncPairingQrPayload = {
+  version: 1;
+  hostIdentity: {
+    deviceId: string;
+    siteId: string;
+    name: string;
+    platform: SyncPeerPlatform;
+    deviceType: SyncPeerDeviceType;
+  };
+  port: number;
+  pairingCode: string;
+  expiresAt: string;
+  addressCandidates: SyncAddressCandidate[];
+};
+
+export type SyncPairingConnectInfo = {
+  hostIdentity: SyncPairingQrPayload["hostIdentity"];
+  port: number;
+  pairingCode: string;
+  expiresAt: string;
+  addressCandidates: SyncAddressCandidate[];
+  qrPayload: SyncPairingQrPayload;
+  qrPayloadText: string;
 };
 
 export type SyncPairingRequestPayload = {
@@ -324,20 +358,85 @@ export type SyncBrainStatusPayload = {
 export type SyncRunQuickCommandArgs = {
   laneId: string;
   title: string;
-  startupCommand: string;
+  startupCommand?: string | null;
   cols?: number;
   rows?: number;
   toolType?: string | null;
+  tracked?: boolean;
 };
 
 export type SyncRemoteCommandAction =
   | "lanes.list"
   | "lanes.refreshSnapshots"
+  | "lanes.getDetail"
   | "lanes.create"
+  | "lanes.createChild"
+  | "lanes.attach"
+  | "lanes.adoptAttached"
+  | "lanes.rename"
+  | "lanes.reparent"
+  | "lanes.updateAppearance"
   | "lanes.archive"
   | "lanes.unarchive"
+  | "lanes.delete"
+  | "lanes.getStackChain"
+  | "lanes.getChildren"
+  | "lanes.rebaseStart"
+  | "lanes.rebasePush"
+  | "lanes.rebaseRollback"
+  | "lanes.rebaseAbort"
+  | "lanes.listRebaseSuggestions"
+  | "lanes.dismissRebaseSuggestion"
+  | "lanes.deferRebaseSuggestion"
+  | "lanes.listAutoRebaseStatuses"
+  | "lanes.listTemplates"
+  | "lanes.getDefaultTemplate"
+  | "lanes.initEnv"
+  | "lanes.getEnvStatus"
+  | "lanes.applyTemplate"
   | "work.listSessions"
   | "work.runQuickCommand"
+  | "work.closeSession"
+  | "chat.listSessions"
+  | "chat.getSummary"
+  | "chat.getTranscript"
+  | "chat.create"
+  | "chat.send"
+  | "chat.models"
+  | "git.getChanges"
+  | "git.getFile"
+  | "files.writeTextAtomic"
+  | "git.stageFile"
+  | "git.stageAll"
+  | "git.unstageFile"
+  | "git.unstageAll"
+  | "git.discardFile"
+  | "git.restoreStagedFile"
+  | "git.commit"
+  | "git.generateCommitMessage"
+  | "git.listRecentCommits"
+  | "git.listCommitFiles"
+  | "git.getCommitMessage"
+  | "git.revertCommit"
+  | "git.cherryPickCommit"
+  | "git.stashPush"
+  | "git.stashList"
+  | "git.stashApply"
+  | "git.stashPop"
+  | "git.stashDrop"
+  | "git.fetch"
+  | "git.pull"
+  | "git.getSyncStatus"
+  | "git.sync"
+  | "git.push"
+  | "git.getConflictState"
+  | "git.rebaseContinue"
+  | "git.rebaseAbort"
+  | "git.listBranches"
+  | "git.checkoutBranch"
+  | "conflicts.getLaneStatus"
+  | "conflicts.listOverlaps"
+  | "conflicts.getBatchAssessment"
   | "prs.list"
   | "prs.refresh"
   | "prs.getDetail"
@@ -349,6 +448,7 @@ export type SyncRemoteCommandAction =
   | "prs.createFromLane"
   | "prs.land"
   | "prs.close"
+  | "prs.reopen"
   | "prs.requestReviewers";
 
 export type SyncRemoteCommandPolicy = {
@@ -356,6 +456,11 @@ export type SyncRemoteCommandPolicy = {
   requiresApproval?: boolean;
   localOnly?: boolean;
   queueable?: boolean;
+};
+
+export type SyncRemoteCommandDescriptor = {
+  action: SyncRemoteCommandAction | (string & {});
+  policy: SyncRemoteCommandPolicy;
 };
 
 export type SyncCommandPayload = {

@@ -368,9 +368,9 @@ export function createHybridSearchService(opts: CreateHybridSearchServiceOpts) {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (/no such module: fts4/i.test(message) || /no such module: fts5/i.test(message) || /unable to use function matchinfo/i.test(message) || /unable to use function MATCH/i.test(message)) {
-          return [];
-        }
+        const isFtsMissing = /no such module: fts[45]/i.test(message)
+          || /unable to use function (matchinfo|MATCH)/i.test(message);
+        if (isFtsMissing) return [];
         throw error;
       }
     })();

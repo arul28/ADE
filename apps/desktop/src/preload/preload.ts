@@ -1128,10 +1128,6 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.agentChatEvent, listener);
       return () => ipcRenderer.removeListener(IPC.agentChatEvent, listener);
     },
-    listContextPacks: async (args: import("../shared/types").ContextPackListArgs = {}): Promise<import("../shared/types").ContextPackOption[]> =>
-      ipcRenderer.invoke(IPC.agentChatListContextPacks, args),
-    fetchContextPack: async (args: import("../shared/types").ContextPackFetchArgs): Promise<import("../shared/types").ContextPackFetchResult> =>
-      ipcRenderer.invoke(IPC.agentChatFetchContextPack, args),
     changePermissionMode: async (args: import("../shared/types").AgentChatChangePermissionModeArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatChangePermissionMode, args),
     slashCommands: async (args: import("../shared/types").AgentChatSlashCommandsArgs): Promise<import("../shared/types").AgentChatSlashCommand[]> =>

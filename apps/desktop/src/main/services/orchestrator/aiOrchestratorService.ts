@@ -258,7 +258,7 @@ import {
 } from "../../../shared/proofArtifacts";
 import { getCapabilityForRequirement } from "../computerUse/localComputerUse";
 
-// ── Intervention Prompt Builder (inlined from deleted planningPipeline module) ──
+// ── Intervention Prompt Builder ──
 
 function buildInterventionResolverPrompt(args: {
   missionTitle: string;
@@ -4796,11 +4796,11 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
 
     const config = readConfig(projectConfigService);
-    if (config.defaultPlannerProvider === "claude" || config.defaultPlannerProvider === "codex") {
-      return config.defaultPlannerProvider as "claude" | "codex";
+    if (config.defaultOrchestratorModelId === "claude" || config.defaultOrchestratorModelId === "codex") {
+      return config.defaultOrchestratorModelId as "claude" | "codex";
     }
-    if (config.defaultPlannerProvider) {
-      const desc = getModelById(config.defaultPlannerProvider);
+    if (config.defaultOrchestratorModelId) {
+      const desc = getModelById(config.defaultOrchestratorModelId);
       if (desc?.family === "anthropic") return "claude";
       if (desc?.family === "openai") return "codex";
     }

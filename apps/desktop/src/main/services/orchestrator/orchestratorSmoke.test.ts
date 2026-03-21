@@ -358,69 +358,10 @@ async function createSmokeFixture() {
     })
   } as any;
 
-  const packService = {
-    getLaneExport: async ({ laneId: targetLaneId, level }: { laneId: string; level: "lite" | "standard" | "deep" }) =>
-      buildExport(`lane:${targetLaneId}`, "lane", level),
-    getProjectExport: async ({ level }: { level: "lite" | "standard" | "deep" }) => buildExport("project", "project", level),
-    getHeadVersion: ({ packKey }: { packKey: string }) => ({
-      packKey,
-      packType: packKey.startsWith("lane:") ? "lane" : "project",
-      versionId: `${packKey}-v1`,
-      versionNumber: 1,
-      contentHash: `hash-${packKey}`,
-      updatedAt: now
-    }),
-    getDeltaDigest: async (): Promise<PackDeltaDigestV1> => ({
-      packKey: `lane:${laneId}`,
-      packType: "lane",
-      since: {
-        sinceVersionId: null,
-        sinceTimestamp: now,
-        baselineVersionId: null,
-        baselineVersionNumber: null,
-        baselineCreatedAt: null
-      },
-      newVersion: {
-        packKey: `lane:${laneId}`,
-        packType: "lane",
-        versionId: `lane:${laneId}-v1`,
-        versionNumber: 1,
-        contentHash: "hash",
-        updatedAt: now
-      },
-      changedSections: [],
-      highImpactEvents: [],
-      blockers: [],
-      conflicts: null,
-      decisionState: {
-        recommendedExportLevel: "standard",
-        reasons: []
-      },
-      handoffSummary: "none",
-      clipReason: null,
-      omittedSections: null
-    }),
-    refreshMissionPack: async ({ missionId }: { missionId: string }) => ({
-      packKey: `mission:${missionId}`,
-      packType: "mission",
-      path: path.join(projectRoot, ".ade", "packs", "missions", missionId, "mission_pack.md"),
-      exists: true,
-      deterministicUpdatedAt: now,
-      narrativeUpdatedAt: null,
-      lastHeadSha: null,
-      versionId: `mission-${missionId}-v1`,
-      versionNumber: 1,
-      contentHash: `hash-mission-${missionId}`,
-      metadata: null,
-      body: "# Mission Pack"
-    })
-  } as any;
-
   const orchestratorService = createOrchestratorService({
     db,
     projectId,
     projectRoot,
-    packService,
     projectConfigService
   });
   const aiOrchestratorService = createAiOrchestratorService({
@@ -672,64 +613,6 @@ describe("orchestrator smoke", () => {
       })
     } as any;
 
-    const packService = {
-      getLaneExport: async ({ laneId: targetLaneId, level }: { laneId: string; level: "lite" | "standard" | "deep" }) =>
-        buildExport(`lane:${targetLaneId}`, "lane", level),
-      getProjectExport: async ({ level }: { level: "lite" | "standard" | "deep" }) => buildExport("project", "project", level),
-      getHeadVersion: ({ packKey }: { packKey: string }) => ({
-        packKey,
-        packType: packKey.startsWith("lane:") ? "lane" : "project",
-        versionId: `${packKey}-v1`,
-        versionNumber: 1,
-        contentHash: `hash-${packKey}`,
-        updatedAt: now
-      }),
-      getDeltaDigest: async (): Promise<PackDeltaDigestV1> => ({
-        packKey: `lane:${laneId}`,
-        packType: "lane",
-        since: {
-          sinceVersionId: null,
-          sinceTimestamp: now,
-          baselineVersionId: null,
-          baselineVersionNumber: null,
-          baselineCreatedAt: null
-        },
-        newVersion: {
-          packKey: `lane:${laneId}`,
-          packType: "lane",
-          versionId: `lane:${laneId}-v1`,
-          versionNumber: 1,
-          contentHash: "hash",
-          updatedAt: now
-        },
-        changedSections: [],
-        highImpactEvents: [],
-        blockers: [],
-        conflicts: null,
-        decisionState: {
-          recommendedExportLevel: "standard",
-          reasons: []
-        },
-        handoffSummary: "none",
-        clipReason: null,
-        omittedSections: null
-      }),
-      refreshMissionPack: async ({ missionId }: { missionId: string }) => ({
-        packKey: `mission:${missionId}`,
-        packType: "mission",
-        path: path.join(projectRoot, ".ade", "packs", "missions", missionId, "mission_pack.md"),
-        exists: true,
-        deterministicUpdatedAt: now,
-        narrativeUpdatedAt: null,
-        lastHeadSha: null,
-        versionId: `mission-${missionId}-v1`,
-        versionNumber: 1,
-        contentHash: `hash-mission-${missionId}`,
-        metadata: null,
-        body: "# Mission Pack"
-      })
-    } as any;
-
     const complexPlan = {
       schemaVersion: "1.0",
       missionSummary: {
@@ -952,7 +835,6 @@ describe("orchestrator smoke", () => {
       db,
       projectId,
       projectRoot,
-      packService,
       projectConfigService
     });
     const aiOrchestratorService = createAiOrchestratorService({

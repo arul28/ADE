@@ -1,3 +1,8 @@
+/**
+ * Transcript insight extraction utilities.
+ * Relocated from packs/transcriptInsights.ts after pack system removal.
+ */
+
 import { stripAnsi } from "../../utils/ansiStrip";
 
 export type InferredTestOutcome = {
@@ -50,7 +55,7 @@ function lineAt(text: string, idx: number): string {
 function isNoiseLine(line: string): boolean {
   const t = line.trim();
   if (!t) return true;
-  if (t.startsWith("✻")) return true;
+  if (t.startsWith("\u2733")) return true;
   const lower = t.toLowerCase();
   if (lower.startsWith("cooked for")) return true;
   return false;
@@ -104,8 +109,8 @@ function parseExplicitFinalBlock(text: string): ParsedTranscriptSummary | null {
   if (!block.length) return null;
 
   const bullets = block
-    .filter((line) => /^[-*•]\s+/.test(line) || /^\d+\.\s+/.test(line))
-    .map((line) => line.replace(/^[-*•]\s+/, "").replace(/^\d+\.\s+/, "").trim())
+    .filter((line) => /^[-*\u2022]\s+/.test(line) || /^\d+\.\s+/.test(line))
+    .map((line) => line.replace(/^[-*\u2022]\s+/, "").replace(/^\d+\.\s+/, "").trim())
     .filter(Boolean);
 
   const summary = block

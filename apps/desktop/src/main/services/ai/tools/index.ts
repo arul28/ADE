@@ -33,4 +33,3 @@ export function createCodingToolSet(
 export { createUniversalToolSet } from "./universalTools";
 export type { PermissionMode, UniversalToolSetOptions } from "./universalTools";
 export { buildCodingAgentSystemPrompt, composeSystemPrompt } from "./systemPrompt";
-export { loadMcpTools } from "./mcpBridge";

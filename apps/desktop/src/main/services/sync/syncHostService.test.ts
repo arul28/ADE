@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { openKvDb } from "../state/kvDb";
+import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { createSyncHostService } from "./syncHostService";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
@@ -197,7 +198,7 @@ afterEach(async () => {
   }
 });
 
-describe("syncHostService", () => {
+describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
   it("authenticates peers, relays CRDT changes, and rebroadcasts to other peers", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-brain-"), createLogger() as any);
     const dbA = await openKvDb(makeDbPath("ade-sync-peer-a-"), createLogger() as any);
@@ -219,6 +220,59 @@ describe("syncHostService", () => {
       } as any,
       prService: {
         listAll: vi.fn().mockResolvedValue([]),
+        refresh: vi.fn().mockResolvedValue([
+          {
+            id: "pr-1",
+            laneId: "lane-1",
+            projectId: "project-1",
+            repoOwner: "arul",
+            repoName: "ade",
+            githubPrNumber: 42,
+            githubUrl: "https://github.com/arul/ade/pull/42",
+            githubNodeId: "node-42",
+            title: "Fix mobile hydration",
+            state: "open",
+            baseBranch: "main",
+            headBranch: "ade/mobile-hydration",
+            checksStatus: "pending",
+            reviewStatus: "requested",
+            additions: 12,
+            deletions: 4,
+            lastSyncedAt: "2026-03-17T00:10:00.000Z",
+            createdAt: "2026-03-17T00:10:00.000Z",
+            updatedAt: "2026-03-17T00:10:00.000Z",
+          },
+        ]),
+        listSnapshots: vi.fn().mockReturnValue([
+          {
+            prId: "pr-1",
+            detail: {
+              prId: "pr-1",
+              body: "Hydration fix",
+              assignees: [],
+              author: { login: "arul", avatarUrl: null },
+              isDraft: false,
+              labels: [],
+              requestedReviewers: [],
+              milestone: null,
+              linkedIssues: [],
+            },
+            status: {
+              prId: "pr-1",
+              state: "open",
+              checksStatus: "pending",
+              reviewStatus: "requested",
+              isMergeable: true,
+              mergeConflicts: false,
+              behindBaseBy: 0,
+            },
+            checks: [],
+            reviews: [],
+            comments: [],
+            files: [],
+            updatedAt: "2026-03-17T00:10:00.000Z",
+          },
+        ]),
         getDetail: vi.fn(),
         getStatus: vi.fn(),
         getChecks: vi.fn(),
@@ -294,7 +348,7 @@ describe("syncHostService", () => {
     expect(payload.changes.length).toBeGreaterThan(0);
     dbB.sync.applyChanges(payload.changes as any);
     expect(dbB.getJson<{ value: string }>("replicated-state")).toEqual({ value: "hello" });
-  });
+  }, 60_000);
 
   it("serves workspace file operations and artifact reads while blocking .git access", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-files-"), createLogger() as any);
@@ -319,7 +373,64 @@ describe("syncHostService", () => {
         archive: vi.fn(),
       } as any,
       prService: {
-        listAll: vi.fn().mockResolvedValue([]),
+        listAll: vi.fn().mockResolvedValue([
+          {
+            id: "pr-1",
+            laneId: "lane-1",
+            projectId: "project-1",
+            repoOwner: "arul",
+            repoName: "ade",
+            githubPrNumber: 42,
+            githubUrl: "https://github.com/arul/ade/pull/42",
+            githubNodeId: "node-42",
+            title: "Fix mobile hydration",
+            state: "open",
+            baseBranch: "main",
+            headBranch: "ade/mobile-hydration",
+            checksStatus: "pending",
+            reviewStatus: "requested",
+            additions: 12,
+            deletions: 4,
+            lastSyncedAt: "2026-03-17T00:10:00.000Z",
+            createdAt: "2026-03-17T00:10:00.000Z",
+            updatedAt: "2026-03-17T00:10:00.000Z",
+          },
+        ]),
+        refresh: vi.fn().mockResolvedValue([
+          {
+            id: "pr-1",
+          },
+        ]),
+        listSnapshots: vi.fn().mockReturnValue([
+          {
+            prId: "pr-1",
+            detail: {
+              prId: "pr-1",
+              body: "Hydration fix",
+              assignees: [],
+              author: { login: "arul", avatarUrl: null },
+              isDraft: false,
+              labels: [],
+              requestedReviewers: [],
+              milestone: null,
+              linkedIssues: [],
+            },
+            status: {
+              prId: "pr-1",
+              state: "open",
+              checksStatus: "pending",
+              reviewStatus: "requested",
+              isMergeable: true,
+              mergeConflicts: false,
+              behindBaseBy: 0,
+            },
+            checks: [],
+            reviews: [],
+            comments: [],
+            files: [],
+            updatedAt: "2026-03-17T00:10:00.000Z",
+          },
+        ]),
         getDetail: vi.fn(),
         getStatus: vi.fn(),
         getChecks: vi.fn(),
@@ -428,7 +539,64 @@ describe("syncHostService", () => {
         archive: vi.fn(),
       } as any,
       prService: {
-        listAll: vi.fn().mockResolvedValue([]),
+        listAll: vi.fn().mockResolvedValue([
+          {
+            id: "pr-1",
+            laneId: "lane-1",
+            projectId: "project-1",
+            repoOwner: "arul",
+            repoName: "ade",
+            githubPrNumber: 42,
+            githubUrl: "https://github.com/arul/ade/pull/42",
+            githubNodeId: "node-42",
+            title: "Fix mobile hydration",
+            state: "open",
+            baseBranch: "main",
+            headBranch: "ade/mobile-hydration",
+            checksStatus: "pending",
+            reviewStatus: "requested",
+            additions: 12,
+            deletions: 4,
+            lastSyncedAt: "2026-03-17T00:10:00.000Z",
+            createdAt: "2026-03-17T00:10:00.000Z",
+            updatedAt: "2026-03-17T00:10:00.000Z",
+          },
+        ]),
+        refresh: vi.fn().mockResolvedValue([
+          {
+            id: "pr-1",
+          },
+        ]),
+        listSnapshots: vi.fn().mockReturnValue([
+          {
+            prId: "pr-1",
+            detail: {
+              prId: "pr-1",
+              body: "Hydration fix",
+              assignees: [],
+              author: { login: "arul", avatarUrl: null },
+              isDraft: false,
+              labels: [],
+              requestedReviewers: [],
+              milestone: null,
+              linkedIssues: [],
+            },
+            status: {
+              prId: "pr-1",
+              state: "open",
+              checksStatus: "pending",
+              reviewStatus: "requested",
+              isMergeable: true,
+              mergeConflicts: false,
+              behindBaseBy: 0,
+            },
+            checks: [],
+            reviews: [],
+            comments: [],
+            files: [],
+            updatedAt: "2026-03-17T00:10:00.000Z",
+          },
+        ]),
         getDetail: vi.fn(),
         getStatus: vi.fn(),
         getChecks: vi.fn(),
@@ -441,7 +609,30 @@ describe("syncHostService", () => {
         requestReviewers: vi.fn(),
       } as any,
       sessionService: {
-        list: () => [],
+        list: () => [
+          {
+            id: "session-1",
+            laneId: "lane-1",
+            laneName: "Primary",
+            ptyId: "pty-1",
+            tracked: true,
+            pinned: false,
+            goal: "Run tests",
+            toolType: "run-shell",
+            title: "npm test",
+            status: "running",
+            startedAt: "2026-03-17T00:10:00.000Z",
+            endedAt: null,
+            exitCode: null,
+            transcriptPath: path.join(projectRoot, ".ade", "transcripts", "session-1.log"),
+            headShaStart: null,
+            headShaEnd: null,
+            lastOutputPreview: "prior output",
+            summary: null,
+            runtimeState: "running",
+            resumeCommand: "npm test",
+          },
+        ],
         get: () => ({
           id: "session-1",
           transcriptPath: path.join(projectRoot, ".ade", "transcripts", "session-1.log"),
@@ -519,6 +710,45 @@ describe("syncHostService", () => {
     const result = await client.queue.next("command_result");
     expect((result.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
     expect(createSpy).toHaveBeenCalledTimes(1);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-work-list",
+      payload: {
+        commandId: "cmd-work-list",
+        action: "work.listSessions",
+        args: {},
+      },
+    }));
+    const workListAck = await client.queue.next("command_ack");
+    expect((workListAck.payload as { accepted: boolean }).accepted).toBe(true);
+    const workListResult = await client.queue.next("command_result");
+    const workSessions = (workListResult.payload as { ok: boolean; result: Array<{ id: string }> }).result;
+    expect(workSessions.map((entry) => entry.id)).toEqual(["session-1"]);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-pr-refresh",
+      payload: {
+        commandId: "cmd-pr-refresh",
+        action: "prs.refresh",
+        args: {},
+      },
+    }));
+    const prRefreshAck = await client.queue.next("command_ack");
+    expect((prRefreshAck.payload as { accepted: boolean }).accepted).toBe(true);
+    const prRefreshResult = await client.queue.next("command_result");
+    const prRefreshPayload = prRefreshResult.payload as {
+      ok: boolean;
+      result: {
+        refreshedCount: number;
+        prs: Array<{ id: string }>;
+        snapshots: Array<{ prId: string }>;
+      };
+    };
+    expect(prRefreshPayload.result.refreshedCount).toBe(1);
+    expect(prRefreshPayload.result.prs.map((entry) => entry.id)).toEqual(["pr-1"]);
+    expect(prRefreshPayload.result.snapshots.map((entry) => entry.prId)).toEqual(["pr-1"]);
 
     client.ws.send(encodeSyncEnvelope({
       type: "command",
@@ -640,9 +870,67 @@ describe("syncHostService", () => {
       },
     }));
     const helloOk = await authQueue.next("hello_ok");
-    const helloPayload = helloOk.payload as { features: { pairingAuth: { enabled: boolean } } };
+    const helloPayload = helloOk.payload as {
+      features: {
+        pairingAuth: { enabled: boolean };
+        commandRouting: {
+          supportedActions: string[];
+          actions: Array<{ action: string; policy: { queueable?: boolean; viewerAllowed: boolean } }>;
+        };
+      };
+    };
     expect(helloPayload.features.pairingAuth.enabled).toBe(true);
-    authWs.close();
-    await new Promise((resolve) => authWs.once("close", resolve));
+    expect(helloPayload.features.commandRouting.supportedActions).toContain("lanes.getDetail");
+    expect(helloPayload.features.commandRouting.supportedActions).toContain("lanes.rename");
+    const getDetailDescriptor = helloPayload.features.commandRouting.actions.find(
+      (entry) => entry.action === "lanes.getDetail",
+    );
+    expect(getDetailDescriptor?.policy.viewerAllowed).toBe(true);
+    expect(getDetailDescriptor?.policy.queueable).toBeUndefined();
+    expect(helloPayload.features.commandRouting.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "lanes.rename",
+          policy: expect.objectContaining({ viewerAllowed: true, queueable: true }),
+        }),
+      ]),
+    );
+    expect(host.getPeerStates().map((peer) => peer.deviceId)).toContain("ios-phone-1");
+
+    host.revokePairedDevice("ios-phone-1");
+    if (authWs.readyState !== WebSocket.CLOSED) {
+      await new Promise((resolve) => authWs.once("close", resolve));
+    }
+    await waitFor(() => !host.getPeerStates().some((peer) => peer.deviceId === "ios-phone-1"));
+    const revokedWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      revokedWs.once("open", () => resolve());
+      revokedWs.once("error", reject);
+    });
+    const revokedQueue = createMessageQueue(revokedWs);
+    revokedWs.send(encodeSyncEnvelope({
+      type: "hello",
+      requestId: "hello-revoked",
+      payload: {
+        peer: {
+          deviceId: "ios-phone-1",
+          deviceName: "Arul iPhone",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: "ios-site-1",
+          dbVersion: 0,
+        },
+        auth: {
+          kind: "paired",
+          deviceId: "ios-phone-1",
+          secret: pairingPayload.secret,
+        },
+      },
+    }));
+    const revokedHello = await revokedQueue.next("hello_error");
+    const revokedPayload = revokedHello.payload as { code: string; message: string };
+    expect(revokedPayload.code).toBe("auth_failed");
+    revokedWs.close();
+    await new Promise((resolve) => revokedWs.once("close", resolve));
   });
 });

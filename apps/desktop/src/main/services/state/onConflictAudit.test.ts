@@ -56,6 +56,11 @@ const APPROVED_CONFLICT_TARGETS: ConflictTarget[] = [
     columns: "id",
   },
   {
+    file: "src/main/services/lanes/laneService.ts",
+    table: "lane_state_snapshots",
+    columns: "lane_id",
+  },
+  {
     file: "src/main/services/memory/proceduralLearningService.ts",
     table: "memory_procedure_details",
     columns: "memory_id",
@@ -81,19 +86,14 @@ const APPROVED_CONFLICT_TARGETS: ConflictTarget[] = [
     columns: "run_id",
   },
   {
-    file: "src/main/services/packs/packService.ts",
-    table: "pack_heads",
-    columns: "project_id,pack_key",
-  },
-  {
-    file: "src/main/services/packs/packUtils.ts",
-    table: "packs_index",
-    columns: "pack_key",
-  },
-  {
     file: "src/main/services/processes/processService.ts",
     table: "process_runtime",
     columns: "project_id,lane_id,process_key",
+  },
+  {
+    file: "src/main/services/prs/prService.ts",
+    table: "pull_request_snapshots",
+    columns: "pr_id",
   },
   {
     file: "src/main/services/prs/queueLandingService.ts",

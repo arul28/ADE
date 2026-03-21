@@ -8,7 +8,6 @@ import type {
   MissionPhaseConfiguration,
 } from "../../../shared/types";
 import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
-/** Inline type — formerly in the deleted missionPlanningService module. */
 type MissionPlanStepDraft = {
   index: number;
   title: string;

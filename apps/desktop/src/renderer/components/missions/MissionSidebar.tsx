@@ -16,9 +16,7 @@ import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
 import {
-  STATUS_BADGE_STYLES,
-  STATUS_DOT_HEX,
-  STATUS_LABELS,
+  STATUS_CONFIG,
   MISSION_BOARD_COLUMNS,
   type MissionListViewMode,
 } from "./missionHelpers";
@@ -519,7 +517,7 @@ function MissionListItem(props: {
   const { mission: m, isSelected, onSelect, onContextMenu } = props;
   const progress = m.totalSteps > 0 ? Math.round((m.completedSteps / m.totalSteps) * 100) : 0;
   const isActive = m.status === "in_progress" || m.status === "planning";
-  const badgeStyle = STATUS_BADGE_STYLES[m.status];
+  const badgeStyle = STATUS_CONFIG[m.status];
   return (
     <button
       onClick={() => onSelect(m.id)}
@@ -534,7 +532,7 @@ function MissionListItem(props: {
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium" style={{ color: COLORS.textPrimary }}>{m.title}</div>
           <div className="mt-0.5 flex items-center gap-1.5">
-            <span className="px-1 py-0.5 text-[10px] font-bold uppercase tracking-[1px]" style={{ background: badgeStyle.background, color: badgeStyle.color, border: badgeStyle.border, fontFamily: MONO_FONT }}>{STATUS_LABELS[m.status]}</span>
+            <span className="px-1 py-0.5 text-[10px] font-bold uppercase tracking-[1px]" style={{ background: badgeStyle.background, color: badgeStyle.color, border: badgeStyle.border, fontFamily: MONO_FONT }}>{badgeStyle.label}</span>
             <MissionInterventionBadge count={m.openInterventions} />
           </div>
           {m.totalSteps > 0 && (
@@ -553,7 +551,7 @@ function MissionListItem(props: {
 
 function MissionListStatusDot({ mission: m }: { mission: MissionSummary }) {
   const needsAttention = m.status === "intervention_required" || m.status === "failed" || (m.status === "in_progress" && m.openInterventions > 0);
-  const dotColor = m.status === "intervention_required" ? "#F59E0B" : m.status === "in_progress" && m.openInterventions > 0 ? "#3B82F6" : m.status === "failed" ? "#EF4444" : STATUS_DOT_HEX[m.status];
+  const dotColor = m.status === "intervention_required" ? "#F59E0B" : m.status === "in_progress" && m.openInterventions > 0 ? "#3B82F6" : m.status === "failed" ? "#EF4444" : STATUS_CONFIG[m.status].color;
   return (
     <span
       className={cn("mt-1 h-2 w-2 shrink-0", needsAttention && m.status !== "failed" && "ade-glow-pulse-amber", m.status === "failed" && "ade-glow-pulse-red")}
