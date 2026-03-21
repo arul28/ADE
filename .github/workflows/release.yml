@@ -63,7 +63,7 @@ jobs:
           test -d "$APP_PATH"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mac-app-${{ matrix.arch }}
           path: apps/desktop/release/ADE-${{ matrix.arch }}.app.zip
