@@ -3353,33 +3353,6 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("creates context snapshots without lane pack bootstrap refresh", async () => {
-    let laneExportCalls = 0;
-    const fixture = await createFixture({});
-    try {
-      const started = fixture.service.startRun({
-        missionId: fixture.missionId,
-        steps: [{ stepKey: "bootstrap-pack", title: "Bootstrap pack", stepIndex: 0, laneId: fixture.laneId }]
-      });
-      const step = fixture.service.listSteps(started.run.id)[0];
-      if (!step) throw new Error("Missing step");
-      const attempt = await fixture.service.startAttempt({
-        runId: started.run.id,
-        stepId: step.id,
-        ownerId: "owner"
-      });
-      const snapshot = fixture.service
-        .listContextSnapshots({ runId: started.run.id })
-        .find((entry) => entry.id === attempt.contextSnapshotId);
-      expect(attempt.contextSnapshotId).toBeTruthy();
-      expect(laneExportCalls).toBe(1);
-      expect(snapshot?.cursor.contextSources?.some((source) => source.startsWith("context_export:project:"))).toBe(true);
-      expect(snapshot?.cursor.contextSources?.some((source) => source.startsWith("context_export:lane:"))).toBe(true);
-    } finally {
-      fixture.dispose();
-    }
-  });
-
   it("normalizes adapter envelopes and supports deterministic integration chain blocking", async () => {
     const conflictService = {
       prepareResolverSession: async () => ({

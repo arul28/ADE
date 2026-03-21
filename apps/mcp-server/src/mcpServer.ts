@@ -22,7 +22,6 @@ import {
   type LinearWorkflowConfig,
   type ComputerUseArtifactOwner,
   type ComputerUsePolicy,
-  type ContextExportLevel,
   type MergeMethod,
 } from "../../desktop/src/shared/types";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
@@ -71,7 +70,6 @@ const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_PTY_COLS = 120;
 const DEFAULT_PTY_ROWS = 36;
 
-const RESOURCE_MIME_MARKDOWN = "text/markdown";
 const RESOURCE_MIME_JSON = "application/json";
 
 const TOOL_SPECS: ToolSpec[] = [
@@ -100,20 +98,6 @@ const TOOL_SPECS: ToolSpec[] = [
           additionalProperties: false,
           properties: {
             profile: { type: "string" },
-            packs: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  scope: { type: "string" },
-                  packKey: { type: "string" },
-                  level: { type: "string" },
-                  approxTokens: { type: "number" },
-                  summary: { type: "string" }
-                }
-              }
-            },
             docs: {
               type: "array",
               items: {
@@ -138,26 +122,6 @@ const TOOL_SPECS: ToolSpec[] = [
             }
           }
         }
-      }
-    }
-  },
-  {
-    name: "read_context",
-    description: "Read project/lane/feature/conflict/plan/mission context packs for orchestration.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        scope: {
-          type: "string",
-          enum: ["project", "lane", "feature", "conflict", "plan", "mission"],
-          default: "project"
-        },
-        laneId: { type: "string" },
-        featureKey: { type: "string" },
-        peerLaneId: { type: "string" },
-        missionId: { type: "string" },
-        level: { type: "string", enum: ["lite", "standard", "deep"], default: "standard" }
       }
     }
   },
@@ -1362,7 +1326,6 @@ const ALL_TOOL_SPECS: ToolSpec[] = [
 const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
 
 const READ_ONLY_TOOLS = new Set([
-  "read_context",
   "check_conflicts",
   "get_lane_status",
   "list_lanes",
@@ -1542,11 +1505,6 @@ function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string
   }
 
   return owners;
-}
-
-function normalizeExportLevel(value: unknown, fallback: ContextExportLevel = "standard"): ContextExportLevel {
-  if (value === "lite" || value === "standard" || value === "deep") return value;
-  return fallback;
 }
 
 type MemoryToolCategory = "fact" | "preference" | "pattern" | "decision" | "gotcha" | "convention";
@@ -1834,14 +1792,9 @@ function resolveSpawnContextFile(args: {
   contextFilePathRaw: string | null;
 }): { contextFilePath: string | null; contextDigest: string | null; contextBytes: number | null; approxTokens: number } {
   const contextFilePathRaw = args.contextFilePathRaw?.trim() ?? "";
-  const packList = Array.isArray(args.context.packs) ? args.context.packs : [];
   const docsList = Array.isArray(args.context.docs) ? args.context.docs : [];
-  const hasContextPayload = packList.length > 0 || docsList.length > 0 || Object.keys(args.context).length > 0;
-  const approxTokens = packList.reduce((sum, item) => {
-    const record = safeObject(item);
-    const raw = Number(record.approxTokens ?? 0);
-    return sum + (Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0);
-  }, 0);
+  const hasContextPayload = docsList.length > 0 || Object.keys(args.context).length > 0;
+  const approxTokens = 0;
 
   if (!contextFilePathRaw && !hasContextPayload) {
     return { contextFilePath: null, contextDigest: null, contextBytes: null, approxTokens };
@@ -1890,16 +1843,6 @@ function resolveSpawnContextFile(args: {
     promptPreview: args.userPrompt ? clipText(args.userPrompt, 2000) : null,
     context: {
       profile: asOptionalTrimmedString(args.context.profile),
-      packs: packList.slice(0, 24).map((item) => {
-        const record = safeObject(item);
-        return {
-          scope: asOptionalTrimmedString(record.scope),
-          packKey: asOptionalTrimmedString(record.packKey),
-          level: asOptionalTrimmedString(record.level),
-          approxTokens: Number.isFinite(Number(record.approxTokens)) ? Number(record.approxTokens) : null,
-          summary: clipText(asTrimmedString(record.summary), 800)
-        };
-      }),
       docs: docsList.slice(0, 40).map((item) => {
         const record = safeObject(item);
         return {
@@ -2098,40 +2041,12 @@ function parseMcpUri(uriRaw: string): { path: string[] } {
 }
 
 function resourceListFromLanes(lanes: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-  const resources: Array<Record<string, unknown>> = [
-    {
-      uri: "ade://pack/project/lite",
-      name: "Project Pack (Lite)",
-      description: "Project context export (lite)",
-      mimeType: RESOURCE_MIME_MARKDOWN
-    },
-    {
-      uri: "ade://pack/project/standard",
-      name: "Project Pack (Standard)",
-      description: "Project context export (standard)",
-      mimeType: RESOURCE_MIME_MARKDOWN
-    },
-    {
-      uri: "ade://pack/project/deep",
-      name: "Project Pack (Deep)",
-      description: "Project context export (deep)",
-      mimeType: RESOURCE_MIME_MARKDOWN
-    }
-  ];
+  const resources: Array<Record<string, unknown>> = [];
 
   for (const lane of lanes) {
     const laneId = asTrimmedString(lane.id);
     const laneName = asTrimmedString(lane.name) || laneId;
     if (!laneId) continue;
-
-    for (const level of ["lite", "standard", "deep"] as const) {
-      resources.push({
-        uri: `ade://pack/lane/${encodeURIComponent(laneId)}/${level}`,
-        name: `${laneName} Pack (${level})`,
-        description: `Lane context export for '${laneName}' (${level})`,
-        mimeType: RESOURCE_MIME_MARKDOWN
-      });
-    }
 
     resources.push({
       uri: `ade://lane/${encodeURIComponent(laneId)}/status`,
@@ -2151,100 +2066,10 @@ function resourceListFromLanes(lanes: Array<Record<string, unknown>>): Array<Rec
   return resources;
 }
 
-function appendPackResource(
-  resources: Array<Record<string, unknown>>,
-  args: {
-    uri: string;
-    name: string;
-    description: string;
-  }
-): void {
-  resources.push({
-    uri: args.uri,
-    name: args.name,
-    description: args.description,
-    mimeType: RESOURCE_MIME_MARKDOWN
-  });
-}
-
-function listFeatureKeysFromLanes(lanes: Array<Record<string, unknown>>): string[] {
-  const keys = new Set<string>();
-
-  for (const lane of lanes) {
-    const rawTags = Array.isArray(lane.tags) ? lane.tags : [];
-    for (const tag of rawTags) {
-      const key = asTrimmedString(tag);
-      if (key.length) keys.add(key);
-    }
-  }
-
-  return [...keys].sort((a, b) => a.localeCompare(b));
-}
-
-function listMissionIds(runtime: AdeMcpRuntime): string[] {
-  const rows = runtime.db.all<{ id: string }>(
-    `
-      select id
-      from missions
-      where project_id = ?
-      order by updated_at desc
-      limit 120
-    `,
-    [runtime.projectId]
-  );
-
-  return rows
-    .map((row) => asTrimmedString(row.id))
-    .filter((entry) => entry.length > 0);
-}
-
 function buildResourceList(args: {
   lanes: Array<Record<string, unknown>>;
-  featureKeys: string[];
-  missionIds: string[];
 }): Array<Record<string, unknown>> {
-  const resources = resourceListFromLanes(args.lanes);
-
-  for (const lane of args.lanes) {
-    const laneId = asTrimmedString(lane.id);
-    const laneName = asTrimmedString(lane.name) || laneId;
-    if (!laneId) continue;
-
-    for (const level of ["lite", "standard", "deep"] as const) {
-      appendPackResource(resources, {
-        uri: `ade://pack/plan/${encodeURIComponent(laneId)}/${level}`,
-        name: `${laneName} Plan Pack (${level})`,
-        description: `Plan pack export for lane '${laneName}' (${level})`
-      });
-      appendPackResource(resources, {
-        uri: `ade://pack/conflict/${encodeURIComponent(laneId)}/base/${level}`,
-        name: `${laneName} Conflict Pack (${level})`,
-        description: `Conflict pack export anchored to lane '${laneName}' (${level})`
-      });
-    }
-  }
-
-  for (const featureKey of args.featureKeys) {
-    for (const level of ["lite", "standard", "deep"] as const) {
-      appendPackResource(resources, {
-        uri: `ade://pack/feature/${encodeURIComponent(featureKey)}/${level}`,
-        name: `Feature Pack: ${featureKey} (${level})`,
-        description: `Feature pack export for '${featureKey}' (${level})`
-      });
-    }
-  }
-
-  for (const missionId of args.missionIds) {
-    for (const level of ["lite", "standard", "deep"] as const) {
-      appendPackResource(resources, {
-        uri: `ade://pack/mission/${encodeURIComponent(missionId)}/${level}`,
-        name: `Mission Pack: ${missionId} (${level})`,
-        description: `Mission pack export for mission '${missionId}' (${level})`
-      });
-    }
-  }
-
-  return resources;
+  return resourceListFromLanes(args.lanes);
 }
 
 async function waitForTestRunCompletion(args: {
@@ -4265,13 +4090,6 @@ async function runTool(args: {
     return result;
   }
 
-  if (name === "read_context") {
-    const scope = asTrimmedString(toolArgs.scope) || "project";
-    const level = normalizeExportLevel(toolArgs.level, "standard");
-
-    return { error: "Context packs have been removed. Use the unified memory system instead.", scope, level };
-  }
-
   if (name === "spawn_agent") {
 
 
@@ -4905,10 +4723,6 @@ async function readResource(runtime: AdeMcpRuntime, uri: string): Promise<Record
   const parsed = parseMcpUri(uri);
   const [head, ...tail] = parsed.path;
 
-  if (head === "pack") {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Context packs have been removed. Use the unified memory system instead.");
-  }
-
   if (head === "lane") {
     const [laneId, scope] = tail;
     if (laneId && scope === "status") {
@@ -5143,13 +4957,9 @@ export function createMcpRequestHandler(args: {
     if (method === "resources/list") {
       const lanes = await runtime.laneService.list({ includeArchived: false });
       const laneRecords = lanes as unknown as Array<Record<string, unknown>>;
-      const featureKeys = listFeatureKeysFromLanes(laneRecords);
-      const missionIds = listMissionIds(runtime);
       return {
         resources: buildResourceList({
-          lanes: laneRecords,
-          featureKeys,
-          missionIds
+          lanes: laneRecords
         })
       };
     }

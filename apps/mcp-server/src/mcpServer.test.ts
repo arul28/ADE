@@ -80,7 +80,6 @@ function createRuntime() {
       testLogsDir: path.join(projectRoot, ".ade", "logs", "tests"),
       transcriptsDir: path.join(projectRoot, ".ade", "transcripts"),
       worktreesDir: path.join(projectRoot, ".ade", "worktrees"),
-      packsDir: path.join(projectRoot, ".ade", "packs"),
       dbPath: path.join(projectRoot, ".ade", "ade.db")
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -159,14 +158,6 @@ function createRuntime() {
       finish: operationFinish
     },
     projectConfigService: {} as any,
-    packService: {
-      getProjectExport: vi.fn(async () => ({ header: { scope: "project" }, content: "project", warnings: [] })),
-      getLaneExport: vi.fn(async ({ laneId }: { laneId: string }) => ({ header: { scope: "lane", laneId }, content: "lane", warnings: [] })),
-      getFeatureExport: vi.fn(async ({ featureKey }: { featureKey: string }) => ({ header: { scope: "feature", featureKey }, content: "feature", warnings: [] })),
-      getConflictExport: vi.fn(async ({ laneId, peerLaneId }: { laneId: string; peerLaneId?: string }) => ({ header: { scope: "conflict", laneId, peerLaneId: peerLaneId ?? null }, content: "conflict", warnings: [] })),
-      getPlanExport: vi.fn(async ({ laneId }: { laneId: string }) => ({ header: { scope: "plan", laneId }, content: "plan", warnings: [] })),
-      getMissionExport: vi.fn(async ({ missionId }: { missionId: string }) => ({ header: { scope: "mission", missionId }, content: "mission", warnings: [] }))
-    },
     conflictService: {
       runPrediction: vi.fn(async () => ({ lanes: [], matrix: [], overlaps: [] })),
       getLaneStatus: vi.fn(async ({ laneId }: { laneId: string }) => ({ laneId, status: "merge-ready" })),
@@ -288,8 +279,6 @@ function createRuntime() {
         createdAt: "2026-03-17T19:10:00.000Z",
         lastActivityAt: "2026-03-17T19:10:00.000Z",
       })),
-      listContextPacks: vi.fn(async () => []),
-      fetchContextPack: vi.fn(async () => ({ content: "context", truncated: false })),
     } as any,
     fileService: null,
     memoryService: {
@@ -697,7 +686,6 @@ describe("mcpServer", () => {
     expect(names).toEqual(
       expect.arrayContaining([
         "spawn_agent",
-        "read_context",
         "create_lane",
         "check_conflicts",
         "merge_lane",
@@ -1369,28 +1357,6 @@ describe("mcpServer", () => {
       expect.objectContaining({ limit: 100 })
     );
     expect(Array.isArray(patternStatsResponse.structuredContent.patternStats)).toBe(true);
-  });
-
-  it("supports read_context contracts for all pack scopes", async () => {
-    const { runtime } = createRuntime();
-    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler);
-
-    const scopes: Array<{ scope: string; args: Record<string, unknown> }> = [
-      { scope: "project", args: {} },
-      { scope: "lane", args: { laneId: "lane-1" } },
-      { scope: "feature", args: { featureKey: "auth" } },
-      { scope: "conflict", args: { laneId: "lane-1", peerLaneId: "lane-2" } },
-      { scope: "plan", args: { laneId: "lane-1" } },
-      { scope: "mission", args: { missionId: "mission-1" } }
-    ];
-
-    for (const item of scopes) {
-      const response = await callTool(handler, "read_context", { scope: item.scope, level: "standard", ...item.args });
-      expect(response?.isError).toBeUndefined();
-      expect(response?.structuredContent?.export).toBeTruthy();
-    }
   });
 
   it("routes spawn_agent to lane-scoped tracked pty sessions", async () => {
@@ -2199,10 +2165,6 @@ describe("mcpServer", () => {
       prompt: "Investigate failing CI and propose a fix plan before editing.",
       context: {
         profile: "orchestrator_deterministic_v1",
-        packs: [
-          { scope: "project", packKey: "project", level: "lite", approxTokens: 850, summary: "Project pack summary" },
-          { scope: "lane", packKey: "lane:lane-1", level: "standard", approxTokens: 1200, summary: "Lane summary" }
-        ],
         docs: [{ path: "docs/PRD.md", sha256: "abc", bytes: 1024 }],
         handoffDigest: { summarizedCount: 4, byType: { attempt_succeeded: 3, attempt_failed: 1 } }
       }
@@ -2222,8 +2184,6 @@ describe("mcpServer", () => {
     const manifest = JSON.parse(fs.readFileSync(contextPath, "utf8"));
     expect(manifest.schema).toBe("ade.mcp.spawnAgentContext.v1");
     expect(manifest.mission.runId).toBe("run-123");
-    expect(Array.isArray(manifest.context.packs)).toBe(true);
-    expect(response.structuredContent.contextRef?.approxTokens).toBeGreaterThan(0);
   });
 
   it("routes run_tests for suite and ad-hoc command contracts", async () => {
@@ -2413,7 +2373,7 @@ describe("mcpServer", () => {
     expect(response.structuredContent.commit.sha).toBe("abc123");
   });
 
-  it("returns resources for packs, lane status/conflicts, and mission/feature contexts", async () => {
+  it("returns resources for lane status/conflicts", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
@@ -2421,13 +2381,9 @@ describe("mcpServer", () => {
     const result = (await handler({ jsonrpc: "2.0", id: 4, method: "resources/list", params: {} })) as any;
     const uris = (result.resources ?? []).map((entry: any) => entry.uri);
 
-    expect(uris).toContain("ade://pack/project/standard");
-    expect(uris).toContain("ade://pack/lane/lane-1/standard");
-    expect(uris).toContain("ade://pack/plan/lane-1/standard");
-    expect(uris).toContain("ade://pack/feature/auth/standard");
-    expect(uris).toContain("ade://pack/mission/mission-1/standard");
     expect(uris).toContain("ade://lane/lane-1/status");
     expect(uris).toContain("ade://lane/lane-1/conflicts");
+    expect(uris.some((u: string) => u.startsWith("ade://pack/"))).toBe(false);
   });
 
   it("reads lane/status resource with the correct URI parser semantics", async () => {
@@ -2445,37 +2401,6 @@ describe("mcpServer", () => {
     const payload = JSON.parse(result.contents[0].text);
     expect(payload.lane.id).toBe("lane-1");
     expect(payload.rebaseStatus).toBe("idle");
-  });
-
-  it("reads feature/plan/mission pack resources", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler);
-
-    const feature = (await handler({
-      jsonrpc: "2.0",
-      id: 6,
-      method: "resources/read",
-      params: { uri: "ade://pack/feature/auth/standard" }
-    })) as any;
-    expect(feature.contents[0].text).toContain("feature");
-
-    const plan = (await handler({
-      jsonrpc: "2.0",
-      id: 7,
-      method: "resources/read",
-      params: { uri: "ade://pack/plan/lane-1/standard" }
-    })) as any;
-    expect(plan.contents[0].text).toContain("plan");
-
-    const mission = (await handler({
-      jsonrpc: "2.0",
-      id: 8,
-      method: "resources/read",
-      params: { uri: "ade://pack/mission/mission-1/standard" }
-    })) as any;
-    expect(mission.contents[0].text).toContain("mission");
   });
 
   it("records succeeded audit metadata for read-only tools", async () => {

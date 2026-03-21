@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
 
@@ -84,7 +85,7 @@ afterEach(async () => {
   }
 });
 
-describe("syncService", () => {
+describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
   it("reports W3 transfer blockers while keeping paused and idle state survivable", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-blockers-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
