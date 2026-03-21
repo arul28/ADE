@@ -18,8 +18,8 @@ jobs:
 
       - name: Ensure tag points to main
         run: |
-          git fetch origin main --depth=1
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          git fetch --depth=1 origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
 
   build-mac-app:
     needs: verify
