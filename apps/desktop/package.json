@@ -81,7 +81,7 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
-    "@electron/universal": "^2.0.3",
+    "@electron/universal": "^3.0.3",
     "@electron/rebuild": "^4.0.1",
     "@tailwindcss/postcss": "^4.1.18",
     "@testing-library/dom": "^10.4.1",
