@@ -96,12 +96,12 @@ jobs:
           ADE_RELEASE_TAG: ${{ github.ref_name }}
         run: cd apps/desktop && npm run version:release
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: mac-app-arm64
           path: apps/desktop/release/_ci/downloads/arm64
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: mac-app-x64
           path: apps/desktop/release/_ci/downloads/x64
