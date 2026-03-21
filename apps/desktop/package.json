@@ -88,7 +88,7 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/dagre": "^0.7.53",
-    "@types/node": "^20.11.30",
+    "@types/node": "^25.5.0",
     "@types/node-cron": "^3.0.11",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.2.74",
