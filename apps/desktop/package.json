@@ -62,7 +62,7 @@
     "geist": "^1.7.0",
     "lucide-react": "^0.563.0",
     "monaco-editor": "^0.55.1",
-    "motion": "^12.34.2",
+    "motion": "^12.38.0",
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
     "onnxruntime-node": "^1.24.3",
