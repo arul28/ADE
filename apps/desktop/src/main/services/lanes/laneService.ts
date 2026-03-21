@@ -744,12 +744,14 @@ export function createLaneService({
     getStateSnapshot(laneId: string): LaneStateSnapshotSummary | null {
       const row = db.get<LaneStateSnapshotRow>(
         `
-          select lane_id, agent_summary_json, mission_summary_json, updated_at
-          from lane_state_snapshots
-          where lane_id = ?
+          select s.lane_id, s.agent_summary_json, s.mission_summary_json, s.updated_at
+          from lane_state_snapshots s
+          join lanes l on l.id = s.lane_id
+          where s.lane_id = ?
+            and l.project_id = ?
           limit 1
         `,
-        [laneId],
+        [laneId, projectId],
       );
       if (!row) return null;
       return {
@@ -763,9 +765,12 @@ export function createLaneService({
     listStateSnapshots(): LaneStateSnapshotSummary[] {
       return db.all<LaneStateSnapshotRow>(
         `
-          select lane_id, agent_summary_json, mission_summary_json, updated_at
-          from lane_state_snapshots
+          select s.lane_id, s.agent_summary_json, s.mission_summary_json, s.updated_at
+          from lane_state_snapshots s
+          join lanes l on l.id = s.lane_id
+          where l.project_id = ?
         `,
+        [projectId],
       ).map((row) => ({
         laneId: row.lane_id,
         agentSummary: parseSummaryRecord(row.agent_summary_json),
@@ -775,6 +780,7 @@ export function createLaneService({
     },
 
     async refreshSnapshots(args: ListLanesArgs = {}): Promise<{ refreshedCount: number; lanes: LaneSummary[] }> {
+      invalidateLaneListCache();
       const summaries = await listLanes({
         includeArchived: args.includeArchived ?? true,
         includeStatus: true,

@@ -1,9 +1,29 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
+
+// Prevent real WebSocket servers from binding to port 8787 during tests.
+// Tests only exercise role/transfer/pairing logic, not the sync transport.
+vi.mock("./syncHostService", () => ({
+  createSyncHostService: () => ({
+    async waitUntilListening() { return 8787; },
+    getPort() { return 8787; },
+    getBootstrapToken() { return "test-bootstrap-token"; },
+    getPairingSession() {
+      const expires = new Date(Date.now() + 600_000).toISOString();
+      return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
+    },
+    revokePairedDevice() {},
+    getPeerStates() { return []; },
+    getBrainStatusSnapshot() { return {}; },
+    handlePtyData() {},
+    handlePtyExit() {},
+    async dispose() {},
+  }),
+}));
 
 function createLogger() {
   return {

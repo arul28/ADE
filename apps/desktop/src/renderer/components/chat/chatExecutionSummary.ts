@@ -49,9 +49,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         status: "running",
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
-        summary: event.summary.trim() || existing?.summary || null,
+        summary: event.summary?.trim() || existing?.summary || null,
         lastToolName: event.lastToolName ?? existing?.lastToolName,
-        usage: event.usage ?? existing?.usage,
+        usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
       continue;
     }
@@ -64,9 +64,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         status: event.status,
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
-        summary: event.summary.trim() || existing?.summary || null,
+        summary: event.summary?.trim() || existing?.summary || null,
         lastToolName: existing?.lastToolName,
-        usage: event.usage ?? existing?.usage,
+        usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
     }
   }

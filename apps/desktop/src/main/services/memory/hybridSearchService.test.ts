@@ -5,18 +5,34 @@ import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 
-const require = createRequire(import.meta.url);
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => { exec: (sql: string) => void; close: () => void } };
+type DatabaseSyncLike = {
+  exec: (sql: string) => void;
+  close: () => void;
+};
+
+type DatabaseSyncCtor = new (path: string) => DatabaseSyncLike;
+
+function loadDatabaseSync(): DatabaseSyncCtor | null {
+  try {
+    const req = createRequire(import.meta.url);
+    return (req("node:sqlite") as { DatabaseSync?: DatabaseSyncCtor }).DatabaseSync ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function hasFts(): boolean {
-  const tmp = new DatabaseSync(":memory:");
+  const DatabaseSync = loadDatabaseSync();
+  if (!DatabaseSync) return false;
+  let tmp: DatabaseSyncLike | null = null;
   try {
+    tmp = new DatabaseSync(":memory:");
     tmp.exec("create virtual table _fts_probe using fts4(content)");
     return true;
   } catch {
     return false;
   } finally {
-    tmp.close();
+    tmp?.close();
   }
 }
 

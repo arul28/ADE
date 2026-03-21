@@ -208,6 +208,8 @@ type ClaudeRuntime = {
   pendingSteers: string[];
   approvals: Map<string, PendingClaudeApproval>;
   interrupted: boolean;
+  /** Set when a reasoning effort change is requested mid-turn; flushed when idle. */
+  pendingSessionReset?: boolean;
 };
 
 type PendingUnifiedApproval = {
@@ -458,7 +460,7 @@ const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort)
 
 const EFFORT_ALIASES: Record<string, Record<string, string>> = {
   codex: { minimal: "low", max: "xhigh", none: "low" },
-  claude: { max: "high" },
+  claude: {},
 };
 
 function validateReasoningEffort(provider: "codex" | "claude", effort: string | null | undefined): string | null {
@@ -2665,11 +2667,10 @@ export function createAgentChatService(args: {
         if (msg.type === "system" && (msg as any).subtype === "task_progress") {
           const taskMsg = msg as any;
           const taskId = String(taskMsg.task_id ?? "");
+          if (!taskId) continue;
           const existing = runtime.activeSubagents.get(taskId);
           const description = String(taskMsg.description ?? existing?.description ?? "");
-          if (taskId.length) {
-            runtime.activeSubagents.set(taskId, { taskId, description });
-          }
+          runtime.activeSubagents.set(taskId, { taskId, description });
           emitChatEvent(managed, {
             type: "subagent_progress",
             taskId,
@@ -2921,7 +2922,7 @@ export function createAgentChatService(args: {
           const suggestionMsg = msg as Record<string, unknown>;
           const suggestionText =
             [suggestionMsg.suggestion, suggestionMsg.prompt, suggestionMsg.text]
-              .find((v): v is string => typeof v === "string") ?? null;
+              .find((v): v is string => typeof v === "string" && v.trim().length > 0)?.trim() ?? null;
           if (suggestionText) {
             emitChatEvent(managed, {
               type: "prompt_suggestion",
@@ -2940,6 +2941,15 @@ export function createAgentChatService(args: {
       runtime.activeTurnId = null;
       managed.session.status = "idle";
       reportProviderRuntimeReady("claude");
+
+      // Flush deferred session reset from mid-turn reasoning effort change
+      if (runtime.pendingSessionReset) {
+        runtime.pendingSessionReset = false;
+        cancelClaudeWarmup(managed, runtime, "session_reset");
+        try { runtime.v2Session?.close(); } catch { /* ignore */ }
+        runtime.v2Session = null;
+        runtime.v2WarmupDone = null;
+      }
 
       const finalStatus = runtime.interrupted ? "interrupted" : "completed";
       emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
@@ -5935,10 +5945,16 @@ export function createAgentChatService(args: {
       // session, invalidate the V2 session so it is recreated on the next turn
       // with the updated thinking configuration.
       if (prev !== next && managed.runtime?.kind === "claude" && (managed.runtime.v2Session || managed.runtime.v2WarmupDone)) {
-        cancelClaudeWarmup(managed, managed.runtime, "session_reset");
-        try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
-        managed.runtime.v2Session = null;
-        managed.runtime.v2WarmupDone = null;
+        if (managed.runtime.busy) {
+          // Defer session reset until the current turn completes — tearing down
+          // a live session mid-turn would force the stream down the failure path.
+          managed.runtime.pendingSessionReset = true;
+        } else {
+          cancelClaudeWarmup(managed, managed.runtime, "session_reset");
+          try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
+          managed.runtime.v2Session = null;
+          managed.runtime.v2WarmupDone = null;
+        }
       }
     }
 

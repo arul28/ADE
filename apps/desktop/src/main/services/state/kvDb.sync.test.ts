@@ -268,17 +268,17 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
       )
     );
     if (isFts) {
-      // Fallback plain table — verify content was copied
-      const match = db2.get<{ count: number }>(
-        "select count(*) as count from unified_memories_fts where content like ?",
-        ["%ios%"]
-      );
-      expect(Number(match?.count ?? 0)).toBeGreaterThan(0);
-    } else {
-      // Real FTS virtual table
+      // Real FTS virtual table — query with MATCH
       const match = db2.get<{ count: number }>(
         "select count(*) as count from unified_memories_fts where unified_memories_fts match ?",
         ["ios"]
+      );
+      expect(Number(match?.count ?? 0)).toBeGreaterThan(0);
+    } else {
+      // Fallback plain table — verify content was copied with LIKE
+      const match = db2.get<{ count: number }>(
+        "select count(*) as count from unified_memories_fts where content like ?",
+        ["%ios%"]
       );
       expect(Number(match?.count ?? 0)).toBeGreaterThan(0);
     }

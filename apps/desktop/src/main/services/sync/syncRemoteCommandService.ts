@@ -326,10 +326,13 @@ function parseGitBatchFileActionArgs(value: Record<string, unknown>, action: str
 }
 
 function parseWriteTextAtomicArgs(value: Record<string, unknown>): WriteTextAtomicArgs {
+  if (typeof value.text !== "string") {
+    throw new Error("files.writeTextAtomic requires text.");
+  }
   return {
     laneId: requireString(value.laneId, "files.writeTextAtomic requires laneId."),
     path: requireString(value.path, "files.writeTextAtomic requires path."),
-    text: typeof value.text === "string" ? value.text : "",
+    text: value.text,
   };
 }
 

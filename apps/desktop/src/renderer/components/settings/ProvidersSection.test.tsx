@@ -27,7 +27,7 @@ function buildStatus(claudeRuntimeAvailable: boolean): AiSettingsStatus {
         runtimeAvailable: claudeRuntimeAvailable,
         usageAvailable: claudeRuntimeAvailable,
         path: "/Users/arul/.local/bin/claude",
-        blocker: claudeRuntimeAvailable ? null : null,
+        blocker: claudeRuntimeAvailable ? null : "Authentication required",
         lastCheckedAt: "2026-03-17T19:00:00.000Z",
         sources: [
           {

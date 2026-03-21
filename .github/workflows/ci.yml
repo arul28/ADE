@@ -9,52 +9,181 @@ on:
 permissions:
   contents: read
 
+env:
+  CACHE_KEY: nm-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
+
 jobs:
-  check:
+  # ── Stage 1: Install & cache ──────────────────────────────────────────
+  install:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/mcp-server/package-lock.json
-            apps/web/package-lock.json
 
-      - name: Install MCP server dependencies
-        run: cd apps/mcp-server && npm ci
+      - name: Restore node_modules cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/mcp-server/node_modules
+            apps/web/node_modules
+          key: ${{ env.CACHE_KEY }}
 
-      - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
+      - name: Install all dependencies (parallel)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cd apps/desktop   && npm ci &
+          cd apps/mcp-server && npm ci &
+          cd apps/web        && npm ci &
+          wait
 
-      - name: Install web dependencies
-        run: cd apps/web && npm ci
+  # ── Stage 2: Parallel checks ──────────────────────────────────────────
+  typecheck-desktop:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/mcp-server/node_modules
+            apps/web/node_modules
+          key: ${{ env.CACHE_KEY }}
+      - run: cd apps/desktop && npm run typecheck
 
-      - name: Typecheck desktop
-        run: cd apps/desktop && npm run typecheck
+  typecheck-mcp:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/mcp-server/node_modules
+            apps/web/node_modules
+          key: ${{ env.CACHE_KEY }}
+      - run: cd apps/mcp-server && npm run typecheck
 
-      - name: Typecheck MCP server
-        run: cd apps/mcp-server && npm run typecheck
+  lint-desktop:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/mcp-server/node_modules
+            apps/web/node_modules
+          key: ${{ env.CACHE_KEY }}
+      - run: cd apps/desktop && npm run lint
 
-      - name: Lint desktop
-        run: cd apps/desktop && npm run lint
+  test-desktop:
+    needs: install
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/mcp-server/node_modules
+            apps/web/node_modules
+          key: ${{ env.CACHE_KEY }}
+      - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/3
 
-      - name: Test desktop
-        run: cd apps/desktop && npm test
+  test-mcp:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/mcp-server/node_modules
+            apps/web/node_modules
+          key: ${{ env.CACHE_KEY }}
+      - run: cd apps/mcp-server && npm test
 
-      - name: Test MCP server
-        run: cd apps/mcp-server && npm test
+  build:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/mcp-server/node_modules
+            apps/web/node_modules
+          key: ${{ env.CACHE_KEY }}
+      - run: cd apps/desktop && npm run build
+      - run: cd apps/mcp-server && npm run build
+      - run: cd apps/web && npm run build
 
-      - name: Build desktop
-        run: cd apps/desktop && npm run build
+  validate-docs:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/mcp-server/node_modules
+            apps/web/node_modules
+          key: ${{ env.CACHE_KEY }}
+      - run: node scripts/validate-docs.mjs
 
-      - name: Build MCP server
-        run: cd apps/mcp-server && npm run build
-
-      - name: Build web
-        run: cd apps/web && npm run build
-
-      - name: Validate docs
-        run: node scripts/validate-docs.mjs
+  # ── Gate: all jobs must pass ──────────────────────────────────────────
+  ci-pass:
+    if: always()
+    needs:
+      - typecheck-desktop
+      - typecheck-mcp
+      - lint-desktop
+      - test-desktop
+      - test-mcp
+      - build
+      - validate-docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] ||
+             [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "::error::One or more required jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "All CI jobs passed"

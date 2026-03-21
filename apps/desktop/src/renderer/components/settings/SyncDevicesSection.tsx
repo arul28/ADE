@@ -259,14 +259,14 @@ export function SyncDevicesSection() {
     }
   }, [connectHost, connectPort, status]);
 
+  const qrPayloadText = status?.pairingConnectInfo?.qrPayloadText ?? null;
   useEffect(() => {
     let cancelled = false;
-    const pairingInfo = status?.pairingConnectInfo;
-    if (!pairingInfo?.qrPayloadText) {
+    if (!qrPayloadText) {
       setPairingQrDataUrl(null);
       return;
     }
-    void QRCode.toDataURL(pairingInfo.qrPayloadText, {
+    void QRCode.toDataURL(qrPayloadText, {
       width: 240,
       margin: 1,
       errorCorrectionLevel: "M",
@@ -286,7 +286,7 @@ export function SyncDevicesSection() {
     return () => {
       cancelled = true;
     };
-  }, [status?.pairingConnectInfo]);
+  }, [qrPayloadText]);
 
   const runAction = useCallback(async (work: () => Promise<void>) => {
     setBusy(true);
@@ -512,7 +512,7 @@ export function SyncDevicesSection() {
                       <ol style={{ ...helperTextStyle, margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
                         <li>Open ADE on the phone.</li>
                         <li>Tap the connection button.</li>
-                        <li>Scan the QR, or enter `{pairingInfo.pairingCode}` with host `{primaryPairAddress}` and port `{pairingInfo.port}`.</li>
+                        <li>Scan the QR, or enter <code>{pairingInfo.pairingCode}</code> with host <code>{primaryPairAddress}</code> and port <code>{pairingInfo.port}</code>.</li>
                       </ol>
                     </div>
                   </div>
