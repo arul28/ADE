@@ -10,14 +10,15 @@
     "predev": "node ./scripts/clear-vite-cache.cjs",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
     "build": "tsup && vite build",
-    "dist:mac": "npm run build && npm run rebuild:native && electron-builder --mac --publish never",
-    "dist:mac:dir": "npm run build && npm run rebuild:native && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
-    "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run build && npm run rebuild:native && electron-builder --mac --publish never",
-    "merge:mac:universal": "node ./scripts/make-universal-mac.mjs",
-    "sign:mac:universal": "node ./scripts/require-macos-release-secrets.cjs && node ./scripts/sign-universal-mac.mjs",
-    "dist:mac:universal:signed": "npm run sign:mac:universal && electron-builder --mac --universal --publish never --prepackaged release/mac-universal/ADE.app",
-    "release:mac": "node ./scripts/require-macos-release-secrets.cjs && npm run build && npm run rebuild:native && electron-builder --mac --publish always",
-    "release:mac:universal": "npm run sign:mac:universal && electron-builder --mac --universal --publish always --prepackaged release/mac-universal/ADE.app",
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:mac:dir": "npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
+    "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac --publish never",
+    "prepare:mac:universal": "node ./scripts/prepare-universal-mac-inputs.mjs",
+    "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac --universal --publish never",
+    "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac zip --universal --publish never",
+    "notarize:mac:dmg": "node ./scripts/notarize-mac-dmg.mjs",
+    "validate:mac:artifacts": "node ./scripts/validate-mac-artifacts.mjs",
+    "release:mac:local": "node ./scripts/release-mac-local.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
@@ -125,16 +126,20 @@
       "dist/**/*",
       "electron.cjs",
       "package.json",
-      "vendor/**/*"
+      "vendor/**/*",
+      "!node_modules/onnxruntime-node/**",
+      "!node_modules/node-pty/build/**"
     ],
     "asarUnpack": [
-      "node_modules/onnxruntime-node/**",
+      "node_modules/@huggingface/transformers/node_modules/onnxruntime-node/**",
       "vendor/crsqlite/**"
     ],
     "publish": {
       "provider": "github",
       "owner": "arul28",
-      "repo": "ADE"
+      "repo": "ADE",
+      "releaseType": "draft",
+      "publishAutoUpdate": true
     },
     "npmRebuild": false,
     "mac": {
@@ -148,7 +153,9 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
-      "notarize": true
+      "notarize": true,
+      "mergeASARs": true,
+      "x64ArchFiles": "{Contents/Resources/app.asar.unpacked/node_modules/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/vendor/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@openai/codex-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/**/*}"
     }
   }
 }

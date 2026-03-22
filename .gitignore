@@ -21,6 +21,7 @@ __pycache__/
 /apps/mcp-server/dist/
 /apps/desktop/release/
 /apps/desktop/dist/
+/apps/desktop/vendor/crsqlite/darwin-x64/
 
 # Release & local
 PRtab

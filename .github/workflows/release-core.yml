@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       publish:
-        description: Whether to create the draft release and publish signed artifacts.
+        description: Whether to upload validated artifacts to a draft GitHub release.
         required: false
         default: false
         type: boolean
@@ -34,61 +34,9 @@ jobs:
           git fetch --depth=1 origin main:refs/remotes/origin/main
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
 
-  build-mac-app:
+  build-mac-release:
     needs: verify
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-latest
-            app_dir: mac-arm64
-          - arch: x64
-            runner: macos-15-intel
-            app_dir: mac
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.target_ref }}
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-
-      - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
-
-      - name: Stamp release version
-        env:
-          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: cd apps/desktop && npm run version:release
-
-      - name: Build unsigned macOS app bundle
-        run: cd apps/desktop && npm run dist:mac:dir -- --${{ matrix.arch }}
-
-      - name: Archive app bundle
-        run: |
-          APP_PATH="apps/desktop/release/${{ matrix.app_dir }}/ADE.app"
-          ARCHIVE_PATH="apps/desktop/release/ADE-${{ matrix.arch }}.app.zip"
-          test -d "$APP_PATH"
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mac-app-${{ matrix.arch }}
-          path: apps/desktop/release/ADE-${{ matrix.arch }}.app.zip
-          if-no-files-found: error
-
-  release:
-    if: ${{ inputs.publish }}
-    needs:
-      - verify
-      - build-mac-app
-    runs-on: macos-latest
+    runs-on: macos-15
     concurrency:
       group: release-${{ inputs.release_tag }}
       cancel-in-progress: true
@@ -112,25 +60,10 @@ jobs:
           ADE_RELEASE_TAG: ${{ inputs.release_tag }}
         run: cd apps/desktop && npm run version:release
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: mac-app-arm64
-          path: apps/desktop/release/_ci/downloads/arm64
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: mac-app-x64
-          path: apps/desktop/release/_ci/downloads/x64
-
-      - name: Expand architecture app bundles
+      - name: Reset release output
         run: |
-          rm -rf apps/desktop/release/_ci/arm64 apps/desktop/release/_ci/x64
-          mkdir -p apps/desktop/release/_ci/arm64 apps/desktop/release/_ci/x64
-          ditto -x -k apps/desktop/release/_ci/downloads/arm64/ADE-arm64.app.zip apps/desktop/release/_ci/arm64
-          ditto -x -k apps/desktop/release/_ci/downloads/x64/ADE-x64.app.zip apps/desktop/release/_ci/x64
-
-      - name: Merge universal app bundle
-        run: cd apps/desktop && npm run merge:mac:universal
+          rm -rf apps/desktop/release apps/desktop/.cache
+          mkdir -p apps/desktop/.cache
 
       - name: Materialize App Store Connect API key
         env:
@@ -147,21 +80,68 @@ jobs:
           chmod 600 "$KEY_PATH"
           echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
 
-      - name: Create draft GitHub release with generated notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ inputs.release_tag }}
+      - name: Seed x64 runtime payload into universal build inputs
         run: |
-          gh release view "$TAG_NAME" >/dev/null 2>&1 || \
-            gh release create "$TAG_NAME" --draft --title "$TAG_NAME" --generate-notes
+          cd apps/desktop
+          npm run prepare:mac:universal
 
-      - name: Build and publish macOS release
+      - name: Build signed universal macOS release
         env:
-          GH_TOKEN: ${{ github.token }}
-          ELECTRON_CACHE: ${{ runner.temp }}/electron
-          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: cd apps/desktop && npm run release:mac:universal
+          ELECTRON_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron-builder
+        run: cd apps/desktop && npm run dist:mac:universal:signed
+
+      - name: Notarize and staple DMG artifact
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: cd apps/desktop && npm run notarize:mac:dmg
+
+      - name: Validate macOS release artifacts
+        run: cd apps/desktop && npm run validate:mac:artifacts
+
+      - name: Upload validated artifacts to workflow run
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-mac-release-${{ inputs.release_tag }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*-mac.zip.blockmap
+            apps/desktop/release/latest-mac.yml
+          if-no-files-found: error
+
+      - name: Create or update draft GitHub release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.release_tag }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          shopt -s nullglob
+          files=(
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*-mac.zip.blockmap
+            apps/desktop/release/latest-mac.yml
+          )
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No release artifacts were found after validation."
+            exit 1
+          fi
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$TAG_NAME" "${files[@]}" \
+              --draft \
+              --title "$TAG_NAME" \
+              --generate-notes \
+              --target "$TARGET_REF"
+          fi

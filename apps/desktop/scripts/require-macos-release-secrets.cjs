@@ -11,10 +11,11 @@ function formatList(values) {
 
 const missing = [];
 
-for (const name of ["CSC_LINK", "CSC_KEY_PASSWORD"]) {
-  if (!hasEnv(name)) {
-    missing.push(name);
-  }
+const hasImportedCertificate = ["CSC_LINK", "CSC_KEY_PASSWORD"].every(hasEnv);
+const hasInstalledIdentity = hasEnv("CSC_NAME");
+
+if (!hasImportedCertificate && !hasInstalledIdentity) {
+  missing.push("Provide either CSC_LINK + CSC_KEY_PASSWORD or CSC_NAME");
 }
 
 const notarizationProfiles = [
@@ -67,5 +68,7 @@ if (matchingProfile.vars.includes("APPLE_API_KEY") && !String(process.env.APPLE_
 }
 
 process.stdout.write(
-  `[release:mac] macOS signing and notarization environment looks complete (${matchingProfile.label}).\n`
+  `[release:mac] macOS signing and notarization environment looks complete (` +
+    `${hasImportedCertificate ? "imported Developer ID certificate" : `installed identity ${process.env.CSC_NAME}`}, ` +
+    `${matchingProfile.label}).\n`
 );
