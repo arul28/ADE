@@ -23,6 +23,6 @@ jobs:
     uses: ./.github/workflows/release-core.yml
     with:
       release_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
-      target_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_sha || github.ref }}
+      target_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_sha || github.sha }}
       publish: true
     secrets: inherit
