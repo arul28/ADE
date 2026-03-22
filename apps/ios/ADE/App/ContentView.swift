@@ -653,19 +653,11 @@ private struct ADEGlassCardModifier: ViewModifier {
   func body(content: Content) -> some View {
     content
       .padding(padding)
-      .background(
+      .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+      .overlay(
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .fill(ADEPalette.surfaceBackground.opacity(0.92))
-          .background(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-              .fill(.ultraThinMaterial)
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-              .stroke(ADEPalette.border.opacity(0.7), lineWidth: 0.5)
-          )
+          .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
       )
-      .shadow(color: Color.black.opacity(0.14), radius: 12, x: 0, y: 4)
   }
 }
 

@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Enums
+
 private enum LaneListScope: String, CaseIterable, Identifiable {
   case active
   case archived
@@ -13,14 +15,6 @@ private enum LaneListScope: String, CaseIterable, Identifiable {
     case .active: return "Active"
     case .archived: return "Archived"
     case .all: return "All"
-    }
-  }
-
-  var symbol: String {
-    switch self {
-    case .active: return "circle.grid.2x2.fill"
-    case .archived: return "archivebox.fill"
-    case .all: return "square.stack.3d.up.fill"
     }
   }
 }
@@ -37,7 +31,7 @@ private enum LaneRuntimeFilter: String, CaseIterable, Identifiable {
     switch self {
     case .all: return "All"
     case .running: return "Running"
-    case .awaitingInput: return "Awaiting input"
+    case .awaitingInput: return "Awaiting"
     case .ended: return "Ended"
     }
   }
@@ -53,9 +47,9 @@ private enum LaneRuntimeFilter: String, CaseIterable, Identifiable {
 }
 
 private enum LaneDetailSection: String, CaseIterable, Identifiable {
-  case overview
   case git
   case work
+  case overview
   case manage
 
   var id: String { rawValue }
@@ -90,6 +84,8 @@ private enum LaneDeleteMode: String, CaseIterable, Identifiable {
   }
 }
 
+// MARK: - Lanes tab
+
 struct LanesTabView: View {
   @EnvironmentObject private var syncService: SyncService
 
@@ -107,6 +103,7 @@ struct LanesTabView: View {
   @State private var detailSheetTarget: LaneDetailSheetTarget?
   @State private var batchManageLaneIds: [String] = []
   @State private var batchManagePresented = false
+  @State private var showFilters = false
 
   private var laneStatus: SyncDomainStatus {
     syncService.status(for: .lanes)
@@ -187,7 +184,8 @@ struct LanesTabView: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        LazyVStack(spacing: 16) {
+        LazyVStack(spacing: 14) {
+          // Connection status
           if let notice = statusNotice {
             notice
               .transition(.asymmetric(
@@ -208,28 +206,111 @@ struct LanesTabView: View {
             .transition(.opacity)
           }
 
-          laneControlDeck
+          // Inline filter bar
+          filterBar
 
+          // Open lanes tray
           if !openLaneSnapshots.isEmpty {
-            laneOpenDeck
+            openLanesTray
               .transition(.move(edge: .top).combined(with: .opacity))
           }
 
+          // Attention banners
           if !visibleSuggestions.isEmpty || !visibleAutoRebaseAttention.isEmpty {
-            laneAttentionDeck
+            attentionSection
               .transition(.move(edge: .top).combined(with: .opacity))
           }
 
-          laneListDeck
+          // Lane list
+          laneList
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .animation(.easeInOut(duration: 0.3), value: filteredSnapshots.count)
-        .animation(.easeInOut(duration: 0.3), value: openLaneSnapshots.count)
+        .padding(.vertical, 8)
+        .animation(.spring(.bouncy(duration: 0.35)), value: filteredSnapshots.count)
+        .animation(.spring(.bouncy(duration: 0.35)), value: openLaneSnapshots.count)
       }
       .background(ADEPalette.pageBackground.ignoresSafeArea())
+      .searchable(text: $searchText, prompt: "Filter by lane, branch, is:dirty...")
       .navigationTitle("Lanes")
-      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+          Menu {
+            Section("Scope") {
+              ForEach(LaneListScope.allCases) { option in
+                Button {
+                  scope = option
+                } label: {
+                  Label(
+                    "\(option.title) (\(option == .active ? activeLaneCount : option == .archived ? archivedLaneCount : laneSnapshots.count))",
+                    systemImage: scope == option ? "checkmark.circle.fill" : "circle"
+                  )
+                }
+              }
+            }
+
+            Section("Runtime") {
+              ForEach(LaneRuntimeFilter.allCases) { filter in
+                Button {
+                  runtimeFilter = filter
+                } label: {
+                  Label(
+                    "\(filter.title) (\(count(for: filter)))",
+                    systemImage: runtimeFilter == filter ? "checkmark.circle.fill" : "circle"
+                  )
+                }
+              }
+            }
+
+            if manageableVisibleLaneIds.count > 1 {
+              Section {
+                Button {
+                  batchManageLaneIds = manageableVisibleLaneIds
+                  batchManagePresented = true
+                } label: {
+                  Label("Manage visible lanes", systemImage: "slider.horizontal.3")
+                }
+              }
+            }
+
+            if let primaryLane {
+              Section("Primary branch") {
+                ForEach(primaryBranches) { branch in
+                  Button(branch.name) {
+                    Task {
+                      do {
+                        try await syncService.checkoutPrimaryBranch(laneId: primaryLane.id, branchName: branch.name)
+                        try await syncService.refreshLaneSnapshots()
+                        await reload()
+                      } catch {
+                        primaryBranchError = error.localizedDescription
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } label: {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+              .symbolVariant(scope != .active || runtimeFilter != .all ? .fill : .none)
+          }
+
+          Menu {
+            Button {
+              createPresented = true
+            } label: {
+              Label("New lane", systemImage: "plus.square")
+            }
+            Button {
+              attachPresented = true
+            } label: {
+              Label("Attach worktree", systemImage: "link")
+            }
+          } label: {
+            Image(systemName: "plus.circle.fill")
+              .symbolRenderingMode(.hierarchical)
+          }
+        }
+      }
       .refreshable {
         await reload(refreshRemote: true)
       }
@@ -280,360 +361,75 @@ struct LanesTabView: View {
     }
   }
 
-  @ViewBuilder
-  private var laneControlDeck: some View {
-    LaneSurfaceCard {
-      VStack(alignment: .leading, spacing: 14) {
-        HStack(alignment: .top, spacing: 12) {
-          VStack(alignment: .leading, spacing: 4) {
-            Text("Current lane graph")
-              .font(.headline)
-              .foregroundStyle(ADEPalette.textPrimary)
-            Text("\(filteredSnapshots.count) visible • \(activeLaneCount) active • \(archivedLaneCount) archived")
-              .font(.subheadline)
-              .foregroundStyle(ADEPalette.textSecondary)
-          }
-
-          Spacer(minLength: 12)
-
-          LaneSummaryCountPill(
-            label: "Open",
-            value: "\(openLaneSnapshots.count)",
-            tint: openLaneSnapshots.isEmpty ? ADEPalette.textMuted : ADEPalette.accent
-          )
-        }
-
-        LaneSearchField(
-          text: $searchText,
-          placeholder: "Filter by lane, branch, is:dirty, type:attached"
-        )
-
-        LaneInlineGroup(title: "Scope") {
-          ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-              ForEach(LaneListScope.allCases) { option in
-                LaneFilterChip(
-                  title: option.title,
-                  symbol: option.symbol,
-                  count: option == .active ? activeLaneCount : option == .archived ? archivedLaneCount : laneSnapshots.count,
-                  isActive: scope == option,
-                  tint: scope == option ? ADEPalette.accent : ADEPalette.textSecondary
-                ) {
-                  scope = option
-                }
-              }
-            }
-          }
-        }
-
-        LaneInlineGroup(title: "Runtime") {
-          ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-              ForEach(LaneRuntimeFilter.allCases) { filter in
-                LaneFilterChip(
-                  title: filter.title,
-                  symbol: filter.symbol,
-                  count: count(for: filter),
-                  isActive: runtimeFilter == filter,
-                  tint: runtimeFilter == filter ? runtimeTint(bucket: filter.rawValue) : ADEPalette.textSecondary
-                ) {
-                  runtimeFilter = filter
-                }
-              }
-            }
-          }
-        }
-
-        LaneInlineGroup(title: "Actions") {
-          ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-              LaneActionStripButton(
-                title: "New lane",
-                symbol: "plus.square.fill",
-                tint: ADEPalette.accent,
-                prominence: .primary
-              ) {
-                createPresented = true
-              }
-
-              LaneActionStripButton(
-                title: "Attach worktree",
-                symbol: "link",
-                tint: ADEPalette.textSecondary
-              ) {
-                attachPresented = true
-              }
-
-              if manageableVisibleLaneIds.count > 1 {
-                LaneActionStripButton(
-                  title: "Manage visible",
-                  symbol: "slider.horizontal.3",
-                  tint: ADEPalette.warning
-                ) {
-                  batchManageLaneIds = manageableVisibleLaneIds
-                  batchManagePresented = true
-                }
-              }
-            }
-          }
-        }
-
-        if let primaryLane {
-          Divider()
-            .overlay(ADEPalette.border.opacity(0.75))
-
-          VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 10) {
-              LaneSectionMarker(
-                title: "Primary branch",
-                detail: primaryLane.branchRef,
-                symbol: "point.topleft.down.curvedto.point.bottomright.up",
-                tint: ADEPalette.accent
-              )
-              Spacer()
-              Menu {
-                ForEach(primaryBranches) { branch in
-                  Button(branch.name) {
-                    Task {
-                      do {
-                        try await syncService.checkoutPrimaryBranch(laneId: primaryLane.id, branchName: branch.name)
-                        try await syncService.refreshLaneSnapshots()
-                        await reload()
-                      } catch {
-                        primaryBranchError = error.localizedDescription
-                      }
-                    }
-                  }
-                }
-              } label: {
-                LaneCompactMenuButton(title: "Checkout", tint: ADEPalette.accent)
-              }
-              .disabled(primaryBranches.isEmpty || !canRunLiveActions)
-            }
-
-            if let primaryBranchError {
-              Text(primaryBranchError)
-                .font(.caption)
-                .foregroundStyle(ADEPalette.danger)
-            } else if !canRunLiveActions {
-              Text("Reconnect to refresh and switch the primary branch.")
-                .font(.caption)
-                .foregroundStyle(ADEPalette.textMuted)
-            }
-          }
-        }
-      }
-    }
-  }
+  // MARK: - Filter bar
 
   @ViewBuilder
-  private var laneOpenDeck: some View {
-    LaneSurfaceCard(title: "Open lanes", subtitle: "\(openLaneSnapshots.count) kept in the tray") {
-      VStack(alignment: .leading, spacing: 12) {
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 8) {
-            ForEach(openLaneSnapshots) { snapshot in
-              NavigationLink {
-                LaneDetailScreen(
-                  laneId: snapshot.lane.id,
-                  initialSnapshot: snapshot,
-                  allLaneSnapshots: laneSnapshots,
-                  onRefreshRoot: { await reload(refreshRemote: true) }
-                )
-              } label: {
-                LaneOpenChip(
-                  snapshot: snapshot,
-                  isPinned: pinnedLaneIds.contains(snapshot.lane.id)
-                )
-              }
-              .buttonStyle(.plain)
-              .contextMenu {
-                Button("Manage lane") {
-                  detailSheetTarget = LaneDetailSheetTarget(
-                    laneId: snapshot.lane.id,
-                    snapshot: snapshot,
-                    initialSection: .manage
-                  )
-                }
-                Button(pinnedLaneIds.contains(snapshot.lane.id) ? "Unpin" : "Pin") {
-                  togglePin(snapshot.lane.id)
-                }
-                Button("Remove from open lanes") {
-                  closeLaneChip(snapshot.lane.id)
-                }
-                Button("Close others") {
-                  openLaneIds = [snapshot.lane.id]
-                }
-              }
-            }
-          }
-        }
-
-        HStack(spacing: 8) {
-          LaneInlineButton(title: "Open filtered", symbol: "checklist") {
-            openLaneIds = filteredSnapshots.map(\.lane.id)
-          }
-          .disabled(filteredSnapshots.isEmpty)
-
-          if manageableOpenLaneIds.count > 1 {
-            LaneInlineButton(title: "Manage open", symbol: "slider.horizontal.3") {
-              batchManageLaneIds = manageableOpenLaneIds
-              batchManagePresented = true
-            }
-          }
-
-          Spacer(minLength: 8)
-
-          LaneInlineButton(
-            title: "Clear tray",
-            symbol: "xmark.circle",
-            tint: ADEPalette.danger
+  private var filterBar: some View {
+    VStack(spacing: 10) {
+      HStack(spacing: 8) {
+        ForEach(LaneListScope.allCases) { option in
+          LaneFilterPill(
+            title: option.title,
+            count: option == .active ? activeLaneCount : option == .archived ? archivedLaneCount : laneSnapshots.count,
+            isActive: scope == option,
+            tint: scope == option ? ADEPalette.accent : ADEPalette.textSecondary
           ) {
-            openLaneIds = Array(pinnedLaneIds)
-          }
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var laneAttentionDeck: some View {
-    LaneSurfaceCard(title: "Needs attention", subtitle: "Rebase and auto-rebase issues stay visible here") {
-      VStack(alignment: .leading, spacing: 14) {
-        if !visibleSuggestions.isEmpty {
-          LaneInlineGroup(title: "Behind parent") {
-            VStack(spacing: 10) {
-              ForEach(visibleSuggestions.prefix(3)) { snapshot in
-                HStack(alignment: .center, spacing: 10) {
-                  VStack(alignment: .leading, spacing: 3) {
-                    Text(snapshot.lane.name)
-                      .font(.subheadline.weight(.semibold))
-                      .foregroundStyle(ADEPalette.textPrimary)
-                    Text("Behind parent by \(snapshot.rebaseSuggestion?.behindCount ?? 0) commit(s)")
-                      .font(.caption)
-                      .foregroundStyle(ADEPalette.textSecondary)
-                  }
-
-                  Spacer(minLength: 8)
-
-                  ADEStatusPill(
-                    text: "\(snapshot.rebaseSuggestion?.behindCount ?? 0)\u{2193}",
-                    tint: ADEPalette.warning
-                  )
-
-                  Menu {
-                    Button("Defer") {
-                      Task {
-                        do {
-                          try await syncService.deferRebaseSuggestion(laneId: snapshot.lane.id)
-                          await reload(refreshRemote: true)
-                        } catch {
-                          errorMessage = error.localizedDescription
-                        }
-                      }
-                    }
-                    Button("Dismiss") {
-                      Task {
-                        do {
-                          try await syncService.dismissRebaseSuggestion(laneId: snapshot.lane.id)
-                          await reload(refreshRemote: true)
-                        } catch {
-                          errorMessage = error.localizedDescription
-                        }
-                      }
-                    }
-                  } label: {
-                    Image(systemName: "ellipsis.circle")
-                      .foregroundStyle(ADEPalette.textMuted)
-                  }
-
-                  LaneInlineButton(
-                    title: "Rebase",
-                    symbol: "arrow.triangle.2.circlepath",
-                    tint: ADEPalette.accent
-                  ) {
-                    Task {
-                      do {
-                        try await syncService.startLaneRebase(laneId: snapshot.lane.id)
-                        await reload(refreshRemote: true)
-                      } catch {
-                        errorMessage = error.localizedDescription
-                      }
-                    }
-                  }
-                  .disabled(!canRunLiveActions)
-                }
-              }
-            }
+            withAnimation(.spring(.bouncy(duration: 0.3))) { scope = option }
           }
         }
 
-        if !visibleAutoRebaseAttention.isEmpty {
-          LaneInlineGroup(title: "Auto rebase") {
-            VStack(spacing: 10) {
-              ForEach(visibleAutoRebaseAttention.prefix(3)) { snapshot in
-                HStack(alignment: .center, spacing: 10) {
-                  VStack(alignment: .leading, spacing: 3) {
-                    Text(snapshot.lane.name)
-                      .font(.subheadline.weight(.semibold))
-                      .foregroundStyle(ADEPalette.textPrimary)
-                    Text(snapshot.autoRebaseStatus?.message ?? "Manual follow-up is required.")
-                      .font(.caption)
-                      .foregroundStyle(ADEPalette.textSecondary)
-                      .lineLimit(2)
-                  }
-
-                  Spacer(minLength: 8)
-
-                  ADEStatusPill(
-                    text: snapshot.autoRebaseStatus?.state == "rebaseConflict" ? "CONFLICT" : "PENDING",
-                    tint: snapshot.autoRebaseStatus?.state == "rebaseConflict" ? ADEPalette.danger : ADEPalette.warning
-                  )
-
-                  LaneInlineButton(title: "Open lane", symbol: "arrow.right") {
-                    detailSheetTarget = LaneDetailSheetTarget(
-                      laneId: snapshot.lane.id,
-                      snapshot: snapshot,
-                      initialSection: .git
-                    )
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var laneListDeck: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .center, spacing: 8) {
-        Text(scope.title)
-          .font(.headline)
-          .foregroundStyle(ADEPalette.textPrimary)
-        Text("\(filteredSnapshots.count)")
-          .font(.system(.caption, design: .monospaced).weight(.semibold))
-          .foregroundStyle(ADEPalette.textMuted)
         Spacer()
-        if !searchText.isEmpty {
-          Text("Filtered")
+
+        if !searchText.isEmpty || runtimeFilter != .all {
+          Text("\(filteredSnapshots.count) results")
             .font(.caption)
             .foregroundStyle(ADEPalette.textMuted)
         }
       }
 
-      if filteredSnapshots.isEmpty {
-        LaneSurfaceCard {
-          Text(emptyStateText)
-            .font(.subheadline)
-            .foregroundStyle(ADEPalette.textSecondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+      if !laneSnapshots.isEmpty {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            ForEach(LaneRuntimeFilter.allCases) { filter in
+              LaneFilterPill(
+                title: filter.title,
+                count: count(for: filter),
+                isActive: runtimeFilter == filter,
+                tint: runtimeFilter == filter ? runtimeTint(bucket: filter.rawValue) : ADEPalette.textSecondary
+              ) {
+                withAnimation(.spring(.bouncy(duration: 0.3))) { runtimeFilter = filter }
+              }
+            }
+          }
         }
-      } else {
-        VStack(spacing: 10) {
-          ForEach(filteredSnapshots) { snapshot in
+      }
+    }
+  }
+
+  // MARK: - Open lanes tray
+
+  @ViewBuilder
+  private var openLanesTray: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Label("Open lanes", systemImage: "square.stack.3d.up.fill")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEPalette.textSecondary)
+        Spacer()
+        Button {
+          withAnimation(.spring(.bouncy(duration: 0.3))) {
+            openLaneIds = Array(pinnedLaneIds)
+          }
+        } label: {
+          Text("Clear")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEPalette.textMuted)
+        }
+      }
+
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          ForEach(openLaneSnapshots) { snapshot in
             NavigationLink {
               LaneDetailScreen(
                 laneId: snapshot.lane.id,
@@ -642,44 +438,12 @@ struct LanesTabView: View {
                 onRefreshRoot: { await reload(refreshRemote: true) }
               )
             } label: {
-              LaneListRow(
+              LaneOpenChip(
                 snapshot: snapshot,
-                isPinned: pinnedLaneIds.contains(snapshot.lane.id),
-                isOpen: openLaneIds.contains(snapshot.lane.id)
+                isPinned: pinnedLaneIds.contains(snapshot.lane.id)
               )
             }
             .buttonStyle(.plain)
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-              Button(openLaneIds.contains(snapshot.lane.id) ? "Close" : "Open") {
-                toggleOpenLane(snapshot.lane.id)
-              }
-              .tint(ADEPalette.accent)
-
-              if snapshot.lane.archivedAt == nil {
-                Button("Archive", role: .destructive) {
-                  Task {
-                    do {
-                      try await syncService.archiveLane(snapshot.lane.id)
-                      await reload(refreshRemote: true)
-                    } catch {
-                      errorMessage = error.localizedDescription
-                    }
-                  }
-                }
-              } else {
-                Button("Restore") {
-                  Task {
-                    do {
-                      try await syncService.unarchiveLane(snapshot.lane.id)
-                      await reload(refreshRemote: true)
-                    } catch {
-                      errorMessage = error.localizedDescription
-                    }
-                  }
-                }
-                .tint(.green)
-              }
-            }
             .contextMenu {
               Button("Manage lane") {
                 detailSheetTarget = LaneDetailSheetTarget(
@@ -688,37 +452,234 @@ struct LanesTabView: View {
                   initialSection: .manage
                 )
               }
-              Button(openLaneIds.contains(snapshot.lane.id) ? "Remove from open lanes" : "Add to open lanes") {
-                toggleOpenLane(snapshot.lane.id)
-              }
               Button(pinnedLaneIds.contains(snapshot.lane.id) ? "Unpin" : "Pin") {
                 togglePin(snapshot.lane.id)
+              }
+              Button("Remove from open lanes") {
+                closeLaneChip(snapshot.lane.id)
               }
               Button("Close others") {
                 openLaneIds = [snapshot.lane.id]
               }
-              Button("Select all visible") {
-                openLaneIds = filteredSnapshots.map(\.lane.id)
+            }
+          }
+        }
+      }
+    }
+    .padding(12)
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+    )
+  }
+
+  // MARK: - Attention section
+
+  @ViewBuilder
+  private var attentionSection: some View {
+    VStack(spacing: 10) {
+      ForEach(visibleSuggestions.prefix(3)) { snapshot in
+        HStack(spacing: 12) {
+          Image(systemName: "arrow.triangle.2.circlepath")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEPalette.warning)
+
+          VStack(alignment: .leading, spacing: 2) {
+            Text(snapshot.lane.name)
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEPalette.textPrimary)
+            Text("Behind parent by \(snapshot.rebaseSuggestion?.behindCount ?? 0) commit(s)")
+              .font(.caption)
+              .foregroundStyle(ADEPalette.textSecondary)
+          }
+
+          Spacer(minLength: 8)
+
+          Button("Rebase") {
+            Task {
+              do {
+                try await syncService.startLaneRebase(laneId: snapshot.lane.id)
+                await reload(refreshRemote: true)
+              } catch {
+                errorMessage = error.localizedDescription
               }
-              if manageableVisibleLaneIds.count > 1 {
-                Button("Manage \(manageableVisibleLaneIds.count) visible lanes") {
-                  batchManageLaneIds = manageableVisibleLaneIds
-                  batchManagePresented = true
+            }
+          }
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEPalette.accent)
+          .disabled(!canRunLiveActions)
+
+          Menu {
+            Button("Defer") {
+              Task {
+                do {
+                  try await syncService.deferRebaseSuggestion(laneId: snapshot.lane.id)
+                  await reload(refreshRemote: true)
+                } catch {
+                  errorMessage = error.localizedDescription
                 }
               }
-              Button("Copy path") {
-                UIPasteboard.general.string = snapshot.lane.worktreePath
+            }
+            Button("Dismiss") {
+              Task {
+                do {
+                  try await syncService.dismissRebaseSuggestion(laneId: snapshot.lane.id)
+                  await reload(refreshRemote: true)
+                } catch {
+                  errorMessage = error.localizedDescription
+                }
               }
-              if snapshot.adoptableAttached {
-                Button("Move to ADE-managed worktree") {
-                  Task {
-                    do {
-                      _ = try await syncService.adoptAttachedLane(snapshot.lane.id)
-                      await reload(refreshRemote: true)
-                    } catch {
-                      errorMessage = error.localizedDescription
-                    }
-                  }
+            }
+          } label: {
+            Image(systemName: "ellipsis.circle")
+              .font(.caption)
+              .foregroundStyle(ADEPalette.textMuted)
+          }
+        }
+        .padding(12)
+        .background(ADEPalette.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(ADEPalette.warning.opacity(0.2), lineWidth: 0.5)
+        )
+      }
+
+      ForEach(visibleAutoRebaseAttention.prefix(3)) { snapshot in
+        HStack(spacing: 12) {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(snapshot.autoRebaseStatus?.state == "rebaseConflict" ? ADEPalette.danger : ADEPalette.warning)
+
+          VStack(alignment: .leading, spacing: 2) {
+            Text(snapshot.lane.name)
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEPalette.textPrimary)
+            Text(snapshot.autoRebaseStatus?.message ?? "Manual follow-up required")
+              .font(.caption)
+              .foregroundStyle(ADEPalette.textSecondary)
+              .lineLimit(2)
+          }
+
+          Spacer(minLength: 8)
+
+          Button("Open") {
+            detailSheetTarget = LaneDetailSheetTarget(
+              laneId: snapshot.lane.id,
+              snapshot: snapshot,
+              initialSection: .git
+            )
+          }
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEPalette.accent)
+        }
+        .padding(12)
+        .background(ADEPalette.danger.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(ADEPalette.danger.opacity(0.15), lineWidth: 0.5)
+        )
+      }
+    }
+  }
+
+  // MARK: - Lane list
+
+  @ViewBuilder
+  private var laneList: some View {
+    if filteredSnapshots.isEmpty {
+      ContentUnavailableView {
+        Label(emptyStateTitle, systemImage: "square.stack.3d.up.slash")
+      } description: {
+        Text(emptyStateText)
+      }
+      .foregroundStyle(ADEPalette.textSecondary)
+      .padding(.top, 40)
+    } else {
+      ForEach(filteredSnapshots) { snapshot in
+        NavigationLink {
+          LaneDetailScreen(
+            laneId: snapshot.lane.id,
+            initialSnapshot: snapshot,
+            allLaneSnapshots: laneSnapshots,
+            onRefreshRoot: { await reload(refreshRemote: true) }
+          )
+        } label: {
+          LaneListRow(
+            snapshot: snapshot,
+            isPinned: pinnedLaneIds.contains(snapshot.lane.id),
+            isOpen: openLaneIds.contains(snapshot.lane.id)
+          )
+        }
+        .buttonStyle(ADEScaleButtonStyle())
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+          Button(openLaneIds.contains(snapshot.lane.id) ? "Close" : "Open") {
+            toggleOpenLane(snapshot.lane.id)
+          }
+          .tint(ADEPalette.accent)
+
+          if snapshot.lane.archivedAt == nil {
+            Button("Archive", role: .destructive) {
+              Task {
+                do {
+                  try await syncService.archiveLane(snapshot.lane.id)
+                  await reload(refreshRemote: true)
+                } catch {
+                  errorMessage = error.localizedDescription
+                }
+              }
+            }
+          } else {
+            Button("Restore") {
+              Task {
+                do {
+                  try await syncService.unarchiveLane(snapshot.lane.id)
+                  await reload(refreshRemote: true)
+                } catch {
+                  errorMessage = error.localizedDescription
+                }
+              }
+            }
+            .tint(.green)
+          }
+        }
+        .contextMenu {
+          Button("Manage lane") {
+            detailSheetTarget = LaneDetailSheetTarget(
+              laneId: snapshot.lane.id,
+              snapshot: snapshot,
+              initialSection: .manage
+            )
+          }
+          Button(openLaneIds.contains(snapshot.lane.id) ? "Remove from open lanes" : "Add to open lanes") {
+            toggleOpenLane(snapshot.lane.id)
+          }
+          Button(pinnedLaneIds.contains(snapshot.lane.id) ? "Unpin" : "Pin") {
+            togglePin(snapshot.lane.id)
+          }
+          Button("Close others") {
+            openLaneIds = [snapshot.lane.id]
+          }
+          Button("Select all visible") {
+            openLaneIds = filteredSnapshots.map(\.lane.id)
+          }
+          if manageableVisibleLaneIds.count > 1 {
+            Button("Manage \(manageableVisibleLaneIds.count) visible lanes") {
+              batchManageLaneIds = manageableVisibleLaneIds
+              batchManagePresented = true
+            }
+          }
+          Button("Copy path") {
+            UIPasteboard.general.string = snapshot.lane.worktreePath
+          }
+          if snapshot.adoptableAttached {
+            Button("Move to ADE-managed worktree") {
+              Task {
+                do {
+                  _ = try await syncService.adoptAttachedLane(snapshot.lane.id)
+                  await reload(refreshRemote: true)
+                } catch {
+                  errorMessage = error.localizedDescription
                 }
               }
             }
@@ -727,6 +688,8 @@ struct LanesTabView: View {
       }
     }
   }
+
+  // MARK: - Helpers
 
   @MainActor
   private func reload(refreshRemote: Bool = false) async {
@@ -766,10 +729,12 @@ struct LanesTabView: View {
   }
 
   private func toggleOpenLane(_ laneId: String) {
-    if openLaneIds.contains(laneId) {
-      closeLaneChip(laneId)
-    } else {
-      openLaneIds.insert(laneId, at: 0)
+    withAnimation(.spring(.bouncy(duration: 0.3))) {
+      if openLaneIds.contains(laneId) {
+        closeLaneChip(laneId)
+      } else {
+        openLaneIds.insert(laneId, at: 0)
+      }
     }
   }
 
@@ -789,14 +754,25 @@ struct LanesTabView: View {
     }
   }
 
+  private var emptyStateTitle: String {
+    switch scope {
+    case .active: return "No active lanes"
+    case .archived: return "No archived lanes"
+    case .all: return "No lanes"
+    }
+  }
+
   private var emptyStateText: String {
+    if !searchText.isEmpty {
+      return "Try a different search or clear the filter."
+    }
     switch scope {
     case .active:
-      return "No active lanes match this filter."
+      return "Create a new lane or connect to a host."
     case .archived:
-      return "No archived lanes match this filter."
+      return "Archived lanes will appear here."
     case .all:
-      return "No lanes match this filter."
+      return "No lanes match the current filters."
     }
   }
 
@@ -811,7 +787,7 @@ struct LanesTabView: View {
               : "Reconnect to load the current lane graph from the host.")
           : (needsRepairing
               ? "Cached lane data is still visible, but the previous host trust was cleared. Pair again before trusting the lane graph."
-              : "Cached lane data is available. Reconnect to confirm lane state, rebase status, and work activity."),
+              : "Cached lane data is available. Reconnect to refresh."),
         icon: "bolt.horizontal.circle",
         tint: ADEPalette.warning,
         actionTitle: syncService.activeHostProfile == nil ? (needsRepairing ? "Pair again" : "Pair with host") : "Reconnect",
@@ -829,7 +805,7 @@ struct LanesTabView: View {
     case .hydrating:
       return ADENoticeCard(
         title: "Hydrating lane graph",
-        message: "Pulling lane snapshots, stack state, and lane work metadata from the host.",
+        message: "Pulling lane snapshots from the host.",
         icon: "arrow.trianglehead.2.clockwise.rotate.90",
         tint: ADEPalette.accent,
         actionTitle: nil,
@@ -838,7 +814,7 @@ struct LanesTabView: View {
     case .failed:
       return ADENoticeCard(
         title: "Lane hydration failed",
-        message: laneStatus.lastError ?? "The host connection is up, but lane hydration did not complete cleanly.",
+        message: laneStatus.lastError ?? "Lane hydration did not complete.",
         icon: "exclamationmark.triangle.fill",
         tint: ADEPalette.danger,
         actionTitle: "Retry",
@@ -848,7 +824,7 @@ struct LanesTabView: View {
       guard laneSnapshots.isEmpty else { return nil }
       return ADENoticeCard(
         title: "No lanes on this host",
-        message: "This ADE host does not currently have any lanes to show on iPhone.",
+        message: "This ADE host does not have any lanes to show.",
         icon: "square.stack.3d.up.slash",
         tint: ADEPalette.textSecondary,
         actionTitle: nil,
@@ -858,487 +834,7 @@ struct LanesTabView: View {
   }
 }
 
-private struct LaneSurfaceCard<Content: View>: View {
-  let title: String?
-  let subtitle: String?
-  let cornerRadius: CGFloat
-  let padding: CGFloat
-  let fill: Color
-  let border: Color
-  let content: Content
-
-  init(
-    title: String? = nil,
-    subtitle: String? = nil,
-    cornerRadius: CGFloat = 16,
-    padding: CGFloat = 16,
-    fill: Color = ADEPalette.surfaceBackground,
-    border: Color = ADEPalette.border,
-    @ViewBuilder content: () -> Content
-  ) {
-    self.title = title
-    self.subtitle = subtitle
-    self.cornerRadius = cornerRadius
-    self.padding = padding
-    self.fill = fill
-    self.border = border
-    self.content = content()
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: title == nil && subtitle == nil ? 0 : 14) {
-      if let title {
-        VStack(alignment: .leading, spacing: 4) {
-          Text(title)
-            .font(.headline)
-            .foregroundStyle(ADEPalette.textPrimary)
-          if let subtitle {
-            Text(subtitle)
-              .font(.subheadline)
-              .foregroundStyle(ADEPalette.textSecondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-        }
-      }
-
-      content
-    }
-    .padding(padding)
-    .background(
-      RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        .fill(fill)
-        .overlay(
-          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .stroke(border.opacity(0.8), lineWidth: 0.5)
-        )
-    )
-    .shadow(color: Color.black.opacity(0.08), radius: 6, x: 0, y: 2)
-  }
-}
-
-private struct LaneSummaryCountPill: View {
-  let label: String
-  let value: String
-  let tint: Color
-
-  var body: some View {
-    VStack(alignment: .trailing, spacing: 2) {
-      Text(label)
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEPalette.textMuted)
-      Text(value)
-        .font(.system(.caption, design: .monospaced).weight(.semibold))
-        .foregroundStyle(tint)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(tint.opacity(0.24), lineWidth: 1)
-    )
-  }
-}
-
-private struct LaneSearchField: View {
-  @Binding var text: String
-  let placeholder: String
-  @FocusState private var isFocused: Bool
-
-  var body: some View {
-    HStack(spacing: 10) {
-      Image(systemName: "magnifyingglass")
-        .foregroundStyle(isFocused ? ADEPalette.accent : ADEPalette.textMuted)
-      TextField(placeholder, text: $text)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .submitLabel(.search)
-        .foregroundStyle(ADEPalette.textPrimary)
-        .focused($isFocused)
-      if !text.isEmpty {
-        Button {
-          text = ""
-        } label: {
-          Image(systemName: "xmark.circle.fill")
-            .foregroundStyle(ADEPalette.textMuted)
-        }
-        .transition(.scale.combined(with: .opacity))
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 11)
-    .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(isFocused ? ADEPalette.accent.opacity(0.5) : ADEPalette.border.opacity(0.75), lineWidth: isFocused ? 1.5 : 1)
-    )
-    .animation(.easeInOut(duration: 0.2), value: isFocused)
-    .animation(.easeInOut(duration: 0.2), value: text.isEmpty)
-    .accessibilityLabel("Search lanes")
-  }
-}
-
-private struct LaneInlineGroup<Content: View>: View {
-  let title: String
-  let content: Content
-
-  init(title: String, @ViewBuilder content: () -> Content) {
-    self.title = title
-    self.content = content()
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text(title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEPalette.textMuted)
-      content
-    }
-  }
-}
-
-private struct LaneFilterChip: View {
-  let title: String
-  let symbol: String
-  let count: Int?
-  let isActive: Bool
-  let tint: Color
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 6) {
-        Image(systemName: symbol)
-          .font(.system(size: 11, weight: .semibold))
-        Text(title)
-          .font(.system(.caption, design: .monospaced).weight(.semibold))
-        if let count {
-          Text("\(count)")
-            .font(.system(.caption2, design: .monospaced).weight(.medium))
-            .foregroundStyle(isActive ? tint : ADEPalette.textMuted)
-        }
-      }
-      .foregroundStyle(isActive ? tint : ADEPalette.textSecondary)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 8)
-      .background(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .fill(isActive ? tint.opacity(0.14) : ADEPalette.recessedBackground)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(isActive ? tint.opacity(0.26) : ADEPalette.border.opacity(0.65), lineWidth: 1)
-      )
-      .animation(.easeInOut(duration: 0.2), value: isActive)
-    }
-    .buttonStyle(.plain)
-    .sensoryFeedback(.selection, trigger: isActive)
-    .accessibilityLabel("\(title)\(count.map { ", \($0) items" } ?? "")")
-    .accessibilityAddTraits(isActive ? .isSelected : [])
-  }
-}
-
-private enum LaneActionProminence {
-  case primary
-  case secondary
-}
-
-private struct LaneActionStripButton: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-  let prominence: LaneActionProminence
-  let action: () -> Void
-
-  init(title: String, symbol: String, tint: Color, prominence: LaneActionProminence = .secondary, action: @escaping () -> Void) {
-    self.title = title
-    self.symbol = symbol
-    self.tint = tint
-    self.prominence = prominence
-    self.action = action
-  }
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 8) {
-        Image(systemName: symbol)
-          .font(.system(size: 12, weight: .semibold))
-        Text(title)
-          .font(.system(.caption, design: .monospaced).weight(.semibold))
-      }
-      .foregroundStyle(prominence == .primary ? ADEPalette.textPrimary : tint)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 10)
-      .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(prominence == .primary ? tint.opacity(0.18) : ADEPalette.recessedBackground)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(prominence == .primary ? tint.opacity(0.3) : ADEPalette.border.opacity(0.65), lineWidth: 1)
-      )
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-private struct LaneSectionMarker: View {
-  let title: String
-  let detail: String
-  let symbol: String
-  let tint: Color
-
-  var body: some View {
-    HStack(spacing: 10) {
-      Image(systemName: symbol)
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(tint)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEPalette.textMuted)
-        Text(detail)
-          .font(.system(.caption, design: .monospaced).weight(.medium))
-          .foregroundStyle(ADEPalette.textPrimary)
-      }
-    }
-  }
-}
-
-private struct LaneCompactMenuButton: View {
-  let title: String
-  let tint: Color
-
-  var body: some View {
-    HStack(spacing: 6) {
-      Text(title)
-        .font(.system(.caption, design: .monospaced).weight(.semibold))
-      Image(systemName: "chevron.down")
-        .font(.system(size: 10, weight: .bold))
-    }
-    .foregroundStyle(tint)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEPalette.border.opacity(0.65), lineWidth: 1)
-    )
-  }
-}
-
-private struct LaneOpenChip: View {
-  let snapshot: LaneListSnapshot
-  let isPinned: Bool
-
-  var body: some View {
-    HStack(spacing: 8) {
-      Circle()
-        .fill(runtimeTint(bucket: snapshot.runtime.bucket))
-        .frame(width: 7, height: 7)
-      Text(snapshot.lane.name)
-        .font(.system(.caption, design: .monospaced).weight(.semibold))
-        .foregroundStyle(ADEPalette.textPrimary)
-        .lineLimit(1)
-      if isPinned {
-        Image(systemName: "pin.fill")
-          .font(.system(size: 9))
-          .foregroundStyle(ADEPalette.accent)
-      }
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEPalette.border.opacity(0.65), lineWidth: 1)
-    )
-    .accessibilityLabel("\(snapshot.lane.name)\(isPinned ? ", pinned" : "")")
-  }
-}
-
-private struct LaneInlineButton: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-  let action: () -> Void
-
-  init(title: String, symbol: String, tint: Color = ADEPalette.accent, action: @escaping () -> Void) {
-    self.title = title
-    self.symbol = symbol
-    self.tint = tint
-    self.action = action
-  }
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 6) {
-        Image(systemName: symbol)
-          .font(.system(size: 11, weight: .semibold))
-        Text(title)
-          .font(.system(.caption, design: .monospaced).weight(.semibold))
-      }
-      .foregroundStyle(tint)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 8)
-      .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-private struct LaneMetaChip: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-
-  var body: some View {
-    HStack(spacing: 5) {
-      Image(systemName: symbol)
-        .font(.system(size: 10, weight: .semibold))
-      Text(title)
-        .font(.system(.caption2, design: .monospaced).weight(.semibold))
-    }
-    .foregroundStyle(tint)
-    .padding(.horizontal, 8)
-    .padding(.vertical, 6)
-    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-  }
-}
-
-private struct LaneLaunchTile: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      VStack(spacing: 8) {
-        Image(systemName: symbol)
-          .font(.system(size: 18, weight: .semibold))
-          .symbolRenderingMode(.hierarchical)
-        Text(title)
-          .font(.system(.caption, design: .monospaced).weight(.semibold))
-      }
-      .foregroundStyle(tint)
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, 14)
-      .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(tint.opacity(0.18), lineWidth: 1)
-      )
-    }
-    .buttonStyle(ADEScaleButtonStyle())
-    .sensoryFeedback(.impact(weight: .light), trigger: UUID())
-    .accessibilityLabel("Launch \(title)")
-  }
-}
-
-private struct ADEScaleButtonStyle: ButtonStyle {
-  func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
-      .opacity(configuration.isPressed ? 0.85 : 1.0)
-      .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
-  }
-}
-
-private struct LaneSessionCard: View {
-  let session: TerminalSessionSummary
-
-  var body: some View {
-    LaneSurfaceCard(cornerRadius: 12, padding: 12, fill: ADEPalette.recessedBackground, border: ADEPalette.border.opacity(0.6)) {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack {
-          Text(session.title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEPalette.textPrimary)
-          Spacer()
-          ADEStatusPill(text: session.status.uppercased(), tint: session.status == "running" ? ADEPalette.success : ADEPalette.textSecondary)
-        }
-        Text(session.laneName)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(ADEPalette.textSecondary)
-        if let preview = session.lastOutputPreview {
-          Text(preview)
-            .font(.caption.monospaced())
-            .foregroundStyle(ADEPalette.textMuted)
-            .lineLimit(2)
-        }
-      }
-    }
-  }
-}
-
-private struct LaneChatCard: View {
-  let chat: AgentChatSessionSummary
-
-  var body: some View {
-    LaneSurfaceCard(cornerRadius: 12, padding: 12, fill: ADEPalette.recessedBackground, border: ADEPalette.border.opacity(0.6)) {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack {
-          Text(chat.title ?? chat.provider.uppercased())
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEPalette.textPrimary)
-          Spacer()
-          ADEStatusPill(text: chat.status.uppercased(), tint: chat.status == "active" ? ADEPalette.success : ADEPalette.textSecondary)
-        }
-        Text(chat.model)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(ADEPalette.textSecondary)
-        if let preview = chat.lastOutputPreview {
-          Text(preview)
-            .font(.caption)
-            .foregroundStyle(ADEPalette.textMuted)
-            .lineLimit(2)
-        }
-      }
-    }
-  }
-}
-
-private struct LaneInfoRow: View {
-  let label: String
-  let value: String
-  var isMonospaced = false
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 12) {
-      Text(label)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEPalette.textMuted)
-        .frame(width: 54, alignment: .leading)
-      Text(value)
-        .font(isMonospaced ? .system(.caption, design: .monospaced) : .subheadline)
-        .foregroundStyle(ADEPalette.textPrimary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-  }
-}
-
-private struct LaneTextField: View {
-  let title: String
-  @Binding var text: String
-
-  init(_ title: String, text: Binding<String>) {
-    self.title = title
-    self._text = text
-  }
-
-  var body: some View {
-    TextField(title, text: $text, axis: .vertical)
-      .textFieldStyle(.plain)
-      .padding(12)
-      .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(ADEPalette.border.opacity(0.75), lineWidth: 1)
-      )
-      .foregroundStyle(ADEPalette.textPrimary)
-  }
-}
+// MARK: - Lane list row
 
 private struct LaneListRow: View {
   let snapshot: LaneListSnapshot
@@ -1346,83 +842,77 @@ private struct LaneListRow: View {
   let isOpen: Bool
 
   var body: some View {
-    LaneSurfaceCard(
-      cornerRadius: 14,
-      padding: 14,
-      fill: isOpen ? ADEPalette.surfaceBackground.opacity(0.96) : ADEPalette.surfaceBackground,
-      border: isOpen ? ADEPalette.accent.opacity(0.5) : ADEPalette.border.opacity(0.7)
-    ) {
-      VStack(alignment: .leading, spacing: 12) {
-        HStack(alignment: .top, spacing: 12) {
-          Circle()
-            .fill(runtimeTint(bucket: snapshot.runtime.bucket))
-            .frame(width: 9, height: 9)
-            .padding(.top, 6)
+    HStack(spacing: 14) {
+      LaneStatusIndicator(bucket: snapshot.runtime.bucket)
 
-          VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-              Text(snapshot.lane.name)
-                .font(.system(.body).weight(.semibold))
-                .foregroundStyle(ADEPalette.textPrimary)
-                .lineLimit(1)
+      VStack(alignment: .leading, spacing: 5) {
+        HStack(spacing: 8) {
+          Text(snapshot.lane.name)
+            .font(.body.weight(.semibold))
+            .foregroundStyle(ADEPalette.textPrimary)
+            .lineLimit(1)
 
-              if snapshot.lane.laneType == "primary" {
-                ADEStatusPill(text: "PRIMARY", tint: ADEPalette.accent)
-              } else if snapshot.lane.laneType == "attached" {
-                ADEStatusPill(text: "ATTACHED", tint: ADEPalette.textSecondary)
-              }
-            }
-
-            HStack(spacing: 8) {
-              Text(snapshot.lane.branchRef)
-                .font(.system(.caption, design: .monospaced).weight(.medium))
-                .foregroundStyle(ADEPalette.textSecondary)
-                .lineLimit(1)
-              if snapshot.lane.baseRef != snapshot.lane.branchRef {
-                Text("from \(snapshot.lane.baseRef)")
-                  .font(.caption)
-                  .foregroundStyle(ADEPalette.textMuted)
-                  .lineLimit(1)
-              }
-            }
+          if snapshot.lane.laneType == "primary" {
+            LaneTypeBadge(text: "Primary", tint: ADEPalette.accent)
+          } else if snapshot.lane.laneType == "attached" {
+            LaneTypeBadge(text: "Attached", tint: ADEPalette.textMuted)
           }
-
-          Spacer(minLength: 8)
-
-          lanePriorityBadge(snapshot: snapshot)
         }
 
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 8) {
-            if isPinned {
-              LaneMetaChip(title: "Pinned", symbol: "pin.fill", tint: ADEPalette.accent)
-            }
-            if isOpen {
-              LaneMetaChip(title: "Open", symbol: "square.stack.3d.up.fill", tint: ADEPalette.textSecondary)
-            }
-            if snapshot.lane.status.ahead > 0 {
-              LaneMetaChip(title: "\(snapshot.lane.status.ahead)", symbol: "arrow.up", tint: ADEPalette.success)
-            }
-            if snapshot.lane.status.behind > 0 {
-              LaneMetaChip(title: "\(snapshot.lane.status.behind)", symbol: "arrow.down", tint: ADEPalette.warning)
-            }
-            if snapshot.lane.childCount > 0 {
-              LaneMetaChip(title: "\(snapshot.lane.childCount)", symbol: "square.stack.3d.up", tint: ADEPalette.textMuted)
-            }
-            if snapshot.runtime.sessionCount > 0 {
-              LaneMetaChip(title: "\(snapshot.runtime.sessionCount)", symbol: runtimeSymbol(snapshot.runtime.bucket), tint: runtimeTint(bucket: snapshot.runtime.bucket))
-            }
+        Text(snapshot.lane.branchRef)
+          .font(.system(.caption, design: .monospaced))
+          .foregroundStyle(ADEPalette.textSecondary)
+          .lineLimit(1)
+
+        HStack(spacing: 6) {
+          if snapshot.lane.status.ahead > 0 {
+            LaneMicroChip(icon: "arrow.up", text: "\(snapshot.lane.status.ahead)", tint: ADEPalette.success)
+          }
+          if snapshot.lane.status.behind > 0 {
+            LaneMicroChip(icon: "arrow.down", text: "\(snapshot.lane.status.behind)", tint: ADEPalette.warning)
+          }
+          if snapshot.runtime.sessionCount > 0 {
+            LaneMicroChip(
+              icon: runtimeSymbol(snapshot.runtime.bucket),
+              text: "\(snapshot.runtime.sessionCount)",
+              tint: runtimeTint(bucket: snapshot.runtime.bucket)
+            )
+          }
+          if snapshot.lane.childCount > 0 {
+            LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEPalette.textMuted)
+          }
+          if isPinned {
+            Image(systemName: "pin.fill")
+              .font(.system(size: 9))
+              .foregroundStyle(ADEPalette.accent)
           }
         }
 
         if let activity = laneActivitySummary(snapshot) {
           Text(activity)
-            .font(.caption)
+            .font(.caption2)
             .foregroundStyle(ADEPalette.textMuted)
-            .lineLimit(2)
+            .lineLimit(1)
         }
       }
+
+      Spacer(minLength: 8)
+
+      VStack(alignment: .trailing, spacing: 6) {
+        lanePriorityBadge(snapshot: snapshot)
+      }
+
+      Image(systemName: "chevron.right")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEPalette.textMuted)
     }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(isOpen ? ADEPalette.accent.opacity(0.4) : Color.white.opacity(0.06), lineWidth: isOpen ? 1 : 0.5)
+    )
     .accessibilityElement(children: .combine)
     .accessibilityLabel(laneRowAccessibilityLabel)
   }
@@ -1438,33 +928,1116 @@ private struct LaneListRow: View {
   }
 }
 
-@ViewBuilder
-private func lanePriorityBadge(snapshot: LaneListSnapshot) -> some View {
-  if snapshot.autoRebaseStatus?.state == "rebaseConflict" {
-    ADEStatusPill(text: "CONFLICT", tint: ADEPalette.danger)
-  } else if snapshot.lane.status.dirty {
-    ADEStatusPill(text: "DIRTY", tint: ADEPalette.warning)
-  } else if snapshot.runtime.bucket == "running" {
-    ADEStatusPill(text: "RUN", tint: ADEPalette.success)
-  } else if snapshot.runtime.bucket == "awaiting-input" {
-    ADEStatusPill(text: "ATTN", tint: ADEPalette.warning)
-  } else if snapshot.lane.archivedAt != nil {
-    ADEStatusPill(text: "ARCH", tint: ADEPalette.textMuted)
-  } else if let rebaseSuggestion = snapshot.rebaseSuggestion {
-    ADEStatusPill(text: "\(rebaseSuggestion.behindCount)\u{2193}", tint: ADEPalette.warning)
-  } else {
-    EmptyView()
+// MARK: - Lane detail screen
+
+private struct LaneDetailScreen: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  let laneId: String
+  let initialSnapshot: LaneListSnapshot
+  let allLaneSnapshots: [LaneListSnapshot]
+  let onRefreshRoot: @MainActor () async -> Void
+
+  @State private var detail: LaneDetailPayload?
+  @State private var errorMessage: String?
+  @State private var section: LaneDetailSection
+  @State private var busyAction: String?
+  @State private var renameText = ""
+  @State private var selectedParentLaneId = ""
+  @State private var colorText = ""
+  @State private var iconText = ""
+  @State private var tagsText = ""
+  @State private var commitMessage = ""
+  @State private var amendCommit = false
+  @State private var stashMessage = ""
+  @State private var deleteMode: LaneDeleteMode = .worktree
+  @State private var deleteRemoteName = "origin"
+  @State private var deleteForce = false
+  @State private var deleteConfirmText = ""
+  @State private var selectedDiffRequest: LaneDiffRequest?
+  @State private var trackedLaunch = true
+  @State private var showStackGraph = false
+  @State private var chatLaunchTarget: LaneChatLaunchTarget?
+
+  init(
+    laneId: String,
+    initialSnapshot: LaneListSnapshot,
+    allLaneSnapshots: [LaneListSnapshot],
+    initialSection: LaneDetailSection = .git,
+    onRefreshRoot: @escaping @MainActor () async -> Void
+  ) {
+    self.laneId = laneId
+    self.initialSnapshot = initialSnapshot
+    self.allLaneSnapshots = allLaneSnapshots
+    self.onRefreshRoot = onRefreshRoot
+    _section = State(initialValue: initialSection)
+  }
+
+  private var currentSnapshot: LaneListSnapshot {
+    allLaneSnapshots.first(where: { $0.lane.id == laneId }) ?? initialSnapshot
+  }
+
+  private var reparentCandidates: [LaneSummary] {
+    allLaneSnapshots
+      .map(\.lane)
+      .filter { $0.id != laneId && $0.archivedAt == nil }
+      .sorted { lhs, rhs in
+        if lhs.laneType == "primary" && rhs.laneType != "primary" { return true }
+        if lhs.laneType != "primary" && rhs.laneType == "primary" { return false }
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+      }
+  }
+
+  var body: some View {
+    ScrollView {
+      LazyVStack(spacing: 14, pinnedViews: [.sectionHeaders]) {
+        // Connection banner
+        if let banner = connectionBanner {
+          banner
+        }
+
+        // Busy indicator
+        if let busyAction {
+          HStack(spacing: 10) {
+            ProgressView()
+              .tint(ADEPalette.accent)
+            Text(busyAction.capitalized)
+              .font(.subheadline)
+              .foregroundStyle(ADEPalette.textSecondary)
+            Spacer()
+          }
+          .padding(12)
+          .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+
+        // Error
+        if let errorMessage {
+          HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+              .foregroundStyle(ADEPalette.danger)
+            Text(errorMessage)
+              .font(.caption)
+              .foregroundStyle(ADEPalette.danger)
+            Spacer()
+          }
+          .padding(12)
+          .background(ADEPalette.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+
+        // Header card
+        detailHeader
+
+        // Quick actions
+        quickActionBar
+
+        // Section picker + content
+        Section {
+          selectedSectionContent
+            .id(section)
+            .transition(.opacity.animation(.easeInOut(duration: 0.2)))
+        } header: {
+          sectionPicker
+            .padding(.bottom, 6)
+            .background(ADEPalette.pageBackground.opacity(0.96))
+        }
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 8)
+    }
+    .background(ADEPalette.pageBackground.ignoresSafeArea())
+    .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
+    .navigationBarTitleDisplayMode(.inline)
+    .animation(.spring(.bouncy(duration: 0.35)), value: section)
+    .task {
+      await loadDetail(refreshRemote: true)
+    }
+    .refreshable {
+      await loadDetail(refreshRemote: true)
+    }
+    .sheet(item: $selectedDiffRequest) { request in
+      LaneDiffScreen(request: request)
+    }
+    .sheet(isPresented: $showStackGraph) {
+      LaneStackGraphSheet(snapshots: allLaneSnapshots, selectedLaneId: laneId)
+    }
+    .sheet(item: $chatLaunchTarget) { target in
+      LaneChatLaunchSheet(laneId: laneId, provider: target.provider) { _ in
+        await loadDetail(refreshRemote: true)
+      }
+    }
+  }
+
+  // MARK: Detail header
+
+  @ViewBuilder
+  private var detailHeader: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .top, spacing: 10) {
+        LaneStatusIndicator(bucket: currentSnapshot.runtime.bucket, size: 12)
+
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 8) {
+            Text(detail?.lane.branchRef ?? currentSnapshot.lane.branchRef)
+              .font(.system(.headline, design: .monospaced))
+              .foregroundStyle(ADEPalette.textPrimary)
+            lanePriorityBadge(snapshot: currentSnapshot)
+          }
+
+          if currentSnapshot.lane.baseRef != currentSnapshot.lane.branchRef {
+            Text("from \(detail?.lane.baseRef ?? currentSnapshot.lane.baseRef)")
+              .font(.caption)
+              .foregroundStyle(ADEPalette.textSecondary)
+          }
+        }
+
+        Spacer(minLength: 10)
+
+        VStack(alignment: .trailing, spacing: 6) {
+          if currentSnapshot.lane.laneType == "primary" {
+            LaneTypeBadge(text: "Primary", tint: ADEPalette.accent)
+          } else if currentSnapshot.lane.laneType == "attached" {
+            LaneTypeBadge(text: "Attached", tint: ADEPalette.textSecondary)
+          }
+          if currentSnapshot.runtime.sessionCount > 0 {
+            LaneTypeBadge(
+              text: "\(currentSnapshot.runtime.sessionCount) live",
+              tint: runtimeTint(bucket: currentSnapshot.runtime.bucket)
+            )
+          }
+        }
+      }
+
+      // Meta chips
+      HStack(spacing: 6) {
+        if currentSnapshot.lane.status.ahead > 0 {
+          LaneMicroChip(icon: "arrow.up", text: "\(currentSnapshot.lane.status.ahead) ahead", tint: ADEPalette.success)
+        }
+        if currentSnapshot.lane.status.behind > 0 {
+          LaneMicroChip(icon: "arrow.down", text: "\(currentSnapshot.lane.status.behind) behind", tint: ADEPalette.warning)
+        }
+        if currentSnapshot.lane.status.dirty {
+          LaneMicroChip(icon: "pencil.line", text: "Dirty", tint: ADEPalette.warning)
+        }
+        if currentSnapshot.lane.childCount > 0 {
+          LaneMicroChip(icon: "square.stack.3d.up", text: "\(currentSnapshot.lane.childCount) child", tint: ADEPalette.textMuted)
+        }
+      }
+    }
+    .padding(14)
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+    )
+  }
+
+  // MARK: Quick actions
+
+  @ViewBuilder
+  private var quickActionBar: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
+        LaneQuickAction(title: "Files", symbol: "folder", tint: ADEPalette.accent) {
+          Task { await openFiles() }
+        }
+        LaneQuickAction(title: "Copy path", symbol: "doc.on.doc", tint: ADEPalette.textSecondary) {
+          UIPasteboard.general.string = detail?.lane.worktreePath ?? currentSnapshot.lane.worktreePath
+        }
+        LaneQuickAction(title: "Stack", symbol: "list.number", tint: ADEPalette.textSecondary) {
+          showStackGraph = true
+        }
+        if canRunLiveActions {
+          LaneQuickAction(title: "Shell", symbol: "terminal", tint: ADEPalette.success) {
+            Task {
+              await performAction("launch shell") {
+                try await syncService.runQuickCommand(laneId: laneId, title: "Shell", toolType: "shell", tracked: trackedLaunch)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: Section picker
+
+  @ViewBuilder
+  private var sectionPicker: some View {
+    Picker("Section", selection: $section) {
+      ForEach(LaneDetailSection.allCases) { item in
+        Label(item.title, systemImage: item.symbol)
+          .tag(item)
+      }
+    }
+    .pickerStyle(.segmented)
+    .sensoryFeedback(.selection, trigger: section)
+  }
+
+  // MARK: Section content
+
+  @ViewBuilder
+  private var selectedSectionContent: some View {
+    if detail == nil && errorMessage == nil {
+      HStack(spacing: 12) {
+        ProgressView()
+          .tint(ADEPalette.accent)
+        Text("Loading lane detail...")
+          .font(.subheadline)
+          .foregroundStyle(ADEPalette.textSecondary)
+        Spacer()
+      }
+      .padding(14)
+      .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    } else {
+      switch section {
+      case .overview:
+        overviewSections
+      case .git:
+        gitSections
+      case .work:
+        workSections
+      case .manage:
+        manageSections
+      }
+    }
+  }
+
+  // MARK: - Overview section
+
+  @ViewBuilder
+  private var overviewSections: some View {
+    if let detail {
+      VStack(spacing: 14) {
+        GlassSection(title: "Lane summary") {
+          VStack(alignment: .leading, spacing: 10) {
+            LaneInfoRow(label: "Type", value: detail.lane.laneType.capitalized)
+            LaneInfoRow(label: "Base", value: detail.lane.baseRef)
+            LaneInfoRow(label: "Path", value: detail.lane.worktreePath, isMonospaced: true)
+            if let parentLaneId = detail.lane.parentLaneId,
+               let parent = allLaneSnapshots.first(where: { $0.lane.id == parentLaneId })?.lane {
+              LaneInfoRow(label: "Parent", value: "\(parent.name) (\(parent.branchRef))")
+            }
+          }
+        }
+
+        if detail.autoRebaseStatus != nil || detail.rebaseSuggestion != nil {
+          GlassSection(title: "Rebase status") {
+            VStack(alignment: .leading, spacing: 10) {
+              if let autoRebaseStatus = detail.autoRebaseStatus, autoRebaseStatus.state != "autoRebased" {
+                Text(autoRebaseStatus.message ?? "This lane needs manual rebase attention.")
+                  .font(.subheadline)
+                  .foregroundStyle(ADEPalette.textPrimary)
+                if autoRebaseStatus.conflictCount > 0 {
+                  Text("\(autoRebaseStatus.conflictCount) conflict file(s) blocking auto-rebase.")
+                    .font(.caption)
+                    .foregroundStyle(ADEPalette.danger)
+                }
+              }
+
+              if let rebaseSuggestion = detail.rebaseSuggestion {
+                Text("Behind parent by \(rebaseSuggestion.behindCount) commit(s).")
+                  .font(.subheadline)
+                  .foregroundStyle(ADEPalette.textPrimary)
+              }
+
+              HStack(spacing: 8) {
+                if detail.rebaseSuggestion != nil {
+                  LaneActionButton(title: "Defer", symbol: "clock.badge.pause") {
+                    Task { await performAction("defer rebase") { try await syncService.deferRebaseSuggestion(laneId: laneId) } }
+                  }
+                  LaneActionButton(title: "Dismiss", symbol: "xmark.circle") {
+                    Task { await performAction("dismiss rebase") { try await syncService.dismissRebaseSuggestion(laneId: laneId) } }
+                  }
+                }
+                Spacer(minLength: 8)
+                LaneActionButton(title: "Rebase", symbol: "arrow.triangle.2.circlepath", tint: ADEPalette.accent) {
+                  Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId) } }
+                }
+                .disabled(!canRunLiveActions)
+              }
+            }
+          }
+        }
+
+        if let conflictStatus = detail.conflictStatus {
+          GlassSection(title: "Conflicts") {
+            VStack(alignment: .leading, spacing: 10) {
+              Text(conflictSummary(conflictStatus))
+                .font(.caption)
+                .foregroundStyle(ADEPalette.textSecondary)
+
+              ForEach(detail.overlaps) { overlap in
+                VStack(alignment: .leading, spacing: 6) {
+                  HStack {
+                    Text(overlap.peerName)
+                      .font(.subheadline.weight(.semibold))
+                      .foregroundStyle(ADEPalette.textPrimary)
+                    Spacer()
+                    LaneTypeBadge(
+                      text: overlap.riskLevel.uppercased(),
+                      tint: overlap.riskLevel == "high" ? ADEPalette.danger : ADEPalette.warning
+                    )
+                  }
+
+                  ForEach(overlap.files.prefix(4)) { file in
+                    HStack(alignment: .top, spacing: 8) {
+                      Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 10))
+                        .foregroundStyle(ADEPalette.textMuted)
+                        .padding(.top, 3)
+                      VStack(alignment: .leading, spacing: 2) {
+                        Text(file.path)
+                          .font(.system(.caption, design: .monospaced))
+                          .foregroundStyle(ADEPalette.textPrimary)
+                        Text(file.conflictType)
+                          .font(.caption2)
+                          .foregroundStyle(ADEPalette.textSecondary)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        GlassSection(title: "Stack") {
+          VStack(alignment: .leading, spacing: 10) {
+            if detail.stackChain.isEmpty {
+              Text("No stack chain available.")
+                .font(.subheadline)
+                .foregroundStyle(ADEPalette.textSecondary)
+            } else {
+              ForEach(detail.stackChain) { item in
+                HStack(alignment: .center, spacing: 10) {
+                  Circle()
+                    .fill(item.laneId == laneId ? ADEPalette.accent : runtimeTint(bucket: detail.runtime.bucket))
+                    .frame(width: 7, height: 7)
+                  Text(String(repeating: "  ", count: item.depth) + item.laneName)
+                    .font(.subheadline.weight(item.laneId == laneId ? .semibold : .regular))
+                    .foregroundStyle(ADEPalette.textPrimary)
+                  Spacer()
+                  Text(item.branchRef)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(ADEPalette.textSecondary)
+                }
+              }
+            }
+
+            if !detail.children.isEmpty {
+              Divider()
+              VStack(alignment: .leading, spacing: 8) {
+                Text("Children")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(ADEPalette.textMuted)
+                ForEach(detail.children) { child in
+                  HStack {
+                    Text(child.name)
+                      .font(.subheadline)
+                      .foregroundStyle(ADEPalette.textPrimary)
+                    Spacer()
+                    Text(child.branchRef)
+                      .font(.system(.caption, design: .monospaced))
+                      .foregroundStyle(ADEPalette.textSecondary)
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if summarizeState(detail.stateSnapshot?.agentSummary) != nil || summarizeState(detail.stateSnapshot?.missionSummary) != nil {
+          GlassSection(title: "Live state") {
+            VStack(alignment: .leading, spacing: 10) {
+              if let stateText = summarizeState(detail.stateSnapshot?.agentSummary) {
+                VStack(alignment: .leading, spacing: 4) {
+                  Text("Agent")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ADEPalette.textMuted)
+                  Text(stateText)
+                    .font(.subheadline)
+                    .foregroundStyle(ADEPalette.textSecondary)
+                }
+              }
+              if let missionText = summarizeState(detail.stateSnapshot?.missionSummary) {
+                VStack(alignment: .leading, spacing: 4) {
+                  Text("Mission")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ADEPalette.textMuted)
+                  Text(missionText)
+                    .font(.subheadline)
+                    .foregroundStyle(ADEPalette.textSecondary)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: - Git section
+
+  @ViewBuilder
+  private var gitSections: some View {
+    if let detail {
+      VStack(spacing: 14) {
+        GlassSection(title: "Sync", subtitle: detail.syncStatus.map(syncSummary)) {
+          VStack(alignment: .leading, spacing: 12) {
+            ScrollView(.horizontal, showsIndicators: false) {
+              HStack(spacing: 8) {
+                LaneActionButton(title: "Fetch", symbol: "arrow.down.circle") {
+                  Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } }
+                }
+                Menu {
+                  Button("Pull (merge)") {
+                    Task { await performAction("pull merge") { try await syncService.pullGit(laneId: laneId) } }
+                  }
+                  Button("Pull (rebase)") {
+                    Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
+                  }
+                } label: {
+                  LaneMenuLabel(title: "Pull")
+                }
+                LaneActionButton(
+                  title: detail.syncStatus?.hasUpstream == false ? "Publish" : "Push",
+                  symbol: "arrow.up.circle",
+                  tint: ADEPalette.accent
+                ) {
+                  Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
+                }
+                Menu {
+                  Button("Force push") {
+                    Task { await performAction("force push") { try await syncService.pushGit(laneId: laneId, forceWithLease: true) } }
+                  }
+                  Divider()
+                  Button("Rebase lane only") {
+                    Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
+                  }
+                  Button("Rebase lane + descendants") {
+                    Task { await performAction("rebase descendants") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants") } }
+                  }
+                  Button("Rebase and push") {
+                    Task { await performAction("rebase and push") { try await runRebaseAndPush() } }
+                  }
+                } label: {
+                  LaneMenuLabel(title: "More")
+                }
+              }
+            }
+
+            if let upstreamRef = detail.syncStatus?.upstreamRef {
+              LaneInfoRow(label: "Upstream", value: upstreamRef, isMonospaced: true)
+            }
+          }
+        }
+
+        GlassSection(title: "Commit") {
+          VStack(alignment: .leading, spacing: 12) {
+            TextField("Commit message", text: $commitMessage, axis: .vertical)
+              .textFieldStyle(.plain)
+              .padding(12)
+              .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+              .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                  .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+              )
+
+            Toggle("Amend latest commit", isOn: $amendCommit)
+              .font(.subheadline)
+              .foregroundStyle(ADEPalette.textSecondary)
+
+            HStack(spacing: 8) {
+              LaneActionButton(title: "Generate", symbol: "sparkles") {
+                Task {
+                  do {
+                    commitMessage = try await syncService.generateCommitMessage(laneId: laneId, amend: amendCommit)
+                  } catch {
+                    errorMessage = error.localizedDescription
+                  }
+                }
+              }
+              LaneActionButton(title: "Commit", symbol: "checkmark.circle.fill", tint: ADEPalette.accent) {
+                Task {
+                  await performAction("commit") {
+                    try await syncService.commitLane(laneId: laneId, message: commitMessage, amend: amendCommit)
+                  }
+                  commitMessage = ""
+                }
+              }
+            }
+          }
+        }
+
+        if let diffChanges = detail.diffChanges, !diffChanges.unstaged.isEmpty {
+          GlassSection(title: "Unstaged files (\(diffChanges.unstaged.count))") {
+            VStack(alignment: .leading, spacing: 10) {
+              if diffChanges.unstaged.count > 1 {
+                LaneActionButton(title: "Stage all", symbol: "plus.circle.fill", tint: ADEPalette.accent) {
+                  Task {
+                    await performAction("stage all") {
+                      try await syncService.stageAll(laneId: laneId, paths: diffChanges.unstaged.map(\.path))
+                    }
+                  }
+                }
+              }
+              ForEach(diffChanges.unstaged) { file in
+                fileRow(file: file, mode: "unstaged")
+              }
+            }
+          }
+        }
+
+        if let diffChanges = detail.diffChanges, !diffChanges.staged.isEmpty {
+          GlassSection(title: "Staged files (\(diffChanges.staged.count))") {
+            VStack(alignment: .leading, spacing: 10) {
+              if diffChanges.staged.count > 1 {
+                LaneActionButton(title: "Unstage all", symbol: "minus.circle", tint: ADEPalette.warning) {
+                  Task {
+                    await performAction("unstage all") {
+                      try await syncService.unstageAll(laneId: laneId, paths: diffChanges.staged.map(\.path))
+                    }
+                  }
+                }
+              }
+              ForEach(diffChanges.staged) { file in
+                fileRow(file: file, mode: "staged")
+              }
+            }
+          }
+        }
+
+        if !detail.stashes.isEmpty || canRunLiveActions {
+          GlassSection(title: "Stashes") {
+            VStack(alignment: .leading, spacing: 12) {
+              HStack(spacing: 8) {
+                TextField("Stash message", text: $stashMessage)
+                  .textFieldStyle(.plain)
+                  .padding(10)
+                  .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                LaneActionButton(title: "Stash", symbol: "tray.and.arrow.down", tint: ADEPalette.accent) {
+                  Task { await performAction("stash") { try await syncService.stashPush(laneId: laneId, message: stashMessage, includeUntracked: true) } }
+                }
+              }
+
+              ForEach(detail.stashes) { stash in
+                VStack(alignment: .leading, spacing: 8) {
+                  HStack {
+                    Text(stash.subject)
+                      .font(.subheadline.weight(.semibold))
+                      .foregroundStyle(ADEPalette.textPrimary)
+                    Spacer()
+                    if let createdAt = stash.createdAt {
+                      Text(relativeTimestamp(createdAt))
+                        .font(.caption2)
+                        .foregroundStyle(ADEPalette.textMuted)
+                    }
+                  }
+                  HStack(spacing: 8) {
+                    LaneActionButton(title: "Apply", symbol: "tray.and.arrow.up") {
+                      Task { await performAction("stash apply") { try await syncService.stashApply(laneId: laneId, stashRef: stash.ref) } }
+                    }
+                    LaneActionButton(title: "Pop", symbol: "arrow.up.right.square") {
+                      Task { await performAction("stash pop") { try await syncService.stashPop(laneId: laneId, stashRef: stash.ref) } }
+                    }
+                    LaneActionButton(title: "Drop", symbol: "trash", tint: ADEPalette.danger) {
+                      Task { await performAction("stash drop") { try await syncService.stashDrop(laneId: laneId, stashRef: stash.ref) } }
+                    }
+                  }
+                }
+                if stash.id != detail.stashes.last?.id {
+                  Divider()
+                }
+              }
+            }
+          }
+        }
+
+        if !detail.recentCommits.isEmpty {
+          GlassSection(title: "Recent commits") {
+            VStack(alignment: .leading, spacing: 12) {
+              ForEach(detail.recentCommits) { commit in
+                VStack(alignment: .leading, spacing: 6) {
+                  HStack {
+                    Text(commit.subject)
+                      .font(.subheadline.weight(.semibold))
+                      .foregroundStyle(ADEPalette.textPrimary)
+                      .lineLimit(2)
+                    Spacer()
+                    Text(commit.shortSha)
+                      .font(.system(.caption2, design: .monospaced))
+                      .foregroundStyle(ADEPalette.textMuted)
+                  }
+                  Text("\(commit.authorName) \u{2022} \(relativeTimestamp(commit.authoredAt))")
+                    .font(.caption2)
+                    .foregroundStyle(ADEPalette.textSecondary)
+
+                  ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                      LaneActionButton(title: "Diff", symbol: "doc.text.magnifyingglass") {
+                        Task {
+                          do {
+                            let files = try await syncService.listCommitFiles(laneId: laneId, commitSha: commit.sha)
+                            guard let path = files.first else {
+                              errorMessage = "This commit has no file diffs."
+                              return
+                            }
+                            selectedDiffRequest = LaneDiffRequest(
+                              laneId: laneId,
+                              path: path,
+                              mode: "commit",
+                              compareRef: commit.sha,
+                              compareTo: "parent",
+                              title: commit.subject
+                            )
+                          } catch {
+                            errorMessage = error.localizedDescription
+                          }
+                        }
+                      }
+                      LaneActionButton(title: "Message", symbol: "text.alignleft") {
+                        Task {
+                          do {
+                            commitMessage = try await syncService.getCommitMessage(laneId: laneId, commitSha: commit.sha)
+                          } catch {
+                            errorMessage = error.localizedDescription
+                          }
+                        }
+                      }
+                      LaneActionButton(title: "Revert", symbol: "arrow.uturn.backward", tint: ADEPalette.warning) {
+                        Task { await performAction("revert commit") { try await syncService.revertCommit(laneId: laneId, commitSha: commit.sha) } }
+                      }
+                      LaneActionButton(title: "Cherry-pick", symbol: "arrow.triangle.merge") {
+                        Task { await performAction("cherry pick") { try await syncService.cherryPickCommit(laneId: laneId, commitSha: commit.sha) } }
+                      }
+                    }
+                  }
+                }
+
+                if commit.id != detail.recentCommits.last?.id {
+                  Divider()
+                }
+              }
+            }
+          }
+        }
+
+        if let conflictState = detail.conflictState, conflictState.inProgress {
+          GlassSection(title: "Rebase conflict") {
+            VStack(alignment: .leading, spacing: 12) {
+              Text("Git reports a \(conflictState.kind ?? "merge") in progress.")
+                .font(.caption)
+                .foregroundStyle(ADEPalette.textSecondary)
+
+              if !conflictState.conflictedFiles.isEmpty {
+                ForEach(conflictState.conflictedFiles, id: \.self) { path in
+                  Text(path)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(ADEPalette.textSecondary)
+                }
+              }
+              HStack(spacing: 8) {
+                LaneActionButton(title: "Continue", symbol: "play.fill", tint: ADEPalette.accent) {
+                  Task { await performAction("rebase continue") { try await syncService.rebaseContinueGit(laneId: laneId) } }
+                }
+                .disabled(!conflictState.canContinue)
+                LaneActionButton(title: "Abort", symbol: "xmark.circle", tint: ADEPalette.danger) {
+                  Task { await performAction("rebase abort") { try await syncService.rebaseAbortGit(laneId: laneId) } }
+                }
+                .disabled(!conflictState.canAbort)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: - Work section
+
+  @ViewBuilder
+  private var workSections: some View {
+    if let detail {
+      VStack(spacing: 14) {
+        GlassSection(title: "Launch") {
+          VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+              LaneLaunchTile(title: "Shell", symbol: "terminal", tint: ADEPalette.textSecondary) {
+                Task {
+                  await performAction("launch shell") {
+                    try await syncService.runQuickCommand(laneId: laneId, title: "Shell", toolType: "shell", tracked: trackedLaunch)
+                  }
+                }
+              }
+              LaneLaunchTile(title: "Codex", symbol: "sparkle", tint: ADEPalette.accent) {
+                chatLaunchTarget = LaneChatLaunchTarget(provider: "codex")
+              }
+              LaneLaunchTile(title: "Claude", symbol: "brain.head.profile", tint: ADEPalette.warning) {
+                chatLaunchTarget = LaneChatLaunchTarget(provider: "claude")
+              }
+            }
+
+            Toggle("Track sessions", isOn: $trackedLaunch)
+              .font(.subheadline)
+              .foregroundStyle(ADEPalette.textSecondary)
+
+            LaneActionButton(title: "Open in Files", symbol: "folder", tint: ADEPalette.accent) {
+              Task { await openFiles() }
+            }
+          }
+        }
+
+        if !detail.sessions.isEmpty {
+          GlassSection(title: "Workspace sessions (\(detail.sessions.count))") {
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(detail.sessions) { session in
+                NavigationLink {
+                  LaneSessionTranscriptView(session: session)
+                } label: {
+                  LaneSessionCard(session: session)
+                }
+                .buttonStyle(.plain)
+                .swipeActions(edge: .trailing) {
+                  Button("Close", role: .destructive) {
+                    Task { await performAction("close session") { try await syncService.closeWorkSession(sessionId: session.id) } }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if !detail.chatSessions.isEmpty {
+          GlassSection(title: "AI chats (\(detail.chatSessions.count))") {
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(detail.chatSessions) { chat in
+                NavigationLink {
+                  LaneChatSessionView(summary: chat)
+                } label: {
+                  LaneChatCard(chat: chat)
+                }
+                .buttonStyle(.plain)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: - Manage section
+
+  @ViewBuilder
+  private var manageSections: some View {
+    if let detail {
+      VStack(spacing: 14) {
+        GlassSection(title: "Identity") {
+          VStack(alignment: .leading, spacing: 12) {
+            LaneTextField("Lane name", text: $renameText)
+            LaneActionButton(title: "Save name", symbol: "checkmark.circle.fill", tint: ADEPalette.accent) {
+              Task { await performAction("rename lane") { try await syncService.renameLane(laneId, name: renameText) } }
+            }
+            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || renameText == detail.lane.name)
+          }
+        }
+
+        GlassSection(title: "Appearance") {
+          VStack(alignment: .leading, spacing: 12) {
+            LaneTextField("Color token or hex", text: $colorText)
+              .textInputAutocapitalization(.never)
+            LaneTextField("Icon (star, flag, bolt, shield, tag)", text: $iconText)
+              .textInputAutocapitalization(.never)
+            LaneTextField("Tags (comma separated)", text: $tagsText)
+            LaneActionButton(title: "Save appearance", symbol: "paintpalette", tint: ADEPalette.accent) {
+              Task {
+                let tags = tagsText
+                  .split(separator: ",")
+                  .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                  .filter { !$0.isEmpty }
+                await performAction("save appearance") {
+                  try await syncService.updateLaneAppearance(
+                    laneId,
+                    color: colorText,
+                    icon: iconText,
+                    tags: tags
+                  )
+                }
+              }
+            }
+          }
+        }
+
+        if detail.lane.laneType != "primary" {
+          GlassSection(title: "Reparent") {
+            VStack(alignment: .leading, spacing: 12) {
+              Picker("Parent lane", selection: $selectedParentLaneId) {
+                Text("Select parent").tag("")
+                ForEach(reparentCandidates) { lane in
+                  Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
+                }
+              }
+              .pickerStyle(.menu)
+
+              LaneActionButton(title: "Save parent", symbol: "arrow.triangle.swap", tint: ADEPalette.accent) {
+                Task { await performAction("reparent lane") { try await syncService.reparentLane(laneId, newParentLaneId: selectedParentLaneId) } }
+              }
+              .disabled(selectedParentLaneId.isEmpty)
+            }
+          }
+        }
+
+        if detail.lane.laneType == "attached" && detail.lane.archivedAt == nil {
+          GlassSection(title: "Attached lane") {
+            VStack(alignment: .leading, spacing: 8) {
+              Text("Adopt this worktree into .ade/worktrees so ADE manages it end-to-end.")
+                .font(.caption)
+                .foregroundStyle(ADEPalette.textSecondary)
+              LaneActionButton(title: "Move to ADE-managed worktree", symbol: "arrow.down.doc", tint: ADEPalette.accent) {
+                Task { await performAction("adopt attached lane") { _ = try await syncService.adoptAttachedLane(laneId) } }
+              }
+            }
+          }
+        }
+
+        GlassSection(title: detail.lane.archivedAt == nil ? "Archive" : "Restore") {
+          if detail.lane.archivedAt == nil {
+            LaneActionButton(title: "Archive lane", symbol: "archivebox", tint: ADEPalette.warning) {
+              Task { await performAction("archive lane") { try await syncService.archiveLane(laneId) } }
+            }
+            .disabled(detail.lane.laneType == "primary")
+          } else {
+            LaneActionButton(title: "Restore lane", symbol: "tray.and.arrow.up", tint: ADEPalette.accent) {
+              Task { await performAction("restore lane") { try await syncService.unarchiveLane(laneId) } }
+            }
+          }
+        }
+
+        if detail.lane.laneType != "primary" {
+          GlassSection(title: "Danger zone") {
+            DisclosureGroup("Delete lane") {
+              VStack(alignment: .leading, spacing: 12) {
+                Picker("Delete mode", selection: $deleteMode) {
+                  ForEach(LaneDeleteMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                  }
+                }
+                .pickerStyle(.menu)
+
+                if deleteMode == .remoteBranch {
+                  LaneTextField("Remote name", text: $deleteRemoteName)
+                }
+
+                Toggle("Force delete", isOn: $deleteForce)
+                  .font(.subheadline)
+                  .foregroundStyle(ADEPalette.textSecondary)
+
+                LaneTextField("Type delete \(detail.lane.name) to confirm", text: $deleteConfirmText)
+
+                LaneActionButton(title: "Delete lane", symbol: "trash", tint: ADEPalette.danger) {
+                  Task {
+                    await performAction("delete lane") {
+                      try await syncService.deleteLane(
+                        laneId,
+                        deleteBranch: deleteMode != .worktree,
+                        deleteRemoteBranch: deleteMode == .remoteBranch,
+                        remoteName: deleteRemoteName,
+                        force: deleteForce
+                      )
+                    }
+                  }
+                }
+                .disabled(deleteConfirmText.lowercased() != "delete \(detail.lane.name)".lowercased())
+              }
+              .padding(.top, 12)
+            }
+            .tint(ADEPalette.danger)
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: - Detail helpers
+
+  private var connectionBanner: ADENoticeCard? {
+    guard !canRunLiveActions else { return nil }
+    return ADENoticeCard(
+      title: "Showing cached lane detail",
+      message: "Reconnect to refresh git state, sessions, and lane actions.",
+      icon: "icloud.slash",
+      tint: ADEPalette.warning,
+      actionTitle: syncService.activeHostProfile == nil ? "Pair again" : "Reconnect",
+      action: {
+        if syncService.activeHostProfile == nil {
+          syncService.settingsPresented = true
+        } else {
+          Task {
+            await syncService.reconnectIfPossible()
+            await loadDetail(refreshRemote: true)
+          }
+        }
+      }
+    )
+  }
+
+  private var canRunLiveActions: Bool {
+    syncService.connectionState == .connected || syncService.connectionState == .syncing
+  }
+
+  @MainActor
+  private func loadDetail(refreshRemote: Bool) async {
+    do {
+      if let cached = try await syncService.fetchLaneDetail(laneId: laneId) {
+        detail = cached
+        seedForms(from: cached)
+      }
+      if refreshRemote {
+        let refreshed = try await syncService.refreshLaneDetail(laneId: laneId)
+        detail = refreshed
+        seedForms(from: refreshed)
+        await onRefreshRoot()
+      }
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func performAction(_ label: String, operation: () async throws -> Void) async {
+    do {
+      busyAction = label
+      try await operation()
+      await loadDetail(refreshRemote: true)
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+    busyAction = nil
+  }
+
+  private func runRebaseAndPush() async throws {
+    try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only", pushMode: "none")
+    try? await syncService.fetchGit(laneId: laneId)
+    let syncStatus = try await syncService.fetchSyncStatus(laneId: laneId)
+    if syncStatus.hasUpstream == false {
+      try await syncService.pushGit(laneId: laneId)
+      return
+    }
+    if syncStatus.diverged && syncStatus.ahead > 0 {
+      try await syncService.pushGit(laneId: laneId, forceWithLease: true)
+      return
+    }
+    if syncStatus.ahead > 0 {
+      try await syncService.pushGit(laneId: laneId)
+    }
+  }
+
+  @MainActor
+  private func openFiles(path: String? = nil) async {
+    do {
+      let workspaces = try await syncService.listWorkspaces()
+      guard let workspace = workspaces.first(where: { $0.laneId == laneId }) else {
+        errorMessage = "No Files workspace for this lane."
+        return
+      }
+      syncService.requestedFilesNavigation = FilesNavigationRequest(
+        workspaceId: workspace.id,
+        relativePath: path
+      )
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func seedForms(from detail: LaneDetailPayload) {
+    renameText = detail.lane.name
+    colorText = detail.lane.color ?? ""
+    iconText = detail.lane.icon?.rawValue ?? ""
+    tagsText = detail.lane.tags.joined(separator: ", ")
+    selectedParentLaneId = detail.lane.parentLaneId ?? ""
+  }
+
+  @ViewBuilder
+  private func fileRow(file: FileChange, mode: String) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .top, spacing: 10) {
+        Circle()
+          .fill(file.kind == "modified" ? ADEPalette.warning : file.kind == "added" ? ADEPalette.success : ADEPalette.danger)
+          .frame(width: 6, height: 6)
+          .padding(.top, 7)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(file.path)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(ADEPalette.textPrimary)
+            .lineLimit(2)
+          Text(file.kind.capitalized)
+            .font(.caption2)
+            .foregroundStyle(ADEPalette.textMuted)
+        }
+        Spacer()
+      }
+
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          LaneActionButton(title: "Diff", symbol: "doc.text.magnifyingglass") {
+            selectedDiffRequest = LaneDiffRequest(
+              laneId: laneId,
+              path: file.path,
+              mode: mode,
+              compareRef: nil,
+              compareTo: nil,
+              title: file.path
+            )
+          }
+          LaneActionButton(title: "Files", symbol: "folder") {
+            Task { await openFiles(path: file.path) }
+          }
+          if mode == "unstaged" {
+            LaneActionButton(title: "Stage", symbol: "plus.circle.fill", tint: ADEPalette.accent) {
+              Task { await performAction("stage file") { try await syncService.stageFile(laneId: laneId, path: file.path) } }
+            }
+            LaneActionButton(title: "Discard", symbol: "trash", tint: ADEPalette.danger) {
+              Task { await performAction("discard file") { try await syncService.discardFile(laneId: laneId, path: file.path) } }
+            }
+          } else {
+            LaneActionButton(title: "Unstage", symbol: "minus.circle", tint: ADEPalette.warning) {
+              Task { await performAction("unstage file") { try await syncService.unstageFile(laneId: laneId, path: file.path) } }
+            }
+            LaneActionButton(title: "Restore", symbol: "trash", tint: ADEPalette.danger) {
+              Task { await performAction("restore staged file") { try await syncService.restoreStagedFile(laneId: laneId, path: file.path) } }
+            }
+          }
+        }
+      }
+    }
+    .padding(10)
+    .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
   }
 }
 
-private func laneActivitySummary(_ snapshot: LaneListSnapshot) -> String? {
-  if let agentText = summarizeState(snapshot.stateSnapshot?.agentSummary) {
-    return agentText
-  }
-  if let missionText = summarizeState(snapshot.stateSnapshot?.missionSummary) {
-    return missionText
-  }
-  return nil
+// MARK: - Sheets
+
+private struct LaneDetailSheetTarget: Identifiable {
+  var id: String { "\(laneId):\(initialSection.rawValue)" }
+  let laneId: String
+  let snapshot: LaneListSnapshot
+  let initialSection: LaneDetailSection
+}
+
+private struct LaneDiffRequest: Identifiable {
+  var id: String { "\(laneId):\(mode):\(path ?? "none"):\(compareRef ?? "none")" }
+  let laneId: String
+  let path: String?
+  let mode: String
+  let compareRef: String?
+  let compareTo: String?
+  let title: String
+}
+
+private struct LaneChatLaunchTarget: Identifiable {
+  var id: String { provider }
+  let provider: String
 }
 
 private struct LaneCreateSheet: View {
@@ -1490,15 +2063,15 @@ private struct LaneCreateSheet: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        VStack(spacing: 16) {
-          LaneSurfaceCard(title: "Create lane", subtitle: createAsChild ? "This lane will branch from another ADE lane." : "This lane will branch from the selected base branch.") {
+        VStack(spacing: 14) {
+          GlassSection(title: "Create lane", subtitle: createAsChild ? "Branches from another ADE lane." : "Branches from the selected base.") {
             VStack(alignment: .leading, spacing: 12) {
               LaneTextField("Lane name", text: $name)
               LaneTextField("Description", text: $description)
             }
           }
 
-          LaneSurfaceCard(title: "Branching", subtitle: createAsChild ? "Child lanes inherit the selected parent." : "Base branch is taken from the primary lane branch list.") {
+          GlassSection(title: "Branching") {
             VStack(alignment: .leading, spacing: 12) {
               Toggle("Create as child lane", isOn: $createAsChild)
                 .font(.subheadline)
@@ -1523,7 +2096,7 @@ private struct LaneCreateSheet: View {
             }
           }
 
-          LaneSurfaceCard(title: "Template", subtitle: "Apply a default lane template immediately after creation") {
+          GlassSection(title: "Template") {
             Picker("Template", selection: $selectedTemplateId) {
               Text("No template").tag("")
               ForEach(templates) { template in
@@ -1534,7 +2107,7 @@ private struct LaneCreateSheet: View {
           }
 
           if let envProgress {
-            LaneSurfaceCard(title: "Environment setup", subtitle: envProgress.overallStatus.capitalized) {
+            GlassSection(title: "Environment setup") {
               VStack(alignment: .leading, spacing: 10) {
                 ForEach(envProgress.steps) { step in
                   HStack {
@@ -1552,11 +2125,16 @@ private struct LaneCreateSheet: View {
           }
 
           if let errorMessage {
-            LaneSurfaceCard(fill: ADEPalette.danger.opacity(0.08), border: ADEPalette.danger.opacity(0.28)) {
-              Text(errorMessage)
-                .font(.subheadline)
+            HStack(spacing: 10) {
+              Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEPalette.danger)
+              Text(errorMessage)
+                .font(.caption)
+                .foregroundStyle(ADEPalette.danger)
+              Spacer()
             }
+            .padding(12)
+            .background(ADEPalette.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
           }
         }
         .padding(16)
@@ -1639,8 +2217,8 @@ private struct LaneAttachSheet: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        VStack(spacing: 16) {
-          LaneSurfaceCard(title: "Attach worktree", subtitle: "Register an existing worktree as a lane without moving it into .ade/worktrees yet.") {
+        VStack(spacing: 14) {
+          GlassSection(title: "Attach worktree", subtitle: "Register an existing worktree as a lane.") {
             VStack(alignment: .leading, spacing: 12) {
               LaneTextField("Lane name", text: $name)
               LaneTextField("Worktree path", text: $attachedPath)
@@ -1650,18 +2228,17 @@ private struct LaneAttachSheet: View {
             }
           }
 
-          LaneSurfaceCard(title: "Path expectations", subtitle: "The path should point at the existing worktree root on the host.") {
-            Text("Attached lanes remain externally managed until you adopt them into .ade/worktrees from the lane manage surface.")
-              .font(.subheadline)
-              .foregroundStyle(ADEPalette.textSecondary)
-          }
-
           if let errorMessage {
-            LaneSurfaceCard(fill: ADEPalette.danger.opacity(0.08), border: ADEPalette.danger.opacity(0.28)) {
-              Text(errorMessage)
-                .font(.subheadline)
+            HStack(spacing: 10) {
+              Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEPalette.danger)
+              Text(errorMessage)
+                .font(.caption)
+                .foregroundStyle(ADEPalette.danger)
+              Spacer()
             }
+            .padding(12)
+            .background(ADEPalette.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
           }
         }
         .padding(16)
@@ -1699,1259 +2276,6 @@ private struct LaneAttachSheet: View {
   }
 }
 
-private struct LaneDetailSheetTarget: Identifiable {
-  var id: String { "\(laneId):\(initialSection.rawValue)" }
-  let laneId: String
-  let snapshot: LaneListSnapshot
-  let initialSection: LaneDetailSection
-}
-
-private struct LaneDetailScreen: View {
-  @EnvironmentObject private var syncService: SyncService
-
-  let laneId: String
-  let initialSnapshot: LaneListSnapshot
-  let allLaneSnapshots: [LaneListSnapshot]
-  let onRefreshRoot: @MainActor () async -> Void
-
-  @State private var detail: LaneDetailPayload?
-  @State private var errorMessage: String?
-  @State private var section: LaneDetailSection
-  @State private var busyAction: String?
-  @State private var renameText = ""
-  @State private var selectedParentLaneId = ""
-  @State private var colorText = ""
-  @State private var iconText = ""
-  @State private var tagsText = ""
-  @State private var commitMessage = ""
-  @State private var amendCommit = false
-  @State private var stashMessage = ""
-  @State private var deleteMode: LaneDeleteMode = .worktree
-  @State private var deleteRemoteName = "origin"
-  @State private var deleteForce = false
-  @State private var deleteConfirmText = ""
-  @State private var selectedDiffRequest: LaneDiffRequest?
-  @State private var trackedLaunch = true
-  @State private var showStackGraph = false
-  @State private var chatLaunchTarget: LaneChatLaunchTarget?
-
-  init(
-    laneId: String,
-    initialSnapshot: LaneListSnapshot,
-    allLaneSnapshots: [LaneListSnapshot],
-    initialSection: LaneDetailSection = .overview,
-    onRefreshRoot: @escaping @MainActor () async -> Void
-  ) {
-    self.laneId = laneId
-    self.initialSnapshot = initialSnapshot
-    self.allLaneSnapshots = allLaneSnapshots
-    self.onRefreshRoot = onRefreshRoot
-    _section = State(initialValue: initialSection)
-  }
-
-  private var currentSnapshot: LaneListSnapshot {
-    allLaneSnapshots.first(where: { $0.lane.id == laneId }) ?? initialSnapshot
-  }
-
-  private var reparentCandidates: [LaneSummary] {
-    allLaneSnapshots
-      .map(\.lane)
-      .filter { $0.id != laneId && $0.archivedAt == nil }
-      .sorted { lhs, rhs in
-        if lhs.laneType == "primary" && rhs.laneType != "primary" { return true }
-        if lhs.laneType != "primary" && rhs.laneType == "primary" { return false }
-        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-      }
-  }
-
-  var body: some View {
-    ScrollView {
-      LazyVStack(spacing: 16, pinnedViews: [.sectionHeaders]) {
-        if let banner = connectionBanner {
-          banner
-        }
-        if let busyAction {
-          LaneSurfaceCard {
-            HStack(spacing: 10) {
-              ProgressView()
-              Text("Running \(busyAction)...")
-                .font(.subheadline)
-                .foregroundStyle(ADEPalette.textSecondary)
-              Spacer()
-            }
-          }
-        }
-        if let errorMessage {
-          LaneSurfaceCard(fill: ADEPalette.danger.opacity(0.08), border: ADEPalette.danger.opacity(0.28)) {
-            Text(errorMessage)
-              .font(.subheadline)
-              .foregroundStyle(ADEPalette.danger)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-        }
-
-        detailSummaryHeader
-
-        Section {
-          selectedSectionContent
-        } header: {
-          detailSectionSwitcher
-            .padding(.bottom, 6)
-            .background(ADEPalette.pageBackground.opacity(0.96))
-        }
-      }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
-    }
-    .background(ADEPalette.pageBackground.ignoresSafeArea())
-    .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
-    .navigationBarTitleDisplayMode(.inline)
-    .task {
-      await loadDetail(refreshRemote: true)
-    }
-    .refreshable {
-      await loadDetail(refreshRemote: true)
-    }
-    .sheet(item: $selectedDiffRequest) { request in
-      LaneDiffScreen(request: request)
-    }
-    .sheet(isPresented: $showStackGraph) {
-      LaneStackGraphSheet(snapshots: allLaneSnapshots, selectedLaneId: laneId)
-    }
-    .sheet(item: $chatLaunchTarget) { target in
-      LaneChatLaunchSheet(laneId: laneId, provider: target.provider) { _ in
-        await loadDetail(refreshRemote: true)
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var detailSummaryHeader: some View {
-    LaneSurfaceCard(
-      title: detail?.lane.name ?? currentSnapshot.lane.name,
-      subtitle: detail?.lane.description ?? currentSnapshot.lane.description ?? "Lane details"
-    ) {
-      VStack(alignment: .leading, spacing: 14) {
-        HStack(alignment: .top, spacing: 10) {
-          VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-              Text(detail?.lane.branchRef ?? currentSnapshot.lane.branchRef)
-                .font(.system(.headline, design: .monospaced))
-                .foregroundStyle(ADEPalette.textPrimary)
-              lanePriorityBadge(snapshot: currentSnapshot)
-            }
-
-            Text("Base: \(detail?.lane.baseRef ?? currentSnapshot.lane.baseRef)")
-              .font(.system(.caption, design: .monospaced))
-              .foregroundStyle(ADEPalette.textSecondary)
-          }
-
-          Spacer(minLength: 10)
-
-          VStack(alignment: .trailing, spacing: 6) {
-            if currentSnapshot.lane.laneType == "primary" {
-              ADEStatusPill(text: "PRIMARY", tint: ADEPalette.accent)
-            } else if currentSnapshot.lane.laneType == "attached" {
-              ADEStatusPill(text: "ATTACHED", tint: ADEPalette.textSecondary)
-            }
-            if currentSnapshot.runtime.sessionCount > 0 {
-              ADEStatusPill(text: "\(currentSnapshot.runtime.sessionCount) LIVE", tint: runtimeTint(bucket: currentSnapshot.runtime.bucket))
-            }
-          }
-        }
-
-        Text(detail?.lane.worktreePath ?? currentSnapshot.lane.worktreePath)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(ADEPalette.textMuted)
-          .frame(maxWidth: .infinity, alignment: .leading)
-
-        HStack(spacing: 8) {
-          if currentSnapshot.lane.status.ahead > 0 {
-            LaneMetaChip(title: "\(currentSnapshot.lane.status.ahead) ahead", symbol: "arrow.up", tint: ADEPalette.success)
-          }
-          if currentSnapshot.lane.status.behind > 0 {
-            LaneMetaChip(title: "\(currentSnapshot.lane.status.behind) behind", symbol: "arrow.down", tint: ADEPalette.warning)
-          }
-          if currentSnapshot.lane.status.dirty {
-            LaneMetaChip(title: "Dirty", symbol: "pencil.line", tint: ADEPalette.warning)
-          }
-          if currentSnapshot.lane.childCount > 0 {
-            LaneMetaChip(title: "\(currentSnapshot.lane.childCount) child", symbol: "square.stack.3d.up", tint: ADEPalette.textMuted)
-          }
-        }
-
-        HStack(spacing: 8) {
-          LaneInlineButton(title: "Files", symbol: "folder") {
-            Task { await openFiles() }
-          }
-          LaneInlineButton(title: "Copy path", symbol: "doc.on.doc") {
-            UIPasteboard.general.string = detail?.lane.worktreePath ?? currentSnapshot.lane.worktreePath
-          }
-          LaneInlineButton(title: "Git", symbol: "arrow.triangle.branch", tint: ADEPalette.textSecondary) {
-            section = .git
-          }
-          LaneInlineButton(title: "Work", symbol: "terminal", tint: ADEPalette.textSecondary) {
-            section = .work
-          }
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var detailSectionSwitcher: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        ForEach(LaneDetailSection.allCases) { item in
-          LaneFilterChip(
-            title: item.title,
-            symbol: item.symbol,
-            count: nil,
-            isActive: section == item,
-            tint: section == item ? ADEPalette.accent : ADEPalette.textSecondary
-          ) {
-            withAnimation(.easeInOut(duration: 0.25)) {
-              section = item
-            }
-          }
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var selectedSectionContent: some View {
-    if detail == nil && errorMessage == nil {
-      LaneSurfaceCard {
-        HStack(spacing: 12) {
-          ProgressView()
-          Text("Loading lane detail...")
-            .font(.subheadline)
-            .foregroundStyle(ADEPalette.textSecondary)
-          Spacer()
-        }
-      }
-    } else {
-      switch section {
-      case .overview:
-        overviewSections
-      case .git:
-        gitSections
-      case .work:
-        workSections
-      case .manage:
-        manageSections
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var overviewSections: some View {
-    if let detail {
-      VStack(spacing: 16) {
-        LaneSurfaceCard(title: "Lane summary", subtitle: "Key references and hand-off points") {
-          VStack(alignment: .leading, spacing: 12) {
-            LaneInfoRow(label: "Type", value: detail.lane.laneType.capitalized)
-            LaneInfoRow(label: "Base", value: detail.lane.baseRef)
-            LaneInfoRow(label: "Path", value: detail.lane.worktreePath, isMonospaced: true)
-            if let parentLaneId = detail.lane.parentLaneId,
-               let parent = allLaneSnapshots.first(where: { $0.lane.id == parentLaneId })?.lane {
-              LaneInfoRow(label: "Parent", value: "\(parent.name) (\(parent.branchRef))")
-            }
-
-            HStack(spacing: 8) {
-              LaneInlineButton(title: "Copy path", symbol: "doc.on.doc") {
-                UIPasteboard.general.string = detail.lane.worktreePath
-              }
-              LaneInlineButton(title: "Files", symbol: "folder") {
-                Task { await openFiles() }
-              }
-              LaneInlineButton(title: "Stack graph", symbol: "list.number") {
-                showStackGraph = true
-              }
-            }
-          }
-        }
-
-        if detail.autoRebaseStatus != nil || detail.rebaseSuggestion != nil {
-          LaneSurfaceCard(title: "Rebase", subtitle: "Keep this lane current with its parent") {
-            VStack(alignment: .leading, spacing: 12) {
-              if let autoRebaseStatus = detail.autoRebaseStatus, autoRebaseStatus.state != "autoRebased" {
-                VStack(alignment: .leading, spacing: 6) {
-                  Text(autoRebaseStatus.message ?? "This lane needs manual rebase attention.")
-                    .font(.subheadline)
-                    .foregroundStyle(ADEPalette.textPrimary)
-                  if autoRebaseStatus.conflictCount > 0 {
-                    Text("\(autoRebaseStatus.conflictCount) conflict file(s) are blocking auto-rebase.")
-                      .font(.caption)
-                      .foregroundStyle(ADEPalette.danger)
-                  }
-                }
-              }
-
-              if let rebaseSuggestion = detail.rebaseSuggestion {
-                VStack(alignment: .leading, spacing: 6) {
-                  Text("Behind parent by \(rebaseSuggestion.behindCount) commit(s).")
-                    .font(.subheadline)
-                    .foregroundStyle(ADEPalette.textPrimary)
-                  Text("Use rebase now for the fastest route, or defer/dismiss if you are waiting on other lane work.")
-                    .font(.caption)
-                    .foregroundStyle(ADEPalette.textSecondary)
-                }
-              }
-
-              HStack(spacing: 8) {
-                if detail.rebaseSuggestion != nil {
-                  LaneInlineButton(title: "Defer", symbol: "clock.badge.pause") {
-                    Task { await performAction("defer rebase") { try await syncService.deferRebaseSuggestion(laneId: laneId) } }
-                  }
-                  LaneInlineButton(title: "Dismiss", symbol: "xmark.circle") {
-                    Task { await performAction("dismiss rebase") { try await syncService.dismissRebaseSuggestion(laneId: laneId) } }
-                  }
-                }
-                Spacer(minLength: 8)
-                LaneInlineButton(title: "Open Git", symbol: "arrow.triangle.branch", tint: ADEPalette.textSecondary) {
-                  section = .git
-                }
-                LaneInlineButton(title: "Rebase now", symbol: "arrow.triangle.2.circlepath", tint: ADEPalette.accent) {
-                  Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId) } }
-                }
-                .disabled(!canRunLiveActions)
-              }
-            }
-          }
-        }
-
-        if let conflictStatus = detail.conflictStatus {
-          LaneSurfaceCard(title: "Conflicts", subtitle: conflictSummary(conflictStatus)) {
-            VStack(alignment: .leading, spacing: 10) {
-              if detail.overlaps.isEmpty {
-                Text("No overlap detail is currently attached to this lane.")
-                  .font(.caption)
-                  .foregroundStyle(ADEPalette.textSecondary)
-              } else {
-                ForEach(detail.overlaps) { overlap in
-                  VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                      Text(overlap.peerName)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(ADEPalette.textPrimary)
-                      Spacer()
-                      ADEStatusPill(
-                        text: overlap.riskLevel.uppercased(),
-                        tint: overlap.riskLevel == "high" ? ADEPalette.danger : ADEPalette.warning
-                      )
-                    }
-
-                    ForEach(overlap.files.prefix(4)) { file in
-                      HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "arrow.triangle.branch")
-                          .font(.system(size: 10))
-                          .foregroundStyle(ADEPalette.textMuted)
-                          .padding(.top, 3)
-                        VStack(alignment: .leading, spacing: 2) {
-                          Text(file.path)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(ADEPalette.textPrimary)
-                          Text(file.conflictType)
-                            .font(.caption2)
-                            .foregroundStyle(ADEPalette.textSecondary)
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        LaneSurfaceCard(title: "Stack", subtitle: "Hierarchy and child lanes") {
-          VStack(alignment: .leading, spacing: 12) {
-            if detail.stackChain.isEmpty {
-              Text("No stack chain available.")
-                .font(.subheadline)
-                .foregroundStyle(ADEPalette.textSecondary)
-            } else {
-              ForEach(detail.stackChain) { item in
-                HStack(alignment: .center, spacing: 10) {
-                  Circle()
-                    .fill(item.laneId == laneId ? ADEPalette.accent : runtimeTint(bucket: detail.runtime.bucket))
-                    .frame(width: 7, height: 7)
-                  Text(String(repeating: "  ", count: item.depth) + item.laneName)
-                    .font(.subheadline)
-                    .foregroundStyle(ADEPalette.textPrimary)
-                  Spacer()
-                  Text(item.branchRef)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(ADEPalette.textSecondary)
-                }
-              }
-            }
-
-            if !detail.children.isEmpty {
-              Divider()
-                .overlay(ADEPalette.border.opacity(0.75))
-              VStack(alignment: .leading, spacing: 8) {
-                Text("Children")
-                  .font(.caption.weight(.semibold))
-                  .foregroundStyle(ADEPalette.textMuted)
-                ForEach(detail.children) { child in
-                  HStack {
-                    Text(child.name)
-                      .font(.subheadline)
-                      .foregroundStyle(ADEPalette.textPrimary)
-                    Spacer()
-                    Text(child.branchRef)
-                      .font(.system(.caption, design: .monospaced))
-                      .foregroundStyle(ADEPalette.textSecondary)
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        if summarizeState(detail.stateSnapshot?.agentSummary) != nil || summarizeState(detail.stateSnapshot?.missionSummary) != nil {
-          LaneSurfaceCard(title: "Live state", subtitle: "Agent and mission context carried on the lane") {
-            VStack(alignment: .leading, spacing: 12) {
-              if let stateText = summarizeState(detail.stateSnapshot?.agentSummary) {
-                LaneInlineGroup(title: "Agent") {
-                  Text(stateText)
-                    .font(.subheadline)
-                    .foregroundStyle(ADEPalette.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-              }
-
-              if let missionText = summarizeState(detail.stateSnapshot?.missionSummary) {
-                LaneInlineGroup(title: "Mission") {
-                  Text(missionText)
-                    .font(.subheadline)
-                    .foregroundStyle(ADEPalette.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var gitSections: some View {
-    if let detail {
-      VStack(spacing: 16) {
-        LaneSurfaceCard(title: "Sync", subtitle: detail.syncStatus.map(syncSummary) ?? "Host sync status is not available for this lane.") {
-          VStack(alignment: .leading, spacing: 12) {
-            ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 8) {
-                LaneInlineButton(title: "Fetch", symbol: "arrow.down.circle") {
-                  Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } }
-                }
-                Menu {
-                  Button("Pull (merge)") {
-                    Task { await performAction("pull merge") { try await syncService.pullGit(laneId: laneId) } }
-                  }
-                  Button("Pull (rebase)") {
-                    Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
-                  }
-                } label: {
-                  LaneCompactMenuButton(title: "Pull", tint: ADEPalette.textSecondary)
-                }
-                LaneInlineButton(title: detail.syncStatus?.hasUpstream == false ? "Publish" : "Push", symbol: "arrow.up.circle", tint: ADEPalette.accent) {
-                  Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
-                }
-                Menu {
-                  Button("Force push") {
-                    Task { await performAction("force push") { try await syncService.pushGit(laneId: laneId, forceWithLease: true) } }
-                  }
-                  Divider()
-                  Button("Rebase lane only") {
-                    Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
-                  }
-                  Button("Rebase lane + descendants") {
-                    Task { await performAction("rebase descendants") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants") } }
-                  }
-                  Button("Rebase and push") {
-                    Task { await performAction("rebase and push") { try await runRebaseAndPush() } }
-                  }
-                } label: {
-                  LaneCompactMenuButton(title: "More", tint: ADEPalette.textSecondary)
-                }
-              }
-            }
-
-            if let upstreamRef = detail.syncStatus?.upstreamRef {
-              LaneInfoRow(label: "Upstream", value: upstreamRef, isMonospaced: true)
-            }
-          }
-        }
-
-        LaneSurfaceCard(title: "Commit", subtitle: amendCommit ? "Amend is on for the next commit." : "Generate a message or type one directly.") {
-          VStack(alignment: .leading, spacing: 12) {
-            TextField("Commit message", text: $commitMessage, axis: .vertical)
-              .textFieldStyle(.plain)
-              .padding(12)
-              .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-              .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                  .stroke(ADEPalette.border.opacity(0.75), lineWidth: 1)
-              )
-
-            Toggle("Amend latest commit", isOn: $amendCommit)
-              .font(.subheadline)
-              .foregroundStyle(ADEPalette.textSecondary)
-
-            HStack(spacing: 8) {
-              LaneInlineButton(title: "Generate", symbol: "sparkles") {
-                Task {
-                  do {
-                    commitMessage = try await syncService.generateCommitMessage(laneId: laneId, amend: amendCommit)
-                  } catch {
-                    errorMessage = error.localizedDescription
-                  }
-                }
-              }
-              LaneInlineButton(title: "Commit", symbol: "checkmark.circle.fill", tint: ADEPalette.accent) {
-                Task {
-                  await performAction("commit") {
-                    try await syncService.commitLane(laneId: laneId, message: commitMessage, amend: amendCommit)
-                  }
-                  commitMessage = ""
-                }
-              }
-            }
-          }
-        }
-
-        if let diffChanges = detail.diffChanges, !diffChanges.unstaged.isEmpty {
-          LaneSurfaceCard(title: "Unstaged files", subtitle: "Review, open, stage, or discard individual files") {
-            VStack(alignment: .leading, spacing: 12) {
-              if diffChanges.unstaged.count > 1 {
-                LaneInlineButton(title: "Stage all", symbol: "plus.circle.fill", tint: ADEPalette.accent) {
-                  Task {
-                    await performAction("stage all") {
-                      try await syncService.stageAll(laneId: laneId, paths: diffChanges.unstaged.map(\.path))
-                    }
-                  }
-                }
-              }
-              ForEach(diffChanges.unstaged) { file in
-                fileRow(file: file, mode: "unstaged")
-              }
-            }
-          }
-        }
-
-        if let diffChanges = detail.diffChanges, !diffChanges.staged.isEmpty {
-          LaneSurfaceCard(title: "Staged files", subtitle: "Diff, open, unstage, or restore staged work") {
-            VStack(alignment: .leading, spacing: 12) {
-              if diffChanges.staged.count > 1 {
-                LaneInlineButton(title: "Unstage all", symbol: "minus.circle", tint: ADEPalette.warning) {
-                  Task {
-                    await performAction("unstage all") {
-                      try await syncService.unstageAll(laneId: laneId, paths: diffChanges.staged.map(\.path))
-                    }
-                  }
-                }
-              }
-              ForEach(diffChanges.staged) { file in
-                fileRow(file: file, mode: "staged")
-              }
-            }
-          }
-        }
-
-        if !detail.stashes.isEmpty || canRunLiveActions {
-          LaneSurfaceCard(title: "Stashes", subtitle: "Park or restore work without changing the lane state") {
-            VStack(alignment: .leading, spacing: 12) {
-              TextField("Stash message", text: $stashMessage)
-                .textFieldStyle(.plain)
-                .padding(12)
-                .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                  RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(ADEPalette.border.opacity(0.75), lineWidth: 1)
-                )
-
-              LaneInlineButton(title: "Create stash", symbol: "tray.and.arrow.down", tint: ADEPalette.accent) {
-                Task { await performAction("stash") { try await syncService.stashPush(laneId: laneId, message: stashMessage, includeUntracked: true) } }
-              }
-
-              ForEach(detail.stashes) { stash in
-                VStack(alignment: .leading, spacing: 8) {
-                  HStack {
-                    Text(stash.subject)
-                      .font(.subheadline.weight(.semibold))
-                      .foregroundStyle(ADEPalette.textPrimary)
-                    Spacer()
-                    if let createdAt = stash.createdAt {
-                      Text(relativeTimestamp(createdAt))
-                        .font(.caption)
-                        .foregroundStyle(ADEPalette.textMuted)
-                    }
-                  }
-                  HStack(spacing: 8) {
-                    LaneInlineButton(title: "Apply", symbol: "tray.and.arrow.up") {
-                      Task { await performAction("stash apply") { try await syncService.stashApply(laneId: laneId, stashRef: stash.ref) } }
-                    }
-                    LaneInlineButton(title: "Pop", symbol: "arrow.up.right.square") {
-                      Task { await performAction("stash pop") { try await syncService.stashPop(laneId: laneId, stashRef: stash.ref) } }
-                    }
-                    LaneInlineButton(title: "Drop", symbol: "trash", tint: ADEPalette.danger) {
-                      Task { await performAction("stash drop") { try await syncService.stashDrop(laneId: laneId, stashRef: stash.ref) } }
-                    }
-                  }
-                }
-                if stash.id != detail.stashes.last?.id {
-                  Divider()
-                    .overlay(ADEPalette.border.opacity(0.75))
-                }
-              }
-            }
-          }
-        }
-
-        if !detail.recentCommits.isEmpty {
-          LaneSurfaceCard(title: "Recent commits", subtitle: "Review commit metadata and act without leaving the lane") {
-            VStack(alignment: .leading, spacing: 12) {
-              ForEach(detail.recentCommits) { commit in
-                VStack(alignment: .leading, spacing: 8) {
-                  HStack {
-                    Text(commit.subject)
-                      .font(.subheadline.weight(.semibold))
-                      .foregroundStyle(ADEPalette.textPrimary)
-                    Spacer()
-                    Text(commit.shortSha)
-                      .font(.system(.caption, design: .monospaced))
-                      .foregroundStyle(ADEPalette.textSecondary)
-                  }
-                  Text("\(commit.authorName) • \(relativeTimestamp(commit.authoredAt))")
-                    .font(.caption)
-                    .foregroundStyle(ADEPalette.textSecondary)
-
-                  ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                      LaneInlineButton(title: "Diff", symbol: "doc.text.magnifyingglass") {
-                        Task {
-                          do {
-                            let files = try await syncService.listCommitFiles(laneId: laneId, commitSha: commit.sha)
-                            guard let path = files.first else {
-                              errorMessage = "This commit does not include any file diffs."
-                              return
-                            }
-                            selectedDiffRequest = LaneDiffRequest(
-                              laneId: laneId,
-                              path: path,
-                              mode: "commit",
-                              compareRef: commit.sha,
-                              compareTo: "parent",
-                              title: commit.subject
-                            )
-                          } catch {
-                            errorMessage = error.localizedDescription
-                          }
-                        }
-                      }
-                      LaneInlineButton(title: "Message", symbol: "text.alignleft") {
-                        Task {
-                          do {
-                            commitMessage = try await syncService.getCommitMessage(laneId: laneId, commitSha: commit.sha)
-                          } catch {
-                            errorMessage = error.localizedDescription
-                          }
-                        }
-                      }
-                      LaneInlineButton(title: "Revert", symbol: "arrow.uturn.backward", tint: ADEPalette.warning) {
-                        Task { await performAction("revert commit") { try await syncService.revertCommit(laneId: laneId, commitSha: commit.sha) } }
-                      }
-                      LaneInlineButton(title: "Cherry-pick", symbol: "arrow.triangle.merge") {
-                        Task { await performAction("cherry pick") { try await syncService.cherryPickCommit(laneId: laneId, commitSha: commit.sha) } }
-                      }
-                    }
-                  }
-                }
-
-                if commit.id != detail.recentCommits.last?.id {
-                  Divider()
-                    .overlay(ADEPalette.border.opacity(0.75))
-                }
-              }
-            }
-          }
-        }
-
-        if let conflictState = detail.conflictState, conflictState.inProgress {
-          LaneSurfaceCard(title: "Rebase conflict", subtitle: "Git reports a \(conflictState.kind ?? "merge") in progress.") {
-            VStack(alignment: .leading, spacing: 12) {
-              if !conflictState.conflictedFiles.isEmpty {
-                ForEach(conflictState.conflictedFiles, id: \.self) { path in
-                  Text(path)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(ADEPalette.textSecondary)
-                }
-              }
-              HStack(spacing: 8) {
-                LaneInlineButton(title: "Continue", symbol: "play.fill", tint: ADEPalette.accent) {
-                  Task { await performAction("rebase continue") { try await syncService.rebaseContinueGit(laneId: laneId) } }
-                }
-                .disabled(!conflictState.canContinue)
-                LaneInlineButton(title: "Abort", symbol: "xmark.circle", tint: ADEPalette.danger) {
-                  Task { await performAction("rebase abort") { try await syncService.rebaseAbortGit(laneId: laneId) } }
-                }
-                .disabled(!conflictState.canAbort)
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var workSections: some View {
-    if let detail {
-      VStack(spacing: 16) {
-        LaneSurfaceCard(title: "Launch", subtitle: "Start work for this lane without leaving the detail screen") {
-          VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-              LaneLaunchTile(title: "Shell", symbol: "terminal", tint: ADEPalette.textSecondary) {
-                Task {
-                  await performAction("launch shell") {
-                    try await syncService.runQuickCommand(laneId: laneId, title: "Shell", toolType: "shell", tracked: trackedLaunch)
-                  }
-                }
-              }
-              LaneLaunchTile(title: "Codex", symbol: "sparkle", tint: ADEPalette.accent) {
-                chatLaunchTarget = LaneChatLaunchTarget(provider: "codex")
-              }
-              LaneLaunchTile(title: "Claude", symbol: "brain.head.profile", tint: ADEPalette.warning) {
-                chatLaunchTarget = LaneChatLaunchTarget(provider: "claude")
-              }
-            }
-
-            Toggle("Track sessions", isOn: $trackedLaunch)
-              .font(.subheadline)
-              .foregroundStyle(ADEPalette.textSecondary)
-
-            LaneInlineButton(title: "Open in Files", symbol: "folder", tint: ADEPalette.accent) {
-              Task { await openFiles() }
-            }
-          }
-        }
-
-        if !detail.sessions.isEmpty {
-          LaneSurfaceCard(title: "Workspace sessions", subtitle: "\(detail.sessions.count) lane-scoped session(s)") {
-            VStack(alignment: .leading, spacing: 12) {
-              ForEach(detail.sessions) { session in
-                NavigationLink {
-                  LaneSessionTranscriptView(session: session)
-                } label: {
-                  LaneSessionCard(session: session)
-                }
-                .buttonStyle(.plain)
-                .swipeActions(edge: .trailing) {
-                  Button("Close", role: .destructive) {
-                    Task { await performAction("close session") { try await syncService.closeWorkSession(sessionId: session.id) } }
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        if !detail.chatSessions.isEmpty {
-          LaneSurfaceCard(title: "AI chats", subtitle: "\(detail.chatSessions.count) lane-scoped chat(s)") {
-            VStack(alignment: .leading, spacing: 12) {
-              ForEach(detail.chatSessions) { chat in
-                NavigationLink {
-                  LaneChatSessionView(summary: chat)
-                } label: {
-                  LaneChatCard(chat: chat)
-                }
-                .buttonStyle(.plain)
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var manageSections: some View {
-    if let detail {
-      VStack(spacing: 16) {
-        LaneSurfaceCard(title: "Identity", subtitle: "Rename the lane without changing its branch history") {
-          VStack(alignment: .leading, spacing: 12) {
-            LaneTextField("Lane name", text: $renameText)
-            LaneInlineButton(title: "Save name", symbol: "checkmark.circle.fill", tint: ADEPalette.accent) {
-              Task { await performAction("rename lane") { try await syncService.renameLane(laneId, name: renameText) } }
-            }
-            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || renameText == detail.lane.name)
-          }
-        }
-
-        LaneSurfaceCard(title: "Appearance", subtitle: "Keep the lane recognizable in dense views") {
-          VStack(alignment: .leading, spacing: 12) {
-            LaneTextField("Color token or hex", text: $colorText)
-              .textInputAutocapitalization(.never)
-            LaneTextField("Icon (star, flag, bolt, shield, tag)", text: $iconText)
-              .textInputAutocapitalization(.never)
-            LaneTextField("Tags (comma separated)", text: $tagsText)
-            LaneInlineButton(title: "Save appearance", symbol: "paintpalette", tint: ADEPalette.accent) {
-              Task {
-                let tags = tagsText
-                  .split(separator: ",")
-                  .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                  .filter { !$0.isEmpty }
-                await performAction("save appearance") {
-                  try await syncService.updateLaneAppearance(
-                    laneId,
-                    color: colorText,
-                    icon: iconText,
-                    tags: tags
-                  )
-                }
-              }
-            }
-          }
-        }
-
-        if detail.lane.laneType != "primary" {
-          LaneSurfaceCard(title: "Reparent", subtitle: "Move the lane under a different parent lane") {
-            VStack(alignment: .leading, spacing: 12) {
-              Picker("Parent lane", selection: $selectedParentLaneId) {
-                Text("Select parent").tag("")
-                ForEach(reparentCandidates) { lane in
-                  Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
-                }
-              }
-              .pickerStyle(.menu)
-
-              LaneInlineButton(title: "Save parent", symbol: "arrow.triangle.swap", tint: ADEPalette.accent) {
-                Task { await performAction("reparent lane") { try await syncService.reparentLane(laneId, newParentLaneId: selectedParentLaneId) } }
-              }
-              .disabled(selectedParentLaneId.isEmpty)
-            }
-          }
-        }
-
-        if detail.lane.laneType == "attached" && detail.lane.archivedAt == nil {
-          LaneSurfaceCard(title: "Attached lane", subtitle: "Adopt this worktree into .ade/worktrees so ADE manages lifecycle end-to-end") {
-            LaneInlineButton(title: "Move to ADE-managed worktree", symbol: "arrow.down.doc", tint: ADEPalette.accent) {
-              Task { await performAction("adopt attached lane") { _ = try await syncService.adoptAttachedLane(laneId) } }
-            }
-          }
-        }
-
-        LaneSurfaceCard(title: detail.lane.archivedAt == nil ? "Archive" : "Restore", subtitle: detail.lane.archivedAt == nil ? "Hide the lane from the active view without deleting it." : "Return the lane to the active view.") {
-          if detail.lane.archivedAt == nil {
-            LaneInlineButton(title: "Archive lane", symbol: "archivebox", tint: ADEPalette.warning) {
-              Task { await performAction("archive lane") { try await syncService.archiveLane(laneId) } }
-            }
-            .disabled(detail.lane.laneType == "primary")
-          } else {
-            LaneInlineButton(title: "Restore lane", symbol: "tray.and.arrow.up", tint: ADEPalette.accent) {
-              Task { await performAction("restore lane") { try await syncService.unarchiveLane(laneId) } }
-            }
-          }
-        }
-
-        if detail.lane.laneType != "primary" {
-          LaneSurfaceCard(title: "Danger zone", subtitle: "Deletion is destructive and requires exact confirmation") {
-            DisclosureGroup("Delete lane") {
-              VStack(alignment: .leading, spacing: 12) {
-                Picker("Delete mode", selection: $deleteMode) {
-                  ForEach(LaneDeleteMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                  }
-                }
-                .pickerStyle(.menu)
-
-                if deleteMode == .remoteBranch {
-                  LaneTextField("Remote name", text: $deleteRemoteName)
-                }
-
-                Toggle("Force delete", isOn: $deleteForce)
-                  .font(.subheadline)
-                  .foregroundStyle(ADEPalette.textSecondary)
-
-                LaneTextField("Type delete \(detail.lane.name) to confirm", text: $deleteConfirmText)
-
-                LaneInlineButton(title: "Delete lane", symbol: "trash", tint: ADEPalette.danger) {
-                  Task {
-                    await performAction("delete lane") {
-                      try await syncService.deleteLane(
-                        laneId,
-                        deleteBranch: deleteMode != .worktree,
-                        deleteRemoteBranch: deleteMode == .remoteBranch,
-                        remoteName: deleteRemoteName,
-                        force: deleteForce
-                      )
-                    }
-                  }
-                }
-                .disabled(deleteConfirmText.lowercased() != "delete \(detail.lane.name)".lowercased())
-              }
-              .padding(.top, 12)
-            }
-            .tint(ADEPalette.danger)
-          }
-        }
-      }
-    }
-  }
-
-  private var connectionBanner: ADENoticeCard? {
-    guard !canRunLiveActions else { return nil }
-    return ADENoticeCard(
-      title: "Showing cached lane detail",
-      message: "Reconnect to refresh git state, work sessions, chat threads, and lane actions from the host.",
-      icon: "icloud.slash",
-      tint: ADEPalette.warning,
-      actionTitle: syncService.activeHostProfile == nil ? "Pair again" : "Reconnect",
-      action: {
-        if syncService.activeHostProfile == nil {
-          syncService.settingsPresented = true
-        } else {
-          Task {
-            await syncService.reconnectIfPossible()
-            await loadDetail(refreshRemote: true)
-          }
-        }
-      }
-    )
-  }
-
-  private var canRunLiveActions: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
-  }
-
-  @MainActor
-  private func loadDetail(refreshRemote: Bool) async {
-    do {
-      if let cached = try await syncService.fetchLaneDetail(laneId: laneId) {
-        detail = cached
-        seedForms(from: cached)
-      }
-      if refreshRemote {
-        let refreshed = try await syncService.refreshLaneDetail(laneId: laneId)
-        detail = refreshed
-        seedForms(from: refreshed)
-        await onRefreshRoot()
-      }
-      errorMessage = nil
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  @MainActor
-  private func performAction(_ label: String, operation: () async throws -> Void) async {
-    do {
-      busyAction = label
-      try await operation()
-      await loadDetail(refreshRemote: true)
-      errorMessage = nil
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-    busyAction = nil
-  }
-
-  private func runRebaseAndPush() async throws {
-    try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only", pushMode: "none")
-    try? await syncService.fetchGit(laneId: laneId)
-    let syncStatus = try await syncService.fetchSyncStatus(laneId: laneId)
-    if syncStatus.hasUpstream == false {
-      try await syncService.pushGit(laneId: laneId)
-      return
-    }
-    if syncStatus.diverged && syncStatus.ahead > 0 {
-      try await syncService.pushGit(laneId: laneId, forceWithLease: true)
-      return
-    }
-    if syncStatus.ahead > 0 {
-      try await syncService.pushGit(laneId: laneId)
-    }
-  }
-
-  @MainActor
-  private func openFiles(path: String? = nil) async {
-    do {
-      let workspaces = try await syncService.listWorkspaces()
-      guard let workspace = workspaces.first(where: { $0.laneId == laneId }) else {
-        errorMessage = "No Files workspace is available for this lane."
-        return
-      }
-      syncService.requestedFilesNavigation = FilesNavigationRequest(
-        workspaceId: workspace.id,
-        relativePath: path
-      )
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  private func seedForms(from detail: LaneDetailPayload) {
-    renameText = detail.lane.name
-    colorText = detail.lane.color ?? ""
-    iconText = detail.lane.icon?.rawValue ?? ""
-    tagsText = detail.lane.tags.joined(separator: ", ")
-    selectedParentLaneId = detail.lane.parentLaneId ?? ""
-  }
-
-  @ViewBuilder
-  private func fileRow(file: FileChange, mode: String) -> some View {
-    LaneSurfaceCard(cornerRadius: 12, padding: 12, fill: ADEPalette.recessedBackground, border: ADEPalette.border.opacity(0.6)) {
-      VStack(alignment: .leading, spacing: 10) {
-        HStack(alignment: .top, spacing: 10) {
-          VStack(alignment: .leading, spacing: 4) {
-            Text(file.path)
-              .font(.system(.caption, design: .monospaced))
-              .foregroundStyle(ADEPalette.textPrimary)
-              .lineLimit(2)
-            Text(mode == "unstaged" ? "Unstaged change" : "Staged change")
-              .font(.caption2)
-              .foregroundStyle(ADEPalette.textMuted)
-          }
-          Spacer()
-          ADEStatusPill(text: file.kind.uppercased(), tint: file.kind == "modified" ? ADEPalette.warning : ADEPalette.textSecondary)
-        }
-
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 8) {
-            LaneInlineButton(title: "Diff", symbol: "doc.text.magnifyingglass") {
-              selectedDiffRequest = LaneDiffRequest(
-                laneId: laneId,
-                path: file.path,
-                mode: mode,
-                compareRef: nil,
-                compareTo: nil,
-                title: file.path
-              )
-            }
-            LaneInlineButton(title: "Files", symbol: "folder") {
-              Task { await openFiles(path: file.path) }
-            }
-            if mode == "unstaged" {
-              LaneInlineButton(title: "Stage", symbol: "plus.circle.fill", tint: ADEPalette.accent) {
-                Task { await performAction("stage file") { try await syncService.stageFile(laneId: laneId, path: file.path) } }
-              }
-              LaneInlineButton(title: "Discard", symbol: "trash", tint: ADEPalette.danger) {
-                Task { await performAction("discard file") { try await syncService.discardFile(laneId: laneId, path: file.path) } }
-              }
-            } else {
-              LaneInlineButton(title: "Unstage", symbol: "minus.circle", tint: ADEPalette.warning) {
-                Task { await performAction("unstage file") { try await syncService.unstageFile(laneId: laneId, path: file.path) } }
-              }
-              LaneInlineButton(title: "Restore", symbol: "trash", tint: ADEPalette.danger) {
-                Task { await performAction("restore staged file") { try await syncService.restoreStagedFile(laneId: laneId, path: file.path) } }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-private struct LaneDiffRequest: Identifiable {
-  var id: String { "\(laneId):\(mode):\(path ?? "none"):\(compareRef ?? "none")" }
-  let laneId: String
-  let path: String?
-  let mode: String
-  let compareRef: String?
-  let compareTo: String?
-  let title: String
-}
-
-private struct LaneChatLaunchTarget: Identifiable {
-  var id: String { provider }
-  let provider: String
-}
-
-private struct LaneChatLaunchSheet: View {
-  @Environment(\.dismiss) private var dismiss
-  @EnvironmentObject private var syncService: SyncService
-
-  let laneId: String
-  let provider: String
-  let onComplete: @MainActor (AgentChatSessionSummary) async -> Void
-
-  @State private var models: [AgentChatModelInfo] = []
-  @State private var selectedModelId = ""
-  @State private var selectedReasoningEffort = ""
-  @State private var busy = false
-  @State private var errorMessage: String?
-
-  private var selectedModel: AgentChatModelInfo? {
-    models.first(where: { $0.id == selectedModelId })
-  }
-
-  private var providerTitle: String {
-    provider == "claude" ? "Claude" : "Codex"
-  }
-
-  var body: some View {
-    NavigationStack {
-      ScrollView {
-        VStack(spacing: 16) {
-          LaneSurfaceCard(title: providerTitle, subtitle: "Launch a lane-scoped \(providerTitle) chat from the Lanes tab.") {
-            HStack(alignment: .center, spacing: 12) {
-              Image(systemName: provider == "claude" ? "brain.head.profile" : "sparkle")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(ADEPalette.accent)
-              VStack(alignment: .leading, spacing: 4) {
-                Text(selectedModel?.displayName ?? "Choose a model")
-                  .font(.subheadline.weight(.semibold))
-                  .foregroundStyle(ADEPalette.textPrimary)
-                Text("Session stays lane-scoped and visible from the Work section.")
-                  .font(.caption)
-                  .foregroundStyle(ADEPalette.textSecondary)
-              }
-              Spacer()
-            }
-          }
-
-          if !models.isEmpty {
-            LaneSurfaceCard(title: "Model", subtitle: "Use the host-provided list for this provider") {
-              VStack(alignment: .leading, spacing: 12) {
-                Picker("Model", selection: $selectedModelId) {
-                  ForEach(models) { model in
-                    Text(model.displayName).tag(model.id)
-                  }
-                }
-                .pickerStyle(.menu)
-
-                if let selectedModel {
-                  VStack(alignment: .leading, spacing: 8) {
-                    if let description = selectedModel.description, !description.isEmpty {
-                      Text(description)
-                        .font(.subheadline)
-                        .foregroundStyle(ADEPalette.textSecondary)
-                    }
-                    HStack(spacing: 8) {
-                      if let family = selectedModel.family, !family.isEmpty {
-                        LaneMetaChip(title: family, symbol: "circle.grid.2x2.fill", tint: ADEPalette.textSecondary)
-                      }
-                      if selectedModel.supportsReasoning == true {
-                        LaneMetaChip(title: "Reasoning", symbol: "brain", tint: ADEPalette.accent)
-                      }
-                      if selectedModel.supportsTools == true {
-                        LaneMetaChip(title: "Tools", symbol: "hammer.fill", tint: ADEPalette.success)
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
-            LaneSurfaceCard(title: "Reasoning", subtitle: "Default keeps the provider’s standard behavior") {
-              VStack(alignment: .leading, spacing: 12) {
-                Picker("Reasoning", selection: $selectedReasoningEffort) {
-                  Text("Default").tag("")
-                  ForEach(reasoningEfforts) { effort in
-                    Text(effort.effort.capitalized).tag(effort.effort)
-                  }
-                }
-                .pickerStyle(.segmented)
-
-                if let effort = reasoningEfforts.first(where: { $0.effort == selectedReasoningEffort }) {
-                  Text(effort.description)
-                    .font(.caption)
-                    .foregroundStyle(ADEPalette.textSecondary)
-                } else {
-                  Text("Use the provider default unless you need a stronger or lighter pass.")
-                    .font(.caption)
-                    .foregroundStyle(ADEPalette.textSecondary)
-                }
-              }
-            }
-          }
-
-          if let errorMessage {
-            LaneSurfaceCard(fill: ADEPalette.danger.opacity(0.08), border: ADEPalette.danger.opacity(0.28)) {
-              Text(errorMessage)
-                .font(.subheadline)
-                .foregroundStyle(ADEPalette.danger)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-          }
-
-          if busy {
-            LaneSurfaceCard(cornerRadius: 12, padding: 12, fill: ADEPalette.recessedBackground, border: ADEPalette.border.opacity(0.6)) {
-              HStack(spacing: 10) {
-                ProgressView()
-                Text("Creating lane-scoped \(providerTitle) chat…")
-                  .font(.subheadline)
-                  .foregroundStyle(ADEPalette.textSecondary)
-                Spacer()
-              }
-            }
-          }
-        }
-        .padding(16)
-      }
-      .background(ADEPalette.pageBackground.ignoresSafeArea())
-      .navigationTitle("New \(providerTitle) chat")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
-            .disabled(busy)
-        }
-        ToolbarItem(placement: .confirmationAction) {
-          Button("Launch") {
-            Task { await submit() }
-          }
-          .disabled(busy || (models.isEmpty == false && selectedModelId.isEmpty))
-        }
-      }
-      .task {
-        await loadModels()
-      }
-    }
-  }
-
-  @MainActor
-  private func loadModels() async {
-    do {
-      models = try await syncService.listChatModels(provider: provider)
-      if let preferred = models.first(where: \.isDefault) ?? models.first {
-        selectedModelId = preferred.id
-        selectedReasoningEffort = preferred.reasoningEfforts?.first?.effort ?? ""
-      }
-      errorMessage = nil
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  @MainActor
-  private func submit() async {
-    do {
-      busy = true
-      let session = try await syncService.createChatSession(
-        laneId: laneId,
-        provider: provider,
-        model: selectedModelId,
-        reasoningEffort: selectedReasoningEffort.isEmpty ? nil : selectedReasoningEffort
-      )
-      await onComplete(session)
-      dismiss()
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-    busy = false
-  }
-}
-
 private struct LaneBatchManageSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -2973,16 +2297,13 @@ private struct LaneBatchManageSheet: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        VStack(spacing: 16) {
-          LaneSurfaceCard(title: "Selected lanes", subtitle: "\(laneIds.count) lane\(laneIds.count == 1 ? "" : "s") currently targeted") {
-            VStack(alignment: .leading, spacing: 10) {
+        VStack(spacing: 14) {
+          GlassSection(title: "Selected lanes (\(laneIds.count))") {
+            VStack(alignment: .leading, spacing: 8) {
               ForEach(snapshots) { snapshot in
-                HStack(alignment: .top, spacing: 10) {
-                  Circle()
-                    .fill(runtimeTint(bucket: snapshot.runtime.bucket))
-                    .frame(width: 8, height: 8)
-                    .padding(.top, 6)
-                  VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .center, spacing: 10) {
+                  LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 8)
+                  VStack(alignment: .leading, spacing: 2) {
                     Text(snapshot.lane.name)
                       .font(.subheadline.weight(.semibold))
                       .foregroundStyle(ADEPalette.textPrimary)
@@ -2992,32 +2313,32 @@ private struct LaneBatchManageSheet: View {
                   }
                   Spacer()
                   if snapshot.lane.status.dirty {
-                    ADEStatusPill(text: "DIRTY", tint: ADEPalette.warning)
+                    LaneTypeBadge(text: "Dirty", tint: ADEPalette.warning)
                   }
                 }
               }
             }
           }
 
-          LaneSurfaceCard(title: "Archive", subtitle: "Hide selected lanes without deleting worktrees or branches") {
+          GlassSection(title: "Archive") {
             Button {
               Task { await archiveSelected() }
             } label: {
               HStack {
                 Image(systemName: "archivebox.fill")
                 Text("Archive selected lanes")
-                  .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                  .font(.subheadline.weight(.semibold))
                 Spacer()
               }
               .foregroundStyle(ADEPalette.warning)
               .padding(12)
-              .background(ADEPalette.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+              .background(ADEPalette.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
             .disabled(busy || laneIds.isEmpty)
           }
 
-          LaneSurfaceCard(title: "Delete", subtitle: "This removes the worktree, and optionally the branch, for every selected lane.") {
+          GlassSection(title: "Delete") {
             VStack(alignment: .leading, spacing: 12) {
               Picker("Delete mode", selection: $deleteMode) {
                 ForEach(LaneDeleteMode.allCases) { mode in
@@ -3046,11 +2367,11 @@ private struct LaneBatchManageSheet: View {
                 HStack {
                   Image(systemName: "trash.fill")
                   Text("Delete selected lanes")
-                    .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                   Spacer()
                 }
                 .padding(12)
-                .background(ADEPalette.danger.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(ADEPalette.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
               }
               .buttonStyle(.plain)
               .disabled(confirmText.lowercased() != "delete open lanes" || busy || laneIds.isEmpty)
@@ -3058,12 +2379,16 @@ private struct LaneBatchManageSheet: View {
           }
 
           if let errorMessage {
-            LaneSurfaceCard(fill: ADEPalette.danger.opacity(0.08), border: ADEPalette.danger.opacity(0.28)) {
-              Text(errorMessage)
-                .font(.subheadline)
+            HStack(spacing: 10) {
+              Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEPalette.danger)
-                .frame(maxWidth: .infinity, alignment: .leading)
+              Text(errorMessage)
+                .font(.caption)
+                .foregroundStyle(ADEPalette.danger)
+              Spacer()
             }
+            .padding(12)
+            .background(ADEPalette.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
           }
         }
         .padding(16)
@@ -3124,7 +2449,6 @@ private struct LaneStackGraphSheet: View {
   let selectedLaneId: String
 
   private var orderedSnapshots: [LaneListSnapshot] {
-    let laneById = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.lane.id, $0) })
     let childrenByParent = Dictionary(grouping: snapshots) { snapshot in
       snapshot.lane.parentLaneId ?? "__root__"
     }
@@ -3140,7 +2464,7 @@ private struct LaneStackGraphSheet: View {
       }
     }
 
-    let primaryBranch = primaryId.flatMap { laneById[$0] }.map { [$0] + visit(parentId: $0.lane.id) } ?? []
+    let primaryBranch = primaryId.flatMap { id in snapshots.first(where: { $0.lane.id == id }) }.map { [$0] + visit(parentId: $0.lane.id) } ?? []
     let seen = Set(primaryBranch.map(\.lane.id))
     let remaining = snapshots.filter { !seen.contains($0.lane.id) }.sorted { $0.lane.createdAt < $1.lane.createdAt }
     return primaryBranch + remaining
@@ -3149,31 +2473,31 @@ private struct LaneStackGraphSheet: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        VStack(spacing: 16) {
-          LaneSurfaceCard(title: "Stack graph", subtitle: "Primary lane first, then children in creation order") {
-            VStack(alignment: .leading, spacing: 10) {
+        VStack(spacing: 14) {
+          GlassSection(title: "Stack graph") {
+            VStack(alignment: .leading, spacing: 8) {
               ForEach(orderedSnapshots) { snapshot in
                 HStack(alignment: .top, spacing: 12) {
                   HStack(spacing: 0) {
                     if snapshot.lane.stackDepth > 0 {
                       Rectangle()
-                        .fill(ADEPalette.border.opacity(0.55))
+                        .fill(Color.white.opacity(0.1))
                         .frame(width: CGFloat(snapshot.lane.stackDepth) * 12, height: 1)
                         .padding(.top, 10)
                     }
                     Circle()
                       .fill(snapshot.lane.id == selectedLaneId ? ADEPalette.accent : runtimeTint(bucket: snapshot.runtime.bucket))
-                      .frame(width: 9, height: 9)
+                      .frame(width: 8, height: 8)
                       .padding(.top, 6)
                   }
-                  VStack(alignment: .leading, spacing: 4) {
+                  VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
                       Text(snapshot.lane.name)
                         .font(.subheadline.weight(snapshot.lane.id == selectedLaneId ? .semibold : .regular))
                         .foregroundStyle(ADEPalette.textPrimary)
                         .lineLimit(1)
                       if snapshot.lane.id == selectedLaneId {
-                        ADEStatusPill(text: "CURRENT", tint: ADEPalette.accent)
+                        LaneTypeBadge(text: "Current", tint: ADEPalette.accent)
                       }
                     }
                     Text(snapshot.lane.branchRef)
@@ -3183,10 +2507,10 @@ private struct LaneStackGraphSheet: View {
                   Spacer()
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
                 .background(
-                  RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(snapshot.lane.id == selectedLaneId ? ADEPalette.accent.opacity(0.1) : ADEPalette.recessedBackground)
+                  RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(snapshot.lane.id == selectedLaneId ? ADEPalette.accent.opacity(0.1) : Color.white.opacity(0.03))
                 )
               }
             }
@@ -3219,11 +2543,11 @@ private struct LaneDiffScreen: View {
 
   var body: some View {
     NavigationStack {
-      VStack(spacing: 12) {
+      VStack(spacing: 0) {
         ScrollView {
-          VStack(spacing: 16) {
-            LaneSurfaceCard(title: request.title, subtitle: request.mode.replacingOccurrences(of: "_", with: " ").capitalized) {
-              VStack(alignment: .leading, spacing: 10) {
+          VStack(spacing: 14) {
+            GlassSection(title: request.title) {
+              VStack(alignment: .leading, spacing: 8) {
                 if let path = request.path {
                   Text(path)
                     .font(.system(.caption, design: .monospaced))
@@ -3239,22 +2563,24 @@ private struct LaneDiffScreen: View {
             }
 
             if let errorMessage {
-              LaneSurfaceCard(fill: ADEPalette.danger.opacity(0.08), border: ADEPalette.danger.opacity(0.28)) {
-                Text(errorMessage)
-                  .font(.subheadline)
+              HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
                   .foregroundStyle(ADEPalette.danger)
-                  .frame(maxWidth: .infinity, alignment: .leading)
+                Text(errorMessage)
+                  .font(.caption)
+                  .foregroundStyle(ADEPalette.danger)
+                Spacer()
               }
+              .padding(12)
+              .background(ADEPalette.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
             if diff != nil {
-              LaneSurfaceCard(cornerRadius: 12, padding: 12, fill: ADEPalette.surfaceBackground, border: ADEPalette.border.opacity(0.65)) {
-                Picker("Side", selection: $side) {
-                  Text("Original").tag("original")
-                  Text("Modified").tag("modified")
-                }
-                .pickerStyle(.segmented)
+              Picker("Side", selection: $side) {
+                Text("Original").tag("original")
+                Text("Modified").tag("modified")
               }
+              .pickerStyle(.segmented)
             }
           }
           .padding(16)
@@ -3262,14 +2588,14 @@ private struct LaneDiffScreen: View {
 
         if let diff {
           if diff.isBinary == true {
-            LaneSurfaceCard(title: "Binary diff", subtitle: "Binary content is view-only on iPhone.") {
-              Text("Open the file in Files or switch to desktop to edit this binary change.")
+            GlassSection(title: "Binary diff") {
+              Text("Binary content is view-only on iPhone.")
                 .font(.subheadline)
                 .foregroundStyle(ADEPalette.textSecondary)
             }
             .padding(.horizontal, 16)
           } else {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
               HStack {
                 Text(side == "original" ? "Original" : "Modified")
                   .font(.caption.weight(.semibold))
@@ -3277,7 +2603,7 @@ private struct LaneDiffScreen: View {
                 Spacer()
                 if request.mode == "unstaged" && side == "modified" {
                   Text("Editable")
-                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(ADEPalette.accent)
                 }
               }
@@ -3292,10 +2618,10 @@ private struct LaneDiffScreen: View {
               .font(.system(.footnote, design: .monospaced))
               .scrollContentBackground(.hidden)
               .padding(12)
-              .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+              .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
               .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                  .stroke(ADEPalette.border.opacity(0.75), lineWidth: 1)
+                  .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
               )
               .disabled(side == "original")
             }
@@ -3305,6 +2631,7 @@ private struct LaneDiffScreen: View {
         } else {
           Spacer()
           ProgressView()
+            .tint(ADEPalette.accent)
           Spacer()
         }
       }
@@ -3370,33 +2697,214 @@ private struct LaneDiffScreen: View {
   }
 }
 
+private struct LaneChatLaunchSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var syncService: SyncService
+
+  let laneId: String
+  let provider: String
+  let onComplete: @MainActor (AgentChatSessionSummary) async -> Void
+
+  @State private var models: [AgentChatModelInfo] = []
+  @State private var selectedModelId = ""
+  @State private var selectedReasoningEffort = ""
+  @State private var busy = false
+  @State private var errorMessage: String?
+
+  private var selectedModel: AgentChatModelInfo? {
+    models.first(where: { $0.id == selectedModelId })
+  }
+
+  private var providerTitle: String {
+    provider == "claude" ? "Claude" : "Codex"
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(spacing: 14) {
+          GlassSection(title: providerTitle) {
+            HStack(alignment: .center, spacing: 12) {
+              Image(systemName: provider == "claude" ? "brain.head.profile" : "sparkle")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(ADEPalette.accent)
+              VStack(alignment: .leading, spacing: 3) {
+                Text(selectedModel?.displayName ?? "Choose a model")
+                  .font(.subheadline.weight(.semibold))
+                  .foregroundStyle(ADEPalette.textPrimary)
+                Text("Session stays lane-scoped.")
+                  .font(.caption)
+                  .foregroundStyle(ADEPalette.textSecondary)
+              }
+              Spacer()
+            }
+          }
+
+          if !models.isEmpty {
+            GlassSection(title: "Model") {
+              VStack(alignment: .leading, spacing: 12) {
+                Picker("Model", selection: $selectedModelId) {
+                  ForEach(models) { model in
+                    Text(model.displayName).tag(model.id)
+                  }
+                }
+                .pickerStyle(.menu)
+
+                if let selectedModel {
+                  VStack(alignment: .leading, spacing: 8) {
+                    if let description = selectedModel.description, !description.isEmpty {
+                      Text(description)
+                        .font(.caption)
+                        .foregroundStyle(ADEPalette.textSecondary)
+                    }
+                    HStack(spacing: 6) {
+                      if let family = selectedModel.family, !family.isEmpty {
+                        LaneMicroChip(icon: "circle.grid.2x2.fill", text: family, tint: ADEPalette.textSecondary)
+                      }
+                      if selectedModel.supportsReasoning == true {
+                        LaneMicroChip(icon: "brain", text: "Reasoning", tint: ADEPalette.accent)
+                      }
+                      if selectedModel.supportsTools == true {
+                        LaneMicroChip(icon: "hammer.fill", text: "Tools", tint: ADEPalette.success)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+            GlassSection(title: "Reasoning") {
+              VStack(alignment: .leading, spacing: 12) {
+                Picker("Reasoning", selection: $selectedReasoningEffort) {
+                  Text("Default").tag("")
+                  ForEach(reasoningEfforts) { effort in
+                    Text(effort.effort.capitalized).tag(effort.effort)
+                  }
+                }
+                .pickerStyle(.segmented)
+
+                if let effort = reasoningEfforts.first(where: { $0.effort == selectedReasoningEffort }) {
+                  Text(effort.description)
+                    .font(.caption)
+                    .foregroundStyle(ADEPalette.textSecondary)
+                }
+              }
+            }
+          }
+
+          if let errorMessage {
+            HStack(spacing: 10) {
+              Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(ADEPalette.danger)
+              Text(errorMessage)
+                .font(.caption)
+                .foregroundStyle(ADEPalette.danger)
+              Spacer()
+            }
+            .padding(12)
+            .background(ADEPalette.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          }
+
+          if busy {
+            HStack(spacing: 10) {
+              ProgressView()
+                .tint(ADEPalette.accent)
+              Text("Creating \(providerTitle) chat...")
+                .font(.subheadline)
+                .foregroundStyle(ADEPalette.textSecondary)
+              Spacer()
+            }
+            .padding(12)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          }
+        }
+        .padding(16)
+      }
+      .background(ADEPalette.pageBackground.ignoresSafeArea())
+      .navigationTitle("New \(providerTitle) chat")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+            .disabled(busy)
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Launch") {
+            Task { await submit() }
+          }
+          .disabled(busy || (models.isEmpty == false && selectedModelId.isEmpty))
+        }
+      }
+      .task {
+        await loadModels()
+      }
+    }
+  }
+
+  @MainActor
+  private func loadModels() async {
+    do {
+      models = try await syncService.listChatModels(provider: provider)
+      if let preferred = models.first(where: \.isDefault) ?? models.first {
+        selectedModelId = preferred.id
+        selectedReasoningEffort = preferred.reasoningEfforts?.first?.effort ?? ""
+      }
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func submit() async {
+    do {
+      busy = true
+      let session = try await syncService.createChatSession(
+        laneId: laneId,
+        provider: provider,
+        model: selectedModelId,
+        reasoningEffort: selectedReasoningEffort.isEmpty ? nil : selectedReasoningEffort
+      )
+      await onComplete(session)
+      dismiss()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+    busy = false
+  }
+}
+
+// MARK: - Sub-views
+
 private struct LaneSessionTranscriptView: View {
   @EnvironmentObject private var syncService: SyncService
   let session: TerminalSessionSummary
 
   var body: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: 16) {
-        LaneSurfaceCard(title: session.title, subtitle: session.laneName) {
+      VStack(alignment: .leading, spacing: 14) {
+        GlassSection(title: session.title) {
           HStack(spacing: 8) {
-            ADEStatusPill(text: session.status.uppercased(), tint: session.status == "running" ? ADEPalette.success : ADEPalette.textSecondary)
+            LaneTypeBadge(text: session.status.uppercased(), tint: session.status == "running" ? ADEPalette.success : ADEPalette.textSecondary)
             if let goal = session.goal, !goal.isEmpty {
               Text(goal)
-                .font(.system(.caption, design: .monospaced))
+                .font(.caption)
                 .foregroundStyle(ADEPalette.textSecondary)
                 .lineLimit(1)
             }
           }
         }
 
-        LaneSurfaceCard(title: "Transcript", subtitle: "Live terminal output for this session") {
+        GlassSection(title: "Transcript") {
           Text(syncService.terminalBuffers[session.id] ?? session.lastOutputPreview ?? "No output yet.")
             .frame(maxWidth: .infinity, alignment: .leading)
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(ADEPalette.textSecondary)
             .textSelection(.enabled)
             .padding(12)
-            .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
       }
       .padding(16)
@@ -3422,40 +2930,41 @@ private struct LaneChatSessionView: View {
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
-        VStack(spacing: 16) {
-          LaneSurfaceCard(title: summary.title ?? summary.provider.uppercased(), subtitle: summary.model) {
+        VStack(spacing: 14) {
+          GlassSection(title: summary.title ?? summary.provider.uppercased()) {
             HStack(spacing: 8) {
-              ADEStatusPill(text: summary.status.uppercased(), tint: summary.status == "active" ? ADEPalette.success : ADEPalette.textSecondary)
-              if let goal = summary.goal, !goal.isEmpty {
-                Text(goal)
-                  .font(.system(.caption, design: .monospaced))
-                  .foregroundStyle(ADEPalette.textSecondary)
-                  .lineLimit(1)
-              }
+              LaneTypeBadge(text: summary.status.uppercased(), tint: summary.status == "active" ? ADEPalette.success : ADEPalette.textSecondary)
+              Text(summary.model)
+                .font(.caption)
+                .foregroundStyle(ADEPalette.textSecondary)
             }
           }
 
           if let errorMessage {
-            LaneSurfaceCard(fill: ADEPalette.danger.opacity(0.08), border: ADEPalette.danger.opacity(0.28)) {
-              Text(errorMessage)
-                .font(.subheadline)
+            HStack(spacing: 10) {
+              Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEPalette.danger)
-                .frame(maxWidth: .infinity, alignment: .leading)
+              Text(errorMessage)
+                .font(.caption)
+                .foregroundStyle(ADEPalette.danger)
+              Spacer()
             }
+            .padding(12)
+            .background(ADEPalette.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
           }
 
           if transcript.isEmpty {
-            LaneSurfaceCard(title: "Transcript", subtitle: "Messages appear here as the lane chat progresses") {
+            GlassSection(title: "Transcript") {
               Text("No chat messages yet.")
                 .font(.subheadline)
                 .foregroundStyle(ADEPalette.textSecondary)
             }
           } else {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
               ForEach(transcript) { entry in
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                   Text(entry.role.uppercased())
-                    .font(.system(.caption2, design: .monospaced).weight(.bold))
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(entry.role == "assistant" ? ADEPalette.accent : ADEPalette.textMuted)
                   Text(entry.text)
                     .font(.body)
@@ -3470,7 +2979,7 @@ private struct LaneChatSessionView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                   RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(entry.role == "assistant" ? ADEPalette.accent.opacity(0.08) : ADEPalette.recessedBackground)
+                    .fill(entry.role == "assistant" ? ADEPalette.accent.opacity(0.08) : Color.white.opacity(0.03))
                 )
               }
             }
@@ -3483,15 +2992,15 @@ private struct LaneChatSessionView: View {
         .padding(16)
       }
       .safeAreaInset(edge: .bottom) {
-        LaneSurfaceCard(title: "Reply", subtitle: "Send a lane-scoped follow-up to this chat session") {
-          VStack(alignment: .leading, spacing: 12) {
+        VStack(spacing: 10) {
+          HStack(spacing: 10) {
             TextField("Send a message", text: $composer, axis: .vertical)
               .textFieldStyle(.plain)
-              .padding(12)
-              .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+              .padding(10)
+              .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
               .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                  .stroke(ADEPalette.border.opacity(0.7), lineWidth: 1)
+                  .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
               )
 
             Button {
@@ -3502,29 +3011,18 @@ private struct LaneChatSessionView: View {
                 }
               }
             } label: {
-              HStack {
-                if sending {
-                  ProgressView()
-                    .tint(ADEPalette.textPrimary)
-                } else {
-                  Image(systemName: "paperplane.fill")
-                }
-                Text("Send")
-                  .font(.system(.subheadline, design: .monospaced).weight(.semibold))
-                Spacer()
-              }
-              .foregroundStyle(ADEPalette.textPrimary)
-              .padding(12)
-              .background(ADEPalette.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+              Image(systemName: sending ? "ellipsis.circle" : "paperplane.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(ADEPalette.accent)
+                .frame(width: 40, height: 40)
+                .background(ADEPalette.accent.opacity(0.15), in: Circle())
             }
-            .buttonStyle(.plain)
             .disabled(composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
           }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 10)
-        .background(ADEPalette.pageBackground.opacity(0.96))
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
       }
       .onChange(of: transcript.count) { _, _ in
         withAnimation(.snappy) {
@@ -3568,6 +3066,416 @@ private struct LaneChatSessionView: View {
     }
     sending = false
   }
+}
+
+// MARK: - Design system components
+
+private struct GlassSection<Content: View>: View {
+  let title: String
+  let subtitle: String?
+  let content: Content
+
+  init(title: String, subtitle: String? = nil, @ViewBuilder content: () -> Content) {
+    self.title = title
+    self.subtitle = subtitle
+    self.content = content()
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEPalette.textPrimary)
+        if let subtitle {
+          Text(subtitle)
+            .font(.caption)
+            .foregroundStyle(ADEPalette.textSecondary)
+        }
+      }
+
+      content
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+    )
+  }
+}
+
+private struct LaneStatusIndicator: View {
+  let bucket: String
+  var size: CGFloat = 10
+
+  @State private var isPulsing = false
+
+  var body: some View {
+    Circle()
+      .fill(runtimeTint(bucket: bucket))
+      .frame(width: size, height: size)
+      .shadow(color: runtimeTint(bucket: bucket).opacity(isAnimating ? 0.5 : 0), radius: isAnimating ? 6 : 0)
+      .scaleEffect(isPulsing && isAnimating ? 1.3 : 1.0)
+      .animation(
+        isAnimating
+          ? .easeInOut(duration: 1.2).repeatForever(autoreverses: true)
+          : .default,
+        value: isPulsing
+      )
+      .onAppear {
+        if isAnimating {
+          isPulsing = true
+        }
+      }
+  }
+
+  private var isAnimating: Bool {
+    bucket == "running" || bucket == "awaiting-input"
+  }
+}
+
+private struct LaneFilterPill: View {
+  let title: String
+  let count: Int
+  let isActive: Bool
+  let tint: Color
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Text(title)
+          .font(.caption.weight(.medium))
+        Text("\(count)")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(isActive ? tint : ADEPalette.textMuted)
+      }
+      .foregroundStyle(isActive ? tint : ADEPalette.textSecondary)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 7)
+      .background(
+        isActive
+          ? AnyShapeStyle(tint.opacity(0.12))
+          : AnyShapeStyle(Color.white.opacity(0.04)),
+        in: Capsule()
+      )
+      .overlay(
+        Capsule()
+          .stroke(isActive ? tint.opacity(0.2) : Color.white.opacity(0.06), lineWidth: 0.5)
+      )
+    }
+    .buttonStyle(.plain)
+    .sensoryFeedback(.selection, trigger: isActive)
+    .accessibilityLabel("\(title), \(count) items")
+    .accessibilityAddTraits(isActive ? .isSelected : [])
+  }
+}
+
+private struct LaneTypeBadge: View {
+  let text: String
+  let tint: Color
+
+  var body: some View {
+    Text(text)
+      .font(.caption2.weight(.semibold))
+      .foregroundStyle(tint)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 3)
+      .background(tint.opacity(0.12), in: Capsule())
+  }
+}
+
+private struct LaneMicroChip: View {
+  let icon: String
+  let text: String?
+  let tint: Color
+
+  var body: some View {
+    HStack(spacing: 3) {
+      Image(systemName: icon)
+        .font(.system(size: 8, weight: .semibold))
+      if let text {
+        Text(text)
+          .font(.system(.caption2).weight(.medium))
+      }
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 6)
+    .padding(.vertical, 3)
+    .background(tint.opacity(0.1), in: Capsule())
+  }
+}
+
+private struct LaneActionButton: View {
+  let title: String
+  let symbol: String
+  let tint: Color
+  let action: () -> Void
+
+  init(title: String, symbol: String, tint: Color = ADEPalette.textSecondary, action: @escaping () -> Void) {
+    self.title = title
+    self.symbol = symbol
+    self.tint = tint
+    self.action = action
+  }
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Image(systemName: symbol)
+          .font(.system(size: 11, weight: .semibold))
+        Text(title)
+          .font(.caption.weight(.medium))
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 7)
+      .background(tint.opacity(0.1), in: Capsule())
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+private struct LaneQuickAction: View {
+  let title: String
+  let symbol: String
+  let tint: Color
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      VStack(spacing: 4) {
+        Image(systemName: symbol)
+          .font(.system(size: 16, weight: .medium))
+          .symbolRenderingMode(.hierarchical)
+        Text(title)
+          .font(.caption2.weight(.medium))
+      }
+      .foregroundStyle(tint)
+      .frame(width: 64, height: 54)
+      .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+      )
+    }
+    .buttonStyle(ADEScaleButtonStyle())
+  }
+}
+
+private struct LaneMenuLabel: View {
+  let title: String
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Text(title)
+        .font(.caption.weight(.medium))
+      Image(systemName: "chevron.down")
+        .font(.system(size: 8, weight: .bold))
+    }
+    .foregroundStyle(ADEPalette.textSecondary)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background(Color.white.opacity(0.04), in: Capsule())
+    .overlay(
+      Capsule()
+        .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+    )
+  }
+}
+
+private struct LaneOpenChip: View {
+  let snapshot: LaneListSnapshot
+  let isPinned: Bool
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Circle()
+        .fill(runtimeTint(bucket: snapshot.runtime.bucket))
+        .frame(width: 6, height: 6)
+      Text(snapshot.lane.name)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(ADEPalette.textPrimary)
+        .lineLimit(1)
+      if isPinned {
+        Image(systemName: "pin.fill")
+          .font(.system(size: 8))
+          .foregroundStyle(ADEPalette.accent)
+      }
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background(Color.white.opacity(0.04), in: Capsule())
+    .overlay(
+      Capsule()
+        .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+    )
+    .accessibilityLabel("\(snapshot.lane.name)\(isPinned ? ", pinned" : "")")
+  }
+}
+
+private struct LaneLaunchTile: View {
+  let title: String
+  let symbol: String
+  let tint: Color
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      VStack(spacing: 8) {
+        Image(systemName: symbol)
+          .font(.system(size: 18, weight: .semibold))
+          .symbolRenderingMode(.hierarchical)
+        Text(title)
+          .font(.caption.weight(.medium))
+      }
+      .foregroundStyle(tint)
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 14)
+      .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(tint.opacity(0.15), lineWidth: 0.5)
+      )
+    }
+    .buttonStyle(ADEScaleButtonStyle())
+    .sensoryFeedback(.impact(weight: .light), trigger: UUID())
+    .accessibilityLabel("Launch \(title)")
+  }
+}
+
+private struct LaneSessionCard: View {
+  let session: TerminalSessionSummary
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack {
+        Text(session.title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEPalette.textPrimary)
+        Spacer()
+        LaneTypeBadge(text: session.status.uppercased(), tint: session.status == "running" ? ADEPalette.success : ADEPalette.textSecondary)
+      }
+      if let preview = session.lastOutputPreview {
+        Text(preview)
+          .font(.caption)
+          .foregroundStyle(ADEPalette.textMuted)
+          .lineLimit(2)
+      }
+    }
+    .padding(10)
+    .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+  }
+}
+
+private struct LaneChatCard: View {
+  let chat: AgentChatSessionSummary
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack {
+        Text(chat.title ?? chat.provider.uppercased())
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEPalette.textPrimary)
+        Spacer()
+        LaneTypeBadge(text: chat.status.uppercased(), tint: chat.status == "active" ? ADEPalette.success : ADEPalette.textSecondary)
+      }
+      Text(chat.model)
+        .font(.system(.caption, design: .monospaced))
+        .foregroundStyle(ADEPalette.textSecondary)
+      if let preview = chat.lastOutputPreview {
+        Text(preview)
+          .font(.caption)
+          .foregroundStyle(ADEPalette.textMuted)
+          .lineLimit(2)
+      }
+    }
+    .padding(10)
+    .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+  }
+}
+
+private struct LaneInfoRow: View {
+  let label: String
+  let value: String
+  var isMonospaced = false
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 12) {
+      Text(label)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEPalette.textMuted)
+        .frame(width: 54, alignment: .leading)
+      Text(value)
+        .font(isMonospaced ? .system(.caption, design: .monospaced) : .subheadline)
+        .foregroundStyle(ADEPalette.textPrimary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+}
+
+private struct LaneTextField: View {
+  let title: String
+  @Binding var text: String
+
+  init(_ title: String, text: Binding<String>) {
+    self.title = title
+    self._text = text
+  }
+
+  var body: some View {
+    TextField(title, text: $text, axis: .vertical)
+      .textFieldStyle(.plain)
+      .padding(12)
+      .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+      )
+      .foregroundStyle(ADEPalette.textPrimary)
+  }
+}
+
+private struct ADEScaleButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+      .opacity(configuration.isPressed ? 0.85 : 1.0)
+      .animation(.spring(.bouncy(duration: 0.2)), value: configuration.isPressed)
+  }
+}
+
+// MARK: - Utility functions
+
+@ViewBuilder
+private func lanePriorityBadge(snapshot: LaneListSnapshot) -> some View {
+  if snapshot.autoRebaseStatus?.state == "rebaseConflict" {
+    LaneTypeBadge(text: "Conflict", tint: ADEPalette.danger)
+  } else if snapshot.lane.status.dirty {
+    LaneTypeBadge(text: "Dirty", tint: ADEPalette.warning)
+  } else if snapshot.runtime.bucket == "running" {
+    LaneTypeBadge(text: "Running", tint: ADEPalette.success)
+  } else if snapshot.runtime.bucket == "awaiting-input" {
+    LaneTypeBadge(text: "Attention", tint: ADEPalette.warning)
+  } else if snapshot.lane.archivedAt != nil {
+    LaneTypeBadge(text: "Archived", tint: ADEPalette.textMuted)
+  } else if let rebaseSuggestion = snapshot.rebaseSuggestion {
+    LaneTypeBadge(text: "\(rebaseSuggestion.behindCount)\u{2193}", tint: ADEPalette.warning)
+  } else {
+    EmptyView()
+  }
+}
+
+private func laneActivitySummary(_ snapshot: LaneListSnapshot) -> String? {
+  if let agentText = summarizeState(snapshot.stateSnapshot?.agentSummary) {
+    return agentText
+  }
+  if let missionText = summarizeState(snapshot.stateSnapshot?.missionSummary) {
+    return missionText
+  }
+  return nil
 }
 
 private func laneMatchesSearch(snapshot: LaneListSnapshot, isPinned: Bool, query: String) -> Bool {
@@ -3687,31 +3595,111 @@ private func relativeTimestamp(_ timestamp: String?) -> String {
 
 private func syncSummary(_ status: GitUpstreamSyncStatus) -> String {
   if !status.hasUpstream {
-    return "No upstream yet. Publish this lane to create and track a remote branch."
+    return "No upstream. Publish to create a remote branch."
   }
   if status.diverged {
-    return "Local and remote history diverged. Rebase or pull before pushing."
+    return "Diverged. Rebase or pull before pushing."
   }
   if status.ahead > 0 && status.behind == 0 {
-    return "Ahead by \(status.ahead) commit(s). Push to publish your local work."
+    return "Ahead by \(status.ahead). Push to publish."
   }
   if status.behind > 0 && status.ahead == 0 {
-    return "Behind by \(status.behind) commit(s). Pull or rebase to catch up."
+    return "Behind by \(status.behind). Pull to catch up."
   }
-  return "Local and remote are in sync."
+  return "In sync with remote."
 }
 
 private func conflictSummary(_ status: ConflictStatus) -> String {
   switch status.status {
   case "conflict-active":
-    return "\(status.overlappingFileCount) overlapping file(s) are in active conflict."
+    return "\(status.overlappingFileCount) overlapping file(s) in active conflict."
   case "conflict-predicted":
-    return "\(status.overlappingFileCount) overlapping file(s) are predicted to conflict across \(status.peerConflictCount) peer lane(s)."
+    return "\(status.overlappingFileCount) overlapping file(s) predicted across \(status.peerConflictCount) peer(s)."
   case "behind-base":
-    return "This lane is behind its base and should be rebased before merging."
+    return "Behind base. Rebase before merging."
   case "merge-ready":
-    return "Conflict prediction is clear. This lane is merge-ready."
+    return "Conflict prediction clear. Merge-ready."
   default:
-    return "Conflict status is available from the host."
+    return "Conflict status available from host."
   }
+}
+
+// MARK: - Previews
+
+#Preview("Lane list rows") {
+  let mockLanes: [LaneListSnapshot] = [
+    LaneListSnapshot(
+      lane: LaneSummary(
+        id: "1", name: "main", description: "Primary branch", laneType: "primary",
+        baseRef: "main", branchRef: "main", worktreePath: "/project",
+        attachedRootPath: nil, parentLaneId: nil, childCount: 3, stackDepth: 0,
+        parentStatus: nil, isEditProtected: false,
+        status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        color: nil, icon: nil, tags: [], folder: nil,
+        createdAt: "2026-01-01T00:00:00Z", archivedAt: nil
+      ),
+      runtime: LaneRuntimeSummary(bucket: "running", runningCount: 2, awaitingInputCount: 0, endedCount: 1, sessionCount: 3),
+      rebaseSuggestion: nil, autoRebaseStatus: nil, conflictStatus: nil, stateSnapshot: nil, adoptableAttached: false
+    ),
+    LaneListSnapshot(
+      lane: LaneSummary(
+        id: "2", name: "feature/auth-flow", description: "OAuth integration", laneType: "worktree",
+        baseRef: "main", branchRef: "feat/auth-flow", worktreePath: "/project/.ade/worktrees/auth",
+        attachedRootPath: nil, parentLaneId: "1", childCount: 0, stackDepth: 1,
+        parentStatus: nil, isEditProtected: false,
+        status: LaneStatus(dirty: true, ahead: 3, behind: 1, remoteBehind: 0, rebaseInProgress: false),
+        color: nil, icon: nil, tags: [], folder: nil,
+        createdAt: "2026-03-01T00:00:00Z", archivedAt: nil
+      ),
+      runtime: LaneRuntimeSummary(bucket: "awaiting-input", runningCount: 0, awaitingInputCount: 1, endedCount: 0, sessionCount: 1),
+      rebaseSuggestion: nil, autoRebaseStatus: nil, conflictStatus: nil,
+      stateSnapshot: LaneStateSnapshotSummary(laneId: "2", agentSummary: ["summary": .string("Codex waiting for approval")], missionSummary: nil, updatedAt: nil),
+      adoptableAttached: false
+    ),
+    LaneListSnapshot(
+      lane: LaneSummary(
+        id: "3", name: "fix/login-redirect", description: nil, laneType: "worktree",
+        baseRef: "main", branchRef: "fix/login-redirect", worktreePath: "/project/.ade/worktrees/fix-login",
+        attachedRootPath: nil, parentLaneId: "1", childCount: 1, stackDepth: 1,
+        parentStatus: nil, isEditProtected: false,
+        status: LaneStatus(dirty: false, ahead: 7, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        color: nil, icon: nil, tags: [], folder: nil,
+        createdAt: "2026-03-10T00:00:00Z", archivedAt: nil
+      ),
+      runtime: LaneRuntimeSummary(bucket: "running", runningCount: 1, awaitingInputCount: 0, endedCount: 0, sessionCount: 1),
+      rebaseSuggestion: nil, autoRebaseStatus: nil, conflictStatus: nil,
+      stateSnapshot: LaneStateSnapshotSummary(laneId: "3", agentSummary: ["summary": .string("Claude writing tests")], missionSummary: nil, updatedAt: nil),
+      adoptableAttached: false
+    ),
+    LaneListSnapshot(
+      lane: LaneSummary(
+        id: "4", name: "refactor/db-layer", description: "Database abstraction", laneType: "attached",
+        baseRef: "main", branchRef: "refactor/db-layer", worktreePath: "/other/project",
+        attachedRootPath: "/other/project", parentLaneId: nil, childCount: 0, stackDepth: 0,
+        parentStatus: nil, isEditProtected: false,
+        status: LaneStatus(dirty: false, ahead: 0, behind: 4, remoteBehind: 0, rebaseInProgress: false),
+        color: nil, icon: nil, tags: [], folder: nil,
+        createdAt: "2026-03-15T00:00:00Z", archivedAt: nil
+      ),
+      runtime: LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1),
+      rebaseSuggestion: RebaseSuggestion(laneId: "4", parentLaneId: "1", parentHeadSha: "abc", behindCount: 4, lastSuggestedAt: "2026-03-22T00:00:00Z", deferredUntil: nil, dismissedAt: nil, hasPr: false),
+      autoRebaseStatus: nil, conflictStatus: nil, stateSnapshot: nil, adoptableAttached: true
+    ),
+  ]
+
+  ScrollView {
+    LazyVStack(spacing: 14) {
+      ForEach(mockLanes) { snapshot in
+        LaneListRow(
+          snapshot: snapshot,
+          isPinned: snapshot.lane.id == "2",
+          isOpen: snapshot.lane.id == "2" || snapshot.lane.id == "3"
+        )
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 8)
+  }
+  .background(ADEPalette.pageBackground)
+  .preferredColorScheme(.dark)
 }
