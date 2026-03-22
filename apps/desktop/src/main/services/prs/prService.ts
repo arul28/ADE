@@ -997,6 +997,7 @@ export function createPrService({
       else state = "commented";
       return {
         reviewer: asString(entry?.user?.login) || "unknown",
+        reviewerAvatarUrl: asString(entry?.user?.avatar_url) || null,
         state,
         body: asString(entry?.body) || null,
         submittedAt: asString(entry?.submitted_at) || null
@@ -1012,6 +1013,7 @@ export function createPrService({
     return data.map((entry: any) => ({
       id: `issue:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
       author: asString(entry?.user?.login) || "unknown",
+      authorAvatarUrl: asString(entry?.user?.avatar_url) || null,
       body: asString(entry?.body) || null,
       source: "issue",
       url: asString(entry?.html_url) || null,
@@ -1030,6 +1032,7 @@ export function createPrService({
     return data.map((entry: any) => ({
       id: `review:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
       author: asString(entry?.user?.login) || "unknown",
+      authorAvatarUrl: asString(entry?.user?.avatar_url) || null,
       body: asString(entry?.body) || null,
       source: "review",
       url: asString(entry?.html_url) || null,
@@ -3885,7 +3888,7 @@ export function createPrService({
           id: `comment-${c.id}`,
           type: "comment",
           author: c.author,
-          avatarUrl: null,
+          avatarUrl: c.authorAvatarUrl || null,
           body: c.body,
           timestamp: c.createdAt || "",
           metadata: { source: c.source, path: c.path, line: c.line, url: c.url }
@@ -3897,7 +3900,7 @@ export function createPrService({
           id: `review-${r.reviewer}-${r.submittedAt || ""}`,
           type: "review",
           author: r.reviewer,
-          avatarUrl: null,
+          avatarUrl: r.reviewerAvatarUrl || null,
           body: r.body,
           timestamp: r.submittedAt || "",
           metadata: { state: r.state }
@@ -3941,6 +3944,7 @@ export function createPrService({
       const comment: PrComment = {
         id: String(data?.id ?? ""),
         author: asString(data?.user?.login) || "",
+        authorAvatarUrl: asString(data?.user?.avatar_url) || null,
         body: asString(data?.body) || null,
         source: "issue",
         url: asString(data?.html_url) || null,

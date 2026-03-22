@@ -60,6 +60,7 @@ export type PrCheck = {
 
 export type PrReview = {
   reviewer: string;
+  reviewerAvatarUrl: string | null;
   state: "pending" | "approved" | "changes_requested" | "commented" | "dismissed";
   body: string | null;
   submittedAt: string | null;
@@ -68,6 +69,7 @@ export type PrReview = {
 export type PrComment = {
   id: string;
   author: string;
+  authorAvatarUrl: string | null;
   body: string | null;
   source: "issue" | "review";
   url: string | null;

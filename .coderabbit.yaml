@@ -1,0 +1,66 @@
+language: en-US
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  review_status: true
+  poem: false
+  sequence_diagrams: false
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_filters:
+    # Non-code / generated files
+    - "!docs/**"
+    - "!assets/**"
+    - "!logo/**"
+    - "!changelog/**"
+    - "!*.md"
+    - "!*.mdx"
+    - "!docs.json"
+    - "!style.css"
+    - "!favicon.svg"
+    - "!.ade/**"
+    - "!**/package-lock.json"
+    - "!**/*.xcodeproj/project.pbxproj"
+    - "!**/*.xcworkspace/**"
+
+  path_instructions:
+    - path: "apps/desktop/src/**"
+      instructions: |
+        Electron desktop app — check for IPC security, proper
+        main/renderer process separation, and React best practices.
+    - path: "apps/ios/**/*.swift"
+      instructions: |
+        iOS Swift app — check for memory management, Swift conventions,
+        and proper SwiftUI patterns.
+    - path: "apps/mcp-server/**"
+      instructions: |
+        MCP server — check for proper protocol compliance, error handling,
+        and API security.
+    - path: "apps/web/**"
+      instructions: |
+        Web app — check for accessibility, SSR compatibility, and
+        proper React patterns.
+
+  labeling_instructions:
+    - label: "desktop"
+      instructions: "Apply when changes touch apps/desktop/"
+    - label: "ios"
+      instructions: "Apply when changes touch apps/ios/"
+    - label: "mcp"
+      instructions: "Apply when changes touch apps/mcp-server/"
+    - label: "web"
+      instructions: "Apply when changes touch apps/web/"
+    - label: "docs"
+      instructions: "Apply when changes touch docs/"
+    - label: "ci"
+      instructions: "Apply when changes touch .github/"
+
+  tools:
+    eslint:
+      enabled: true
+    swiftlint:
+      enabled: true

@@ -240,7 +240,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     ? "'self' http://localhost:* http://127.0.0.1:*"
     : "'self' file: app:";
   const cspWsSources = isDevMode ? " ws://localhost:* ws://127.0.0.1:*" : "";
-  const cspImageSources = `${cspSources} https://avatars.githubusercontent.com`;
+  const cspImageSources = `${cspSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com`;
   const cspPolicy = [
     `default-src ${cspSources}`,
     `base-uri 'self'`,

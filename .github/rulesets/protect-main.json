@@ -42,7 +42,7 @@
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           {
-            "context": "check"
+            "context": "ci-pass"
           }
         ],
         "strict_required_status_checks_policy": true

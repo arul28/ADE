@@ -233,6 +233,11 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const prsRef = React.useRef<PrWithConflicts[]>([]);
   prsRef.current = prs;
 
+  // Refs for detail polling
+  const selectedPrIdRef = React.useRef<string | null>(null);
+  selectedPrIdRef.current = selectedPrId;
+  const detailFetchInProgress = React.useRef(false);
+
   const refreshMergeContexts = useCallback(async (prIds: string[]) => {
     const uniquePrIds = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
     if (uniquePrIds.length === 0) return;
@@ -328,7 +333,49 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     refresh();
   }, [refresh]);
 
-  // Load detail data when selected PR changes
+  // Silently refresh detail data for the given PR (no loading state).
+  // Returns early if a fetch is already in progress or the PR is no longer selected.
+  const rateLimitedUntilRef = React.useRef(0);
+  const refreshDetailSilently = useCallback((prId: string) => {
+    if (detailFetchInProgress.current) return;
+    // Bail if the PR we were asked to refresh is no longer the active one
+    if (selectedPrIdRef.current !== prId) return;
+    // Guard: don't fetch details for a PR that's not in the list
+    if (!prsRef.current.some((p) => p.id === prId)) return;
+    // Skip if we're rate-limited
+    if (Date.now() < rateLimitedUntilRef.current) return;
+
+    detailFetchInProgress.current = true;
+    Promise.all([
+      window.ade.prs.getStatus(prId),
+      window.ade.prs.getChecks(prId),
+      window.ade.prs.getReviews(prId),
+      window.ade.prs.getComments(prId),
+    ])
+      .then(([status, checks, reviews, comments]) => {
+        // Only apply if this PR is still selected
+        if (selectedPrIdRef.current !== prId) return;
+        setDetailStatus((prev) => (jsonEqual(prev, status) ? prev : status));
+        setDetailChecks((prev) => (jsonEqual(prev, checks) ? prev : checks));
+        setDetailReviews((prev) => (jsonEqual(prev, reviews) ? prev : reviews));
+        setDetailComments((prev) => (jsonEqual(prev, comments) ? prev : comments));
+      })
+      .catch((err) => {
+        const msg = String(err?.message ?? err);
+        if (msg.includes("rate limit") || msg.includes("API rate")) {
+          // Back off for 5 minutes on rate limit
+          rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+          console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
+        } else {
+          console.warn("[PrsContext] Failed to refresh PR detail data:", err);
+        }
+      })
+      .finally(() => {
+        detailFetchInProgress.current = false;
+      });
+  }, []);
+
+  // Load detail data when selected PR changes, then poll every 8s
   useEffect(() => {
     if (!selectedPrId) {
       setDetailStatus(null);
@@ -348,13 +395,15 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     }
 
     let cancelled = false;
+    const prId = selectedPrId;
     setDetailBusy(true);
+    detailFetchInProgress.current = true;
 
     Promise.all([
-      window.ade.prs.getStatus(selectedPrId),
-      window.ade.prs.getChecks(selectedPrId),
-      window.ade.prs.getReviews(selectedPrId),
-      window.ade.prs.getComments(selectedPrId),
+      window.ade.prs.getStatus(prId),
+      window.ade.prs.getChecks(prId),
+      window.ade.prs.getReviews(prId),
+      window.ade.prs.getComments(prId),
     ])
       .then(([status, checks, reviews, comments]) => {
         if (cancelled) return;
@@ -373,13 +422,22 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         setDetailComments([]);
       })
       .finally(() => {
+        detailFetchInProgress.current = false;
         if (!cancelled) setDetailBusy(false);
       });
 
+    // After the initial fetch, poll every 60 seconds for fresh detail data.
+    // GitHub rate limit is 5000/hour (~83/min) and each detail refresh uses ~10 API calls,
+    // so polling faster than 60s risks exhausting the rate limit.
+    const intervalId = window.setInterval(() => {
+      refreshDetailSilently(prId);
+    }, 60_000);
+
     return () => {
       cancelled = true;
+      window.clearInterval(intervalId);
     };
-  }, [selectedPrId]);
+  }, [selectedPrId, refreshDetailSilently]);
 
   useEffect(() => {
     if (!selectedPrId) return;
@@ -416,6 +474,11 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
           return jsonEqual(prev, next) ? prev : next;
         });
         scheduleRefresh();
+        // Also refresh detail data for the actively viewed PR
+        const activePrId = selectedPrIdRef.current;
+        if (activePrId) {
+          refreshDetailSilently(activePrId);
+        }
       } else if (event.type === "queue-state" || event.type === "queue-step") {
         window.ade.prs.getQueueState(event.groupId).then((qs) => {
           if (qs) {
@@ -441,7 +504,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         prsRefreshTimer.current = null;
       }
     };
-  }, [refresh]);
+  }, [refresh, refreshDetailSilently]);
 
   // Subscribe to rebase events
   useEffect(() => {

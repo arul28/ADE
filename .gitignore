@@ -53,3 +53,4 @@ xcuserdata/
 /apps/desktop/.ade
 /.playwright-mcp
 /.codex-derived-data
+package-lock.json

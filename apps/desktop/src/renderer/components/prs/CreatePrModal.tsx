@@ -1,11 +1,8 @@
 import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
-import { getModelById } from "../../../shared/modelRegistry";
-import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { useAppStore } from "../../state/appStore";
 import type {
-  AiConfig,
   MergeMethod,
   PrSummary,
   IntegrationProposal,
@@ -14,7 +11,6 @@ import type {
   CreateIntegrationPrResult,
   GitUpstreamSyncStatus,
 } from "../../../shared/types";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
 import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
@@ -80,15 +76,6 @@ const textareaStyle: React.CSSProperties = {
   ...inputStyle,
   resize: "none" as const,
 };
-
-const DEFAULT_PR_DESCRIPTION_MODEL = "anthropic/claude-haiku-4-5";
-
-function selectReasoningEffort(modelId: string, preferred: string | null): string | null {
-  const tiers = getModelById(modelId)?.reasoningTiers ?? [];
-  if (!tiers.length) return null;
-  if (preferred && tiers.includes(preferred)) return preferred;
-  return tiers.includes("medium") ? "medium" : (tiers[0] ?? null);
-}
 
 function StepOutcome({ outcome }: { outcome: IntegrationProposalStep["outcome"] }) {
   if (outcome === "clean") return <CheckCircle size={14} weight="fill" style={{ color: C.success }} />;
@@ -350,9 +337,6 @@ export function CreatePrModal({
 
   // Body & AI draft
   const [normalBody, setNormalBody] = React.useState("");
-  const [draftModel, setDraftModel] = React.useState(DEFAULT_PR_DESCRIPTION_MODEL);
-  const [draftReasoningEffort, setDraftReasoningEffort] = React.useState<string | null>(null);
-  const [availableDraftModelIds, setAvailableDraftModelIds] = React.useState<string[]>([]);
   const [drafting, setDrafting] = React.useState(false);
 
   // Integration PR
@@ -369,11 +353,7 @@ export function CreatePrModal({
   const handleDraftAI = async (laneId: string) => {
     setDrafting(true);
     try {
-      const result = await window.ade.prs.draftDescription({
-        laneId,
-        model: draftModel,
-        reasoningEffort: draftReasoningEffort,
-      });
+      const result = await window.ade.prs.draftDescription({ laneId });
       if (mode === "normal") {
         setNormalTitle(result.title);
         setNormalBody(result.body);
@@ -413,9 +393,6 @@ export function CreatePrModal({
       setExecError(null);
       setResults(null);
       setNormalBody("");
-      setDraftModel(DEFAULT_PR_DESCRIPTION_MODEL);
-      setDraftReasoningEffort(null);
-      setAvailableDraftModelIds([]);
       setDrafting(false);
       setIntegrationSources([]);
       setIntegrationName("");
@@ -427,36 +404,6 @@ export function CreatePrModal({
       setIntegrationResult(null);
     }, 200);
     return () => clearTimeout(id);
-  }, [open]);
-
-  React.useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    const loadDraftModelState = async () => {
-      try {
-        const [status, snapshot] = await Promise.all([
-          window.ade.ai.getStatus(),
-          window.ade.projectConfig.get(),
-        ]);
-        if (cancelled) return;
-        const effectiveAiRaw = snapshot.effective?.ai;
-        const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
-        const persisted = effectiveAi?.featureModelOverrides?.pr_descriptions;
-        const nextAvailableModelIds = deriveConfiguredModelIds(status);
-        const nextModelId = persisted || nextAvailableModelIds[0] || DEFAULT_PR_DESCRIPTION_MODEL;
-        setAvailableDraftModelIds(nextAvailableModelIds);
-        setDraftModel(nextModelId);
-        setDraftReasoningEffort((current) => selectReasoningEffort(nextModelId, current));
-      } catch {
-        if (cancelled) return;
-        setAvailableDraftModelIds([]);
-        setDraftReasoningEffort((current) => selectReasoningEffort(DEFAULT_PR_DESCRIPTION_MODEL, current));
-      }
-    };
-    void loadDraftModelState();
-    return () => {
-      cancelled = true;
-    };
   }, [open]);
 
   React.useEffect(() => {
@@ -1379,51 +1326,34 @@ export function CreatePrModal({
                         marginBottom: 8,
                       }}>
                         <span style={{ ...labelStyle, marginBottom: 0 }}>DESCRIPTION</span>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <UnifiedModelSelector
-                            value={draftModel}
-                            onChange={(modelId) => {
-                              setDraftModel(modelId);
-                              setDraftReasoningEffort((current) => selectReasoningEffort(modelId, current));
-                              void window.ade.ai.updateConfig({
-                                featureModelOverrides: { pr_descriptions: modelId } as AiConfig["featureModelOverrides"],
-                              });
-                            }}
-                            availableModelIds={availableDraftModelIds}
-                            showReasoning
-                            reasoningEffort={draftReasoningEffort}
-                            onReasoningEffortChange={setDraftReasoningEffort}
-                            className="min-w-[260px]"
-                          />
-                          <button
-                            disabled={!normalLaneId || drafting}
-                            onClick={() => void handleDraftAI(normalLaneId)}
-                            style={{
-                              background: "transparent",
-                              border: `1px solid ${C.accentBorder}`,
-                              borderRadius: 0,
-                              color: (!normalLaneId || drafting) ? C.textDisabled : C.accent,
-                              fontFamily: "'JetBrains Mono', monospace",
-                              fontSize: 10,
-                              fontWeight: 700,
-                              textTransform: "uppercase" as const,
-                              letterSpacing: "1px",
-                              padding: "6px 12px",
-                              cursor: (!normalLaneId || drafting) ? "not-allowed" : "pointer",
-                              opacity: (!normalLaneId || drafting) ? 0.5 : 1,
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 6,
-                            }}
-                          >
-                            {drafting ? (
-                              <CircleNotch size={12} className="animate-spin" />
-                            ) : (
-                              <Sparkle size={12} weight="fill" />
-                            )}
-                            {drafting ? "DRAFTING..." : "DRAFT DESCRIPTION"}
-                          </button>
-                        </div>
+                        <button
+                          disabled={!normalLaneId || drafting}
+                          onClick={() => void handleDraftAI(normalLaneId)}
+                          style={{
+                            background: "transparent",
+                            border: `1px solid ${C.accentBorder}`,
+                            borderRadius: 0,
+                            color: (!normalLaneId || drafting) ? C.textDisabled : C.accent,
+                            fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 10,
+                            fontWeight: 700,
+                            textTransform: "uppercase" as const,
+                            letterSpacing: "1px",
+                            padding: "6px 12px",
+                            cursor: (!normalLaneId || drafting) ? "not-allowed" : "pointer",
+                            opacity: (!normalLaneId || drafting) ? 0.5 : 1,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          {drafting ? (
+                            <CircleNotch size={12} className="animate-spin" />
+                          ) : (
+                            <Sparkle size={12} weight="fill" />
+                          )}
+                          {drafting ? "DRAFTING..." : "DRAFT DESCRIPTION"}
+                        </button>
                       </div>
                       <textarea
                         value={normalBody}

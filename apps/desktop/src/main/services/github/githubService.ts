@@ -193,6 +193,11 @@ export function createGithubService({
     };
   };
 
+  // ETag cache for conditional GET requests. Responses that return 304 Not Modified
+  // don't count against GitHub's rate limit, so this dramatically reduces API usage.
+  const etagCache = new Map<string, { etag: string; data: unknown }>();
+  const ETAG_CACHE_MAX_SIZE = 200;
+
   const apiRequest = async <T>(args: {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
     path: string;
@@ -212,16 +217,36 @@ export function createGithubService({
       url.searchParams.set(key, String(value));
     }
 
+    const urlKey = url.toString();
+    const headers: Record<string, string> = {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token}`,
+      "content-type": args.body != null ? "application/json" : "text/plain",
+      "user-agent": "ade-desktop"
+    };
+
+    // For GET requests, send If-None-Match with cached ETag if available.
+    // GitHub returns 304 Not Modified for free (no rate limit cost).
+    if (args.method === "GET") {
+      const cached = etagCache.get(urlKey);
+      if (cached) {
+        headers["if-none-match"] = cached.etag;
+      }
+    }
+
     const response = await fetch(url.toString(), {
       method: args.method,
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
-        "content-type": args.body != null ? "application/json" : "text/plain",
-        "user-agent": "ade-desktop"
-      },
+      headers,
       body: args.body != null ? JSON.stringify(args.body) : undefined
     });
+
+    // 304 Not Modified — return cached data (free, no rate limit cost)
+    if (response.status === 304) {
+      const cached = etagCache.get(urlKey);
+      if (cached) {
+        return { data: cached.data as T, response };
+      }
+    }
 
     const text = await response.text();
     let data: unknown = text;
@@ -246,6 +271,19 @@ export function createGithubService({
         throw err;
       }
       throw new Error(message);
+    }
+
+    // Cache ETag for future conditional requests
+    if (args.method === "GET") {
+      const etag = response.headers.get("etag");
+      if (etag) {
+        // Evict oldest entries if cache is full
+        if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
+          const firstKey = etagCache.keys().next().value;
+          if (firstKey) etagCache.delete(firstKey);
+        }
+        etagCache.set(urlKey, { etag, data });
+      }
     }
 
     return { data: data as T, response };

@@ -17,11 +17,17 @@ import type {
   PrMergeContext,
   PrWithConflicts,
 } from "../../../../shared/types";
-import { COLORS, LABEL_STYLE, MONO_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { QueueTab } from "./QueueTab";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
 import { usePrs } from "../state/PrsContext";
+
+const CATEGORY_THEMES = {
+  integration: { color: "#8B5CF6", bg: "rgba(139, 92, 246, 0.08)", border: "rgba(139, 92, 246, 0.20)", bgSubtle: "rgba(139, 92, 246, 0.04)" },
+  queue: { color: "#F59E0B", bg: "rgba(245, 158, 11, 0.08)", border: "rgba(245, 158, 11, 0.20)", bgSubtle: "rgba(245, 158, 11, 0.04)" },
+  rebase: { color: "#14B8A6", bg: "rgba(20, 184, 166, 0.08)", border: "rgba(20, 184, 166, 0.20)", bgSubtle: "rgba(20, 184, 166, 0.04)" },
+} as const;
 
 export type WorkflowCategory = "integration" | "queue" | "rebase";
 type WorkflowView = "active" | "history";
@@ -147,37 +153,38 @@ function QueueHistoryPanel({
     return <EmptyState title="No queue history" description="Completed and cancelled queue workflows will appear here." />;
   }
 
+  const theme = CATEGORY_THEMES.queue;
   return (
-    <div style={{ display: "grid", gap: 12, padding: 16 }}>
+    <div style={{ display: "grid", gap: 14, padding: 16 }}>
       {groups.map((group) => (
-        <div key={group.groupId} style={cardStyle()}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
+        <div key={group.groupId} style={cardStyle({ background: theme.bgSubtle, borderColor: theme.border, borderLeft: `3px solid ${theme.color}` })}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
             <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
                 {group.name ?? `Queue ${group.groupId.slice(0, 8)}`}
               </div>
-              <div style={{ marginTop: 4, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                target {group.targetBranch ?? "main"} · {group.members.length} PRs
+              <div style={{ marginTop: 4, fontSize: 12, color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+                target <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{group.targetBranch ?? "main"}</span> · <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{group.members.length}</span> PRs
               </div>
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              {group.landingState ? <span style={inlineBadge(group.landingState.state === "completed" ? COLORS.success : COLORS.warning)}>{group.landingState.state}</span> : null}
-              {group.rehearsalState ? <span style={inlineBadge(COLORS.info)}>rehearsal {group.rehearsalState.state}</span> : null}
+              {group.landingState ? <span style={inlineBadge(group.landingState.state === "completed" ? COLORS.success : theme.color, { background: `${group.landingState.state === "completed" ? COLORS.success : theme.color}18`, fontWeight: 600 })}>{group.landingState.state}</span> : null}
+              {group.rehearsalState ? <span style={inlineBadge(COLORS.info, { background: `${COLORS.info}18`, fontWeight: 600 })}>rehearsal {group.rehearsalState.state}</span> : null}
             </div>
           </div>
-          <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ display: "grid", gap: 10 }}>
             {group.members.map((member) => (
-              <div key={member.prId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
+              <div key={member.prId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.04)" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {member.pr?.title ?? member.laneName}
                   </div>
-                  <div style={{ marginTop: 2, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                  <div style={{ marginTop: 3, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
                     {member.laneName}
                   </div>
                 </div>
                 {member.pr ? (
-                  <button type="button" onClick={() => onOpenGitHubTab(member.prId)} style={outlineButton({ height: 28 })}>
+                  <button type="button" onClick={() => onOpenGitHubTab(member.prId)} style={outlineButton({ height: 30, borderColor: theme.border, color: theme.color, background: theme.bgSubtle })}>
                     <GithubLogo size={14} /> Open PR
                   </button>
                 ) : null}
@@ -199,8 +206,15 @@ function RebaseHistoryPanel({
     return <EmptyState title="No rebase history" description="Deferred, dismissed, and recently resolved rebase items will appear here." />;
   }
 
+  const theme = CATEGORY_THEMES.rebase;
+  const statusColors: Record<string, string> = {
+    "dismissed": "#EF4444",
+    "deferred": "#F59E0B",
+    "resolved recently": COLORS.success,
+  };
+
   return (
-    <div style={{ display: "grid", gap: 12, padding: 16 }}>
+    <div style={{ display: "grid", gap: 14, padding: 16 }}>
       {needs.map((need) => {
         const statusLabel = need.dismissedAt
           ? "dismissed"
@@ -208,19 +222,20 @@ function RebaseHistoryPanel({
             ? "deferred"
             : "resolved recently";
         const timestamp = need.dismissedAt ?? need.deferredUntil ?? null;
+        const badgeColor = statusColors[statusLabel] ?? theme.color;
         return (
-          <div key={need.laneId} style={cardStyle()}>
+          <div key={need.laneId} style={cardStyle({ background: theme.bgSubtle, borderColor: theme.border, borderLeft: `3px solid ${theme.color}` })}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>{need.laneName}</div>
-                <div style={{ marginTop: 4, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                  base {need.baseBranch} · behind {need.behindBy}
+                <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>{need.laneName}</div>
+                <div style={{ marginTop: 5, fontSize: 12, color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+                  base <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{need.baseBranch}</span> · behind <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: badgeColor, fontWeight: 600 }}>{need.behindBy}</span>
                 </div>
               </div>
-              <span style={inlineBadge(statusLabel === "resolved recently" ? COLORS.success : COLORS.warning)}>{statusLabel}</span>
+              <span style={inlineBadge(badgeColor, { background: `${badgeColor}18`, fontWeight: 600, borderRadius: 8 })}>{statusLabel}</span>
             </div>
-            <div style={{ marginTop: 10, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textSecondary }}>
-              {timestamp ? `Updated ${formatTimestamp(timestamp)}` : "Captured in workflow history."}
+            <div style={{ marginTop: 10, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+              {timestamp ? <>Updated <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestamp(timestamp)}</span></> : "Captured in workflow history."}
             </div>
           </div>
         );
@@ -327,17 +342,33 @@ function IntegrationWorkflowsTab({
     );
   }
 
+  const theme = CATEGORY_THEMES.integration;
+
+  const stageSteps = [
+    { label: "Proposal", num: 1 },
+    { label: "Lane", num: 2 },
+    { label: "PR", num: 3 },
+    { label: "Cleanup", num: 4 },
+  ];
+  const getStageProgress = (wf: IntegrationProposal): number => {
+    if (wf.cleanupState === "completed") return 4;
+    if (wf.linkedPrId) return 3;
+    if (wf.integrationLaneId) return 2;
+    return 1;
+  };
+
   return (
     <div style={{ display: "flex", minHeight: 0, height: "100%" }}>
-      <div style={{ width: 340, borderRight: "1px solid rgba(255,255,255,0.06)", overflow: "auto", flexShrink: 0 }}>
+      <div style={{ width: 340, borderRight: `1px solid ${theme.border}`, overflow: "auto", flexShrink: 0 }}>
         {workflows.map((workflow) => {
           const selected = workflow.proposalId === selectedWorkflowId;
+          const outcomeColor = workflow.overallOutcome === "clean" ? COLORS.success : workflow.overallOutcome === "conflict" ? COLORS.warning : COLORS.danger;
           const cleanupBadge = workflow.cleanupState === "required"
-            ? inlineBadge(COLORS.warning)
+            ? inlineBadge(COLORS.warning, { background: `${COLORS.warning}18`, fontWeight: 600 })
             : workflow.cleanupState === "completed"
-              ? inlineBadge(COLORS.success)
+              ? inlineBadge(COLORS.success, { background: `${COLORS.success}18`, fontWeight: 600 })
               : workflow.cleanupState === "declined"
-                ? inlineBadge(COLORS.textSecondary)
+                ? inlineBadge(COLORS.textSecondary, { background: "rgba(255,255,255,0.06)", fontWeight: 600 })
                 : null;
           return (
             <button
@@ -347,153 +378,194 @@ function IntegrationWorkflowsTab({
               style={{
                 display: "flex",
                 width: "100%",
-                flexDirection: "column",
-                gap: 8,
+                flexDirection: "row",
+                gap: 12,
                 padding: "14px 16px",
                 textAlign: "left",
                 border: "none",
-                borderLeft: selected ? "3px solid #A78BFA" : "3px solid transparent",
                 borderBottom: "1px solid rgba(255,255,255,0.04)",
-                background: selected ? "rgba(167, 139, 250, 0.08)" : "transparent",
+                background: selected ? theme.bg : "transparent",
                 cursor: "pointer",
                 transition: "background 150ms ease",
               }}
               onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
-              onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
+              onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = selected ? theme.bg : "transparent"; }}
             >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
-                  {workflow.title || workflow.integrationLaneName || `Integration ${workflow.proposalId.slice(0, 8)}`}
+              {/* Colored outcome sidebar */}
+              <div style={{ width: 4, borderRadius: 4, flexShrink: 0, background: outcomeColor, alignSelf: "stretch" }} />
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {workflow.title || workflow.integrationLaneName || `Integration ${workflow.proposalId.slice(0, 8)}`}
+                  </div>
+                  <span style={inlineBadge(workflow.status === "proposed" ? COLORS.info : theme.color, { background: `${workflow.status === "proposed" ? COLORS.info : theme.color}18`, fontWeight: 600, flexShrink: 0 })}>{workflow.status}</span>
                 </div>
-                <span style={inlineBadge(workflow.status === "proposed" ? COLORS.info : COLORS.accent)}>{workflow.status}</span>
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                <span style={inlineBadge(workflow.overallOutcome === "clean" ? COLORS.success : workflow.overallOutcome === "conflict" ? COLORS.warning : COLORS.danger)}>
-                  {workflow.overallOutcome}
-                </span>
-                {cleanupBadge ? <span style={cleanupBadge}>{workflow.cleanupState}</span> : null}
-              </div>
-              <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                {workflow.sourceLaneIds.map((laneId) => laneById.get(laneId)?.name ?? laneId).join(" + ")}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  <span style={inlineBadge(outcomeColor, { background: `${outcomeColor}18`, fontWeight: 600 })}>
+                    {workflow.overallOutcome}
+                  </span>
+                  {cleanupBadge ? <span style={cleanupBadge}>{workflow.cleanupState}</span> : null}
+                </div>
+                <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                  {workflow.sourceLaneIds.map((laneId) => laneById.get(laneId)?.name ?? laneId).join(" + ")}
+                </div>
               </div>
             </button>
           );
         })}
       </div>
 
-      <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 16 }}>
+      <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 20 }}>
         {!selectedWorkflow ? (
           <EmptyState title="No workflow selected" description="Choose an integration workflow to inspect its stages." />
         ) : (
-          <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "grid", gap: 16 }}>
             {actionError ? (
-              <div style={{ ...cardStyle({ borderColor: `${COLORS.danger}40`, color: COLORS.danger }), fontFamily: MONO_FONT, fontSize: 11 }}>
+              <div style={{ ...cardStyle({ borderColor: `${COLORS.danger}40`, background: "rgba(239,68,68,0.06)" }), fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger }}>
                 {actionError}
               </div>
             ) : null}
 
-            <div style={{ ...cardStyle(), display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            {/* Header card */}
+            <div style={{ ...cardStyle({ background: theme.bgSubtle, borderColor: theme.border }), display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
+                <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
                   {selectedWorkflow.title || selectedWorkflow.integrationLaneName || "Integration workflow"}
                 </div>
-                <div style={{ marginTop: 6, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                  created {formatTimestamp(selectedWorkflow.createdAt)}
+                <div style={{ marginTop: 6, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                  Created <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestamp(selectedWorkflow.createdAt)}</span>
                 </div>
               </div>
-              <button type="button" onClick={() => void onRefresh()} style={outlineButton()}>
-                <ArrowsClockwise size={14} /> {busy ? "Refreshing..." : "Refresh Workflows"}
+              <button type="button" onClick={() => void onRefresh()} style={outlineButton({ borderColor: theme.border, color: theme.color })}>
+                <ArrowsClockwise size={14} /> {busy ? "Refreshing..." : "Refresh"}
               </button>
             </div>
 
-            <div style={cardStyle()}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 10 }}>Stage 1 · Proposal</div>
-              <div style={{ fontFamily: MONO_FONT, fontSize: 12, lineHeight: 1.7, color: COLORS.textSecondary }}>
-                {selectedWorkflow.body?.trim() || "This workflow proposal is tracking the lane bundle and merge analysis for the integration run."}
+            {/* Stage stepper timeline */}
+            <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "4px 0" }}>
+              {stageSteps.map((step, i) => {
+                const progress = getStageProgress(selectedWorkflow);
+                const isComplete = progress >= step.num;
+                const isCurrent = progress === step.num;
+                const dotColor = isComplete ? theme.color : COLORS.textDim;
+                return (
+                  <React.Fragment key={step.num}>
+                    {i > 0 && (
+                      <div style={{ flex: 1, height: 2, background: isComplete ? theme.color : "rgba(255,255,255,0.08)", borderRadius: 1, transition: "background 200ms" }} />
+                    )}
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                      <div style={{
+                        width: isCurrent ? 14 : 10,
+                        height: isCurrent ? 14 : 10,
+                        borderRadius: "50%",
+                        background: isComplete ? dotColor : "transparent",
+                        border: isComplete ? "none" : `2px solid ${COLORS.textDim}`,
+                        boxShadow: isCurrent ? `0 0 0 4px ${theme.color}30` : "none",
+                        transition: "all 200ms",
+                      }} />
+                      <span style={{ fontSize: 10, fontFamily: SANS_FONT, fontWeight: isCurrent ? 700 : 500, color: isComplete ? theme.color : COLORS.textMuted }}>
+                        {step.label}
+                      </span>
+                    </div>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+
+            {/* Stage 1: Proposal */}
+            <div style={cardStyle({ background: theme.bgSubtle, borderColor: theme.border })}>
+              <div style={{ ...LABEL_STYLE, marginBottom: 10, color: theme.color }}>Stage 1 -- Proposal</div>
+              <div style={{ fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.7, color: COLORS.textSecondary }}>
+                {selectedWorkflow.body?.trim() || "Tracking the lane bundle and merge analysis for this integration."}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
                 {selectedWorkflow.sourceLaneIds.map((laneId) => (
-                  <span key={laneId} style={inlineBadge(COLORS.textSecondary)}>
+                  <span key={laneId} style={inlineBadge(theme.color, { background: theme.bg, fontWeight: 600 })}>
                     {laneById.get(laneId)?.name ?? laneId}
                   </span>
                 ))}
               </div>
             </div>
 
-            <div style={cardStyle()}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 10 }}>Stage 2 · Integration Lane</div>
+            {/* Stage 2: Integration Lane */}
+            <div style={cardStyle({ background: theme.bgSubtle, borderColor: theme.border })}>
+              <div style={{ ...LABEL_STYLE, marginBottom: 10, color: theme.color }}>Stage 2 -- Integration Lane</div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                 <div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
                     {selectedWorkflow.integrationLaneName || selectedWorkflow.integrationLaneId || "Pending lane creation"}
                   </div>
-                  <div style={{ marginTop: 4, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                    {selectedWorkflow.integrationLaneId ? `lane ${selectedWorkflow.integrationLaneId}` : "No integration lane has been created yet."}
+                  <div style={{ marginTop: 4, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                    {selectedWorkflow.integrationLaneId ? <>lane <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{selectedWorkflow.integrationLaneId}</span></> : "No integration lane has been created yet."}
                   </div>
                 </div>
-                <span style={inlineBadge(selectedWorkflow.overallOutcome === "clean" ? COLORS.success : selectedWorkflow.overallOutcome === "conflict" ? COLORS.warning : COLORS.danger)}>
+                <span style={inlineBadge(selectedWorkflow.overallOutcome === "clean" ? COLORS.success : selectedWorkflow.overallOutcome === "conflict" ? COLORS.warning : COLORS.danger, { background: `${selectedWorkflow.overallOutcome === "clean" ? COLORS.success : selectedWorkflow.overallOutcome === "conflict" ? COLORS.warning : COLORS.danger}18`, fontWeight: 600 })}>
                   {selectedWorkflow.overallOutcome}
                 </span>
               </div>
             </div>
 
-            <div style={cardStyle()}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 10 }}>Stage 3 · GitHub PR</div>
+            {/* Stage 3: GitHub PR */}
+            <div style={cardStyle({ background: theme.bgSubtle, borderColor: theme.border })}>
+              <div style={{ ...LABEL_STYLE, marginBottom: 10, color: theme.color }}>Stage 3 -- GitHub PR</div>
               {linkedPr ? (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
-                      #{linkedPr.githubPrNumber} {linkedPr.title}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                      <span style={{ fontFamily: MONO_FONT, fontSize: 13 }}>#{linkedPr.githubPrNumber}</span> {linkedPr.title}
                     </div>
                     <div style={{ marginTop: 4, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
                       {linkedPr.headBranch} → {linkedPr.baseBranch}
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                    <span style={inlineBadge(linkedPr.state === "merged" ? COLORS.success : linkedPr.state === "closed" ? COLORS.textMuted : COLORS.accent)}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
+                    <span style={inlineBadge(linkedPr.state === "merged" ? COLORS.success : linkedPr.state === "closed" ? COLORS.textMuted : theme.color, { background: `${linkedPr.state === "merged" ? COLORS.success : linkedPr.state === "closed" ? COLORS.textMuted : theme.color}18`, fontWeight: 600 })}>
                       {linkedPr.state}
                     </span>
-                    <button type="button" onClick={() => void window.ade.app.openExternal(linkedPr.githubUrl)} style={outlineButton({ height: 28 })}>
-                      <GithubLogo size={14} /> Open In GitHub
+                    <button type="button" onClick={() => void window.ade.app.openExternal(linkedPr.githubUrl)} style={outlineButton({ height: 30, borderColor: theme.border, color: theme.color, background: theme.bgSubtle })}>
+                      <GithubLogo size={14} /> Open on GitHub
                     </button>
-                    <button type="button" onClick={() => onOpenGitHubTab(linkedPr.id)} style={outlineButton({ height: 28 })}>
-                      <CaretRight size={14} /> Open In GitHub Tab
+                    <button type="button" onClick={() => onOpenGitHubTab(linkedPr.id)} style={outlineButton({ height: 30, borderColor: theme.border, color: theme.color, background: theme.bgSubtle })}>
+                      <CaretRight size={14} /> GitHub Tab
                     </button>
                   </div>
                 </div>
               ) : (
-                <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textSecondary }}>
-                  No GitHub PR is linked yet. Commit the workflow to create the PR.
+                <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
+                  No GitHub PR linked yet. Commit the workflow to create the PR.
                 </div>
               )}
             </div>
 
-            <div style={cardStyle()}>
-              <div style={{ ...LABEL_STYLE, marginBottom: 10 }}>Stage 4 · Cleanup</div>
+            {/* Stage 4: Cleanup */}
+            <div style={cardStyle({ background: theme.bgSubtle, borderColor: theme.border })}>
+              <div style={{ ...LABEL_STYLE, marginBottom: 10, color: theme.color }}>Stage 4 -- Cleanup</div>
               {selectedWorkflow.cleanupState === "required" || selectedWorkflow.cleanupState === "declined" ? (
-                <div style={{ display: "grid", gap: 12 }}>
-                  <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textSecondary }}>
-                    This workflow is ready for cleanup. The integration lane is preselected; source lanes are optional.
+                <div style={{ display: "grid", gap: 14 }}>
+                  <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
+                    Ready for cleanup. Integration lane is preselected; source lanes are optional.
                   </div>
-                  {selectedWorkflow.integrationLaneId ? (
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary }}>
-                      <input type="checkbox" checked={archiveIntegrationLane} onChange={(event) => setArchiveIntegrationLane(event.target.checked)} />
-                      Archive {selectedWorkflow.integrationLaneName || selectedWorkflow.integrationLaneId}
-                    </label>
-                  ) : null}
-                  <div style={{ display: "grid", gap: 8 }}>
-                    {selectedWorkflow.sourceLaneIds.map((laneId) => (
-                      <label key={laneId} style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary }}>
-                        <input type="checkbox" checked={archiveSourceLaneIds.includes(laneId)} onChange={() => toggleSourceLane(laneId)} />
-                        Archive {laneById.get(laneId)?.name ?? laneId}
+                  <div style={{ padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)" }}>
+                    {selectedWorkflow.integrationLaneId ? (
+                      <label style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary, cursor: "pointer", padding: "4px 0" }}>
+                        <input type="checkbox" checked={archiveIntegrationLane} onChange={(event) => setArchiveIntegrationLane(event.target.checked)} style={{ accentColor: theme.color }} />
+                        Archive <span style={{ fontWeight: 600 }}>{selectedWorkflow.integrationLaneName || selectedWorkflow.integrationLaneId}</span>
                       </label>
-                    ))}
+                    ) : null}
+                    <div style={{ display: "grid", gap: 6, marginTop: selectedWorkflow.integrationLaneId ? 8 : 0 }}>
+                      {selectedWorkflow.sourceLaneIds.map((laneId) => (
+                        <label key={laneId} style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary, cursor: "pointer", padding: "4px 0" }}>
+                          <input type="checkbox" checked={archiveSourceLaneIds.includes(laneId)} onChange={() => toggleSourceLane(laneId)} style={{ accentColor: theme.color }} />
+                          Archive {laneById.get(laneId)?.name ?? laneId}
+                        </label>
+                      ))}
+                    </div>
                   </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button type="button" disabled={actionBusy} onClick={() => void handleCleanup()} style={primaryButton()}>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <button type="button" disabled={actionBusy} onClick={() => void handleCleanup()} style={primaryButton({ background: theme.color, color: "#fff" })}>
                       <Trash size={14} /> {actionBusy ? "Cleaning..." : "Cleanup Selected"}
                     </button>
-                    <button type="button" disabled={actionBusy} onClick={() => void handleDismissCleanup()} style={outlineButton()}>
+                    <button type="button" disabled={actionBusy} onClick={() => void handleDismissCleanup()} style={outlineButton({ borderColor: theme.border, color: COLORS.textSecondary })}>
                       <Clock size={14} /> Not Now
                     </button>
                   </div>
@@ -503,14 +575,15 @@ function IntegrationWorkflowsTab({
                   <span style={inlineBadge(
                     selectedWorkflow.cleanupState === "completed"
                       ? COLORS.success
-                      : COLORS.info
+                      : COLORS.info,
+                    { background: `${selectedWorkflow.cleanupState === "completed" ? COLORS.success : COLORS.info}18`, fontWeight: 600 }
                   )}>
                     {selectedWorkflow.cleanupState}
                   </span>
-                  <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textSecondary }}>
+                  <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
                     {selectedWorkflow.cleanupState === "completed"
-                      ? `Cleanup finished ${formatTimestamp(selectedWorkflow.cleanupCompletedAt ?? null)}.`
-                      : "Cleanup will be offered when the linked GitHub PR is closed or merged."}
+                      ? <>Cleanup finished <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestamp(selectedWorkflow.cleanupCompletedAt ?? null)}</span>.</>
+                      : "Cleanup will be offered when the linked PR is closed or merged."}
                   </div>
                 </div>
               )}
@@ -603,10 +676,13 @@ export function WorkflowsTab({
     rebase: rebaseByView[view].length,
   };
 
+  const activeTheme = CATEGORY_THEMES[activeCategory];
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 16px", borderBottom: `1px solid ${activeTheme.border}` }}>
+        {/* Active / History toggle - pill style */}
+        <div style={{ display: "flex", alignItems: "center", borderRadius: 10, background: "rgba(255,255,255,0.04)", padding: 2, border: "1px solid rgba(255,255,255,0.06)" }}>
           {(["active", "history"] as WorkflowView[]).map((mode) => {
             const selected = view === mode;
             return (
@@ -614,47 +690,103 @@ export function WorkflowsTab({
                 key={mode}
                 type="button"
                 onClick={() => setView(mode)}
-                style={selected ? primaryButton({ height: 28, padding: "0 10px" }) : outlineButton({ height: 28, padding: "0 10px" })}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  height: 28,
+                  padding: "0 14px",
+                  fontSize: 12,
+                  fontWeight: selected ? 600 : 500,
+                  fontFamily: SANS_FONT,
+                  color: selected ? COLORS.textPrimary : COLORS.textMuted,
+                  background: selected ? "rgba(255,255,255,0.10)" : "transparent",
+                  border: "none",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  transition: "all 150ms ease",
+                  textTransform: "capitalize" as const,
+                }}
               >
-                {mode}
+                {mode === "active" ? <><CheckCircle size={13} weight={selected ? "fill" : "regular"} style={{ marginRight: 5 }} />{mode}</> : <><Clock size={13} weight={selected ? "fill" : "regular"} style={{ marginRight: 5 }} />{mode}</>}
               </button>
             );
           })}
         </div>
 
+        {/* Divider */}
+        <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.08)" }} />
+
+        {/* Category buttons with individual color themes */}
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {([
-            { id: "integration", label: "Integration", icon: GitBranch },
-            { id: "queue", label: "Queue", icon: CaretRight },
-            { id: "rebase", label: "Rebase", icon: Sparkle },
-          ] as Array<{ id: WorkflowCategory; label: string; icon: React.ElementType }>).map((category) => {
+            { id: "integration" as WorkflowCategory, label: "Integration", icon: GitBranch },
+            { id: "queue" as WorkflowCategory, label: "Queue", icon: CaretRight },
+            { id: "rebase" as WorkflowCategory, label: "Rebase", icon: Sparkle },
+          ]).map((category) => {
             const selected = activeCategory === category.id;
+            const catTheme = CATEGORY_THEMES[category.id];
             const Icon = category.icon;
+            const count = counts[category.id];
             return (
               <button
                 key={category.id}
                 type="button"
                 onClick={() => onChangeCategory(category.id)}
-                style={selected ? primaryButton({ height: 28, padding: "0 10px" }) : outlineButton({ height: 28, padding: "0 10px" })}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  height: 30,
+                  padding: "0 12px",
+                  fontSize: 12,
+                  fontWeight: selected ? 600 : 500,
+                  fontFamily: SANS_FONT,
+                  color: selected ? catTheme.color : COLORS.textMuted,
+                  background: selected ? catTheme.bg : "transparent",
+                  border: `1px solid ${selected ? catTheme.border : "rgba(255,255,255,0.06)"}`,
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  transition: "all 150ms ease",
+                }}
               >
-                <Icon size={14} /> {category.label} {counts[category.id] > 0 ? `(${counts[category.id]})` : ""}
+                <Icon size={14} weight={selected ? "fill" : "regular"} /> {category.label}
+                {count > 0 ? (
+                  <span style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    minWidth: 18,
+                    height: 18,
+                    padding: "0 5px",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    fontFamily: MONO_FONT,
+                    color: selected ? "#fff" : COLORS.textMuted,
+                    background: selected ? catTheme.color : "rgba(255,255,255,0.08)",
+                    borderRadius: 9,
+                  }}>
+                    {count}
+                  </span>
+                ) : null}
               </button>
             );
           })}
         </div>
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-            {loading ? "Refreshing workflow state..." : "ADE workflow state"}
+          <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: loading ? activeTheme.color : COLORS.textMuted }}>
+            {loading ? "Refreshing..." : "Workflows"}
           </div>
-          <button type="button" onClick={() => void refreshWorkflows()} style={outlineButton({ height: 28, padding: "0 10px" })}>
-            <ArrowsClockwise size={14} /> Refresh Workflows
+          <button type="button" onClick={() => void refreshWorkflows()} style={outlineButton({ height: 28, padding: "0 10px", borderColor: activeTheme.border, color: activeTheme.color })}>
+            <ArrowsClockwise size={14} /> Refresh
           </button>
         </div>
       </div>
 
       {error ? (
-        <div style={{ padding: "10px 16px", borderBottom: "1px solid rgba(239,68,68,0.2)", background: "rgba(239,68,68,0.06)", color: COLORS.danger, fontFamily: MONO_FONT, fontSize: 11 }}>
+        <div style={{ padding: "10px 16px", borderBottom: "1px solid rgba(239,68,68,0.2)", background: "rgba(239,68,68,0.06)", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12 }}>
           {error}
         </div>
       ) : null}

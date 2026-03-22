@@ -202,6 +202,7 @@ describe("knowledgeCaptureService", () => {
           {
             id: "comment-1",
             author: "reviewer",
+            authorAvatarUrl: null,
             body: "Always add coverage when changing validation logic.",
             source: "review",
             url: null,
@@ -214,6 +215,7 @@ describe("knowledgeCaptureService", () => {
         getReviews: async () => [
           {
             reviewer: "lead",
+            reviewerAvatarUrl: null,
             state: "changes_requested",
             body: "This breaks the fallback path unless we preserve the older branch logic.",
             submittedAt: "2026-03-11T13:00:00.000Z",

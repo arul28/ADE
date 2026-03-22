@@ -54,12 +54,14 @@ describe("buildGraphPrOverlay", () => {
         reviews: [
           {
             reviewer: "alex",
+            reviewerAvatarUrl: null,
             state: "approved",
             body: null,
             submittedAt: "2026-03-08T09:00:00Z"
           },
           {
             reviewer: "sam",
+            reviewerAvatarUrl: null,
             state: "changes_requested",
             body: "Needs one more test",
             submittedAt: "2026-03-08T11:45:00Z"
@@ -69,6 +71,7 @@ describe("buildGraphPrOverlay", () => {
           {
             id: "c-1",
             author: "alex",
+            authorAvatarUrl: null,
             body: "Looks good overall",
             source: "issue",
             url: null,

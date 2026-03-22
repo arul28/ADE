@@ -7,6 +7,7 @@ import { CreatePrModal } from "./CreatePrModal";
 import { useAppStore } from "../../state/appStore";
 import { GitHubTab } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
+import { SANS_FONT } from "../lanes/laneDesignTokens";
 
 type SurfaceMode = "github" | "workflows";
 
@@ -104,17 +105,40 @@ function PRsPageInner() {
   if (loading && prs.length === 0) {
     return (
       <div className="flex h-full min-w-0 flex-col" style={{ background: "#0F0D14" }}>
-        <div className="flex flex-1 flex-col items-center justify-center gap-3">
-          <div className="animate-pulse flex flex-col items-center gap-2">
-            <div className="h-4 w-48 rounded-xl bg-white/[0.03]" />
-            <div className="h-3 w-32 rounded-xl bg-white/[0.02]" />
-            <div className="mt-4 grid w-72 gap-2">
-              <div className="h-10 rounded-xl bg-white/[0.03] border border-white/[0.06]" />
-              <div className="h-10 rounded-xl bg-white/[0.03] border border-white/[0.06]" />
-              <div className="h-10 rounded-xl bg-white/[0.03] border border-white/[0.06]" />
-            </div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-4">
+          {/* Shimmer skeleton loader */}
+          <style>{`
+            @keyframes prs-shimmer {
+              0% { background-position: -200% 0; }
+              100% { background-position: 200% 0; }
+            }
+            .prs-shimmer-bar {
+              background: linear-gradient(90deg, rgba(167,139,250,0.04) 25%, rgba(167,139,250,0.10) 50%, rgba(167,139,250,0.04) 75%);
+              background-size: 200% 100%;
+              animation: prs-shimmer 1.8s ease-in-out infinite;
+            }
+          `}</style>
+          <div className="flex flex-col items-center gap-3">
+            <div className="prs-shimmer-bar h-5 w-52 rounded-lg" />
+            <div className="prs-shimmer-bar h-3 w-36 rounded-lg" style={{ opacity: 0.7 }} />
           </div>
-          <div className="text-[10px] font-mono uppercase tracking-[1px] text-[#71717A]">LOADING PRS...</div>
+          <div className="mt-2 grid w-80 gap-2.5">
+            <div className="prs-shimmer-bar h-12 rounded-xl" style={{ border: "1px solid rgba(167,139,250,0.08)" }} />
+            <div className="prs-shimmer-bar h-12 rounded-xl" style={{ border: "1px solid rgba(167,139,250,0.06)", animationDelay: "0.15s" }} />
+            <div className="prs-shimmer-bar h-12 rounded-xl" style={{ border: "1px solid rgba(167,139,250,0.04)", animationDelay: "0.3s" }} />
+          </div>
+          <div
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 12,
+              fontWeight: 500,
+              letterSpacing: "0.3px",
+              color: "#71717A",
+              marginTop: 4,
+            }}
+          >
+            Loading pull requests...
+          </div>
         </div>
       </div>
     );
@@ -122,26 +146,58 @@ function PRsPageInner() {
 
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: "#0F0D14" }}>
-      {/* Header bar */}
-      <div className="flex h-16 shrink-0 items-center gap-6 px-6 border-b border-white/[0.06]">
+      {/* Header bar with subtle gradient */}
+      <div
+        className="flex h-16 shrink-0 items-center gap-6 px-6"
+        style={{
+          background: "linear-gradient(180deg, rgba(167,139,250,0.06) 0%, rgba(167,139,250,0.01) 100%)",
+          borderBottom: "1px solid rgba(167,139,250,0.10)",
+        }}
+      >
         <div className="flex items-center gap-3">
-          <GitPullRequest size={18} weight="bold" className="text-[#A78BFA]" />
-          <span className="text-[16px] font-sans font-bold tracking-[-0.3px] text-[#FAFAFA]">
-            PULL REQUESTS
+          <div
+            className="flex items-center justify-center"
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 8,
+              background: "linear-gradient(135deg, rgba(167,139,250,0.18) 0%, rgba(139,92,246,0.08) 100%)",
+              border: "1px solid rgba(167,139,250,0.15)",
+            }}
+          >
+            <GitPullRequest size={16} weight="bold" className="text-[#A78BFA]" />
+          </div>
+          <span
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 15,
+              fontWeight: 700,
+              letterSpacing: "-0.3px",
+              color: "#FAFAFA",
+            }}
+          >
+            Pull Requests
           </span>
           <span
-            className="rounded-md px-2.5 py-1 text-[9px] font-mono font-bold uppercase tracking-[1px] text-[#A78BFA]"
-            style={{ background: "#A78BFA18", border: "1px solid #A78BFA30" }}
+            className="rounded-full px-2.5 py-0.5"
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 11,
+              fontWeight: 600,
+              color: "#A78BFA",
+              background: "linear-gradient(135deg, rgba(167,139,250,0.14) 0%, rgba(139,92,246,0.08) 100%)",
+              border: "1px solid rgba(167,139,250,0.18)",
+            }}
           >
-            {prs.length} LINKED
+            {prs.length} linked
           </span>
         </div>
 
         <div role="tablist" aria-label="PR surfaces" className="flex items-center gap-1">
           {([
-            { id: "github", num: "01", label: "GITHUB" },
-            { id: "workflows", num: "02", label: "WORKFLOWS" },
-          ] as Array<{ id: SurfaceMode; num: string; label: string }>).map((surface) => {
+            { id: "github", label: "GitHub" },
+            { id: "workflows", label: "Workflows" },
+          ] as Array<{ id: SurfaceMode; label: string }>).map((surface) => {
             const active = activeMode === surface.id;
             return (
               <button
@@ -150,11 +206,26 @@ function PRsPageInner() {
                 role="tab"
                 aria-selected={active}
                 className={cn(
-                  "relative flex items-center gap-2 rounded-md px-4 py-2.5 text-[10px] font-mono font-bold uppercase tracking-[1px] transition-all duration-200",
+                  "relative flex items-center gap-2 rounded-lg px-4 py-2 transition-all duration-200",
                   active
-                    ? "bg-[#A78BFA]/10 text-[#FAFAFA] border border-[#A78BFA]/20"
-                    : "text-[#71717A] border border-transparent hover:bg-white/[0.03] hover:text-[#A1A1AA]"
+                    ? "text-[#FAFAFA]"
+                    : "text-[#71717A] hover:text-[#A1A1AA]"
                 )}
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 13,
+                  fontWeight: active ? 600 : 500,
+                  ...(active
+                    ? {
+                        background: "linear-gradient(135deg, rgba(167,139,250,0.14) 0%, rgba(139,92,246,0.06) 100%)",
+                        border: "1px solid rgba(167,139,250,0.20)",
+                        boxShadow: "0 0 12px rgba(167,139,250,0.08)",
+                      }
+                    : {
+                        border: "1px solid transparent",
+                        background: "transparent",
+                      }),
+                }}
                 onClick={() => {
                   if (surface.id === "github") {
                     setActiveTab("normal");
@@ -163,7 +234,6 @@ function PRsPageInner() {
                   }
                 }}
               >
-                <span className={active ? "text-[#A78BFA]" : "text-[#52525B]"}>{surface.num}</span>
                 <span>{surface.label}</span>
               </button>
             );
@@ -174,10 +244,24 @@ function PRsPageInner() {
           <button
             type="button"
             onClick={() => setCreatePrOpen(true)}
-            className="flex items-center gap-2 h-8 px-5 rounded-md text-[10px] font-mono font-bold uppercase tracking-[1px] text-[#0F0D14] bg-[#A78BFA] transition-all duration-100 hover:brightness-110 active:scale-[0.97]"
+            className="flex items-center gap-2 active:scale-[0.97]"
+            style={{
+              height: 34,
+              padding: "0 16px",
+              borderRadius: 10,
+              fontFamily: SANS_FONT,
+              fontSize: 13,
+              fontWeight: 600,
+              color: "#fff",
+              background: "linear-gradient(135deg, #A78BFA 0%, #8B5CF6 100%)",
+              border: "none",
+              cursor: "pointer",
+              boxShadow: "0 2px 8px rgba(139,92,246,0.30), inset 0 1px 0 rgba(255,255,255,0.10)",
+              transition: "all 150ms ease",
+            }}
           >
             <Plus size={14} weight="bold" />
-            Create
+            Create PR
           </button>
         </div>
       </div>
@@ -190,6 +274,7 @@ function PRsPageInner() {
             selectedPrId={selectedPrId}
             onSelectPr={setSelectedPrId}
             onRefreshAll={handleRefresh}
+            onOpenRebaseTab={() => setActiveTab("rebase")}
           />
         ) : (
           <WorkflowsTab

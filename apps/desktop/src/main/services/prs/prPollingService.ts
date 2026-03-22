@@ -54,7 +54,7 @@ export function createPrPollingService({
     polledAt: string;
   }) => void | Promise<void>;
 }) {
-  const DEFAULT_INTERVAL_MS = 25_000;
+  const DEFAULT_INTERVAL_MS = 60_000;
   const MIN_INTERVAL_MS = 5_000;
   const MAX_INTERVAL_MS = 5 * 60_000;
 
@@ -237,9 +237,10 @@ export function createPrPollingService({
 
       const resetAtMs = (error as any)?.rateLimitResetAtMs;
       if (typeof resetAtMs === "number" && Number.isFinite(resetAtMs)) {
-        // Schedule after reset (+ a small buffer) so we don't keep hammering.
+        // Wait until the rate limit actually resets (+ buffer). Don't clamp to MAX_INTERVAL_MS
+        // because rate limits can take up to 60 minutes to reset.
         const untilReset = Math.max(10_000, resetAtMs - Date.now() + 5_000);
-        nextDelayOverrideMs = clampMs(untilReset, 10_000, MAX_INTERVAL_MS);
+        nextDelayOverrideMs = untilReset;
       }
     } finally {
       running = false;
