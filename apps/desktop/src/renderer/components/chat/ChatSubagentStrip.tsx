@@ -3,7 +3,6 @@ import {
   CheckCircle,
   ClockCounterClockwise,
   Copy,
-  SpinnerGap,
   XCircle,
   TreeStructure,
   ArrowsOutSimple,
@@ -69,8 +68,8 @@ function statusMeta(status: ChatSubagentSnapshot["status"]): {
       return {
         label: "Running",
         chipClassName: "border-violet-400/15 bg-violet-500/[0.06] text-violet-300/90",
-        dotClassName: "bg-violet-400 animate-pulse",
-        icon: <SpinnerGap size={12} weight="bold" className="animate-spin text-violet-400" />,
+        dotClassName: "bg-violet-400",
+        icon: <span className="inline-block h-2.5 w-2.5 rounded-full bg-violet-400" />,
         accentColor: "violet",
       };
   }
@@ -197,19 +196,6 @@ function PreviewCard({
   );
 }
 
-/** Miniature agent dot for compact view */
-function AgentDot({ snapshot }: { snapshot: ChatSubagentSnapshot }) {
-  const meta = statusMeta(snapshot.status);
-  return (
-    <div className="group relative">
-      <div className={cn("h-2 w-2 rounded-full transition-transform group-hover:scale-125", meta.dotClassName)} />
-      <div className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-white/[0.08] bg-[#0c0c0f] px-2 py-1 font-mono text-[9px] text-fg/60 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
-        {snapshot.description}
-      </div>
-    </div>
-  );
-}
-
 export function ChatSubagentStrip({
   snapshots,
   placement = "composer",
@@ -251,119 +237,133 @@ export function ChatSubagentStrip({
     () => snapshots.find((s) => s.taskId === hoveredTaskId) ?? null,
     [hoveredTaskId, snapshots],
   );
+  const summaryText = useMemo(() => {
+    const activeLabel = activeCount === 1 ? "1 active agent" : `${activeCount} active agents`;
+    const backgroundLabel = backgroundRunningCount > 0
+      ? backgroundRunningCount === 1
+        ? "1 background"
+        : `${backgroundRunningCount} background`
+      : null;
+    const completedLabel = completedCount > 0
+      ? completedCount === 1
+        ? "1 done"
+        : `${completedCount} done`
+      : null;
+    const failedLabel = failedCount > 0
+      ? failedCount === 1
+        ? "1 failed"
+        : `${failedCount} failed`
+      : null;
+    return [activeLabel, backgroundLabel, completedLabel, failedLabel].filter((part): part is string => Boolean(part)).join(" · ");
+  }, [activeCount, backgroundRunningCount, completedCount, failedCount]);
 
   if (!snapshots.length) return null;
 
   return (
     <div className={cn("relative", className)}>
-      {/* Header bar */}
-      <div className="flex items-center gap-3 px-3 pb-1.5 pt-2.5">
-        <div className="flex items-center gap-1.5">
-          <TreeStructure size={12} weight="bold" className="text-violet-400/50" />
+      <button
+        type="button"
+        className={cn(
+          "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
+          expanded
+            ? "border-white/[0.12] bg-white/[0.04]"
+            : "border-white/[0.05] bg-white/[0.015] hover:border-white/[0.08] hover:bg-white/[0.03]",
+        )}
+        onClick={() => setExpanded((v) => !v)}
+        title="Show or hide subagent details"
+      >
+        <div className="flex items-center gap-2">
+          <TreeStructure size={12} weight="bold" className="text-violet-400/45" />
           <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-fg/30">
-            Agents
+            Background agents
           </span>
         </div>
-
-        {/* Status capsules */}
-        <div className="flex items-center gap-1.5">
-          {activeCount > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-violet-400/12 bg-violet-500/[0.06] px-2 py-0.5 font-mono text-[9px] text-violet-300/70">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
-              {activeCount}
-            </span>
-          ) : null}
-          {completedCount > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/10 bg-emerald-500/[0.04] px-2 py-0.5 font-mono text-[9px] text-emerald-300/60">
-              {completedCount}
-            </span>
-          ) : null}
-          {failedCount > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-red-400/10 bg-red-500/[0.04] px-2 py-0.5 font-mono text-[9px] text-red-300/60">
-              {failedCount}
-            </span>
-          ) : null}
-          {backgroundRunningCount > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-sky-400/10 bg-sky-500/[0.04] px-2 py-0.5 font-mono text-[9px] text-sky-300/55">
-              {backgroundRunningCount} bg
-            </span>
-          ) : null}
+        <div className="min-w-0 flex-1 truncate text-[11px] text-fg/58">
+          {summaryText}
         </div>
-
-        {/* Overflow dots for hidden agents */}
-        {!expanded && snapshots.length > 6 ? (
-          <div className="flex items-center gap-1">
-            {snapshots.slice(6).map((s) => (
-              <AgentDot key={s.taskId} snapshot={s} />
-            ))}
-          </div>
+        {backgroundRunningCount > 0 ? (
+          <span className="rounded-full border border-sky-400/10 bg-sky-500/[0.04] px-2 py-0.5 font-mono text-[9px] text-sky-300/65">
+            {backgroundRunningCount} bg
+          </span>
         ) : null}
-
         {snapshots.length > 6 ? (
-          <button
-            type="button"
-            className="ml-auto inline-flex items-center gap-1 font-mono text-[9px] text-fg/25 transition-colors hover:text-fg/50"
-            onClick={() => setExpanded((v) => !v)}
-          >
-            <ArrowsOutSimple size={10} />
-            {expanded ? "Collapse" : `+${snapshots.length - 6} more`}
-          </button>
+          <span className="font-mono text-[9px] text-fg/25">
+            +{snapshots.length - 6} more
+          </span>
         ) : null}
-      </div>
+        <ArrowsOutSimple size={10} className={cn("text-fg/30 transition-transform", expanded ? "rotate-45" : "")} />
+      </button>
 
-      {/* Agent cards */}
-      <div className="relative px-3 pb-2">
-        {hovered && !pinned ? (
-          <div className={cn(
-            "absolute left-3 z-30",
-            placement === "composer" ? "bottom-full mb-2" : "top-full mt-2",
-          )}>
-            <PreviewCard snapshot={hovered} onInterruptTurn={onInterruptTurn} />
-          </div>
-        ) : null}
+      {expanded ? (
+        <div className="relative px-1.5 pt-2">
+          {hovered && !pinned ? (
+            <div className={cn(
+              "absolute left-3 z-30",
+              placement === "composer" ? "bottom-full mb-2" : "top-full mt-2",
+            )}>
+              <PreviewCard snapshot={hovered} onInterruptTurn={onInterruptTurn} />
+            </div>
+          ) : null}
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          {visibleSnapshots.map((snapshot) => {
-            const meta = statusMeta(snapshot.status);
-            const runtimeSummary = summarizeRuntime(snapshot);
-            const active = pinnedTaskId === snapshot.taskId;
+          <div className="space-y-1.5">
+            {visibleSnapshots.map((snapshot) => {
+              const meta = statusMeta(snapshot.status);
+              const runtimeSummary = summarizeRuntime(snapshot);
+              const active = pinnedTaskId === snapshot.taskId;
 
-            return (
-              <button
-                key={snapshot.taskId}
-                type="button"
-                className={cn(
-                  "group inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-all",
-                  active
-                    ? "border-white/[0.12] bg-white/[0.06] shadow-[0_0_12px_-4px_rgba(255,255,255,0.06)]"
-                    : "border-white/[0.05] bg-white/[0.015] hover:border-white/[0.1] hover:bg-white/[0.035]",
-                )}
-                onMouseEnter={() => setHoveredTaskId(snapshot.taskId)}
-                onMouseLeave={() => setHoveredTaskId((cur) => (cur === snapshot.taskId ? null : cur))}
-                onClick={() => setPinnedTaskId((cur) => (cur === snapshot.taskId ? null : snapshot.taskId))}
-                title={snapshot.description}
-              >
-                {meta.icon}
-                {snapshot.background ? (
-                  <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1 py-px font-mono text-[7px] font-bold uppercase tracking-widest text-sky-300/50">bg</span>
-                ) : null}
-                <span className="max-w-[14rem] truncate text-[11px] text-fg/70 group-hover:text-fg/85">
-                  {snapshot.description}
-                </span>
-                {runtimeSummary ? (
-                  <span className="font-mono text-[9px] text-fg/25 group-hover:text-fg/35">
-                    {runtimeSummary}
+              return (
+                <button
+                  key={snapshot.taskId}
+                  type="button"
+                  className={cn(
+                    "group flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors",
+                    active
+                      ? "border-white/[0.12] bg-white/[0.06]"
+                      : "border-white/[0.05] bg-white/[0.015] hover:border-white/[0.1] hover:bg-white/[0.03]",
+                  )}
+                  onMouseEnter={() => setHoveredTaskId(snapshot.taskId)}
+                  onMouseLeave={() => setHoveredTaskId((cur) => (cur === snapshot.taskId ? null : cur))}
+                  onClick={() => setPinnedTaskId((cur) => (cur === snapshot.taskId ? null : snapshot.taskId))}
+                  title={snapshot.description}
+                >
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-white/[0.05] bg-white/[0.02]">
+                    {meta.icon}
                   </span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-fg/72 group-hover:text-fg/88">
+                    {snapshot.description}
+                  </span>
+                  {snapshot.background ? (
+                    <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1 py-px font-mono text-[7px] font-bold uppercase tracking-widest text-sky-300/55">
+                      bg
+                    </span>
+                  ) : null}
+                  {runtimeSummary ? (
+                    <span className="font-mono text-[9px] text-fg/25 group-hover:text-fg/35">
+                      {runtimeSummary}
+                    </span>
+                  ) : null}
+                  <span className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-widest", meta.chipClassName)}>
+                    {meta.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
 
-      {/* Pinned preview */}
-      {pinned ? (
-        <div className="px-3 pb-2">
+          {pinned ? (
+            <div className="pt-2">
+              <PreviewCard
+                snapshot={pinned}
+                onDismiss={() => setPinnedTaskId(null)}
+                onInterruptTurn={onInterruptTurn}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!expanded && pinned ? (
+        <div className="px-1.5 pt-2">
           <PreviewCard
             snapshot={pinned}
             onDismiss={() => setPinnedTaskId(null)}

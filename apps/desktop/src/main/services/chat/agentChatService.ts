@@ -23,6 +23,12 @@ type ClaudeV2Session = {
   readonly sessionId: string;
 };
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
+import {
+  appendBufferedAssistantText,
+  canAppendBufferedAssistantText,
+  shouldFlushBufferedAssistantTextForEvent,
+  type BufferedAssistantText,
+} from "./chatTextBatching";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
@@ -262,6 +268,7 @@ type ManagedChatSession = {
     turnId?: string;
     itemId?: string;
   } | null;
+  bufferedText: (BufferedAssistantText & { timer: NodeJS.Timeout | null }) | null;
   recentConversationEntries: Array<{
     role: "user" | "assistant";
     text: string;
@@ -336,6 +343,7 @@ const DEFAULT_UNIFIED_MODEL_ID = DEFAULT_UNIFIED_DESCRIPTOR?.id ?? "anthropic/cl
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5-api";
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+const BUFFERED_TEXT_FLUSH_MS = 100;
 const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
 const DEFAULT_TRANSCRIPT_READ_LIMIT = 20;
 const MAX_TRANSCRIPT_READ_LIMIT = 100;
@@ -1917,6 +1925,54 @@ export function createAgentChatService(args: {
     });
   };
 
+  const flushBufferedText = (managed: ManagedChatSession): void => {
+    const buffered = managed.bufferedText;
+    if (!buffered) return;
+    if (buffered.timer) {
+      clearTimeout(buffered.timer);
+    }
+    managed.bufferedText = null;
+    if (!buffered.text.length) return;
+    commitChatEvent(managed, {
+      type: "text",
+      text: buffered.text,
+      ...(buffered.turnId ? { turnId: buffered.turnId } : {}),
+      ...(buffered.itemId ? { itemId: buffered.itemId } : {}),
+    });
+  };
+
+  const scheduleBufferedTextFlush = (managed: ManagedChatSession): void => {
+    const buffered = managed.bufferedText;
+    if (!buffered || buffered.timer) return;
+    buffered.timer = setTimeout(() => {
+      if (managed.bufferedText) {
+        managed.bufferedText.timer = null;
+      }
+      flushBufferedText(managed);
+    }, BUFFERED_TEXT_FLUSH_MS);
+  };
+
+  const queueBufferedTextEvent = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "text" }>,
+  ): void => {
+    if (canAppendBufferedAssistantText(managed.bufferedText, event)) {
+      managed.bufferedText = {
+        ...appendBufferedAssistantText(managed.bufferedText, event),
+        timer: managed.bufferedText?.timer ?? null,
+      };
+      scheduleBufferedTextFlush(managed);
+      return;
+    }
+
+    flushBufferedText(managed);
+    managed.bufferedText = {
+      ...appendBufferedAssistantText(null, event),
+      timer: null,
+    };
+    scheduleBufferedTextFlush(managed);
+  };
+
   const flushBufferedReasoning = (managed: ManagedChatSession): void => {
     const buffered = managed.bufferedReasoning;
     if (!buffered) return;
@@ -1941,6 +1997,11 @@ export function createAgentChatService(args: {
   };
 
   const emitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    if (event.type === "text") {
+      queueBufferedTextEvent(managed, event);
+      return;
+    }
+
     if (event.type === "reasoning") {
       queueReasoningEvent(managed, event);
       return;
@@ -1952,12 +2013,18 @@ export function createAgentChatService(args: {
         return;
       }
       flushBufferedReasoning(managed);
+      if (shouldFlushBufferedAssistantTextForEvent(event)) {
+        flushBufferedText(managed);
+      }
       managed.lastActivitySignature = signature;
       commitChatEvent(managed, event);
       return;
     }
 
     flushBufferedReasoning(managed);
+    if (shouldFlushBufferedAssistantTextForEvent(event)) {
+      flushBufferedText(managed);
+    }
 
     if (
       event.type === "user_message"
@@ -1975,6 +2042,7 @@ export function createAgentChatService(args: {
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
   const teardownRuntime = (managed: ManagedChatSession): void => {
     flushBufferedReasoning(managed);
+    flushBufferedText(managed);
     if (managed.runtime?.kind === "codex") {
       managed.runtime.suppressExitError = true;
       try { managed.runtime.reader.close(); } catch { /* ignore */ }
@@ -2087,6 +2155,8 @@ export function createAgentChatService(args: {
     if (managed.endedNotified) return;
     managed.endedNotified = true;
     clearSubagentSnapshots(managed.session.id);
+    flushBufferedText(managed);
+    flushBufferedReasoning(managed);
 
     if (options?.summary !== undefined) {
       sessionService.setSummary(managed.session.id, options.summary);
@@ -2239,6 +2309,7 @@ export function createAgentChatService(args: {
       lastActivitySignature: null,
       bufferedReasoning: null,
       previewTextBuffer: null,
+      bufferedText: null,
       recentConversationEntries: [],
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
@@ -4800,6 +4871,7 @@ export function createAgentChatService(args: {
       autoTitleStage: "none",
       autoTitleInFlight: false,
       previewTextBuffer: null,
+      bufferedText: null,
       recentConversationEntries: [],
     };
 
@@ -5050,6 +5122,7 @@ export function createAgentChatService(args: {
       lastActivitySignature: null,
       bufferedReasoning: null,
       previewTextBuffer: null,
+      bufferedText: null,
       recentConversationEntries: [],
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
