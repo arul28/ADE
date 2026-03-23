@@ -295,8 +295,19 @@ export function createRebaseSuggestionService(args: {
     if (!parentId || !parentHeadSha) return;
 
     // Lightweight: only consider direct children; rebase runs can recurse.
+    // Skip lanes that have a queue override — their base is the queue target,
+    // not the direct parent, so writing direct-parent ids here would cause
+    // listSuggestions() to see a base identity change and reset dismissals.
     const lanes = await laneService.list({ includeArchived: false });
-    const children = lanes.filter((lane) => lane.parentLaneId === parentId && lane.status.behind > 0);
+    const directChildren = lanes.filter((lane) => lane.parentLaneId === parentId && lane.status.behind > 0);
+
+    if (directChildren.length === 0) return;
+
+    const children: LaneSummary[] = [];
+    for (const child of directChildren) {
+      const queueOverride = await resolveQueueRebaseOverride({ db, projectId, projectRoot, laneId: child.id });
+      if (!queueOverride) children.push(child);
+    }
 
     if (children.length === 0) return;
 

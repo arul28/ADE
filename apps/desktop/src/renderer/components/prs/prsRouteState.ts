@@ -32,6 +32,12 @@ function parseHashParams(hash: string): URLSearchParams {
   return parseSearch(hash.slice(queryIndex + 1));
 }
 
+function parseOptionalId(value: string | null): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export function parsePrsRouteState(args: { search?: string | null; hash?: string | null }): ParsedPrsRouteState {
   const searchParams = parseSearch(args.search ?? "");
   const hashParams = parseHashParams(args.hash ?? "");
@@ -39,9 +45,9 @@ export function parsePrsRouteState(args: { search?: string | null; hash?: string
   return {
     tab: parseTab(searchParams.get("tab") ?? hashParams.get("tab")),
     workflowTab: parseWorkflowTab(searchParams.get("workflow") ?? hashParams.get("workflow")),
-    laneId: searchParams.get("laneId") ?? hashParams.get("laneId"),
-    prId: searchParams.get("prId") ?? hashParams.get("prId"),
-    queueGroupId: searchParams.get("queueGroupId") ?? hashParams.get("queueGroupId"),
+    laneId: parseOptionalId(searchParams.get("laneId")) ?? parseOptionalId(hashParams.get("laneId")),
+    prId: parseOptionalId(searchParams.get("prId")) ?? parseOptionalId(hashParams.get("prId")),
+    queueGroupId: parseOptionalId(searchParams.get("queueGroupId")) ?? parseOptionalId(hashParams.get("queueGroupId")),
   };
 }
 
