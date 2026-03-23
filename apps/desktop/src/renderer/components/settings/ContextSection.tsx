@@ -46,6 +46,25 @@ const EVENT_TOGGLES: EventToggle[] = [
 
 const DEFAULT_EVENTS: ContextRefreshEvents = { onPrCreate: true, onMissionStart: true };
 
+function isContextGenerationActive(status: ContextStatus["generation"] | null | undefined): boolean {
+  return status?.state === "pending" || status?.state === "running";
+}
+
+function describeGenerationSource(status: ContextStatus["generation"] | null | undefined): string | null {
+  if (!status || !isContextGenerationActive(status)) return null;
+  if (status.source !== "auto") return null;
+  switch (status.event) {
+    case "pr_create": return "Auto-refresh triggered by PR create.";
+    case "pr_land": return "Auto-refresh triggered by PR land.";
+    case "commit": return "Auto-refresh triggered by commit.";
+    case "mission_start": return "Auto-refresh triggered by mission start.";
+    case "mission_end": return "Auto-refresh triggered by mission end.";
+    case "session_end": return "Auto-refresh triggered by session end.";
+    case "lane_create": return "Auto-refresh triggered by lane create.";
+    default: return "Auto-refresh triggered in the background.";
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Context Section
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -145,7 +164,7 @@ export function ContextSection() {
       try {
         const status = await window.ade.context.getStatus();
         setDocsStatus(status);
-        if (status.generation.state !== "running") {
+        if (!isContextGenerationActive(status.generation)) {
           if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
           setGenerating(false);
         }
@@ -160,7 +179,7 @@ export function ContextSection() {
   // When docsStatus updates, detect if generation is running (e.g. kicked off from setup page)
   const genState = docsStatus?.generation.state;
   React.useEffect(() => {
-    if (genState === "running") {
+    if (genState === "pending" || genState === "running") {
       setGenerating(true);
       if (!pollRef.current) startStatusPoll();
     } else if (generating && !pollRef.current) {
@@ -217,9 +236,10 @@ export function ContextSection() {
             Canonical docs remain the stable source for bootstrap and memory ingestion.
           </div>
 
-          {docsStatus?.generation.state === "running" ? (
+          {isContextGenerationActive(docsStatus?.generation) ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.info, padding: "8px 12px", borderRadius: 8, background: `${COLORS.info}08`, border: `1px solid ${COLORS.info}18` }}>
               Context docs are being generated. This may take a minute depending on your model and project size.
+              {describeGenerationSource(docsStatus?.generation) ? ` ${describeGenerationSource(docsStatus?.generation)}` : ""}
             </div>
           ) : null}
 
@@ -233,7 +253,7 @@ export function ContextSection() {
             <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>Loading docs status...</div>
           ) : docsStatus?.docs?.length ? (
             docsStatus.docs.map((doc) => {
-              const isGenerating = docsStatus.generation.state === "running";
+              const isGenerating = isContextGenerationActive(docsStatus.generation);
               const MIN_DOC_SIZE = 200;
               const hasContent = doc.exists && doc.sizeBytes >= MIN_DOC_SIZE;
               const statusColor = isGenerating ? COLORS.info : hasContent ? COLORS.success : COLORS.warning;
