@@ -130,7 +130,7 @@ export function getPermissionOptions(opts: {
     return [
       {
         value: "plan",
-        label: "Default",
+        label: "Plan",
         shortDesc: "Propose-only \u2014 approval required for everything",
         detail: "Read-only sandbox with untrusted approval policy. Codex explores and proposes; every shell command and file patch requires your go-ahead before it runs.",
         allows: ["File exploration", "Code search", "Plan generation"],

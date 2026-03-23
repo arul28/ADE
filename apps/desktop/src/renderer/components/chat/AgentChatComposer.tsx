@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { At, Image, Paperclip, Square, X, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
+import { At, CaretDown, Image, Paperclip, Square, X, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -117,7 +117,8 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
         <span className={cn("ml-auto font-sans text-[9px] font-bold uppercase tracking-widest", colors.badge)}>{badgeLabel}</span>
       </div>
       <div className="space-y-2.5 px-3 py-2.5">
-        <p className="font-sans text-[11px] leading-[1.5] text-fg/65">{opt.detail}</p>
+        <p className="font-sans text-[11px] leading-[1.5] text-fg/75">{opt.shortDesc}</p>
+        <p className="font-sans text-[11px] leading-[1.5] text-fg/60">{opt.detail}</p>
         {opt.allows.length > 0 && (
           <div className="space-y-1">
             {opt.allows.map((item) => (
@@ -153,6 +154,216 @@ function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
             <span className="font-sans text-[10px] leading-[1.4] text-red-400/80">{opt.warning}</span>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+type AdvancedSettingsPopoverProps = {
+  executionModeOptions: ExecutionModeOption[];
+  executionMode: AgentChatExecutionMode | null;
+  onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
+  computerUsePolicy: ComputerUsePolicy;
+  computerUseSnapshot: ComputerUseOwnerSnapshot | null;
+  onToggleComputerUse: () => void;
+  onOpenComputerUseDetails: () => void;
+  proofOpen: boolean;
+  proofArtifactCount: number;
+  onToggleProof?: () => void;
+  includeProjectDocs?: boolean;
+  onIncludeProjectDocsChange?: (checked: boolean) => void;
+};
+
+function AdvancedSettingsPopover({
+  executionModeOptions,
+  executionMode,
+  onExecutionModeChange,
+  computerUsePolicy,
+  computerUseSnapshot,
+  onToggleComputerUse,
+  onOpenComputerUseDetails,
+  proofOpen,
+  proofArtifactCount,
+  onToggleProof,
+  includeProjectDocs,
+  onIncludeProjectDocsChange,
+}: AdvancedSettingsPopoverProps) {
+  const [hoveredExecutionMode, setHoveredExecutionMode] = useState<AgentChatExecutionMode | null>(null);
+  const computerUseAllowed = computerUsePolicy.mode !== "off";
+  const activeBackend = computerUseSnapshot?.activeBackend?.name ?? (computerUsePolicy.allowLocalFallback ? "Fallback allowed" : "No fallback");
+  const activeExecutionMode = executionModeOptions.find((option) => option.value === executionMode) ?? executionModeOptions[0] ?? null;
+  const helpMode = hoveredExecutionMode
+    ? executionModeOptions.find((option) => option.value === hoveredExecutionMode) ?? activeExecutionMode
+    : activeExecutionMode;
+
+  return (
+    <div className="absolute bottom-full right-0 z-30 mb-3 w-[min(44rem,calc(100vw-2rem))] overflow-hidden rounded-[22px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(18,20,28,0.98),rgba(10,12,18,0.98))] shadow-[0_24px_90px_-40px_rgba(0,0,0,0.88)] backdrop-blur-xl">
+      <div className="border-b border-white/[0.05] px-4 py-3">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <div className="font-sans text-[12px] font-semibold tracking-tight text-fg/86">Advanced settings</div>
+            <div className="max-w-[34rem] text-[11px] leading-5 text-fg/54">
+              Tune execution behavior, computer use, proof retention, and project context without widening the main composer.
+            </div>
+          </div>
+          <button
+            type="button"
+            className="rounded-[var(--chat-radius-pill)] border border-white/[0.08] bg-white/[0.03] px-3 py-1 font-sans text-[11px] font-medium text-fg/58 transition-colors hover:text-fg/82"
+            onClick={onOpenComputerUseDetails}
+            title="Open the detailed computer-use settings"
+          >
+            Computer use details
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-4 px-4 py-4">
+        {executionModeOptions.length > 0 && onExecutionModeChange ? (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-sans text-[11px] font-semibold uppercase tracking-[0.16em] text-fg/64">Execution mode</div>
+                <div className="mt-1 text-[11px] leading-5 text-fg/48">Choose whether the model stays in one thread or spreads work across delegates.</div>
+              </div>
+              {helpMode ? (
+                <div className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-1 font-sans text-[10px] font-medium text-fg/72">
+                  {helpMode.summary}
+                </div>
+              ) : null}
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {executionModeOptions.map((option) => {
+                const isActive = executionMode === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={cn(
+                      "rounded-[18px] border px-3 py-2 text-left transition-colors",
+                      isActive
+                        ? "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-fg/84"
+                        : "border-white/[0.06] bg-white/[0.03] text-fg/62 hover:border-white/[0.12] hover:bg-white/[0.05]",
+                    )}
+                    style={isActive ? {
+                      borderColor: `${option.accent}44`,
+                      background: `${option.accent}16`,
+                    } : undefined}
+                    onClick={() => onExecutionModeChange(option.value)}
+                    onMouseEnter={() => setHoveredExecutionMode(option.value)}
+                    onMouseLeave={() => setHoveredExecutionMode(null)}
+                    title={option.helper}
+                    aria-pressed={isActive}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-sans text-[12px] font-medium text-fg/82">{option.label}</span>
+                      <span className="font-sans text-[10px] uppercase tracking-[0.16em] text-fg/34">{option.summary}</span>
+                    </div>
+                    <div className="mt-1 text-[11px] leading-5 text-fg/54">{option.helper}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <button
+            type="button"
+            className={cn(
+              "rounded-[18px] border px-3 py-3 text-left transition-colors",
+              computerUseAllowed
+                ? "border-sky-400/22 bg-sky-500/10"
+                : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
+            )}
+            onClick={onToggleComputerUse}
+            title="Allow the agent to use connected browser or desktop tools for this chat"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-sans text-[12px] font-medium text-fg/84">Computer use</span>
+              <span className={cn(
+                "rounded-md border px-2 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.14em]",
+                computerUseAllowed
+                  ? "border-sky-400/25 bg-sky-500/10 text-sky-200"
+                  : "border-white/[0.08] bg-white/[0.03] text-fg/45",
+              )}>
+                {computerUseAllowed ? "On" : "Off"}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] leading-5 text-fg/58">
+              Let the agent inspect or control a connected browser or desktop runtime for this chat.
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-fg/42">
+              <span>Backend: {activeBackend}</span>
+              <span>Proof: {computerUsePolicy.retainArtifacts ? "retained" : "not retained"}</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className={cn(
+              "rounded-[18px] border px-3 py-3 text-left transition-colors",
+              proofOpen || proofArtifactCount > 0
+                ? "border-emerald-400/22 bg-emerald-500/10"
+                : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
+            )}
+            onClick={onToggleProof}
+            disabled={!onToggleProof}
+            title="Open or hide the proof drawer for retained screenshots, traces, logs, and verification output"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-sans text-[12px] font-medium text-fg/84">Proof</span>
+              <span className={cn(
+                "rounded-md border px-2 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.14em]",
+                proofOpen
+                  ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
+                  : "border-white/[0.08] bg-white/[0.03] text-fg/45",
+              )}>
+                {proofArtifactCount > 0 ? `${proofArtifactCount} artifacts` : proofOpen ? "Open" : "Closed"}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] leading-5 text-fg/58">
+              Inspect retained screenshots, traces, logs, and validation output from this chat.
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className={cn(
+              "rounded-[18px] border px-3 py-3 text-left transition-colors md:col-span-2",
+              includeProjectDocs
+                ? "border-accent/22 bg-accent/10"
+                : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
+            )}
+            onClick={() => onIncludeProjectDocsChange?.(!includeProjectDocs)}
+            disabled={!onIncludeProjectDocsChange}
+            title="Include project-level context docs (PRD and architecture) with the first message"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-sans text-[12px] font-medium text-fg/84">Project Context</span>
+              <span className={cn(
+                "rounded-md border px-2 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.14em]",
+                includeProjectDocs
+                  ? "border-accent/25 bg-accent/10 text-accent"
+                  : "border-white/[0.08] bg-white/[0.03] text-fg/45",
+              )}>
+                {includeProjectDocs ? "Included" : "Off"}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] leading-5 text-fg/58">
+              Attach the project-level PRD and architecture context to the next turn so the agent starts with more background.
+            </div>
+          </button>
+        </div>
+
+        {helpMode ? (
+          <div className="rounded-[18px] border border-white/[0.06] bg-black/20 px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-sans text-[10px] font-semibold uppercase tracking-[0.16em] text-fg/48">Mode help</span>
+              <span className="font-sans text-[10px] text-fg/38">{helpMode.label}</span>
+            </div>
+            <div className="mt-1 text-[11px] leading-5 text-fg/58">{hoveredExecutionMode ? helpMode.helper : helpMode.summary}</div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -426,17 +637,19 @@ export function AgentChatComposer({
 
   const [hoveredMode, setHoveredMode] = useState<AgentChatPermissionMode | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [advancedMenuOpen, setAdvancedMenuOpen] = useState(false);
   const [computerUseModalOpen, setComputerUseModalOpen] = useState(false);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const advancedMenuRef = useRef<HTMLDivElement | null>(null);
+  const advancedButtonRef = useRef<HTMLButtonElement | null>(null);
   const canAttach = !turnActive;
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
   const computerUseAllowed = computerUsePolicy.mode !== "off";
-  const proofButtonLabel = proofArtifactCount > 0 ? `Proof ${proofArtifactCount}` : "Proof";
 
   const effectiveSlashCommands = useMemo(
     () => buildSlashCommands(sdkSlashCommands, selectedModel?.family),
@@ -478,6 +691,28 @@ export function AgentChatComposer({
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [computerUseModalOpen]);
+
+  useEffect(() => {
+    if (!advancedMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (advancedMenuRef.current?.contains(target)) return;
+      if (advancedButtonRef.current?.contains(target)) return;
+      setAdvancedMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setAdvancedMenuOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [advancedMenuOpen]);
 
   useEffect(() => {
     if (!attachmentPickerOpen) return;
@@ -767,131 +1002,44 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="space-y-1.5 px-3 py-2">
-          {/* Row 1: Control groups — permissions, CU, execution mode */}
-          <div className="flex flex-wrap items-center gap-1.5 overflow-x-auto scrollbar-none">
-            {!isPersistentIdentitySurface && executionModeOptions.length > 0 && onExecutionModeChange ? (
-              <div className="flex shrink-0 items-center gap-px rounded-md border border-white/[0.06] bg-white/[0.02]">
-                {executionModeOptions.map((option) => {
-                  const isActive = executionMode === option.value;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={cn(
-                        "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
-                        isActive
-                          ? "text-fg/80"
-                          : "text-muted-fg/28 hover:text-fg/55",
-                      )}
-                      style={isActive ? {
-                        borderColor: `${option.accent}44`,
-                        background: `${option.accent}18`,
-                      } : undefined}
-                      onClick={() => onExecutionModeChange(option.value)}
-                      title={option.helper}
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-
-            {permissionMode && onPermissionModeChange && permissionOptions.length > 0 && !permissionModeLocked ? (
-              <div className="relative flex shrink-0 items-center gap-px rounded-md border border-white/[0.06] bg-white/[0.02]">
-                {permissionOptions.map((opt) => {
-                  const isActive = permissionMode === opt.value;
-                  const isHovered = hoveredMode === opt.value;
-                  const colors = safetyColors(opt.safety);
-                  return (
-                    <div key={opt.value} className="relative">
-                      <button
-                        type="button"
-                        className={cn(
-                          "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
-                          isActive ? `${colors.activeBg} text-fg/80` : "text-muted-fg/25 hover:text-muted-fg/50",
-                        )}
-                        onClick={() => onPermissionModeChange(opt.value)}
-                        onMouseEnter={() => {
-                          if (!isPersistentIdentitySurface) setHoveredMode(opt.value);
-                        }}
-                        onMouseLeave={() => setHoveredMode(null)}
-                        title={opt.shortDesc}
-                      >
-                        {opt.label}
-                      </button>
-                      {isHovered && !isPersistentIdentitySurface ? <PermissionHoverPane opt={opt} /> : null}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
-
-            <div className="flex shrink-0 items-center gap-1.5">
-              <div className="flex items-center rounded-md border border-white/[0.06] bg-white/[0.02]">
-                <button
-                  type="button"
-                  className={cn(
-                    "rounded-l-md px-2.5 py-1 font-sans text-[10px] font-medium transition-colors",
-                    computerUseAllowed
-                      ? "bg-sky-500/12 text-sky-200"
-                      : "text-muted-fg/32 hover:text-fg/62",
-                  )}
-                  onClick={() => onComputerUsePolicyChange({
-                    ...computerUsePolicy,
-                    mode: computerUseAllowed ? "off" : "enabled",
+        <div className="space-y-2 px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+              {permissionMode && permissionOptions.length > 0 ? (
+                <div className="relative flex shrink-0 flex-wrap items-center gap-px rounded-md border border-white/[0.06] bg-white/[0.02]">
+                  {permissionOptions.map((opt) => {
+                    const isActive = permissionMode === opt.value;
+                    const isLocked = permissionModeLocked || !onPermissionModeChange;
+                    const colors = safetyColors(opt.safety);
+                    const isHovered = hoveredMode === opt.value;
+                    return (
+                      <div key={opt.value} className="relative">
+                        <button
+                          type="button"
+                          className={cn(
+                            "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
+                            isActive ? `${colors.activeBg} text-fg/80` : "text-muted-fg/25 hover:text-muted-fg/50",
+                            isLocked ? "cursor-not-allowed opacity-70" : "",
+                          )}
+                          disabled={isLocked}
+                          onClick={() => onPermissionModeChange?.(opt.value)}
+                          onMouseEnter={() => {
+                            if (!isLocked && !isPersistentIdentitySurface) setHoveredMode(opt.value);
+                          }}
+                          onMouseLeave={() => setHoveredMode(null)}
+                          title={isLocked ? `${opt.label} is locked for this surface` : `${opt.shortDesc} — ${opt.detail}`}
+                          aria-pressed={isActive}
+                        >
+                          {opt.label}
+                        </button>
+                        {isHovered && !isPersistentIdentitySurface ? <PermissionHoverPane opt={opt} /> : null}
+                      </div>
+                    );
                   })}
-                  title="Allow the agent to use connected browser or desktop tools in this chat"
-                >
-                  {computerUseAllowed ? "Computer use on" : "Computer use off"}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-r-md border-l border-white/[0.06] px-2 py-1 font-sans text-[10px] font-medium text-muted-fg/38 transition-colors hover:text-fg/70"
-                  onClick={() => setComputerUseModalOpen(true)}
-                  title="Open computer-use settings for this chat"
-                >
-                  Details
-                </button>
-              </div>
-
-              <button
-                type="button"
-                className={cn(
-                  "rounded-md border px-2.5 py-1 font-sans text-[10px] font-medium transition-colors",
-                  proofOpen
-                    ? "border-emerald-400/22 bg-emerald-500/12 text-emerald-200"
-                    : computerUsePolicy.retainArtifacts
-                      ? "border-white/[0.06] bg-white/[0.02] text-fg/64 hover:text-fg/82"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/32 hover:text-fg/62",
-                )}
-                onClick={() => onToggleProof?.()}
-                title="Open the proof drawer to inspect retained screenshots, traces, logs, and other computer-use artifacts"
-              >
-                {proofButtonLabel}
-              </button>
+                </div>
+              ) : null}
             </div>
 
-            {!isPersistentIdentitySurface && onIncludeProjectDocsChange && !turnActive ? (
-              <button
-                type="button"
-                className={cn(
-                  "flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 font-sans text-[10px] font-medium transition-colors",
-                  includeProjectDocs
-                    ? "border-accent/25 bg-accent/10 text-accent"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/28 hover:text-muted-fg/50",
-                )}
-                onClick={() => onIncludeProjectDocsChange(!includeProjectDocs)}
-                title="Include project-level context docs (PRD + Architecture) with first message"
-              >
-                Project Context
-              </button>
-            ) : null}
-          </div>
-
-          {/* Row 2: Model selector + actions */}
-          <div className="flex items-center gap-2">
             <div className="min-w-0 shrink">
               <UnifiedModelSelector
                 value={modelId}
@@ -903,53 +1051,106 @@ export function AgentChatComposer({
                 onReasoningEffortChange={onReasoningEffortChange}
               />
             </div>
+          </div>
 
-            <div className="ml-auto flex shrink-0 items-center gap-1">
+          <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
                 disabled={!canAttach}
                 onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
                 title="Attach files or images (@)"
-              >@</button>
+              >
+                @
+              </button>
               <button
                 type="button"
                 className="rounded-md px-1.5 py-1 text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
                 disabled={!canAttach}
                 onClick={openUploadPicker}
                 title="Upload file from disk"
-              ><Paperclip size={12} /></button>
+              >
+                <Paperclip size={12} />
+              </button>
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
                 onClick={() => { onDraftChange("/"); setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); textareaRef.current?.focus(); }}
                 title="Commands (/)"
-              >/</button>
+              >
+                /
+              </button>
+            </div>
+
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              <div className="relative">
+                <button
+                  ref={advancedButtonRef}
+                  type="button"
+                  className={cn(
+                    "inline-flex h-7 items-center gap-1 rounded-md border px-2.5 font-sans text-[10px] font-medium transition-colors",
+                    advancedMenuOpen
+                      ? "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)]"
+                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.12] hover:text-fg/68",
+                  )}
+                  onClick={() => setAdvancedMenuOpen((open) => !open)}
+                  title="Open advanced composer settings"
+                  aria-expanded={advancedMenuOpen}
+                >
+                  <span>Advanced</span>
+                  <CaretDown size={10} weight="bold" />
+                </button>
+                {advancedMenuOpen ? (
+                  <div ref={advancedMenuRef}>
+                    <AdvancedSettingsPopover
+                      executionModeOptions={executionModeOptions}
+                      executionMode={executionMode}
+                      onExecutionModeChange={onExecutionModeChange}
+                      computerUsePolicy={computerUsePolicy}
+                      computerUseSnapshot={computerUseSnapshot ?? null}
+                      onToggleComputerUse={() => {
+                        onComputerUsePolicyChange({
+                          ...computerUsePolicy,
+                          mode: computerUseAllowed ? "off" : "enabled",
+                        });
+                      }}
+                      onOpenComputerUseDetails={() => {
+                        setAdvancedMenuOpen(false);
+                        setComputerUseModalOpen(true);
+                      }}
+                      proofOpen={proofOpen}
+                      proofArtifactCount={proofArtifactCount}
+                      onToggleProof={onToggleProof}
+                      includeProjectDocs={includeProjectDocs}
+                      onIncludeProjectDocsChange={onIncludeProjectDocsChange}
+                    />
+                  </div>
+                ) : null}
+              </div>
 
               {turnActive ? (
                 <>
-                  {draft.trim().length > 0 && (
-                    <>
-                      {onClearDraft ? (
-                        <button
-                          type="button"
-                          className="inline-flex h-7 items-center justify-center rounded-md border border-white/[0.06] px-2 font-sans text-[10px] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
-                          onClick={onClearDraft}
-                          title="Clear draft only"
-                        >
-                          Clear
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-                        onClick={onSubmit}
-                        title="Send steer message"
-                      >
-                        <PaperPlaneTilt size={11} weight="fill" />
-                      </button>
-                    </>
-                  )}
+                  {draft.trim().length > 0 && onClearDraft ? (
+                    <button
+                      type="button"
+                      className="inline-flex h-7 items-center justify-center rounded-md border border-white/[0.06] px-2 font-sans text-[10px] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
+                      onClick={onClearDraft}
+                      title="Clear draft only"
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                  {draft.trim().length > 0 ? (
+                    <button
+                      type="button"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
+                      onClick={onSubmit}
+                      title="Send steer message"
+                    >
+                      <PaperPlaneTilt size={11} weight="fill" />
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-500/20 bg-red-500/[0.06] text-red-400/70 transition-all hover:border-red-500/35 hover:bg-red-500/12 hover:text-red-400"
@@ -1024,7 +1225,7 @@ export function AgentChatComposer({
               "min-h-[40px] max-h-[160px] w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
               dragActive ? "opacity-30" : "",
             )}
-            placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Message the agent..."))}
+            placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Message the assistant..."))}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
           />

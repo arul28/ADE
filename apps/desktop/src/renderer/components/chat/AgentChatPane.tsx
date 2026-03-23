@@ -537,9 +537,18 @@ export function AgentChatPane({
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : laneDisplayLabel?.trim() || "Chat");
-  const assistantLabel = presentation?.assistantLabel?.trim() || "Agent";
+  const assistantLabel = presentation?.assistantLabel?.trim()
+    || (selectedSession?.provider === "claude"
+      ? "Claude"
+      : selectedSession?.provider === "codex"
+        ? "Codex"
+        : selectedModelDesc?.family === "anthropic" || selectedModelDesc?.cliCommand === "claude"
+          ? "Claude"
+          : selectedModelDesc?.family === "openai" || selectedModelDesc?.cliCommand === "codex"
+            ? "Codex"
+            : "Assistant");
   const messagePlaceholder = presentation?.messagePlaceholder?.trim()
-    || (assistantLabel === "Agent" ? "Message the agent..." : `Message ${assistantLabel}...`);
+    || (assistantLabel === "Assistant" ? "Message the assistant..." : `Message ${assistantLabel}...`);
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
 

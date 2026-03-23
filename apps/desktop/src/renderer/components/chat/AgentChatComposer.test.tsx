@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
+import { getPermissionOptions } from "../shared/permissionOptions";
 import { AgentChatComposer } from "./AgentChatComposer";
 
 function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
@@ -42,6 +43,23 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
   return props;
 }
 
+const executionModeOptions = [
+  {
+    value: "focused",
+    label: "Focused",
+    summary: "Single stream",
+    helper: "Keep work in one stream.",
+    accent: "#38bdf8",
+  },
+  {
+    value: "parallel",
+    label: "Parallel",
+    summary: "Split work",
+    helper: "Use parallel branches for independent tasks.",
+    accent: "#c084fc",
+  },
+] as NonNullable<ComponentProps<typeof AgentChatComposer>["executionModeOptions"]>;
+
 describe("AgentChatComposer", () => {
   it("clear draft only triggers the draft-clear action during an active turn", () => {
     const props = renderComposer();
@@ -60,5 +78,41 @@ describe("AgentChatComposer", () => {
 
     expect(props.onInterrupt).toHaveBeenCalledTimes(1);
     expect(props.onClearDraft).not.toHaveBeenCalled();
+  });
+
+  it("labels the Codex plan permission mode as Plan", () => {
+    expect(getPermissionOptions({ family: "openai", isCliWrapped: true })[0]?.label).toBe("Plan");
+  });
+
+  it("opens the advanced popover and wires the advanced controls", () => {
+    const onExecutionModeChange = vi.fn();
+    const onComputerUsePolicyChange = vi.fn();
+    const onToggleProof = vi.fn();
+    const onIncludeProjectDocsChange = vi.fn();
+    renderComposer({
+      executionMode: "focused",
+      executionModeOptions,
+      onExecutionModeChange,
+      onComputerUsePolicyChange,
+      onToggleProof,
+      includeProjectDocs: false,
+      onIncludeProjectDocsChange,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Parallel/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Computer use (On|Off)$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Proof\b/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Project Context\b/i }));
+
+    expect(onExecutionModeChange).toHaveBeenCalledWith("parallel");
+    expect(onComputerUsePolicyChange).toHaveBeenCalledTimes(1);
+    expect(onComputerUsePolicyChange.mock.calls[0]?.[0]?.mode).toBe("off");
+    expect(onToggleProof).toHaveBeenCalledTimes(1);
+    expect(onIncludeProjectDocsChange).toHaveBeenCalledWith(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    expect(screen.queryByText("Advanced settings")).not.toBeInTheDocument();
   });
 });
