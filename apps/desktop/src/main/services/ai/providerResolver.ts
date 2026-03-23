@@ -9,6 +9,7 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import type { DetectedAuth } from "./authDetector";
+import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { wrapWithMiddleware, type WrapMiddlewareOpts } from "./middleware";
 import { resolveViaAdeProviderRegistry } from "./adeProviderRegistry";
 export { buildProviderOptions } from "./providerOptions";
@@ -221,6 +222,7 @@ export function normalizeCliMcpServers(
 function buildCliDefaultSettings(
   provider: "claude" | "codex",
   opts?: ResolveModelOpts,
+  auth?: DetectedAuth[],
 ): Record<string, unknown> {
   const settings: Record<string, unknown> = {};
   const cwd = opts?.cwd?.trim() || process.cwd();
@@ -237,6 +239,9 @@ function buildCliDefaultSettings(
   }
   if (provider === "claude" && settings.systemPrompt == null) {
     settings.systemPrompt = { type: "preset", preset: "claude_code" };
+  }
+  if (provider === "claude" && settings.pathToClaudeCodeExecutable == null) {
+    settings.pathToClaudeCodeExecutable = resolveClaudeCodeExecutable({ auth }).path;
   }
   return settings;
 }
@@ -282,7 +287,7 @@ async function resolveCliWrapped(
     }
     const createClaudeCode = await loadClaudeCodeProvider();
     const provider = createClaudeCode({
-      defaultSettings: buildCliDefaultSettings("claude", opts),
+      defaultSettings: buildCliDefaultSettings("claude", opts, auth),
     });
     return provider(descriptor.sdkModelId) as LanguageModel;
   }

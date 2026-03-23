@@ -6,13 +6,29 @@ const { createCodexCliMock } = vi.hoisted(() => ({
   createCodexCliMock: vi.fn(),
 }));
 
+const { createClaudeCodeMock } = vi.hoisted(() => ({
+  createClaudeCodeMock: vi.fn(),
+}));
+
 vi.mock("ai-sdk-provider-codex-cli", () => ({
   createCodexCli: createCodexCliMock,
+}));
+
+vi.mock("ai-sdk-provider-claude-code", () => ({
+  createClaudeCode: createClaudeCodeMock,
+}));
+
+vi.mock("./claudeCodeExecutable", () => ({
+  resolveClaudeCodeExecutable: () => ({
+    path: "/mock/bin/claude",
+    source: "auth",
+  }),
 }));
 
 describe("providerResolver codex CLI", () => {
   beforeEach(() => {
     createCodexCliMock.mockReset();
+    createClaudeCodeMock.mockReset();
   });
 
   it("resolves Codex CLI models through the community provider with MCP settings", async () => {
@@ -77,6 +93,59 @@ describe("providerResolver codex CLI", () => {
     ).rejects.toThrow("Codex CLI is required");
 
     expect(createCodexCliMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves Claude CLI models through the provider with an explicit executable path", async () => {
+    const sdkModel = { modelId: "mock-claude-model" } as any;
+    const providerInstance = vi.fn(() => sdkModel);
+    createClaudeCodeMock.mockReturnValue(providerInstance);
+
+    const auth: DetectedAuth[] = [
+      {
+        type: "cli-subscription",
+        cli: "claude",
+        path: "/opt/homebrew/bin/claude",
+        authenticated: true,
+        verified: true,
+      },
+    ];
+
+    const resolved = await resolveModel("anthropic/claude-haiku-4-5", auth, {
+      middleware: false,
+      cwd: "/tmp/worktree",
+      cli: {
+        mcpServers: {
+          ade: {
+            command: "node",
+            args: ["/tmp/mcp-server.js"],
+            env: {
+              ADE_RUN_ID: "run-1",
+            },
+          },
+        },
+      },
+    });
+
+    expect(createClaudeCodeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultSettings: expect.objectContaining({
+          cwd: "/tmp/worktree",
+          pathToClaudeCodeExecutable: "/mock/bin/claude",
+          mcpServers: {
+            ade: {
+              type: "stdio",
+              command: "node",
+              args: ["/tmp/mcp-server.js"],
+              env: {
+                ADE_RUN_ID: "run-1",
+              },
+            },
+          },
+        }),
+      }),
+    );
+    expect(providerInstance).toHaveBeenCalledWith("haiku");
+    expect(resolved).toBe(sdkModel);
   });
 
   it("normalizes ADE MCP server config for both Claude and Codex CLI providers", () => {

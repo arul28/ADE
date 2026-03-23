@@ -83,16 +83,18 @@ export async function buildProviderConnections(
   }
 
   // Apply runtime health overrides.
-  // Only an explicit auth failure should downgrade status. Transient probe
-  // failures (process abort, timeout) should not block a user with valid creds.
+  // If ADE cannot launch the actual provider runtime from this app session,
+  // surface that as not runtime-available even when auth artifacts exist.
   function applyRuntimeHealth(
     status: AiProviderConnectionStatus,
     health: ReturnType<typeof getProviderRuntimeHealth>,
   ): void {
-    if (health?.state === "auth-failed") {
+    if (health?.state === "auth-failed" || health?.state === "runtime-failed") {
       status.runtimeAvailable = false;
       status.blocker = health.message
-        ?? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`;
+        ?? (health.state === "auth-failed"
+          ? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`
+          : `${status.provider} runtime was detected, but ADE could not launch it from this app session.`);
     } else if (health?.state === "ready") {
       status.runtimeAvailable = true;
       status.authAvailable = true;
