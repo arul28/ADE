@@ -762,8 +762,10 @@ function normalizeWorkspacePathCandidate(value: string): string | null {
   if (/^(?:https?|mailto|tel):/i.test(trimmed)) return null;
   if (/^#/.test(trimmed)) return null;
   const withoutScheme = trimmed.replace(/^file:\/\//i, "");
-  const withoutQuery = withoutScheme.split(/[?#]/, 1)[0]?.trim() ?? "";
+  const withoutQuery = withoutScheme.split(/[?#]/, 1)[0]?.trim().replace(/\\/g, "/") ?? "";
   if (!withoutQuery.length) return null;
+  // Normalize Windows drive-letter paths: /C:/... → C:/...
+  if (/^\/[A-Za-z]:\//.test(withoutQuery)) return withoutQuery.slice(1);
   return withoutQuery;
 }
 
@@ -803,7 +805,15 @@ function InlineDisclosureRow({
   className?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const prevDefaultOpen = useRef(defaultOpen);
   const expandable = Boolean(children);
+
+  useEffect(() => {
+    if (!prevDefaultOpen.current && defaultOpen) {
+      setOpen(true);
+    }
+    prevDefaultOpen.current = defaultOpen;
+  }, [defaultOpen]);
 
   return (
     <div className={cn("rounded-lg", className)}>
