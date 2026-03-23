@@ -390,11 +390,29 @@ export type ContextDocGenerationWarning = {
   actionPath?: string;
 };
 
+export type ContextDocGenerationSource = "manual" | "auto";
+
+export type ContextDocGenerationEvent =
+  | "session_end"
+  | "commit"
+  | "pr_create"
+  | "pr_land"
+  | "mission_start"
+  | "mission_end"
+  | "lane_create";
+
 export type ContextDocGenerationStatus = {
-  state: "idle" | "running" | "failed";
+  state: "idle" | "pending" | "running" | "succeeded" | "failed";
+  requestedAt: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   error: string | null;
+  source: ContextDocGenerationSource | null;
+  event: ContextDocGenerationEvent | null;
+  reason: string | null;
+  provider: ContextDocProvider | null;
+  modelId: string | null;
+  reasoningEffort: string | null;
 };
 
 export type ContextStatus = {
