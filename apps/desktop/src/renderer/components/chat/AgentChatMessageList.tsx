@@ -334,26 +334,29 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
   if (event.type === "text") {
     const nextTurn = event.turnId ?? null;
     const nextItem = event.itemId ?? null;
-    const matchIndex = [...out]
-      .reverse()
-      .findIndex((candidate) =>
-        candidate.event.type === "text"
-        && (candidate.event.turnId ?? null) === nextTurn
-        && (candidate.event.itemId ?? null) === nextItem,
-      );
-    if (matchIndex >= 0) {
-      const actualIndex = out.length - 1 - matchIndex;
-      const existing = out[actualIndex];
-      if (existing?.event.type === "text") {
-        out[actualIndex] = {
-          ...existing,
-          timestamp: envelope.timestamp,
-          event: {
-            ...existing.event,
-            text: `${existing.event.text}${event.text}`,
-          },
-        };
-        return;
+    // Require at least one identity field to prevent merging anonymous chunks
+    if (nextTurn || nextItem) {
+      const matchIndex = [...out]
+        .reverse()
+        .findIndex((candidate) =>
+          candidate.event.type === "text"
+          && (candidate.event.turnId ?? null) === nextTurn
+          && (candidate.event.itemId ?? null) === nextItem,
+        );
+      if (matchIndex >= 0) {
+        const actualIndex = out.length - 1 - matchIndex;
+        const existing = out[actualIndex];
+        if (existing?.event.type === "text") {
+          out[actualIndex] = {
+            ...existing,
+            timestamp: envelope.timestamp,
+            event: {
+              ...existing.event,
+              text: `${existing.event.text}${event.text}`,
+            },
+          };
+          return;
+        }
       }
     }
   }
@@ -2990,7 +2993,7 @@ export function AgentChatMessageList({
       ? formatTime(envelope.timestamp)
       : null;
     const turnModel = currentTurn
-      ? (turnModelState.map.get(currentTurn) ?? turnModelState.lastModel)
+      ? (turnModelState.map.get(currentTurn) ?? null)
       : turnModelState.lastModel;
 
     if (virtualized) {
@@ -3063,7 +3066,7 @@ export function AgentChatMessageList({
       className={cn("h-full min-h-0 overflow-auto bg-[#09090b] px-4 pt-5 pb-8", className)}
       onScroll={handleScroll}
     >
-      {rows.length === 0 ? (
+      {rows.length === 0 && !streamingIndicator ? (
         <div className="flex h-full flex-col items-center justify-center gap-5">
           <div className="relative flex h-20 w-20 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)]">
             <Robot size={34} weight="thin" className="text-[var(--chat-accent)]" />
