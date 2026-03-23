@@ -74,6 +74,7 @@ import { normalizeConflictType, runGit, runGitMergeTree, runGitOrThrow } from ".
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
 import { safeSegment } from "../shared/packLegacyUtils";
+import { fetchQueueTargetTrackingBranches, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { asString, isRecord, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
@@ -4159,6 +4160,18 @@ export function createConflictService({
   };
 
   const scanRebaseNeeds = async (): Promise<RebaseNeed[]> => {
+    try {
+      await fetchQueueTargetTrackingBranches({
+        db,
+        projectId,
+        projectRoot,
+      });
+    } catch (error) {
+      logger.warn("conflicts.queue_target_refresh_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     const lanes = await listActiveLanes();
     const needs: RebaseNeed[] = [];
 
@@ -4166,7 +4179,15 @@ export function createConflictService({
     const nonPrimaryLanes = lanes.filter((l) => l.laneType !== "primary");
     for (const lane of nonPrimaryLanes) {
       try {
-        const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+        const queueOverride = await resolveQueueRebaseOverride({
+          db,
+          projectId,
+          projectRoot,
+          laneId: lane.id,
+        });
+        const comparisonRef = queueOverride?.comparisonRef ?? lane.baseRef;
+        const displayBaseBranch = queueOverride?.displayBaseBranch ?? lane.baseRef;
+        const baseHead = await readHeadSha(projectRoot, comparisonRef);
         const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
 
         // Count how many commits the lane is behind base
@@ -4193,12 +4214,12 @@ export function createConflictService({
         needs.push({
           laneId: lane.id,
           laneName: lane.name,
-          baseBranch: lane.baseRef,
+          baseBranch: displayBaseBranch,
           behindBy,
           conflictPredicted: conflictingFiles.length > 0,
           conflictingFiles,
           prId: null,
-          groupContext: null,
+          groupContext: queueOverride?.groupContext ?? null,
           dismissedAt: rebaseDismissed.get(lane.id) ?? null,
           deferredUntil: rebaseDeferred.get(lane.id) ?? null
         });
@@ -4216,12 +4237,26 @@ export function createConflictService({
   };
 
   const getRebaseNeed = async (laneId: string): Promise<RebaseNeed | null> => {
+    await fetchQueueTargetTrackingBranches({
+      db,
+      projectId,
+      projectRoot,
+    });
+
     const lanes = await listActiveLanes();
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane || lane.laneType === "primary") return null;
 
     try {
-      const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+      const queueOverride = await resolveQueueRebaseOverride({
+        db,
+        projectId,
+        projectRoot,
+        laneId: lane.id,
+      });
+      const comparisonRef = queueOverride?.comparisonRef ?? lane.baseRef;
+      const displayBaseBranch = queueOverride?.displayBaseBranch ?? lane.baseRef;
+      const baseHead = await readHeadSha(projectRoot, comparisonRef);
       const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
 
       const behindRes = await runGit(
@@ -4246,12 +4281,12 @@ export function createConflictService({
       return {
         laneId: lane.id,
         laneName: lane.name,
-        baseBranch: lane.baseRef,
+        baseBranch: displayBaseBranch,
         behindBy,
         conflictPredicted: conflictingFiles.length > 0,
         conflictingFiles,
         prId: null,
-        groupContext: null,
+        groupContext: queueOverride?.groupContext ?? null,
         dismissedAt: rebaseDismissed.get(lane.id) ?? null,
         deferredUntil: rebaseDeferred.get(lane.id) ?? null
       };
@@ -4332,6 +4367,9 @@ export function createConflictService({
       if (args.aiAssisted) {
         logger.info(`rebaseLane: AI-assisted rebase requested for lane ${args.laneId}`, {
           provider: args.provider ?? "codex",
+          modelId: args.modelId ?? null,
+          reasoningEffort: args.reasoningEffort ?? null,
+          permissionMode: args.permissionMode ?? null,
           autoApplyThreshold: args.autoApplyThreshold
         });
       }
@@ -4340,8 +4378,15 @@ export function createConflictService({
         onEvent({ type: "rebase-started", laneId: args.laneId, timestamp: new Date().toISOString() });
       }
 
+      const queueOverride = await resolveQueueRebaseOverride({
+        db,
+        projectId,
+        projectRoot,
+        laneId: lane.id,
+      });
+      const rebaseTarget = queueOverride?.comparisonRef ?? lane.baseRef;
       const rebaseRes = await runGit(
-        ["rebase", lane.baseRef],
+        ["rebase", rebaseTarget],
         { cwd: lane.worktreePath, timeoutMs: 120_000 }
       );
 

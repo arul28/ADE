@@ -215,7 +215,6 @@ function normalizeFinalizationPolicy(value: unknown): MissionFinalizationPolicy 
     autoRebase: nullableBool(raw.autoRebase),
     ciGating: nullableBool(raw.ciGating),
     autoLand: nullableBool(raw.autoLand),
-    rehearseQueue: nullableBool(raw.rehearseQueue),
     autoResolveConflicts: nullableBool(raw.autoResolveConflicts),
     archiveLaneOnLand: nullableBool(raw.archiveLaneOnLand),
     mergeMethod:
@@ -234,7 +233,7 @@ function normalizeFinalizationState(value: unknown): MissionFinalizationState | 
   const policy = normalizeFinalizationPolicy(raw.policy);
   if (!policy) return null;
   const VALID_FINALIZATION_STATUSES = new Set([
-    "idle", "finalizing", "creating_pr", "rehearsing_queue", "landing_queue",
+    "idle", "finalizing", "creating_pr", "landing_queue",
     "resolving_integration_conflicts", "resolving_queue_conflicts", "waiting_for_green",
     "awaiting_operator_review", "posting_review_comment", "finalization_failed", "completed",
   ]);
@@ -258,8 +257,6 @@ function normalizeFinalizationState(value: unknown): MissionFinalizationState | 
     integrationLaneId: nullableString(raw.integrationLaneId),
     queueGroupId: nullableString(raw.queueGroupId),
     queueId: nullableString(raw.queueId),
-    queueRehearsalId: nullableString(raw.queueRehearsalId),
-    scratchLaneId: nullableString(raw.scratchLaneId),
     activePrId: nullableString(raw.activePrId),
     waitReason,
     proposalUrl: nullableString(raw.proposalUrl),

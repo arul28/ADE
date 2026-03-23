@@ -689,7 +689,6 @@ export type MissionFinalizationStatus =
   | "idle"
   | "finalizing"
   | "creating_pr"
-  | "rehearsing_queue"
   | "landing_queue"
   | "resolving_integration_conflicts"
   | "resolving_queue_conflicts"
@@ -707,7 +706,6 @@ export type MissionFinalizationPolicy = {
   autoRebase: boolean | null;
   ciGating: boolean | null;
   autoLand: boolean | null;
-  rehearseQueue: boolean | null;
   autoResolveConflicts: boolean | null;
   archiveLaneOnLand: boolean | null;
   mergeMethod: "merge" | "squash" | "rebase" | null;
@@ -729,8 +727,6 @@ export type MissionFinalizationState = {
   integrationLaneId: string | null;
   queueGroupId: string | null;
   queueId: string | null;
-  queueRehearsalId: string | null;
-  scratchLaneId: string | null;
   activePrId: string | null;
   waitReason: QueueWaitReason | null;
   proposalUrl: string | null;

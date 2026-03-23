@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { GitConflictState } from "./git";
-import type { RebaseNeed } from "./prs";
+import type { AiPermissionMode, RebaseNeed } from "./prs";
 
 export type ConflictStatusValue =
   | "merge-ready"
@@ -483,6 +483,9 @@ export type RebaseLaneArgs = {
   laneId: string;
   aiAssisted?: boolean;
   provider?: "codex" | "claude";
+  modelId?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: AiPermissionMode;
   autoApplyThreshold?: number;
 };
 

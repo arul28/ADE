@@ -1014,7 +1014,6 @@ function CreateMissionDialogInner({
                                   autoRebase: true,
                                   ciGating: true,
                                   autoLand: false,
-                                  rehearseQueue: false,
                                   autoResolveConflicts: false,
                                   archiveLaneOnLand: false,
                                   mergeMethod: "squash" as MergeMethod,
@@ -1114,24 +1113,6 @@ function CreateMissionDialogInner({
                         <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                           <input
                             type="checkbox"
-                            checked={draft.prStrategy.rehearseQueue ?? false}
-                            onChange={(e) => setDraft((p) => {
-                              const prevQueue = p.prStrategy.kind === "queue" ? p.prStrategy : { kind: "queue" as const };
-                              return {
-                                ...p,
-                                prStrategy: {
-                                  ...prevQueue,
-                                  rehearseQueue: e.target.checked,
-                                  autoLand: e.target.checked ? false : prevQueue.autoLand,
-                                } as PrStrategy
-                              };
-                            })}
-                          />
-                          Dry-run full queue
-                        </label>
-                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <input
-                            type="checkbox"
                             checked={draft.prStrategy.autoLand ?? false}
                             onChange={(e) => setDraft((p) => {
                               const prevQueue = p.prStrategy.kind === "queue" ? p.prStrategy : { kind: "queue" as const };
@@ -1140,7 +1121,6 @@ function CreateMissionDialogInner({
                                 prStrategy: {
                                   ...prevQueue,
                                   autoLand: e.target.checked,
-                                  rehearseQueue: e.target.checked ? false : prevQueue.rehearseQueue,
                                 } as PrStrategy
                               };
                             })}
@@ -1190,7 +1170,7 @@ function CreateMissionDialogInner({
                       </div>
                       {(draft.prStrategy.autoResolveConflicts ?? false) ? (
                         <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          Uses the configured Claude/Codex CLI resolver model from mission runtime settings. Queue rehearsal runs on an isolated scratch lane and never merges; auto-land still merges for real. Launch is blocked if no compatible resolver model is available.
+                          Uses the configured Claude/Codex CLI resolver model from mission runtime settings. Auto-land uses the same resolver path when configured. Launch is blocked if no compatible resolver model is available.
                         </div>
                       ) : null}
                     </div>

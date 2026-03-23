@@ -1023,37 +1023,6 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   try { db.run("alter table queue_landing_state add column wait_reason text"); } catch {}
   try { db.run("alter table queue_landing_state add column updated_at text"); } catch {}
 
-  // Queue rehearsal state table (dry-run queue landing on an isolated scratch lane)
-  db.run(`
-    create table if not exists queue_rehearsal_state (
-      id text primary key,
-      group_id text not null,
-      project_id text not null,
-      state text not null,
-      entries_json text not null,
-      config_json text not null default '{}',
-      current_position integer not null default 0,
-      scratch_lane_id text,
-      active_pr_id text,
-      active_resolver_run_id text,
-      last_error text,
-      wait_reason text,
-      started_at text not null,
-      completed_at text,
-      updated_at text,
-      foreign key(group_id) references pr_groups(id),
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_queue_rehearsal_state_group on queue_rehearsal_state(group_id)");
-  try { db.run("alter table queue_rehearsal_state add column config_json text not null default '{}'"); } catch {}
-  try { db.run("alter table queue_rehearsal_state add column scratch_lane_id text"); } catch {}
-  try { db.run("alter table queue_rehearsal_state add column active_pr_id text"); } catch {}
-  try { db.run("alter table queue_rehearsal_state add column active_resolver_run_id text"); } catch {}
-  try { db.run("alter table queue_rehearsal_state add column last_error text"); } catch {}
-  try { db.run("alter table queue_rehearsal_state add column wait_reason text"); } catch {}
-  try { db.run("alter table queue_rehearsal_state add column updated_at text"); } catch {}
-
   // Rebase dismiss/defer persistence
   db.run(`
     create table if not exists rebase_dismissed (

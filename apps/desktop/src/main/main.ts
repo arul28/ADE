@@ -33,7 +33,6 @@ import { createGithubService } from "./services/github/githubService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
-import { createQueueRehearsalService } from "./services/prs/queueRehearsalService";
 import { detectDefaultBaseRef, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
@@ -728,6 +727,7 @@ app.whenReady().then(async () => {
       db,
       logger,
       projectId,
+      projectRoot,
       laneService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, event)
     });
@@ -796,6 +796,7 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       projectConfigService,
       conflictService,
+      rebaseSuggestionService,
       openExternal: async (url) => {
         await shell.openExternal(url);
       }
@@ -845,19 +846,6 @@ app.whenReady().then(async () => {
       }
     });
     queueLandingService.init();
-    const queueRehearsalService = createQueueRehearsalService({
-      db,
-      logger,
-      projectId,
-      prService,
-      laneService,
-      conflictService,
-      emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
-      onStateChanged: (state) => {
-        aiOrchestratorServiceRef?.onQueueRehearsalStateChanged?.(state);
-      }
-    });
-    queueRehearsalService.init();
 
     const fileService = createFileService({
       laneService,
@@ -1541,7 +1529,6 @@ app.whenReady().then(async () => {
       prService,
       conflictService,
       queueLandingService,
-      queueRehearsalService,
       projectRoot,
       missionBudgetService,
       humanWorkDigestService,
@@ -2117,7 +2104,6 @@ app.whenReady().then(async () => {
       prPollingService,
       computerUseArtifactBrokerService,
       queueLandingService,
-      queueRehearsalService,
       jobEngine,
       automationService,
       automationPlannerService,
@@ -2210,7 +2196,6 @@ app.whenReady().then(async () => {
       prService: null,
       prPollingService: null,
       queueLandingService: null,
-      queueRehearsalService: null,
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,

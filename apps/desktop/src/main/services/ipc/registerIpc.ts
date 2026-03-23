@@ -7,6 +7,7 @@ import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
+import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import type {
   ApplyConflictProposalArgs,
@@ -35,12 +36,12 @@ import type {
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   ConflictProposal,
-   ConflictExternalResolverRunSummary,
-   ConflictProposalPreview,
-   ConflictOverlap,
-   ConflictStatus,
-   DraftPrDescriptionArgs,
-   CreateLaneArgs,
+  ConflictExternalResolverRunSummary,
+  ConflictProposalPreview,
+  ConflictOverlap,
+  ConflictStatus,
+  DraftPrDescriptionArgs,
+  CreateLaneArgs,
   CreateChildLaneArgs,
   DeleteLaneArgs,
   DockLayout,
@@ -118,18 +119,25 @@ import type {
   PrAiResolutionSessionInfo,
   PrAiResolutionSessionStatus,
   AiPermissionMode,
+  PrIssueResolutionPromptPreviewArgs,
+  PrIssueResolutionPromptPreviewResult,
+  PrIssueResolutionStartArgs,
+  PrIssueResolutionStartResult,
   LinkPrToLaneArgs,
   LandResult,
   LandStackEnhancedArgs,
   LandQueueNextArgs,
   PrCheck,
   PrComment,
+  PrReviewThread,
   PrHealth,
   PrMergeContext,
   PrReview,
   PrStatus,
   PrSummary,
   QueueLandingState,
+  ReplyToPrReviewThreadArgs,
+  ResolvePrReviewThreadArgs,
   SimulateIntegrationArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -437,9 +445,6 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
-} from "../../../shared/types";
-import type { LaneEnvInitConfig, LaneOverlayOverrides, LaneTemplate, PortLease } from "../../../shared/types";
-import type {
   ComputerUseArtifactListArgs,
   ComputerUseArtifactReviewArgs,
   ComputerUseArtifactRouteArgs,
@@ -448,6 +453,10 @@ import type {
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
   ComputerUseSettingsSnapshot,
+  LaneEnvInitConfig,
+  LaneOverlayOverrides,
+  LaneTemplate,
+  PortLease,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -478,7 +487,6 @@ import type { createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
-import type { createQueueRehearsalService } from "../prs/queueRehearsalService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import {
@@ -571,7 +579,6 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
   queueLandingService: ReturnType<typeof createQueueLandingService>;
-  queueRehearsalService: ReturnType<typeof createQueueRehearsalService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
@@ -4306,6 +4313,16 @@ export function registerIpc({
     }
   });
 
+  ipcMain.handle(IPC.prsGetReviewThreads, async (_event, arg: { prId: string }): Promise<PrReviewThread[]> => {
+    const ctx = ensurePrPolling();
+    try {
+      return await ctx.prService.getReviewThreads(arg.prId);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("PR not found")) return [];
+      throw err;
+    }
+  });
+
   ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.prService.updateDescription(arg);
@@ -4465,17 +4482,9 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));
 
-  ipcMain.handle(IPC.prsStartQueueRehearsal, async (_event, arg) => {
-    const ctx = getCtx();
-    const state = await ctx.queueRehearsalService.startQueueRehearsal(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_start_queue_rehearsal:${arg.groupId}`,
-    });
-    return state;
+  ipcMain.handle(IPC.prsReorderQueue, async (_event, arg: import("../../../shared/types").ReorderQueuePrsArgs): Promise<void> => {
+    await getCtx().prService.reorderQueuePrs(arg);
   });
-
-  ipcMain.handle(IPC.prsCancelQueueRehearsal, async (_event, arg) => getCtx().queueRehearsalService.cancelQueueRehearsal(arg.rehearsalId));
 
   ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));
 
@@ -4484,12 +4493,6 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.prsListQueueStates, async (_event, arg = {}) => getCtx().queueLandingService.listQueueStates(arg));
-
-  ipcMain.handle(IPC.prsGetQueueRehearsalState, async (_event, arg: { groupId: string }) =>
-    getCtx().queueRehearsalService.getQueueRehearsalStateByGroup(arg.groupId)
-  );
-
-  ipcMain.handle(IPC.prsListQueueRehearsals, async (_event, arg = {}) => getCtx().queueRehearsalService.listQueueRehearsals(arg));
 
   ipcMain.handle(IPC.prsCreateIntegrationLaneForProposal, async (_event, arg: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
     getCtx().prService.createIntegrationLaneForProposal(arg));
@@ -4773,11 +4776,42 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.prsIssueResolutionStart, async (_event, arg: PrIssueResolutionStartArgs): Promise<PrIssueResolutionStartResult> => {
+    const ctx = getCtx();
+    return await launchPrIssueResolutionChat(
+      {
+        prService: ctx.prService,
+        laneService: ctx.laneService,
+        agentChatService: ctx.agentChatService,
+        sessionService: ctx.sessionService,
+      },
+      arg,
+    );
+  });
+
+  ipcMain.handle(IPC.prsIssueResolutionPreviewPrompt, async (
+    _event,
+    arg: PrIssueResolutionPromptPreviewArgs,
+  ): Promise<PrIssueResolutionPromptPreviewResult> => {
+    const ctx = getCtx();
+    return await previewPrIssueResolutionPrompt(
+      {
+        prService: ctx.prService,
+        laneService: ctx.laneService,
+        agentChatService: ctx.agentChatService,
+        sessionService: ctx.sessionService,
+      },
+      arg,
+    );
+  });
+
   ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => getCtx().prService.getDetail(args.prId));
   ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => getCtx().prService.getFiles(args.prId));
   ipcMain.handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => getCtx().prService.getActionRuns(args.prId));
   ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => getCtx().prService.getActivity(args.prId));
   ipcMain.handle(IPC.prsAddComment, (_e, args) => getCtx().prService.addComment(args));
+  ipcMain.handle(IPC.prsReplyToReviewThread, (_e, args: ReplyToPrReviewThreadArgs) => getCtx().prService.replyToReviewThread(args));
+  ipcMain.handle(IPC.prsResolveReviewThread, (_e, args: ResolvePrReviewThreadArgs) => getCtx().prService.resolveReviewThread(args));
   ipcMain.handle(IPC.prsUpdateTitle, (_e, args) => getCtx().prService.updateTitle(args));
   ipcMain.handle(IPC.prsUpdateBody, (_e, args) => getCtx().prService.updateBody(args));
   ipcMain.handle(IPC.prsSetLabels, (_e, args) => getCtx().prService.setLabels(args));

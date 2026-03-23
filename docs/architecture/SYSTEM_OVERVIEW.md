@@ -93,7 +93,7 @@ The coordinator has finalization awareness: a `check_finalization_status` tool r
 Agent tools are organized into three tiers:
 
 - **universalTools** — available to all agents (memory search/add/pin, context reading)
-- **workflowTools** — available to chat agents (lane creation, PR creation, screenshot capture, completion reporting)
+- **workflowTools** — available to chat agents (lane creation, PR creation, screenshot capture, completion reporting, PR issue resolution tools)
 - **coordinatorTools** — restricted to the mission orchestrator (spawn_worker, skip_step, complete_mission, check_finalization_status, etc.)
 
 This tiering ensures appropriate capability boundaries between agent roles.
@@ -222,7 +222,7 @@ Missions remain ADE's structured multi-worker execution system, but the mission 
 
 ### PRs and GitHub
 
-The PR system still supports local simulation, stacked workflows, and integration proposals, but GitHub snapshot loading is now cached and integration simulation is manually triggered instead of auto-running on tab entry.
+The PR system still supports local simulation, stacked workflows, and integration proposals, but GitHub snapshot loading is now cached and integration simulation is manually triggered instead of auto-running on tab entry. PR issue resolution is now available: agents can be launched from the PR detail surface to fix failing CI checks and address unresolved review threads, with dedicated workflow tools for refreshing issue state, rerunning checks, and managing review threads.
 
 ### Workspace Graph
 

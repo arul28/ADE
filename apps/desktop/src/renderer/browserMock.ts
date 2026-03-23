@@ -545,42 +545,6 @@ const MOCK_QUEUE_STATE: Record<string, any> = {
   },
 };
 
-const MOCK_QUEUE_REHEARSAL_STATE: Record<string, any> = {
-  "queue-commerce-v3": {
-    rehearsalId: "rehearsal-commerce-v3",
-    groupId: "queue-commerce-v3",
-    groupName: "Release v3.0 - Commerce",
-    targetBranch: "main",
-    state: "completed",
-    entries: [
-      { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", position: 0, prNumber: 160, githubUrl: "https://github.com/mock/repo/pull/160", state: "ready", changedFiles: ["payments.ts"], updatedAt: yesterday },
-      { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", position: 1, prNumber: 161, githubUrl: "https://github.com/mock/repo/pull/161", state: "resolved", resolvedByAi: true, changedFiles: ["checkout.ts"], conflictPaths: ["checkout.ts"], updatedAt: now },
-    ],
-    currentPosition: 2,
-    scratchLaneId: "lane-queue-rehearsal",
-    activePrId: null,
-    activeResolverRunId: null,
-    lastError: null,
-    waitReason: null,
-    config: {
-      method: "squash",
-      autoResolve: true,
-      resolverProvider: "claude",
-      resolverModel: "anthropic/claude-sonnet-4-6",
-      reasoningEffort: "medium",
-      permissionMode: "guarded_edit",
-      preserveScratchLane: true,
-      originSurface: "queue",
-      originMissionId: null,
-      originRunId: null,
-      originLabel: "Release v3.0 - Commerce",
-    },
-    startedAt: yesterday,
-    completedAt: now,
-    updatedAt: now,
-  },
-};
-
 // ── Integration simulation result ─────────────────────────────
 const MOCK_INTEGRATION_SIMULATION: any = {
   proposalId: "sim-mock-1",
@@ -1455,6 +1419,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       getChecks: async (prId: string) => MOCK_CHECKS_BY_PR[prId] ?? [],
       getComments: async (prId: string) => MOCK_COMMENTS_BY_PR[prId] ?? [],
       getReviews: async (prId: string) => MOCK_REVIEWS_BY_PR[prId] ?? [],
+      getReviewThreads: resolvedArg([]),
       updateDescription: resolvedArg(undefined),
       delete: resolvedArg({ deleted: true }),
       draftDescription: resolvedArg({ title: "AI-drafted title", body: "AI-drafted body" }),
@@ -1502,29 +1467,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         if (state) state.state = "cancelled";
         return state;
       },
-      startQueueRehearsal: async (args: { groupId: string; autoResolve?: boolean; method?: string; resolverModel?: string; reasoningEffort?: string }) => {
-        const state = MOCK_QUEUE_REHEARSAL_STATE[args.groupId];
-        if (!state) throw new Error(`Unknown queue group: ${args.groupId}`);
-        state.state = "running";
-        state.config = {
-          ...state.config,
-          autoResolve: args.autoResolve ?? state.config.autoResolve,
-          method: args.method ?? state.config.method,
-          resolverModel: args.resolverModel ?? state.config.resolverModel,
-          reasoningEffort: args.reasoningEffort ?? state.config.reasoningEffort,
-        };
-        return state;
-      },
-      cancelQueueRehearsal: async (rehearsalId: string) => {
-        const state = Object.values(MOCK_QUEUE_REHEARSAL_STATE).find((candidate) => candidate.rehearsalId === rehearsalId) ?? null;
-        if (state) state.state = "cancelled";
-        return state;
-      },
       getHealth: resolvedArg({}),
       getQueueState: async (groupId: string) => MOCK_QUEUE_STATE[groupId] ?? null,
       listQueueStates: async () => Object.values(MOCK_QUEUE_STATE),
-      getQueueRehearsalState: async (groupId: string) => MOCK_QUEUE_REHEARSAL_STATE[groupId] ?? null,
-      listQueueRehearsals: async () => Object.values(MOCK_QUEUE_REHEARSAL_STATE),
       getConflictAnalysis: resolvedArg({}),
       getMergeContext: async (prId: string) =>
         MOCK_MERGE_CONTEXTS[prId] ?? { prId, groupId: null, groupType: null, sourceLaneIds: [], targetLaneId: null, integrationLaneId: null, members: [] },
@@ -1539,6 +1484,15 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         error: null,
         context: { sourceTab: "normal" as const, laneId: "lane-1" }
       }),
+      issueResolutionStart: async () => ({
+        sessionId: "mock-pr-issue-session",
+        laneId: "lane-dashboard",
+        href: "/work?laneId=lane-dashboard&sessionId=mock-pr-issue-session",
+      }),
+      issueResolutionPreviewPrompt: async () => ({
+        title: "Resolve PR #1 issues",
+        prompt: "Mock PR issue resolver prompt",
+      }),
       aiResolutionInput: resolvedArg(undefined),
       aiResolutionStop: resolvedArg(undefined),
       onAiResolutionEvent: noop,
@@ -1548,6 +1502,8 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       getActionRuns: resolvedArg([]),
       getActivity: resolvedArg([]),
       addComment: resolvedArg({ id: "mock", author: "you", body: "", source: "issue", url: null, path: null, line: null, createdAt: null, updatedAt: null }),
+      replyToReviewThread: resolvedArg({ id: "thread-reply", author: "you", authorAvatarUrl: null, body: "", url: null, createdAt: null, updatedAt: null }),
+      resolveReviewThread: resolvedArg(undefined),
       updateTitle: resolvedArg(undefined),
       updateBody: resolvedArg(undefined),
       setLabels: resolvedArg(undefined),

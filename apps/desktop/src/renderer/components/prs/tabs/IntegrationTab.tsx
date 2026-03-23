@@ -548,7 +548,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     setSelectedProposalId(id);
   };
 
-  const selectedPr = React.useMemo(() => prs.find((p) => p.id === selectedPrId) ?? null, [prs, selectedPrId]);
+  const integrationPrs = React.useMemo(
+    () => prs.filter((pr) => mergeContextByPrId[pr.id]?.groupType === "integration"),
+    [mergeContextByPrId, prs],
+  );
+  const selectedPr = React.useMemo(() => integrationPrs.find((p) => p.id === selectedPrId) ?? null, [integrationPrs, selectedPrId]);
   const selectedMergeContext = selectedPr ? mergeContextByPrId[selectedPr.id] ?? null : null;
   const selectedPrLiveModel = React.useMemo(
     () => (selectedPr ? deriveIntegrationPrLiveModel({ prLaneId: selectedPr.laneId, mergeContext: selectedMergeContext }) : null),
@@ -588,7 +592,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   // Auto-select first item (PR or proposal)
   React.useEffect(() => {
     if (!proposalsLoaded) return;
-    if (selectedPrId && prs.some((p) => p.id === selectedPrId)) return;
+    if (selectedPrId && integrationPrs.some((p) => p.id === selectedPrId)) return;
     if (selectedProposalId && proposals.some((p) => p.proposalId === selectedProposalId)) return;
     if (urlProposalId) {
       const proposal = proposals.find((p) => p.proposalId === urlProposalId);
@@ -598,14 +602,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         return;
       }
     }
-    if (prs.length > 0) {
-      onSelectPr(prs[0].id);
+    if (integrationPrs.length > 0) {
+      onSelectPr(integrationPrs[0].id);
       setSelectedProposalId(null);
     } else if (proposals.length > 0) {
       onSelectPr(null);
       setSelectedProposalId(proposals[0].proposalId);
     }
-  }, [onSelectPr, proposals, proposalsLoaded, prs, selectedPrId, selectedProposalId, urlProposalId]);
+  }, [integrationPrs, onSelectPr, proposals, proposalsLoaded, selectedPrId, selectedProposalId, urlProposalId]);
 
   const commitProposalWithOptionalDirtyWorktree = React.useCallback(
     async (proposal: IntegrationProposal): Promise<string> => {
@@ -1338,7 +1342,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
       {/* List body */}
       <div style={{ padding: 8, overflowY: "auto", height: "calc(100% - 44px)" }}>
-        {!prs.length && !proposals.length ? (
+        {!integrationPrs.length && !proposals.length ? (
           <EmptyState
             title="No integration PRs"
             description="Use Create PR to set up an integration branch from multiple lanes."
@@ -1413,7 +1417,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             })}
 
             {/* Existing PRs */}
-            {prs.map((pr) => {
+            {integrationPrs.map((pr) => {
               const ctx = mergeContextByPrId[pr.id];
               const isSelected = pr.id === selectedPrId;
               return (
@@ -1843,7 +1847,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               onNavigate={(path) => {
                 window.location.hash = path.startsWith("/") ? `#${path}` : path;
               }}
-              onTabChange={(tab) => setActiveTab(tab as "normal" | "queue" | "integration" | "rebase")}
+              onOpenRebaseTab={() => setActiveTab("rebase")}
               onShowInGraph={(laneId) => {
                 window.location.hash = laneId
                   ? `#/graph?focusLane=${encodeURIComponent(laneId)}`

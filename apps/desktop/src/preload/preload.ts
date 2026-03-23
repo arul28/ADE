@@ -179,6 +179,8 @@ import type {
   PrCheck,
   PrComment,
   PrReview,
+  PrReviewThread,
+  PrReviewThreadComment,
   PrStatus,
   PrSummary,
   PrDetail,
@@ -188,6 +190,8 @@ import type {
   PrLabel,
   PrUser,
   AddPrCommentArgs,
+  ReplyToPrReviewThreadArgs,
+  ResolvePrReviewThreadArgs,
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
@@ -311,6 +315,10 @@ import type {
   CleanupIntegrationWorkflowResult,
   PrAiResolutionStartArgs,
   PrAiResolutionStartResult,
+  PrIssueResolutionStartArgs,
+  PrIssueResolutionPromptPreviewArgs,
+  PrIssueResolutionPromptPreviewResult,
+  PrIssueResolutionStartResult,
   PrAiResolutionGetSessionArgs,
   PrAiResolutionGetSessionResult,
   PrAiResolutionInputArgs,
@@ -319,11 +327,10 @@ import type {
   CommitIntegrationArgs,
   LandStackEnhancedArgs,
   LandQueueNextArgs,
+  ReorderQueuePrsArgs,
   ResumeQueueAutomationArgs,
   StartQueueAutomationArgs,
-  StartQueueRehearsalArgs,
   QueueLandingState,
-  QueueRehearsalState,
   GitHubPrSnapshot,
   PrConflictAnalysis,
   PrMergeContext,
@@ -1314,6 +1321,7 @@ contextBridge.exposeInMainWorld("ade", {
     getChecks: async (prId: string): Promise<PrCheck[]> => ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
     getComments: async (prId: string): Promise<PrComment[]> => ipcRenderer.invoke(IPC.prsGetComments, { prId }),
     getReviews: async (prId: string): Promise<PrReview[]> => ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
+    getReviewThreads: async (prId: string): Promise<PrReviewThread[]> => ipcRenderer.invoke(IPC.prsGetReviewThreads, { prId }),
     updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateDescription, args),
     delete: async (args: DeletePrArgs): Promise<DeletePrResult> => ipcRenderer.invoke(IPC.prsDelete, args),
     draftDescription: async (args: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> =>
@@ -1347,20 +1355,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsResumeQueueAutomation, args),
     cancelQueueAutomation: (queueId: string): Promise<QueueLandingState | null> =>
       ipcRenderer.invoke(IPC.prsCancelQueueAutomation, { queueId }),
-    startQueueRehearsal: (args: StartQueueRehearsalArgs): Promise<QueueRehearsalState> =>
-      ipcRenderer.invoke(IPC.prsStartQueueRehearsal, args),
-    cancelQueueRehearsal: (rehearsalId: string): Promise<QueueRehearsalState | null> =>
-      ipcRenderer.invoke(IPC.prsCancelQueueRehearsal, { rehearsalId }),
+    reorderQueuePrs: (args: ReorderQueuePrsArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsReorderQueue, args),
     getHealth: (prId: string): Promise<PrHealth> =>
       ipcRenderer.invoke(IPC.prsGetHealth, { prId }),
     getQueueState: (groupId: string): Promise<QueueLandingState | null> =>
       ipcRenderer.invoke(IPC.prsGetQueueState, { groupId }),
     listQueueStates: (args?: { includeCompleted?: boolean; limit?: number }): Promise<QueueLandingState[]> =>
       ipcRenderer.invoke(IPC.prsListQueueStates, args ?? {}),
-    getQueueRehearsalState: (groupId: string): Promise<QueueRehearsalState | null> =>
-      ipcRenderer.invoke(IPC.prsGetQueueRehearsalState, { groupId }),
-    listQueueRehearsals: (args?: { includeCompleted?: boolean; limit?: number }): Promise<QueueRehearsalState[]> =>
-      ipcRenderer.invoke(IPC.prsListQueueRehearsals, args ?? {}),
     getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
       ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
     getMergeContext: (prId: string): Promise<PrMergeContext> =>
@@ -1387,6 +1389,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsAiResolutionInput, args),
     aiResolutionStop: (args: PrAiResolutionStopArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.prsAiResolutionStop, args),
+    issueResolutionStart: (args: PrIssueResolutionStartArgs): Promise<PrIssueResolutionStartResult> =>
+      ipcRenderer.invoke(IPC.prsIssueResolutionStart, args),
+    issueResolutionPreviewPrompt: (args: PrIssueResolutionPromptPreviewArgs): Promise<PrIssueResolutionPromptPreviewResult> =>
+      ipcRenderer.invoke(IPC.prsIssueResolutionPreviewPrompt, args),
     onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PrAiResolutionEventPayload) => cb(payload);
       ipcRenderer.on(IPC.prsAiResolutionEvent, listener);
@@ -1402,6 +1408,10 @@ contextBridge.exposeInMainWorld("ade", {
     getActionRuns: async (prId: string): Promise<PrActionRun[]> => ipcRenderer.invoke(IPC.prsGetActionRuns, { prId }),
     getActivity: async (prId: string): Promise<PrActivityEvent[]> => ipcRenderer.invoke(IPC.prsGetActivity, { prId }),
     addComment: async (args: AddPrCommentArgs): Promise<PrComment> => ipcRenderer.invoke(IPC.prsAddComment, args),
+    replyToReviewThread: async (args: ReplyToPrReviewThreadArgs): Promise<PrReviewThreadComment> =>
+      ipcRenderer.invoke(IPC.prsReplyToReviewThread, args),
+    resolveReviewThread: async (args: ResolvePrReviewThreadArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsResolveReviewThread, args),
     updateTitle: async (args: UpdatePrTitleArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateTitle, args),
     updateBody: async (args: UpdatePrBodyArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateBody, args),
     setLabels: async (args: SetPrLabelsArgs): Promise<void> => ipcRenderer.invoke(IPC.prsSetLabels, args),

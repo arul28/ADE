@@ -1,13 +1,12 @@
 import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
+import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash, ArrowUp, ArrowDown } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import type {
   MergeMethod,
   PrSummary,
   IntegrationProposal,
   IntegrationProposalStep,
-  CreateQueuePrsResult,
   CreateIntegrationPrResult,
   GitUpstreamSyncStatus,
 } from "../../../shared/types";
@@ -16,7 +15,6 @@ import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/
 import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
 
 type CreateMode = "normal" | "queue" | "integration";
-type WizardStep = "select-type" | "configure" | "execute";
 
 /** Alias mapping from old `C` tokens to centralized COLORS. */
 const C = {
@@ -75,6 +73,17 @@ const inputStyle: React.CSSProperties = {
 const textareaStyle: React.CSSProperties = {
   ...inputStyle,
   resize: "none" as const,
+};
+
+const errorBannerStyle: React.CSSProperties = {
+  background: `${C.error}0D`,
+  border: `1px solid ${C.error}33`,
+  borderRadius: 0,
+  padding: "10px 14px",
+  fontSize: 11,
+  fontFamily: "'JetBrains Mono', monospace",
+  color: C.error,
+  whiteSpace: "pre-wrap",
 };
 
 function StepOutcome({ outcome }: { outcome: IntegrationProposalStep["outcome"] }) {
@@ -211,11 +220,121 @@ function buildLaneWarningSummaries(args: {
     .filter((item): item is LaneWarningSummary => item != null);
 }
 
+function outcomeColor(outcome: string): string {
+  if (outcome === "clean") return C.success;
+  if (outcome === "conflict") return C.warning;
+  return C.error;
+}
+
 function getCreateActionLabel(mode: CreateMode, busy: boolean): string {
   if (busy) {
     return mode === "integration" ? "SAVING..." : "CREATING...";
   }
   return mode === "integration" ? "SAVE PROPOSAL" : "CREATE PR";
+}
+
+export function reorderQueueLaneIds(queueLaneIds: string[], draggedLaneId: string, targetLaneId: string): string[] {
+  const draggedIndex = queueLaneIds.indexOf(draggedLaneId);
+  const targetIndex = queueLaneIds.indexOf(targetLaneId);
+  if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) return queueLaneIds;
+
+  const next = [...queueLaneIds];
+  const [removed] = next.splice(draggedIndex, 1);
+  // After removing the dragged item, adjust target index if dragged was above
+  const adjustedTarget = draggedIndex < targetIndex ? targetIndex - 1 : targetIndex;
+  next.splice(adjustedTarget, 0, removed);
+  return next;
+}
+
+function LaneCheckboxList({
+  lanes: displayLanes,
+  selectedIds,
+  warningItemsById,
+  onToggle,
+  maxHeight = 240,
+}: {
+  lanes: Array<{ id: string; name: string; branchRef: string }>;
+  selectedIds: string[];
+  warningItemsById: Record<string, string[]>;
+  onToggle: (laneId: string) => void;
+  maxHeight?: number;
+}) {
+  return (
+    <div style={{
+      maxHeight,
+      overflowY: "auto",
+      background: C.bgInput,
+      border: `1px solid ${C.border}`,
+      borderRadius: 0,
+      padding: 8,
+    }}>
+      {displayLanes.map((lane) => {
+        const checked = selectedIds.includes(lane.id);
+        const warningCount = warningItemsById[lane.id]?.length ?? 0;
+        return (
+          <label
+            key={lane.id}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "8px 10px",
+              cursor: "pointer",
+              background: checked ? C.accentSubtleBg : "transparent",
+              borderRadius: 0,
+              transition: "background 0.1s",
+              marginBottom: 2,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={() => onToggle(lane.id)}
+              style={{ accentColor: C.accent }}
+            />
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 12,
+              fontWeight: 600,
+              color: C.textPrimary,
+              flex: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}>
+              {lane.name}
+            </span>
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 11,
+              color: C.textMuted,
+            }}>
+              {lane.branchRef}
+            </span>
+            {warningCount > 0 ? (
+              <span
+                title={`${warningCount} readiness warning${warningCount === 1 ? "" : "s"}`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  fontSize: 10,
+                  fontFamily: MONO_FONT,
+                  color: C.warning,
+                  background: `${C.warning}18`,
+                  border: `1px solid ${C.warning}30`,
+                  padding: "2px 6px",
+                }}
+              >
+                <Warning size={10} weight="fill" />
+                {warningCount}
+              </span>
+            ) : null}
+          </label>
+        );
+      })}
+    </div>
+  );
 }
 
 function LaneWarningPanel({
@@ -317,7 +436,6 @@ export function CreatePrModal({
   const lanes = useAppStore((s) => s.lanes);
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
-  const [, setStep] = React.useState<WizardStep>("select-type");
   const [mode, setMode] = React.useState<CreateMode>("normal");
 
   // Internal numeric step for stepper (1=BRANCH, 2=DETAILS, 3=REVIEW)
@@ -334,6 +452,7 @@ export function CreatePrModal({
   // Queue PRs
   const [queueLaneIds, setQueueLaneIds] = React.useState<string[]>([]);
   const [queueDraft, setQueueDraft] = React.useState(false);
+  const [queueDragLaneId, setQueueDragLaneId] = React.useState<string | null>(null);
 
   // Body & AI draft
   const [normalBody, setNormalBody] = React.useState("");
@@ -380,7 +499,6 @@ export function CreatePrModal({
   React.useEffect(() => {
     if (open) return;
     const id = setTimeout(() => {
-      setStep("select-type");
       setMode("normal");
       setNumericStep(1);
       setMergeMethod("squash");
@@ -389,6 +507,7 @@ export function CreatePrModal({
       setNormalDraft(false);
       setQueueLaneIds([]);
       setQueueDraft(false);
+      setQueueDragLaneId(null);
       setBusy(false);
       setExecError(null);
       setResults(null);
@@ -514,11 +633,9 @@ export function CreatePrModal({
         // No PR created — proposal saved for later commit from Integration tab
         setResults([]);
       }
-      setStep("execute");
       setNumericStep(3);
     } catch (err: unknown) {
       setExecError(err instanceof Error ? err.message : String(err));
-      setStep("execute");
       setNumericStep(3);
     } finally {
       setBusy(false);
@@ -533,6 +650,15 @@ export function CreatePrModal({
     );
   };
 
+  const handleQueueLaneDrop = React.useCallback((targetLaneId: string) => {
+    if (!queueDragLaneId || queueDragLaneId === targetLaneId) {
+      setQueueDragLaneId(null);
+      return;
+    }
+    setQueueLaneIds((prev) => reorderQueueLaneIds(prev, queueDragLaneId, targetLaneId));
+    setQueueDragLaneId(null);
+  }, [queueDragLaneId]);
+
   const toggleIntegrationSource = (laneId: string) => {
     setIntegrationSources((prev) =>
       prev.includes(laneId) ? prev.filter((id) => id !== laneId) : [...prev, laneId]
@@ -546,14 +672,8 @@ export function CreatePrModal({
     !!proposal &&
     proposal.overallOutcome !== "blocked";
 
-  /* Can user advance from step 1 to step 2? */
-  const canAdvanceStep1 =
-    (mode === "normal" && !!normalLaneId) ||
-    (mode === "queue" && queueLaneIds.length > 0) ||
-    (mode === "integration" && canCreateIntegration);
-
-  /* Can user create from step 2? */
-  const canCreateFromStep2 =
+  /* Can user advance to step 2 or submit from step 2? Same readiness check. */
+  const canProceed =
     (mode === "normal" && !!normalLaneId) ||
     (mode === "queue" && queueLaneIds.length > 0) ||
     (mode === "integration" && canCreateIntegration);
@@ -891,80 +1011,172 @@ export function CreatePrModal({
                 {/* ── Queue mode: Lane selection ─────────────────── */}
                 {mode === "queue" && (
                   <div>
-                    <span style={labelStyle}>SELECT LANES (IN QUEUE ORDER)</span>
-                    <div style={{
-                      maxHeight: 200,
-                      overflowY: "auto",
-                      background: C.bgInput,
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 0,
-                      padding: 8,
-                    }}>
-                      {nonPrimaryLanes.map((lane) => {
-                        const checked = queueLaneIds.includes(lane.id);
-                        const warningCount = laneWarningItemsById[lane.id]?.length ?? 0;
-                        return (
-                          <label
-                            key={lane.id}
-                            style={{
+                    <span style={labelStyle}>BUILD QUEUE</span>
+                    <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                      <div>
+                        <div style={{ ...labelStyle, marginBottom: 6 }}>AVAILABLE LANES</div>
+                        <LaneCheckboxList
+                          lanes={nonPrimaryLanes}
+                          selectedIds={queueLaneIds}
+                          warningItemsById={laneWarningItemsById}
+                          onToggle={toggleQueueLane}
+                        />
+                        <div style={{ marginTop: 8, fontSize: 11, color: C.textMuted, fontFamily: MONO_FONT }}>
+                          Select lanes to add them to the queue.
+                        </div>
+                      </div>
+
+                      <div>
+                        <div style={{ ...labelStyle, marginBottom: 6 }}>QUEUE ORDER</div>
+                        <div style={{
+                          minHeight: 240,
+                          background: C.bgInput,
+                          border: `1px solid ${C.border}`,
+                          borderRadius: 0,
+                          padding: 8,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 6,
+                        }}>
+                          {queueLaneIds.length === 0 ? (
+                            <div style={{
+                              flex: 1,
                               display: "flex",
                               alignItems: "center",
-                              gap: 10,
-                              padding: "8px 10px",
-                              cursor: "pointer",
-                              background: checked ? C.accentSubtleBg : "transparent",
-                              borderRadius: 0,
-                              transition: "background 0.1s",
-                              marginBottom: 2,
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleQueueLane(lane.id)}
-                              style={{ accentColor: C.accent }}
-                            />
-                            <span style={{
-                              fontFamily: "'JetBrains Mono', monospace",
-                              fontSize: 12,
-                              fontWeight: 600,
-                              color: C.textPrimary,
-                              flex: 1,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}>
-                              {lane.name}
-                            </span>
-                            <span style={{
-                              fontFamily: "'JetBrains Mono', monospace",
-                              fontSize: 11,
+                              justifyContent: "center",
+                              padding: 16,
                               color: C.textMuted,
+                              fontFamily: MONO_FONT,
+                              fontSize: 11,
+                              textAlign: "center",
+                              border: `1px dashed ${C.borderSubtle}`,
                             }}>
-                              {lane.branchRef}
-                            </span>
-                            {warningCount > 0 ? (
-                              <span
-                                title={`${warningCount} readiness warning${warningCount === 1 ? "" : "s"}`}
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 4,
-                                  fontSize: 10,
-                                  fontFamily: MONO_FONT,
-                                  color: C.warning,
-                                  background: `${C.warning}18`,
-                                  border: `1px solid ${C.warning}30`,
-                                  padding: "2px 6px",
-                                }}
-                              >
-                                <Warning size={10} weight="fill" />
-                                {warningCount}
-                              </span>
-                            ) : null}
-                          </label>
-                        );
-                      })}
+                              Add lanes, then drag this list to set landing order.
+                            </div>
+                          ) : (
+                            queueLaneIds.map((laneId, idx) => {
+                              const lane = lanes.find((entry) => entry.id === laneId);
+                              const isDragged = queueDragLaneId === laneId;
+                              return (
+                                <div
+                                  key={laneId}
+                                  draggable={queueLaneIds.length > 1}
+                                  data-queue-lane-id={laneId}
+                                  onDragStart={() => setQueueDragLaneId(laneId)}
+                                  onDragEnd={() => setQueueDragLaneId(null)}
+                                  onDragOver={(event) => event.preventDefault()}
+                                  onDrop={() => handleQueueLaneDrop(laneId)}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 10,
+                                    padding: "10px 12px",
+                                    border: `1px solid ${isDragged ? C.accent : C.borderSubtle}`,
+                                    background: isDragged ? C.accentSubtleBg : "transparent",
+                                    opacity: isDragged ? 0.7 : 1,
+                                  }}
+                                >
+                                  <DotsSixVertical size={14} style={{ color: C.textMuted, cursor: "grab", flexShrink: 0 }} />
+                                  <span style={{
+                                    minWidth: 24,
+                                    color: C.accent,
+                                    fontFamily: MONO_FONT,
+                                    fontSize: 11,
+                                    fontWeight: 700,
+                                  }}>
+                                    #{idx + 1}
+                                  </span>
+                                  <div style={{ minWidth: 0, flex: 1 }}>
+                                    <div style={{
+                                      fontFamily: MONO_FONT,
+                                      fontSize: 12,
+                                      fontWeight: 700,
+                                      color: C.textPrimary,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}>
+                                      {lane?.name ?? laneId}
+                                    </div>
+                                    <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: C.textMuted }}>
+                                      {lane?.branchRef ?? "---"}
+                                    </div>
+                                  </div>
+                                  {idx > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setQueueLaneIds((prev) => {
+                                        const next = [...prev];
+                                        [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                                        return next;
+                                      })}
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        padding: 4,
+                                        background: "transparent",
+                                        border: "none",
+                                        color: C.textMuted,
+                                        cursor: "pointer",
+                                        flexShrink: 0,
+                                      }}
+                                      title="Move up"
+                                    >
+                                      <ArrowUp size={13} />
+                                    </button>
+                                  )}
+                                  {idx < queueLaneIds.length - 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setQueueLaneIds((prev) => {
+                                        const next = [...prev];
+                                        [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                        return next;
+                                      })}
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        padding: 4,
+                                        background: "transparent",
+                                        border: "none",
+                                        color: C.textMuted,
+                                        cursor: "pointer",
+                                        flexShrink: 0,
+                                      }}
+                                      title="Move down"
+                                    >
+                                      <ArrowDown size={13} />
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setQueueLaneIds((prev) => prev.filter((id) => id !== laneId))}
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      padding: 4,
+                                      background: "transparent",
+                                      border: "none",
+                                      color: C.textMuted,
+                                      cursor: "pointer",
+                                      flexShrink: 0,
+                                    }}
+                                    title="Remove lane from queue"
+                                  >
+                                    <Trash size={13} />
+                                  </button>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: 11, color: C.textMuted, fontFamily: MONO_FONT }}>
+                          Drag queued lanes to choose the exact PR creation and landing order.
+                        </div>
+                      </div>
                     </div>
                     <LaneWarningPanel
                       items={selectedQueueWarnings}
@@ -990,80 +1202,13 @@ export function CreatePrModal({
                   <>
                     <div>
                       <span style={labelStyle}>SOURCE LANES TO INTEGRATE (SELECT 2+)</span>
-                      <div style={{
-                        maxHeight: 200,
-                        overflowY: "auto",
-                        background: C.bgInput,
-                        border: `1px solid ${C.border}`,
-                        borderRadius: 0,
-                        padding: 8,
-                      }}>
-                        {nonPrimaryLanes.map((lane) => {
-                          const checked = integrationSources.includes(lane.id);
-                          const warningCount = laneWarningItemsById[lane.id]?.length ?? 0;
-                          return (
-                            <label
-                              key={lane.id}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 10,
-                                padding: "8px 10px",
-                                cursor: "pointer",
-                                background: checked ? C.accentSubtleBg : "transparent",
-                                borderRadius: 0,
-                                transition: "background 0.1s",
-                                marginBottom: 2,
-                              }}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => toggleIntegrationSource(lane.id)}
-                                style={{ accentColor: C.accent }}
-                              />
-                              <span style={{
-                                fontFamily: "'JetBrains Mono', monospace",
-                                fontSize: 12,
-                                fontWeight: 600,
-                                color: C.textPrimary,
-                                flex: 1,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}>
-                                {lane.name}
-                              </span>
-                              <span style={{
-                                fontFamily: "'JetBrains Mono', monospace",
-                                fontSize: 11,
-                                color: C.textMuted,
-                              }}>
-                                {lane.branchRef}
-                              </span>
-                              {warningCount > 0 ? (
-                                <span
-                                  title={`${warningCount} readiness warning${warningCount === 1 ? "" : "s"}`}
-                                  style={{
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    gap: 4,
-                                    fontSize: 10,
-                                    fontFamily: MONO_FONT,
-                                    color: C.warning,
-                                    background: `${C.warning}18`,
-                                    border: `1px solid ${C.warning}30`,
-                                    padding: "2px 6px",
-                                  }}
-                                >
-                                  <Warning size={10} weight="fill" />
-                                  {warningCount}
-                                </span>
-                              ) : null}
-                            </label>
-                          );
-                        })}
-                      </div>
+                      <LaneCheckboxList
+                        lanes={nonPrimaryLanes}
+                        selectedIds={integrationSources}
+                        warningItemsById={laneWarningItemsById}
+                        onToggle={toggleIntegrationSource}
+                        maxHeight={200}
+                      />
                       <LaneWarningPanel
                         items={selectedIntegrationWarnings}
                         loading={selectedIntegrationLoading}
@@ -1133,16 +1278,8 @@ export function CreatePrModal({
                             letterSpacing: "1px",
                             padding: "4px 8px",
                             borderRadius: 0,
-                            color: proposal.overallOutcome === "clean"
-                              ? C.success
-                              : proposal.overallOutcome === "conflict"
-                                ? C.warning
-                                : C.error,
-                            background: proposal.overallOutcome === "clean"
-                              ? `${C.success}18`
-                              : proposal.overallOutcome === "conflict"
-                                ? `${C.warning}18`
-                                : `${C.error}18`,
+                            color: outcomeColor(proposal.overallOutcome),
+                            background: `${outcomeColor(proposal.overallOutcome)}18`,
                           }}>
                             {proposal.overallOutcome.toUpperCase()}
                           </span>
@@ -1281,18 +1418,7 @@ export function CreatePrModal({
                 )}
 
                 {execError && (
-                  <div style={{
-                    background: `${C.error}0D`,
-                    border: `1px solid ${C.error}33`,
-                    borderRadius: 0,
-                    padding: "10px 14px",
-                    fontSize: 11,
-                    fontFamily: "'JetBrains Mono', monospace",
-                    color: C.error,
-                    whiteSpace: "pre-wrap",
-                  }}>
-                    {execError}
-                  </div>
+                  <div style={errorBannerStyle}>{execError}</div>
                 )}
               </div>
             )}
@@ -1394,7 +1520,7 @@ export function CreatePrModal({
                       borderRadius: 0,
                       padding: 16,
                     }}>
-                      <span style={labelStyle}>QUEUED LANES</span>
+                      <span style={labelStyle}>QUEUE ORDER</span>
                       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                         {queueLaneIds.map((laneId, idx) => {
                           const lane = lanes.find((l) => l.id === laneId);
@@ -1420,6 +1546,9 @@ export function CreatePrModal({
                             </div>
                           );
                         })}
+                      </div>
+                      <div style={{ marginTop: 10, fontSize: 11, color: C.textMuted, fontFamily: MONO_FONT }}>
+                        This order will be used exactly when ADE creates the queue PRs.
                       </div>
                     </div>
 
@@ -1470,16 +1599,8 @@ export function CreatePrModal({
                           letterSpacing: "1px",
                           padding: "4px 8px",
                           borderRadius: 0,
-                          color: proposal.overallOutcome === "clean"
-                            ? C.success
-                            : proposal.overallOutcome === "conflict"
-                              ? C.warning
-                              : C.error,
-                          background: proposal.overallOutcome === "clean"
-                            ? `${C.success}18`
-                            : proposal.overallOutcome === "conflict"
-                              ? `${C.warning}18`
-                              : `${C.error}18`,
+                          color: outcomeColor(proposal.overallOutcome),
+                          background: `${outcomeColor(proposal.overallOutcome)}18`,
                         }}>
                           {proposal.overallOutcome.toUpperCase()}
                         </span>
@@ -1533,18 +1654,7 @@ export function CreatePrModal({
                 )}
 
                 {execError && (
-                  <div style={{
-                    background: `${C.error}0D`,
-                    border: `1px solid ${C.error}33`,
-                    borderRadius: 0,
-                    padding: "10px 14px",
-                    fontSize: 11,
-                    fontFamily: "'JetBrains Mono', monospace",
-                    color: C.error,
-                    whiteSpace: "pre-wrap",
-                  }}>
-                    {execError}
-                  </div>
+                  <div style={errorBannerStyle}>{execError}</div>
                 )}
               </div>
             )}
@@ -1708,18 +1818,7 @@ export function CreatePrModal({
 
                 {/* Error display */}
                 {execError && (
-                  <div style={{
-                    background: `${C.error}0D`,
-                    border: `1px solid ${C.error}33`,
-                    borderRadius: 0,
-                    padding: "12px 16px",
-                    fontSize: 11,
-                    fontFamily: "'JetBrains Mono', monospace",
-                    color: C.error,
-                    whiteSpace: "pre-wrap",
-                  }}>
-                    {execError}
-                  </div>
+                  <div style={errorBannerStyle}>{execError}</div>
                 )}
               </div>
             )}
@@ -1792,10 +1891,10 @@ export function CreatePrModal({
             <div>
               {numericStep === 1 && (
                 <button
-                  disabled={!canAdvanceStep1}
+                  disabled={!canProceed}
                   onClick={goToStep2}
                   style={{
-                    background: canAdvanceStep1 ? C.accent : C.textDisabled,
+                    background: canProceed ? C.accent : C.textDisabled,
                     border: "none",
                     borderRadius: 0,
                     color: C.bgMain,
@@ -1805,8 +1904,8 @@ export function CreatePrModal({
                     textTransform: "uppercase" as const,
                     letterSpacing: "1px",
                     padding: "10px 20px",
-                    cursor: canAdvanceStep1 ? "pointer" : "not-allowed",
-                    opacity: canAdvanceStep1 ? 1 : 0.5,
+                    cursor: canProceed ? "pointer" : "not-allowed",
+                    opacity: canProceed ? 1 : 0.5,
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
@@ -1818,10 +1917,10 @@ export function CreatePrModal({
               )}
               {numericStep === 2 && (
                 <button
-                  disabled={busy || !canCreateFromStep2}
+                  disabled={busy || !canProceed}
                   onClick={() => void handleCreate()}
                   style={{
-                    background: (busy || !canCreateFromStep2) ? C.textDisabled : C.accent,
+                    background: (busy || !canProceed) ? C.textDisabled : C.accent,
                     border: "none",
                     borderRadius: 0,
                     color: C.bgMain,
@@ -1831,8 +1930,8 @@ export function CreatePrModal({
                     textTransform: "uppercase" as const,
                     letterSpacing: "1px",
                     padding: "10px 20px",
-                    cursor: (busy || !canCreateFromStep2) ? "not-allowed" : "pointer",
-                    opacity: (busy || !canCreateFromStep2) ? 0.5 : 1,
+                    cursor: (busy || !canProceed) ? "not-allowed" : "pointer",
+                    opacity: (busy || !canProceed) ? 0.5 : 1,
                     display: "flex",
                     alignItems: "center",
                     gap: 6,

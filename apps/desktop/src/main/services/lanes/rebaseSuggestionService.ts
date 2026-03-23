@@ -1,8 +1,9 @@
-import { getHeadSha } from "../git/git";
+import { getHeadSha, runGit } from "../git/git";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
-import type { RebaseSuggestion, RebaseSuggestionsEventPayload } from "../../../shared/types";
+import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload } from "../../../shared/types";
+import { fetchQueueTargetTrackingBranches, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { isRecord, nowIso } from "../shared/utils";
 
 type StoredSuggestionState = {
@@ -57,10 +58,11 @@ export function createRebaseSuggestionService(args: {
   db: AdeDb;
   logger: Logger;
   projectId: string;
+  projectRoot: string;
   laneService: ReturnType<typeof createLaneService>;
   onEvent?: (event: RebaseSuggestionsEventPayload) => void;
 }) {
-  const { db, logger, projectId, laneService, onEvent } = args;
+  const { db, logger, projectId, projectRoot, laneService, onEvent } = args;
 
   const getPrLaneIds = (): Set<string> => {
     const rows = db.all<{ lane_id: string }>(
@@ -80,40 +82,87 @@ export function createRebaseSuggestionService(args: {
     db.setJson(keyForLane(state.laneId), state);
   };
 
+  const readRefHeadSha = async (ref: string): Promise<string | null> => {
+    const result = await runGit(["rev-parse", "--verify", ref], { cwd: projectRoot, timeoutMs: 10_000 });
+    return result.exitCode === 0 && result.stdout.trim() ? result.stdout.trim() : null;
+  };
+
+  const readBehindCount = async (args: { laneWorktreePath: string; baseHeadSha: string }): Promise<number> => {
+    const laneHeadSha = await getHeadSha(args.laneWorktreePath);
+    if (!laneHeadSha) return 0;
+    const result = await runGit(
+      ["rev-list", "--count", `${laneHeadSha}..${args.baseHeadSha}`],
+      { cwd: projectRoot, timeoutMs: 10_000 }
+    );
+    return result.exitCode === 0 ? Math.max(0, Number(result.stdout.trim()) || 0) : 0;
+  };
+
+  const resolveSuggestionBase = async (
+    lane: LaneSummary,
+    laneById: Map<string, LaneSummary>,
+  ): Promise<{ parentLaneId: string; parentHeadSha: string; baseLabel: string | null; groupContext: string | null } | null> => {
+    const queueOverride = await resolveQueueRebaseOverride({
+      db,
+      projectId,
+      projectRoot,
+      laneId: lane.id,
+    });
+    if (queueOverride) {
+      const parentHeadSha = await readRefHeadSha(queueOverride.comparisonRef);
+      if (!parentHeadSha) return null;
+      return {
+        parentLaneId: `queue:${queueOverride.queueGroupId}`,
+        parentHeadSha,
+        baseLabel: queueOverride.baseLabel,
+        groupContext: queueOverride.groupContext,
+      };
+    }
+
+    if (!lane.parentLaneId) return null;
+    const parent = laneById.get(lane.parentLaneId);
+    if (!parent) return null;
+    const parentHeadSha = await getHeadSha(parent.worktreePath);
+    if (!parentHeadSha) return null;
+    return {
+      parentLaneId: lane.parentLaneId,
+      parentHeadSha,
+      baseLabel: parent.name ?? null,
+      groupContext: null,
+    };
+  };
+
   const listSuggestions = async (): Promise<RebaseSuggestion[]> => {
+    await fetchQueueTargetTrackingBranches({
+      db,
+      projectId,
+      projectRoot,
+    });
+
     const lanes = await laneService.list({ includeArchived: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const prLaneIds = getPrLaneIds();
-    const parentHeadShaById = new Map<string, string | null>();
 
     const out: RebaseSuggestion[] = [];
     const nowMs = Date.now();
 
     for (const lane of lanes) {
-      const parentLaneId = lane.parentLaneId;
-      if (!parentLaneId) continue;
-      if (lane.status.behind <= 0) continue;
-
-      const parent = laneById.get(parentLaneId);
-      if (!parent) continue;
-
-      let parentHeadSha = parentHeadShaById.get(parentLaneId);
-      if (parentHeadSha === undefined) {
-        parentHeadSha = await getHeadSha(parent.worktreePath);
-        parentHeadShaById.set(parentLaneId, parentHeadSha);
-      }
-      if (!parentHeadSha) continue;
+      const base = await resolveSuggestionBase(lane, laneById);
+      if (!base) continue;
+      const behindCount = await readBehindCount({
+        laneWorktreePath: lane.worktreePath,
+        baseHeadSha: base.parentHeadSha,
+      });
+      if (behindCount <= 0) continue;
 
       const existing = loadState(lane.id);
-      const behindCount = Math.max(0, Math.floor(lane.status.behind));
 
-      const nextState: StoredSuggestionState = existing && existing.parentLaneId === parentLaneId
+      const nextState: StoredSuggestionState = existing && existing.parentLaneId === base.parentLaneId
         ? (() => {
-            if (existing.parentHeadSha !== parentHeadSha) {
+            if (existing.parentHeadSha !== base.parentHeadSha) {
               return {
                 laneId: lane.id,
-                parentLaneId,
-                parentHeadSha,
+                parentLaneId: base.parentLaneId,
+                parentHeadSha: base.parentHeadSha,
                 behindCount,
                 lastSuggestedAt: nowIso(),
                 deferredUntil: existing.deferredUntil ?? null,
@@ -125,8 +174,8 @@ export function createRebaseSuggestionService(args: {
           })()
         : {
             laneId: lane.id,
-            parentLaneId,
-            parentHeadSha,
+            parentLaneId: base.parentLaneId,
+            parentHeadSha: base.parentHeadSha,
             behindCount,
             lastSuggestedAt: nowIso(),
             deferredUntil: existing?.deferredUntil ?? null,
@@ -137,13 +186,15 @@ export function createRebaseSuggestionService(args: {
         saveState(nextState);
       }
 
-      if (isSuppressed({ nowMs, state: nextState, currentParentHeadSha: parentHeadSha })) continue;
+      if (isSuppressed({ nowMs, state: nextState, currentParentHeadSha: base.parentHeadSha })) continue;
 
       out.push({
         laneId: lane.id,
-        parentLaneId,
-        parentHeadSha,
+        parentLaneId: base.parentLaneId,
+        parentHeadSha: base.parentHeadSha,
         behindCount,
+        baseLabel: base.baseLabel,
+        groupContext: base.groupContext,
         lastSuggestedAt: nextState.lastSuggestedAt,
         deferredUntil: nextState.deferredUntil,
         dismissedAt: nextState.dismissedAt,
@@ -179,19 +230,20 @@ export function createRebaseSuggestionService(args: {
     const lanes = await laneService.list({ includeArchived: false });
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
-    if (!lane.parentLaneId) throw new Error("Lane has no parent; nothing to dismiss.");
-
-    const parent = lanes.find((l) => l.id === lane.parentLaneId);
-    if (!parent) throw new Error("Parent lane not found.");
-    const parentHeadSha = await getHeadSha(parent.worktreePath);
-    if (!parentHeadSha) throw new Error("Unable to resolve parent HEAD.");
+    const laneById = new Map(lanes.map((entry) => [entry.id, entry] as const));
+    const base = await resolveSuggestionBase(lane, laneById);
+    if (!base) throw new Error("Lane has no rebase suggestion to dismiss.");
 
     const existing = loadState(laneId);
+    const behindCount = await readBehindCount({
+      laneWorktreePath: lane.worktreePath,
+      baseHeadSha: base.parentHeadSha,
+    });
     const next: StoredSuggestionState = {
       laneId,
-      parentLaneId: lane.parentLaneId,
-      parentHeadSha,
-      behindCount: Math.max(0, Math.floor(lane.status.behind)),
+      parentLaneId: base.parentLaneId,
+      parentHeadSha: base.parentHeadSha,
+      behindCount,
       lastSuggestedAt: existing?.lastSuggestedAt ?? nowIso(),
       deferredUntil: existing?.deferredUntil ?? null,
       dismissedAt: nowIso()
@@ -210,19 +262,20 @@ export function createRebaseSuggestionService(args: {
     const lanes = await laneService.list({ includeArchived: false });
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
-    if (!lane.parentLaneId) throw new Error("Lane has no parent; nothing to defer.");
-
-    const parent = lanes.find((l) => l.id === lane.parentLaneId);
-    if (!parent) throw new Error("Parent lane not found.");
-    const parentHeadSha = await getHeadSha(parent.worktreePath);
-    if (!parentHeadSha) throw new Error("Unable to resolve parent HEAD.");
+    const laneById = new Map(lanes.map((entry) => [entry.id, entry] as const));
+    const base = await resolveSuggestionBase(lane, laneById);
+    if (!base) throw new Error("Lane has no rebase suggestion to defer.");
 
     const existing = loadState(laneId);
+    const behindCount = await readBehindCount({
+      laneWorktreePath: lane.worktreePath,
+      baseHeadSha: base.parentHeadSha,
+    });
     const next: StoredSuggestionState = {
       laneId,
-      parentLaneId: lane.parentLaneId,
-      parentHeadSha,
-      behindCount: Math.max(0, Math.floor(lane.status.behind)),
+      parentLaneId: base.parentLaneId,
+      parentHeadSha: base.parentHeadSha,
+      behindCount,
       lastSuggestedAt: existing?.lastSuggestedAt ?? nowIso(),
       deferredUntil: until,
       dismissedAt: null
@@ -242,8 +295,19 @@ export function createRebaseSuggestionService(args: {
     if (!parentId || !parentHeadSha) return;
 
     // Lightweight: only consider direct children; rebase runs can recurse.
+    // Skip lanes that have a queue override — their base is the queue target,
+    // not the direct parent, so writing direct-parent ids here would cause
+    // listSuggestions() to see a base identity change and reset dismissals.
     const lanes = await laneService.list({ includeArchived: false });
-    const children = lanes.filter((lane) => lane.parentLaneId === parentId && lane.status.behind > 0);
+    const directChildren = lanes.filter((lane) => lane.parentLaneId === parentId && lane.status.behind > 0);
+
+    if (directChildren.length === 0) return;
+
+    const children: LaneSummary[] = [];
+    for (const child of directChildren) {
+      const queueOverride = await resolveQueueRebaseOverride({ db, projectId, projectRoot, laneId: child.id });
+      if (!queueOverride) children.push(child);
+    }
 
     if (children.length === 0) return;
 
@@ -268,6 +332,7 @@ export function createRebaseSuggestionService(args: {
 
   return {
     listSuggestions,
+    refresh: emit,
     dismiss,
     defer,
     onParentHeadChanged

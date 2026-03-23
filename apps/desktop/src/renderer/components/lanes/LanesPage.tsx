@@ -1597,7 +1597,7 @@ export function LanesPage() {
                   display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,
                   fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
                   color: COLORS.warning, background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30`,
-                }} title={`Behind parent by ${rebaseSuggestion.behindCount} commit(s)`}>
+                }} title={`Behind ${rebaseSuggestion.baseLabel?.trim() || "base"} by ${rebaseSuggestion.behindCount} commit(s)`}>
                   ↑{rebaseSuggestion.behindCount}
                 </span>
               ) : null}

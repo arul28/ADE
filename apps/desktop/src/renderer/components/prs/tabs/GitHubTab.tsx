@@ -14,6 +14,7 @@ type GitHubTabProps = {
   onSelectPr: (id: string | null) => void;
   onRefreshAll: () => Promise<void>;
   onOpenRebaseTab?: () => void;
+  onOpenQueueView?: (groupId: string) => void;
 };
 
 type GitHubFilter = "open" | "closed" | "merged" | "all";
@@ -83,8 +84,6 @@ function stateColor(state: string): { bg: string; border: string; text: string }
       return { bg: "rgba(245,158,11,0.10)", border: "rgba(245,158,11,0.20)", text: "#FBBF24" };
     case "merged":
       return { bg: "rgba(34,197,94,0.10)", border: "rgba(34,197,94,0.20)", text: "#4ADE80" };
-    case "closed":
-      return { bg: "rgba(161,161,170,0.08)", border: "rgba(161,161,170,0.15)", text: "#A1A1AA" };
     default:
       return { bg: "rgba(161,161,170,0.08)", border: "rgba(161,161,170,0.15)", text: "#A1A1AA" };
   }
@@ -138,50 +137,39 @@ function reviewIndicator(linkedPr: PrSummary | null): { color: string; label: st
 }
 
 /* -- adeKind badge with distinctive styling -- */
+const ADE_KIND_STYLES: Record<string, { color: string; background: string; border: string }> = {
+  integration: {
+    color: "#FBBF24",
+    background: "linear-gradient(135deg, rgba(245,158,11,0.14) 0%, rgba(217,119,6,0.06) 100%)",
+    border: "1px solid rgba(245,158,11,0.22)",
+  },
+  queue: {
+    color: "#60A5FA",
+    background: "linear-gradient(135deg, rgba(59,130,246,0.14) 0%, rgba(37,99,235,0.06) 100%)",
+    border: "1px solid rgba(59,130,246,0.22)",
+  },
+  single: {
+    color: "#A1A1AA",
+    background: "rgba(161,161,170,0.06)",
+    border: "1px solid rgba(161,161,170,0.12)",
+  },
+};
+
 function adeKindBadge(kind: GitHubPrListItem["adeKind"]): React.CSSProperties | null {
-  if (kind === "integration") {
-    return {
-      display: "inline-flex",
-      alignItems: "center",
-      padding: "2px 7px",
-      fontSize: 10,
-      fontWeight: 600,
-      fontFamily: SANS_FONT,
-      color: "#FBBF24",
-      background: "linear-gradient(135deg, rgba(245,158,11,0.14) 0%, rgba(217,119,6,0.06) 100%)",
-      border: "1px solid rgba(245,158,11,0.22)",
-      borderRadius: 5,
-    };
-  }
-  if (kind === "queue") {
-    return {
-      display: "inline-flex",
-      alignItems: "center",
-      padding: "2px 7px",
-      fontSize: 10,
-      fontWeight: 600,
-      fontFamily: SANS_FONT,
-      color: "#60A5FA",
-      background: "linear-gradient(135deg, rgba(59,130,246,0.14) 0%, rgba(37,99,235,0.06) 100%)",
-      border: "1px solid rgba(59,130,246,0.22)",
-      borderRadius: 5,
-    };
-  }
-  if (kind === "single") {
-    return {
-      display: "inline-flex",
-      alignItems: "center",
-      padding: "2px 7px",
-      fontSize: 10,
-      fontWeight: 600,
-      fontFamily: SANS_FONT,
-      color: "#A1A1AA",
-      background: "rgba(161,161,170,0.06)",
-      border: "1px solid rgba(161,161,170,0.12)",
-      borderRadius: 5,
-    };
-  }
-  return null;
+  const style = ADE_KIND_STYLES[kind ?? ""];
+  if (!style) return null;
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "2px 7px",
+    fontSize: 10,
+    fontWeight: 600,
+    fontFamily: SANS_FONT,
+    color: style.color,
+    background: style.background,
+    border: style.border,
+    borderRadius: 5,
+  };
 }
 
 /* -- Filter button styles -- */
@@ -367,10 +355,11 @@ function GitHubReadOnlyPane({
   );
 }
 
-export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefreshAll, onOpenRebaseTab }: GitHubTabProps) {
+export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefreshAll, onOpenRebaseTab, onOpenQueueView }: GitHubTabProps) {
   const navigate = useNavigate();
   const {
     prs,
+    mergeContextByPrId,
     detailStatus,
     detailChecks,
     detailReviews,
@@ -509,6 +498,15 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
     () => (selectedItem?.linkedPrId ? prs.find((pr) => pr.id === selectedItem.linkedPrId) ?? null : null),
     [prs, selectedItem],
   );
+  const selectedQueueContext = React.useMemo(() => {
+    if (!selectedLinkedPr) return null;
+    const mergeContext = mergeContextByPrId[selectedLinkedPr.id];
+    if (mergeContext?.groupType !== "queue" || !mergeContext.groupId) return null;
+    return {
+      groupId: mergeContext.groupId,
+      label: "Open queue",
+    };
+  }, [mergeContextByPrId, selectedLinkedPr]);
 
   const handleSync = React.useCallback(async () => {
     setSyncing(true);
@@ -857,6 +855,39 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                     {item.cleanupState === "required" ? (
                       <span style={{ ...inlineBadge(COLORS.warning), fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>cleanup</span>
                     ) : null}
+                    {item.adeKind === "queue" && item.linkedGroupId && onOpenQueueView ? (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenQueueView(item.linkedGroupId!);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onOpenQueueView(item.linkedGroupId!);
+                          }
+                        }}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          padding: "2px 7px",
+                          fontSize: 10,
+                          fontWeight: 600,
+                          fontFamily: SANS_FONT,
+                          color: COLORS.info,
+                          background: "rgba(59,130,246,0.10)",
+                          border: "1px solid rgba(59,130,246,0.18)",
+                          borderRadius: 5,
+                          cursor: "pointer",
+                        }}
+                        title="Open queue workflow"
+                      >
+                        open queue
+                      </span>
+                    ) : null}
                     <span
                       role="link"
                       tabIndex={0}
@@ -1046,8 +1077,9 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
               mergeMethod={mergeMethod}
               onRefresh={handleSync}
               onNavigate={navigate}
-              onTabChange={() => {}}
               onOpenRebaseTab={onOpenRebaseTab}
+              queueContext={selectedQueueContext}
+              onOpenQueueView={onOpenQueueView}
             />
           ) : selectedItem ? (
             <GitHubReadOnlyPane

@@ -77,7 +77,7 @@ export function LaneRebaseBanner({
                       <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>{s.behindCount} BEHIND</span>
                     </div>
                     <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>
-                      Rebase this lane onto its parent to pick up new commits.
+                      Rebase this lane onto {s.baseLabel?.trim() || "its parent"} to pick up new commits.
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">

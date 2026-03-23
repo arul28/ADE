@@ -325,7 +325,6 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
                 mergeMethod={mergeMethod}
                 onRefresh={onRefresh}
                 onNavigate={(path) => navigate(path)}
-                onTabChange={(tab) => setActiveTab(tab as "normal" | "queue" | "integration" | "rebase")}
                 onShowInGraph={(laneId) => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
                 onOpenRebaseTab={() => setActiveTab("rebase")}
               />

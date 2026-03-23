@@ -13,6 +13,7 @@ import type { createLaneService } from "../../lanes/laneService";
 import type { createPrService } from "../../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../../computerUse/computerUseArtifactBrokerService";
 import { nowIso } from "../../shared/utils";
+import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
 import {
   createDefaultComputerUsePolicy,
   isComputerUseModeEnabled,
@@ -21,6 +22,10 @@ import {
 } from "../../../../shared/types";
 
 const execFileAsync = promisify(execFile);
+
+function formatToolError(prefix: string, err: unknown): { success: false; error: string } {
+  return { success: false, error: `${prefix}: ${err instanceof Error ? err.message : String(err)}` };
+}
 
 export interface WorkflowToolDeps {
   laneService: ReturnType<typeof createLaneService>;
@@ -87,10 +92,7 @@ export function createWorkflowTools(
           worktreePath: lane.worktreePath,
         };
       } catch (err) {
-        return {
-          success: false,
-          error: `Failed to create lane: ${err instanceof Error ? err.message : String(err)}`,
-        };
+        return formatToolError("Failed to create lane", err);
       }
     },
   });
@@ -140,10 +142,7 @@ export function createWorkflowTools(
             state: pr.state,
           };
         } catch (err) {
-          return {
-            success: false,
-            error: `Failed to create PR: ${err instanceof Error ? err.message : String(err)}`,
-          };
+          return formatToolError("Failed to create PR", err);
         }
       },
     });
@@ -222,10 +221,7 @@ export function createWorkflowTools(
             title: artifact?.title ?? title,
           };
         } catch (err) {
-          return {
-            success: false,
-            error: `Screenshot failed: ${err instanceof Error ? err.message : String(err)}`,
-          };
+          return formatToolError("Screenshot failed", err);
         }
       },
     });
@@ -268,10 +264,10 @@ export function createWorkflowTools(
               totalComments: comments.length,
               actionableComments: actionableComments.length,
               reviewsRequiringChanges: pendingReviews.filter((r) => r.state === "changes_requested").length,
-              checksStatus: checks.every((c) => c.conclusion === "success")
-                ? "passing"
-                : checks.some((c) => c.conclusion === "failure")
-                  ? "failing"
+              checksStatus: checks.some((c) => c.conclusion === "failure")
+                ? "failing"
+                : checks.every((c) => c.conclusion === "success")
+                  ? "passing"
                   : "pending",
             },
             comments: actionableComments.map((c) => ({
@@ -292,10 +288,7 @@ export function createWorkflowTools(
             })),
           };
         } catch (err) {
-          return {
-            success: false,
-            error: `Failed to get PR comments: ${err instanceof Error ? err.message : String(err)}`,
-          };
+          return formatToolError("Failed to get PR comments", err);
         }
       },
     });
@@ -330,10 +323,7 @@ export function createWorkflowTools(
             commentId: comment.id,
           };
         } catch (err) {
-          return {
-            success: false,
-            error: `Failed to post reply: ${err instanceof Error ? err.message : String(err)}`,
-          };
+          return formatToolError("Failed to post reply", err);
         }
       },
     });
@@ -355,13 +345,10 @@ export function createWorkflowTools(
           const failing = checks.filter((c) => c.conclusion === "failure");
           const pending = checks.filter((c) => c.status !== "completed");
 
+          const overall = failing.length > 0 ? "failing" : pending.length > 0 ? "pending" : "passing";
           return {
             success: true,
-            overall: failing.length > 0
-              ? "failing"
-              : pending.length > 0
-                ? "pending"
-                : "passing",
+            overall,
             total: checks.length,
             passing: passing.length,
             failing: failing.length,
@@ -374,10 +361,147 @@ export function createWorkflowTools(
             })),
           };
         } catch (err) {
+          return formatToolError("Failed to get checks", err);
+        }
+      },
+    });
+
+    tools.prRefreshIssueInventory = tool({
+      description:
+        "Refresh the current pull request issue inventory, including checks, failing workflow details, unresolved review threads, and advisory issue comments. " +
+        "Use this to understand what still needs to be fixed before the PR is ready.",
+      inputSchema: z.object({
+        prId: z.string().describe("The ADE PR ID to inspect"),
+      }),
+      execute: async ({ prId }) => {
+        try {
+          const [checks, actionRuns, reviewThreads, comments] = await Promise.all([
+            prService.getChecks(prId),
+            prService.getActionRuns(prId),
+            prService.getReviewThreads(prId),
+            prService.getComments(prId),
+          ]);
+          const availability = getPrIssueResolutionAvailability(checks, reviewThreads);
+          const failingRuns = actionRuns
+            .filter((run) => run.conclusion === "failure" || run.conclusion === "timed_out" || run.conclusion === "action_required")
+            .map((run) => ({
+              id: run.id,
+              name: run.name,
+              status: run.status,
+              conclusion: run.conclusion,
+              url: run.htmlUrl,
+              failingJobs: run.jobs
+                .filter((job) => job.conclusion === "failure" || job.status === "in_progress")
+                .map((job) => ({
+                  id: job.id,
+                  name: job.name,
+                  status: job.status,
+                  conclusion: job.conclusion,
+                  failingSteps: job.steps
+                    .filter((step) => step.conclusion === "failure" || step.status === "in_progress")
+                    .map((step) => step.name),
+                })),
+            }));
+
           return {
-            success: false,
-            error: `Failed to get checks: ${err instanceof Error ? err.message : String(err)}`,
+            success: true,
+            summary: availability,
+            checks: checks.map((check) => ({
+              name: check.name,
+              status: check.status,
+              conclusion: check.conclusion,
+              url: check.detailsUrl,
+            })),
+            failingWorkflowRuns: failingRuns,
+            reviewThreads: reviewThreads
+              .filter((thread) => !thread.isResolved && !thread.isOutdated)
+              .map((thread) => ({
+                id: thread.id,
+                path: thread.path,
+                line: thread.line,
+                url: thread.url,
+                comments: thread.comments.map((comment) => ({
+                  id: comment.id,
+                  author: comment.author,
+                  body: comment.body,
+                  url: comment.url,
+                })),
+              })),
+            issueComments: comments
+              .filter((comment) => comment.source === "issue")
+              .map((comment) => ({
+                id: comment.id,
+                author: comment.author,
+                body: comment.body,
+                url: comment.url,
+              })),
           };
+        } catch (err) {
+          return formatToolError("Failed to refresh PR issue inventory", err);
+        }
+      },
+    });
+
+    tools.prRerunFailedChecks = tool({
+      description:
+        "Rerun failed CI checks for a pull request through ADE's GitHub integration. " +
+        "Use this after pushing a fix or when the current failed runs should be retried.",
+      inputSchema: z.object({
+        prId: z.string().describe("The ADE PR ID to rerun checks for"),
+      }),
+      execute: async ({ prId }) => {
+        try {
+          await prService.rerunChecks({ prId });
+          return {
+            success: true,
+            prId,
+          };
+        } catch (err) {
+          return formatToolError("Failed to rerun checks", err);
+        }
+      },
+    });
+
+    tools.prReplyToReviewThread = tool({
+      description:
+        "Reply to a GitHub pull request review thread. " +
+        "Use this when you need to explain a fix or justify why a review thread is not being changed.",
+      inputSchema: z.object({
+        prId: z.string().describe("The ADE PR ID"),
+        threadId: z.string().describe("The GitHub review thread node ID"),
+        body: z.string().describe("The markdown reply to post"),
+      }),
+      execute: async ({ prId, threadId, body }) => {
+        try {
+          const comment = await prService.replyToReviewThread({ prId, threadId, body });
+          return {
+            success: true,
+            comment,
+          };
+        } catch (err) {
+          return formatToolError("Failed to reply to review thread", err);
+        }
+      },
+    });
+
+    tools.prResolveReviewThread = tool({
+      description:
+        "Resolve a GitHub pull request review thread through ADE's GitHub integration. " +
+        "Use this only after the underlying issue is actually fixed or the thread is clearly stale/invalid.",
+      inputSchema: z.object({
+        prId: z.string().describe("The ADE PR ID"),
+        threadId: z.string().describe("The GitHub review thread node ID"),
+      }),
+      execute: async ({ prId, threadId }) => {
+        try {
+          await prService.resolveReviewThread({ prId, threadId });
+          return {
+            success: true,
+            prId,
+            threadId,
+          };
+        } catch (err) {
+          return formatToolError("Failed to resolve review thread", err);
         }
       },
     });

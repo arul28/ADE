@@ -382,24 +382,9 @@ export function createMissionPreflightService(args: {
       )
       || (
         selectedPrStrategy?.kind === "queue"
-        && (selectedPrStrategy.autoLand === true || selectedPrStrategy.rehearseQueue === true)
+        && selectedPrStrategy.autoLand === true
         && selectedPrStrategy.autoResolveConflicts === true
       );
-    if (selectedPrStrategy?.kind === "queue" && selectedPrStrategy.autoLand === true && selectedPrStrategy.rehearseQueue === true) {
-      capabilityIssues.push("Queue finalization cannot auto-land and dry-run the queue at the same time. Pick either auto-land or rehearse-only.");
-    }
-    if (selectedPrStrategy?.kind === "queue" && selectedPrStrategy.rehearseQueue === true) {
-      const targetBranch = toOptionalString(selectedPrStrategy.targetBranch) ?? "main";
-      const stripRefPrefix = (ref: string) => ref.trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
-      const targetExists = activeLanes.some((lane) => {
-        const branchRef = stripRefPrefix(String((lane as { branchRef?: string }).branchRef ?? ""));
-        const baseRef = stripRefPrefix(String((lane as { baseRef?: string }).baseRef ?? ""));
-        return lane.id === targetBranch || branchRef === targetBranch || baseRef === targetBranch;
-      });
-      if (!targetExists) {
-        capabilityIssues.push(`Queue rehearsal requires a local lane for target branch "${targetBranch}", but ADE could not find one.`);
-      }
-    }
     if (needsCliConflictResolver) {
       const hasCliResolverModel = [
         ...selected.phases.map((phase) => phase.model.modelId),
@@ -411,9 +396,7 @@ export function createMissionPreflightService(args: {
       if (!hasCliResolverModel) {
         capabilityIssues.push(
           selectedPrStrategy?.kind === "queue"
-            ? selectedPrStrategy.rehearseQueue
-              ? "Queue rehearsal is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
-              : "Queue auto-land is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
+            ? "Queue auto-land is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
             : "Integration finalization is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
         );
       }
@@ -790,7 +773,7 @@ export function createMissionPreflightService(args: {
           ? "Parallel fan-out may be reduced because available worktrees are below the ideal concurrency target."
           : "ADE can provision or reuse enough active lanes for the expected worker fan-out.",
         selectedPrStrategy?.kind === "queue"
-          ? "Queue finalization will respect the configured rehearse/auto-land settings and surface conflicts if automation is blocked."
+          ? "Queue finalization will respect the configured auto-land settings and surface blocked queue steps for operator follow-up."
           : selectedPrStrategy?.kind === "integration"
             ? "Integration finalization will open or land PRs using the configured PR depth and conflict policy."
             : "Mission will complete without a special PR/queue finalization contract.",

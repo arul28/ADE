@@ -259,6 +259,8 @@ export type RebaseSuggestion = {
   parentLaneId: string;
   parentHeadSha: string;
   behindCount: number;
+  baseLabel?: string | null;
+  groupContext?: string | null;
   lastSuggestedAt: string;
   deferredUntil: string | null;
   dismissedAt: string | null;
