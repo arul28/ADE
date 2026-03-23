@@ -1,6 +1,6 @@
 import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash } from "@phosphor-icons/react";
+import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash, ArrowUp, ArrowDown } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import type {
   MergeMethod,
@@ -239,8 +239,10 @@ export function reorderQueueLaneIds(queueLaneIds: string[], draggedLaneId: strin
   if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) return queueLaneIds;
 
   const next = [...queueLaneIds];
-  const [moved] = next.splice(draggedIndex, 1);
-  next.splice(targetIndex, 0, moved);
+  const [removed] = next.splice(draggedIndex, 1);
+  // After removing the dragged item, adjust target index if dragged was above
+  const adjustedTarget = draggedIndex < targetIndex ? targetIndex - 1 : targetIndex;
+  next.splice(adjustedTarget, 0, removed);
   return next;
 }
 
@@ -1100,6 +1102,54 @@ export function CreatePrModal({
                                       {lane?.branchRef ?? "---"}
                                     </div>
                                   </div>
+                                  {idx > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setQueueLaneIds((prev) => {
+                                        const next = [...prev];
+                                        [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                                        return next;
+                                      })}
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        padding: 4,
+                                        background: "transparent",
+                                        border: "none",
+                                        color: C.textMuted,
+                                        cursor: "pointer",
+                                        flexShrink: 0,
+                                      }}
+                                      title="Move up"
+                                    >
+                                      <ArrowUp size={13} />
+                                    </button>
+                                  )}
+                                  {idx < queueLaneIds.length - 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setQueueLaneIds((prev) => {
+                                        const next = [...prev];
+                                        [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                        return next;
+                                      })}
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        padding: 4,
+                                        background: "transparent",
+                                        border: "none",
+                                        color: C.textMuted,
+                                        cursor: "pointer",
+                                        flexShrink: 0,
+                                      }}
+                                      title="Move down"
+                                    >
+                                      <ArrowDown size={13} />
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => setQueueLaneIds((prev) => prev.filter((id) => id !== laneId))}

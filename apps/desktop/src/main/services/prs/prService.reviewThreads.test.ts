@@ -124,114 +124,123 @@ describe("prService.getReviewThreads", () => {
   it("fetches review threads without querying unsupported thread timestamps", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pr-review-threads-"));
     const db = await openKvDb(path.join(root, ".ade.db"), createLogger());
-    const projectId = "proj-review-threads";
-    const lane = makeLane("lane-80", "feature/pr-80", "refs/heads/feature/pr-80", { worktreePath: root });
+    try {
+      const projectId = "proj-review-threads";
+      const lane = makeLane("lane-80", "feature/pr-80", "refs/heads/feature/pr-80", { worktreePath: root });
 
-    await seedProject(db, projectId, root);
-    await seedLane(db, projectId, lane);
-    await seedPr(db, {
-      prId: "pr-80",
-      projectId,
-      laneId: lane.id,
-      baseBranch: "main",
-      headBranch: "feature/pr-80",
-      title: "Fix PR review thread loading",
-    });
+      await seedProject(db, projectId, root);
+      await seedLane(db, projectId, lane);
+      await seedPr(db, {
+        prId: "pr-80",
+        projectId,
+        laneId: lane.id,
+        baseBranch: "main",
+        headBranch: "feature/pr-80",
+        title: "Fix PR review thread loading",
+      });
 
-    const apiRequest = vi.fn(async ({ path: requestPath, body }: { path: string; body?: { query?: string } }) => {
-      if (requestPath !== "/graphql") return { data: {} };
-      const query = body?.query ?? "";
-      expect(query.match(/\bcreatedAt\b/g)?.length ?? 0).toBe(1);
-      expect(query.match(/\bupdatedAt\b/g)?.length ?? 0).toBe(1);
-      return {
-        data: {
+      const apiRequest = vi.fn(async ({ path: requestPath, body }: { path: string; body?: { query?: string } }) => {
+        if (requestPath !== "/graphql") return { data: {} };
+        const query = body?.query ?? "";
+        const commentsSection = query.slice(query.indexOf("comments"));
+        expect(commentsSection).toMatch(/\bcreatedAt\b/);
+        expect(commentsSection).toMatch(/\bupdatedAt\b/);
+        const beforeComments = query.slice(0, query.indexOf("comments"));
+        expect(beforeComments).not.toMatch(/\bcreatedAt\b/);
+        expect(beforeComments).not.toMatch(/\bupdatedAt\b/);
+        return {
           data: {
-            repository: {
-              pullRequest: {
-                reviewThreads: {
-                  pageInfo: {
-                    hasNextPage: false,
-                    endCursor: null,
-                  },
-                  nodes: [
-                    {
-                      id: "thread-1",
-                      isResolved: false,
-                      isOutdated: false,
-                      path: "apps/desktop/src/main/services/prs/prService.ts",
-                      line: 1097,
-                      originalLine: 1097,
-                      startLine: null,
-                      originalStartLine: null,
-                      diffSide: "RIGHT",
-                      comments: {
-                        nodes: [
-                          {
-                            id: "comment-1",
-                            body: "Please load CodeRabbit review threads correctly.",
-                            url: "https://github.com/arul28/ADE/pull/80#discussion_r1",
-                            createdAt: "2026-03-23T01:00:00.000Z",
-                            updatedAt: "2026-03-23T01:05:00.000Z",
-                            author: {
-                              login: "coderabbitai",
-                              avatarUrl: "https://example.com/avatar.png",
-                            },
-                          },
-                        ],
-                      },
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    pageInfo: {
+                      hasNextPage: false,
+                      endCursor: null,
                     },
-                  ],
+                    nodes: [
+                      {
+                        id: "thread-1",
+                        isResolved: false,
+                        isOutdated: false,
+                        path: "apps/desktop/src/main/services/prs/prService.ts",
+                        line: 1097,
+                        originalLine: 1097,
+                        startLine: null,
+                        originalStartLine: null,
+                        diffSide: "RIGHT",
+                        comments: {
+                          nodes: [
+                            {
+                              id: "comment-1",
+                              body: "Please load CodeRabbit review threads correctly.",
+                              url: "https://github.com/arul28/ADE/pull/80#discussion_r1",
+                              createdAt: "2026-03-23T01:00:00.000Z",
+                              updatedAt: "2026-03-23T01:05:00.000Z",
+                              author: {
+                                login: "coderabbitai",
+                                avatarUrl: "https://example.com/avatar.png",
+                              },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
                 },
               },
             },
           },
+        };
+      });
+
+      const service = createPrService({
+        db,
+        logger: createLogger() as any,
+        projectId,
+        projectRoot: root,
+        laneService: {
+          list: async () => [lane],
+        } as any,
+        operationService: {} as any,
+        githubService: { apiRequest } as any,
+        aiIntegrationService: undefined,
+        projectConfigService: {} as any,
+        conflictService: undefined,
+        openExternal: async () => {},
+      });
+
+      await expect(service.getReviewThreads("pr-80")).resolves.toEqual([
+        {
+          id: "thread-1",
+          isResolved: false,
+          isOutdated: false,
+          path: "apps/desktop/src/main/services/prs/prService.ts",
+          line: 1097,
+          originalLine: 1097,
+          startLine: 0,
+          originalStartLine: 0,
+          diffSide: "RIGHT",
+          url: "https://github.com/arul28/ADE/pull/80#discussion_r1",
+          createdAt: "2026-03-23T01:00:00.000Z",
+          updatedAt: "2026-03-23T01:05:00.000Z",
+          comments: [
+            {
+              id: "comment-1",
+              author: "coderabbitai",
+              authorAvatarUrl: "https://example.com/avatar.png",
+              body: "Please load CodeRabbit review threads correctly.",
+              url: "https://github.com/arul28/ADE/pull/80#discussion_r1",
+              createdAt: "2026-03-23T01:00:00.000Z",
+              updatedAt: "2026-03-23T01:05:00.000Z",
+            },
+          ],
         },
-      };
-    });
-
-    const service = createPrService({
-      db,
-      logger: createLogger() as any,
-      projectId,
-      projectRoot: root,
-      laneService: {
-        list: async () => [lane],
-      } as any,
-      operationService: {} as any,
-      githubService: { apiRequest } as any,
-      aiIntegrationService: undefined,
-      projectConfigService: {} as any,
-      conflictService: undefined,
-      openExternal: async () => {},
-    });
-
-    await expect(service.getReviewThreads("pr-80")).resolves.toEqual([
-      {
-        id: "thread-1",
-        isResolved: false,
-        isOutdated: false,
-        path: "apps/desktop/src/main/services/prs/prService.ts",
-        line: 1097,
-        originalLine: 1097,
-        startLine: 0,
-        originalStartLine: 0,
-        diffSide: "RIGHT",
-        url: "https://github.com/arul28/ADE/pull/80#discussion_r1",
-        createdAt: "2026-03-23T01:00:00.000Z",
-        updatedAt: "2026-03-23T01:05:00.000Z",
-        comments: [
-          {
-            id: "comment-1",
-            author: "coderabbitai",
-            authorAvatarUrl: "https://example.com/avatar.png",
-            body: "Please load CodeRabbit review threads correctly.",
-            url: "https://github.com/arul28/ADE/pull/80#discussion_r1",
-            createdAt: "2026-03-23T01:00:00.000Z",
-            updatedAt: "2026-03-23T01:05:00.000Z",
-          },
-        ],
-      },
-    ]);
-    expect(apiRequest).toHaveBeenCalledTimes(1);
+      ]);
+      expect(apiRequest).toHaveBeenCalledTimes(1);
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

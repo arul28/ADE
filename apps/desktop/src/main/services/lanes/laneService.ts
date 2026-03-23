@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 import { isWithinDir } from "../shared/utils";
-import { resolveQueueRebaseOverride } from "../shared/queueRebase";
+import { resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
 import type { createOperationService } from "../history/operationService";
 import type {
@@ -559,18 +559,40 @@ export function createLaneService({
       childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
     }
 
+    // Precompute queue rebase overrides for all lanes to avoid N+1 DB queries
+    // inside resolveStatus(). Each call does multiple DB queries and may run
+    // git commands, so batching up-front is significantly cheaper.
+    const queueOverrideCache = new Map<string, QueueRebaseOverride | null>();
+    if (includeStatus) {
+      const laneIdsToResolve = new Set<string>();
+      for (const row of rows) {
+        laneIdsToResolve.add(row.id);
+        if (row.parent_lane_id) laneIdsToResolve.add(row.parent_lane_id);
+      }
+      await Promise.all(
+        [...laneIdsToResolve].map(async (laneId) => {
+          try {
+            const override = await resolveQueueRebaseOverride({
+              db,
+              projectId,
+              projectRoot,
+              laneId,
+            });
+            queueOverrideCache.set(laneId, override);
+          } catch {
+            queueOverrideCache.set(laneId, null);
+          }
+        }),
+      );
+    }
+
     const resolveStatus = async (laneId: string): Promise<LaneStatus> => {
       const cached = statusCache.get(laneId);
       if (cached) return cached;
       const row = rowsById.get(laneId);
       if (!row) return DEFAULT_LANE_STATUS;
       const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
-      const queueOverride = await resolveQueueRebaseOverride({
-        db,
-        projectId,
-        projectRoot,
-        laneId: row.id,
-      });
+      const queueOverride = queueOverrideCache.get(row.id) ?? null;
       let baseRef = queueOverride?.comparisonRef ?? parent?.branch_ref ?? row.base_ref;
 
       // For primary lanes with no parent, compare against the upstream tracking ref

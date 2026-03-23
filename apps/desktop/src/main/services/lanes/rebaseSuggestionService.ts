@@ -111,7 +111,7 @@ export function createRebaseSuggestionService(args: {
       const parentHeadSha = await readRefHeadSha(queueOverride.comparisonRef);
       if (!parentHeadSha) return null;
       return {
-        parentLaneId: lane.parentLaneId ?? `queue:${queueOverride.queueGroupId}`,
+        parentLaneId: `queue:${queueOverride.queueGroupId}`,
         parentHeadSha,
         baseLabel: queueOverride.baseLabel,
         groupContext: queueOverride.groupContext,

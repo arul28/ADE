@@ -1342,7 +1342,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
       {/* List body */}
       <div style={{ padding: 8, overflowY: "auto", height: "calc(100% - 44px)" }}>
-        {!prs.length && !proposals.length ? (
+        {!integrationPrs.length && !proposals.length ? (
           <EmptyState
             title="No integration PRs"
             description="Use Create PR to set up an integration branch from multiple lanes."

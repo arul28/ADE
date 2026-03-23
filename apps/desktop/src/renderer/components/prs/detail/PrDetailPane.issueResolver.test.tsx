@@ -58,6 +58,7 @@ const visibilityCases: Array<{
   name: string;
   checks: PrCheck[];
   reviewThreads: PrReviewThread[];
+  statusOverrides?: Partial<PrStatus>;
   visible: boolean;
 }> = [
   {
@@ -79,6 +80,7 @@ const visibilityCases: Array<{
     name: "shows for unresolved review threads only",
     checks: [makeCheck({ conclusion: "success" })],
     reviewThreads: [makeThread()],
+    statusOverrides: { checksStatus: "passing" },
     visible: true,
   },
   {
@@ -88,6 +90,7 @@ const visibilityCases: Array<{
       isResolved: true,
       comments: [{ id: "comment-1", author: "reviewer", authorAvatarUrl: null, body: "Looks good now.", url: null, createdAt: null, updatedAt: null }],
     })],
+    statusOverrides: { checksStatus: "passing", reviewStatus: "approved" },
     visible: false,
   },
 ];
@@ -142,7 +145,7 @@ function makeLane(): LaneSummary {
   };
 }
 
-function makeStatus(): PrStatus {
+function makeStatus(overrides: Partial<PrStatus> = {}): PrStatus {
   return {
     prId: "pr-80",
     state: "open",
@@ -151,6 +154,7 @@ function makeStatus(): PrStatus {
     isMergeable: false,
     mergeConflicts: false,
     behindBaseBy: 0,
+    ...overrides,
   };
 }
 
@@ -160,6 +164,7 @@ function renderPane(args: {
   lanes?: LaneSummary[];
   onNavigate?: (path: string) => void;
   activity?: PrActivityEvent[];
+  statusOverrides?: Partial<PrStatus>;
 }) {
   const issueResolutionStart = vi.fn().mockResolvedValue({
     sessionId: "session-1",
@@ -209,7 +214,7 @@ function renderPane(args: {
     ...render(
       <PrDetailPane
         pr={makePr()}
-        status={makeStatus()}
+        status={makeStatus(args.statusOverrides)}
         checks={args.checks}
         reviews={[]}
         comments={[]}
@@ -239,8 +244,8 @@ describe("PrDetailPane issue resolver CTA", () => {
     cleanup();
   });
 
-  it.each(visibilityCases)("$name", async ({ checks, reviewThreads, visible }) => {
-    renderPane({ checks, reviewThreads });
+  it.each(visibilityCases)("$name", async ({ checks, reviewThreads, statusOverrides, visible }) => {
+    renderPane({ checks, reviewThreads, statusOverrides });
 
     await waitFor(() => {
       if (visible) {

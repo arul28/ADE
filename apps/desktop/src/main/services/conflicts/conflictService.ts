@@ -4160,11 +4160,17 @@ export function createConflictService({
   };
 
   const scanRebaseNeeds = async (): Promise<RebaseNeed[]> => {
-    await fetchQueueTargetTrackingBranches({
-      db,
-      projectId,
-      projectRoot,
-    });
+    try {
+      await fetchQueueTargetTrackingBranches({
+        db,
+        projectId,
+        projectRoot,
+      });
+    } catch (error) {
+      logger.warn("conflicts.queue_target_refresh_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const lanes = await listActiveLanes();
     const needs: RebaseNeed[] = [];

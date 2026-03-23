@@ -63,7 +63,7 @@ vi.mock("../../state/appStore", () => ({
   useAppStore: (selector: (state: { lanes: LaneSummary[] }) => unknown) => selector({ lanes: mockLanes }),
 }));
 
-import { CreatePrModal } from "./CreatePrModal";
+import { CreatePrModal, reorderQueueLaneIds } from "./CreatePrModal";
 
 describe("CreatePrModal queue workflow", () => {
   const originalAde = globalThis.window.ade;
@@ -138,5 +138,54 @@ describe("CreatePrModal queue workflow", () => {
         targetBranch: "main",
       }),
     );
+  });
+});
+
+describe("reorderQueueLaneIds", () => {
+  it("returns the original array when dragged and target are the same", () => {
+    const ids = ["a", "b", "c"];
+    expect(reorderQueueLaneIds(ids, "b", "b")).toBe(ids);
+  });
+
+  it("returns the original array when dragged id is not found", () => {
+    const ids = ["a", "b", "c"];
+    expect(reorderQueueLaneIds(ids, "z", "b")).toBe(ids);
+  });
+
+  it("returns the original array when target id is not found", () => {
+    const ids = ["a", "b", "c"];
+    expect(reorderQueueLaneIds(ids, "a", "z")).toBe(ids);
+  });
+
+  it("moves an item forward (drag from above target)", () => {
+    // Drag "a" (index 0) to where "c" (index 2) is
+    expect(reorderQueueLaneIds(["a", "b", "c"], "a", "c")).toEqual(["b", "a", "c"]);
+  });
+
+  it("moves an item backward (drag from below target)", () => {
+    // Drag "c" (index 2) to where "a" (index 0) is
+    expect(reorderQueueLaneIds(["a", "b", "c"], "c", "a")).toEqual(["c", "a", "b"]);
+  });
+
+  it("handles adjacent swap: drag earlier to later", () => {
+    // Dragging "a" onto adjacent "b" places "a" at b's position (insert-before semantic),
+    // which after index adjustment is effectively a no-op for immediate neighbors.
+    expect(reorderQueueLaneIds(["a", "b", "c"], "a", "b")).toEqual(["a", "b", "c"]);
+  });
+
+  it("handles adjacent swap: drag later to earlier", () => {
+    expect(reorderQueueLaneIds(["a", "b", "c"], "b", "a")).toEqual(["b", "a", "c"]);
+  });
+
+  it("handles a longer list - drag from start to end", () => {
+    expect(reorderQueueLaneIds(["a", "b", "c", "d", "e"], "a", "e")).toEqual(["b", "c", "d", "a", "e"]);
+  });
+
+  it("handles a longer list - drag from end to start", () => {
+    expect(reorderQueueLaneIds(["a", "b", "c", "d", "e"], "e", "a")).toEqual(["e", "a", "b", "c", "d"]);
+  });
+
+  it("handles a longer list - drag from middle to middle", () => {
+    expect(reorderQueueLaneIds(["a", "b", "c", "d", "e"], "b", "d")).toEqual(["a", "c", "b", "d", "e"]);
   });
 });

@@ -1,5 +1,5 @@
 export type PrWorkflowTab = "queue" | "integration" | "rebase";
-export type PrActiveTab = "normal" | PrWorkflowTab;
+export type PrActiveTab = "github" | "normal" | PrWorkflowTab;
 
 export type ParsedPrsRouteState = {
   tab: "github" | "normal" | "workflows" | PrWorkflowTab | null;
@@ -53,8 +53,8 @@ export function buildPrsRouteSearch(args: {
 }): string {
   const params = new URLSearchParams();
 
-  if (args.activeTab === "normal") {
-    params.set("tab", "normal");
+  if (args.activeTab === "normal" || args.activeTab === "github") {
+    params.set("tab", args.activeTab);
     if (args.selectedPrId) params.set("prId", args.selectedPrId);
   } else {
     params.set("tab", "workflows");

@@ -232,7 +232,7 @@ type ConflictExcerpts = {
 };
 
 function parseConflictMarkers(content: string): ConflictExcerpts {
-  const markerRegex = /(<<<<<<<[^\n]*\n)([\s\S]*?)(=======\n)([\s\S]*?)(>>>>>>>[^\n]*)/g;
+  const markerRegex = /(<<<<<<<[^\r\n]*\r?\n)([\s\S]*?)(=======\r?\n)([\s\S]*?)(>>>>>>>[^\r\n]*)/g;
   const markers: string[] = [];
   const oursLines: string[] = [];
   const theirsLines: string[] = [];
@@ -1095,6 +1095,10 @@ export function createPrService({
                 startLine
                 originalStartLine
                 diffSide
+                # TODO: comments are capped at 50 per thread with no pagination.
+                # Threads with more than 50 comments will have truncated data and
+                # thread-level timestamps (createdAt/updatedAt) are derived from this
+                # incomplete slice. Paginating comments requires schema changes.
                 comments(first: 50) {
                   nodes {
                     id
@@ -1838,7 +1842,14 @@ export function createPrService({
           error: error instanceof Error ? error.message : String(error),
         });
       });
-      laneService.invalidateCache?.();
+      try {
+        laneService.invalidateCache?.();
+      } catch (cacheError) {
+        logger.warn("prs.lane_cache_invalidation_failed", {
+          prId: row.id,
+          error: cacheError instanceof Error ? cacheError.message : String(cacheError),
+        });
+      }
 
       operationService.finish({
         operationId: op.operationId,
@@ -4284,7 +4295,12 @@ export function createPrService({
     },
 
     async replyToReviewThread(args: ReplyToPrReviewThreadArgs): Promise<PrReviewThreadComment> {
-      requireRow(args.prId);
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
+      if (!threads.some((t) => t.id === args.threadId)) {
+        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
+      }
       const data = await graphqlRequest<{
         addPullRequestReviewThreadReply?: {
           comment?: {
@@ -4339,7 +4355,12 @@ export function createPrService({
     },
 
     async resolveReviewThread(args: ResolvePrReviewThreadArgs): Promise<void> {
-      requireRow(args.prId);
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
+      if (!threads.some((t) => t.id === args.threadId)) {
+        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
+      }
       await graphqlRequest(
         `
           mutation AdeResolveReviewThread($threadId: ID!) {

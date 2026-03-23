@@ -530,6 +530,21 @@ export function QueueTab({
     }
   }, [deleteCloseGh, onRefresh]);
 
+  /** Entry states that indicate the PR has been removed from `pr_group_members` on the backend. */
+  const terminalEntryStates = React.useMemo<Set<QueueLandingEntry["state"]>>(
+    () => new Set(["landed", "skipped"]),
+    [],
+  );
+
+  /** Returns true when a member's queue entry has a terminal state (landed/skipped). */
+  const isMemberTerminal = React.useCallback(
+    (prId: string): boolean => {
+      const entry = queueEntryByPrId.get(prId);
+      return entry != null && terminalEntryStates.has(entry.state);
+    },
+    [queueEntryByPrId, terminalEntryStates],
+  );
+
   const handleDropMember = React.useCallback(async (targetPrId: string) => {
     if (!selectedGroup || !draggedPrId || draggedPrId === targetPrId) {
       setDraggedPrId(null);
@@ -540,12 +555,18 @@ export function QueueTab({
       setDraggedPrId(null);
       return;
     }
+    // Reconcile: only include members that are still current on the backend.
+    // Landed / skipped PRs are removed from pr_group_members by prService.land(),
+    // so sending them to reorderQueuePrs() would cause a rejection.
+    const currentMemberPrIds = selectedGroup.members
+      .filter((member) => !isMemberTerminal(member.prId))
+      .map((member) => member.prId);
     const orderedPrIds = reorderQueueMemberIds(
-      selectedGroup.members.map((member) => member.prId),
+      currentMemberPrIds,
       draggedPrId,
       targetPrId,
     );
-    if (orderedPrIds.join(",") === selectedGroup.members.map((member) => member.prId).join(",")) {
+    if (orderedPrIds.join(",") === currentMemberPrIds.join(",")) {
       setDraggedPrId(null);
       return;
     }
@@ -560,7 +581,7 @@ export function QueueTab({
       setReorderBusy(false);
       setDraggedPrId(null);
     }
-  }, [draggedPrId, onRefresh, queueIsAutomationLocked, selectedGroup]);
+  }, [draggedPrId, isMemberTerminal, onRefresh, queueIsAutomationLocked, selectedGroup]);
 
   const handleRebase = React.useCallback(async (mode: QueueRebaseMode) => {
     if (rebaseTargets.length === 0) return;
@@ -740,6 +761,8 @@ export function QueueTab({
                 const status = describeQueueEntry(queueEntry, member);
                 const healthSummary = describePrHealth(member.pr);
                 const rebaseNeed = rebaseNeedByLaneId.get(member.laneId) ?? null;
+                const memberTerminal = isMemberTerminal(member.prId);
+                const dragDisabled = queueIsAutomationLocked || memberTerminal || selectedGroup.members.length <= 1;
                 const marker =
                   currentMember?.prId === member.prId
                     ? { label: "Current", theme: THEME_BLUE }
@@ -750,11 +773,11 @@ export function QueueTab({
                 return (
                   <div
                     key={member.prId}
-                    draggable={!queueIsAutomationLocked && selectedGroup.members.length > 1}
-                    onDragStart={() => setDraggedPrId(member.prId)}
+                    draggable={!dragDisabled}
+                    onDragStart={() => { if (!memberTerminal) setDraggedPrId(member.prId); }}
                     onDragEnd={() => setDraggedPrId(null)}
                     onDragOver={(event) => {
-                      if (!queueIsAutomationLocked) event.preventDefault();
+                      if (!queueIsAutomationLocked && !memberTerminal) event.preventDefault();
                     }}
                     onDrop={() => void handleDropMember(member.prId)}
                     style={{
@@ -764,23 +787,23 @@ export function QueueTab({
                       display: "flex",
                       flexDirection: "column",
                       gap: 8,
-                      opacity: reorderBusy && draggedPrId === member.prId ? 0.6 : 1,
+                      opacity: reorderBusy && draggedPrId === member.prId ? 0.6 : memberTerminal ? 0.6 : 1,
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
                       <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
                         <button
                           type="button"
-                          disabled={queueIsAutomationLocked || selectedGroup.members.length <= 1}
+                          disabled={dragDisabled}
                           style={{
                             background: "transparent",
                             border: "none",
-                            color: queueIsAutomationLocked ? "#3F3F46" : "#71717A",
+                            color: dragDisabled ? "#3F3F46" : "#71717A",
                             padding: 0,
-                            cursor: queueIsAutomationLocked ? "not-allowed" : "grab",
+                            cursor: dragDisabled ? "not-allowed" : "grab",
                             marginTop: 2,
                           }}
-                          title={queueIsAutomationLocked ? "Queue order is locked while the queue run is active." : "Drag to reorder queue lanes"}
+                          title={queueIsAutomationLocked ? "Queue order is locked while the queue run is active." : memberTerminal ? "This PR has already landed or been skipped." : "Drag to reorder queue lanes"}
                         >
                           <ArrowsDownUp size={14} />
                         </button>
@@ -858,17 +881,19 @@ export function QueueTab({
                         {member.pr?.state !== "merged" ? (
                           <button
                             type="button"
+                            disabled={queueIsAutomationLocked}
                             onClick={() => setDeleteTargetPrId(deleteTargetPrId === member.prId ? null : member.prId)}
                             style={{
                               padding: 6,
                               background: "transparent",
                               border: "1px solid #27212F",
-                              color: deleteTargetPrId === member.prId ? "#FCA5A5" : "#A1A1AA",
-                              cursor: "pointer",
+                              color: queueIsAutomationLocked ? "#52525B" : deleteTargetPrId === member.prId ? "#FCA5A5" : "#A1A1AA",
+                              cursor: queueIsAutomationLocked ? "not-allowed" : "pointer",
+                              opacity: queueIsAutomationLocked ? 0.5 : 1,
                               display: "inline-flex",
                               alignItems: "center",
                             }}
-                            title="Remove from queue"
+                            title={queueIsAutomationLocked ? "Cannot remove while queue automation is active" : "Remove from queue"}
                           >
                             <Trash size={12} />
                           </button>
