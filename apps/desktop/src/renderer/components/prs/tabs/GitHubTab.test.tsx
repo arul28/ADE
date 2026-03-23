@@ -119,7 +119,7 @@ describe("GitHubTab", () => {
 
     await screen.findByText("Merged PR");
 
-    await user.click(screen.getByRole("button", { name: /^open$/i }));
+    await user.click(screen.getByRole("button", { name: /^open/i }));
 
     await waitFor(() => expect(onSelectPr).toHaveBeenLastCalledWith("pr-open"));
     await waitFor(() => expect(screen.getByText("Open PR")).toBeTruthy());

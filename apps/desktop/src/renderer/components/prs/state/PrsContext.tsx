@@ -280,7 +280,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       const shouldLoadWorkflowState = activeTab !== "normal";
       const [prList, laneList, queueStateList, queueRehearsalList] = await Promise.all([
         window.ade.prs.listWithConflicts(),
-        window.ade.lanes.list({ includeStatus: false }),
+        window.ade.lanes.list({ includeStatus: true }),
         shouldLoadWorkflowState
           ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
           : Promise.resolve([] as QueueLandingState[]),

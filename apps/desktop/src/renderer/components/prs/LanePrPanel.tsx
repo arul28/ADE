@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { Warning } from "@phosphor-icons/react";
 import type { AiConfig, CreatePrFromLaneArgs, LandResult, MergeMethod, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
@@ -570,6 +571,36 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
           </div>
         </div>
       )}
+
+      {/* Rebase warning banner — uses local lane status as primary source */}
+      {(() => {
+        const localBehind = lane?.status?.behind ?? 0;
+        const ghBehind = status?.behindBaseBy ?? 0;
+        const effectiveBehind = Math.max(localBehind, ghBehind);
+        const hasConflicts = status?.mergeConflicts ?? false;
+        if (effectiveBehind <= 0 || pr.state !== "open") return null;
+        return (
+          <div className={cn(
+            "mt-2 rounded-lg border p-2.5 text-xs flex items-center gap-2",
+            hasConflicts
+              ? "border-red-500/20 bg-red-500/5"
+              : "border-amber-500/20 bg-amber-500/5"
+          )}>
+            <Warning size={14} weight="fill" className={hasConflicts ? "text-red-400 shrink-0" : "text-amber-400 shrink-0"} />
+            <div className="flex-1 min-w-0">
+              <span className={cn("font-semibold", hasConflicts ? "text-red-300" : "text-amber-300")}>
+                {effectiveBehind} commit{effectiveBehind !== 1 ? "s" : ""} behind {pr.baseBranch}
+              </span>
+              <span className="text-muted-fg ml-1.5">
+                {hasConflicts ? "— conflicts detected" : "— rebase recommended"}
+              </span>
+            </div>
+            <Button size="sm" variant="outline" className="h-6 px-2 text-xs shrink-0" onClick={() => navigate("/prs?tab=rebase")}>
+              Rebase
+            </Button>
+          </div>
+        );
+      })()}
 
       {status ? (
         <div className="mt-2 grid grid-cols-3 gap-2 text-xs">

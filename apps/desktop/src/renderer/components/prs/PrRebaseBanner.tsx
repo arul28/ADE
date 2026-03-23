@@ -99,7 +99,10 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
       <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
         <Warning size={14} weight="fill" style={{ color: "#F59E0B", flexShrink: 0 }} />
         <span className="font-mono font-bold" style={{ fontSize: 11, color: "#F5D08B" }}>
-          {need.behindBy} update{need.behindBy !== 1 ? "s" : ""} behind main — rebase recommended before merging
+          {need.behindBy} commit{need.behindBy !== 1 ? "s" : ""} behind {need.baseBranch}
+          {need.conflictPredicted
+            ? " — conflicts predicted, rebase required"
+            : " — no conflicts, rebase recommended"}
         </span>
       </div>
       <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>

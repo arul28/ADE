@@ -987,7 +987,7 @@ export type PrActionStep = {
 /** Unified activity event for the PR timeline. */
 export type PrActivityEvent = {
   id: string;
-  type: "comment" | "review" | "commit" | "label" | "ci_run" | "state_change" | "review_request";
+  type: "comment" | "review" | "commit" | "label" | "ci_run" | "state_change" | "review_request" | "deployment" | "force_push";
   author: string;
   avatarUrl: string | null;
   body: string | null;

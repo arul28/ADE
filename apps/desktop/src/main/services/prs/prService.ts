@@ -3875,17 +3875,27 @@ export function createPrService({
     },
 
     async getActivity(prId: string): Promise<PrActivityEvent[]> {
-      const [comments, reviews, checks] = await Promise.all([
+      const row = requireRow(prId);
+      const repo = repoFromRow(row);
+      const prNumber = Number(row.github_pr_number);
+
+      const [comments, reviews, checks, timelineEvents] = await Promise.all([
         getComments(prId).catch(() => [] as PrComment[]),
         getReviews(prId).catch(() => [] as PrReview[]),
-        getChecks(prId).catch(() => [] as PrCheck[])
+        getChecks(prId).catch(() => [] as PrCheck[]),
+        fetchAllPages<any>({
+          path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/timeline`
+        }).catch(() => [] as any[])
       ]);
 
       const events: PrActivityEvent[] = [];
+      const seenIds = new Set<string>();
 
       for (const c of comments) {
+        const id = `comment-${c.id}`;
+        seenIds.add(id);
         events.push({
-          id: `comment-${c.id}`,
+          id,
           type: "comment",
           author: c.author,
           avatarUrl: c.authorAvatarUrl || null,
@@ -3896,8 +3906,10 @@ export function createPrService({
       }
 
       for (const r of reviews) {
+        const id = `review-${r.reviewer}-${r.submittedAt || ""}`;
+        seenIds.add(id);
         events.push({
-          id: `review-${r.reviewer}-${r.submittedAt || ""}`,
+          id,
           type: "review",
           author: r.reviewer,
           avatarUrl: r.reviewerAvatarUrl || null,
@@ -3908,8 +3920,10 @@ export function createPrService({
       }
 
       for (const ch of checks) {
+        const id = `ci-${ch.name}`;
+        seenIds.add(id);
         events.push({
-          id: `ci-${ch.name}`,
+          id,
           type: "ci_run",
           author: "github-actions",
           avatarUrl: null,
@@ -3921,6 +3935,109 @@ export function createPrService({
             detailsUrl: ch.detailsUrl
           }
         });
+      }
+
+      // Process GitHub timeline events for deployments, force-pushes, commits, etc.
+      for (const entry of timelineEvents) {
+        const eventType = asString(entry?.event);
+        const nodeId = asString(entry?.node_id || entry?.id);
+        if (!eventType || !nodeId) continue;
+
+        if (eventType === "deployed") {
+          const id = `deploy-${nodeId}`;
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+          const env = asString(entry?.deployment?.environment)
+            || asString(entry?.deployment_environment)
+            || asString(entry?.environment);
+          const creator = asString(entry?.actor?.login)
+            || asString(entry?.performed_via_github_app?.name)
+            || asString(entry?.deployment?.creator?.login);
+          events.push({
+            id,
+            type: "deployment",
+            author: creator || "github-actions",
+            avatarUrl: asString(entry?.actor?.avatar_url) || asString(entry?.deployment?.creator?.avatar_url) || null,
+            body: env ? `Deployed to **${env}**` : "Deployed",
+            timestamp: asString(entry?.created_at) || asString(entry?.deployment?.created_at) || "",
+            metadata: {
+              environment: env,
+              url: asString(entry?.deployment?.url) || null,
+              statusesUrl: asString(entry?.deployment?.statuses_url) || null,
+            }
+          });
+        } else if (eventType === "head_ref_force_pushed") {
+          const id = `force-push-${nodeId}`;
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+          const actor = asString(entry?.actor?.login);
+          const beforeSha = asString(entry?.before_commit_sha).slice(0, 7);
+          const afterSha = asString(entry?.after_commit_sha).slice(0, 7);
+          events.push({
+            id,
+            type: "force_push",
+            author: actor || "unknown",
+            avatarUrl: asString(entry?.actor?.avatar_url) || null,
+            body: beforeSha && afterSha
+              ? `Force-pushed branch from ${beforeSha} to ${afterSha}`
+              : "Force-pushed branch",
+            timestamp: asString(entry?.created_at) || "",
+            metadata: {
+              beforeSha: asString(entry?.before_commit_sha),
+              afterSha: asString(entry?.after_commit_sha),
+            }
+          });
+        } else if (eventType === "committed") {
+          const sha = asString(entry?.sha).slice(0, 7);
+          const id = `commit-${sha || nodeId}`;
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+          events.push({
+            id,
+            type: "commit",
+            author: asString(entry?.author?.name || entry?.committer?.name) || "unknown",
+            avatarUrl: null,
+            body: asString(entry?.message?.split("\n")[0]),
+            timestamp: asString(entry?.author?.date || entry?.committer?.date) || "",
+            metadata: {
+              sha: asString(entry?.sha),
+              shortSha: sha,
+              url: asString(entry?.html_url),
+            }
+          });
+        } else if (eventType === "labeled" || eventType === "unlabeled") {
+          const id = `label-${nodeId}`;
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+          const labelName = asString(entry?.label?.name);
+          events.push({
+            id,
+            type: "label",
+            author: asString(entry?.actor?.login) || "unknown",
+            avatarUrl: asString(entry?.actor?.avatar_url) || null,
+            body: `${eventType === "labeled" ? "Added" : "Removed"} label: ${labelName}`,
+            timestamp: asString(entry?.created_at) || "",
+            metadata: {
+              action: eventType,
+              label: labelName,
+              color: asString(entry?.label?.color),
+            }
+          });
+        } else if (eventType === "review_requested") {
+          const id = `review-req-${nodeId}`;
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+          const reviewer = asString(entry?.requested_reviewer?.login);
+          events.push({
+            id,
+            type: "review_request",
+            author: asString(entry?.actor?.login) || "unknown",
+            avatarUrl: asString(entry?.actor?.avatar_url) || null,
+            body: reviewer ? `Requested review from ${reviewer}` : "Requested a review",
+            timestamp: asString(entry?.created_at) || "",
+            metadata: { reviewer }
+          });
+        }
       }
 
       // Sort descending by timestamp

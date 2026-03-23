@@ -3,9 +3,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import {
-  GitBranch, GitMerge, GithubLogo, CheckCircle, XCircle, Circle,
+  GitBranch, GitMerge, GitCommit, GithubLogo, CheckCircle, XCircle, Circle,
   CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code, ClockCounterClockwise,
-  PencilSimple, X, Check, ArrowsClockwise, Warning, Play,
+  PencilSimple, X, Check, ArrowsClockwise, Warning, Play, Rocket, Tag,
   CaretDown, CaretRight, UserCircle, DotsThreeVertical, Robot,
 } from "@phosphor-icons/react";
 import type {
@@ -453,7 +453,7 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
     { id: "overview", label: "Overview", icon: Eye },
     { id: "files", label: "Files", icon: Code, count: files.length },
     { id: "checks", label: "CI / Checks", icon: Play, count: checks.length },
-    { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: (comments.length + reviews.length) },
+    { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: activity.length > 0 ? activity.length : (comments.length + reviews.length) },
   ];
 
   return (
@@ -626,6 +626,11 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
             onAiSummary={handleAiSummary}
             onNavigate={onNavigate}
             onOpenRebaseTab={onOpenRebaseTab}
+            localBehindCount={(() => {
+              const lane = lanes.find((l) => l.id === pr.laneId);
+              return lane?.status?.behind ?? 0;
+            })()}
+            activity={activity}
           />
         )}
         {activeTab === "files" && (
@@ -863,10 +868,12 @@ type OverviewTabProps = {
   onAiSummary: () => void;
   onNavigate: (path: string) => void;
   onOpenRebaseTab?: () => void;
+  localBehindCount: number;
+  activity: PrActivityEvent[];
 };
 
 function OverviewTab(props: OverviewTabProps) {
-  const { pr, detail, status, checks, reviews, comments, detailBusy, aiSummary, aiSummaryBusy, actionBusy, mergeMethod } = props;
+  const { pr, detail, status, checks, reviews, comments, detailBusy, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity } = props;
   const [checksExpanded, setChecksExpanded] = React.useState(false);
   const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(mergeMethod);
 
@@ -913,44 +920,50 @@ function OverviewTab(props: OverviewTabProps) {
           </div>
         </div>
 
-        {/* ---- Rebase Banner (when PR is behind base branch) ---- */}
-        {(status?.behindBaseBy ?? 0) > 0 && pr.state === "open" && (
-          <div style={{
-            ...cardStyle({ padding: 0, overflow: "hidden" }),
-            flexShrink: 0,
-            borderColor: status?.mergeConflicts ? `${COLORS.danger}30` : `${COLORS.warning}30`,
-            background: status?.mergeConflicts
-              ? `linear-gradient(135deg, ${COLORS.danger}08 0%, transparent 60%)`
-              : `linear-gradient(135deg, ${COLORS.warning}08 0%, transparent 60%)`,
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
-              <Warning size={18} weight="fill" style={{ color: status?.mergeConflicts ? COLORS.danger : COLORS.warning, flexShrink: 0, filter: `drop-shadow(0 0 4px ${status?.mergeConflicts ? COLORS.danger : COLORS.warning}40)` }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-                  {status?.mergeConflicts
-                    ? `${status.behindBaseBy} commit${status.behindBaseBy !== 1 ? "s" : ""} behind ${pr.baseBranch} with conflicts`
-                    : `${status?.behindBaseBy} commit${(status?.behindBaseBy ?? 0) !== 1 ? "s" : ""} behind ${pr.baseBranch}`}
-                </span>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, marginLeft: 8 }}>
-                  {status?.mergeConflicts ? "Rebase required to resolve conflicts" : "Rebase recommended before merging"}
-                </span>
+        {/* ---- Rebase Banner (when PR is behind base branch — checks both GitHub API and local lane status) ---- */}
+        {(() => {
+          const ghBehind = status?.behindBaseBy ?? 0;
+          const effectiveBehind = Math.max(ghBehind, props.localBehindCount);
+          const hasConflicts = status?.mergeConflicts ?? false;
+          if (effectiveBehind <= 0 || pr.state !== "open") return null;
+          return (
+            <div style={{
+              ...cardStyle({ padding: 0, overflow: "hidden" }),
+              flexShrink: 0,
+              borderColor: hasConflicts ? `${COLORS.danger}30` : `${COLORS.warning}30`,
+              background: hasConflicts
+                ? `linear-gradient(135deg, ${COLORS.danger}08 0%, transparent 60%)`
+                : `linear-gradient(135deg, ${COLORS.warning}08 0%, transparent 60%)`,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+                <Warning size={18} weight="fill" style={{ color: hasConflicts ? COLORS.danger : COLORS.warning, flexShrink: 0, filter: `drop-shadow(0 0 4px ${hasConflicts ? COLORS.danger : COLORS.warning}40)` }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
+                    {hasConflicts
+                      ? `${effectiveBehind} commit${effectiveBehind !== 1 ? "s" : ""} behind ${pr.baseBranch} with conflicts`
+                      : `${effectiveBehind} commit${effectiveBehind !== 1 ? "s" : ""} behind ${pr.baseBranch}`}
+                  </span>
+                  <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, marginLeft: 8 }}>
+                    {hasConflicts ? "Rebase required to resolve conflicts" : "Rebase recommended before merging"}
+                  </span>
+                </div>
+                {props.onOpenRebaseTab && (
+                  <button
+                    type="button"
+                    onClick={props.onOpenRebaseTab}
+                    style={outlineButton({
+                      height: 30, padding: "0 14px",
+                      color: hasConflicts ? COLORS.danger : COLORS.warning,
+                      borderColor: hasConflicts ? `${COLORS.danger}40` : `${COLORS.warning}40`,
+                    })}
+                  >
+                    <ArrowsClockwise size={13} weight="bold" /> View Rebase Details
+                  </button>
+                )}
               </div>
-              {props.onOpenRebaseTab && (
-                <button
-                  type="button"
-                  onClick={props.onOpenRebaseTab}
-                  style={outlineButton({
-                    height: 30, padding: "0 14px",
-                    color: status?.mergeConflicts ? COLORS.danger : COLORS.warning,
-                    borderColor: status?.mergeConflicts ? `${COLORS.danger}40` : `${COLORS.warning}40`,
-                  })}
-                >
-                  <ArrowsClockwise size={13} weight="bold" /> Rebase
-                </button>
-              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ---- PR Description ---- */}
         <div style={cardStyle()}>
@@ -1091,45 +1104,141 @@ function OverviewTab(props: OverviewTabProps) {
           )}
         </div>
 
-        {/* ---- Comments Section ---- */}
+        {/* ---- Activity & Comments Section ---- */}
         <div style={cardStyle()}>
-          <span style={{ ...LABEL_STYLE, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary, marginBottom: 14, display: "block" }}>Comments ({comments.length})</span>
-          {sortedComments.length === 0 ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim, marginBottom: 14, padding: "8px 0" }}>No comments yet</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
-              {sortedComments.map((comment) => {
-                const isReview = comment.source === "review";
-                const authorIsBot = isBot(comment.author);
-                return (
-                  <div key={comment.id} style={{
-                    padding: "14px 14px 12px", borderRadius: 10,
-                    background: isReview ? "rgba(245,158,11,0.04)" : "rgba(255,245,235,0.03)",
-                    border: `1px solid ${isReview ? "rgba(245,158,11,0.12)" : "rgba(255,255,255,0.06)"}`,
-                  }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <CommentAvatar author={comment.author} avatarUrl={comment.authorAvatarUrl} size={24} />
-                      <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{comment.author}</span>
-                      {authorIsBot && (
-                        <span style={{ fontFamily: SANS_FONT, fontSize: 9, fontWeight: 700, color: COLORS.textMuted, background: `${COLORS.textMuted}18`, padding: "1px 5px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>bot</span>
-                      )}
-                      <span style={inlineBadge(isReview ? COLORS.warning : COLORS.info, { padding: "1px 8px", fontSize: 10 })}>
-                        {isReview ? "Review" : "Comment"}
-                      </span>
-                      {comment.path && (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}14`, padding: "2px 8px", borderRadius: 6 }}>{comment.path}{comment.line ? `:${comment.line}` : ""}</span>
-                      )}
-                      <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted }}>{formatTs(comment.createdAt)}</span>
-                      <CommentMenu url={comment.url} />
+          <span style={{ ...LABEL_STYLE, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary, marginBottom: 14, display: "block" }}>
+            Activity ({activity.length > 0 ? activity.length : comments.length})
+          </span>
+          {(() => {
+            // Use full activity timeline if available, else fall back to comments.
+            // Filter out ci_run events — they're shown in the CI/Checks tab.
+            const timeline = activity.length > 0
+              ? [...activity].filter((ev) => ev.type !== "ci_run").sort((a, b) => {
+                  const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+                  const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+                  return ta - tb;
+                })
+              : sortedComments.map((c) => ({
+                  id: c.id, type: "comment" as const, author: c.author,
+                  avatarUrl: c.authorAvatarUrl, body: c.body,
+                  timestamp: c.createdAt ?? "", metadata: { source: c.source, path: c.path, line: c.line, url: c.url },
+                }));
+
+            if (timeline.length === 0) {
+              return <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim, marginBottom: 14, padding: "8px 0" }}>No activity yet</div>;
+            }
+
+            const eventColor = (ev: PrActivityEvent) => {
+              if (ev.type === "comment") return ev.metadata?.source === "review" ? COLORS.warning : COLORS.info;
+              if (ev.type === "review") return COLORS.accent;
+              if (ev.type === "deployment") return COLORS.success;
+              if (ev.type === "force_push") return COLORS.warning;
+              if (ev.type === "commit") return COLORS.accent;
+              if (ev.type === "ci_run") return COLORS.warning;
+              if (ev.type === "label") return COLORS.info;
+              return COLORS.textMuted;
+            };
+
+            const eventLabel = (ev: PrActivityEvent) => {
+              if (ev.type === "comment") return ev.metadata?.source === "review" ? "review comment" : "comment";
+              if (ev.type === "review") return "review";
+              if (ev.type === "deployment") return "deployed";
+              if (ev.type === "force_push") return "force push";
+              if (ev.type === "commit") return "commit";
+              if (ev.type === "ci_run") return "CI";
+              if (ev.type === "label") return "label";
+              if (ev.type === "review_request") return "review request";
+              return String(ev.type).replace(/_/g, " ");
+            };
+
+            const eventIcon = (ev: PrActivityEvent) => {
+              const col = eventColor(ev);
+              const s = { color: col, flexShrink: 0 } as const;
+              if (ev.type === "comment") return <ChatText size={12} weight="fill" style={s} />;
+              if (ev.type === "review") return <Check size={12} weight="bold" style={s} />;
+              if (ev.type === "deployment") return <Rocket size={12} weight="fill" style={s} />;
+              if (ev.type === "force_push") return <ArrowsClockwise size={12} weight="bold" style={s} />;
+              if (ev.type === "commit") return <GitCommit size={12} weight="bold" style={s} />;
+              if (ev.type === "ci_run") return <Play size={12} weight="fill" style={s} />;
+              if (ev.type === "label") return <Tag size={12} weight="fill" style={s} />;
+              if (ev.type === "review_request") return <Eye size={12} weight="fill" style={s} />;
+              return <Circle size={10} weight="fill" style={s} />;
+            };
+
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+                {timeline.map((ev) => {
+                  const col = eventColor(ev);
+                  const isComment = ev.type === "comment";
+                  const isReviewComment = isComment && ev.metadata?.source === "review";
+                  const authorIsBot = isBot(ev.author);
+
+                  return (
+                    <div key={ev.id} style={{
+                      padding: isComment ? "14px 14px 12px" : "10px 14px",
+                      borderRadius: 10,
+                      background: isReviewComment
+                        ? "rgba(245,158,11,0.04)"
+                        : isComment
+                          ? "rgba(255,245,235,0.03)"
+                          : `${col}06`,
+                      border: `1px solid ${isReviewComment ? "rgba(245,158,11,0.12)" : isComment ? "rgba(255,255,255,0.06)" : `${col}18`}`,
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: isComment && ev.body ? 8 : 0 }}>
+                        {ev.avatarUrl ? (
+                          <CommentAvatar author={ev.author} avatarUrl={ev.avatarUrl} size={isComment ? 24 : 20} />
+                        ) : (
+                          <div style={{ width: isComment ? 24 : 20, height: isComment ? 24 : 20, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            {eventIcon(ev)}
+                          </div>
+                        )}
+                        <span style={{ fontFamily: SANS_FONT, fontSize: isComment ? 13 : 12, fontWeight: 600, color: COLORS.textPrimary }}>{ev.author}</span>
+                        {authorIsBot && (
+                          <span style={{ fontFamily: SANS_FONT, fontSize: 9, fontWeight: 700, color: COLORS.textMuted, background: `${COLORS.textMuted}18`, padding: "1px 5px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>bot</span>
+                        )}
+                        <span style={inlineBadge(col, { padding: "1px 8px", fontSize: 10 })}>
+                          {eventLabel(ev)}
+                        </span>
+                        {isComment && typeof ev.metadata?.path === "string" && (
+                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}14`, padding: "2px 8px", borderRadius: 6 }}>
+                            {String(ev.metadata.path)}{typeof ev.metadata?.line === "number" ? `:${ev.metadata.line}` : ""}
+                          </span>
+                        )}
+                        {ev.type === "deployment" && typeof ev.metadata?.environment === "string" && (
+                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.success, background: `${COLORS.success}14`, padding: "2px 8px", borderRadius: 6 }}>
+                            {String(ev.metadata.environment)}
+                          </span>
+                        )}
+                        {ev.type === "commit" && typeof ev.metadata?.shortSha === "string" && (
+                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}14`, padding: "2px 8px", borderRadius: 6 }}>
+                            {String(ev.metadata.shortSha)}
+                          </span>
+                        )}
+                        {ev.type === "force_push" && (
+                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.warning, background: `${COLORS.warning}14`, padding: "2px 8px", borderRadius: 6 }}>
+                            {typeof ev.metadata?.beforeSha === "string" ? `${String(ev.metadata.beforeSha).slice(0, 7)} → ${String(ev.metadata?.afterSha ?? "").slice(0, 7)}` : "branch updated"}
+                          </span>
+                        )}
+                        <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted, flexShrink: 0 }}>{formatTs(ev.timestamp)}</span>
+                        {isComment && typeof ev.metadata?.url === "string" && (
+                          <CommentMenu url={String(ev.metadata.url)} />
+                        )}
+                      </div>
+                      {isComment && ev.body ? (
+                        <div style={{ paddingLeft: 32 }}>
+                          <MarkdownBody markdown={ev.body} />
+                        </div>
+                      ) : !isComment && ev.body ? (
+                        <div style={{ paddingLeft: isComment ? 32 : 28, marginTop: 4 }}>
+                          <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>{ev.body}</span>
+                        </div>
+                      ) : null}
                     </div>
-                    <div style={{ paddingLeft: 32 }}>
-                      <MarkdownBody markdown={comment.body || "(empty comment)"} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  );
+                })}
+              </div>
+            );
+          })()}
           {/* Add comment */}
           <div style={{ position: "relative" }}>
             <textarea
@@ -1927,18 +2036,26 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
     }
     if (event.type === "ci_run") return COLORS.warning;
     if (event.type === "state_change") return COLORS.success;
+    if (event.type === "deployment") return COLORS.success;
+    if (event.type === "force_push") return COLORS.warning;
+    if (event.type === "commit") return COLORS.accent;
+    if (event.type === "label") return COLORS.info;
     return COLORS.textMuted;
   }, []);
 
   const activityLabel = React.useCallback((event: PrActivityEvent) => {
     if (event.type === "comment") {
-      return event.metadata?.source === "review" ? "review comment" : "issue comment";
+      return event.metadata?.source === "review" ? "review comment" : "comment";
     }
     if (event.type === "review") return "review";
     if (event.type === "ci_run") return "CI";
     if (event.type === "state_change") return "state change";
     if (event.type === "review_request") return "review request";
-    return event.type.replace(/_/g, " ");
+    if (event.type === "deployment") return "deployed";
+    if (event.type === "force_push") return "force push";
+    if (event.type === "commit") return "commit";
+    if (event.type === "label") return "label";
+    return String(event.type).replace(/_/g, " ");
   }, []);
 
   const activityIcon = React.useCallback((event: PrActivityEvent) => {
@@ -1949,6 +2066,10 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
     if (event.type === "ci_run") return <Play size={12} weight="fill" style={iconStyle} />;
     if (event.type === "state_change") return <GitMerge size={12} weight="fill" style={iconStyle} />;
     if (event.type === "review_request") return <Eye size={12} weight="fill" style={iconStyle} />;
+    if (event.type === "deployment") return <Rocket size={12} weight="fill" style={iconStyle} />;
+    if (event.type === "force_push") return <ArrowsClockwise size={12} weight="bold" style={iconStyle} />;
+    if (event.type === "commit") return <GitCommit size={12} weight="bold" style={iconStyle} />;
+    if (event.type === "label") return <Tag size={12} weight="fill" style={iconStyle} />;
     return <Circle size={10} weight="fill" style={iconStyle} />;
   }, [activityColor]);
 
@@ -2020,6 +2141,21 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
                           {String(event.metadata.path)}{typeof event.metadata?.line === "number" ? `:${event.metadata.line}` : ""}
                         </span>
                       ) : null}
+                      {event.type === "deployment" && typeof event.metadata?.environment === "string" ? (
+                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.success, background: `${COLORS.success}14`, padding: "2px 8px", borderRadius: 6 }}>
+                          {String(event.metadata.environment)}
+                        </span>
+                      ) : null}
+                      {event.type === "commit" && typeof event.metadata?.shortSha === "string" ? (
+                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}14`, padding: "2px 8px", borderRadius: 6 }}>
+                          {String(event.metadata.shortSha)}
+                        </span>
+                      ) : null}
+                      {event.type === "force_push" && (
+                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.warning, background: `${COLORS.warning}14`, padding: "2px 8px", borderRadius: 6 }}>
+                          {typeof event.metadata?.beforeSha === "string" ? `${String(event.metadata.beforeSha).slice(0, 7)} → ${String(event.metadata?.afterSha ?? "").slice(0, 7)}` : "branch updated"}
+                        </span>
+                      )}
                       <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: "#8B7355" }}>{formatTs(event.timestamp)}</span>
                     </div>
                     {event.body && (
