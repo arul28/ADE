@@ -819,6 +819,7 @@ function InlineDisclosureRow({
     <div className={cn("rounded-lg", className)}>
       <button
         type="button"
+        aria-expanded={expandable ? open : undefined}
         className={cn(
           "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-white/[0.03]",
           !expandable && "cursor-default hover:bg-transparent",
