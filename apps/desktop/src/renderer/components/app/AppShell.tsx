@@ -311,7 +311,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Poll context status while generation is running so banners update in real-time
   useEffect(() => {
     if (!project?.rootPath) return;
-    if (contextStatus?.generation.state !== "running") return;
+    if (contextStatus?.generation.state !== "pending" && contextStatus?.generation.state !== "running") return;
     const poll = window.setInterval(() => {
       void window.ade.context.getStatus().then((status) => {
         setContextStatus(status);
@@ -566,7 +566,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar && project?.rootPath && !showWelcome && contextStatus?.generation.state === "running" ? (
+      {!hideSidebar && project?.rootPath && !showWelcome && (contextStatus?.generation.state === "pending" || contextStatus?.generation.state === "running") ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-sky-500/6 px-3 py-1.5 text-[11px] font-mono text-sky-800">
           ADE context docs are generating in the background. <Link to="/settings?tab=workspace" className="underline">Open context settings</Link>
         </div>
@@ -578,7 +578,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar && project?.rootPath && !showWelcome && contextStatus?.generation.state !== "running" && missingContextDocs.length > 0 ? (
+      {!hideSidebar && project?.rootPath && !showWelcome && contextStatus?.generation.state !== "pending" && contextStatus?.generation.state !== "running" && missingContextDocs.length > 0 ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           Missing ADE context docs:
           {missingContextDocs.map((doc) => ` ${doc.label}`).join(", ")}.
