@@ -1,27 +1,70 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 
 function LocationProbe() {
   const location = useLocation();
-  return <div data-testid="location">{location.pathname}{location.search}</div>;
+  return (
+    <div data-testid="location">
+      {location.pathname}{location.search}
+      {"::"}
+      {JSON.stringify(location.state ?? null)}
+    </div>
+  );
 }
 
-function renderMessageList(events: AgentChatEventEnvelope[]) {
-  render(
-    <MemoryRouter initialEntries={["/"]}>
-      <AgentChatMessageList events={events} />
+function renderMessageList(
+  events: AgentChatEventEnvelope[],
+  options?: {
+    assistantLabel?: string;
+    initialState?: Record<string, unknown>;
+    showStreamingIndicator?: boolean;
+  },
+) {
+  return render(
+    <MemoryRouter initialEntries={[{ pathname: "/", state: options?.initialState }]}>
+      <AgentChatMessageList
+        events={events}
+        assistantLabel={options?.assistantLabel}
+        showStreamingIndicator={options?.showStreamingIndicator}
+      />
       <LocationProbe />
     </MemoryRouter>,
   );
 }
 
+const originalAde = globalThis.window.ade;
+
+beforeEach(() => {
+  globalThis.window.ade = {
+    ...(originalAde ?? {}),
+    files: {
+      ...(originalAde?.files ?? {}),
+      listWorkspaces: vi.fn().mockResolvedValue([
+        {
+          id: "workspace-lane-123",
+          kind: "worktree",
+          laneId: "lane-123",
+          name: "Lane 123",
+          rootPath: "/Users/admin/Projects/ADE/.ade/worktrees/fix-codex-chat-67bc1826",
+          isReadOnlyByDefault: false,
+        },
+      ]),
+    },
+  } as any;
+});
+
 afterEach(() => {
   cleanup();
+  if (originalAde === undefined) {
+    delete (globalThis.window as any).ade;
+  } else {
+    globalThis.window.ade = originalAde;
+  }
 });
 
 describe("AgentChatMessageList operator navigation suggestions", () => {
@@ -52,7 +95,7 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open in Work" }));
 
-    expect(screen.getByTestId("location").textContent).toBe("/work?sessionId=chat-1");
+    expect(screen.getByTestId("location").textContent).toBe("/work?sessionId=chat-1::null");
   });
 
   it("renders mission suggestions from tool results and navigates by deeplink", () => {
@@ -82,6 +125,480 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open mission" }));
 
-    expect(screen.getByTestId("location").textContent).toBe("/missions?missionId=mission-1");
+    expect(screen.getByTestId("location").textContent).toBe("/missions?missionId=mission-1::null");
+  });
+});
+
+describe("AgentChatMessageList transcript rendering", () => {
+  it("groups consecutive commands into one expandable card", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "command",
+          command: "npm test",
+          cwd: "/Users/admin/project",
+          output: "ok",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "completed",
+          exitCode: 0,
+          durationMs: 120,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "command",
+          command: "npm run lint",
+          cwd: "/Users/admin/project",
+          output: "lint ok",
+          itemId: "command-2",
+          turnId: "turn-1",
+          status: "completed",
+          exitCode: 0,
+          durationMs: 140,
+        },
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: /2 commands/i }));
+
+    expect(screen.getAllByText("npm test").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("npm run lint").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("groups consecutive file changes into one expandable card", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "file_change",
+          path: "apps/desktop/src/foo.ts",
+          diff: "+ const a = 1;\n",
+          kind: "modify",
+          itemId: "file-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "file_change",
+          path: "apps/desktop/src/bar.ts",
+          diff: "+ const b = 2;\n",
+          kind: "modify",
+          itemId: "file-2",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: /2 files/i }));
+
+    const body = document.body.textContent ?? "";
+    expect(body).toContain("foo.ts");
+    expect(body).toContain("bar.ts");
+  });
+
+  it("makes workspace markdown links open the Files tab", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Open [AgentChatMessageList.tsx](apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx) for the renderer.",
+            itemId: "text-1",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-123" },
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "AgentChatMessageList.tsx" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
+    );
+  });
+
+  it("maps absolute workspace file references into Files navigation targets", async () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `/Users/admin/Projects/ADE/.ade/worktrees/fix-codex-chat-67bc1826/apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`.",
+            itemId: "text-absolute",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-123" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "/Users/admin/Projects/ADE/.ade/worktrees/fix-codex-chat-67bc1826/apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx",
+      }),
+    );
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
+    );
+  });
+
+  it("coalesces text fragments even when structured events interleave", () => {
+    const view = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: "Grouped",
+          itemId: "text-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "command",
+          command: "echo ok",
+          cwd: "/Users/admin/project",
+          output: "ok",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "completed",
+          exitCode: 0,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "text",
+          text: " output",
+          itemId: "text-1",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(view.container.textContent).toContain("Grouped output");
+    expect(screen.getByText("echo ok")).toBeTruthy();
+  });
+
+  it("keeps activity rows in the streaming indicator instead of the transcript", () => {
+    const sharedEvents: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: "Let me check that.",
+          itemId: "text-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "activity",
+          activity: "running_command",
+          detail: "npm test",
+          turnId: "turn-1",
+        },
+      },
+    ];
+
+    const streaming = renderMessageList(sharedEvents, { showStreamingIndicator: true });
+
+    expect(streaming.container.textContent).toContain("Running command: npm test");
+
+    cleanup();
+
+    const transcriptOnly = renderMessageList(sharedEvents, { showStreamingIndicator: false });
+
+    expect(transcriptOnly.container.textContent).not.toContain("Running command: npm test");
+  });
+
+  it("keeps the live assistant bubble stable until the turn finishes", () => {
+    const live = renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Streaming response",
+            itemId: "text-live",
+            turnId: "turn-live",
+          },
+        },
+      ],
+      { showStreamingIndicator: true },
+    );
+
+    expect(live.container.innerHTML).toContain("min-h-[5.5rem]");
+
+    cleanup();
+
+    const settled = renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Streaming response",
+            itemId: "text-live",
+            turnId: "turn-live",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: {
+            type: "done",
+            turnId: "turn-live",
+            status: "completed",
+            modelId: "gpt-5.4-codex",
+          },
+        },
+      ],
+      { showStreamingIndicator: false },
+    );
+
+    expect(settled.container.innerHTML).not.toContain("min-h-[5.5rem]");
+  });
+
+  it("renders a bottom turn summary card with task, file, and background-agent totals", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "todo_update",
+            turnId: "turn-1",
+            items: [
+              { id: "task-1", description: "Inspect chat renderer", status: "completed" },
+              { id: "task-2", description: "Refine summary card", status: "in_progress" },
+            ],
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: {
+            type: "file_change",
+            path: "apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx",
+            diff: "+ const added = true;\n- const removed = false;\n",
+            kind: "modify",
+            itemId: "file-1",
+            turnId: "turn-1",
+            status: "completed",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:02.000Z",
+          event: {
+            type: "subagent_started",
+            taskId: "agent-1",
+            description: "Check Claude task list support",
+            background: true,
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-123" },
+      },
+    );
+
+    expect(screen.getAllByText("1 of 2 tasks completed").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/1 file changed/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/1 background agent/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("1 active").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("-1").length).toBeGreaterThanOrEqual(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+
+    expect(screen.getByTestId("location").textContent).toBe("/files::{\"laneId\":\"lane-123\"}");
+  });
+
+  it("renders ask-user requests with a static amber dot instead of a spinner", () => {
+    const view = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "approval_request",
+          itemId: "approval-1",
+          kind: "tool_call",
+          description: "Which branch should I use?",
+          turnId: "turn-1",
+          detail: {
+            tool: "askUser",
+            question: "Which branch should I use?",
+          },
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Needs Input")).toBeTruthy();
+    expect(view.container.querySelector(".animate-spin")).toBeNull();
+    expect(view.container.querySelector(".bg-amber-400\\/85")).toBeTruthy();
+  });
+
+  it("labels provider chats as Codex and preserves explicit assistant labels", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: "Streaming response",
+          itemId: "text-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          modelId: "gpt-5.4-codex",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Codex")).toBeTruthy();
+
+    cleanup();
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Streaming response",
+            itemId: "text-1",
+            turnId: "turn-1",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: {
+            type: "done",
+            turnId: "turn-1",
+            status: "completed",
+            modelId: "gpt-5.4-codex",
+          },
+        },
+      ],
+      {
+        assistantLabel: "Workbench",
+      },
+    );
+
+    expect(screen.getByText("Workbench")).toBeTruthy();
+  });
+
+  it("surfaces the latest turn task summary with review changes near the composer", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Working through the renderer pass.",
+            itemId: "text-1",
+            turnId: "turn-7",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: {
+            type: "todo_update",
+            turnId: "turn-7",
+            items: [
+              { id: "task-1", description: "Inspect shared renderer", status: "completed" },
+              { id: "task-2", description: "Implement calmer transcript rows", status: "in_progress" },
+            ],
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:02.000Z",
+          event: {
+            type: "file_change",
+            path: "apps/desktop/src/foo.ts",
+            diff: "+ const a = 1;\n",
+            kind: "modify",
+            itemId: "file-1",
+            turnId: "turn-7",
+            status: "completed",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:03.000Z",
+          event: {
+            type: "subagent_started",
+            taskId: "bg-1",
+            description: "Check mission thread renderer",
+            turnId: "turn-7",
+            background: true,
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-123" },
+      },
+    );
+
+    expect(screen.getAllByText("1 of 2 tasks completed").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Inspect shared renderer").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Implement calmer transcript rows").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/1 file changed/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/1 background agent/i).length).toBeGreaterThanOrEqual(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Review changes/i }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"laneId\":\"lane-123\"}",
+    );
   });
 });

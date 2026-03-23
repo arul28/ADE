@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   CaretDown,
   CaretRight,
@@ -29,6 +29,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   ChatSurfaceChipTone,
+  FilesWorkspace,
   ChatSurfaceProfile,
   ChatSurfaceMode,
   OperatorNavigationSuggestion,
@@ -41,6 +42,7 @@ import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
+import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 
 function formatStructuredValue(value: unknown): string {
   if (typeof value === "string") return value;
@@ -98,6 +100,49 @@ function summarizeInlineText(value: string, maxChars = 120): string {
   const text = value.replace(/\s+/g, " ").trim();
   if (!text.length) return "";
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
+}
+
+function getEventTurnId(event: AgentChatEvent): string | null {
+  if (!("turnId" in event) || typeof event.turnId !== "string") return null;
+  const turnId = event.turnId.trim();
+  return turnId.length ? turnId : null;
+}
+
+function basenamePathLabel(value: string): string {
+  const normalized = value.replace(/\\/g, "/");
+  const basename = normalized.split("/").pop()?.trim();
+  return basename?.length ? basename : normalized;
+}
+
+function dirnamePathLabel(value: string): string | null {
+  const normalized = value.replace(/\\/g, "/");
+  const basename = basenamePathLabel(normalized);
+  if (basename === normalized) return null;
+  const suffix = `/${basename}`;
+  return normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : null;
+}
+
+function summarizeDiffStats(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split(/\r?\n/)) {
+    if (!line.length) continue;
+    if (line.startsWith("+++ ") || line.startsWith("--- ") || line.startsWith("@@")) continue;
+    if (line.startsWith("+")) additions += 1;
+    else if (line.startsWith("-")) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+function formatFileAction(kind: Extract<AgentChatEvent, { type: "file_change" }>["kind"]): string {
+  switch (kind) {
+    case "create":
+      return "Created";
+    case "delete":
+      return "Deleted";
+    default:
+      return "Edited";
+  }
 }
 
 function formatTokenCount(value: number | null | undefined): string | null {
@@ -210,12 +255,6 @@ type RenderEnvelope = {
   };
 };
 
-const ABSTRACT_ACTIVITIES = new Set(["thinking", "working", "searching", "reading", "web_searching", "spawning_agent"]);
-
-function isAbstractActivity(activity: string): boolean {
-  return ABSTRACT_ACTIVITIES.has(activity);
-}
-
 function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnvelope, sequence: number): void {
   const { event } = envelope;
 
@@ -223,14 +262,10 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     return;
   }
 
-  // Activity events are useful for the live streaming indicator, but too noisy
-  // to render inline when they carry no useful detail. Abstract activities
-  // (thinking, working, searching, reading) are suppressed from the history
-  // since they only make sense during live streaming.
+  // Activity rows are intentionally hidden from the transcript and surfaced
+  // only in the live streaming indicator.
   if (event.type === "activity") {
-    if (isAbstractActivity(event.activity)) {
-      return;
-    }
+    return;
   }
 
   if (event.type === "status") {
@@ -296,21 +331,33 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     }
   }
 
-  if (prev?.event.type === "text" && event.type === "text") {
-    const prevTurn = prev.event.turnId ?? null;
+  if (event.type === "text") {
     const nextTurn = event.turnId ?? null;
-    const prevItem = prev.event.itemId ?? null;
     const nextItem = event.itemId ?? null;
-    if (prevTurn === nextTurn && prevItem === nextItem) {
-      out[out.length - 1] = {
-        ...prev,
-        timestamp: envelope.timestamp,
-        event: {
-          ...prev.event,
-          text: `${prev.event.text}${event.text}`
+    // Require at least one identity field to prevent merging anonymous chunks
+    if (nextTurn || nextItem) {
+      const matchIndex = [...out]
+        .reverse()
+        .findIndex((candidate) =>
+          candidate.event.type === "text"
+          && (candidate.event.turnId ?? null) === nextTurn
+          && (candidate.event.itemId ?? null) === nextItem,
+        );
+      if (matchIndex >= 0) {
+        const actualIndex = out.length - 1 - matchIndex;
+        const existing = out[actualIndex];
+        if (existing?.event.type === "text") {
+          out[actualIndex] = {
+            ...existing,
+            timestamp: envelope.timestamp,
+            event: {
+              ...existing.event,
+              text: `${existing.event.text}${event.text}`,
+            },
+          };
+          return;
         }
-      };
-      return;
+      }
     }
   }
 
@@ -562,10 +609,22 @@ type ToolGroup = {
   tools: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "tool_invocation" }> }>;
 };
 
+type CommandGroup = {
+  type: "command_group";
+  commands: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "command" }> }>;
+  turnId: string | null;
+};
+
+type FileChangeGroup = {
+  type: "file_change_group";
+  fileChanges: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "file_change" }> }>;
+  turnId: string | null;
+};
+
 type GroupedRenderEnvelope = {
   key: string;
   timestamp: string;
-  event: RenderEnvelope["event"] | ToolGroup;
+  event: RenderEnvelope["event"] | ToolGroup | CommandGroup | FileChangeGroup;
 };
 
 function groupConsecutiveTools(rows: RenderEnvelope[]): GroupedRenderEnvelope[] {
@@ -604,18 +663,73 @@ function groupConsecutiveTools(rows: RenderEnvelope[]): GroupedRenderEnvelope[] 
   return result;
 }
 
+function groupConsecutiveStructuredRows(rows: GroupedRenderEnvelope[]): GroupedRenderEnvelope[] {
+  const result: GroupedRenderEnvelope[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i]!;
+    if (row.event.type === "command" || row.event.type === "file_change") {
+      const kind = row.event.type;
+      const turnId = row.event.turnId ?? null;
+      if (turnId === null) {
+        result.push(row);
+        i++;
+        continue;
+      }
+      const group: GroupedRenderEnvelope[] = [];
+      while (i < rows.length) {
+        const next = rows[i]!;
+        if (next.event.type !== kind || (next.event.turnId ?? null) !== turnId) {
+          break;
+        }
+        group.push(next);
+        i++;
+      }
+      if (group.length === 1) {
+        result.push(group[0]!);
+        continue;
+      }
+      if (kind === "command") {
+        result.push({
+          key: `group:${group[0]!.key}`,
+          timestamp: group[group.length - 1]!.timestamp,
+          event: {
+            type: "command_group",
+            turnId,
+            commands: group.map((entry) => entry as RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "command" }> }),
+          },
+        });
+      } else {
+        result.push({
+          key: `group:${group[0]!.key}`,
+          timestamp: group[group.length - 1]!.timestamp,
+          event: {
+            type: "file_change_group",
+            turnId,
+            fileChanges: group.map((entry) => entry as RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "file_change" }> }),
+          },
+        });
+      }
+      continue;
+    }
+    result.push(row);
+    i++;
+  }
+  return result;
+}
+
 /* ── Status indicators ── */
 
 function StatusIcon({ status }: { status: "running" | "completed" | "failed" }) {
   if (status === "completed") return <CheckCircle size={13} weight="bold" className="text-emerald-400" />;
   if (status === "failed") return <XCircle size={13} weight="bold" className="text-red-400" />;
-  return <SpinnerGap size={13} weight="bold" className="animate-spin text-accent" />;
+  return <Circle size={11} weight="fill" className="text-accent/80" />;
 }
 
 function PlanStepIcon({ status }: { status: string }) {
   if (status === "completed") return <Checks size={13} weight="bold" className="text-emerald-400" />;
   if (status === "failed") return <XCircle size={13} weight="bold" className="text-red-400" />;
-  if (status === "in_progress") return <SpinnerGap size={13} weight="bold" className="animate-spin text-accent" />;
+  if (status === "in_progress") return <Circle size={11} weight="fill" className="text-sky-400/80" />;
   return <Circle size={11} weight="regular" className="text-muted-fg/40" />;
 }
 
@@ -641,11 +755,167 @@ function statusColorClass(status: string | undefined): string {
   }
 }
 
+function isExternalHref(href: string): boolean {
+  return /^(?:[a-z]+:)?\/\//i.test(href) || /^mailto:/i.test(href) || /^tel:/i.test(href);
+}
+
+function normalizeWorkspacePathCandidate(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed.length) return null;
+  if (/^(?:https?|mailto|tel):/i.test(trimmed)) return null;
+  if (/^#/.test(trimmed)) return null;
+  const withoutScheme = trimmed.replace(/^file:\/\//i, "");
+  const withoutQuery = withoutScheme.split(/[?#]/, 1)[0]?.trim().replace(/\\/g, "/") ?? "";
+  if (!withoutQuery.length) return null;
+  // Normalize Windows drive-letter paths: /C:/... → C:/...
+  if (/^\/[A-Za-z]:\//.test(withoutQuery)) return withoutQuery.slice(1);
+  return withoutQuery;
+}
+
+function looksLikeWorkspacePath(value: string): boolean {
+  const candidate = normalizeWorkspacePathCandidate(value);
+  if (!candidate) return false;
+  if (candidate.startsWith("./")) {
+    return true;
+  }
+  // Reject directory-traversal and home-relative paths
+  if (candidate.startsWith("../") || candidate.startsWith("~/")) {
+    return false;
+  }
+  if (candidate.startsWith("/")) {
+    return candidate.slice(1).includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate);
+  }
+  return candidate.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate);
+}
+
+function resolveWorkspacePathFromHref(href: string | undefined): string | null {
+  if (!href) return null;
+  const candidate = normalizeWorkspacePathCandidate(href);
+  if (!candidate) return null;
+  if (isExternalHref(candidate)) return null;
+  return looksLikeWorkspacePath(candidate) ? candidate : null;
+}
+
+function InlineDisclosureRow({
+  summary,
+  children,
+  defaultOpen = false,
+  className,
+}: {
+  summary: React.ReactNode;
+  children?: React.ReactNode;
+  defaultOpen?: boolean;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const prevDefaultOpen = useRef(defaultOpen);
+  const expandable = Boolean(children);
+
+  useEffect(() => {
+    if (!prevDefaultOpen.current && defaultOpen) {
+      setOpen(true);
+    }
+    prevDefaultOpen.current = defaultOpen;
+  }, [defaultOpen]);
+
+  return (
+    <div className={cn("rounded-lg", className)}>
+      <button
+        type="button"
+        aria-expanded={expandable ? open : undefined}
+        className={cn(
+          "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-white/[0.03]",
+          !expandable && "cursor-default hover:bg-transparent",
+        )}
+        onClick={() => {
+          if (expandable) setOpen((value) => !value);
+        }}
+      >
+        {expandable ? (
+          open ? <CaretDown size={10} weight="bold" className="text-fg/28" /> : <CaretRight size={10} weight="bold" className="text-fg/28" />
+        ) : (
+          <span className="ml-[2px] inline-flex h-1.5 w-1.5 rounded-full bg-white/12" aria-hidden="true" />
+        )}
+        <div className="min-w-0 flex-1">{summary}</div>
+      </button>
+      {expandable && open ? (
+        <div className="ml-5 mt-1 space-y-2 border-l border-white/[0.05] pl-3">
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function normalizeFileSystemPath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function trimTrailingSlashes(value: string): string {
+  if (value === "/") return value;
+  return value.replace(/\/+$/, "");
+}
+
+function resolveFilesNavigationTarget(args: {
+  path: string;
+  workspaces: FilesWorkspace[];
+  fallbackLaneId: string | null;
+}): { openFilePath: string; laneId: string | null } | null {
+  const candidate = normalizeWorkspacePathCandidate(args.path);
+  if (!candidate) return null;
+
+  const normalizedCandidate = normalizeFileSystemPath(candidate);
+  if (normalizedCandidate.startsWith("/")) {
+    const matches = args.workspaces
+      .map((workspace) => ({
+        workspace,
+        rootPath: trimTrailingSlashes(normalizeFileSystemPath(workspace.rootPath)),
+      }))
+      .filter(({ rootPath }) =>
+        normalizedCandidate === rootPath || normalizedCandidate.startsWith(`${rootPath}/`),
+      )
+      .sort((left, right) => {
+        const rightMatchesLane = right.workspace.laneId != null && right.workspace.laneId === args.fallbackLaneId ? 1 : 0;
+        const leftMatchesLane = left.workspace.laneId != null && left.workspace.laneId === args.fallbackLaneId ? 1 : 0;
+        if (rightMatchesLane !== leftMatchesLane) return rightMatchesLane - leftMatchesLane;
+        return right.rootPath.length - left.rootPath.length;
+      });
+
+    const match = matches[0];
+    if (!match) return null;
+    const openFilePath = normalizedCandidate.slice(match.rootPath.length).replace(/^\/+/, "");
+    if (!openFilePath.length) return null;
+    return {
+      openFilePath,
+      laneId: match.workspace.laneId ?? args.fallbackLaneId ?? null,
+    };
+  }
+
+  const openFilePath = normalizedCandidate.replace(/^\.\//, "");
+  if (!openFilePath.length) return null;
+  return {
+    openFilePath,
+    laneId: args.fallbackLaneId ?? null,
+  };
+}
+
 /* ── Markdown renderer ── */
 
-const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown: string }) {
+const MarkdownBlock = React.memo(function MarkdownBlock({
+  markdown,
+  onOpenWorkspacePath,
+  workspaceLaneId,
+}: {
+  markdown: string;
+  onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
+  workspaceLaneId?: string | null;
+}) {
+  const openWorkspacePath = useCallback((path: string) => {
+    onOpenWorkspacePath?.(path, workspaceLaneId ?? null);
+  }, [onOpenWorkspacePath, workspaceLaneId]);
+
   return (
-    <div className="prose prose-invert max-w-none text-[13px] leading-[1.72] text-fg/92 prose-headings:mb-2 prose-headings:mt-4 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:text-fg prose-blockquote:border-l-white/12 prose-blockquote:text-fg/78 prose-hr:border-white/[0.06] prose-table:my-3 prose-th:border-white/[0.08] prose-th:bg-white/[0.03] prose-th:px-3 prose-th:py-2 prose-td:border-white/[0.06] prose-td:px-3 prose-td:py-2">
+    <div className="prose prose-invert max-w-none text-[13px] leading-[1.78] text-fg/92 prose-headings:mb-2 prose-headings:mt-5 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-2.5 prose-ul:my-3 prose-ol:my-3 prose-li:my-1 prose-strong:text-fg prose-blockquote:border-l-white/12 prose-blockquote:text-fg/78 prose-hr:my-4 prose-hr:border-white/[0.06] prose-table:my-4 prose-th:border-white/[0.08] prose-th:bg-white/[0.03] prose-th:px-3 prose-th:py-2 prose-td:border-white/[0.06] prose-td:px-3 prose-td:py-2">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -663,29 +933,55 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ markdown }: { markdown
             </div>
           ),
           pre: ({ children }) => (
-            <pre className={cn("my-2.5 max-h-80", RECESSED_BLOCK_CLASS)}>
+            <pre className={cn("my-3 max-h-80", RECESSED_BLOCK_CLASS)}>
               {children}
             </pre>
           ),
           code: ({ className, children }) => {
             const text = String(children ?? "");
             const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
+            const workspacePath = !isBlock ? normalizeWorkspacePathCandidate(text) : null;
+            const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(workspacePath));
             return isBlock ? (
               <code className="font-mono text-[11px] text-fg/82">{children}</code>
+            ) : pathIsClickable ? (
+              <button
+                type="button"
+                className="inline-flex items-center rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 font-mono text-[11px] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100"
+                onClick={() => openWorkspacePath(workspacePath!)}
+                title="Open file in Files"
+              >
+                {children}
+              </button>
             ) : (
               <code className="rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[11px] text-fg/90">{children}</code>
             );
           },
-          a: ({ children, href }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noreferrer"
-              className="text-accent underline decoration-accent/30 underline-offset-2 transition-colors hover:text-accent/80 hover:decoration-accent/50"
-            >
-              {children}
-            </a>
-          )
+          a: ({ children, href }) => {
+            const workspacePath = resolveWorkspacePathFromHref(href);
+            if (workspacePath) {
+              return (
+                <button
+                  type="button"
+                  className="inline-flex items-center rounded-sm border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 font-sans text-[12px] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/22 hover:bg-sky-500/[0.1] hover:text-sky-100"
+                  onClick={() => openWorkspacePath(workspacePath)}
+                  title="Open file in Files"
+                >
+                  {children}
+                </button>
+              );
+            }
+            return (
+              <a
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent underline decoration-accent/30 underline-offset-2 transition-colors hover:text-accent/80 hover:decoration-accent/50"
+              >
+                {children}
+              </a>
+            );
+          }
         }}
       >
         {markdown}
@@ -926,6 +1222,254 @@ function ModelGlyph({
   return <Robot size={size} weight="bold" className={className} />;
 }
 
+type AssistantPresentation = {
+  label: string;
+  glyph: React.ReactNode;
+};
+
+function resolveAssistantPresentation({
+  assistantLabel,
+  turnModel,
+}: {
+  assistantLabel?: string;
+  turnModel?: { label: string; modelId?: string; model?: string } | null;
+}): AssistantPresentation {
+  const customLabel = assistantLabel?.trim() ?? "";
+  const modelMeta = turnModel ? resolveModelMeta(turnModel.modelId, turnModel.model) : { family: null, cliCommand: null };
+  const providerLabel =
+    modelMeta.family === "anthropic" || modelMeta.cliCommand === "claude"
+      ? "Claude"
+      : modelMeta.cliCommand === "codex"
+        ? "Codex"
+        : null;
+  const fallbackProviderLabel = customLabel === "Claude" || customLabel === "Codex" ? customLabel : null;
+  const hardOverrideLabel =
+    customLabel.length > 0
+      && customLabel !== "Agent"
+      && customLabel !== "Assistant"
+      && customLabel !== "Claude"
+      && customLabel !== "Codex"
+      ? customLabel
+      : null;
+  const resolvedProviderLabel = providerLabel ?? fallbackProviderLabel;
+  const label = hardOverrideLabel ?? resolvedProviderLabel ?? "Assistant";
+  const glyph = resolvedProviderLabel === "Claude"
+    ? <ClaudeLogo size={10} className="text-fg/70" />
+    : resolvedProviderLabel === "Codex"
+      ? <CodexLogo size={10} className="text-fg/70" />
+      : <Robot size={10} weight="bold" className="text-fg/70" />;
+  return { label, glyph };
+}
+
+function commandStatusBadgeCls(status: "running" | "completed" | "failed"): string {
+  switch (status) {
+    case "completed":
+      return "border-emerald-500/25 bg-emerald-500/10 text-emerald-400";
+    case "failed":
+      return "border-red-500/25 bg-red-500/10 text-red-400";
+    default:
+      return "border-amber-500/25 bg-amber-500/10 text-amber-400";
+  }
+}
+
+function aggregateCommandStatus(commands: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "command" }> }>): "running" | "completed" | "failed" {
+  if (commands.some((entry) => entry.event.status === "failed")) return "failed";
+  if (commands.some((entry) => entry.event.status === "running")) return "running";
+  return "completed";
+}
+
+function aggregateFileChangeStatus(fileChanges: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "file_change" }> }>): "running" | "completed" | "failed" {
+  if (fileChanges.some((entry) => entry.event.status === "failed")) return "failed";
+  if (fileChanges.some((entry) => entry.event.status === "running")) return "running";
+  return "completed";
+}
+
+function commandTimelineVerb(status: Extract<AgentChatEvent, { type: "command" }>["status"]): string {
+  if (status === "failed") return "Command failed";
+  if (status === "running") return "Running";
+  return "Ran";
+}
+
+function CommandEventCard({
+  event,
+}: {
+  event: Extract<AgentChatEvent, { type: "command" }>;
+}) {
+  const outputTrimmed = event.output.trim();
+  const hasOutput = outputTrimmed.length > 0;
+  const timelineVerb = commandTimelineVerb(event.status);
+  const timelineSummary = (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+      <span className={cn(
+        "inline-flex h-1.5 w-1.5 rounded-full",
+        event.status === "completed"
+          ? "bg-emerald-400/85"
+          : event.status === "failed"
+            ? "bg-red-400/85"
+            : "bg-amber-400/85",
+      )} />
+      <Terminal size={11} weight="regular" className="text-fg/34" />
+      <span className="font-medium text-fg/62">{timelineVerb}</span>
+      <span className="min-w-0 flex-1 truncate text-fg/76">{event.command}</span>
+      {event.durationMs != null ? <span className="text-[10px] text-fg/28">{Math.max(0, event.durationMs)}ms</span> : null}
+      {event.exitCode != null ? (
+        <span className={cn("text-[10px]", event.exitCode === 0 ? "text-emerald-300/60" : "text-red-300/65")}>
+          {event.exitCode === 0 ? "pass" : `exit ${event.exitCode}`}
+        </span>
+      ) : null}
+    </div>
+  );
+
+  const commandBody = (
+    <>
+      <div className="rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[11px] text-fg/80">
+        <span className="select-none text-amber-500/40">$ </span>
+        {event.command}
+      </div>
+      {hasOutput ? (
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[11px] leading-[1.5] text-fg/60">
+          {event.output}
+        </pre>
+      ) : null}
+    </>
+  );
+
+  return (
+    <InlineDisclosureRow
+      defaultOpen={event.status === "failed"}
+      summary={timelineSummary}
+    >
+      {commandBody}
+    </InlineDisclosureRow>
+  );
+}
+
+function FileChangeEventCard({
+  event,
+}: {
+  event: Extract<AgentChatEvent, { type: "file_change" }>;
+}) {
+  const { additions, deletions } = summarizeDiffStats(event.diff);
+  const hasDiff = event.diff.trim().length > 0;
+  const basename = basenamePathLabel(event.path);
+  const dirname = dirnamePathLabel(event.path);
+  const summary = (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+      <span className={cn(
+        "inline-flex h-1.5 w-1.5 rounded-full",
+        event.status === "failed"
+          ? "bg-red-400/85"
+          : event.status === "running"
+            ? "bg-amber-400/85"
+            : "bg-emerald-400/85",
+      )} />
+      <FileCode size={11} weight="regular" className="text-fg/34" />
+      <span className="font-medium text-fg/62">{formatFileAction(event.kind)}</span>
+      <span className="truncate text-fg/78">{basename}</span>
+      {additions > 0 ? <span className="text-emerald-300/70">+{additions}</span> : null}
+      {deletions > 0 || event.kind === "delete" ? <span className="text-red-300/70">-{deletions}</span> : null}
+      {dirname ? <span className="truncate text-[10px] text-fg/26">{dirname}</span> : null}
+    </div>
+  );
+
+  return (
+    <InlineDisclosureRow
+      defaultOpen={event.status === "failed"}
+      summary={summary}
+    >
+      {hasDiff ? (
+        <DiffPreview diff={event.diff} />
+      ) : (
+        <div className="font-mono text-[11px] text-muted-fg/40">No diff payload available.</div>
+      )}
+    </InlineDisclosureRow>
+  );
+}
+
+function CommandGroupCard({
+  group,
+}: {
+  group: CommandGroup;
+}) {
+  const status = aggregateCommandStatus(group.commands);
+  const preview = summarizeInlineText(group.commands[group.commands.length - 1]!.event.command, 96);
+  return (
+    <InlineDisclosureRow
+      defaultOpen={status === "failed"}
+      summary={
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+          <span className={cn(
+            "inline-flex h-1.5 w-1.5 rounded-full",
+            status === "completed"
+              ? "bg-emerald-400/85"
+              : status === "failed"
+                ? "bg-red-400/85"
+                : "bg-amber-400/85",
+          )} />
+          <Terminal size={11} weight="regular" className="text-fg/34" />
+          <span className="font-medium text-fg/62">Ran</span>
+          <span className="text-fg/76">{group.commands.length} command{group.commands.length === 1 ? "" : "s"}</span>
+          <span className="truncate text-[10px] text-fg/34">{preview}</span>
+        </div>
+      }
+    >
+      <div className="space-y-2">
+        {group.commands.map((entry) => (
+          <CommandEventCard key={entry.key} event={entry.event} />
+        ))}
+      </div>
+    </InlineDisclosureRow>
+  );
+}
+
+function FileChangeGroupCard({
+  group,
+}: {
+  group: FileChangeGroup;
+}) {
+  const status = aggregateFileChangeStatus(group.fileChanges);
+  const preview = summarizeInlineText(
+    basenamePathLabel(group.fileChanges[group.fileChanges.length - 1]!.event.path),
+    96,
+  );
+  const totals = group.fileChanges.reduce((acc, entry) => {
+    const stats = summarizeDiffStats(entry.event.diff);
+    return {
+      additions: acc.additions + stats.additions,
+      deletions: acc.deletions + stats.deletions,
+    };
+  }, { additions: 0, deletions: 0 });
+  return (
+    <InlineDisclosureRow
+      defaultOpen={status === "failed"}
+      summary={
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+          <span className={cn(
+            "inline-flex h-1.5 w-1.5 rounded-full",
+            status === "completed"
+              ? "bg-emerald-400/85"
+              : status === "failed"
+                ? "bg-red-400/85"
+                : "bg-amber-400/85",
+          )} />
+          <FileCode size={11} weight="regular" className="text-fg/34" />
+          <span className="font-medium text-fg/62">Changed</span>
+          <span className="text-fg/76">{group.fileChanges.length} file{group.fileChanges.length === 1 ? "" : "s"}</span>
+          {totals.additions > 0 ? <span className="text-emerald-300/70">+{totals.additions}</span> : null}
+          {totals.deletions > 0 ? <span className="text-red-300/70">-{totals.deletions}</span> : null}
+          <span className="truncate text-[10px] text-fg/34">{preview}</span>
+        </div>
+      }
+    >
+      <div className="space-y-2">
+        {group.fileChanges.map((entry) => (
+          <FileChangeEventCard key={entry.key} event={entry.event} />
+        ))}
+      </div>
+    </InlineDisclosureRow>
+  );
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
@@ -935,6 +1479,7 @@ function renderEvent(
     surfaceProfile?: ChatSurfaceProfile;
     assistantLabel?: string;
     turnActive?: boolean;
+    onOpenWorkspacePath?: (path: string) => void;
   }
 ) {
   const event = envelope.event;
@@ -970,24 +1515,25 @@ function renderEvent(
 
   /* ── Agent text ── */
   if (event.type === "text") {
+    const assistant = resolveAssistantPresentation({
+      assistantLabel: options?.assistantLabel,
+      turnModel: options?.turnModel,
+    });
     return (
       <div className="flex justify-start">
-        <div className={cn(GLASS_CARD_CLASS, "max-w-[94%] px-4 py-3")} style={surfaceInlineCardStyle()}>
-          <div className="mb-2 flex items-center gap-2">
-            <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-teal-300/18 bg-teal-400/[0.10]">
-              <ModelGlyph
-                size={10}
-                modelId={options?.turnModel?.modelId}
-                model={options?.turnModel?.model ?? options?.turnModel?.label ?? undefined}
-                className="text-teal-200/90"
-              />
+        <div className={cn("max-w-[94%] py-1.5", options?.turnActive ? "min-h-[5.5rem]" : null)}>
+          <div className="mb-1.5 flex items-center gap-2 px-1">
+            <span className="inline-flex h-4.5 w-4.5 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03]">
+              {assistant.glyph}
             </span>
-            <span className="font-sans text-[11px] font-medium text-teal-100/90">{options?.assistantLabel ?? "Agent"}</span>
-            <span className="ml-auto font-sans text-[10px] text-fg/52">{formatTime(envelope.timestamp)}</span>
+            <span className="font-sans text-[10px] font-medium text-fg/58">{assistant.label}</span>
+            <span className="ml-auto font-sans text-[10px] text-fg/34">{formatTime(envelope.timestamp)}</span>
           </div>
-          <MarkdownBlock markdown={event.text} />
+          <div className={cn("px-1", options?.turnActive ? "min-h-[4.75rem]" : null)}>
+            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+          </div>
           {options?.turnModel?.label ? (
-            <div className="mt-3 border-t border-white/[0.08] pt-2 font-sans text-[10px] text-fg/52">
+            <div className="mt-2 px-1 font-sans text-[10px] text-fg/38">
               {options.turnModel.label}
             </div>
           ) : null}
@@ -998,96 +1544,12 @@ function renderEvent(
 
   /* ── Command ── */
   if (event.type === "command") {
-    const outputTrimmed = event.output.trim();
-    const isLong = outputTrimmed.split("\n").length > 12;
-
-    let statusBadgeCls: string;
-    switch (event.status) {
-      case "completed":
-        statusBadgeCls = "border-emerald-500/25 bg-emerald-500/10 text-emerald-400";
-        break;
-      case "failed":
-        statusBadgeCls = "border-red-500/25 bg-red-500/10 text-red-400";
-        break;
-      default:
-        statusBadgeCls = "border-amber-500/25 bg-amber-500/10 text-amber-400";
-    }
-
-    const commandHeader = (
-      <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
-        <span className="inline-flex items-center gap-1 border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-400">
-          <Terminal size={11} weight="bold" />
-          BASH
-        </span>
-        <span className="flex-1 truncate text-[10px] text-fg/50">{event.command}</span>
-        {event.durationMs != null ? <span className="text-[10px] text-muted-fg/40">{Math.max(0, event.durationMs)}ms</span> : null}
-        <span className={cn("border px-1.5 py-0.5 text-[9px] font-bold uppercase", statusBadgeCls)}>
-          {event.status === "completed" ? "PASS" : event.status === "failed" ? "FAIL" : "RUN"}
-          {event.exitCode != null ? ` ${event.exitCode}` : ""}
-        </span>
-      </div>
-    );
-
-    const commandBody = (
-      <>
-        <div className="border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[11px] text-fg/80">
-          <span className="select-none text-amber-500/40">$ </span>{event.command}
-        </div>
-        {outputTrimmed.length ? (
-          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[11px] leading-[1.5] text-fg/60">
-            {event.output}
-          </pre>
-        ) : null}
-      </>
-    );
-
-    if (isLong) {
-      return (
-        <CollapsibleCard
-          defaultOpen={event.status === "running"}
-          summary={commandHeader}
-          className="border-amber-500/10"
-        >
-          {commandBody}
-        </CollapsibleCard>
-      );
-    }
-
-    return (
-      <div className={cn(GLASS_CARD_CLASS, "p-3")} style={surfaceInlineCardStyle()}>
-        <div className="mb-2">{commandHeader}</div>
-        {commandBody}
-      </div>
-    );
+    return <CommandEventCard event={event} />;
   }
 
   /* ── File change ── */
   if (event.type === "file_change") {
-    const hasDiff = event.diff.trim().length > 0;
-    const summary = (
-      <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
-        <span className="inline-flex items-center gap-1 border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-400">
-          <FileCode size={11} weight="bold" />
-          EDIT
-        </span>
-        <span className="flex-1 truncate text-[10px] text-emerald-400/60">{event.path}</span>
-        <span className="border border-border/15 bg-surface-recessed/90 px-1.5 py-0.5 text-[9px] text-muted-fg/50">{event.kind}</span>
-      </div>
-    );
-
-    return (
-      <CollapsibleCard
-        defaultOpen={!hasDiff || event.diff.split("\n").length <= 20}
-        summary={summary}
-        className="border-transparent"
-      >
-        {hasDiff ? (
-          <DiffPreview diff={event.diff} />
-        ) : (
-          <div className="font-mono text-[11px] text-muted-fg/40">No diff payload available.</div>
-        )}
-      </CollapsibleCard>
-    );
+    return <FileChangeEventCard event={event} />;
   }
 
   /* ── Plan ── */
@@ -1095,18 +1557,23 @@ function renderEvent(
     if (hideInternalExecution) {
       return null;
     }
+    const completedCount = event.steps.filter((step) => step.status === "completed").length;
     return (
-      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
-        <div className="mb-3 flex items-center gap-2">
-          <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-violet-400/18 bg-violet-500/[0.1]">
-            <ListChecks size={13} weight="bold" className="text-violet-300/80" />
-          </span>
-          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-violet-300/80">Plan</span>
-        </div>
-        <div className="space-y-1">
+      <InlineDisclosureRow
+        summary={
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+            <span className="inline-flex h-1.5 w-1.5 rounded-full bg-violet-400/80" />
+            <ListChecks size={11} weight="regular" className="text-fg/34" />
+            <span className="font-medium text-fg/62">Plan updated</span>
+            <span className="text-fg/76">{completedCount}/{event.steps.length || 0} complete</span>
+            {event.steps[0]?.text ? <span className="truncate text-[10px] text-fg/34">{summarizeInlineText(event.steps[0].text, 96)}</span> : null}
+          </div>
+        }
+      >
+        <div className="space-y-1.5">
           {event.steps.length ? (
             event.steps.map((step, index) => (
-              <div key={`${step.text}:${index}`} className="flex items-start gap-2.5 px-2 py-1.5 transition-colors hover:bg-violet-500/[0.03]">
+              <div key={`${step.text}:${index}`} className="flex items-start gap-2.5 px-1 py-1">
                 <div className="mt-0.5 flex-shrink-0">
                   <PlanStepIcon status={step.status} />
                 </div>
@@ -1123,9 +1590,9 @@ function renderEvent(
           )}
         </div>
         {event.explanation ? (
-          <div className="mt-3 border-t border-violet-500/8 pt-2.5 text-[11px] text-muted-fg/50">{event.explanation}</div>
+          <div className="mt-2 border-t border-white/[0.05] pt-2 text-[11px] text-muted-fg/50">{event.explanation}</div>
         ) : null}
-      </div>
+      </InlineDisclosureRow>
     );
   }
 
@@ -1133,25 +1600,33 @@ function renderEvent(
   if (event.type === "todo_update") {
     const completedCount = event.items.filter((item) => item.status === "completed").length;
     const totalCount = event.items.length;
-    const progressPct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+    const activeItem = event.items.find((item) => item.status === "in_progress") ?? null;
     return (
-      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
-        <div className="mb-3 flex items-center gap-2">
-          <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-cyan-400/18 bg-cyan-500/[0.1]">
-            <ListChecks size={13} weight="bold" className="text-cyan-300/80" />
-          </span>
-          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-cyan-300/80">TODO</span>
-          <span className="ml-auto font-mono text-[10px] text-muted-fg/40">{completedCount}/{totalCount}</span>
-        </div>
-        <div className="space-y-1">
+      <InlineDisclosureRow
+        defaultOpen={Boolean(activeItem)}
+        summary={
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+            <span className="inline-flex h-1.5 w-1.5 rounded-full bg-cyan-400/80" />
+            <ListChecks size={11} weight="regular" className="text-fg/34" />
+            <span className="font-medium text-fg/62">Task list</span>
+            <span className="text-fg/76">{completedCount}/{totalCount} complete</span>
+            {activeItem?.description ? (
+              <span className="truncate text-[10px] text-fg/34">
+                {summarizeInlineText(activeItem.description, 96)}
+              </span>
+            ) : null}
+          </div>
+        }
+      >
+        <div className="space-y-1.5">
           {event.items.length ? (
             event.items.map((item) => (
-              <div key={item.id} className="flex items-start gap-2.5 px-2 py-1.5 transition-colors hover:bg-cyan-500/[0.03]">
+              <div key={item.id} className="flex items-start gap-2.5 px-1 py-1">
                 <div className="mt-0.5 flex-shrink-0">
                   {item.status === "completed" ? (
                     <Checks size={13} weight="bold" className="text-emerald-400" />
                   ) : item.status === "in_progress" ? (
-                    <SpinnerGap size={13} weight="bold" className="animate-spin text-sky-400" />
+                    <Circle size={11} weight="fill" className="text-sky-400/80" />
                   ) : (
                     <Circle size={11} weight="regular" className="text-amber-400/60" />
                   )}
@@ -1174,17 +1649,7 @@ function renderEvent(
             <div className="font-mono text-[11px] text-muted-fg/40">No items yet.</div>
           )}
         </div>
-        {totalCount > 0 ? (
-          <div className="mt-3 border-t border-cyan-500/8 pt-2.5">
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-cyan-500/[0.08]">
-              <div
-                className="h-full rounded-full bg-cyan-400/50 transition-all duration-300"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-          </div>
-        ) : null}
-      </div>
+      </InlineDisclosureRow>
     );
   }
 
@@ -1284,7 +1749,7 @@ function renderEvent(
             </span>
           </div>
           <div className="prose prose-invert prose-sm max-w-none text-[12px] leading-relaxed text-fg/70">
-            <MarkdownBlock markdown={event.text} />
+            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         </div>
       </div>
@@ -1294,10 +1759,11 @@ function renderEvent(
   /* ── Subagent Started ── */
   if (event.type === "subagent_started") {
     return (
-      <div className="inline-flex items-center gap-2 rounded-[var(--chat-radius-pill)] border border-violet-400/18 bg-violet-500/[0.08] px-3 py-1.5">
-        <SpinnerGap size={13} weight="bold" className="animate-spin text-violet-300/80" />
-        <span className="font-mono text-[11px] font-bold text-violet-300/80">
-          Subagent: {event.description}
+      <div className="flex items-center gap-2 rounded-lg px-1.5 py-1 font-mono text-[11px] text-fg/50">
+        <span className="inline-flex h-1.5 w-1.5 rounded-full bg-violet-400/85" />
+        <span className="font-medium text-fg/62">Spawning agent</span>
+        <span className="truncate text-fg/78">
+          {event.description}
         </span>
       </div>
     );
@@ -1307,18 +1773,15 @@ function renderEvent(
   if (event.type === "subagent_progress") {
     const summaryText = summarizeInlineText(event.summary, 140);
     return (
-      <CollapsibleCard
+      <InlineDisclosureRow
         defaultOpen={false}
         summary={
-          <div className="flex items-center gap-2 font-mono text-[11px]">
-            <SpinnerGap size={13} weight="bold" className="animate-spin text-violet-300/80" />
-            <span className="inline-flex items-center border border-violet-400/18 bg-violet-500/[0.08] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-300/80">
-              Subagent running
-            </span>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+            <span className="inline-flex h-1.5 w-1.5 rounded-full bg-violet-400/85" />
+            <span className="font-medium text-fg/62">Agent running</span>
             {summaryText ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryText}</span> : null}
           </div>
         }
-        className="border-violet-500/12"
       >
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-muted-fg/45">
@@ -1331,7 +1794,7 @@ function renderEvent(
           </div>
           {renderSubagentUsage(event.usage)}
         </div>
-      </CollapsibleCard>
+      </InlineDisclosureRow>
     );
   }
 
@@ -1341,28 +1804,21 @@ function renderEvent(
     const defaultOpen = !isSuccess;
     const summaryTruncated = summarizeInlineText(event.summary, 120);
     return (
-      <CollapsibleCard
+      <InlineDisclosureRow
         defaultOpen={defaultOpen}
         summary={
-          <div className="flex items-center gap-2 font-mono text-[11px]">
-            {isSuccess ? (
-              <CheckCircle size={13} weight="bold" className="text-emerald-400" />
-            ) : (
-              <XCircle size={13} weight="bold" className="text-red-400" />
-            )}
-            <span className="inline-flex items-center border border-violet-400/18 bg-violet-500/[0.08] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-300/80">
-              Subagent {event.status}
-            </span>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+            <span className={cn("inline-flex h-1.5 w-1.5 rounded-full", isSuccess ? "bg-emerald-400/85" : "bg-red-400/85")} />
+            <span className="font-medium text-fg/62">{isSuccess ? "Agent finished" : "Agent failed"}</span>
             {summaryTruncated ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryTruncated}</span> : null}
           </div>
         }
-        className="border-violet-500/12"
       >
         <div className="space-y-3">
           <div className="text-[12px] leading-relaxed text-fg/70">{event.summary}</div>
           {renderSubagentUsage(event.usage)}
         </div>
-      </CollapsibleCard>
+      </InlineDisclosureRow>
     );
   }
 
@@ -1406,24 +1862,21 @@ function renderEvent(
     }
     const summaryText = event.summary;
     const toolCount = event.toolUseIds.length;
-    const isLong = summaryText.length > 120;
     return (
-      <CollapsibleCard
-        defaultOpen={!isLong}
+      <InlineDisclosureRow
+        defaultOpen={summaryText.length <= 120}
         summary={
-          <div className="flex items-center gap-2 font-mono text-[11px]">
-            <Info size={12} weight="bold" className="text-muted-fg/45" />
-            <span className="inline-flex items-center border border-border/15 bg-surface-recessed/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-muted-fg/55">
-              Tool Summary
-            </span>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+            <span className="inline-flex h-1.5 w-1.5 rounded-full bg-white/30" />
+            <Info size={11} weight="regular" className="text-fg/34" />
+            <span className="font-medium text-fg/62">Tool summary</span>
+            <span className="text-[10px] text-fg/35">{toolCount} tool{toolCount === 1 ? "" : "s"}</span>
             <span className="flex-1 truncate text-[10px] text-fg/45">{summarizeInlineText(summaryText, 100)}</span>
-            <span className="text-[9px] text-muted-fg/35">{toolCount} tool{toolCount === 1 ? "" : "s"}</span>
           </div>
         }
-        className="border-transparent"
       >
         <div className="text-[12px] leading-relaxed text-fg/65">{summaryText}</div>
-      </CollapsibleCard>
+      </InlineDisclosureRow>
     );
   }
 
@@ -1692,7 +2145,14 @@ function renderEvent(
     return (
       <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
         <div className="mb-2 flex items-center gap-2">
-          <Warning size={13} weight="bold" className="text-amber-500" />
+          {isAskUser ? (
+            <span
+              aria-hidden="true"
+              className="inline-flex h-2.5 w-2.5 rounded-full bg-amber-400/85 shadow-[0_0_0_3px_rgba(245,158,11,0.12)]"
+            />
+          ) : (
+            <Warning size={13} weight="bold" className="text-amber-500" />
+          )}
           <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">
             {isAskUser ? "Needs Input" : "Approval Required"}
           </span>
@@ -1916,22 +2376,22 @@ function ToolGroupCard({ group }: { group: ToolGroup }) {
   const ToolIcon = meta.icon;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-white/[0.05] bg-[#0d0d10] px-3 py-2">
+    <div className="rounded-lg">
       <button
         type="button"
-        className="flex w-full items-center gap-2 py-1 text-left font-mono text-[12px] text-fg/58 transition-colors hover:text-fg/76"
+        className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left font-mono text-[11px] text-fg/52 transition-colors hover:bg-white/[0.03] hover:text-fg/72"
         onClick={() => setExpanded((v) => !v)}
       >
         {expanded ? <CaretDown size={10} weight="bold" className="text-fg/30" /> : <CaretRight size={10} weight="bold" className="text-fg/30" />}
-        <ToolIcon size={13} weight="regular" className="text-fg/44" />
-        {runningCount > 0 ? <ThinkingDots /> : null}
-        <span className="truncate">{meta.label}{display.secondaryLabel ? ` ${display.secondaryLabel}` : ""}</span>
-        <span className="text-[10px] text-fg/38">{group.tools.length} calls</span>
+        <span className={cn("inline-flex h-1.5 w-1.5 rounded-full", failedCount > 0 ? "bg-red-400/85" : runningCount > 0 ? "bg-amber-400/85" : "bg-white/30")} />
+        <ToolIcon size={11} weight="regular" className="text-fg/34" />
+        <span className="truncate font-medium text-fg/62">{meta.label}{display.secondaryLabel ? ` ${display.secondaryLabel}` : ""}</span>
+        <span className="text-[10px] text-fg/35">{group.tools.length} calls</span>
         {failedCount > 0 ? <span className="text-[10px] text-red-300/80">{failedCount} failed</span> : null}
       </button>
 
       {expanded && (
-        <div className="space-y-1 border-t border-white/[0.05] pl-4 pt-3">
+        <div className="ml-5 mt-1 space-y-1 border-l border-white/[0.05] pl-3">
           {group.tools.map((tool) => {
             const meta = getToolMeta(tool.event.tool);
             const ToolIcon = meta.icon;
@@ -1944,15 +2404,9 @@ function ToolGroupCard({ group }: { group: ToolGroup }) {
                 : meta.label;
 
             return (
-              <div key={tool.key} className="flex items-center gap-2 py-0.5 font-mono text-[12px] text-fg/50">
-                {tool.event.status === "running" ? (
-                  <ThinkingDots />
-                ) : tool.event.status === "failed" ? (
-                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-400/70" />
-                ) : (
-                  <CaretRight size={10} weight="bold" className="text-fg/30" />
-                )}
-                <ToolIcon size={13} weight="regular" className="text-fg/40" />
+              <div key={tool.key} className="flex items-center gap-2 py-0.5 font-mono text-[11px] text-fg/50">
+                <span className={cn("inline-block h-1.5 w-1.5 rounded-full", tool.event.status === "failed" ? "bg-red-400/70" : tool.event.status === "running" ? "bg-amber-400/70" : "bg-white/22")} />
+                <ToolIcon size={11} weight="regular" className="text-fg/34" />
                 <span className="truncate">{label}</span>
               </div>
             );
@@ -1963,16 +2417,239 @@ function ToolGroupCard({ group }: { group: ToolGroup }) {
   );
 }
 
+type TurnSummaryTask = {
+  id: string;
+  description: string;
+  status: string;
+};
+
+type TurnSummaryFile = {
+  path: string;
+  kind: Extract<AgentChatEvent, { type: "file_change" }>["kind"];
+  status?: Extract<AgentChatEvent, { type: "file_change" }>["status"];
+  additions: number;
+  deletions: number;
+};
+
+type TurnSummary = {
+  turnId: string;
+  tasks: TurnSummaryTask[];
+  files: TurnSummaryFile[];
+  totalAdditions: number;
+  totalDeletions: number;
+  backgroundAgentCount: number;
+  activeBackgroundAgentCount: number;
+};
+
+function deriveTurnSummary(events: AgentChatEventEnvelope[]): TurnSummary | null {
+  const latestTurnId = [...events]
+    .reverse()
+    .map((envelope) => getEventTurnId(envelope.event))
+    .find((turnId): turnId is string => Boolean(turnId));
+  if (!latestTurnId) return null;
+
+  let latestTodoUpdate: Extract<AgentChatEvent, { type: "todo_update" }> | null = null;
+  let latestPlan: Extract<AgentChatEvent, { type: "plan" }> | null = null;
+  const files = new Map<string, TurnSummaryFile>();
+  const subagents = new Map<string, { background: boolean; status: ChatSubagentSnapshot["status"] }>();
+
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (getEventTurnId(event) !== latestTurnId) continue;
+
+    if (event.type === "todo_update") {
+      latestTodoUpdate = event;
+      continue;
+    }
+
+    if (event.type === "plan") {
+      latestPlan = event;
+      continue;
+    }
+
+    if (event.type === "file_change") {
+      const stats = summarizeDiffStats(event.diff);
+      files.set(event.path, {
+        path: event.path,
+        kind: event.kind,
+        status: event.status,
+        additions: stats.additions,
+        deletions: stats.deletions,
+      });
+      continue;
+    }
+
+    if (event.type === "subagent_started") {
+      const existing = subagents.get(event.taskId);
+      subagents.set(event.taskId, {
+        background: event.background ?? existing?.background ?? false,
+        status: "running",
+      });
+      continue;
+    }
+
+    if (event.type === "subagent_progress") {
+      const existing = subagents.get(event.taskId);
+      subagents.set(event.taskId, {
+        background: existing?.background ?? false,
+        status: "running",
+      });
+      continue;
+    }
+
+    if (event.type === "subagent_result") {
+      const existing = subagents.get(event.taskId);
+      subagents.set(event.taskId, {
+        background: existing?.background ?? false,
+        status: event.status,
+      });
+    }
+  }
+
+  const tasks: TurnSummaryTask[] = latestTodoUpdate
+    ? latestTodoUpdate.items.map((item) => ({
+        id: item.id,
+        description: item.description,
+        status: item.status,
+      }))
+    : latestPlan
+      ? latestPlan.steps.map((step, index) => ({
+          id: `plan-${index}`,
+          description: step.text,
+          status: step.status,
+        }))
+      : [];
+  const changedFiles = [...files.values()];
+  const totalAdditions = changedFiles.reduce((sum, file) => sum + file.additions, 0);
+  const totalDeletions = changedFiles.reduce((sum, file) => sum + file.deletions, 0);
+  const backgroundAgentCount = [...subagents.values()].filter((entry) => entry.background).length;
+  const activeBackgroundAgentCount = [...subagents.values()].filter((entry) => entry.background && entry.status === "running").length;
+
+  if (!tasks.length && !changedFiles.length && !backgroundAgentCount) {
+    return null;
+  }
+
+  return {
+    turnId: latestTurnId,
+    tasks,
+    files: changedFiles,
+    totalAdditions,
+    totalDeletions,
+    backgroundAgentCount,
+    activeBackgroundAgentCount,
+  };
+}
+
+function TurnSummaryCard({
+  summary,
+  onReviewChanges,
+}: {
+  summary: TurnSummary;
+  onReviewChanges?: () => void;
+}) {
+  const completedCount = summary.tasks.filter((task) => task.status === "completed").length;
+  const totalCount = summary.tasks.length;
+  const filesLabel = summary.files.length
+    ? `${summary.files.length} file${summary.files.length === 1 ? "" : "s"} changed`
+    : null;
+  const agentsLabel = summary.backgroundAgentCount
+    ? `${summary.backgroundAgentCount} background agent${summary.backgroundAgentCount === 1 ? "" : "s"}`
+    : null;
+
+  return (
+    <div className="overflow-hidden rounded-[20px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(26,26,29,0.92),rgba(19,19,22,0.94))] shadow-[0_24px_80px_-48px_rgba(0,0,0,0.85)]">
+      <div className="border-b border-white/[0.05] px-4 py-3">
+        <div className="flex items-center gap-2">
+          <ListChecks size={13} weight="bold" className="text-fg/58" />
+          <span className="font-sans text-[13px] font-medium text-fg/86">
+            {totalCount
+              ? `${completedCount} of ${totalCount} tasks completed`
+              : filesLabel ?? agentsLabel ?? "Turn summary"}
+          </span>
+          {onReviewChanges && summary.files.length > 0 ? (
+            <button
+              type="button"
+              className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-fg/70 transition-colors hover:bg-white/[0.05] hover:text-fg/88"
+              onClick={onReviewChanges}
+            >
+              Review changes
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {summary.tasks.length ? (
+        <div className="space-y-1 border-b border-white/[0.05] px-4 py-3">
+          {summary.tasks.map((task, index) => (
+            <div key={task.id || `${task.description}:${index}`} className="flex items-start gap-2.5 py-1">
+              <div className="mt-0.5 shrink-0">
+                <PlanStepIcon status={task.status} />
+              </div>
+              <div className={cn(
+                "flex-1 text-[12px] leading-6",
+                task.status === "completed" ? "text-fg/42 line-through decoration-fg/15" : "text-fg/82",
+              )}>
+                {task.description}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3 font-mono text-[10px] text-fg/44">
+        {filesLabel ? (
+          <span>
+            {filesLabel}
+            {summary.totalAdditions > 0 ? <span className="ml-2 text-emerald-300/70">+{summary.totalAdditions}</span> : null}
+            {summary.totalDeletions > 0 ? <span className="ml-1 text-red-300/70">-{summary.totalDeletions}</span> : null}
+          </span>
+        ) : null}
+        {agentsLabel ? (
+          <span>
+            {agentsLabel}
+            {summary.activeBackgroundAgentCount > 0 ? <span className="ml-2 text-sky-300/60">{summary.activeBackgroundAgentCount} active</span> : null}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: string; detail?: string } | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const evt = events[i]!.event;
     if (evt.type === "activity") {
-      if (!isAbstractActivity(evt.activity)) continue;
       return { activity: evt.activity, detail: evt.detail };
     }
     if (evt.type === "done" || evt.type === "status") return null;
   }
   return null;
+}
+
+function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
+  const completedTurnIds = new Set<string>();
+  for (let i = events.length - 1; i >= 0; i--) {
+    const evt = events[i]!.event;
+    if (evt.type === "done" && evt.turnId?.trim()) {
+      completedTurnIds.add(evt.turnId.trim());
+      continue;
+    }
+    const turnId = getEventTurnId(evt);
+    if (!turnId || completedTurnIds.has(turnId)) continue;
+    return turnId;
+  }
+  return null;
+}
+
+function getGroupedTurnId(envelope: GroupedRenderEnvelope | undefined): string | null {
+  if (!envelope) return null;
+  if (envelope.event.type === "tool_group") {
+    return envelope.event.tools[0]?.event.turnId ?? null;
+  }
+  if (envelope.event.type === "command_group" || envelope.event.type === "file_change_group") {
+    return envelope.event.turnId;
+  }
+  return "turnId" in envelope.event ? envelope.event.turnId ?? null : null;
 }
 
 /* ── Main component ── */
@@ -1987,6 +2664,7 @@ type EventRowProps = {
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   turnActive?: boolean;
+  onOpenWorkspacePath?: (path: string) => void;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -1999,6 +2677,7 @@ const EventRow = React.memo(function EventRow({
   surfaceProfile = "standard",
   assistantLabel,
   turnActive,
+  onOpenWorkspacePath,
 }: EventRowProps) {
   return (
     <div className="space-y-3">
@@ -2013,7 +2692,11 @@ const EventRow = React.memo(function EventRow({
       ) : null}
       {envelope.event.type === "tool_group"
         ? <ToolGroupCard group={envelope.event} />
-        : renderEvent(envelope as RenderEnvelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive })}
+        : envelope.event.type === "command_group"
+          ? <CommandGroupCard group={envelope.event} />
+          : envelope.event.type === "file_change_group"
+            ? <FileChangeGroupCard group={envelope.event} />
+            : renderEvent(envelope as RenderEnvelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive, onOpenWorkspacePath })}
     </div>
   );
 });
@@ -2063,6 +2746,7 @@ export function AgentChatMessageList({
   surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
+  onOpenWorkspacePath,
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -2071,13 +2755,17 @@ export function AgentChatMessageList({
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
+  onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const location = useLocation();
+  const navigate = useNavigate();
   const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: RenderEnvelope[] }>({
     events: [],
     rows: [],
   });
   const [stickToBottom, setStickToBottom] = useState(true);
+  const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
   const stickToBottomRef = useRef(true);
   const onApprovalRef = useRef(onApproval);
 
@@ -2101,24 +2789,88 @@ export function AgentChatMessageList({
     collapseCacheRef.current = { events, rows: nextRows };
     return nextRows;
   }, [events]);
-  const groupedRows = useMemo(() => groupConsecutiveTools(rows), [rows]);
+  const groupedRows = useMemo(() => groupConsecutiveStructuredRows(groupConsecutiveTools(rows)), [rows]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
-  const latestRowIsActivity = rows[rows.length - 1]?.event.type === "activity";
+  const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
+  const turnSummary = useMemo(() => deriveTurnSummary(events), [events]);
+  const currentLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
+    ? (location.state as { laneId: string }).laneId
+    : null;
 
-  const turnModelMap = useMemo(() => {
+  useEffect(() => {
+    let cancelled = false;
+    const listWorkspaces = window.ade?.files?.listWorkspaces;
+    if (typeof listWorkspaces !== "function") return;
+    listWorkspaces()
+      .then((workspaces) => {
+        if (!cancelled) {
+          setFilesWorkspaces(workspaces);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFilesWorkspaces([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openWorkspacePath = useCallback(async (path: string) => {
+    let resolvedWorkspaces = filesWorkspaces;
+    let target = resolveFilesNavigationTarget({
+      path,
+      workspaces: resolvedWorkspaces,
+      fallbackLaneId: currentLaneId,
+    });
+    if (!target && normalizeWorkspacePathCandidate(path)?.startsWith("/")) {
+      const listWorkspaces = window.ade?.files?.listWorkspaces;
+      if (typeof listWorkspaces === "function") {
+        try {
+          resolvedWorkspaces = await listWorkspaces();
+          setFilesWorkspaces(resolvedWorkspaces);
+          target = resolveFilesNavigationTarget({
+            path,
+            workspaces: resolvedWorkspaces,
+            fallbackLaneId: currentLaneId,
+          });
+        } catch {
+          target = null;
+        }
+      }
+    }
+    if (!target) return;
+    const state = target.laneId
+      ? { openFilePath: target.openFilePath, laneId: target.laneId }
+      : { openFilePath: target.openFilePath };
+    navigate("/files", { state });
+    onOpenWorkspacePath?.(target.openFilePath, target.laneId);
+  }, [currentLaneId, filesWorkspaces, navigate, onOpenWorkspacePath]);
+
+  const handleReviewChanges = useCallback(() => {
+    if (!turnSummary?.files.length) return;
+    const state = currentLaneId ? { laneId: currentLaneId } : undefined;
+    navigate("/files", state ? { state } : undefined);
+  }, [currentLaneId, navigate, turnSummary?.files.length]);
+
+  const turnModelState = useMemo(() => {
     const map = new Map<string, { label: string; modelId?: string; model?: string }>();
+    let lastModel: { label: string; modelId?: string; model?: string } | null = null;
     for (const envelope of events) {
       const evt = envelope.event;
       if (evt.type !== "done") continue;
       const modelLabel = resolveModelLabel(evt.modelId, evt.model);
       if (!evt.turnId || !modelLabel) continue;
-      map.set(evt.turnId, {
+      const model = {
         label: modelLabel,
         ...(evt.modelId ? { modelId: evt.modelId } : {}),
         ...(evt.model ? { model: evt.model } : {}),
-      });
+      };
+      map.set(evt.turnId, model);
+      lastModel = model;
     }
-    return map;
+    return { map, lastModel };
   }, [events]);
 
   useEffect(() => {
@@ -2128,33 +2880,11 @@ export function AgentChatMessageList({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || !stickToBottom) return;
-    // Use rAF to ensure DOM has updated before scrolling
     const raf = requestAnimationFrame(() => {
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
   }, [groupedRows, stickToBottom, showStreamingIndicator]);
-
-  // Auto-scroll when content mutates (streaming text, images loading, etc.)
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (typeof MutationObserver === "undefined") return;
-    let rafId = 0;
-    const mo = new MutationObserver(() => {
-      if (!stickToBottomRef.current) return;
-      if (rafId) return; // already scheduled
-      rafId = requestAnimationFrame(() => {
-        rafId = 0;
-        el.scrollTop = el.scrollHeight;
-      });
-    });
-    mo.observe(el, { childList: true, subtree: true, characterData: true });
-    return () => {
-      mo.disconnect();
-      if (rafId) cancelAnimationFrame(rafId);
-    };
-  }, []);
 
   // Observe the scroll container's size so we know the viewport height.
   useEffect(() => {
@@ -2256,20 +2986,15 @@ export function AgentChatMessageList({
 
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: GroupedRenderEnvelope, index: number, virtualized: boolean) => {
-    const currentTurn = envelope.event.type === "tool_group"
-      ? envelope.event.tools[0]?.event.turnId ?? null
-      : ("turnId" in envelope.event ? envelope.event.turnId ?? null : null);
-    const previous = groupedRows[index - 1];
-    const previousTurn = previous
-      ? previous.event.type === "tool_group"
-        ? previous.event.tools[0]?.event.turnId ?? null
-        : ("turnId" in previous.event ? previous.event.turnId ?? null : null)
-      : null;
+    const currentTurn = getGroupedTurnId(envelope);
+    const previousTurn = getGroupedTurnId(groupedRows[index - 1]);
     const showTurnDivider = currentTurn && currentTurn !== previousTurn;
     const turnDividerLabel = showTurnDivider
       ? formatTime(envelope.timestamp)
       : null;
-    const turnModel = currentTurn ? (turnModelMap.get(currentTurn) ?? null) : null;
+    const turnModel = currentTurn
+      ? (turnModelState.map.get(currentTurn) ?? null)
+      : turnModelState.lastModel;
 
     if (virtualized) {
       return (
@@ -2285,7 +3010,8 @@ export function AgentChatMessageList({
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
-          turnActive={showStreamingIndicator}
+          turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
+          onOpenWorkspacePath={openWorkspacePath}
         />
       );
     }
@@ -2301,10 +3027,11 @@ export function AgentChatMessageList({
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
-        turnActive={showStreamingIndicator}
+        turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
+        onOpenWorkspacePath={openWorkspacePath}
       />
     );
-  }, [assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelMap, handleApproval, handleMeasure, showStreamingIndicator]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -2318,7 +3045,7 @@ export function AgentChatMessageList({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 
-  const streamingIndicator = showStreamingIndicator && !latestRowIsActivity ? (
+  const streamingIndicator = showStreamingIndicator ? (
     latestActivity ? (
       <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
     ) : (
@@ -2329,13 +3056,17 @@ export function AgentChatMessageList({
     )
   ) : null;
 
+  const turnSummaryCard = turnSummary ? (
+    <TurnSummaryCard summary={turnSummary} onReviewChanges={turnSummary.files.length > 0 ? handleReviewChanges : undefined} />
+  ) : null;
+
   return (
     <div
       ref={scrollRef}
       className={cn("h-full min-h-0 overflow-auto bg-[#09090b] px-4 pt-5 pb-8", className)}
       onScroll={handleScroll}
     >
-      {rows.length === 0 ? (
+      {rows.length === 0 && !streamingIndicator ? (
         <div className="flex h-full flex-col items-center justify-center gap-5">
           <div className="relative flex h-20 w-20 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)]">
             <Robot size={34} weight="thin" className="text-[var(--chat-accent)]" />
@@ -2350,23 +3081,27 @@ export function AgentChatMessageList({
         </div>
       ) : shouldVirtualize ? (
         /* ── Virtualized path: only render rows in / near the viewport ── */
-        <div style={{ height: totalHeight, position: "relative" }}>
-          {/* Top spacer pushes rendered rows to their correct scroll position */}
-          <div style={{ height: offsetTop }} aria-hidden />
-          <div className="space-y-3">
-            {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) =>
-              renderRow(envelope, startIndex + i, true)
-            )}
+        <div className="space-y-3">
+          <div style={{ height: totalHeight, position: "relative" }}>
+            {/* Top spacer pushes rendered rows to their correct scroll position */}
+            <div style={{ height: offsetTop }} aria-hidden />
+            <div className="space-y-3">
+              {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) =>
+                renderRow(envelope, startIndex + i, true)
+              )}
+            </div>
+            {/* Bottom spacer fills remaining scroll area */}
+            <div style={{ height: bottomSpacerHeight }} aria-hidden />
           </div>
-          {/* Bottom spacer fills remaining scroll area */}
-          <div style={{ height: bottomSpacerHeight }} aria-hidden />
           {streamingIndicator}
+          {turnSummaryCard}
         </div>
       ) : (
         /* ── Non-virtualized path: render all rows (small conversation) ── */
         <div className="space-y-3">
           {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
           {streamingIndicator}
+          {turnSummaryCard}
         </div>
       )}
     </div>

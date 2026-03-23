@@ -128,6 +128,49 @@ describe("MissionThreadMessageList transcript merge", () => {
 
     expect(merged).toHaveLength(0);
   });
+
+  it("keeps mission-thread text fragments merged even when structured events interleave", () => {
+    const merged = mergeMissionThreadEvents([], [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "text",
+          turnId: "turn-7",
+          itemId: "text-1",
+          text: "Grouped command cards",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:01.000Z",
+        event: {
+          type: "tool_result",
+          tool: "read_file",
+          itemId: "tool-1",
+          turnId: "turn-7",
+          status: "completed",
+          result: { ok: true },
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:02.000Z",
+        event: {
+          type: "text",
+          turnId: "turn-7",
+          itemId: "text-1",
+          text: " with quieter scrolling",
+        },
+      },
+    ]);
+
+    expect(
+      merged.some((envelope) =>
+        envelope.event.type === "text" && envelope.event.text === "Grouped command cards with quieter scrolling",
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("MissionThreadMessageList usage", () => {
