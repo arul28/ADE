@@ -61,6 +61,28 @@ function seedRepoWithLaneWork(root: string): { laneHeadSha: string } {
   return { laneHeadSha: git(root, ["rev-parse", "HEAD"]) };
 }
 
+function seedQueueRebaseRepo(root: string): void {
+  fs.mkdirSync(path.join(root, "src"), { recursive: true });
+  fs.writeFileSync(path.join(root, "src", "base.ts"), "export const base = 1;\n", "utf8");
+  git(root, ["init", "-b", "main"]);
+  git(root, ["config", "user.email", "ade@test.local"]);
+  git(root, ["config", "user.name", "ADE Test"]);
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "base"]);
+
+  git(root, ["checkout", "-b", "feature/lane-2"]);
+  fs.writeFileSync(path.join(root, "src", "lane2.ts"), "export const lane2 = true;\n", "utf8");
+  git(root, ["add", "src/lane2.ts"]);
+  git(root, ["commit", "-m", "lane 2 work"]);
+
+  git(root, ["checkout", "main"]);
+  fs.writeFileSync(path.join(root, "src", "landed.ts"), "export const landed = true;\n", "utf8");
+  git(root, ["add", "src/landed.ts"]);
+  git(root, ["commit", "-m", "land queue item 1"]);
+
+  git(root, ["checkout", "feature/lane-2"]);
+}
+
 async function seedProjectAndLane(db: any, projectId: string, repoRoot: string) {
   const now = "2026-02-15T19:00:00.000Z";
   db.run(
@@ -804,5 +826,130 @@ describe("conflictService conflict context integrity", () => {
     expect(runRecord.integrationLaneId).toBe("lane-integration");
     expect(runRecord.sourceLaneIds).toEqual(["lane-1", "lane-2"]);
     expect(runRecord.resolverContextKey).toBeTruthy();
+  });
+
+  it("surfaces and executes queue-aware rebases against the queue target", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-queue-rebase-"));
+    const repoRoot = path.join(root, "repo");
+    fs.mkdirSync(repoRoot, { recursive: true });
+    seedQueueRebaseRepo(repoRoot);
+    const db = await openKvDb(path.join(root, "kv.sqlite"), createLogger());
+    const projectId = "proj-queue-rebase";
+    const now = "2026-03-23T12:00:00.000Z";
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, repoRoot, "demo", "main", now, now]
+    );
+    db.run(
+      `
+        insert into pr_groups(id, project_id, group_type, name, auto_rebase, ci_gating, target_branch, created_at)
+        values (?, ?, 'queue', ?, 0, 1, ?, ?)
+      `,
+      ["group-queue", projectId, "Queue A", "main", now]
+    );
+    db.run(
+      `
+        insert into pull_requests(
+          id, lane_id, project_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
+          title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
+          last_synced_at, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        "pr-1",
+        "lane-1",
+        projectId,
+        "owner",
+        "repo",
+        1,
+        "https://example.com/pr/1",
+        null,
+        "lane 1",
+        "merged",
+        "main",
+        "feature/lane-1",
+        "passing",
+        "approved",
+        0,
+        0,
+        now,
+        now,
+        now
+      ]
+    );
+    db.run(
+      `
+        insert into pull_requests(
+          id, lane_id, project_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
+          title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
+          last_synced_at, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        "pr-2",
+        "lane-2",
+        projectId,
+        "owner",
+        "repo",
+        2,
+        "https://example.com/pr/2",
+        null,
+        "lane 2",
+        "open",
+        "main",
+        "feature/lane-2",
+        "passing",
+        "approved",
+        0,
+        0,
+        now,
+        now,
+        now
+      ]
+    );
+    db.run(
+      `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, 'source')`,
+      [randomUUID(), "group-queue", "pr-1", "lane-1", 0]
+    );
+    db.run(
+      `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, 'source')`,
+      [randomUUID(), "group-queue", "pr-2", "lane-2", 1]
+    );
+
+    const lane = createLaneSummary(repoRoot, {
+      id: "lane-2",
+      name: "Lane 2",
+      branchRef: "feature/lane-2",
+      baseRef: "feature/lane-1",
+      parentLaneId: "lane-1"
+    });
+
+    const service = createConflictService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: repoRoot,
+      laneService: {
+        list: async () => [lane],
+        getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "feature/lane-1", branchRef: "feature/lane-2" })
+      } as any,
+      projectConfigService: {
+        get: () => ({ effective: { providerMode: "guest" }, local: {} })
+      } as any,
+    });
+
+    const needs = await service.scanRebaseNeeds();
+    expect(needs).toHaveLength(1);
+    expect(needs[0]).toMatchObject({
+      laneId: "lane-2",
+      baseBranch: "main",
+      groupContext: "Queue A",
+    });
+    expect((needs[0]?.behindBy ?? 0) > 0).toBe(true);
+
+    const rebased = await service.rebaseLane({ laneId: "lane-2" });
+    expect(rebased.success).toBe(true);
+    expect(git(repoRoot, ["rev-list", "--count", "HEAD..main"])).toBe("0");
   });
 });

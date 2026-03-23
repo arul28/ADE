@@ -6,15 +6,18 @@ import {
   GitBranch, GitMerge, GitCommit, GithubLogo, CheckCircle, XCircle, Circle,
   CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code, ClockCounterClockwise,
   PencilSimple, X, Check, ArrowsClockwise, Warning, Play, Rocket, Tag,
-  CaretDown, CaretRight, UserCircle, DotsThreeVertical, Robot, Trash, Archive,
+  CaretDown, CaretRight, UserCircle, DotsThreeVertical, Robot, Trash, Archive, Stack as Layers,
 } from "@phosphor-icons/react";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
-  PrFile, PrActionRun, PrActivityEvent, AiReviewSummary,
+  PrFile, PrActionRun, PrActivityEvent, AiReviewSummary, PrReviewThread,
   LaneSummary, MergeMethod, LandResult,
 } from "../../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, recessedStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
+import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
+import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
 import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
+import { PrIssueResolverModal } from "../shared/PrIssueResolverModal";
+import { usePrs } from "../state/PrsContext";
 
 // ---- Sub-tab type ----
 type DetailTab = "overview" | "files" | "checks" | "activity";
@@ -235,6 +238,50 @@ function CheckIcon({ check }: { check: PrCheck }) {
   return <Circle size={16} weight="regular" style={{ color: COLORS.textMuted }} />;
 }
 
+// ---- Shared activity event helpers (used by OverviewTab and ActivityTab) ----
+function activityEventColor(ev: PrActivityEvent): string {
+  if (ev.type === "comment") return ev.metadata?.source === "review" ? COLORS.warning : COLORS.info;
+  if (ev.type === "review") return COLORS.accent;
+  if (ev.type === "state_change") return COLORS.success;
+  if (ev.type === "deployment") return COLORS.success;
+  if (ev.type === "force_push") return COLORS.warning;
+  if (ev.type === "commit") return COLORS.accent;
+  if (ev.type === "ci_run") return COLORS.warning;
+  if (ev.type === "label") return COLORS.info;
+  return COLORS.textMuted;
+}
+
+function activityEventLabel(ev: PrActivityEvent): string {
+  if (ev.type === "comment") return ev.metadata?.source === "review" ? "review comment" : "comment";
+  if (ev.type === "review") return "review";
+  if (ev.type === "state_change") return "state change";
+  if (ev.type === "deployment") return "deployed";
+  if (ev.type === "force_push") return "force push";
+  if (ev.type === "commit") return "commit";
+  if (ev.type === "ci_run") return "CI";
+  if (ev.type === "label") return "label";
+  if (ev.type === "review_request") return "review request";
+  return String(ev.type).replace(/_/g, " ");
+}
+
+function ActivityEventIcon({ event, withGlow }: { event: PrActivityEvent; withGlow?: boolean }) {
+  const col = activityEventColor(event);
+  const s = withGlow
+    ? { color: col, filter: `drop-shadow(0 0 3px ${col}40)` }
+    : { color: col, flexShrink: 0 as const };
+
+  if (event.type === "comment") return <ChatText size={12} weight="fill" style={s} />;
+  if (event.type === "review") return <Check size={12} weight="bold" style={s} />;
+  if (event.type === "state_change") return <GitMerge size={12} weight="fill" style={s} />;
+  if (event.type === "deployment") return <Rocket size={12} weight="fill" style={s} />;
+  if (event.type === "force_push") return <ArrowsClockwise size={12} weight="bold" style={s} />;
+  if (event.type === "commit") return <GitCommit size={12} weight="bold" style={s} />;
+  if (event.type === "ci_run") return <Play size={12} weight="fill" style={s} />;
+  if (event.type === "label") return <Tag size={12} weight="fill" style={s} />;
+  if (event.type === "review_request") return <Eye size={12} weight="fill" style={s} />;
+  return <Circle size={10} weight="fill" style={s} />;
+}
+
 const FILE_STATUS_COLORS: Record<string, string> = {
   added: COLORS.success,
   removed: COLORS.danger,
@@ -270,19 +317,49 @@ type PrDetailPaneProps = {
   mergeMethod: MergeMethod;
   onRefresh: () => Promise<void>;
   onNavigate: (path: string) => void;
-  onTabChange: (tab: string) => void;
   onShowInGraph?: (laneId: string) => void;
   onOpenRebaseTab?: () => void;
+  queueContext?: { groupId: string; label?: string | null } | null;
+  onOpenQueueView?: (groupId: string) => void;
 };
 
-export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy, lanes, mergeMethod, onRefresh, onNavigate, onTabChange, onShowInGraph, onOpenRebaseTab }: PrDetailPaneProps) {
+export function PrDetailPane({
+  pr,
+  status,
+  checks,
+  reviews,
+  comments,
+  detailBusy,
+  lanes,
+  mergeMethod,
+  onRefresh,
+  onNavigate,
+  onShowInGraph,
+  onOpenRebaseTab,
+  queueContext,
+  onOpenQueueView,
+}: PrDetailPaneProps) {
+  const {
+    resolverModel,
+    resolverReasoningLevel,
+    resolverPermissionMode,
+    setResolverModel,
+    setResolverReasoningLevel,
+    setResolverPermissionMode,
+  } = usePrs();
   const [activeTab, setActiveTab] = React.useState<DetailTab>("overview");
   const [detail, setDetail] = React.useState<PrDetail | null>(null);
   const [files, setFiles] = React.useState<PrFile[]>([]);
   const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>([]);
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
+  const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
   const [aiSummary, setAiSummary] = React.useState<AiReviewSummary | null>(null);
   const [aiSummaryBusy, setAiSummaryBusy] = React.useState(false);
+  const [showIssueResolverModal, setShowIssueResolverModal] = React.useState(false);
+  const [issueResolverBusy, setIssueResolverBusy] = React.useState(false);
+  const [issueResolverCopyBusy, setIssueResolverCopyBusy] = React.useState(false);
+  const [issueResolverCopyNotice, setIssueResolverCopyNotice] = React.useState<string | null>(null);
+  const [issueResolverError, setIssueResolverError] = React.useState<string | null>(null);
 
   // Action states
   const [actionBusy, setActionBusy] = React.useState(false);
@@ -307,17 +384,19 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
   const loadDetail = React.useCallback(async () => {
     const requestId = ++detailLoadSeqRef.current;
     try {
-      const [d, f, a, act] = await Promise.all([
+      const [d, f, a, act, threads] = await Promise.all([
         window.ade.prs.getDetail(pr.id).catch(() => null),
         window.ade.prs.getFiles(pr.id).catch(() => []),
         window.ade.prs.getActionRuns(pr.id).catch(() => []),
         window.ade.prs.getActivity(pr.id).catch(() => []),
+        window.ade.prs.getReviewThreads(pr.id).catch(() => []),
       ]);
       if (requestId !== detailLoadSeqRef.current) return;
       setDetail(d);
       setFiles(f);
       setActionRuns(a);
       setActivity(act);
+      setReviewThreads(threads);
     } catch {
       // silently fail - basic data still available from context
     }
@@ -329,9 +408,15 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
     setFiles([]);
     setActionRuns([]);
     setActivity([]);
+    setReviewThreads([]);
     setAiSummary(null);
     setActionError(null);
     setActionResult(null);
+    setIssueResolverError(null);
+    setIssueResolverBusy(false);
+    setIssueResolverCopyBusy(false);
+    setIssueResolverCopyNotice(null);
+    setShowIssueResolverModal(false);
     setEditingTitle(false);
     setEditingBody(false);
     setShowLabelEditor(false);
@@ -343,6 +428,12 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
       detailLoadSeqRef.current += 1;
     };
   }, [loadDetail, pr.id]);
+
+  React.useEffect(() => {
+    if (!issueResolverCopyNotice) return;
+    const timer = window.setTimeout(() => setIssueResolverCopyNotice(null), 2500);
+    return () => window.clearTimeout(timer);
+  }, [issueResolverCopyNotice]);
 
   // ---- Action helper to reduce repetitive try/catch/finally ----
   const runAction = async (fn: () => Promise<void>) => {
@@ -438,6 +529,83 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
       setActionError(err instanceof Error ? err.message : String(err));
     } finally { setAiSummaryBusy(false); }
   };
+
+  const laneForPr = React.useMemo(
+    () => lanes.find((lane) => lane.id === pr.laneId && !lane.archivedAt) ?? null,
+    [lanes, pr.laneId],
+  );
+  const issueResolutionAvailability = React.useMemo(() => {
+    const availability = getPrIssueResolutionAvailability(checks, reviewThreads);
+    if (laneForPr) return availability;
+    return {
+      ...availability,
+      hasActionableChecks: false,
+      hasActionableComments: false,
+      hasAnyActionableIssues: false,
+    };
+  }, [checks, laneForPr, reviewThreads]);
+
+  const handleOpenIssueResolver = React.useCallback(() => {
+    setIssueResolverError(null);
+    setIssueResolverCopyNotice(null);
+    setShowIssueResolverModal(true);
+    void loadDetail();
+  }, [loadDetail]);
+
+  const handleLaunchIssueResolver = React.useCallback(async (
+    args: { scope: "checks" | "comments" | "both"; additionalInstructions: string },
+  ) => {
+    setIssueResolverBusy(true);
+    setIssueResolverError(null);
+    try {
+      const result = await window.ade.prs.issueResolutionStart({
+        prId: pr.id,
+        scope: args.scope,
+        modelId: resolverModel,
+        reasoning: resolverReasoningLevel || null,
+        permissionMode: resolverPermissionMode,
+        additionalInstructions: args.additionalInstructions,
+      });
+      setShowIssueResolverModal(false);
+      onNavigate(result.href);
+    } catch (err: unknown) {
+      setIssueResolverError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIssueResolverBusy(false);
+    }
+  }, [onNavigate, pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel]);
+
+  const handleCopyIssueResolverPrompt = React.useCallback(async (
+    args: { scope: "checks" | "comments" | "both"; additionalInstructions: string },
+  ) => {
+    setIssueResolverCopyBusy(true);
+    setIssueResolverError(null);
+    setIssueResolverCopyNotice(null);
+    try {
+      const preview = await window.ade.prs.issueResolutionPreviewPrompt({
+        prId: pr.id,
+        scope: args.scope,
+        modelId: resolverModel,
+        reasoning: resolverReasoningLevel || null,
+        permissionMode: resolverPermissionMode,
+        additionalInstructions: args.additionalInstructions,
+      });
+      if (window.ade?.app?.writeClipboardText) {
+        await window.ade.app.writeClipboardText(preview.prompt);
+      } else if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(preview.prompt);
+      } else {
+        throw new Error("Clipboard access is not available in this environment.");
+      }
+      setIssueResolverCopyNotice("Prompt copied to clipboard.");
+    } catch (err: unknown) {
+      setIssueResolverError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIssueResolverCopyBusy(false);
+    }
+  }, [pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel]);
+
+  const localBehindCount = laneForPr?.status?.behind ?? 0;
 
   const sc = getPrStateBadge(pr.state);
   const cc = getPrChecksBadge(pr.checksStatus);
@@ -539,7 +707,7 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
                   borderTop: "none",
                   borderLeft: "none",
                   borderRight: "none",
-                  borderRadius: isActive ? "8px 8px 0 0" : "8px 8px 0 0",
+                  borderRadius: "8px 8px 0 0",
                   cursor: "pointer", transition: "all 120ms ease",
                 }}
               >
@@ -562,9 +730,28 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
 
           {/* Right-side action buttons */}
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+            {issueResolutionAvailability.hasAnyActionableIssues ? (
+              <button
+                type="button"
+                onClick={handleOpenIssueResolver}
+                style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}
+              >
+                <Sparkle size={14} weight="fill" /> Resolve issues with agent
+              </button>
+            ) : null}
             <button type="button" onClick={() => void onRefresh()} style={outlineButton({ height: 30, padding: "0 8px" })} title="Refresh">
               <ArrowsClockwise size={14} weight="bold" />
             </button>
+            {queueContext && onOpenQueueView ? (
+              <button
+                type="button"
+                onClick={() => onOpenQueueView(queueContext.groupId)}
+                style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}
+                title={queueContext.label ?? "Open queue"}
+              >
+                <Layers size={14} /> Queue
+              </button>
+            ) : null}
             {onShowInGraph ? (
               <button type="button" onClick={() => onShowInGraph(pr.laneId)} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.info, borderColor: `${COLORS.info}40` })}>
                 <GitBranch size={14} /> Graph
@@ -626,10 +813,7 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
             onAiSummary={handleAiSummary}
             onNavigate={onNavigate}
             onOpenRebaseTab={onOpenRebaseTab}
-            localBehindCount={(() => {
-              const lane = lanes.find((l) => l.id === pr.laneId);
-              return lane?.status?.behind ?? 0;
-            })()}
+            localBehindCount={localBehindCount}
             activity={activity}
             lanes={lanes}
           />
@@ -642,6 +826,8 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
             checks={checks} actionRuns={actionRuns} expandedRun={expandedRun}
             setExpandedRun={setExpandedRun} actionBusy={actionBusy}
             onRerunChecks={handleRerunChecks}
+            showIssueResolverAction={issueResolutionAvailability.hasAnyActionableIssues}
+            onOpenIssueResolver={handleOpenIssueResolver}
           />
         )}
         {activeTab === "activity" && (
@@ -652,6 +838,34 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
           />
         )}
       </div>
+
+      <PrIssueResolverModal
+        open={showIssueResolverModal}
+        prNumber={pr.githubPrNumber}
+        prTitle={pr.title}
+        availability={issueResolutionAvailability}
+        checks={checks}
+        reviewThreads={reviewThreads}
+        modelId={resolverModel}
+        reasoningEffort={resolverReasoningLevel}
+        permissionMode={resolverPermissionMode}
+        busy={issueResolverBusy}
+        copyBusy={issueResolverCopyBusy}
+        copyNotice={issueResolverCopyNotice}
+        error={issueResolverError}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setIssueResolverError(null);
+            setIssueResolverCopyNotice(null);
+          }
+          setShowIssueResolverModal(nextOpen);
+        }}
+        onModelChange={setResolverModel}
+        onReasoningEffortChange={setResolverReasoningLevel}
+        onPermissionModeChange={setResolverPermissionMode}
+        onLaunch={handleLaunchIssueResolver}
+        onCopyPrompt={handleCopyIssueResolverPrompt}
+      />
     </div>
   );
 }
@@ -970,48 +1184,6 @@ function OverviewTab(props: OverviewTabProps) {
           );
         })()}
 
-        {/* ---- PR Description ---- */}
-        <div style={cardStyle()}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-            <span style={{ ...LABEL_STYLE, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary }}>Description</span>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button type="button" onClick={props.onAiSummary} disabled={aiSummaryBusy} style={outlineButton({ height: 28, padding: "0 12px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}>
-                <Sparkle size={12} weight="fill" />
-                {aiSummaryBusy ? "Analyzing..." : "AI Review"}
-              </button>
-              {!props.editingBody && (
-                <button type="button" onClick={() => { props.setBodyDraft(detail?.body ?? ""); props.setEditingBody(true); }} style={outlineButton({ height: 28, padding: "0 10px" })}>
-                  <PencilSimple size={12} /> Edit
-                </button>
-              )}
-            </div>
-          </div>
-          {props.editingBody ? (
-            <div>
-              <textarea
-                value={props.bodyDraft}
-                onChange={(e) => props.setBodyDraft(e.target.value)}
-                style={{
-                  width: "100%", minHeight: 200, resize: "vertical", padding: 14,
-                  fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary,
-                  background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, borderRadius: 10, outline: "none",
-                }}
-                placeholder="Write PR description (markdown)..."
-              />
-              <div style={{ display: "flex", gap: 6, marginTop: 10, justifyContent: "flex-end" }}>
-                <button type="button" onClick={() => props.setEditingBody(false)} style={outlineButton({ height: 30 })}>Cancel</button>
-                <button type="button" onClick={() => void props.onUpdateBody()} disabled={actionBusy} style={primaryButton({ height: 30 })}>
-                  {actionBusy ? "Saving..." : "Save"}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div style={{ maxHeight: 300, overflow: "auto" }}>
-              <MarkdownBody markdown={detail?.body || pr.title || "No description provided."} />
-            </div>
-          )}
-        </div>
-
         {/* ---- AI Review Summary ---- */}
         {aiSummary && (
           <div style={{ ...cardStyle(), borderColor: `${COLORS.accent}30`, background: `linear-gradient(135deg, ${COLORS.accent}08 0%, transparent 60%)` }}>
@@ -1052,63 +1224,6 @@ function OverviewTab(props: OverviewTabProps) {
           </div>
         )}
 
-        {/* ---- Reviews Section ---- */}
-        <div style={cardStyle()}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-            <span style={{ ...LABEL_STYLE, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary }}>Reviews ({reviews.length})</span>
-            <button type="button" onClick={() => props.setShowReviewModal(true)} style={outlineButton({ height: 26, padding: "0 10px" })}>
-              <Check size={12} weight="bold" /> Submit Review
-            </button>
-          </div>
-          {reviews.length === 0 ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim, padding: "8px 0" }}>No reviews yet</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {reviews.map((review, idx) => {
-                const isApproved = review.state === "approved";
-                const isChangesRequested = review.state === "changes_requested";
-                const reviewBg = isApproved ? `${COLORS.success}0A` : isChangesRequested ? `${COLORS.danger}0A` : "transparent";
-                const reviewBorder = isApproved ? `${COLORS.success}25` : isChangesRequested ? `${COLORS.danger}25` : COLORS.border;
-                const reviewLeftBorder = isApproved ? COLORS.success : isChangesRequested ? COLORS.danger : COLORS.border;
-                return (
-                  <div key={`${review.reviewer}-${idx}`} style={{
-                    display: "flex", alignItems: "flex-start", gap: 12, padding: 12,
-                    background: reviewBg, borderRadius: 10, border: `1px solid ${reviewBorder}`,
-                    borderLeft: `3px solid ${reviewLeftBorder}`,
-                  }}>
-                    <CommentAvatar author={review.reviewer} avatarUrl={review.reviewerAvatarUrl} size={28} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{review.reviewer}</span>
-                        {isBot(review.reviewer) && (
-                          <span style={{ fontFamily: SANS_FONT, fontSize: 9, fontWeight: 700, color: COLORS.textMuted, background: `${COLORS.textMuted}18`, padding: "1px 5px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>bot</span>
-                        )}
-                        <span style={{
-                          ...inlineBadge(
-                            isApproved ? COLORS.success : isChangesRequested ? COLORS.danger : COLORS.textMuted,
-                          ),
-                          fontWeight: 600,
-                          background: isApproved ? `${COLORS.success}18` : isChangesRequested ? `${COLORS.danger}18` : undefined,
-                        }}>
-                          {isApproved && <CheckCircle size={12} weight="fill" style={{ marginRight: 4 }} />}
-                          {isChangesRequested && <Warning size={12} weight="fill" style={{ marginRight: 4 }} />}
-                          {isApproved ? "Approved" : isChangesRequested ? "Changes Requested" : review.state.replace(/_/g, " ")}
-                        </span>
-                        {review.submittedAt && <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted }}>{formatTs(review.submittedAt)}</span>}
-                      </div>
-                      {review.body ? (
-                        <div style={{ marginTop: 8 }}>
-                          <MarkdownBody markdown={review.body} />
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
         {/* ---- Activity & Comments Section ---- */}
         <div style={cardStyle()}>
           <span style={{ ...LABEL_STYLE, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary, marginBottom: 14, display: "block" }}>
@@ -1133,48 +1248,12 @@ function OverviewTab(props: OverviewTabProps) {
               return <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim, marginBottom: 14, padding: "8px 0" }}>No activity yet</div>;
             }
 
-            const eventColor = (ev: PrActivityEvent) => {
-              if (ev.type === "comment") return ev.metadata?.source === "review" ? COLORS.warning : COLORS.info;
-              if (ev.type === "review") return COLORS.accent;
-              if (ev.type === "deployment") return COLORS.success;
-              if (ev.type === "force_push") return COLORS.warning;
-              if (ev.type === "commit") return COLORS.accent;
-              if (ev.type === "ci_run") return COLORS.warning;
-              if (ev.type === "label") return COLORS.info;
-              return COLORS.textMuted;
-            };
-
-            const eventLabel = (ev: PrActivityEvent) => {
-              if (ev.type === "comment") return ev.metadata?.source === "review" ? "review comment" : "comment";
-              if (ev.type === "review") return "review";
-              if (ev.type === "deployment") return "deployed";
-              if (ev.type === "force_push") return "force push";
-              if (ev.type === "commit") return "commit";
-              if (ev.type === "ci_run") return "CI";
-              if (ev.type === "label") return "label";
-              if (ev.type === "review_request") return "review request";
-              return String(ev.type).replace(/_/g, " ");
-            };
-
-            const eventIcon = (ev: PrActivityEvent) => {
-              const col = eventColor(ev);
-              const s = { color: col, flexShrink: 0 } as const;
-              if (ev.type === "comment") return <ChatText size={12} weight="fill" style={s} />;
-              if (ev.type === "review") return <Check size={12} weight="bold" style={s} />;
-              if (ev.type === "deployment") return <Rocket size={12} weight="fill" style={s} />;
-              if (ev.type === "force_push") return <ArrowsClockwise size={12} weight="bold" style={s} />;
-              if (ev.type === "commit") return <GitCommit size={12} weight="bold" style={s} />;
-              if (ev.type === "ci_run") return <Play size={12} weight="fill" style={s} />;
-              if (ev.type === "label") return <Tag size={12} weight="fill" style={s} />;
-              if (ev.type === "review_request") return <Eye size={12} weight="fill" style={s} />;
-              return <Circle size={10} weight="fill" style={s} />;
-            };
-
             return (
               <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
                 {timeline.map((ev) => {
-                  const col = eventColor(ev);
+                  const col = activityEventColor(ev);
                   const isComment = ev.type === "comment";
+                  const supportsRichBody = isComment || ev.type === "review";
                   const isReviewComment = isComment && ev.metadata?.source === "review";
                   const authorIsBot = isBot(ev.author);
 
@@ -1194,7 +1273,7 @@ function OverviewTab(props: OverviewTabProps) {
                           <CommentAvatar author={ev.author} avatarUrl={ev.avatarUrl} size={isComment ? 24 : 20} />
                         ) : (
                           <div style={{ width: isComment ? 24 : 20, height: isComment ? 24 : 20, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            {eventIcon(ev)}
+                            <ActivityEventIcon event={ev} />
                           </div>
                         )}
                         <span style={{ fontFamily: SANS_FONT, fontSize: isComment ? 13 : 12, fontWeight: 600, color: COLORS.textPrimary }}>{ev.author}</span>
@@ -1202,7 +1281,7 @@ function OverviewTab(props: OverviewTabProps) {
                           <span style={{ fontFamily: SANS_FONT, fontSize: 9, fontWeight: 700, color: COLORS.textMuted, background: `${COLORS.textMuted}18`, padding: "1px 5px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>bot</span>
                         )}
                         <span style={inlineBadge(col, { padding: "1px 8px", fontSize: 10 })}>
-                          {eventLabel(ev)}
+                          {activityEventLabel(ev)}
                         </span>
                         {isComment && typeof ev.metadata?.path === "string" && (
                           <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}14`, padding: "2px 8px", borderRadius: 6 }}>
@@ -1229,11 +1308,11 @@ function OverviewTab(props: OverviewTabProps) {
                           <CommentMenu url={String(ev.metadata.url)} />
                         )}
                       </div>
-                      {isComment && ev.body ? (
+                      {supportsRichBody && ev.body ? (
                         <div style={{ paddingLeft: 32 }}>
                           <MarkdownBody markdown={ev.body} />
                         </div>
-                      ) : !isComment && ev.body ? (
+                      ) : ev.body ? (
                         <div style={{ paddingLeft: isComment ? 32 : 28, marginTop: 4 }}>
                           <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>{ev.body}</span>
                         </div>
@@ -1467,6 +1546,16 @@ function OverviewTab(props: OverviewTabProps) {
 
       {/* ---- Right Sidebar ---- */}
       <div style={{ width: 250, borderLeft: `1px solid ${COLORS.border}`, overflow: "auto", padding: 18, flexShrink: 0, display: "flex", flexDirection: "column", gap: 0, background: `linear-gradient(180deg, rgba(167,139,250,0.02) 0%, transparent 40%)` }}>
+        {/* Quick actions */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 14, marginBottom: 2, borderBottom: `1px solid ${COLORS.border}` }}>
+          <button type="button" onClick={props.onAiSummary} disabled={aiSummaryBusy} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40`, width: "100%", justifyContent: "center" })}>
+            <Sparkle size={13} weight="fill" />
+            {aiSummaryBusy ? "Analyzing..." : "AI Review"}
+          </button>
+          <button type="button" onClick={() => props.setShowReviewModal(true)} style={outlineButton({ height: 30, padding: "0 10px", width: "100%", justifyContent: "center" })}>
+            <Check size={13} weight="bold" /> Submit Review
+          </button>
+        </div>
         {/* Reviewers */}
         <SidebarSection title="Reviewers" onEdit={() => props.setShowReviewerEditor(!props.showReviewerEditor)}>
           {detail?.requestedReviewers?.length ? (
@@ -1556,6 +1645,8 @@ function OverviewTab(props: OverviewTabProps) {
             <StatRow label="Updated" value={formatTsFull(pr.updatedAt)} />
             <StatRow label="Checks" value={`${checks.filter(c => c.conclusion === "success").length}/${checks.length} passing`} />
             <StatRow label="Reviews" value={`${reviews.filter(r => r.state === "approved").length} approved`} />
+            <StatRow label="Additions" value={`+${pr.additions}`} />
+            <StatRow label="Deletions" value={`-${pr.deletions}`} />
           </div>
         </SidebarSection>
       </div>
@@ -1705,13 +1796,15 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
 // CHECKS TAB
 // ================================================================
 
-function ChecksTab({ checks, actionRuns, expandedRun, setExpandedRun, actionBusy, onRerunChecks }: {
+function ChecksTab({ checks, actionRuns, expandedRun, setExpandedRun, actionBusy, onRerunChecks, showIssueResolverAction, onOpenIssueResolver }: {
   checks: PrCheck[];
   actionRuns: PrActionRun[];
   expandedRun: number | null;
   setExpandedRun: (id: number | null) => void;
   actionBusy: boolean;
   onRerunChecks: () => void;
+  showIssueResolverAction: boolean;
+  onOpenIssueResolver: () => void;
 }) {
   const [collapsedGroups, setCollapsedGroups] = React.useState<Record<string, boolean>>({});
 
@@ -1772,9 +1865,16 @@ function ChecksTab({ checks, actionRuns, expandedRun, setExpandedRun, actionBusy
           <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
             {summaryText}
           </span>
-          <button type="button" disabled={actionBusy} onClick={onRerunChecks} style={outlineButton({ height: 30, color: COLORS.warning, borderColor: `${COLORS.warning}40` })}>
-            <ArrowsClockwise size={14} /> Re-run Failed
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {showIssueResolverAction ? (
+              <button type="button" onClick={onOpenIssueResolver} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}>
+                <Sparkle size={14} weight="fill" /> Resolve issues with agent
+              </button>
+            ) : null}
+            <button type="button" disabled={actionBusy} onClick={onRerunChecks} style={outlineButton({ height: 30, color: COLORS.warning, borderColor: `${COLORS.warning}40` })}>
+              <ArrowsClockwise size={14} /> Re-run Failed
+            </button>
+          </div>
         </div>
         {total > 0 && (
           <div style={{ display: "flex", height: 4 }}>
@@ -2035,50 +2135,6 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
     return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [activity, comments, reviews]);
 
-  const activityColor = React.useCallback((event: PrActivityEvent) => {
-    if (event.type === "review") return COLORS.accent;
-    if (event.type === "comment") {
-      return event.metadata?.source === "review" ? COLORS.warning : COLORS.info;
-    }
-    if (event.type === "ci_run") return COLORS.warning;
-    if (event.type === "state_change") return COLORS.success;
-    if (event.type === "deployment") return COLORS.success;
-    if (event.type === "force_push") return COLORS.warning;
-    if (event.type === "commit") return COLORS.accent;
-    if (event.type === "label") return COLORS.info;
-    return COLORS.textMuted;
-  }, []);
-
-  const activityLabel = React.useCallback((event: PrActivityEvent) => {
-    if (event.type === "comment") {
-      return event.metadata?.source === "review" ? "review comment" : "comment";
-    }
-    if (event.type === "review") return "review";
-    if (event.type === "ci_run") return "CI";
-    if (event.type === "state_change") return "state change";
-    if (event.type === "review_request") return "review request";
-    if (event.type === "deployment") return "deployed";
-    if (event.type === "force_push") return "force push";
-    if (event.type === "commit") return "commit";
-    if (event.type === "label") return "label";
-    return String(event.type).replace(/_/g, " ");
-  }, []);
-
-  const activityIcon = React.useCallback((event: PrActivityEvent) => {
-    const col = activityColor(event);
-    const iconStyle = { color: col, filter: `drop-shadow(0 0 3px ${col}40)` };
-    if (event.type === "review") return <Check size={12} weight="bold" style={iconStyle} />;
-    if (event.type === "comment") return <ChatText size={12} weight="fill" style={iconStyle} />;
-    if (event.type === "ci_run") return <Play size={12} weight="fill" style={iconStyle} />;
-    if (event.type === "state_change") return <GitMerge size={12} weight="fill" style={iconStyle} />;
-    if (event.type === "review_request") return <Eye size={12} weight="fill" style={iconStyle} />;
-    if (event.type === "deployment") return <Rocket size={12} weight="fill" style={iconStyle} />;
-    if (event.type === "force_push") return <ArrowsClockwise size={12} weight="bold" style={iconStyle} />;
-    if (event.type === "commit") return <GitCommit size={12} weight="bold" style={iconStyle} />;
-    if (event.type === "label") return <Tag size={12} weight="fill" style={iconStyle} />;
-    return <Circle size={10} weight="fill" style={iconStyle} />;
-  }, [activityColor]);
-
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
       {/* Comment input at top */}
@@ -2117,7 +2173,7 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
               borderRadius: 1,
             }} />
             {timeline.map((event, idx) => {
-              const evColor = activityColor(event);
+              const evColor = activityEventColor(event);
               return (
                 <div key={event.id} style={{ position: "relative", paddingBottom: idx < timeline.length - 1 ? 20 : 0 }}>
                   {/* Icon dot */}
@@ -2129,13 +2185,13 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
                     display: "flex", alignItems: "center", justifyContent: "center",
                     boxShadow: `0 0 8px ${evColor}20`,
                   }}>
-                    {activityIcon(event)}
+                    <ActivityEventIcon event={event} withGlow />
                   </div>
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                       <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{event.author}</span>
                       <span style={inlineBadge(evColor)}>
-                        {activityLabel(event)}
+                        {activityEventLabel(event)}
                       </span>
                       {event.type === "review" && typeof event.metadata?.state === "string" ? (
                         <span style={inlineBadge(event.metadata.state === "approved" ? COLORS.success : event.metadata.state === "changes_requested" ? COLORS.warning : COLORS.textSecondary)}>

@@ -104,11 +104,17 @@ workflow tools that enable them to take actions beyond conversation:
 | `createPR` | Create a pull request from a lane's changes |
 | `captureScreenshot` | Capture a screenshot of the current environment (when runtime supports it) |
 | `reportCompletion` | Persist a structured closeout report for the chat session, including status, summary, and produced artifacts |
+| `prRefreshIssueInventory` | Fetch the latest checks, review threads, and comments for a PR so the agent can re-evaluate what still needs fixing |
+| `prRerunFailedChecks` | Re-trigger failed GitHub Actions check runs after applying fixes |
+| `prReplyToReviewThread` | Post a reply on a GitHub review thread |
+| `prResolveReviewThread` | Mark a GitHub review thread as resolved |
 
 These tools form the `workflowTools` tier, sitting between
 `universalTools` (available to all agents) and `coordinatorTools`
 (restricted to the mission orchestrator). The system prompt tells agents
 what tools they have and guides them on when to use each capability.
+
+The four PR issue resolution tools (`prRefreshIssueInventory`, `prRerunFailedChecks`, `prReplyToReviewThread`, `prResolveReviewThread`) are specifically designed for the PR issue resolution workflow, where an agent is launched to fix failing CI checks and/or address unresolved review threads on a pull request.
 
 ## Permission Modes
 

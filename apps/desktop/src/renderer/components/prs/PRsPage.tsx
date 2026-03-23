@@ -1,5 +1,6 @@
 import React from "react";
 import { GitPullRequest, Plus } from "@phosphor-icons/react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { PrsProvider, usePrs } from "./state/PrsContext";
@@ -8,10 +9,13 @@ import { useAppStore } from "../../state/appStore";
 import { GitHubTab } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
+import { buildPrsRouteSearch, parsePrsRouteState } from "./prsRouteState";
 
 type SurfaceMode = "github" | "workflows";
 
 function PRsPageInner() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const {
     activeTab,
@@ -21,6 +25,9 @@ function PRsPageInner() {
     mergeMethod,
     selectedPrId,
     setSelectedPrId,
+    selectedQueueGroupId,
+    setSelectedQueueGroupId,
+    selectedRebaseItemId,
     setSelectedRebaseItemId,
     loading,
     error,
@@ -48,25 +55,13 @@ function PRsPageInner() {
   React.useEffect(() => {
     const syncFromLocation = () => {
       try {
-        const searchParams = new URLSearchParams(window.location.search);
-        const fromSearch = searchParams.get("tab");
-        const workflow = searchParams.get("workflow");
-        const searchLaneId = searchParams.get("laneId");
-        const fromHash = (() => {
-          const hash = window.location.hash ?? "";
-          const queryIndex = hash.indexOf("?");
-          if (queryIndex < 0) return null;
-          const hashParams = new URLSearchParams(hash.slice(queryIndex + 1));
-          return {
-            tab: hashParams.get("tab"),
-            workflow: hashParams.get("workflow"),
-            laneId: hashParams.get("laneId"),
-          };
-        })();
-
-        const tab = fromSearch ?? fromHash?.tab ?? null;
-        const workflowTab = workflow ?? fromHash?.workflow ?? null;
-        const laneId = searchLaneId ?? fromHash?.laneId ?? null;
+        const routeState = parsePrsRouteState({
+          search: location.search,
+          hash: window.location.hash,
+        });
+        const tab = routeState.tab;
+        const workflowTab = routeState.workflowTab;
+        const laneId = routeState.laneId;
 
         if (tab === "github" || tab === "normal") {
           setActiveTab("normal");
@@ -79,8 +74,14 @@ function PRsPageInner() {
           setActiveTab(tab);
         }
 
-        if ((tab === "rebase" || workflowTab === "rebase") && laneId) {
-          setSelectedRebaseItemId(laneId);
+        if (tab === "normal" || tab === "github") {
+          setSelectedPrId(routeState.prId ?? null);
+        }
+        if (tab === "queue" || workflowTab === "queue") {
+          setSelectedQueueGroupId(routeState.queueGroupId ?? null);
+        }
+        if (tab === "rebase" || workflowTab === "rebase") {
+          setSelectedRebaseItemId(laneId ?? null);
         }
       } catch {
         // Ignore malformed URLs and fall back to current state.
@@ -94,7 +95,26 @@ function PRsPageInner() {
       window.removeEventListener("popstate", syncFromLocation);
       window.removeEventListener("hashchange", syncFromLocation);
     };
-  }, [setActiveTab, setSelectedRebaseItemId]);
+  }, [location.search, setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId]);
+
+  React.useEffect(() => {
+    const nextSearch = buildPrsRouteSearch({
+      activeTab,
+      selectedPrId,
+      selectedQueueGroupId,
+      selectedRebaseItemId,
+    });
+    if (location.search === nextSearch) return;
+    void navigate({ pathname: location.pathname, search: nextSearch }, { replace: true });
+  }, [
+    activeTab,
+    selectedPrId,
+    selectedQueueGroupId,
+    selectedRebaseItemId,
+    location.pathname,
+    location.search,
+    navigate,
+  ]);
 
   const activeMode: SurfaceMode = activeTab === "normal" ? "github" : "workflows";
 
@@ -275,6 +295,10 @@ function PRsPageInner() {
             onSelectPr={setSelectedPrId}
             onRefreshAll={handleRefresh}
             onOpenRebaseTab={() => setActiveTab("rebase")}
+            onOpenQueueView={(groupId) => {
+              setSelectedQueueGroupId(groupId);
+              setActiveTab("queue");
+            }}
           />
         ) : (
           <WorkflowsTab

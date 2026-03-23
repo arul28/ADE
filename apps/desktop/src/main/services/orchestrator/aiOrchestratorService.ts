@@ -116,7 +116,6 @@ import type { createAgentChatService } from "../chat/agentChatService";
 import type { createPrService } from "../prs/prService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
-import type { createQueueRehearsalService } from "../prs/queueRehearsalService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import {
   buildComputerUseOwnerSnapshot,
@@ -765,7 +764,6 @@ export function createAiOrchestratorService(args: {
   prService?: ReturnType<typeof createPrService> | null;
   conflictService?: ReturnType<typeof createConflictService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
-  queueRehearsalService?: ReturnType<typeof createQueueRehearsalService> | null;
   missionBudgetService?: import("./missionBudgetService").MissionBudgetService | null;
   humanWorkDigestService?: import("../memory/humanWorkDigestService").HumanWorkDigestService | null;
   missionMemoryLifecycleService?: import("../memory/missionMemoryLifecycleService").MissionMemoryLifecycleService | null;
@@ -787,7 +785,6 @@ export function createAiOrchestratorService(args: {
     prService,
     conflictService,
     queueLandingService,
-    queueRehearsalService,
     missionBudgetService,
     humanWorkDigestService,
     missionMemoryLifecycleService,
@@ -2517,7 +2514,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     autoRebase: null,
     ciGating: null,
     autoLand: null,
-    rehearseQueue: null,
     autoResolveConflicts: null,
     archiveLaneOnLand: null,
     mergeMethod: null,
@@ -2554,7 +2550,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       };
     }
     const autoLand = strategy.autoLand ?? false;
-    const rehearseQueue = strategy.rehearseQueue ?? false;
     const autoResolveConflicts = strategy.autoResolveConflicts ?? false;
     return {
       kind: "queue",
@@ -2564,17 +2559,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       autoRebase: strategy.autoRebase ?? true,
       ciGating: strategy.ciGating ?? false,
       autoLand,
-      rehearseQueue,
       autoResolveConflicts,
       archiveLaneOnLand: strategy.archiveLaneOnLand ?? false,
       mergeMethod: strategy.mergeMethod ?? "squash",
       conflictResolverModel: strategy.conflictResolverModel ?? null,
       reasoningEffort: strategy.reasoningEffort ?? null,
-      description: rehearseQueue
-        ? autoResolveConflicts
-          ? "Create queue PRs, rehearse the entire queue on an isolated scratch lane, and use the shared AI resolver before the mission is considered complete."
-          : "Create queue PRs and rehearse the entire queue on an isolated scratch lane before the mission is considered complete."
-        : autoLand
+      description: autoLand
         ? autoResolveConflicts
           ? "Create queue PRs, auto-resolve merge conflicts, and land the queue before the mission is considered complete."
           : "Create queue PRs and land the queue before the mission is considered complete."
@@ -2836,8 +2826,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       integrationLaneId: state.integrationLaneId ?? previous?.integrationLaneId ?? null,
       queueGroupId: state.queueGroupId ?? previous?.queueGroupId ?? null,
       queueId: state.queueId ?? previous?.queueId ?? null,
-      queueRehearsalId: state.queueRehearsalId ?? previous?.queueRehearsalId ?? null,
-      scratchLaneId: state.scratchLaneId ?? previous?.scratchLaneId ?? null,
       activePrId: state.activePrId ?? previous?.activePrId ?? null,
       waitReason: state.waitReason ?? previous?.waitReason ?? null,
       proposalUrl: state.proposalUrl ?? previous?.proposalUrl ?? null,
@@ -3037,91 +3025,6 @@ Check all worker statuses and continue managing the mission from here. Read work
           : `[finalization.queue_landed] Queue landing was cancelled. ${detail ?? ""} Call check_finalization_status to review the current state.`;
         coordAgent.injectMessage(eventMessage);
       }
-    }
-  };
-
-  const onQueueRehearsalStateChanged = async (rehearsalState: import("../../../shared/types").QueueRehearsalState): Promise<void> => {
-    const runId = rehearsalState.config.originRunId ?? null;
-    const missionId = rehearsalState.config.originMissionId ?? (runId ? getMissionIdForRun(runId) : null);
-    if (!runId || !missionId) return;
-
-    const mission = missionService.get(missionId);
-    if (!mission) return;
-
-    let graph: OrchestratorRunGraph;
-    try {
-      graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-    } catch {
-      return;
-    }
-
-    const prUrls = rehearsalState.entries
-      .map((entry) => entry.githubUrl ?? null)
-      .filter((value): value is string => Boolean(value));
-
-    let status: MissionFinalizationState["status"] = "rehearsing_queue";
-    let blocked = false;
-    let blockedReason: string | null = null;
-    let mergeReadiness: string | null = null;
-    let contractSatisfied = false;
-    let summary = "Queue rehearsal is still running.";
-    let detail = rehearsalState.lastError ?? null;
-
-    if (rehearsalState.state === "completed") {
-      status = "completed";
-      contractSatisfied = true;
-      mergeReadiness = "queue_rehearsed";
-      const resolvedCount = rehearsalState.entries.filter((entry) => entry.state === "resolved").length;
-      summary = resolvedCount > 0
-        ? "Execution finished and the full queue rehearsal completed with AI-assisted conflict fixes."
-        : "Execution finished and the full queue rehearsal completed cleanly.";
-      detail = `Rehearsed ${rehearsalState.entries.length} queue PR(s) on scratch lane ${rehearsalState.scratchLaneId ?? "unknown"}.`;
-    } else if (rehearsalState.state === "running") {
-      status = rehearsalState.activeResolverRunId ? "resolving_queue_conflicts" : "rehearsing_queue";
-      summary = rehearsalState.activeResolverRunId
-        ? "Queue rehearsal is resolving simulated conflicts before it can continue."
-        : "Queue rehearsal is simulating queue landing on an isolated scratch lane.";
-    } else if (rehearsalState.state === "paused") {
-      status = "finalizing";
-      blocked = true;
-      blockedReason = rehearsalState.lastError ?? "Queue rehearsal paused and needs operator intervention.";
-      summary = "Queue rehearsal is paused pending operator intervention.";
-    } else if (rehearsalState.state === "cancelled" || rehearsalState.state === "failed") {
-      status = "finalization_failed";
-      blocked = true;
-      blockedReason = rehearsalState.lastError ?? "Queue rehearsal failed.";
-      summary = rehearsalState.state === "cancelled"
-        ? "Queue rehearsal was cancelled."
-        : "Queue rehearsal failed.";
-    }
-
-    const finalization = await updateMissionFinalizationState(runId, {
-      policy: resolveMissionFinalizationPolicy((resolveActivePhaseSettings(missionId).settings.prStrategy ?? { kind: "manual" }) as PrStrategy),
-      status,
-      executionComplete: true,
-      contractSatisfied,
-      blocked,
-      blockedReason,
-      summary,
-      detail,
-      resolverJobId: rehearsalState.activeResolverRunId,
-      queueGroupId: rehearsalState.groupId,
-      queueRehearsalId: rehearsalState.rehearsalId,
-      scratchLaneId: rehearsalState.scratchLaneId,
-      activePrId: rehearsalState.activePrId,
-      prUrls,
-      mergeReadiness,
-      completedAt: contractSatisfied ? rehearsalState.completedAt : null,
-      warnings: [],
-    }, { graph });
-
-    if (finalization) {
-      await updateMissionCompletionFromStateDoc({
-        runId,
-        graph,
-        mission,
-        finalization,
-      });
     }
   };
 
@@ -7038,7 +6941,6 @@ Check all worker statuses and continue managing the mission from here. Read work
               const laneIdArray = laneIdArrayBase;
               const targetBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
               const autoLandQueue = prStrategy.autoLand ?? false;
-              const rehearseQueue = prStrategy.rehearseQueue ?? false;
               const autoResolveQueueConflicts = prStrategy.autoResolveConflicts ?? false;
               const queueMergeMethod = prStrategy.mergeMethod ?? "squash";
               const resolverModelId = prStrategy.conflictResolverModel ?? integrationPrPolicy.conflictResolverModel ?? null;
@@ -7086,34 +6988,6 @@ Check all worker statuses and continue managing the mission from here. Read work
                   detail: queueResult.errors.map((entry) => `${entry.laneId}: ${entry.error}`).join("\n"),
                   warnings: [],
                 }, { graph });
-              } else if (rehearseQueue && queueRehearsalService) {
-                await updateMissionFinalizationState(runId, {
-                  policy: finalizationPolicy,
-                  status: "rehearsing_queue",
-                  executionComplete: true,
-                  contractSatisfied: false,
-                  blocked: false,
-                  queueGroupId: queueResult.groupId,
-                  prUrls: queueResult.prs.map((entry) => entry.githubUrl),
-                  mergeReadiness: "queue_rehearsing",
-                  summary: "Execution finished. Queue rehearsal has started and must complete before the mission can close out.",
-                  detail: `Queue group ${queueResult.groupId} created with ${queueResult.prs.length} PR(s).`,
-                  warnings: [],
-                }, { graph });
-                await queueRehearsalService.startQueueRehearsal({
-                  groupId: queueResult.groupId,
-                  method: queueMergeMethod,
-                  autoResolve: autoResolveQueueConflicts,
-                  resolverProvider,
-                  resolverModel: resolverModelId,
-                  reasoningEffort: prStrategy.reasoningEffort ?? null,
-                  permissionMode: prStrategy.permissionMode ?? "guarded_edit",
-                  preserveScratchLane: true,
-                  originSurface: "mission",
-                  originMissionId: mission.id,
-                  originRunId: runId,
-                  originLabel: mission.title,
-                });
               } else if (autoLandQueue && queueLandingService) {
                 await updateMissionFinalizationState(runId, {
                   policy: finalizationPolicy,
@@ -10138,7 +10012,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     cancelRunGracefully,
     cleanupTeamResources,
     onQueueLandingStateChanged,
-    onQueueRehearsalStateChanged,
 
     onOrchestratorRuntimeEvent(event: OrchestratorRuntimeEvent) {
       if (disposed) return;

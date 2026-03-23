@@ -79,6 +79,32 @@ export type PrComment = {
   updatedAt: string | null;
 };
 
+export type PrReviewThreadComment = {
+  id: string;
+  author: string;
+  authorAvatarUrl: string | null;
+  body: string | null;
+  url: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type PrReviewThread = {
+  id: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string | null;
+  line: number | null;
+  originalLine: number | null;
+  startLine: number | null;
+  originalStartLine: number | null;
+  diffSide: "LEFT" | "RIGHT" | null;
+  url: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  comments: PrReviewThreadComment[];
+};
+
 export type GitHubPrListItem = {
   id: string;
   scope: "repo" | "external";
@@ -143,23 +169,6 @@ export type PrEventPayload =
       type: "queue-state";
       groupId: string;
       state: QueueState;
-      currentPosition: number;
-      timestamp: string;
-    }
-  | {
-      type: "queue-rehearsal-step";
-      groupId: string;
-      rehearsalId: string;
-      prId: string;
-      entryState: QueueRehearsalEntryState;
-      position: number;
-      timestamp: string;
-    }
-  | {
-      type: "queue-rehearsal-state";
-      groupId: string;
-      rehearsalId: string;
-      state: QueueRehearsalStateStatus;
       currentPosition: number;
       timestamp: string;
     }
@@ -585,27 +594,63 @@ export type PrAiResolutionGetSessionArgs = {
 
 export type PrAiResolutionGetSessionResult = PrAiResolutionSessionInfo | null;
 
+export type PrIssueResolutionScope = "checks" | "comments" | "both";
+
+export type PrIssueResolutionStartArgs = {
+  prId: string;
+  scope: PrIssueResolutionScope;
+  modelId: string;
+  reasoning?: string | null;
+  permissionMode?: AiPermissionMode;
+  additionalInstructions?: string | null;
+};
+
+export type PrIssueResolutionStartResult = {
+  sessionId: string;
+  laneId: string;
+  href: string;
+};
+
+export type PrIssueResolutionPromptPreviewArgs = PrIssueResolutionStartArgs;
+
+export type PrIssueResolutionPromptPreviewResult = {
+  title: string;
+  prompt: string;
+};
+
+export type ReplyToPrReviewThreadArgs = {
+  prId: string;
+  threadId: string;
+  body: string;
+};
+
+export type ResolvePrReviewThreadArgs = {
+  prId: string;
+  threadId: string;
+};
+
 export function normalizePrAiResolutionContext(context: PrAiResolutionContext): PrAiResolutionContext {
-  const sourceLaneIds = Array.from(
-    new Set(
-      (context.sourceLaneIds ?? [])
-        .map((value) => value.trim())
-        .filter(Boolean)
-    ),
-  ).sort((a, b) => a.localeCompare(b));
   const sourceLaneId = context.sourceLaneId?.trim() || null;
-  if (sourceLaneId && !sourceLaneIds.includes(sourceLaneId)) {
-    sourceLaneIds.push(sourceLaneId);
-  }
-  sourceLaneIds.sort((a, b) => a.localeCompare(b));
+
+  const sourceLaneIdSet = new Set(
+    (context.sourceLaneIds ?? []).map((v) => v.trim()).filter(Boolean),
+  );
+  if (sourceLaneId) sourceLaneIdSet.add(sourceLaneId);
+  const sourceLaneIds = Array.from(sourceLaneIdSet).sort((a, b) => a.localeCompare(b));
+
+  const targetLaneId = context.targetLaneId?.trim() || null;
+  const proposalId = context.proposalId?.trim() || null;
+  const integrationLaneId = context.integrationLaneId?.trim() || null;
+  const laneId = context.laneId?.trim() || null;
+
   return {
     sourceTab: context.sourceTab,
     ...(sourceLaneId ? { sourceLaneId } : {}),
     ...(sourceLaneIds.length ? { sourceLaneIds } : {}),
-    ...(context.targetLaneId?.trim() ? { targetLaneId: context.targetLaneId.trim() } : {}),
-    ...(context.proposalId?.trim() ? { proposalId: context.proposalId.trim() } : {}),
-    ...(context.integrationLaneId?.trim() ? { integrationLaneId: context.integrationLaneId.trim() } : {}),
-    ...(context.laneId?.trim() ? { laneId: context.laneId.trim() } : {}),
+    ...(targetLaneId ? { targetLaneId } : {}),
+    ...(proposalId ? { proposalId } : {}),
+    ...(integrationLaneId ? { integrationLaneId } : {}),
+    ...(laneId ? { laneId } : {}),
     ...(context.scenario ? { scenario: context.scenario } : {}),
   };
 }
@@ -669,24 +714,6 @@ export type QueueWaitReason =
   | "manual"
   | "canceled";
 
-export type QueueRehearsalEntryState =
-  | "pending"
-  | "rehearsing"
-  | "resolving"
-  | "ready"
-  | "resolved"
-  | "failed"
-  | "blocked"
-  | "cancelled";
-
-export type QueueRehearsalStateStatus = "running" | "paused" | "completed" | "failed" | "cancelled";
-
-export type QueueRehearsalWaitReason =
-  | "manual"
-  | "resolver_failed"
-  | "capability_gap"
-  | "canceled";
-
 export type QueueAutomationConfig = {
   method: MergeMethod;
   archiveLane: boolean;
@@ -697,20 +724,6 @@ export type QueueAutomationConfig = {
   reasoningEffort: string | null;
   permissionMode: ConflictResolverPermissionMode | null;
   confidenceThreshold: number | null;
-  originSurface: ConflictResolverOriginSurface;
-  originMissionId: string | null;
-  originRunId: string | null;
-  originLabel: string | null;
-};
-
-export type QueueRehearsalConfig = {
-  method: MergeMethod;
-  autoResolve: boolean;
-  resolverProvider: ExternalConflictResolverProvider | null;
-  resolverModel: string | null;
-  reasoningEffort: string | null;
-  permissionMode: ConflictResolverPermissionMode | null;
-  preserveScratchLane: boolean;
   originSurface: ConflictResolverOriginSurface;
   originMissionId: string | null;
   originRunId: string | null;
@@ -728,21 +741,6 @@ export type StartQueueAutomationArgs = {
   reasoningEffort?: string | null;
   permissionMode?: ConflictResolverPermissionMode | null;
   confidenceThreshold?: number | null;
-  originSurface?: ConflictResolverOriginSurface;
-  originMissionId?: string | null;
-  originRunId?: string | null;
-  originLabel?: string | null;
-};
-
-export type StartQueueRehearsalArgs = {
-  groupId: string;
-  method: MergeMethod;
-  autoResolve?: boolean;
-  resolverProvider?: ExternalConflictResolverProvider | null;
-  resolverModel?: string | null;
-  reasoningEffort?: string | null;
-  permissionMode?: ConflictResolverPermissionMode | null;
-  preserveScratchLane?: boolean;
   originSurface?: ConflictResolverOriginSurface;
   originMissionId?: string | null;
   originRunId?: string | null;
@@ -782,6 +780,11 @@ export type LandQueueNextArgs = {
   confidenceThreshold?: number;
 };
 
+export type ReorderQueuePrsArgs = {
+  groupId: string;
+  prIds: string[];
+};
+
 export type QueueLandingEntry = {
   prId: string;
   laneId: string;
@@ -811,42 +814,6 @@ export type QueueLandingState = {
   lastError: string | null;
   waitReason: QueueWaitReason | null;
   config: QueueAutomationConfig;
-  startedAt: string;
-  completedAt: string | null;
-  updatedAt: string;
-};
-
-export type QueueRehearsalEntry = {
-  prId: string;
-  laneId: string;
-  laneName: string;
-  position: number;
-  state: QueueRehearsalEntryState;
-  prNumber?: number | null;
-  githubUrl?: string | null;
-  resolvedByAi?: boolean;
-  resolverRunId?: string | null;
-  simulatedCommitSha?: string | null;
-  changedFiles?: string[];
-  conflictPaths?: string[];
-  updatedAt?: string | null;
-  error?: string;
-};
-
-export type QueueRehearsalState = {
-  rehearsalId: string;
-  groupId: string;
-  groupName: string | null;
-  targetBranch: string | null;
-  state: QueueRehearsalStateStatus;
-  entries: QueueRehearsalEntry[];
-  currentPosition: number;
-  scratchLaneId: string | null;
-  activePrId: string | null;
-  activeResolverRunId: string | null;
-  lastError: string | null;
-  waitReason: QueueRehearsalWaitReason | null;
-  config: QueueRehearsalConfig;
   startedAt: string;
   completedAt: string | null;
   updatedAt: string;
@@ -904,7 +871,6 @@ export type PrStrategy =
       ciGating?: boolean;
       prDepth?: PrDepth;
       autoLand?: boolean;
-      rehearseQueue?: boolean;
       autoResolveConflicts?: boolean;
       archiveLaneOnLand?: boolean;
       mergeMethod?: MergeMethod;

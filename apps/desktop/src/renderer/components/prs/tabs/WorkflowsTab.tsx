@@ -8,7 +8,6 @@ import {
   GithubLogo,
   Sparkle,
   Trash,
-  Warning,
 } from "@phosphor-icons/react";
 import { EmptyState } from "../../ui/EmptyState";
 import type {
@@ -22,6 +21,7 @@ import { QueueTab } from "./QueueTab";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
 import { usePrs } from "../state/PrsContext";
+import { getQueueWorkflowBucket } from "./queueWorkflowModel";
 
 const CATEGORY_THEMES = {
   integration: { color: "#8B5CF6", bg: "rgba(139, 92, 246, 0.08)", border: "rgba(139, 92, 246, 0.20)", bgSubtle: "rgba(139, 92, 246, 0.04)" },
@@ -49,8 +49,28 @@ type QueueGroupSummary = {
   bucket: WorkflowView;
   members: Array<{ prId: string; laneId: string; laneName: string; position: number; pr: PrWithConflicts | null }>;
   landingState: import("../../../../shared/types").QueueLandingState | null;
-  rehearsalState: import("../../../../shared/types").QueueRehearsalState | null;
 };
+
+function outcomeColor(outcome: string): string {
+  switch (outcome) {
+    case "clean": return COLORS.success;
+    case "conflict": return COLORS.warning;
+    default: return COLORS.danger;
+  }
+}
+
+function cleanupBadgeStyle(cleanupState: string | null | undefined): React.CSSProperties | null {
+  switch (cleanupState) {
+    case "required":
+      return inlineBadge(COLORS.warning, { background: `${COLORS.warning}18`, fontWeight: 600 });
+    case "completed":
+      return inlineBadge(COLORS.success, { background: `${COLORS.success}18`, fontWeight: 600 });
+    case "declined":
+      return inlineBadge(COLORS.textSecondary, { background: "rgba(255,255,255,0.06)", fontWeight: 600 });
+    default:
+      return null;
+  }
+}
 
 function formatTimestamp(iso: string | null): string {
   if (!iso) return "---";
@@ -64,52 +84,30 @@ function buildQueueWorkflowGroups(args: {
   mergeContextByPrId: Record<string, PrMergeContext>;
   lanes: LaneSummary[];
   queueStates: Record<string, import("../../../../shared/types").QueueLandingState>;
-  queueRehearsals: Record<string, import("../../../../shared/types").QueueRehearsalState>;
 }): QueueGroupSummary[] {
   const laneById = new Map(args.lanes.map((lane) => [lane.id, lane]));
   const prById = new Map(args.prs.map((pr) => [pr.id, pr] as const));
   const groupMap = new Map<string, QueueGroupSummary>();
 
+  function toMembers(entries: Array<{ prId: string; laneId: string; laneName: string; position: number }>): QueueGroupSummary["members"] {
+    return entries.map((entry) => ({
+      prId: entry.prId,
+      laneId: entry.laneId,
+      laneName: laneById.get(entry.laneId)?.name ?? entry.laneName,
+      position: entry.position,
+      pr: prById.get(entry.prId) ?? null,
+    }));
+  }
+
   for (const queueState of Object.values(args.queueStates)) {
+    const members = toMembers(queueState.entries);
     groupMap.set(queueState.groupId, {
       groupId: queueState.groupId,
       name: queueState.groupName,
       targetBranch: queueState.targetBranch,
-      bucket: queueState.state === "completed" || queueState.state === "cancelled" ? "history" : "active",
+      bucket: getQueueWorkflowBucket({ landingState: queueState, members }),
       landingState: queueState,
-      rehearsalState: args.queueRehearsals[queueState.groupId] ?? null,
-      members: queueState.entries.map((entry) => ({
-        prId: entry.prId,
-        laneId: entry.laneId,
-        laneName: laneById.get(entry.laneId)?.name ?? entry.laneName,
-        position: entry.position,
-        pr: prById.get(entry.prId) ?? null,
-      })),
-    });
-  }
-
-  for (const rehearsalState of Object.values(args.queueRehearsals)) {
-    const existing = groupMap.get(rehearsalState.groupId);
-    const rehearsalBucket: WorkflowView = rehearsalState.state === "running" || rehearsalState.state === "paused" ? "active" : "history";
-    if (existing) {
-      existing.rehearsalState = rehearsalState;
-      existing.bucket = existing.bucket === "active" ? "active" : rehearsalBucket;
-      continue;
-    }
-    groupMap.set(rehearsalState.groupId, {
-      groupId: rehearsalState.groupId,
-      name: rehearsalState.groupName,
-      targetBranch: rehearsalState.targetBranch,
-      bucket: rehearsalBucket,
-      landingState: args.queueStates[rehearsalState.groupId] ?? null,
-      rehearsalState,
-      members: rehearsalState.entries.map((entry) => ({
-        prId: entry.prId,
-        laneId: entry.laneId,
-        laneName: laneById.get(entry.laneId)?.name ?? entry.laneName,
-        position: entry.position,
-        pr: prById.get(entry.prId) ?? null,
-      })),
+      members,
     });
   }
 
@@ -117,26 +115,21 @@ function buildQueueWorkflowGroups(args: {
     const context = args.mergeContextByPrId[pr.id];
     if (!context?.groupId || context.groupType !== "queue") continue;
     if (groupMap.has(context.groupId)) continue;
+    const members = toMembers(context.members);
+    const landingState = args.queueStates[context.groupId] ?? null;
     groupMap.set(context.groupId, {
       groupId: context.groupId,
       name: null,
       targetBranch: pr.baseBranch ?? null,
-      bucket: pr.state === "open" || pr.state === "draft" ? "active" : "history",
-      landingState: args.queueStates[context.groupId] ?? null,
-      rehearsalState: args.queueRehearsals[context.groupId] ?? null,
-      members: context.members.map((member) => ({
-        prId: member.prId,
-        laneId: member.laneId,
-        laneName: member.laneName,
-        position: member.position,
-        pr: prById.get(member.prId) ?? null,
-      })),
+      bucket: getQueueWorkflowBucket({ landingState, members }),
+      landingState,
+      members,
     });
   }
 
   return [...groupMap.values()].sort((a, b) => {
-    const aTs = Date.parse(a.landingState?.updatedAt ?? a.rehearsalState?.updatedAt ?? "");
-    const bTs = Date.parse(b.landingState?.updatedAt ?? b.rehearsalState?.updatedAt ?? "");
+    const aTs = Date.parse(a.landingState?.updatedAt ?? "");
+    const bTs = Date.parse(b.landingState?.updatedAt ?? "");
     if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return bTs - aTs;
     return (a.name ?? a.groupId).localeCompare(b.name ?? b.groupId);
   });
@@ -169,7 +162,6 @@ function QueueHistoryPanel({
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
               {group.landingState ? <span style={inlineBadge(group.landingState.state === "completed" ? COLORS.success : theme.color, { background: `${group.landingState.state === "completed" ? COLORS.success : theme.color}18`, fontWeight: 600 })}>{group.landingState.state}</span> : null}
-              {group.rehearsalState ? <span style={inlineBadge(COLORS.info, { background: `${COLORS.info}18`, fontWeight: 600 })}>rehearsal {group.rehearsalState.state}</span> : null}
             </div>
           </div>
           <div style={{ display: "grid", gap: 10 }}>
@@ -362,14 +354,8 @@ function IntegrationWorkflowsTab({
       <div style={{ width: 340, borderRight: `1px solid ${theme.border}`, overflow: "auto", flexShrink: 0 }}>
         {workflows.map((workflow) => {
           const selected = workflow.proposalId === selectedWorkflowId;
-          const outcomeColor = workflow.overallOutcome === "clean" ? COLORS.success : workflow.overallOutcome === "conflict" ? COLORS.warning : COLORS.danger;
-          const cleanupBadge = workflow.cleanupState === "required"
-            ? inlineBadge(COLORS.warning, { background: `${COLORS.warning}18`, fontWeight: 600 })
-            : workflow.cleanupState === "completed"
-              ? inlineBadge(COLORS.success, { background: `${COLORS.success}18`, fontWeight: 600 })
-              : workflow.cleanupState === "declined"
-                ? inlineBadge(COLORS.textSecondary, { background: "rgba(255,255,255,0.06)", fontWeight: 600 })
-                : null;
+          const oc = outcomeColor(workflow.overallOutcome);
+          const cleanupBadge = cleanupBadgeStyle(workflow.cleanupState);
           return (
             <button
               key={workflow.proposalId}
@@ -392,7 +378,7 @@ function IntegrationWorkflowsTab({
               onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = selected ? theme.bg : "transparent"; }}
             >
               {/* Colored outcome sidebar */}
-              <div style={{ width: 4, borderRadius: 4, flexShrink: 0, background: outcomeColor, alignSelf: "stretch" }} />
+              <div style={{ width: 4, borderRadius: 4, flexShrink: 0, background: oc, alignSelf: "stretch" }} />
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -401,7 +387,7 @@ function IntegrationWorkflowsTab({
                   <span style={inlineBadge(workflow.status === "proposed" ? COLORS.info : theme.color, { background: `${workflow.status === "proposed" ? COLORS.info : theme.color}18`, fontWeight: 600, flexShrink: 0 })}>{workflow.status}</span>
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  <span style={inlineBadge(outcomeColor, { background: `${outcomeColor}18`, fontWeight: 600 })}>
+                  <span style={inlineBadge(oc, { background: `${oc}18`, fontWeight: 600 })}>
                     {workflow.overallOutcome}
                   </span>
                   {cleanupBadge ? <span style={cleanupBadge}>{workflow.cleanupState}</span> : null}
@@ -499,7 +485,7 @@ function IntegrationWorkflowsTab({
                     {selectedWorkflow.integrationLaneId ? <>lane <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{selectedWorkflow.integrationLaneId}</span></> : "No integration lane has been created yet."}
                   </div>
                 </div>
-                <span style={inlineBadge(selectedWorkflow.overallOutcome === "clean" ? COLORS.success : selectedWorkflow.overallOutcome === "conflict" ? COLORS.warning : COLORS.danger, { background: `${selectedWorkflow.overallOutcome === "clean" ? COLORS.success : selectedWorkflow.overallOutcome === "conflict" ? COLORS.warning : COLORS.danger}18`, fontWeight: 600 })}>
+                <span style={inlineBadge(outcomeColor(selectedWorkflow.overallOutcome), { background: `${outcomeColor(selectedWorkflow.overallOutcome)}18`, fontWeight: 600 })}>
                   {selectedWorkflow.overallOutcome}
                 </span>
               </div>
@@ -519,9 +505,10 @@ function IntegrationWorkflowsTab({
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
-                    <span style={inlineBadge(linkedPr.state === "merged" ? COLORS.success : linkedPr.state === "closed" ? COLORS.textMuted : theme.color, { background: `${linkedPr.state === "merged" ? COLORS.success : linkedPr.state === "closed" ? COLORS.textMuted : theme.color}18`, fontWeight: 600 })}>
-                      {linkedPr.state}
-                    </span>
+                    {(() => {
+                      const stateCol = linkedPr.state === "merged" ? COLORS.success : linkedPr.state === "closed" ? COLORS.textMuted : theme.color;
+                      return <span style={inlineBadge(stateCol, { background: `${stateCol}18`, fontWeight: 600 })}>{linkedPr.state}</span>;
+                    })()}
                     <button type="button" onClick={() => void window.ade.app.openExternal(linkedPr.githubUrl)} style={outlineButton({ height: 30, borderColor: theme.border, color: theme.color, background: theme.bgSubtle })}>
                       <GithubLogo size={14} /> Open on GitHub
                     </button>
@@ -570,14 +557,11 @@ function IntegrationWorkflowsTab({
                     </button>
                   </div>
                 </div>
-              ) : (
+              ) : (() => {
+                const cleanupCol = selectedWorkflow.cleanupState === "completed" ? COLORS.success : COLORS.info;
+                return (
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={inlineBadge(
-                    selectedWorkflow.cleanupState === "completed"
-                      ? COLORS.success
-                      : COLORS.info,
-                    { background: `${selectedWorkflow.cleanupState === "completed" ? COLORS.success : COLORS.info}18`, fontWeight: 600 }
-                  )}>
+                  <span style={inlineBadge(cleanupCol, { background: `${cleanupCol}18`, fontWeight: 600 })}>
                     {selectedWorkflow.cleanupState}
                   </span>
                   <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
@@ -586,7 +570,8 @@ function IntegrationWorkflowsTab({
                       : "Cleanup will be offered when the linked PR is closed or merged."}
                   </div>
                 </div>
-              )}
+                );
+              })()}
             </div>
           </div>
         )}
@@ -615,7 +600,6 @@ export function WorkflowsTab({
     setSelectedRebaseItemId,
     rebaseNeeds,
     queueStates,
-    queueRehearsals,
     resolverModel,
     resolverReasoningLevel,
     resolverPermissionMode,
@@ -654,8 +638,8 @@ export function WorkflowsTab({
   }, [loadWorkflows, onRefreshAll]);
 
   const queueWorkflowGroups = React.useMemo(
-    () => buildQueueWorkflowGroups({ prs, mergeContextByPrId, lanes, queueStates, queueRehearsals }),
-    [prs, mergeContextByPrId, lanes, queueStates, queueRehearsals],
+    () => buildQueueWorkflowGroups({ prs, mergeContextByPrId, lanes, queueStates }),
+    [prs, mergeContextByPrId, lanes, queueStates],
   );
   const integrationByView = React.useMemo(() => ({
     active: integrationWorkflows.filter((workflow) => workflow.workflowDisplayState === "active"),

@@ -3874,7 +3874,6 @@ function GraphInner() {
                     mergeMethod={prDialog.mergeMethod}
                     onRefresh={refreshPrDialogDetail}
                     onNavigate={(path) => navigate(path)}
-                    onTabChange={() => {}}
                     onShowInGraph={(laneId) => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
                   />
                 </div>

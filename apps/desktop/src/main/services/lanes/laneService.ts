@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 import { isWithinDir } from "../shared/utils";
+import { resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
 import type { createOperationService } from "../history/operationService";
 import type {
@@ -564,11 +565,17 @@ export function createLaneService({
       const row = rowsById.get(laneId);
       if (!row) return DEFAULT_LANE_STATUS;
       const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
-      let baseRef = parent?.branch_ref ?? row.base_ref;
+      const queueOverride = await resolveQueueRebaseOverride({
+        db,
+        projectId,
+        projectRoot,
+        laneId: row.id,
+      });
+      let baseRef = queueOverride?.comparisonRef ?? parent?.branch_ref ?? row.base_ref;
 
       // For primary lanes with no parent, compare against the upstream tracking ref
       // instead of base_ref (which equals branchRef, giving 0 behind).
-      if (!parent && row.lane_type === "primary") {
+      if (!queueOverride && !parent && row.lane_type === "primary") {
         const upstreamRes = await runGit(
           ["rev-parse", "--verify", `${row.branch_ref}@{upstream}`],
           { cwd: row.worktree_path, timeoutMs: 5_000 }
@@ -1738,6 +1745,10 @@ export function createLaneService({
 
     updateBranchRef(laneId: string, branchRef: string): void {
       db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [branchRef, laneId, projectId]);
+      invalidateLaneListCache();
+    },
+
+    invalidateCache(): void {
       invalidateLaneListCache();
     },
 

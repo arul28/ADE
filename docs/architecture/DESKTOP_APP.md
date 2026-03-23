@@ -167,7 +167,7 @@ Several heavy surfaces now load in phases:
 - CTO loads summary state first and defers team/settings-specific work
 - Missions loads the list first and defers dashboard/settings/model metadata; live orchestrator events coalesce into selected-mission refreshes instead of reloading the whole dashboard
 - Graph loads topology first and then stages risk, activity, sync, and PR overlays
-- PR workflows load queue/rehearsal state lazily instead of on every visit
+- PR workflows load queue state lazily instead of on every visit
 
 ### Explicit fallback behavior
 

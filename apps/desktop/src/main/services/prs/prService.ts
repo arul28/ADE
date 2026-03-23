@@ -52,6 +52,7 @@ import type {
   PrSummary,
   PrWithConflicts,
   QueueLandingState,
+  ReorderQueuePrsArgs,
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
   SimulateIntegrationArgs,
@@ -79,11 +80,16 @@ import type {
   PrActionStep,
   PrActivityEvent,
   PrLabel,
-  PrUser
+  PrUser,
+  PrReviewThread,
+  PrReviewThreadComment,
+  ReplyToPrReviewThreadArgs,
+  ResolvePrReviewThreadArgs,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
+import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -94,6 +100,7 @@ import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
+import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
 import { asNumber, asString, normalizeBranchName, nowIso } from "../shared/utils";
 
 type PullRequestRow = {
@@ -216,61 +223,57 @@ async function readIntegrationLaneSnapshot(worktreePath: string): Promise<Integr
   };
 }
 
+type ConflictExcerpts = {
+  conflictType: "content" | null;
+  conflictMarkers: string;
+  oursExcerpt: string | null;
+  theirsExcerpt: string | null;
+  diffHunk: string | null;
+};
+
+function parseConflictMarkers(content: string): ConflictExcerpts {
+  const markerRegex = /(<<<<<<<[^\n]*\n)([\s\S]*?)(=======\n)([\s\S]*?)(>>>>>>>[^\n]*)/g;
+  const markers: string[] = [];
+  const oursLines: string[] = [];
+  const theirsLines: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = markerRegex.exec(content)) !== null) {
+    markers.push(match[0]);
+    oursLines.push(match[2]!.trim());
+    theirsLines.push(match[4]!.trim());
+  }
+  return {
+    conflictType: "content",
+    conflictMarkers: markers.join("\n---\n").slice(0, 2000),
+    oursExcerpt: oursLines.join("\n---\n").slice(0, 500) || null,
+    theirsExcerpt: theirsLines.join("\n---\n").slice(0, 500) || null,
+    diffHunk: markers.map((entry) => entry.split("\n").slice(0, 12).join("\n")).join("\n...\n").slice(0, 500) || null,
+  };
+}
+
+const EMPTY_CONFLICT_EXCERPTS: ConflictExcerpts = {
+  conflictType: null,
+  conflictMarkers: "",
+  oursExcerpt: null,
+  theirsExcerpt: null,
+  diffHunk: null,
+};
+
 function readConflictFilePreviewFromWorktree(worktreePath: string, filePath: string): IntegrationProposalStep["conflictingFiles"][number] {
   const root = path.resolve(worktreePath);
   const absPath = path.resolve(root, filePath);
   if (absPath !== root && !absPath.startsWith(`${root}${path.sep}`)) {
-    return {
-      path: filePath,
-      conflictType: null,
-      conflictMarkers: "",
-      oursExcerpt: null,
-      theirsExcerpt: null,
-      diffHunk: null,
-    };
+    return { path: filePath, ...EMPTY_CONFLICT_EXCERPTS };
   }
 
   try {
     const content = fs.readFileSync(absPath, "utf8");
     if (!hasMergeConflictMarkers(content)) {
-      return {
-        path: filePath,
-        conflictType: null,
-        conflictMarkers: "",
-        oursExcerpt: null,
-        theirsExcerpt: null,
-        diffHunk: null,
-      };
+      return { path: filePath, ...EMPTY_CONFLICT_EXCERPTS };
     }
-
-    const markerRegex = /(<<<<<<<[^\n]*\n)([\s\S]*?)(=======\n)([\s\S]*?)(>>>>>>>[^\n]*)/g;
-    const markers: string[] = [];
-    const oursLines: string[] = [];
-    const theirsLines: string[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = markerRegex.exec(content)) !== null) {
-      markers.push(match[0]);
-      oursLines.push(match[2]!.trim());
-      theirsLines.push(match[4]!.trim());
-    }
-
-    return {
-      path: filePath,
-      conflictType: "content",
-      conflictMarkers: markers.join("\n---\n").slice(0, 2000),
-      oursExcerpt: oursLines.join("\n---\n").slice(0, 500) || null,
-      theirsExcerpt: theirsLines.join("\n---\n").slice(0, 500) || null,
-      diffHunk: markers.map((entry) => entry.split("\n").slice(0, 12).join("\n")).join("\n...\n").slice(0, 500) || null,
-    };
+    return { path: filePath, ...parseConflictMarkers(content) };
   } catch {
-    return {
-      path: filePath,
-      conflictType: null,
-      conflictMarkers: "",
-      oursExcerpt: null,
-      theirsExcerpt: null,
-      diffHunk: null,
-    };
+    return { path: filePath, ...EMPTY_CONFLICT_EXCERPTS };
   }
 }
 
@@ -568,6 +571,7 @@ export function createPrService({
   aiIntegrationService,
   projectConfigService,
   conflictService,
+  rebaseSuggestionService,
   openExternal
 }: {
   db: AdeDb;
@@ -580,6 +584,7 @@ export function createPrService({
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   conflictService?: ReturnType<typeof createConflictService>;
+  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   openExternal: (url: string) => Promise<void>;
 }) {
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
@@ -834,6 +839,30 @@ export function createPrService({
     return data;
   };
 
+  const graphqlRequest = async <T>(query: string, variables: Record<string, unknown>): Promise<T> => {
+    const { data: payload } = await githubService.apiRequest<{
+      data?: T;
+      errors?: Array<{ message?: unknown }>;
+    }>({
+      method: "POST",
+      path: "/graphql",
+      body: { query, variables },
+    });
+
+    const errors = Array.isArray(payload?.errors)
+      ? payload.errors
+          .map((entry) => asString(entry?.message).trim())
+          .filter(Boolean)
+      : [];
+    if (errors.length > 0) {
+      throw new Error(errors.join("; "));
+    }
+    if (!payload || payload.data == null) {
+      throw new Error("GitHub GraphQL request returned no data.");
+    }
+    return payload.data;
+  };
+
   const fetchAllPages = async <T>(args: {
     path: string;
     query?: Record<string, string | number | boolean | undefined | null>;
@@ -1043,6 +1072,116 @@ export function createPrService({
     }));
   };
 
+  const fetchReviewThreads = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReviewThread[]> => {
+    const threads: PrReviewThread[] = [];
+    let after: string | null = null;
+
+    const query = `
+      query AdePullRequestReviewThreads($owner: String!, $name: String!, $number: Int!, $after: String) {
+        repository(owner: $owner, name: $name) {
+          pullRequest(number: $number) {
+            reviewThreads(first: 100, after: $after) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                id
+                isResolved
+                isOutdated
+                path
+                line
+                originalLine
+                startLine
+                originalStartLine
+                diffSide
+                comments(first: 50) {
+                  nodes {
+                    id
+                    body
+                    url
+                    createdAt
+                    updatedAt
+                    author {
+                      login
+                      avatarUrl
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    for (let page = 0; page < 10; page += 1) {
+      const data: {
+        repository?: {
+          pullRequest?: {
+            reviewThreads?: {
+              pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
+              nodes?: any[];
+            } | null;
+          } | null;
+        } | null;
+      } = await graphqlRequest(query, {
+        owner: repo.owner,
+        name: repo.name,
+        number: prNumber,
+        after,
+      });
+
+      const reviewThreads: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
+        nodes?: any[];
+      } | null | undefined = data.repository?.pullRequest?.reviewThreads;
+      const nodes = Array.isArray(reviewThreads?.nodes) ? reviewThreads.nodes : [];
+      for (const node of nodes) {
+        const comments: PrReviewThreadComment[] = Array.isArray(node?.comments?.nodes)
+          ? node.comments.nodes.map((entry: any) => ({
+              id: asString(entry?.id) || String(randomUUID()),
+              author: asString(entry?.author?.login) || "unknown",
+              authorAvatarUrl: asString(entry?.author?.avatarUrl) || null,
+              body: asString(entry?.body) || null,
+              url: asString(entry?.url) || null,
+              createdAt: asString(entry?.createdAt) || null,
+              updatedAt: asString(entry?.updatedAt) || null,
+            }))
+          : [];
+        const latestComment = comments[comments.length - 1] ?? comments[0] ?? null;
+        const diffSideRaw = asString(node?.diffSide).trim().toUpperCase();
+        threads.push({
+          id: asString(node?.id) || String(randomUUID()),
+          isResolved: Boolean(node?.isResolved),
+          isOutdated: Boolean(node?.isOutdated),
+          path: asString(node?.path) || null,
+          line: Number.isFinite(Number(node?.line)) ? Number(node?.line) : null,
+          originalLine: Number.isFinite(Number(node?.originalLine)) ? Number(node?.originalLine) : null,
+          startLine: Number.isFinite(Number(node?.startLine)) ? Number(node?.startLine) : null,
+          originalStartLine: Number.isFinite(Number(node?.originalStartLine)) ? Number(node?.originalStartLine) : null,
+          diffSide: diffSideRaw === "LEFT" || diffSideRaw === "RIGHT" ? diffSideRaw : null,
+          url: latestComment?.url ?? null,
+          createdAt: asString(node?.createdAt) || latestComment?.createdAt || null,
+          updatedAt: asString(node?.updatedAt) || latestComment?.updatedAt || null,
+          comments,
+        });
+      }
+
+      const hasNextPage = Boolean(reviewThreads?.pageInfo?.hasNextPage);
+      const endCursor: string | null = asString(reviewThreads?.pageInfo?.endCursor) || null;
+      if (!hasNextPage || !endCursor) break;
+      after = endCursor;
+    }
+
+    return threads.sort((a, b) => {
+      const aTs = a.createdAt ? Date.parse(a.createdAt) : Number.NaN;
+      const bTs = b.createdAt ? Date.parse(b.createdAt) : Number.NaN;
+      if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
+      return a.id.localeCompare(b.id);
+    });
+  };
+
   const fetchCombinedStatus = async (repo: GitHubRepoRef, sha: string): Promise<{
     state: string;
     statuses: Array<{ context: string; state: string; description: string | null; target_url: string | null; created_at: string | null; updated_at: string | null }>;
@@ -1063,8 +1202,7 @@ export function createPrService({
       path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/check-runs`,
       query: { per_page: 100 }
     });
-    const runs = Array.isArray(data?.check_runs) ? data.check_runs : [];
-    return runs;
+    return Array.isArray(data?.check_runs) ? data.check_runs : [];
   };
 
   const fetchCompare = async (repo: GitHubRepoRef, baseSha: string, headSha: string): Promise<{ behindBy: number }> => {
@@ -1211,20 +1349,14 @@ export function createPrService({
       const name = asString(run?.name) || "check";
       if (seen.has(name)) continue;
       seen.add(name);
-      const statusRaw = asString(run?.status).toLowerCase();
-      const status: PrCheck["status"] =
-        statusRaw === "queued" ? "queued" : statusRaw === "in_progress" ? "in_progress" : "completed";
       const conclusionRaw = asString(run?.conclusion).toLowerCase();
-      let conclusion: PrCheck["conclusion"];
-      if (conclusionRaw === "success") conclusion = "success";
-      else if (conclusionRaw === "failure" || conclusionRaw === "timed_out" || conclusionRaw === "action_required") conclusion = "failure";
-      else if (conclusionRaw === "neutral") conclusion = "neutral";
-      else if (conclusionRaw === "skipped") conclusion = "skipped";
-      else if (conclusionRaw === "cancelled") conclusion = "cancelled";
-      else conclusion = null;
+      const conclusion: PrCheck["conclusion"] =
+        conclusionRaw === "failure" || conclusionRaw === "timed_out" || conclusionRaw === "action_required"
+          ? "failure"
+          : toJobConclusion(run?.conclusion);
       out.push({
         name,
-        status,
+        status: toJobStatus(run?.status),
         conclusion,
         detailsUrl: asString(run?.details_url) || asString(run?.html_url) || null,
         startedAt: asString(run?.started_at) || null,
@@ -1696,6 +1828,18 @@ export function createPrService({
         }
       }
 
+      await fetchRemoteTrackingBranch({
+        projectRoot,
+        targetBranch: row.base_branch,
+      }).catch((error) => {
+        logger.warn("prs.fetch_base_branch_failed", {
+          prId: row.id,
+          baseBranch: row.base_branch,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      laneService.invalidateCache?.();
+
       operationService.finish({
         operationId: op.operationId,
         status: "succeeded",
@@ -1703,6 +1847,18 @@ export function createPrService({
       });
 
       await refreshOne(row.id).catch(() => {});
+      await conflictService?.scanRebaseNeeds().catch((error) => {
+        logger.warn("prs.refresh_rebase_needs_failed", {
+          prId: row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      await rebaseSuggestionService?.refresh().catch((error) => {
+        logger.warn("prs.refresh_rebase_suggestions_failed", {
+          prId: row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
 
       return {
         prId: row.id,
@@ -2202,7 +2358,7 @@ export function createPrService({
     treeOid: string,
     filePath: string,
     cwd: string
-  ): Promise<{ conflictType: "content" | null; conflictMarkers: string; oursExcerpt: string; theirsExcerpt: string; diffHunk: string }> => {
+  ): Promise<ConflictExcerpts> => {
     try {
       const result = await runGit(
         ["show", `${treeOid}:${filePath}`],
@@ -2210,31 +2366,11 @@ export function createPrService({
       );
       const content = result.stdout;
       if (!content.includes("<<<<<<<")) {
-        return { conflictType: null, conflictMarkers: "", oursExcerpt: "", theirsExcerpt: "", diffHunk: "" };
+        return EMPTY_CONFLICT_EXCERPTS;
       }
-
-      // Extract conflict markers and excerpts
-      const markerRegex = /(<<<<<<<[^\n]*\n)([\s\S]*?)(=======\n)([\s\S]*?)(>>>>>>>[^\n]*)/g;
-      const markers: string[] = [];
-      const oursLines: string[] = [];
-      const theirsLines: string[] = [];
-      let match: RegExpExecArray | null;
-      while ((match = markerRegex.exec(content)) !== null) {
-        markers.push(match[0]);
-        oursLines.push(match[2]!.trim());
-        theirsLines.push(match[4]!.trim());
-      }
-
-      const conflictMarkers = markers.join("\n---\n").slice(0, 2000);
-      const oursExcerpt = oursLines.join("\n---\n").slice(0, 500);
-      const theirsExcerpt = theirsLines.join("\n---\n").slice(0, 500);
-
-      // Build a simple diff hunk preview
-      const diffHunk = markers.map((m) => m.split("\n").slice(0, 12).join("\n")).join("\n...\n").slice(0, 500);
-
-      return { conflictType: "content", conflictMarkers, oursExcerpt, theirsExcerpt, diffHunk };
+      return parseConflictMarkers(content);
     } catch {
-      return { conflictType: null, conflictMarkers: "", oursExcerpt: "", theirsExcerpt: "", diffHunk: "" };
+      return EMPTY_CONFLICT_EXCERPTS;
     }
   };
 
@@ -2590,13 +2726,12 @@ export function createPrService({
       const conflictsWith = Array.from(conflictingPeersByLaneId.get(laneId) ?? []);
       conflictsWith.sort((a, b) => (laneOrder.get(a) ?? 0) - (laneOrder.get(b) ?? 0));
 
-      const outcome: IntegrationLaneSummary["outcome"] = !laneSummary?.headSha
-        ? "blocked"
-        : blockedLaneIds.has(laneId) || sequentialBlockedLaneIds.has(laneId)
-          ? "blocked"
-        : conflictsWith.length > 0 || sequentialConflictLaneIds.has(laneId)
-          ? "conflict"
-          : "clean";
+      let outcome: IntegrationLaneSummary["outcome"] = "clean";
+      if (!laneSummary?.headSha || blockedLaneIds.has(laneId) || sequentialBlockedLaneIds.has(laneId)) {
+        outcome = "blocked";
+      } else if (conflictsWith.length > 0 || sequentialConflictLaneIds.has(laneId)) {
+        outcome = "conflict";
+      }
 
       return {
         laneId,
@@ -2619,11 +2754,12 @@ export function createPrService({
       diffStat: laneSummary.diffStat
     }));
 
-    const overallOutcome = laneSummaries.some((lane) => lane.outcome === "blocked")
-      ? "blocked"
-      : laneSummaries.some((lane) => lane.outcome === "conflict")
-        ? "conflict"
-        : "clean";
+    let overallOutcome: IntegrationProposal["overallOutcome"] = "clean";
+    if (laneSummaries.some((lane) => lane.outcome === "blocked")) {
+      overallOutcome = "blocked";
+    } else if (laneSummaries.some((lane) => lane.outcome === "conflict")) {
+      overallOutcome = "conflict";
+    }
 
     const proposal: IntegrationProposal = {
       proposalId,
@@ -2871,6 +3007,18 @@ export function createPrService({
       if (linkedPrId) workflowByPrId.set(linkedPrId, row);
     }
 
+    const deriveAdeKind = (
+      workflow: IntegrationProposalRow | null,
+      group: { group_type: string } | null | undefined,
+      linked: PullRequestRow | null,
+    ): GitHubPrListItem["adeKind"] => {
+      if (workflow) return "integration";
+      if (group?.group_type === "queue") return "queue";
+      if (group?.group_type === "integration") return "integration";
+      if (linked) return "single";
+      return null;
+    };
+
     const toGitHubState = (rawPr: any): PrState => {
       if (Boolean(rawPr?.draft)) return "draft";
       if (rawPr?.merged_at) return "merged";
@@ -2909,15 +3057,7 @@ export function createPrService({
         linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
         linkedLaneId: linkedPrRow?.lane_id ?? null,
         linkedLaneName: linkedPrRow ? (laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
-        adeKind: workflowRow
-          ? "integration"
-          : groupRow?.group_type === "queue"
-            ? "queue"
-            : groupRow?.group_type === "integration"
-              ? "integration"
-              : linkedPrRow
-                ? "single"
-                : null,
+        adeKind: deriveAdeKind(workflowRow, groupRow, linkedPrRow),
         workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
         cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
       };
@@ -3094,6 +3234,66 @@ export function createPrService({
       .map((m) => getRow(m.pr_id))
       .filter((r): r is PullRequestRow => r != null)
       .map(rowToSummary);
+  };
+
+  const reorderQueuePrs = async (args: ReorderQueuePrsArgs): Promise<void> => {
+    const groupRow = db.get<{ id: string; group_type: string }>(
+      `select id, group_type
+       from pr_groups
+       where id = ? and project_id = ?`,
+      [args.groupId, projectId],
+    );
+    if (!groupRow || groupRow.group_type !== "queue") {
+      throw new Error("Queue group not found.");
+    }
+
+    const queueState = db.get<{ state: string }>(
+      `select state
+       from queue_landing_state
+       where group_id = ? and project_id = ?
+       order by started_at desc
+       limit 1`,
+      [args.groupId, projectId],
+    );
+    if (queueState && (queueState.state === "landing" || queueState.state === "paused")) {
+      throw new Error("Queue order cannot change while landing is active or paused.");
+    }
+
+    const members = db.all<{ pr_id: string; position: number }>(
+      `select pr_id, position
+       from pr_group_members
+       where group_id = ? and role = 'source'
+       order by position asc`,
+      [args.groupId],
+    );
+    if (members.length < 2) return;
+
+    const requestedPrIds = args.prIds.map((value) => value.trim()).filter(Boolean);
+    const existingPrIds = members.map((member) => String(member.pr_id));
+    if (
+      requestedPrIds.length !== existingPrIds.length
+      || new Set(requestedPrIds).size !== requestedPrIds.length
+      || requestedPrIds.some((prId) => !existingPrIds.includes(prId))
+    ) {
+      throw new Error("Queue reorder request does not match the current queue members.");
+    }
+
+    const basePosition = Math.min(...members.map((member) => Number(member.position) || 0));
+    db.run("BEGIN");
+    try {
+      requestedPrIds.forEach((prId, index) => {
+        db.run(
+          `update pr_group_members
+           set position = ?
+           where group_id = ? and pr_id = ? and role = 'source'`,
+          [basePosition + index, args.groupId, prId],
+        );
+      });
+      db.run("COMMIT");
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
+    }
   };
 
   const listWithConflicts = async (): Promise<PrWithConflicts[]> => {
@@ -3659,6 +3859,12 @@ export function createPrService({
       return reviews;
     },
 
+    async getReviewThreads(prId: string): Promise<PrReviewThread[]> {
+      const row = requireRow(prId);
+      const repo = repoFromRow(row);
+      return await fetchReviewThreads(repo, Number(row.github_pr_number));
+    },
+
     async updateDescription(args: UpdatePrDescriptionArgs): Promise<void> {
       return await updateDescription(args);
     },
@@ -3707,6 +3913,10 @@ export function createPrService({
 
     async landQueueNext(args: LandQueueNextArgs): Promise<LandResult> {
       return await landQueueNext(args);
+    },
+
+    async reorderQueuePrs(args: ReorderQueuePrsArgs): Promise<void> {
+      return await reorderQueuePrs(args);
     },
 
     async getPrHealth(prId: string): Promise<PrHealth> {
@@ -4071,6 +4281,78 @@ export function createPrService({
         updatedAt: asString(data?.updated_at) || null
       };
       return comment;
+    },
+
+    async replyToReviewThread(args: ReplyToPrReviewThreadArgs): Promise<PrReviewThreadComment> {
+      requireRow(args.prId);
+      const data = await graphqlRequest<{
+        addPullRequestReviewThreadReply?: {
+          comment?: {
+            id?: unknown;
+            body?: unknown;
+            url?: unknown;
+            createdAt?: unknown;
+            updatedAt?: unknown;
+            author?: {
+              login?: unknown;
+              avatarUrl?: unknown;
+            } | null;
+          } | null;
+        } | null;
+      }>(
+        `
+          mutation AdeReplyToReviewThread($threadId: ID!, $body: String!) {
+            addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+              comment {
+                id
+                body
+                url
+                createdAt
+                updatedAt
+                author {
+                  login
+                  avatarUrl
+                }
+              }
+            }
+          }
+        `,
+        {
+          threadId: args.threadId,
+          body: args.body,
+        },
+      );
+
+      const comment = data.addPullRequestReviewThreadReply?.comment;
+      if (!comment) {
+        throw new Error("GitHub did not return the review-thread reply.");
+      }
+      return {
+        id: asString(comment.id) || String(randomUUID()),
+        author: asString(comment.author?.login) || "unknown",
+        authorAvatarUrl: asString(comment.author?.avatarUrl) || null,
+        body: asString(comment.body) || null,
+        url: asString(comment.url) || null,
+        createdAt: asString(comment.createdAt) || null,
+        updatedAt: asString(comment.updatedAt) || null,
+      };
+    },
+
+    async resolveReviewThread(args: ResolvePrReviewThreadArgs): Promise<void> {
+      requireRow(args.prId);
+      await graphqlRequest(
+        `
+          mutation AdeResolveReviewThread($threadId: ID!) {
+            resolveReviewThread(input: { threadId: $threadId }) {
+              thread {
+                id
+                isResolved
+              }
+            }
+          }
+        `,
+        { threadId: args.threadId },
+      );
     },
 
     async updateTitle(args: UpdatePrTitleArgs): Promise<void> {

@@ -101,11 +101,6 @@ const APPROVED_CONFLICT_TARGETS: ConflictTarget[] = [
     columns: "id",
   },
   {
-    file: "src/main/services/prs/queueRehearsalService.ts",
-    table: "queue_rehearsal_state",
-    columns: "id",
-  },
-  {
     file: "src/main/services/sessions/sessionDeltaService.ts",
     table: "session_deltas",
     columns: "session_id",

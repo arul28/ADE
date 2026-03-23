@@ -1229,7 +1229,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 - Reasoning tier standardization: Claude CLI low/medium/high, Claude API low/medium/high/max, Codex minimal/low/medium/high/xhigh
 - UnifiedModelSelector redesign (auth-type grouping, hide unavailable models, "Configure more..." settings link)
 - Universal tools for API-key and local models (`universalTools.ts`: permission modes plan/edit/full-auto)
-- Workflow tools for chat agents (`workflowTools.ts`: lane creation, PR creation, screenshot capture, completion reporting)
+- Workflow tools for chat agents (`workflowTools.ts`: lane creation, PR creation, screenshot capture, completion reporting, PR issue resolution tools)
 - Three-tier tool architecture: universalTools (all agents) -> workflowTools (chat agents) -> coordinatorTools (orchestrator only)
 - System prompt agent capability boundaries (tool tier guidance in agent prompts)
 - Middleware layer (`middleware.ts`: logging, retry, cost guard, reasoning extraction)

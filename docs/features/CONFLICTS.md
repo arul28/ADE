@@ -54,7 +54,7 @@ Per `docs/final-plan/README.md`, Conflicts owns merge-risk intelligence and reso
 
 ### Conflict Prediction
 
-Dry-run merge simulation using `git merge-tree` or a temporary index to predict
+Merge simulation using `git merge-tree` or a temporary index to predict
 whether two branches will conflict — without actually performing a merge. This runs
 periodically in the background via the job engine and on-demand when the user
 requests a simulation.

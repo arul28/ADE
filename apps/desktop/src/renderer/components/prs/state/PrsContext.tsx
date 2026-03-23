@@ -20,7 +20,6 @@ import type {
   RebaseNeed,
   RebaseEventPayload,
   QueueLandingState,
-  QueueRehearsalState,
   PrEventPayload,
   LaneSummary,
   AutoRebaseLaneStatus,
@@ -65,7 +64,6 @@ type PrsState = {
 
   // Queue state
   queueStates: Record<string, QueueLandingState>;
-  queueRehearsals: Record<string, QueueRehearsalState>;
 
   // Inline terminal
   inlineTerminal: InlineTerminalState;
@@ -180,7 +178,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Queue state
   const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>({});
-  const [queueRehearsals, setQueueRehearsals] = useState<Record<string, QueueRehearsalState>>({});
 
   // Inline terminal
   const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(null);
@@ -278,15 +275,12 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     setError(null);
     try {
       const shouldLoadWorkflowState = activeTab !== "normal";
-      const [prList, laneList, queueStateList, queueRehearsalList] = await Promise.all([
+      const [prList, laneList, queueStateList] = await Promise.all([
         window.ade.prs.listWithConflicts(),
         window.ade.lanes.list({ includeStatus: true }),
         shouldLoadWorkflowState
           ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
           : Promise.resolve([] as QueueLandingState[]),
-        shouldLoadWorkflowState
-          ? window.ade.prs.listQueueRehearsals({ includeCompleted: true, limit: 50 })
-          : Promise.resolve([] as QueueRehearsalState[]),
       ]);
       const prsChanged = !jsonEqual(prsRef.current, prList);
 
@@ -296,10 +290,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
       setQueueStates((prev) => {
         const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
-        return jsonEqual(prev, next) ? prev : next;
-      });
-      setQueueRehearsals((prev) => {
-        const next = Object.fromEntries(queueRehearsalList.map((state) => [state.groupId, state] as const));
         return jsonEqual(prev, next) ? prev : next;
       });
       prsRef.current = prList;
@@ -487,14 +477,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         }).catch((err) => {
           console.warn("[PrsContext] Failed to fetch queue state for group:", event.groupId, err);
         });
-      } else if (event.type === "queue-rehearsal-state" || event.type === "queue-rehearsal-step") {
-        window.ade.prs.getQueueRehearsalState(event.groupId).then((qs) => {
-          if (qs) {
-            setQueueRehearsals((prev) => ({ ...prev, [event.groupId]: qs }));
-          }
-        }).catch((err) => {
-          console.warn("[PrsContext] Failed to fetch queue rehearsal state for group:", event.groupId, err);
-        });
       }
     });
     return () => {
@@ -567,7 +549,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       rebaseNeeds,
       autoRebaseStatuses,
       queueStates,
-      queueRehearsals,
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,
@@ -610,7 +591,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       rebaseNeeds,
       autoRebaseStatuses,
       queueStates,
-      queueRehearsals,
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,

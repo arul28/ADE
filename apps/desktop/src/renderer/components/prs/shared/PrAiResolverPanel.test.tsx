@@ -48,7 +48,6 @@ const basePrsValue = {
   rebaseNeeds: [],
   autoRebaseStatuses: [],
   queueStates: {},
-  queueRehearsals: {},
   inlineTerminal: null,
   resolverModel: "codex-resolver",
   resolverReasoningLevel: "medium",

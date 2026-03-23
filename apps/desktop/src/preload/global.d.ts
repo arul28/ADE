@@ -235,8 +235,8 @@ import type {
   PrAiResolutionEventPayload,
   CommitIntegrationArgs,
   LandQueueNextArgs,
+  ReorderQueuePrsArgs,
   QueueLandingState,
-  QueueRehearsalState,
   PrHealth,
   RebaseNeed,
   RebaseLaneArgs,
@@ -249,22 +249,48 @@ import type {
   RebaseAbortArgs,
   RebaseRun,
   RebaseRunEventPayload,
+  CleanupIntegrationWorkflowArgs,
+  CleanupIntegrationWorkflowResult,
+  CreateIntegrationPrArgs,
+  CreateIntegrationPrResult,
+  DeleteIntegrationProposalArgs,
+  DeleteIntegrationProposalResult,
   DeletePrArgs,
   DeletePrResult,
+  DismissIntegrationCleanupArgs,
+  DraftPrDescriptionArgs,
+  GitHubPrSnapshot,
+  LandPrArgs,
+  LandResult,
+  LandStackArgs,
+  LandStackEnhancedArgs,
   LinkPrToLaneArgs,
-  PrEventPayload,
-  PrCheck,
-  PrComment,
-  PrReview,
-  PrStatus,
-  PrSummary,
-  PrMergeContext,
-  PrDetail,
-  PrFile,
+  ListIntegrationWorkflowsArgs,
   PrActionRun,
   PrActivityEvent,
+  PrCheck,
+  PrComment,
+  PrConflictAnalysis,
+  PrDetail,
+  PrEventPayload,
+  PrFile,
+  PrIssueResolutionPromptPreviewArgs,
+  PrIssueResolutionPromptPreviewResult,
+  PrIssueResolutionStartArgs,
+  PrIssueResolutionStartResult,
   PrLabel,
+  PrMergeContext,
+  PrReview,
+  PrReviewThread,
+  PrReviewThreadComment,
+  PrStatus,
+  PrSummary,
   PrUser,
+  PrWithConflicts,
+  ReplyToPrReviewThreadArgs,
+  ResolvePrReviewThreadArgs,
+  ResumeQueueAutomationArgs,
+  StartQueueAutomationArgs,
   AddPrCommentArgs,
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
@@ -278,9 +304,6 @@ import type {
   AiReviewSummary,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
-  LandPrArgs,
-  LandStackArgs,
-  LandResult,
   ListOverlapsArgs,
   LaneSummary,
   ListMissionsArgs,
@@ -919,19 +942,20 @@ declare global {
         getChecks: (prId: string) => Promise<PrCheck[]>;
         getComments: (prId: string) => Promise<PrComment[]>;
         getReviews: (prId: string) => Promise<PrReview[]>;
+        getReviewThreads: (prId: string) => Promise<PrReviewThread[]>;
         updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
         delete: (args: DeletePrArgs) => Promise<DeletePrResult>;
-        draftDescription: (args: import("../shared/types").DraftPrDescriptionArgs) => Promise<{ title: string; body: string }>;
+        draftDescription: (args: DraftPrDescriptionArgs) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         openInGitHub: (prId: string) => Promise<void>;
         createQueue: (args: CreateQueuePrsArgs) => Promise<CreateQueuePrsResult>;
-        createIntegration: (args: import("../shared/types").CreateIntegrationPrArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
+        createIntegration: (args: CreateIntegrationPrArgs) => Promise<CreateIntegrationPrResult>;
         simulateIntegration: (args: SimulateIntegrationArgs) => Promise<IntegrationProposal>;
-        commitIntegration: (args: CommitIntegrationArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
+        commitIntegration: (args: CommitIntegrationArgs) => Promise<CreateIntegrationPrResult>;
         listProposals(): Promise<IntegrationProposal[]>;
         updateProposal(args: UpdateIntegrationProposalArgs): Promise<void>;
-        deleteProposal(args: import("../shared/types").DeleteIntegrationProposalArgs): Promise<import("../shared/types").DeleteIntegrationProposalResult>;
+        deleteProposal(args: DeleteIntegrationProposalArgs): Promise<DeleteIntegrationProposalResult>;
         createIntegrationLaneForProposal(args: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult>;
         startIntegrationResolution(args: StartIntegrationResolutionArgs): Promise<StartIntegrationResolutionResult>;
         recheckIntegrationStep(args: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult>;
@@ -941,30 +965,31 @@ declare global {
         aiResolutionInput(args: PrAiResolutionInputArgs): Promise<void>;
         aiResolutionStop(args: PrAiResolutionStopArgs): Promise<void>;
         onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => () => void;
-        landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
+        issueResolutionStart(args: PrIssueResolutionStartArgs): Promise<PrIssueResolutionStartResult>;
+        issueResolutionPreviewPrompt(args: PrIssueResolutionPromptPreviewArgs): Promise<PrIssueResolutionPromptPreviewResult>;
+        landStackEnhanced: (args: LandStackEnhancedArgs) => Promise<LandResult[]>;
         landQueueNext: (args: LandQueueNextArgs) => Promise<LandResult>;
-        startQueueAutomation: (args: import("../shared/types").StartQueueAutomationArgs) => Promise<QueueLandingState>;
+        startQueueAutomation: (args: StartQueueAutomationArgs) => Promise<QueueLandingState>;
         pauseQueueAutomation: (queueId: string) => Promise<QueueLandingState | null>;
-        resumeQueueAutomation: (args: import("../shared/types").ResumeQueueAutomationArgs) => Promise<QueueLandingState | null>;
+        resumeQueueAutomation: (args: ResumeQueueAutomationArgs) => Promise<QueueLandingState | null>;
         cancelQueueAutomation: (queueId: string) => Promise<QueueLandingState | null>;
-        startQueueRehearsal: (args: import("../shared/types").StartQueueRehearsalArgs) => Promise<QueueRehearsalState>;
-        cancelQueueRehearsal: (rehearsalId: string) => Promise<QueueRehearsalState | null>;
+        reorderQueuePrs: (args: ReorderQueuePrsArgs) => Promise<void>;
         getHealth: (prId: string) => Promise<PrHealth>;
         getQueueState: (groupId: string) => Promise<QueueLandingState | null>;
         listQueueStates: (args?: { includeCompleted?: boolean; limit?: number }) => Promise<QueueLandingState[]>;
-        getQueueRehearsalState: (groupId: string) => Promise<QueueRehearsalState | null>;
-        listQueueRehearsals: (args?: { includeCompleted?: boolean; limit?: number }) => Promise<QueueRehearsalState[]>;
-        getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
+        getConflictAnalysis: (prId: string) => Promise<PrConflictAnalysis>;
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
-        listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
-        getGitHubSnapshot: (args?: { force?: boolean }) => Promise<import("../shared/types").GitHubPrSnapshot>;
-        listIntegrationWorkflows: (args?: import("../shared/types").ListIntegrationWorkflowsArgs) => Promise<IntegrationProposal[]>;
+        listWithConflicts: () => Promise<PrWithConflicts[]>;
+        getGitHubSnapshot: (args?: { force?: boolean }) => Promise<GitHubPrSnapshot>;
+        listIntegrationWorkflows: (args?: ListIntegrationWorkflowsArgs) => Promise<IntegrationProposal[]>;
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
         getDetail: (prId: string) => Promise<PrDetail>;
         getFiles: (prId: string) => Promise<PrFile[]>;
         getActionRuns: (prId: string) => Promise<PrActionRun[]>;
         getActivity: (prId: string) => Promise<PrActivityEvent[]>;
         addComment: (args: AddPrCommentArgs) => Promise<PrComment>;
+        replyToReviewThread: (args: ReplyToPrReviewThreadArgs) => Promise<PrReviewThreadComment>;
+        resolveReviewThread: (args: ResolvePrReviewThreadArgs) => Promise<void>;
         updateTitle: (args: UpdatePrTitleArgs) => Promise<void>;
         updateBody: (args: UpdatePrBodyArgs) => Promise<void>;
         setLabels: (args: SetPrLabelsArgs) => Promise<void>;
@@ -974,8 +999,8 @@ declare global {
         reopen: (args: ReopenPrArgs) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;
         aiReviewSummary: (args: AiReviewSummaryArgs) => Promise<AiReviewSummary>;
-        dismissIntegrationCleanup: (args: import("../shared/types").DismissIntegrationCleanupArgs) => Promise<IntegrationProposal>;
-        cleanupIntegrationWorkflow: (args: import("../shared/types").CleanupIntegrationWorkflowArgs) => Promise<import("../shared/types").CleanupIntegrationWorkflowResult>;
+        dismissIntegrationCleanup: (args: DismissIntegrationCleanupArgs) => Promise<IntegrationProposal>;
+        cleanupIntegrationWorkflow: (args: CleanupIntegrationWorkflowArgs) => Promise<CleanupIntegrationWorkflowResult>;
       };
       rebase: {
         scanNeeds: () => Promise<RebaseNeed[]>;

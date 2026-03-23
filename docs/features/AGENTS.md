@@ -57,7 +57,7 @@ Agent tools are organized into three tiers, each scoped to the appropriate agent
 | Tier | Surface | Available To | Contents |
 |---|---|---|---|
 | **universalTools** | All agents | CTO, workers, chat sessions, coordinator | Memory tools (memorySearch, memoryAdd, memoryPin, memoryUpdateCore), context reading |
-| **workflowTools** | Chat agents | CTO chat, employee chat, regular chat sessions | Lane creation, PR creation, screenshot capture, completion reporting |
+| **workflowTools** | Chat agents | CTO chat, employee chat, regular chat sessions | Lane creation, PR creation, screenshot capture, completion reporting, PR issue resolution (refresh inventory, rerun checks, reply to/resolve review threads) |
 | **coordinatorTools** | Orchestrator only | Mission coordinator agent | spawn_worker, skip_step, complete_mission, fail_mission, check_finalization_status, set_current_phase, etc. |
 
 This tiering ensures agents have the tools appropriate to their role without exposing orchestrator-level control to regular chat sessions, or workflow actions to headless workers.
