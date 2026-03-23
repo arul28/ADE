@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkViewMode } from "../../state/appStore";
-import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { listSessionsCached } from "../../lib/sessionListCache";
-import { isRunOwnedSession } from "../../lib/sessions";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
+import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
+import { isRunOwnedSession } from "../../lib/sessions";
 
 const DEFAULT_LANE_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
@@ -337,15 +337,20 @@ export function useLaneWorkSessions(laneId: string | null) {
       title?: string;
       startupCommand?: string;
     }) => {
-      const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" } as const;
-      const commandMap = { claude: "claude", codex: "codex", shell: "" } as const;
+      const toolTypeMap = {
+        claude: "claude" as const,
+        codex: "codex" as const,
+        shell: "shell" as const,
+      };
+      const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
+      const commandMap = { claude: "claude", codex: "codex", shell: "" };
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,
         rows: 30,
         title: args.title ?? titleMap[args.profile],
         tracked: args.tracked ?? true,
-        toolType: args.profile,
+        toolType: toolTypeMap[args.profile],
         startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
       });
       selectLane(args.laneId);

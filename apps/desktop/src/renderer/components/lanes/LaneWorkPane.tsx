@@ -1,8 +1,8 @@
 import { ChatCircleText, Command, Terminal } from "@phosphor-icons/react";
 import type { WorkDraftKind } from "../../state/appStore";
-import { WorkViewArea } from "../terminals/WorkViewArea";
 import { EmptyState } from "../ui/EmptyState";
 import { SANS_FONT } from "./laneDesignTokens";
+import { WorkViewArea } from "../terminals/WorkViewArea";
 import { useLaneWorkSessions } from "./useLaneWorkSessions";
 
 const ENTRY_OPTIONS: Array<{
@@ -11,10 +11,12 @@ const ENTRY_OPTIONS: Array<{
   icon: typeof ChatCircleText;
   color: string;
 }> = [
-  { kind: "chat", label: "New chat", icon: ChatCircleText, color: "#8B5CF6" },
-  { kind: "cli", label: "CLI tool", icon: Command, color: "#F97316" },
-  { kind: "shell", label: "New shell", icon: Terminal, color: "#22C55E" },
+  { kind: "chat", label: "New Chat", icon: ChatCircleText, color: "#8B5CF6" },
+  { kind: "cli", label: "CLI Tool", icon: Command, color: "#F97316" },
+  { kind: "shell", label: "New Shell", icon: Terminal, color: "#22C55E" },
 ];
+
+const EMPTY_CLOSING_PTY_IDS = new Set<string>();
 
 export function LaneWorkPane({
   laneId,
@@ -74,7 +76,7 @@ export function LaneWorkPane({
             <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-2 py-1">
               {work.visibleSessions.length} open
             </span>
-            {work.loading ? <span className="text-muted-fg/70">Refreshing...</span> : null}
+            {work.loading ? <span className="text-muted-fg/70">Refreshing…</span> : null}
           </div>
         </div>
       </div>
