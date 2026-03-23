@@ -101,7 +101,7 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: cd apps/desktop && npm run notarize:mac:dmg
 
-      - name: Validate macOS release artifacts
+      - name: Validate macOS release artifacts and runtime payloads
         run: cd apps/desktop && npm run validate:mac:artifacts
 
       - name: Upload validated artifacts to workflow run

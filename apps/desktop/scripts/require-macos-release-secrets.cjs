@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 "use strict";
 
+const fs = require("node:fs");
+
 function hasEnv(name) {
   return Boolean(process.env[name] && String(process.env[name]).trim().length > 0);
 }
@@ -13,8 +15,14 @@ const missing = [];
 
 const hasImportedCertificate = ["CSC_LINK", "CSC_KEY_PASSWORD"].every(hasEnv);
 const hasInstalledIdentity = hasEnv("CSC_NAME");
+const cscLink = hasEnv("CSC_LINK") ? String(process.env.CSC_LINK).trim() : "";
+const cscLinkIsAbsolutePath = cscLink.startsWith("/");
+const cscLinkPathExists = !cscLinkIsAbsolutePath || fs.existsSync(cscLink);
 
-if (!hasImportedCertificate && !hasInstalledIdentity) {
+if (hasImportedCertificate && cscLinkIsAbsolutePath && !cscLinkPathExists && !hasInstalledIdentity) {
+  missing.push(`CSC_LINK points to a missing certificate file: ${cscLink}`);
+  missing.push("Provide a valid CSC_LINK + CSC_KEY_PASSWORD pair or set CSC_NAME to an installed Developer ID identity");
+} else if (!hasImportedCertificate && !hasInstalledIdentity) {
   missing.push("Provide either CSC_LINK + CSC_KEY_PASSWORD or CSC_NAME");
 }
 
@@ -67,8 +75,16 @@ if (matchingProfile.vars.includes("APPLE_API_KEY") && !String(process.env.APPLE_
   process.exit(1);
 }
 
+if (hasImportedCertificate && cscLinkIsAbsolutePath && !cscLinkPathExists && hasInstalledIdentity) {
+  process.stdout.write(
+    `[release:mac] CSC_LINK points to a missing file (${cscLink}); continuing with installed identity ${process.env.CSC_NAME}.\n`
+  );
+}
+
 process.stdout.write(
   `[release:mac] macOS signing and notarization environment looks complete (` +
-    `${hasImportedCertificate ? "imported Developer ID certificate" : `installed identity ${process.env.CSC_NAME}`}, ` +
+    `${hasImportedCertificate && (!cscLinkIsAbsolutePath || cscLinkPathExists)
+      ? "imported Developer ID certificate"
+      : `installed identity ${process.env.CSC_NAME}`}, ` +
     `${matchingProfile.label}).\n`
 );

@@ -6,6 +6,7 @@ import {
   buildClaudeReadOnlyWorkerAllowedTools,
   buildCodexMcpConfigFlags,
   createUnifiedOrchestratorAdapter,
+  resolveAdeMcpServerLaunch,
 } from "./unifiedOrchestratorAdapter";
 
 describe("buildCodexMcpConfigFlags", () => {
@@ -13,6 +14,7 @@ describe("buildCodexMcpConfigFlags", () => {
     const flags = buildCodexMcpConfigFlags({
       workspaceRoot: "/Users/admin/Projects/ADE",
       runtimeRoot: "/tmp/ade-runtime",
+      preferBundledProxy: false,
       missionId: "mission-123",
       runId: "run-456",
       stepId: "step-789",
@@ -29,6 +31,8 @@ describe("buildCodexMcpConfigFlags", () => {
       "-c",
       `'mcp_servers.ade.env.ADE_WORKSPACE_ROOT="/Users/admin/Projects/ADE"'`,
       "-c",
+      `'mcp_servers.ade.env.ADE_MCP_SOCKET_PATH="/Users/admin/Projects/ADE/.ade/mcp.sock"'`,
+      "-c",
       `'mcp_servers.ade.env.ADE_MISSION_ID="mission-123"'`,
       "-c",
       `'mcp_servers.ade.env.ADE_RUN_ID="run-456"'`,
@@ -39,6 +43,50 @@ describe("buildCodexMcpConfigFlags", () => {
       "-c",
       `'mcp_servers.ade.env.ADE_DEFAULT_ROLE="agent"'`,
     ]);
+  });
+});
+
+describe("resolveAdeMcpServerLaunch", () => {
+  it("prefers the packaged dist entry when the built MCP server exists", () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-runtime-"));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-project-"));
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    const builtEntry = path.join(runtimeRoot, "apps", "mcp-server", "dist", "index.cjs");
+
+    fs.mkdirSync(path.dirname(builtEntry), { recursive: true });
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    fs.writeFileSync(builtEntry, "module.exports = {};\n", "utf8");
+
+    const launch = resolveAdeMcpServerLaunch({
+      projectRoot,
+      workspaceRoot,
+      runtimeRoot,
+      preferBundledProxy: false,
+      missionId: "mission-123",
+      runId: "run-456",
+      stepId: "step-789",
+      attemptId: "attempt-000",
+      defaultRole: "external",
+    });
+
+    expect(launch.command).toBe("node");
+    expect(launch.cmdArgs).toEqual([
+      builtEntry,
+      "--project-root",
+      path.resolve(projectRoot),
+      "--workspace-root",
+      path.resolve(workspaceRoot),
+    ]);
+    expect(launch.env).toMatchObject({
+      ADE_PROJECT_ROOT: path.resolve(projectRoot),
+      ADE_WORKSPACE_ROOT: path.resolve(workspaceRoot),
+      ADE_MCP_SOCKET_PATH: path.join(path.resolve(projectRoot), ".ade", "mcp.sock"),
+      ADE_MISSION_ID: "mission-123",
+      ADE_RUN_ID: "run-456",
+      ADE_STEP_ID: "step-789",
+      ADE_ATTEMPT_ID: "attempt-000",
+      ADE_DEFAULT_ROLE: "external",
+    });
   });
 });
 
@@ -374,14 +422,25 @@ describe("createUnifiedOrchestratorAdapter", () => {
     expect(result.status).toBe("accepted");
     const configPath = path.join(projectRoot, ".ade", "cache", "orchestrator", "mcp-configs", "worker-attempt-1.json");
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    expect(config.mcpServers.ade.args).toEqual([
-      "tsx",
-      path.join(projectRoot, "runtime", "apps", "mcp-server", "src", "index.ts"),
+    expect(config.mcpServers.ade.args.slice(-4)).toEqual([
       "--project-root",
       projectRoot,
       "--workspace-root",
       laneWorktreePath,
     ]);
+    if (config.mcpServers.ade.command === process.execPath) {
+      expect(config.mcpServers.ade.args[0]).toMatch(/adeMcpProxy\.cjs$/);
+      expect(config.mcpServers.ade.env.ELECTRON_RUN_AS_NODE).toBe("1");
+    } else {
+      expect(config.mcpServers.ade.args).toEqual([
+        "tsx",
+        path.join(projectRoot, "runtime", "apps", "mcp-server", "src", "index.ts"),
+        "--project-root",
+        projectRoot,
+        "--workspace-root",
+        laneWorktreePath,
+      ]);
+    }
     expect(config.mcpServers.ade.env).toMatchObject({
       ADE_PROJECT_ROOT: projectRoot,
       ADE_WORKSPACE_ROOT: laneWorktreePath,

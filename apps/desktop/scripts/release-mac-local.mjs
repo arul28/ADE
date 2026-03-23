@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -76,13 +76,23 @@ function run(command, args, env) {
 
 function maybeUseInstalledIdentity(env) {
   const hasImportedCertificate = Boolean(env.CSC_LINK && env.CSC_KEY_PASSWORD);
+  const cscLinkPath = typeof env.CSC_LINK === "string" && env.CSC_LINK.startsWith("/") ? env.CSC_LINK : null;
+  const missingImportedCertificate = Boolean(cscLinkPath && !existsSync(cscLinkPath));
 
-  if (hasImportedCertificate) {
+  if (hasImportedCertificate && !missingImportedCertificate) {
     delete env.CSC_NAME;
     return;
   }
 
   if (env.CSC_NAME) {
+    if (missingImportedCertificate) {
+      console.warn(
+        `[release:mac] CSC_LINK points to a missing certificate file (${cscLinkPath}); ` +
+          `falling back to installed identity ${env.CSC_NAME}.`,
+      );
+      delete env.CSC_LINK;
+      delete env.CSC_KEY_PASSWORD;
+    }
     return;
   }
 
@@ -110,6 +120,11 @@ function maybeUseInstalledIdentity(env) {
     identities.find((identity) => authorName && identity.includes(authorName)) ?? identities[0] ?? null;
 
   if (!preferredIdentity) {
+    if (missingImportedCertificate) {
+      throw new Error(
+        `[release:mac] CSC_LINK points to a missing certificate file (${cscLinkPath}) and no installed Developer ID Application identity was found`,
+      );
+    }
     return;
   }
 

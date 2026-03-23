@@ -702,6 +702,50 @@ export function createProcessService({
     child.stderr.on("data", (chunk: string) => onChunk("stderr", chunk));
   };
 
+  const handleProcessStartFailure = (args: {
+    entry: ManagedProcessEntry;
+    laneId: string;
+    definition: ProcessDefinition;
+    runId: string;
+    startedAt: string;
+    endedAt: string;
+    logPath: string;
+    cwd: string;
+    error: unknown;
+  }) => {
+    const { entry, laneId, definition, runId, startedAt, endedAt, logPath, cwd, error } = args;
+    const message = error instanceof Error ? error.message : String(error);
+
+    entry.child = null;
+    entry.processGroupId = null;
+    entry.runId = null;
+    entry.stopIntent = null;
+    entry.runtime.pid = null;
+    entry.runtime.status = "crashed";
+    entry.runtime.readiness = "unknown";
+    entry.runtime.startedAt = startedAt;
+    entry.runtime.endedAt = endedAt;
+    entry.runtime.lastEndedAt = endedAt;
+    entry.runtime.exitCode = null;
+    entry.runtime.lastExitCode = null;
+    entry.runtime.logPath = logPath;
+    emitRuntime(entry);
+
+    upsertRunStart(runId, laneId, definition.id, startedAt, logPath);
+    upsertRunEnd(runId, endedAt, null, "crashed");
+
+    logger.warn("process.start_failed", {
+      laneId,
+      processId: definition.id,
+      cwd,
+      command: definition.command,
+      envPath: process.env.PATH ?? "",
+      envShell: process.env.SHELL ?? "",
+      resourcesPath: process.resourcesPath ?? "",
+      error: message,
+    });
+  };
+
   const startByDefinition = async (
     laneId: string,
     definition: ProcessDefinition,
@@ -744,11 +788,28 @@ export function createProcessService({
         stdio: ["ignore", "pipe", "pipe"]
       });
     } catch (err) {
+      const endedAt = nowIso();
+      try {
+        logStream.write(`\n[process start failure] ${String(err)}\n`);
+      } catch {
+        // ignore
+      }
       try {
         logStream.end();
       } catch {
         // ignore
       }
+      handleProcessStartFailure({
+        entry,
+        laneId,
+        definition,
+        runId,
+        startedAt,
+        endedAt,
+        logPath,
+        cwd,
+        error: err,
+      });
       throw err;
     }
 
@@ -786,7 +847,15 @@ export function createProcessService({
       handleProcessExit(entry, definition.id, code ?? null);
     });
 
-    logger.info("process.start", { laneId, processId: definition.id, cwd, command: definition.command, runId });
+    logger.info("process.start", {
+      laneId,
+      processId: definition.id,
+      cwd,
+      command: definition.command,
+      runId,
+      envPath: process.env.PATH ?? "",
+      envShell: process.env.SHELL ?? "",
+    });
     return { ...entry.runtime };
   };
 

@@ -2,7 +2,9 @@ import { defineConfig } from "tsup";
 
 export default defineConfig({
   entry: {
+    "main/adeMcpProxy": "src/main/adeMcpProxy.ts",
     "main/main": "src/main/main.ts",
+    "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
     "preload/preload": "src/preload/preload.ts"
   },
   format: ["cjs"],

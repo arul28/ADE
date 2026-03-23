@@ -37,6 +37,7 @@ import type { createFileService } from "../files/fileService";
 import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { nowIso, fileSizeOrZero } from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import {
@@ -109,7 +110,7 @@ import type { createLinearDispatcherService } from "../cto/linearDispatcherServi
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createProofObserver } from "../computerUse/proofObserver";
-import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
+import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "../orchestrator/unifiedOrchestratorAdapter";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 
@@ -1083,20 +1084,7 @@ function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">)
 let _mcpRuntimeRootCache: string | null = null;
 function resolveMcpRuntimeRoot(): string {
   if (_mcpRuntimeRootCache !== null) return _mcpRuntimeRootCache;
-  const startPoints = [process.cwd(), __dirname];
-  for (const start of startPoints) {
-    let dir = path.resolve(start);
-    for (let i = 0; i < 12; i += 1) {
-      if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
-        _mcpRuntimeRootCache = dir;
-        return dir;
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-  }
-  _mcpRuntimeRootCache = process.cwd();
+  _mcpRuntimeRootCache = resolveUnifiedRuntimeRoot();
   return _mcpRuntimeRootCache;
 }
 
@@ -1347,6 +1335,29 @@ export function createAgentChatService(args: {
         env: launch.env
       }
     }) ?? {};
+  };
+
+  const summarizeAdeMcpLaunch = (args: {
+    defaultRole: "agent" | "cto" | "external";
+    ownerId?: string | null;
+    computerUsePolicy?: ComputerUsePolicy | null;
+  }) => {
+    const launch = resolveAdeMcpServerLaunch({
+      workspaceRoot: projectRoot,
+      runtimeRoot: resolveMcpRuntimeRoot(),
+      defaultRole: args.defaultRole,
+      ownerId: args.ownerId ?? undefined,
+      computerUsePolicy: normalizeComputerUsePolicy(args.computerUsePolicy, createDefaultComputerUsePolicy()),
+    });
+    return {
+      mode: launch.mode,
+      command: launch.command,
+      entryPath: launch.entryPath,
+      runtimeRoot: launch.runtimeRoot,
+      socketPath: launch.socketPath,
+      packaged: launch.packaged,
+      resourcesPath: launch.resourcesPath,
+    };
   };
 
   const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
@@ -4681,6 +4692,17 @@ export function createAgentChatService(args: {
   };
 
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
+    logger.info("agent_chat.codex_runtime_start", {
+      sessionId: managed.session.id,
+      cwd: managed.laneWorktreePath,
+      shellPath: process.env.SHELL ?? "",
+      path: process.env.PATH ?? "",
+      adeMcpLaunch: summarizeAdeMcpLaunch({
+        defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
+        ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
+        computerUsePolicy: managed.session.computerUse,
+      }),
+    });
     const proc = spawn("codex", ["app-server"], {
       cwd: managed.laneWorktreePath,
       stdio: ["pipe", "pipe", "pipe"]
@@ -4787,7 +4809,38 @@ export function createAgentChatService(args: {
       if (!text.length) return;
       logger.warn("agent_chat.codex_stderr", {
         sessionId: managed.session.id,
-        line: text
+        line: text,
+        cwd: managed.laneWorktreePath,
+      });
+    });
+
+    proc.on("error", (error) => {
+      const message = `Codex app-server failed to start: ${error instanceof Error ? error.message : String(error)}`;
+      logger.warn("agent_chat.codex_spawn_failed", {
+        sessionId: managed.session.id,
+        cwd: managed.laneWorktreePath,
+        path: process.env.PATH ?? "",
+        shellPath: process.env.SHELL ?? "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      for (const request of pending.values()) {
+        request.reject(new Error(message));
+      }
+      pending.clear();
+      runtime.approvals.clear();
+      runtime.suppressExitError = true;
+
+      if (managed.closed || managed.session.status === "ended") return;
+
+      emitChatEvent(managed, {
+        type: "error",
+        message,
+      });
+
+      void finishSession(managed, "failed", {
+        exitCode: null,
+        summary: message,
       });
     });
 
@@ -4924,6 +4977,7 @@ export function createAgentChatService(args: {
       ? mapPermissionToClaude(managed.session.permissionMode)
       : chatConfig.claudePermissionMode;
     const lightweight = isLightweightSession(managed.session);
+    const claudeExecutable = resolveClaudeCodeExecutable();
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
       permissionMode: claudePermissionMode as any,
@@ -4932,6 +4986,7 @@ export function createAgentChatService(args: {
       promptSuggestions: true,
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
       model: resolveClaudeCliModel(managed.session.model),
+      pathToClaudeCodeExecutable: claudeExecutable.path,
     };
     if (!lightweight) {
       opts.systemPrompt = {
@@ -5055,6 +5110,7 @@ export function createAgentChatService(args: {
           sessionId: managed.session.id,
           resume: !!runtime.sdkSessionId,
           model: v2Opts.model,
+          claudeExecutablePath: v2Opts.pathToClaudeCodeExecutable,
         });
 
         if (runtime.v2WarmupCancelled) return;
@@ -5132,6 +5188,12 @@ export function createAgentChatService(args: {
         logger.warn("agent_chat.claude_v2_prewarm_failed", {
           sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),
+          claudeExecutablePath: runtime.v2Session ? undefined : buildClaudeV2SessionOpts(managed, runtime).pathToClaudeCodeExecutable,
+          adeMcpLaunch: summarizeAdeMcpLaunch({
+            defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
+            ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
+            computerUsePolicy: managed.session.computerUse,
+          }),
         });
         try { runtime.v2Session?.close(); } catch { /* ignore */ }
         runtime.v2Session = null;
