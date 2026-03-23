@@ -276,6 +276,7 @@ function AdvancedSettingsPopover({
                 : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
             )}
             onClick={onToggleComputerUse}
+            aria-pressed={computerUseAllowed}
             title="Allow the agent to use connected browser or desktop tools for this chat"
           >
             <div className="flex items-center justify-between gap-2">
@@ -307,6 +308,7 @@ function AdvancedSettingsPopover({
                 : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
             )}
             onClick={onToggleProof}
+            aria-pressed={proofOpen}
             disabled={!onToggleProof}
             title="Open or hide the proof drawer for retained screenshots, traces, logs, and verification output"
           >
@@ -335,6 +337,7 @@ function AdvancedSettingsPopover({
                 : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
             )}
             onClick={() => onIncludeProjectDocsChange?.(!includeProjectDocs)}
+            aria-pressed={!!includeProjectDocs}
             disabled={!onIncludeProjectDocsChange}
             title="Include project-level context docs (PRD and architecture) with the first message"
           >
@@ -704,6 +707,7 @@ export function AgentChatComposer({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setAdvancedMenuOpen(false);
+        advancedButtonRef.current?.focus();
       }
     };
     window.addEventListener("pointerdown", onPointerDown, true);
@@ -1105,7 +1109,7 @@ export function AgentChatComposer({
                   <div ref={advancedMenuRef}>
                     <AdvancedSettingsPopover
                       executionModeOptions={executionModeOptions}
-                      executionMode={executionMode}
+                      executionMode={executionMode ?? null}
                       onExecutionModeChange={onExecutionModeChange}
                       computerUsePolicy={computerUsePolicy}
                       computerUseSnapshot={computerUseSnapshot ?? null}

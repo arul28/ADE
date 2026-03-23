@@ -770,8 +770,12 @@ function normalizeWorkspacePathCandidate(value: string): string | null {
 function looksLikeWorkspacePath(value: string): boolean {
   const candidate = normalizeWorkspacePathCandidate(value);
   if (!candidate) return false;
-  if (candidate.startsWith("./") || candidate.startsWith("../") || candidate.startsWith("~/")) {
+  if (candidate.startsWith("./")) {
     return true;
+  }
+  // Reject directory-traversal and home-relative paths
+  if (candidate.startsWith("../") || candidate.startsWith("~/")) {
+    return false;
   }
   if (candidate.startsWith("/")) {
     return candidate.slice(1).includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate);
@@ -2776,7 +2780,7 @@ export function AgentChatMessageList({
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
   const turnSummary = useMemo(() => deriveTurnSummary(events), [events]);
   const currentLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
-    ? (location.state as { laneId?: string }).laneId
+    ? (location.state as { laneId: string }).laneId
     : null;
 
   useEffect(() => {

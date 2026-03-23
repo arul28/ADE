@@ -538,13 +538,13 @@ export function AgentChatPane({
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : laneDisplayLabel?.trim() || "Chat");
   const assistantLabel = presentation?.assistantLabel?.trim()
-    || (selectedSession?.provider === "claude"
+    || (selectedModelDesc?.family === "anthropic" || selectedModelDesc?.cliCommand === "claude"
       ? "Claude"
-      : selectedSession?.provider === "codex"
+      : selectedModelDesc?.family === "openai" || selectedModelDesc?.cliCommand === "codex"
         ? "Codex"
-        : selectedModelDesc?.family === "anthropic" || selectedModelDesc?.cliCommand === "claude"
+        : selectedSession?.provider === "claude"
           ? "Claude"
-          : selectedModelDesc?.family === "openai" || selectedModelDesc?.cliCommand === "codex"
+          : selectedSession?.provider === "codex"
             ? "Codex"
             : "Assistant");
   const messagePlaceholder = presentation?.messagePlaceholder?.trim()

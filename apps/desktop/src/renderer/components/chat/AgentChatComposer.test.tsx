@@ -1,11 +1,13 @@
 /* @vitest-environment jsdom */
 
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { getPermissionOptions } from "../shared/permissionOptions";
 import { AgentChatComposer } from "./AgentChatComposer";
+
+afterEach(cleanup);
 
 function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
   const props: ComponentProps<typeof AgentChatComposer> = {
@@ -102,7 +104,7 @@ describe("AgentChatComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
 
     fireEvent.click(screen.getByRole("button", { name: /^Parallel/ }));
-    fireEvent.click(screen.getByRole("button", { name: /^Computer use (On|Off)$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Computer use.*\b(On|Off)\b/i }));
     fireEvent.click(screen.getByRole("button", { name: /^Proof\b/i }));
     fireEvent.click(screen.getByRole("button", { name: /^Project Context\b/i }));
 
@@ -113,6 +115,6 @@ describe("AgentChatComposer", () => {
     expect(onIncludeProjectDocsChange).toHaveBeenCalledWith(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
-    expect(screen.queryByText("Advanced settings")).not.toBeInTheDocument();
+    expect(screen.queryByText("Advanced settings")).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, beforeEach, describe, expect, it, vi, waitFor } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { AgentChatMessageList } from "./AgentChatMessageList";
@@ -10,7 +10,7 @@ function LocationProbe() {
   const location = useLocation();
   return (
     <div data-testid="location">
-      {location.pathname}
+      {location.pathname}{location.search}
       {"::"}
       {JSON.stringify(location.state ?? null)}
     </div>
@@ -60,7 +60,11 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  globalThis.window.ade = originalAde;
+  if (originalAde === undefined) {
+    delete (globalThis.window as any).ade;
+  } else {
+    globalThis.window.ade = originalAde;
+  }
 });
 
 describe("AgentChatMessageList operator navigation suggestions", () => {

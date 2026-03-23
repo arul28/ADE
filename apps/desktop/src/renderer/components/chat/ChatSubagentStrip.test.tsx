@@ -1,9 +1,11 @@
 /* @vitest-environment jsdom */
 
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ChatSubagentStrip } from "./ChatSubagentStrip";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
+
+afterEach(cleanup);
 
 function renderStrip(snapshots: ChatSubagentSnapshot[]) {
   const onInterruptTurn = vi.fn();

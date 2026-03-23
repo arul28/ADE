@@ -1244,6 +1244,8 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     const normalizedLimit = Math.max(1, Math.min(MAX_TRANSCRIPT_READ_LIMIT, Math.floor(limit)));
     const normalizedMaxChars = Math.max(200, Math.min(MAX_TRANSCRIPT_READ_CHARS, Math.floor(maxChars)));
+    // Flush any pending buffered text so the transcript includes all content
+    flushBufferedText(managed);
     const transcriptEntries = readTranscriptEntries(managed);
     const fallbackEntries = transcriptEntries.length
       ? transcriptEntries

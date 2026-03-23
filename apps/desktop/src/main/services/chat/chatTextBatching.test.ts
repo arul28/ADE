@@ -90,6 +90,38 @@ describe("chatTextBatching", () => {
     })).toBe(true);
   });
 
+  it("does not collapse anonymous text chunks that lack identity", () => {
+    const buffered = appendBufferedAssistantText(null, {
+      type: "text",
+      text: "Hello",
+    });
+
+    expect(canAppendBufferedAssistantText(buffered, {
+      type: "text",
+      text: " world",
+    })).toBe(false);
+  });
+
+  it("flushes buffered text on discrete UI card events", () => {
+    expect(shouldFlushBufferedAssistantTextForEvent({
+      type: "todo_update",
+      todos: [],
+      turnId: "turn-1",
+    } as any)).toBe(true);
+
+    expect(shouldFlushBufferedAssistantTextForEvent({
+      type: "subagent_started",
+      taskId: "task-1",
+      turnId: "turn-1",
+    } as any)).toBe(true);
+
+    expect(shouldFlushBufferedAssistantTextForEvent({
+      type: "web_search",
+      query: "test",
+      turnId: "turn-1",
+    } as any)).toBe(true);
+  });
+
   it("keeps buffered text live across lightweight progress events", () => {
     expect(shouldFlushBufferedAssistantTextForEvent({
       type: "activity",

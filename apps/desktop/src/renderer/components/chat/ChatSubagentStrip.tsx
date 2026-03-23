@@ -323,6 +323,8 @@ export function ChatSubagentStrip({
                   )}
                   onMouseEnter={() => setHoveredTaskId(snapshot.taskId)}
                   onMouseLeave={() => setHoveredTaskId((cur) => (cur === snapshot.taskId ? null : cur))}
+                  onFocus={() => setHoveredTaskId(snapshot.taskId)}
+                  onBlur={() => setHoveredTaskId((cur) => (cur === snapshot.taskId ? null : cur))}
                   onClick={() => setPinnedTaskId((cur) => (cur === snapshot.taskId ? null : snapshot.taskId))}
                   title={snapshot.description}
                 >

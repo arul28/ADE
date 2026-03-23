@@ -11,6 +11,8 @@ export function canAppendBufferedAssistantText(
   event: Extract<AgentChatEvent, { type: "text" }>,
 ): boolean {
   if (!buffered) return false;
+  // Don't collapse anonymous chunks that lack any identity
+  if (!buffered.turnId && !buffered.itemId && !event.turnId && !event.itemId) return false;
   return (buffered.turnId ?? null) === (event.turnId ?? null)
     && (buffered.itemId ?? null) === (event.itemId ?? null);
 }
@@ -39,13 +41,6 @@ export function shouldFlushBufferedAssistantTextForEvent(event: AgentChatEvent):
     case "reasoning":
     case "activity":
     case "plan_text":
-    case "todo_update":
-    case "subagent_started":
-    case "subagent_progress":
-    case "subagent_result":
-    case "tool_use_summary":
-    case "web_search":
-    case "auto_approval_review":
       return false;
     default:
       return true;
