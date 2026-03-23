@@ -124,4 +124,84 @@ describe("buildProviderConnections", () => {
     expect(result.codex.blocker).toContain("Codex CLI reports no active login");
     expect(result.codex.blocker).toContain("codex login");
   });
+
+  it("downgrades Claude runtime availability when runtime health reports auth-failed", async () => {
+    mockState.readClaudeCredentials.mockResolvedValue({
+      accessToken: "token",
+      source: "claude-credentials-file",
+    });
+    mockState.getProviderRuntimeHealth.mockImplementation((provider) => {
+      if (provider === "claude") {
+        return {
+          provider: "claude",
+          state: "auth-failed",
+          message: "Claude runtime reported that login is still required.",
+          checkedAt: "2026-03-17T19:00:00.000Z",
+        };
+      }
+      return null;
+    });
+
+    const result = await buildProviderConnections([
+      {
+        cli: "claude",
+        installed: true,
+        path: "/Users/arul/.local/bin/claude",
+        authenticated: true,
+        verified: true,
+      },
+      {
+        cli: "codex",
+        installed: false,
+        path: null,
+        authenticated: false,
+        verified: false,
+      },
+    ]);
+
+    expect(result.claude.authAvailable).toBe(true);
+    expect(result.claude.runtimeDetected).toBe(true);
+    expect(result.claude.runtimeAvailable).toBe(false);
+    expect(result.claude.blocker).toBe("Claude runtime reported that login is still required.");
+  });
+
+  it("downgrades Claude runtime availability when runtime health reports a launch failure", async () => {
+    mockState.readClaudeCredentials.mockResolvedValue({
+      accessToken: "token",
+      source: "claude-credentials-file",
+    });
+    mockState.getProviderRuntimeHealth.mockImplementation((provider) => {
+      if (provider === "claude") {
+        return {
+          provider: "claude",
+          state: "runtime-failed",
+          message: "ADE could not launch the Claude runtime from this packaged app session.",
+          checkedAt: "2026-03-17T19:00:00.000Z",
+        };
+      }
+      return null;
+    });
+
+    const result = await buildProviderConnections([
+      {
+        cli: "claude",
+        installed: true,
+        path: "/Users/arul/.local/bin/claude",
+        authenticated: true,
+        verified: true,
+      },
+      {
+        cli: "codex",
+        installed: false,
+        path: null,
+        authenticated: false,
+        verified: false,
+      },
+    ]);
+
+    expect(result.claude.authAvailable).toBe(true);
+    expect(result.claude.runtimeDetected).toBe(true);
+    expect(result.claude.runtimeAvailable).toBe(false);
+    expect(result.claude.blocker).toBe("ADE could not launch the Claude runtime from this packaged app session.");
+  });
 });

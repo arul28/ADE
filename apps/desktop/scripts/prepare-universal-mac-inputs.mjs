@@ -43,6 +43,50 @@ async function assertPathExists(targetPath, description) {
   }
 }
 
+async function findFirstNodeAddon(rootPath) {
+  const entries = await fs.readdir(rootPath, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const entryPath = path.join(rootPath, entry.name);
+
+    if (entry.isDirectory()) {
+      const nestedMatch = await findFirstNodeAddon(entryPath);
+      if (nestedMatch) {
+        return nestedMatch;
+      }
+      continue;
+    }
+
+    if (entry.isFile() && entry.name.endsWith(".node")) {
+      return entryPath;
+    }
+  }
+
+  return null;
+}
+
+async function findNodePtyAddon(moduleRootPath) {
+  const candidateRoots = [
+    path.join(moduleRootPath, "build", "Release"),
+    path.join(moduleRootPath, "build", "Debug"),
+    path.join(moduleRootPath, "prebuilds", "darwin-arm64"),
+    path.join(moduleRootPath, "prebuilds", "darwin-x64"),
+  ];
+
+  for (const candidateRoot of candidateRoots) {
+    if (!(await pathExists(candidateRoot))) {
+      continue;
+    }
+
+    const addonPath = await findFirstNodeAddon(candidateRoot);
+    if (addonPath) {
+      return addonPath;
+    }
+  }
+
+  return null;
+}
+
 async function loadPackageLock() {
   return JSON.parse(await fs.readFile(packageLockPath, "utf8"));
 }
@@ -246,6 +290,14 @@ async function assertUniversalInputsReady() {
     path.join(appDir, "vendor", "crsqlite", "darwin-x64", "crsqlite.dylib"),
     "x64 crsqlite dylib",
   );
+  await assertPathExists(path.join(appDir, "node_modules", "node-pty"), "node-pty package");
+  const nodePtyAddon = await findNodePtyAddon(path.join(appDir, "node_modules", "node-pty"));
+  if (!nodePtyAddon) {
+    throw new Error(
+      "[release:mac] Missing node-pty native addon under node_modules/node-pty/build or node_modules/node-pty/prebuilds",
+    );
+  }
+  console.log(`[release:mac] Verified node-pty native addon: ${path.relative(appDir, nodePtyAddon)}`);
 }
 
 const x64App = await resolveX64AppPath();
@@ -256,11 +308,6 @@ try {
   } else {
     await seedFromLockfileAndPinnedArtifacts();
   }
-
-  await fs.rm(path.join(appDir, "node_modules", "node-pty", "build"), {
-    recursive: true,
-    force: true,
-  });
 
   await assertUniversalInputsReady();
   console.log("[release:mac] Universal macOS source tree now contains the required x64 runtime payloads");
