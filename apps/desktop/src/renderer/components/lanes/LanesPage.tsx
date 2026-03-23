@@ -1073,7 +1073,7 @@ export function LanesPage() {
           })();
 
       await refreshLanes();
-      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
 
       createEnvInitLaneIdRef.current = lane.id;
       const envProgress = selectedTemplateId
@@ -1108,7 +1108,7 @@ export function LanesPage() {
       setAttachName("");
       setAttachPath("");
       setAttachError(null);
-      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
     } catch (err) {
       setAttachError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1388,27 +1388,26 @@ export function LanesPage() {
             <Plus size={12} /> NEW LANE
           </button>
           {addLaneDropdownOpen ? (
-            <div className="absolute left-0 top-full z-50 mt-1" style={{ width: 224, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
+            <div className="absolute left-0 top-full z-50 mt-2 w-60 rounded-xl border border-white/[0.06] bg-bg/80 p-1 shadow-float backdrop-blur-xl">
               <button
                 type="button"
-                className="flex w-full items-center gap-2 text-left"
-                style={{ padding: "8px 12px", fontSize: 12, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
                 onClick={() => {
                   setAddLaneDropdownOpen(false);
                   prepareCreateDialog();
                 }}
               >
-                <Plus size={14} />
-                Create new lane
+                <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-accent">
+                  <Plus size={14} />
+                </span>
+                <span>
+                  <span className="block font-medium">Create new lane</span>
+                  <span className="block text-xs text-muted-fg/70">Start from primary or stack from another lane.</span>
+                </span>
               </button>
               <button
                 type="button"
-                className="flex w-full items-center gap-2 text-left"
-                style={{ padding: "8px 12px", fontSize: 12, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
                 onClick={() => {
                   setAddLaneDropdownOpen(false);
                   setAttachName("");
@@ -1418,8 +1417,13 @@ export function LanesPage() {
                   setAttachOpen(true);
                 }}
               >
-                <Link size={14} />
-                Add existing worktree as lane
+                <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-info">
+                  <Link size={14} />
+                </span>
+                <span>
+                  <span className="block font-medium">Add existing worktree as lane</span>
+                  <span className="block text-xs text-muted-fg/70">Track a worktree that already exists on disk.</span>
+                </span>
               </button>
             </div>
           ) : null}
