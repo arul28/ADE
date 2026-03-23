@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Warning } from "@phosphor-icons/react";
+import { Warning, Trash, Archive } from "@phosphor-icons/react";
 import type { AiConfig, CreatePrFromLaneArgs, LandResult, MergeMethod, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
@@ -552,6 +552,9 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
         </div>
       ) : null}
 
+      {/* Lane cleanup for merged/closed PRs */}
+      <LanePrCleanup pr={pr} lane={lane} loading={loading} />
+
       {descPreview && (
         <div className="mt-2 rounded-lg border border-accent/30 bg-accent/5 p-3 space-y-2">
           <div className="text-xs font-semibold text-fg">Description Preview</div>
@@ -696,6 +699,126 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function LanePrCleanup({ pr, lane, loading }: { pr: PrSummary; lane: { id: string; name: string; laneType: string; branchRef: string; status: { dirty: boolean } } | null; loading: boolean }) {
+  const navigate = useNavigate();
+  const [busy, setBusy] = React.useState(false);
+  const [done, setDone] = React.useState<string | null>(null);
+  const [cleanupError, setCleanupError] = React.useState<string | null>(null);
+  const [deleteMode, setDeleteMode] = React.useState<"worktree" | "local_branch" | "remote_branch">("local_branch");
+  const [confirmText, setConfirmText] = React.useState("");
+
+  if ((pr.state !== "merged" && pr.state !== "closed") || !lane || lane.laneType === "primary") return null;
+
+  const deletePhrase = `delete ${lane.name}`;
+  const confirmMatch = confirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
+
+  if (done) {
+    return (
+      <div className="mt-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2.5 text-xs flex items-center gap-2">
+        <span className="text-emerald-400">{done}</span>
+      </div>
+    );
+  }
+
+  const isDisabled = busy || loading;
+
+  const handleArchive = async () => {
+    setBusy(true);
+    setCleanupError(null);
+    try {
+      await window.ade.lanes.archive({ laneId: lane.id });
+      setDone("Lane archived");
+    } catch (err: unknown) {
+      setCleanupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirmMatch) return;
+    setBusy(true);
+    setCleanupError(null);
+    try {
+      await window.ade.lanes.delete({
+        laneId: lane.id,
+        deleteBranch: deleteMode !== "worktree",
+        deleteRemoteBranch: deleteMode === "remote_branch",
+        remoteName: "origin",
+        force: true,
+      });
+      setDone(deleteMode === "remote_branch" ? "Deleted + remote" : deleteMode === "local_branch" ? "Deleted + branch" : "Worktree removed");
+    } catch (err: unknown) {
+      setCleanupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 rounded-lg border border-border/10 bg-card/50 p-3 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-semibold text-fg">Manage Lane</div>
+        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`)}>
+          View in Lanes
+        </Button>
+      </div>
+
+      {/* Archive */}
+      <div className="flex items-center justify-between rounded-md border border-accent/15 bg-accent/5 px-2.5 py-2">
+        <span className="text-xs text-muted-fg">Archive (keep worktree + branches)</span>
+        <Button size="sm" variant="outline" className="h-6 px-2 text-xs" disabled={isDisabled} onClick={() => void handleArchive()}>
+          <Archive size={11} className="mr-1" /> Archive
+        </Button>
+      </div>
+
+      {/* Delete */}
+      <div className="rounded-md border border-red-500/15 bg-red-500/5 p-2.5 space-y-2">
+        <div className="text-xs font-semibold text-red-400">Delete</div>
+        <div className="grid grid-cols-3 gap-1">
+          {([
+            { value: "worktree" as const, label: "Worktree" },
+            { value: "local_branch" as const, label: "+ Branch" },
+            { value: "remote_branch" as const, label: "+ Remote" },
+          ]).map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setDeleteMode(opt.value)}
+              className={cn(
+                "rounded border px-2 py-1 text-[10px] transition-all",
+                deleteMode === opt.value
+                  ? "border-red-500/30 bg-red-500/10 font-semibold text-red-300"
+                  : "border-border/15 text-muted-fg hover:text-fg"
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div>
+          <label className="block text-[10px] text-muted-fg mb-0.5">
+            Type <span className="font-semibold text-red-400">{deletePhrase}</span>
+          </label>
+          <input
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            className={cn(
+              "h-6 w-full rounded border bg-surface-recessed px-2 font-mono text-[10px] text-fg outline-none",
+              confirmMatch ? "border-red-500/40" : "border-border/15"
+            )}
+          />
+        </div>
+        <Button size="sm" variant="primary" className="h-6 w-full text-xs bg-red-600 hover:bg-red-500" disabled={isDisabled || !confirmMatch} onClick={() => void handleDelete()}>
+          <Trash size={11} className="mr-1" /> {busy ? "Deleting..." : "Delete"}
+        </Button>
+      </div>
+
+      {cleanupError && <div className="text-xs text-red-300 bg-red-950/20 rounded p-1.5">{cleanupError}</div>}
     </div>
   );
 }

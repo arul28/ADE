@@ -6,7 +6,7 @@ import {
   GitBranch, GitMerge, GitCommit, GithubLogo, CheckCircle, XCircle, Circle,
   CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code, ClockCounterClockwise,
   PencilSimple, X, Check, ArrowsClockwise, Warning, Play, Rocket, Tag,
-  CaretDown, CaretRight, UserCircle, DotsThreeVertical, Robot,
+  CaretDown, CaretRight, UserCircle, DotsThreeVertical, Robot, Trash, Archive,
 } from "@phosphor-icons/react";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
@@ -631,6 +631,7 @@ export function PrDetailPane({ pr, status, checks, reviews, comments, detailBusy
               return lane?.status?.behind ?? 0;
             })()}
             activity={activity}
+            lanes={lanes}
           />
         )}
         {activeTab === "files" && (
@@ -870,10 +871,11 @@ type OverviewTabProps = {
   onOpenRebaseTab?: () => void;
   localBehindCount: number;
   activity: PrActivityEvent[];
+  lanes: LaneSummary[];
 };
 
 function OverviewTab(props: OverviewTabProps) {
-  const { pr, detail, status, checks, reviews, comments, detailBusy, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity } = props;
+  const { pr, detail, status, checks, reviews, comments, detailBusy, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;
   const [checksExpanded, setChecksExpanded] = React.useState(false);
   const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(mergeMethod);
 
@@ -904,6 +906,9 @@ function OverviewTab(props: OverviewTabProps) {
     <div style={{ display: "flex", gap: 0, height: "100%" }}>
       {/* Main content */}
       <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+
+        {/* ---- Lane Manage Panel (shown when PR is merged/closed and lane still exists) ---- */}
+        <LaneCleanupSection pr={pr} lanes={lanes} actionBusy={actionBusy} onNavigate={props.onNavigate} />
 
         {/* ---- Merge Status Bar ---- */}
         <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0 }}>
@@ -1456,6 +1461,7 @@ function OverviewTab(props: OverviewTabProps) {
               </button>
             </div>
           )}
+          {/* Lane cleanup moved to top of overview */}
         </div>
       </div>
 
@@ -2169,6 +2175,216 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ================================================================
+// LANE MANAGE PANEL (shown when PR is merged/closed and lane still exists)
+// Same options as ManageLaneDialog in the lanes tab.
+// ================================================================
+
+function LaneCleanupSection({ pr, lanes, actionBusy, onNavigate }: {
+  pr: PrWithConflicts;
+  lanes: LaneSummary[];
+  actionBusy: boolean;
+  onNavigate: (path: string) => void;
+}) {
+  const lane = lanes.find((l) => l.id === pr.laneId);
+  const [busy, setBusy] = React.useState(false);
+  const [done, setDone] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [deleteMode, setDeleteMode] = React.useState<"worktree" | "local_branch" | "remote_branch">("local_branch");
+  const [remoteName, setRemoteName] = React.useState("origin");
+  const [forceDelete, setForceDelete] = React.useState(false);
+  const [confirmText, setConfirmText] = React.useState("");
+
+  if ((pr.state !== "merged" && pr.state !== "closed") || !lane) return null;
+  if (lane.laneType === "primary") return null;
+
+  const isAttached = lane.laneType === "attached";
+  const deletePhrase = `delete ${lane.name}`;
+  const confirmMatch = confirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
+
+  if (done) {
+    return (
+      <div style={{ ...cardStyle(), flexShrink: 0, borderColor: `${COLORS.success}30`, background: `${COLORS.success}08` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CheckCircle size={14} weight="fill" style={{ color: COLORS.success }} />
+          <span style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.success }}>{done}</span>
+        </div>
+      </div>
+    );
+  }
+
+  const isDisabled = busy || actionBusy;
+
+  const handleArchive = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await window.ade.lanes.archive({ laneId: lane.id });
+      setDone("Lane archived successfully");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirmMatch) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await window.ade.lanes.delete({
+        laneId: lane.id,
+        deleteBranch: deleteMode !== "worktree",
+        deleteRemoteBranch: deleteMode === "remote_branch",
+        remoteName: remoteName.trim() || "origin",
+        force: forceDelete,
+      });
+      setDone(
+        deleteMode === "remote_branch" ? "Lane deleted with local + remote branches"
+        : deleteMode === "local_branch" ? "Lane deleted with local branch"
+        : "Lane worktree removed"
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: pr.state === "merged" ? `${COLORS.success}25` : COLORS.border }}>
+      {/* Header */}
+      <div style={{
+        padding: "12px 16px",
+        borderBottom: `1px solid ${COLORS.border}`,
+        background: pr.state === "merged" ? `${COLORS.success}06` : "transparent",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <GitBranch size={14} style={{ color: pr.state === "merged" ? COLORS.success : COLORS.textMuted }} />
+          <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
+            Manage Lane: {lane.name}
+          </span>
+          <span style={inlineBadge(pr.state === "merged" ? COLORS.success : COLORS.textMuted, { padding: "1px 8px", fontSize: 10 })}>
+            {pr.state === "merged" ? "PR merged" : "PR closed"}
+          </span>
+          {lane.status?.dirty && (
+            <span style={inlineBadge(COLORS.warning, { padding: "1px 8px", fontSize: 10 })}>dirty</span>
+          )}
+        </div>
+        <button type="button" onClick={() => onNavigate(`/lanes?laneId=${encodeURIComponent(pr.laneId)}`)} style={{ ...outlineButton({ height: 26, padding: "0 10px", fontSize: 11 }), color: COLORS.textMuted }}>
+          View in Lanes
+        </button>
+      </div>
+
+      <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* Lane info */}
+        <div style={{ display: "flex", gap: 16, fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+          <span>Branch: <span style={{ color: COLORS.textPrimary }}>{lane.branchRef}</span></span>
+          <span>Type: <span style={{ color: COLORS.textPrimary }}>{lane.laneType}</span></span>
+        </div>
+
+        {/* Archive */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: `${COLORS.accent}06`, border: `1px solid ${COLORS.accent}18`, borderRadius: 8 }}>
+          <div>
+            <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>Archive</div>
+            <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>
+              Hide from ADE without deleting worktree or branches
+            </div>
+          </div>
+          <button type="button" disabled={isDisabled} onClick={() => void handleArchive()} style={outlineButton({ height: 32, padding: "0 16px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}>
+            <Archive size={13} /> Archive
+          </button>
+        </div>
+
+        {/* Delete */}
+        <div style={{ padding: "14px", background: `${COLORS.danger}06`, border: `1px solid ${COLORS.danger}18`, borderRadius: 8 }}>
+          <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.danger, marginBottom: 10 }}>
+            {isAttached ? "Detach / Delete" : "Delete Lane"}
+          </div>
+
+          {lane.status?.dirty && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", marginBottom: 10, background: `${COLORS.warning}0A`, border: `1px solid ${COLORS.warning}20`, borderRadius: 6, fontSize: 11, color: COLORS.warning, fontFamily: SANS_FONT }}>
+              <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />
+              This lane has uncommitted changes.
+            </div>
+          )}
+
+          {/* Delete mode radio buttons */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+            {([
+              { value: "worktree" as const, label: isAttached ? "Detach only" : "Worktree only" },
+              { value: "local_branch" as const, label: isAttached ? "Detach + local branch" : "+ local branch" },
+              { value: "remote_branch" as const, label: isAttached ? "Detach + local + remote" : "+ local + remote" },
+            ]).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setDeleteMode(opt.value)}
+                style={{
+                  padding: "8px 10px", fontSize: 11, fontFamily: SANS_FONT,
+                  background: deleteMode === opt.value ? `${COLORS.danger}14` : "rgba(255,255,255,0.03)",
+                  border: `1px solid ${deleteMode === opt.value ? `${COLORS.danger}40` : COLORS.border}`,
+                  borderRadius: 6, cursor: "pointer", textAlign: "left",
+                  color: deleteMode === opt.value ? COLORS.danger : COLORS.textSecondary,
+                  fontWeight: deleteMode === opt.value ? 600 : 400,
+                  transition: "all 100ms ease",
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Remote name input */}
+          {deleteMode === "remote_branch" && (
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ display: "block", fontSize: 11, color: COLORS.textMuted, fontFamily: SANS_FONT, marginBottom: 4 }}>Remote name</label>
+              <input value={remoteName} onChange={(e) => setRemoteName(e.target.value)} placeholder="origin" style={{
+                width: "100%", height: 30, padding: "0 10px", fontSize: 12, fontFamily: MONO_FONT,
+                background: "rgba(255,255,255,0.03)", border: `1px solid ${COLORS.border}`, borderRadius: 6,
+                color: COLORS.textPrimary, outline: "none",
+              }} />
+            </div>
+          )}
+
+          {/* Force delete */}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 11, color: COLORS.textSecondary, fontFamily: SANS_FONT, cursor: "pointer" }}>
+            <input type="checkbox" checked={forceDelete} onChange={(e) => setForceDelete(e.target.checked)} />
+            Force delete (skip safety checks)
+          </label>
+
+          {/* Confirmation */}
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ display: "block", fontSize: 11, color: COLORS.textMuted, fontFamily: SANS_FONT, marginBottom: 4 }}>
+              Type <span style={{ fontWeight: 600, color: COLORS.danger }}>{deletePhrase}</span> to confirm
+            </label>
+            <input value={confirmText} onChange={(e) => setConfirmText(e.target.value)} style={{
+              width: "100%", height: 30, padding: "0 10px", fontSize: 12, fontFamily: MONO_FONT,
+              background: "rgba(255,255,255,0.03)", border: `1px solid ${confirmMatch ? `${COLORS.danger}60` : COLORS.border}`, borderRadius: 6,
+              color: COLORS.textPrimary, outline: "none",
+            }} />
+          </div>
+
+          {error && (
+            <div style={{ marginBottom: 10, padding: "8px 10px", background: `${COLORS.danger}0A`, border: `1px solid ${COLORS.danger}20`, borderRadius: 6, fontSize: 11, color: COLORS.danger, fontFamily: SANS_FONT }}>
+              {error}
+            </div>
+          )}
+
+          <button type="button" disabled={isDisabled || !confirmMatch} onClick={() => void handleDelete()} style={{
+            ...primaryButton({ height: 32, padding: "0 20px", opacity: (isDisabled || !confirmMatch) ? 0.4 : 1 }),
+            background: COLORS.danger,
+          }}>
+            <Trash size={13} /> {busy ? "Deleting..." : "Delete Lane"}
+          </button>
+        </div>
       </div>
     </div>
   );
