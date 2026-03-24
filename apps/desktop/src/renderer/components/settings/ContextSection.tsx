@@ -238,7 +238,9 @@ export function ContextSection() {
 
           {isContextGenerationActive(docsStatus?.generation) ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.info, padding: "8px 12px", borderRadius: 8, background: `${COLORS.info}08`, border: `1px solid ${COLORS.info}18` }}>
-              Context docs are being generated. This may take a minute depending on your model and project size.
+              {docsStatus?.generation.state === "pending"
+                ? "Context doc generation is queued and will start shortly."
+                : "Context docs are being generated. This may take a minute depending on your model and project size."}
               {describeGenerationSource(docsStatus?.generation) ? ` ${describeGenerationSource(docsStatus?.generation)}` : ""}
             </div>
           ) : null}
@@ -258,7 +260,7 @@ export function ContextSection() {
               const hasContent = doc.exists && doc.sizeBytes >= MIN_DOC_SIZE;
               const statusColor = isGenerating ? COLORS.info : hasContent ? COLORS.success : COLORS.warning;
               const statusText = isGenerating
-                ? "generating..."
+                ? (docsStatus.generation.state === "pending" ? "queued..." : "generating...")
                 : hasContent
                   ? `ready \u00b7 updated ${relativeTime(doc.updatedAt)}`
                   : doc.exists

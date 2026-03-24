@@ -72,7 +72,8 @@ function isContextGenerationActive(status: ContextStatus["generation"] | null | 
 }
 
 function hasReadyContextDocs(status: ContextStatus | null): boolean {
-  return status?.docs?.every((doc) => doc.exists && doc.sizeBytes >= 200) ?? false;
+  const docs = status?.docs;
+  return !!docs?.length && docs.every((doc) => doc.exists && doc.sizeBytes >= 200);
 }
 
 export function ProjectSetupPage() {
@@ -277,7 +278,9 @@ export function ProjectSetupPage() {
             {contextLoading
               ? "Checking status..."
               : isGenerating
-                ? "Generating docs — this can take a minute or two depending on your model and repo size."
+                ? (contextStatus?.generation.state === "pending"
+                  ? "Doc generation is queued and will start shortly."
+                  : "Generating docs — this can take a minute or two depending on your model and repo size.")
                 : contextStatus?.generation.state === "failed"
                   ? `Last generation failed${contextStatus.generation.error ? `: ${contextStatus.generation.error}` : "."}`
                   : hasReadyContextDocs(contextStatus)
