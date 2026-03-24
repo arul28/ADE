@@ -945,14 +945,16 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             return isBlock ? (
               <code className="font-mono text-[11px] text-fg/82">{children}</code>
             ) : pathIsClickable ? (
-              <button
-                type="button"
-                className="inline-flex items-center rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 font-mono text-[11px] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100"
+              <span
+                role="button"
+                tabIndex={0}
+                className="inline-flex cursor-pointer items-center rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 font-mono text-[11px] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100"
                 onClick={() => openWorkspacePath(workspacePath!)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openWorkspacePath(workspacePath!); } }}
                 title="Open file in Files"
               >
                 {children}
-              </button>
+              </span>
             ) : (
               <code className="rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[11px] text-fg/90">{children}</code>
             );

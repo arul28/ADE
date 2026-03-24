@@ -562,6 +562,8 @@ app.whenReady().then(async () => {
     let rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null = null;
     let autoRebaseService: ReturnType<typeof createAutoRebaseService> | null = null;
     let humanWorkDigestService: ReturnType<typeof createHumanWorkDigestService> | null = null;
+    let prServiceRef: ReturnType<typeof createPrService> | null = null;
+    let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
 
@@ -605,6 +607,11 @@ app.whenReady().then(async () => {
       void autoRebaseService
         ?.onHeadChanged({ laneId, reason: args.reason, preHeadSha: prev, postHeadSha })
         .catch(() => {});
+
+      const pr = prServiceRef?.getForLane(laneId);
+      if (pr) {
+        prServiceRef?.markHotRefresh([pr.id]);
+      }
     };
 
     const laneService = createLaneService({
@@ -797,10 +804,14 @@ app.whenReady().then(async () => {
       projectConfigService,
       conflictService,
       rebaseSuggestionService,
+      onHotRefreshChanged: () => {
+        prPollingServiceRef?.poke();
+      },
       openExternal: async (url) => {
         await shell.openExternal(url);
       }
     });
+    prServiceRef = prService;
 
     let knowledgeCaptureServiceRef: ReturnType<typeof createKnowledgeCaptureService> | null = null;
     const prPollingService = createPrPollingService({
@@ -808,24 +819,30 @@ app.whenReady().then(async () => {
       prService,
       projectConfigService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
-      onPullRequestsChanged: ({ changedPrs, changes }) => Promise.all([
-        ...changedPrs.map((pr) =>
-          knowledgeCaptureServiceRef?.capturePrFeedback({
-            prId: pr.id,
-            prNumber: pr.githubPrNumber ?? null,
-          }) ?? Promise.resolve()
-        ),
-        ...changes.map(({ pr, previousState, previousChecksStatus, previousReviewStatus }) => {
-          automationService?.onPullRequestChanged?.({
-            pr,
-            previousState,
-            previousChecksStatus,
-            previousReviewStatus,
-          });
-          return Promise.resolve();
-        }),
-      ]).then(() => undefined),
+      onPullRequestsChanged: async ({ changedPrs, changes }) => {
+        if (changedPrs.length > 0) {
+          prService.markHotRefresh(changedPrs.map((pr) => pr.id));
+        }
+        await Promise.all([
+          ...changedPrs.map((pr) =>
+            knowledgeCaptureServiceRef?.capturePrFeedback({
+              prId: pr.id,
+              prNumber: pr.githubPrNumber ?? null,
+            }) ?? Promise.resolve()
+          ),
+          ...changes.map(({ pr, previousState, previousChecksStatus, previousReviewStatus }) => {
+            automationService?.onPullRequestChanged?.({
+              pr,
+              previousState,
+              previousChecksStatus,
+              previousReviewStatus,
+            });
+            return Promise.resolve();
+          }),
+        ]);
+      },
     });
+    prPollingServiceRef = prPollingService;
 
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
     let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
@@ -842,6 +859,15 @@ app.whenReady().then(async () => {
       conflictService,
       emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
       onStateChanged: (state) => {
+        const hotPrIds = new Set<string>();
+        const currentEntry = state.entries[state.currentPosition];
+        const nextEntry = state.entries[state.currentPosition + 1];
+        if (state.activePrId) hotPrIds.add(state.activePrId);
+        if (currentEntry?.prId) hotPrIds.add(currentEntry.prId);
+        if (nextEntry?.prId) hotPrIds.add(nextEntry.prId);
+        if (hotPrIds.size > 0) {
+          prServiceRef?.markHotRefresh(Array.from(hotPrIds));
+        }
         aiOrchestratorServiceRef?.onQueueLandingStateChanged?.(state);
       }
     });

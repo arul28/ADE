@@ -937,7 +937,7 @@ declare global {
         linkToLane: (args: LinkPrToLaneArgs) => Promise<PrSummary>;
         getForLane: (laneId: string) => Promise<PrSummary | null>;
         listAll: () => Promise<PrSummary[]>;
-        refresh: (args?: { prId?: string }) => Promise<PrSummary[]>;
+        refresh: (args?: { prId?: string; prIds?: string[] }) => Promise<PrSummary[]>;
         getStatus: (prId: string) => Promise<PrStatus>;
         getChecks: (prId: string) => Promise<PrCheck[]>;
         getComments: (prId: string) => Promise<PrComment[]>;

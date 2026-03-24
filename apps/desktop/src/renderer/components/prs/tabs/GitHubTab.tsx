@@ -18,32 +18,6 @@ type GitHubTabProps = {
 };
 
 type GitHubFilter = "open" | "closed" | "merged" | "all";
-const GITHUB_SNAPSHOT_TTL_MS = 120_000;
-
-let cachedGitHubSnapshot: GitHubPrSnapshot | null = null;
-let cachedGitHubSnapshotAt = 0;
-let inFlightGitHubSnapshot: Promise<GitHubPrSnapshot> | null = null;
-
-function hasFreshGitHubSnapshot(): boolean {
-  return cachedGitHubSnapshot != null && Date.now() - cachedGitHubSnapshotAt < GITHUB_SNAPSHOT_TTL_MS;
-}
-
-async function fetchGitHubSnapshot(options?: { force?: boolean }): Promise<GitHubPrSnapshot> {
-  if (!options?.force && hasFreshGitHubSnapshot()) {
-    return cachedGitHubSnapshot!;
-  }
-  if (inFlightGitHubSnapshot) {
-    return inFlightGitHubSnapshot;
-  }
-  inFlightGitHubSnapshot = window.ade.prs.getGitHubSnapshot({ force: options?.force === true }).then((snapshot) => {
-    cachedGitHubSnapshot = snapshot;
-    cachedGitHubSnapshotAt = Date.now();
-    return snapshot;
-  }).finally(() => {
-    inFlightGitHubSnapshot = null;
-  });
-  return inFlightGitHubSnapshot;
-}
 
 function formatTimestampLabel(iso: string | null): string {
   if (!iso) return "---";
@@ -367,8 +341,8 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
     detailBusy,
   } = usePrs();
 
-  const [snapshot, setSnapshot] = React.useState<GitHubPrSnapshot | null>(() => cachedGitHubSnapshot);
-  const [loading, setLoading] = React.useState(() => cachedGitHubSnapshot == null);
+  const [snapshot, setSnapshot] = React.useState<GitHubPrSnapshot | null>(null);
+  const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [filter, setFilter] = React.useState<GitHubFilter>("open");
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
@@ -379,6 +353,13 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
   const [searchQuery, setSearchQuery] = React.useState("");
   const lastHandledSelectedPrIdRef = React.useRef<string | null | undefined>(undefined);
   const pendingSelectedItemIdRef = React.useRef<string | null>(null);
+  const snapshotRef = React.useRef<GitHubPrSnapshot | null>(null);
+  const hasInitializedSelectionRef = React.useRef(false);
+  const lastPrFingerprintRef = React.useRef<string>("");
+  const hotRefreshUntilRef = React.useRef(0);
+  const hotRefreshTimerRef = React.useRef<number | null>(null);
+  const inFlightSnapshotRef = React.useRef<Promise<GitHubPrSnapshot> | null>(null);
+  snapshotRef.current = snapshot;
 
   /* Build a lookup from linkedPrId -> PrSummary for CI/review indicators */
   const prsByIdMap = React.useMemo(() => {
@@ -390,33 +371,88 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
   }, [prs]);
 
   const loadSnapshot = React.useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
+    if (inFlightSnapshotRef.current) return inFlightSnapshotRef.current;
     if (!options?.silent) {
-      setLoading((prev) => options?.force || snapshot == null ? true : prev);
+      setLoading((prev) => options?.force || snapshotRef.current == null ? true : prev);
     }
     setError(null);
-    try {
-      const next = await fetchGitHubSnapshot({ force: options?.force });
-      setSnapshot(next);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (!options?.silent) {
-        setLoading(false);
+    const pending = window.ade.prs.getGitHubSnapshot({ force: options?.force === true })
+      .then((next) => {
+        setSnapshot(next);
+        return next;
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        return snapshotRef.current as GitHubPrSnapshot;
+      })
+      .finally(() => {
+        inFlightSnapshotRef.current = null;
+        if (!options?.silent) {
+          setLoading(false);
+        }
+      });
+    inFlightSnapshotRef.current = pending;
+    return pending;
+  }, []);
+
+  const startHotRefreshWindow = React.useCallback(() => {
+    const now = Date.now();
+    hotRefreshUntilRef.current = Math.max(hotRefreshUntilRef.current, now + 180_000);
+    if (hotRefreshTimerRef.current != null) return;
+
+    const schedule = () => {
+      const remaining = hotRefreshUntilRef.current - Date.now();
+      if (remaining <= 0) {
+        hotRefreshTimerRef.current = null;
+        return;
       }
-    }
-  }, [snapshot]);
+      const elapsed = 180_000 - remaining;
+      const delay = elapsed < 60_000 ? 5_000 : 15_000;
+      hotRefreshTimerRef.current = window.setTimeout(() => {
+        hotRefreshTimerRef.current = null;
+        void loadSnapshot({ force: true, silent: true }).finally(() => {
+          schedule();
+        });
+      }, delay);
+    };
+
+    schedule();
+  }, [loadSnapshot]);
 
   React.useEffect(() => {
-    if (cachedGitHubSnapshot) {
-      setSnapshot(cachedGitHubSnapshot);
-      setLoading(false);
-      if (!hasFreshGitHubSnapshot()) {
-        void loadSnapshot({ silent: true });
+    void loadSnapshot();
+    return () => {
+      if (hotRefreshTimerRef.current != null) {
+        window.clearTimeout(hotRefreshTimerRef.current);
+        hotRefreshTimerRef.current = null;
       }
+      hotRefreshUntilRef.current = 0;
+    };
+  }, [loadSnapshot]);
+
+  React.useEffect(() => {
+    const nextFingerprint = JSON.stringify(
+      prs
+        .map((pr) => [
+          pr.id,
+          pr.state,
+          pr.checksStatus,
+          pr.reviewStatus,
+          pr.title,
+          pr.githubPrNumber,
+          pr.updatedAt,
+        ])
+        .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+    );
+    if (!lastPrFingerprintRef.current) {
+      lastPrFingerprintRef.current = nextFingerprint;
       return;
     }
-    void loadSnapshot();
-  }, [loadSnapshot]);
+    if (lastPrFingerprintRef.current === nextFingerprint) return;
+    lastPrFingerprintRef.current = nextFingerprint;
+    startHotRefreshWindow();
+    void loadSnapshot({ force: true, silent: true });
+  }, [loadSnapshot, prs, startHotRefreshWindow]);
 
   const matchesSearch = React.useCallback((item: GitHubPrListItem) => {
     if (!searchQuery.trim()) return true;
@@ -470,6 +506,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
       setFilter(linkedItem.state === "merged" ? "merged" : linkedItem.state === "closed" ? "closed" : "open");
     }
     setSelectedItemId(linkedItem.id);
+    hasInitializedSelectionRef.current = true;
   }, [snapshot, selectedPrId, filter]);
 
   React.useEffect(() => {
@@ -484,10 +521,15 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
 
     const visibleItems = [...repoItems, ...externalItems];
     if (selectedItemId && visibleItems.some((item) => item.id === selectedItemId)) return;
-    const next = visibleItems[0] ?? null;
-    setSelectedItemId(next?.id ?? null);
-    onSelectPr(next?.linkedPrId ?? null);
-  }, [snapshot, repoItems, externalItems, selectedItemId, selectedPrId, onSelectPr]);
+    if (!hasInitializedSelectionRef.current) {
+      const next = visibleItems[0] ?? null;
+      if (next) {
+        hasInitializedSelectionRef.current = true;
+        setSelectedItemId(next.id);
+        onSelectPr(next.linkedPrId ?? null);
+      }
+    }
+  }, [snapshot, repoItems, externalItems, selectedItemId, onSelectPr]);
 
   const selectedItem = React.useMemo(() => {
     const allItems = [...(snapshot?.repoPullRequests ?? []), ...(snapshot?.externalPullRequests ?? [])];
@@ -510,6 +552,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
 
   const handleSync = React.useCallback(async () => {
     setSyncing(true);
+    startHotRefreshWindow();
     try {
       await Promise.all([
         onRefreshAll().catch(() => {}),
@@ -518,9 +561,10 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
     } finally {
       setSyncing(false);
     }
-  }, [loadSnapshot, onRefreshAll]);
+  }, [loadSnapshot, onRefreshAll, startHotRefreshWindow]);
 
   const handleSelectItem = React.useCallback((item: GitHubPrListItem) => {
+    hasInitializedSelectionRef.current = true;
     setSelectedItemId(item.id);
     onSelectPr(item.linkedPrId ?? null);
     setLinkLaneId("");

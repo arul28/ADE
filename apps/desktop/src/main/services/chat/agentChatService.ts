@@ -4622,6 +4622,7 @@ export function createAgentChatService(args: {
       // When enabled, the SDK defers tool definitions and loads them on-demand
       // via the ToolSearch tool, keeping the context window lean.
       opts.env = {
+        ...process.env as Record<string, string>,
         ...opts.env as Record<string, string> | undefined,
         ENABLE_TOOL_SEARCH: "auto",
       };

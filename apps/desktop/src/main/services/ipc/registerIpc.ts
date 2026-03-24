@@ -4267,7 +4267,7 @@ export function registerIpc({
     return ctx.prService.listAll();
   });
 
-  ipcMain.handle(IPC.prsRefresh, async (_event, arg: { prId?: string } = {}): Promise<PrSummary[]> => {
+  ipcMain.handle(IPC.prsRefresh, async (_event, arg: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> => {
     const ctx = ensurePrPolling();
     return await ctx.prService.refresh(arg);
   });

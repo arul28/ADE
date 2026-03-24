@@ -151,7 +151,7 @@ describe("GitHubTab", () => {
     return { onSelectPr, onOpenQueueView };
   }
 
-  it("lets you return to the open filter after a merged PR was selected", async () => {
+  it("does not auto-jump to a different PR when switching filters", async () => {
     const user = userEvent.setup();
     const { onSelectPr } = renderTab({ selectedPrId: "pr-merged" });
 
@@ -159,8 +159,7 @@ describe("GitHubTab", () => {
 
     await user.click(screen.getByRole("button", { name: /^open/i }));
 
-    await waitFor(() => expect(onSelectPr).toHaveBeenLastCalledWith("pr-open"));
-    await waitFor(() => expect(screen.getByText("Open PR")).toBeTruthy());
+    await waitFor(() => expect(onSelectPr).toHaveBeenLastCalledWith(null));
     expect(screen.queryByText("Merged PR")).toBeNull();
   });
 

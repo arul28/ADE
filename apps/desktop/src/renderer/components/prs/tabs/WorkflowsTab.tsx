@@ -9,6 +9,7 @@ import {
   Sparkle,
   Trash,
 } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
 import { EmptyState } from "../../ui/EmptyState";
 import type {
   IntegrationProposal,
@@ -17,6 +18,7 @@ import type {
   PrWithConflicts,
 } from "../../../../shared/types";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
 import { QueueTab } from "./QueueTab";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
@@ -137,11 +139,16 @@ function buildQueueWorkflowGroups(args: {
 
 function QueueHistoryPanel({
   groups,
+  lanes,
   onOpenGitHubTab,
 }: {
   groups: QueueGroupSummary[];
+  lanes: LaneSummary[];
   onOpenGitHubTab: (prId: string) => void;
 }) {
+  const navigate = useNavigate();
+  const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane] as const)), [lanes]);
+
   if (!groups.length) {
     return <EmptyState title="No queue history" description="Completed and cancelled queue workflows will appear here." />;
   }
@@ -166,20 +173,28 @@ function QueueHistoryPanel({
           </div>
           <div style={{ display: "grid", gap: 10 }}>
             {group.members.map((member) => (
-              <div key={member.prId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.04)" }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {member.pr?.title ?? member.laneName}
+              <div key={member.prId} style={{ display: "flex", flexDirection: "column", gap: 10, padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.04)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {member.pr?.title ?? member.laneName}
+                    </div>
+                    <div style={{ marginTop: 3, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                      {member.laneName}
+                    </div>
                   </div>
-                  <div style={{ marginTop: 3, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                    {member.laneName}
-                  </div>
+                  {member.pr ? (
+                    <button type="button" onClick={() => onOpenGitHubTab(member.prId)} style={outlineButton({ height: 30, borderColor: theme.border, color: theme.color, background: theme.bgSubtle })}>
+                      <GithubLogo size={14} /> Open PR
+                    </button>
+                  ) : null}
                 </div>
-                {member.pr ? (
-                  <button type="button" onClick={() => onOpenGitHubTab(member.prId)} style={outlineButton({ height: 30, borderColor: theme.border, color: theme.color, background: theme.bgSubtle })}>
-                    <GithubLogo size={14} /> Open PR
-                  </button>
-                ) : null}
+                <PrLaneCleanupBanner
+                  pr={member.pr}
+                  lane={laneById.get(member.laneId) ?? null}
+                  compact
+                  onNavigate={(path) => navigate(path)}
+                />
               </div>
             ))}
           </div>
@@ -814,7 +829,7 @@ export function WorkflowsTab({
               onRefresh={refreshWorkflows}
             />
           ) : (
-            <QueueHistoryPanel groups={queueByView.history} onOpenGitHubTab={onOpenGitHubTab} />
+            <QueueHistoryPanel groups={queueByView.history} lanes={lanes} onOpenGitHubTab={onOpenGitHubTab} />
           )
         ) : null}
 

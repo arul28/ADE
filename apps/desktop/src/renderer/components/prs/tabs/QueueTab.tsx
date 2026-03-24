@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowsDownUp,
   ArrowSquareOut,
@@ -28,6 +29,7 @@ import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { usePrs } from "../state/PrsContext";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
+import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
 import {
   buildManualLandWarnings,
   findQueueMemberSelection,
@@ -296,6 +298,7 @@ export function QueueTab({
   onSelectGroup,
   onRefresh,
 }: QueueTabProps) {
+  const navigate = useNavigate();
   const {
     rebaseNeeds,
     queueStates,
@@ -334,6 +337,10 @@ export function QueueTab({
   const currentMember = selection.currentMember;
   const currentIndex = selection.currentIndex;
   const nextMember = selection.nextMember;
+  const currentLane = React.useMemo(
+    () => (currentMember ? lanes.find((lane) => lane.id === currentMember.laneId) ?? null : null),
+    [currentMember, lanes],
+  );
 
   const [currentPrStatus, setCurrentPrStatus] = React.useState<PrStatus | null>(null);
   const [statusLoading, setStatusLoading] = React.useState(false);
@@ -383,7 +390,13 @@ export function QueueTab({
     return () => {
       cancelled = true;
     };
-  }, [currentMember?.prId, selectedGroup?.landingState?.updatedAt]);
+  }, [
+    currentMember?.pr?.checksStatus,
+    currentMember?.pr?.reviewStatus,
+    currentMember?.pr?.state,
+    currentMember?.prId,
+    selectedGroup?.landingState?.updatedAt,
+  ]);
 
   const queueEntryByPrId = React.useMemo(() => {
     const entries = selectedGroup?.landingState?.entries ?? [];
@@ -1133,6 +1146,14 @@ export function QueueTab({
                 </div>
               </div>
             </div>
+
+            <PrLaneCleanupBanner
+              pr={currentMember?.pr ?? null}
+              lane={currentLane}
+              actionBusy={landBusy || queueActionBusy != null || reorderBusy}
+              compact
+              onNavigate={(path) => navigate(path)}
+            />
 
             {showLandWarnings && manualLandWarnings.length > 0 ? (
               <div style={{ border: "1px solid rgba(245,158,11,0.24)", background: "rgba(245,158,11,0.08)", padding: 12 }}>

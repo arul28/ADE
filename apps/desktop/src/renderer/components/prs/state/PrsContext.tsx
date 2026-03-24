@@ -153,6 +153,27 @@ function jsonEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+function diffPrIds(prev: PrWithConflicts[], next: PrWithConflicts[]): string[] {
+  const prevById = new Map(prev.map((pr) => [pr.id, pr] as const));
+  const nextById = new Map(next.map((pr) => [pr.id, pr] as const));
+  const changed: string[] = [];
+
+  for (const pr of next) {
+    const previous = prevById.get(pr.id);
+    if (!previous || !jsonEqual(previous, pr)) {
+      changed.push(pr.id);
+    }
+  }
+
+  for (const pr of prev) {
+    if (!nextById.has(pr.id)) {
+      changed.push(pr.id);
+    }
+  }
+
+  return [...new Set(changed)];
+}
+
 export function PrsProvider({ children }: { children: React.ReactNode }) {
   const [activeTab, setActiveTab] = useState<PrTab>(readInitialTab);
   const [prs, setPrs] = useState<PrWithConflicts[]>([]);
@@ -226,9 +247,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Concurrency guard for refresh
   const refreshInFlight = React.useRef(false);
-  const prsRefreshTimer = React.useRef<number | null>(null);
   const prsRef = React.useRef<PrWithConflicts[]>([]);
   prsRef.current = prs;
+  const mergeContextByPrIdRef = React.useRef<Record<string, PrMergeContext>>({});
+  mergeContextByPrIdRef.current = mergeContextByPrId;
 
   // Refs for detail polling
   const selectedPrIdRef = React.useRef<string | null>(null);
@@ -264,6 +286,23 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Track whether the initial data load has completed
   const initialLoadDone = React.useRef(false);
 
+  const refreshQueueStates = useCallback(async (groupIds: string[]) => {
+    const uniqueGroupIds = [...new Set(groupIds.map((groupId) => String(groupId ?? "").trim()).filter(Boolean))];
+    if (uniqueGroupIds.length === 0) return;
+    await Promise.all(uniqueGroupIds.map(async (groupId) => {
+      try {
+        const queueState = await window.ade.prs.getQueueState(groupId);
+        if (!queueState) return;
+        setQueueStates((prev) => {
+          const next = { ...prev, [groupId]: queueState };
+          return jsonEqual(prev, next) ? prev : next;
+        });
+      } catch (err) {
+        console.warn("[PrsContext] Failed to refresh queue state for group:", groupId, err);
+      }
+    }));
+  }, []);
+
   // Core refresh (guarded against concurrent calls)
   const refresh = useCallback(async () => {
     if (refreshInFlight.current) return;
@@ -274,6 +313,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     if (isInitial) setLoading(true);
     setError(null);
     try {
+      await window.ade.prs.refresh().catch(() => {});
       const shouldLoadWorkflowState = activeTab !== "normal";
       const [prList, laneList, queueStateList] = await Promise.all([
         window.ade.prs.listWithConflicts(),
@@ -282,7 +322,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
           ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
           : Promise.resolve([] as QueueLandingState[]),
       ]);
-      const prsChanged = !jsonEqual(prsRef.current, prList);
+      const changedPrIds = diffPrIds(prsRef.current, prList);
 
       // Stable-reference updates: only replace state when data actually changed
       // to avoid unnecessary re-render cascades in child components.
@@ -300,14 +340,24 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         return prev;
       });
 
-      if (prsChanged) {
-        setMergeContextByPrId((prev) => {
-          const allowed = new Set(prList.map((pr) => pr.id));
-          const next = Object.fromEntries(
-            Object.entries(prev).filter(([prId]) => allowed.has(prId))
-          ) as Record<string, PrMergeContext>;
-          return jsonEqual(prev, next) ? prev : next;
-        });
+      setMergeContextByPrId((prev) => {
+        const allowed = new Set(prList.map((pr) => pr.id));
+        const next = Object.fromEntries(
+          Object.entries(prev).filter(([prId]) => allowed.has(prId))
+        ) as Record<string, PrMergeContext>;
+        return jsonEqual(prev, next) ? prev : next;
+      });
+
+      if (changedPrIds.length > 0) {
+        void refreshMergeContexts(changedPrIds);
+        const affectedQueueGroupIds = new Set<string>();
+        for (const prId of changedPrIds) {
+          const context = mergeContextByPrIdRef.current[prId];
+          if (context?.groupType === "queue" && context.groupId) {
+            affectedQueueGroupIds.add(context.groupId);
+          }
+        }
+        void refreshQueueStates([...affectedQueueGroupIds]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -316,7 +366,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       initialLoadDone.current = true;
       refreshInFlight.current = false;
     }
-  }, [activeTab]);
+  }, [activeTab, refreshMergeContexts, refreshQueueStates]);
 
   // Initial load
   useEffect(() => {
@@ -444,29 +494,34 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Subscribe to PR events
   useEffect(() => {
-    const scheduleRefresh = () => {
-      if (prsRefreshTimer.current != null) return;
-      prsRefreshTimer.current = window.setTimeout(() => {
-        prsRefreshTimer.current = null;
-        void refresh();
-      }, 300);
-    };
-
     const unsub = window.ade.prs.onEvent((event: PrEventPayload) => {
       if (event.type === "prs-updated") {
-        setPrs((prev) => {
-          const byId = new Map(prev.map((pr) => [pr.id, pr.conflictAnalysis] as const));
-          const next: PrWithConflicts[] = event.prs.map((pr) => ({
-            ...pr,
-            conflictAnalysis: byId.get(pr.id) ?? null,
-          }));
-          prsRef.current = next;
-          return jsonEqual(prev, next) ? prev : next;
-        });
-        scheduleRefresh();
-        // Also refresh detail data for the actively viewed PR
+        const previous = prsRef.current;
+        const byId = new Map(previous.map((pr) => [pr.id, pr.conflictAnalysis] as const));
+        const next: PrWithConflicts[] = event.prs.map((pr) => ({
+          ...pr,
+          conflictAnalysis: byId.get(pr.id) ?? null,
+        }));
+        const changedPrIds = diffPrIds(previous, next);
+
+        prsRef.current = next;
+        setPrs((prev) => (jsonEqual(prev, next) ? prev : next));
+
+        if (changedPrIds.length > 0) {
+          void refreshMergeContexts(changedPrIds);
+          const affectedQueueGroupIds = new Set<string>();
+          for (const prId of changedPrIds) {
+            const context = mergeContextByPrIdRef.current[prId];
+            if (context?.groupType === "queue" && context.groupId) {
+              affectedQueueGroupIds.add(context.groupId);
+            }
+          }
+          void refreshQueueStates([...affectedQueueGroupIds]);
+        }
+
+        // Also refresh detail data for the actively viewed PR only when it changed.
         const activePrId = selectedPrIdRef.current;
-        if (activePrId) {
+        if (activePrId && changedPrIds.includes(activePrId)) {
           refreshDetailSilently(activePrId);
         }
       } else if (event.type === "queue-state" || event.type === "queue-step") {
@@ -481,12 +536,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     });
     return () => {
       unsub();
-      if (prsRefreshTimer.current != null) {
-        window.clearTimeout(prsRefreshTimer.current);
-        prsRefreshTimer.current = null;
-      }
     };
-  }, [refresh, refreshDetailSilently]);
+  }, [refreshDetailSilently, refreshMergeContexts, refreshQueueStates]);
 
   // Subscribe to rebase events
   useEffect(() => {

@@ -425,6 +425,19 @@ function compareBackgroundRefreshPriority(left: PullRequestRow, right: PullReque
   return parseIsoMs(right.updated_at) - parseIsoMs(left.updated_at);
 }
 
+function hasMaterialSummaryChange(row: PullRequestRow, summary: PrSummary): boolean {
+  return row.state !== summary.state
+    || row.checks_status !== summary.checksStatus
+    || row.review_status !== summary.reviewStatus
+    || (row.title ?? "") !== summary.title
+    || row.base_branch !== summary.baseBranch
+    || row.head_branch !== summary.headBranch
+    || row.github_url !== summary.githubUrl
+    || (row.github_node_id ?? "") !== (summary.githubNodeId ?? "")
+    || Number(row.additions ?? 0) !== Number(summary.additions ?? 0)
+    || Number(row.deletions ?? 0) !== Number(summary.deletions ?? 0);
+}
+
 function parsePrLocator(raw: string): { owner?: string; repo?: string; number: number } {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("PR URL or number is required");
@@ -572,7 +585,8 @@ export function createPrService({
   projectConfigService,
   conflictService,
   rebaseSuggestionService,
-  openExternal
+  openExternal,
+  onHotRefreshChanged,
 }: {
   db: AdeDb;
   logger: Logger;
@@ -586,6 +600,7 @@ export function createPrService({
   conflictService?: ReturnType<typeof createConflictService>;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   openExternal: (url: string) => Promise<void>;
+  onHotRefreshChanged?: () => void;
 }) {
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
@@ -620,6 +635,58 @@ export function createPrService({
       `select ${PR_COLUMNS} from pull_requests where project_id = ? order by updated_at desc`,
       [projectId]
     );
+
+  const HOT_REFRESH_PHASE_ONE_MS = 60_000;
+  const HOT_REFRESH_PHASE_TWO_MS = 3 * 60_000;
+  const HOT_REFRESH_INTERVAL_PHASE_ONE_MS = 5_000;
+  const HOT_REFRESH_INTERVAL_PHASE_TWO_MS = 15_000;
+  const hotRefreshStartedAtByPrId = new Map<string, number>();
+
+  const invalidateGithubSnapshotCache = (): void => {
+    cachedGithubSnapshot = null;
+    cachedGithubSnapshotAt = 0;
+  };
+
+  const pruneExpiredHotRefreshes = (nowMs = Date.now()): void => {
+    for (const [prId, startedAt] of Array.from(hotRefreshStartedAtByPrId.entries())) {
+      if (nowMs - startedAt >= HOT_REFRESH_PHASE_TWO_MS) {
+        hotRefreshStartedAtByPrId.delete(prId);
+      }
+    }
+  };
+
+  const markHotRefresh = (prIds: string[]): void => {
+    const nowMs = Date.now();
+    const uniquePrIds = [...new Set(prIds.map((prId) => String(prId ?? "").trim()).filter(Boolean))];
+    if (uniquePrIds.length === 0) return;
+    for (const prId of uniquePrIds) {
+      hotRefreshStartedAtByPrId.set(prId, nowMs);
+    }
+    invalidateGithubSnapshotCache();
+    onHotRefreshChanged?.();
+  };
+
+  const getHotRefreshPrIds = (nowMs = Date.now()): string[] => {
+    pruneExpiredHotRefreshes(nowMs);
+    return Array.from(hotRefreshStartedAtByPrId.keys());
+  };
+
+  const getHotRefreshDelayMs = (nowMs = Date.now()): number | null => {
+    pruneExpiredHotRefreshes(nowMs);
+    let nextDelay: number | null = null;
+    for (const startedAt of hotRefreshStartedAtByPrId.values()) {
+      const ageMs = nowMs - startedAt;
+      const delay =
+        ageMs < HOT_REFRESH_PHASE_ONE_MS
+          ? HOT_REFRESH_INTERVAL_PHASE_ONE_MS
+          : ageMs < HOT_REFRESH_PHASE_TWO_MS
+            ? HOT_REFRESH_INTERVAL_PHASE_TWO_MS
+            : null;
+      if (delay == null) continue;
+      nextDelay = nextDelay == null ? delay : Math.min(nextDelay, delay);
+    }
+    return nextDelay;
+  };
 
   const upsertSnapshotRow = (args: {
     prId: string;
@@ -1272,9 +1339,12 @@ export function createPrService({
       deletions,
       lastSyncedAt: nowIso(),
       createdAt: row.created_at,
-      updatedAt: nowIso()
+      updatedAt: asString(pr?.updated_at) || row.updated_at || nowIso()
     };
 
+    if (hasMaterialSummaryChange(row, updated)) {
+      invalidateGithubSnapshotCache();
+    }
     upsertRow(updated);
 
     return updated;
@@ -1857,6 +1927,7 @@ export function createPrService({
         metadataPatch: { mergeCommitSha, branchDeleted, laneArchived }
       });
 
+      markHotRefresh([row.id]);
       await refreshOne(row.id).catch(() => {});
       await conflictService?.scanRebaseNeeds().catch((error) => {
         logger.warn("prs.refresh_rebase_needs_failed", {
@@ -3818,30 +3889,58 @@ export function createPrService({
       return listRows().map(rowToSummary);
     },
 
-    async refresh(args: { prId?: string } = {}): Promise<PrSummary[]> {
-      if (args.prId) {
-        const refreshed = await refreshOne(args.prId);
-        await refreshSnapshotData(args.prId);
-        return [refreshed];
+    async refresh(args: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> {
+      const requestedPrIds = [
+        ...(args.prId ? [args.prId] : []),
+        ...((args.prIds ?? []).map((prId) => String(prId ?? "").trim()).filter(Boolean)),
+      ];
+      if (requestedPrIds.length > 0) {
+        const refreshed: PrSummary[] = [];
+        for (const prId of [...new Set(requestedPrIds)]) {
+          refreshed.push(await refreshOne(prId));
+        }
+        return refreshed;
       }
+
       const rows = listRows();
       const nowMs = Date.now();
-      const candidates = rows
-        .filter((row) => isBackgroundRefreshCandidate(row, nowMs))
+      const hotPrIds = new Set(getHotRefreshPrIds(nowMs));
+      const staleCandidates = rows
+        .filter((row) => !hotPrIds.has(row.id) && isBackgroundRefreshCandidate(row, nowMs))
         .sort(compareBackgroundRefreshPriority)
         .slice(0, BACKGROUND_REFRESH_MAX_PRS);
+      const hotCandidates = rows
+        .filter((row) => hotPrIds.has(row.id))
+        .sort(compareBackgroundRefreshPriority);
+      const candidates = [...hotCandidates, ...staleCandidates];
+      const seenCandidateIds = new Set<string>();
       for (const row of candidates) {
+        if (seenCandidateIds.has(row.id)) continue;
+        seenCandidateIds.add(row.id);
         try {
           await refreshOne(row.id);
         } catch (error) {
           logger.warn("prs.refresh_failed", { prId: row.id, error: error instanceof Error ? error.message : String(error) });
         }
       }
-      const summaries = listRows().map(rowToSummary);
-      for (const summary of summaries) {
-        await refreshSnapshotData(summary.id);
-      }
-      return summaries;
+
+      return listRows().map(rowToSummary);
+    },
+
+    markHotRefresh(prIds: string[]): void {
+      markHotRefresh(prIds);
+    },
+
+    getHotRefreshDelayMs(): number | null {
+      return getHotRefreshDelayMs();
+    },
+
+    getHotRefreshPrIds(): string[] {
+      return getHotRefreshPrIds();
+    },
+
+    invalidateGithubSnapshot(): void {
+      invalidateGithubSnapshotCache();
     },
 
     async getStatus(prId: string): Promise<PrStatus> {
@@ -4417,6 +4516,7 @@ export function createPrService({
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/requested_reviewers`,
         body: { reviewers: args.reviewers }
       });
+      markHotRefresh([args.prId]);
       await refreshOne(args.prId);
     },
 
@@ -4428,6 +4528,7 @@ export function createPrService({
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/reviews`,
         body: { event: args.event, body: args.body ?? "" }
       });
+      markHotRefresh([args.prId]);
       await refreshOne(args.prId);
     },
 
@@ -4443,6 +4544,7 @@ export function createPrService({
         `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
         ["closed", nowIso(), row.id, projectId]
       );
+      markHotRefresh([args.prId]);
       await refreshOne(args.prId);
     },
 
@@ -4458,6 +4560,7 @@ export function createPrService({
         `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
         ["open", nowIso(), row.id, projectId]
       );
+      markHotRefresh([args.prId]);
       await refreshOne(args.prId);
     },
 
@@ -4500,6 +4603,7 @@ export function createPrService({
           }
         }
       }
+      markHotRefresh([args.prId]);
       await refreshOne(args.prId);
     },
 

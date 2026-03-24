@@ -1003,10 +1003,11 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("prs.list", { viewerAllowed: true }, async () => args.prService.listAll());
   register("prs.refresh", { viewerAllowed: true }, async (payload) => {
     const prId = asTrimmedString(payload.prId);
-    await args.prService.refresh(prId ? { prId } : {});
+    const prIds = asStringArray(payload.prIds);
+    await args.prService.refresh(prId ? { prId } : prIds.length > 0 ? { prIds } : {});
     const prs = await args.prService.listAll();
     return {
-      refreshedCount: prId ? 1 : prs.length,
+      refreshedCount: prId ? 1 : prIds.length > 0 ? prIds.length : prs.length,
       prs,
       snapshots: args.prService.listSnapshots(),
     };

@@ -31,6 +31,46 @@ function summarizeNotification(args: { kind: PrNotificationKind; pr: PrSummary }
   return { title: `Merge ready ${prLabel}`, message: args.pr.title || "A pull request looks merge-ready." };
 }
 
+function summarizePrForFingerprint(pr: PrSummary): {
+  id: string;
+  laneId: string;
+  repoOwner: string;
+  repoName: string;
+  githubPrNumber: number;
+  githubUrl: string;
+  githubNodeId: string | null;
+  title: string;
+  state: PrSummary["state"];
+  baseBranch: string;
+  headBranch: string;
+  checksStatus: PrSummary["checksStatus"];
+  reviewStatus: PrSummary["reviewStatus"];
+  additions: number;
+  deletions: number;
+} {
+  return {
+    id: pr.id,
+    laneId: pr.laneId,
+    repoOwner: pr.repoOwner,
+    repoName: pr.repoName,
+    githubPrNumber: pr.githubPrNumber,
+    githubUrl: pr.githubUrl,
+    githubNodeId: pr.githubNodeId,
+    title: pr.title,
+    state: pr.state,
+    baseBranch: pr.baseBranch,
+    headBranch: pr.headBranch,
+    checksStatus: pr.checksStatus,
+    reviewStatus: pr.reviewStatus,
+    additions: pr.additions,
+    deletions: pr.deletions,
+  };
+}
+
+function getPrFingerprint(pr: PrSummary): string {
+  return JSON.stringify(summarizePrForFingerprint(pr));
+}
+
 export function createPrPollingService({
   logger,
   prService,
@@ -73,7 +113,9 @@ export function createPrPollingService({
   let initialized = false;
   let consecutiveFailures = 0;
   let nextDelayOverrideMs: number | null = null;
+  let rateLimitResumeAtMs = 0;
   let lastPrFingerprint = "";
+  const lastFingerprintByPrId = new Map<string, string>();
 
   const lastByPrId = new Map<
     string,
@@ -97,6 +139,16 @@ export function createPrPollingService({
     return clampMs(base * Math.pow(2, factor), base, MAX_INTERVAL_MS);
   };
 
+  const poke = () => {
+    if (stopped) return;
+    if (running) return;
+    if (rateLimitResumeAtMs > Date.now()) return;
+    if (!started) {
+      start();
+    }
+    schedule(0);
+  };
+
   const tick = async () => {
     if (stopped) return;
     if (running) {
@@ -111,6 +163,8 @@ export function createPrPollingService({
       if (existing.length === 0) {
         consecutiveFailures = 0;
         initialized = true;
+        lastByPrId.clear();
+        lastFingerprintByPrId.clear();
         if (lastPrFingerprint !== "[]") {
           onEvent({ type: "prs-updated", polledAt, prs: [] });
           lastPrFingerprint = "[]";
@@ -118,13 +172,18 @@ export function createPrPollingService({
         return;
       }
 
-      const prs = await prService.refresh();
+      const hotPrIds = prService.getHotRefreshPrIds();
+      if (hotPrIds.length > 0) {
+        await prService.refresh({ prIds: hotPrIds });
+      } else {
+        await prService.refresh();
+      }
+      const prs = prService.listAll();
+      const fingerprintPrs = [...prs].sort((left, right) => left.id.localeCompare(right.id));
 
       // Only notify the renderer when PR data actually changed —
       // avoids unnecessary re-render cascades on every poll tick.
-      const fingerprint = JSON.stringify(
-        prs.map((p) => [p.id, p.state, p.checksStatus, p.reviewStatus, p.title, p.githubPrNumber, p.updatedAt])
-      );
+      const fingerprint = JSON.stringify(fingerprintPrs.map((p) => getPrFingerprint(p)));
       if (fingerprint !== lastPrFingerprint) {
         onEvent({ type: "prs-updated", polledAt, prs });
         lastPrFingerprint = fingerprint;
@@ -132,6 +191,7 @@ export function createPrPollingService({
 
       if (!initialized) {
         lastByPrId.clear();
+        lastFingerprintByPrId.clear();
         for (const pr of prs) {
           lastByPrId.set(pr.id, {
             checksStatus: pr.checksStatus,
@@ -139,6 +199,7 @@ export function createPrPollingService({
             state: pr.state,
             mergeReady: pr.state === "open" && pr.checksStatus === "passing" && pr.reviewStatus === "approved"
           });
+          lastFingerprintByPrId.set(pr.id, getPrFingerprint(pr));
         }
         initialized = true;
         consecutiveFailures = 0;
@@ -154,9 +215,12 @@ export function createPrPollingService({
       }> = [];
       for (const pr of prs) {
         const prev = lastByPrId.get(pr.id) ?? null;
+        const prevFingerprint = lastFingerprintByPrId.get(pr.id) ?? null;
+        const nextFingerprint = getPrFingerprint(pr);
         const mergeReady = pr.state === "open" && pr.checksStatus === "passing" && pr.reviewStatus === "approved";
         const changed =
           !prev
+          || prevFingerprint !== nextFingerprint
           || prev.checksStatus !== pr.checksStatus
           || prev.reviewStatus !== pr.reviewStatus
           || prev.state !== pr.state;
@@ -206,6 +270,7 @@ export function createPrPollingService({
           state: pr.state,
           mergeReady
         });
+        lastFingerprintByPrId.set(pr.id, nextFingerprint);
       }
 
       if (changedPrs.length > 0) {
@@ -227,7 +292,10 @@ export function createPrPollingService({
       // Drop any PRs removed from the DB.
       const seen = new Set(prs.map((pr) => pr.id));
       for (const prId of Array.from(lastByPrId.keys())) {
-        if (!seen.has(prId)) lastByPrId.delete(prId);
+        if (!seen.has(prId)) {
+          lastByPrId.delete(prId);
+          lastFingerprintByPrId.delete(prId);
+        }
       }
 
       consecutiveFailures = 0;
@@ -241,12 +309,17 @@ export function createPrPollingService({
         // because rate limits can take up to 60 minutes to reset.
         const untilReset = Math.max(10_000, resetAtMs - Date.now() + 5_000);
         nextDelayOverrideMs = untilReset;
+        rateLimitResumeAtMs = Date.now() + untilReset;
       }
     } finally {
       running = false;
-      const base = computeBackoffMs();
+      const hotDelay = prService.getHotRefreshDelayMs();
+      const base = hotDelay ?? computeBackoffMs();
       const delay = jitterMs(Math.max(base, nextDelayOverrideMs ?? 0));
       nextDelayOverrideMs = null;
+      if (rateLimitResumeAtMs > 0 && Date.now() >= rateLimitResumeAtMs) {
+        rateLimitResumeAtMs = 0;
+      }
       schedule(delay);
     }
   };
@@ -261,6 +334,7 @@ export function createPrPollingService({
 
   return {
     start,
+    poke,
     dispose() {
       stopped = true;
       if (timer) clearTimeout(timer);
