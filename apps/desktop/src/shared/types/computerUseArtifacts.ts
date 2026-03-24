@@ -265,7 +265,16 @@ function toOptionalString(value: unknown): string | null {
 export function normalizeComputerUsePolicy(value: unknown, fallback: Partial<ComputerUsePolicy> = {}): ComputerUsePolicy {
   const record = isRecord(value) ? value : {};
   // Migrate persisted "off" mode to "auto" — "off" is no longer a valid mode.
-  const rawMode = record.mode === "enabled" ? "enabled" : "auto";
+  // If record.mode is explicitly "auto" or legacy "off", respect it as "auto"
+  // instead of letting fallback.mode override it back to "enabled".
+  const mode: ComputerUsePolicyMode =
+    record.mode === "enabled"
+      ? "enabled"
+      : record.mode === "auto" || record.mode === "off"
+        ? "auto"
+        : fallback.mode === "enabled"
+          ? "enabled"
+          : "auto";
   const allowLocalFallback = typeof record.allowLocalFallback === "boolean"
     ? record.allowLocalFallback
     : fallback.allowLocalFallback ?? true;
@@ -273,7 +282,7 @@ export function normalizeComputerUsePolicy(value: unknown, fallback: Partial<Com
     ? record.retainArtifacts
     : fallback.retainArtifacts ?? true;
   return {
-    mode: (fallback.mode === "enabled" ? fallback.mode : rawMode) ?? "auto",
+    mode,
     allowLocalFallback,
     retainArtifacts,
     preferredBackend: toOptionalString(record.preferredBackend) ?? fallback.preferredBackend ?? null,

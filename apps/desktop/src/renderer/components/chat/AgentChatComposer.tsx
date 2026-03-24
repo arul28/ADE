@@ -399,7 +399,7 @@ function ComputerUseSettingsModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3">
             <button
               type="button"
               className="rounded-[18px] border border-white/[0.06] bg-white/[0.03] px-4 py-2.5 font-sans text-[12px] font-medium text-fg/78 transition-colors hover:border-white/[0.12] hover:text-fg/90"
@@ -407,14 +407,6 @@ function ComputerUseSettingsModal({
               title="Open the proof drawer"
             >
               Open proof drawer
-            </button>
-            <button
-              type="button"
-              className="rounded-[18px] border border-white/[0.06] bg-white/[0.03] px-4 py-2.5 font-sans text-[12px] font-medium text-fg/78 transition-colors hover:border-white/[0.12] hover:text-fg/90"
-              onClick={onClose}
-              title="Open backend settings"
-            >
-              Backend settings
             </button>
           </div>
         </div>

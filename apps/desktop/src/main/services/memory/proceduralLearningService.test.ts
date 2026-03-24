@@ -64,7 +64,7 @@ function makeHumanReadableEpisodeContent(overrides: Record<string, unknown> = {}
     createdAt: "2026-03-24T12:00:00.000Z",
     ...overrides,
   };
-  return `Task: ${episode.taskDescription}\nApproach: ${episode.approachTaken}\n<!--episode:${JSON.stringify(episode)}-->`;
+  return `Task: ${episode.taskDescription}\nApproach: ${episode.approachTaken}\n<!--episode:${Buffer.from(JSON.stringify(episode)).toString("base64")}-->`;
 }
 
 function addEpisodeMemory(

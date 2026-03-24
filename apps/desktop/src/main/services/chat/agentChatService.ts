@@ -2712,24 +2712,6 @@ export function createAgentChatService(args: {
 
     const attachments = args.attachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-    const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
-
-    const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-    const basePromptText = [
-      reconstructionContext.length
-        ? [
-            "System context (identity reconstruction, do not echo verbatim):",
-            reconstructionContext,
-          ].join("\n")
-        : null,
-      autoMemoryContext.length ? autoMemoryContext : null,
-      args.promptText,
-    ].filter((section): section is string => Boolean(section)).join("\n\n");
-    if (reconstructionContext.length) {
-      managed.pendingReconstructionContext = null;
-      persistChatState(managed);
-    }
-
     emitChatEvent(managed, { type: "user_message", text: displayText, attachments, turnId });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
 
@@ -2762,6 +2744,23 @@ export function createAgentChatService(args: {
     };
 
     try {
+      const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
+
+      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
+      const basePromptText = [
+        reconstructionContext.length
+          ? [
+              "System context (identity reconstruction, do not echo verbatim):",
+              reconstructionContext,
+            ].join("\n")
+          : null,
+        autoMemoryContext.length ? autoMemoryContext : null,
+        args.promptText,
+      ].filter((section): section is string => Boolean(section)).join("\n\n");
+      if (reconstructionContext.length) {
+        managed.pendingReconstructionContext = null;
+        persistChatState(managed);
+      }
       // ── V2 persistent session with background pre-warming ──
       // The pre-warm was kicked off in ensureClaudeSessionRuntime. Wait for it.
       if (runtime.v2WarmupDone) {
@@ -3395,63 +3394,8 @@ export function createAgentChatService(args: {
     managed.session.status = "active";
     const attachments = args.attachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-    const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
-
-    const attachmentHint = attachments.length
-      ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
-      : "";
-    const userContent = [
-      autoMemoryContext.length ? autoMemoryContext : null,
-      `${args.promptText}${attachmentHint}`,
-    ].filter((section): section is string => Boolean(section)).join("\n\n");
-    const streamingBaseText = autoMemoryContext.length
-      ? `${autoMemoryContext}\n\n${args.promptText}`
-      : args.promptText;
-
-    applyReconstructionContextToStreamingRuntime(managed, runtime);
-
-    runtime.messages.push({ role: "user", content: userContent });
     emitChatEvent(managed, { type: "user_message", text: displayText, attachments, turnId });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-
-    const abortController = new AbortController();
-    runtime.abortController = abortController;
-
-    // Turn-level timeout: abort if the entire turn exceeds the limit
-    const turnTimeout = setTimeout(() => {
-      logger.warn("agent_chat.turn_timeout", {
-        sessionId: managed.session.id,
-        turnId,
-        timeoutMs: TURN_TIMEOUT_MS,
-      });
-      emitChatEvent(managed, {
-        type: "error",
-        message: `Turn timed out after ${TURN_TIMEOUT_MS / 1000}s. The agent loop was aborted.`,
-        turnId,
-      });
-      runtime.interrupted = true;
-      abortController.abort();
-    }, TURN_TIMEOUT_MS);
-
-    const streamMessages = runtime.messages.map((message, index): ModelMessage => {
-      const isCurrentUserMessage = index === runtime.messages.length - 1 && message.role === "user";
-      if (!isCurrentUserMessage) {
-        return {
-          role: message.role as "user" | "assistant",
-          content: message.content,
-        };
-      }
-
-      return {
-        role: "user",
-        content: buildStreamingUserContent({
-          baseText: streamingBaseText,
-          attachments,
-          runtimeKind: "unified",
-          modelDescriptor: runtime.modelDescriptor,
-        }),
-      };
-    });
 
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
@@ -3470,7 +3414,64 @@ export function createAgentChatService(args: {
       });
     };
 
+    let turnTimeout: ReturnType<typeof setTimeout> | undefined;
+
     try {
+      const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
+
+      const attachmentHint = attachments.length
+        ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
+        : "";
+      const userContent = [
+        autoMemoryContext.length ? autoMemoryContext : null,
+        `${args.promptText}${attachmentHint}`,
+      ].filter((section): section is string => Boolean(section)).join("\n\n");
+      const streamingBaseText = autoMemoryContext.length
+        ? `${autoMemoryContext}\n\n${args.promptText}`
+        : args.promptText;
+
+      applyReconstructionContextToStreamingRuntime(managed, runtime);
+
+      runtime.messages.push({ role: "user", content: userContent });
+
+      const abortController = new AbortController();
+      runtime.abortController = abortController;
+
+      // Turn-level timeout: abort if the entire turn exceeds the limit
+      turnTimeout = setTimeout(() => {
+        logger.warn("agent_chat.turn_timeout", {
+          sessionId: managed.session.id,
+          turnId,
+          timeoutMs: TURN_TIMEOUT_MS,
+        });
+        emitChatEvent(managed, {
+          type: "error",
+          message: `Turn timed out after ${TURN_TIMEOUT_MS / 1000}s. The agent loop was aborted.`,
+          turnId,
+        });
+        runtime.interrupted = true;
+        abortController.abort();
+      }, TURN_TIMEOUT_MS);
+
+      const streamMessages = runtime.messages.map((message, index): ModelMessage => {
+        const isCurrentUserMessage = index === runtime.messages.length - 1 && message.role === "user";
+        if (!isCurrentUserMessage) {
+          return {
+            role: message.role as "user" | "assistant",
+            content: message.content,
+          };
+        }
+
+        return {
+          role: "user",
+          content: buildStreamingUserContent({
+            baseText: streamingBaseText,
+            attachments,
+            runtimeKind: "unified",
+            modelDescriptor: runtime.modelDescriptor,
+          }),
+        };
+      });
       const lightweight = isLightweightSession(managed.session);
       const tools = lightweight
         ? {}
@@ -5751,7 +5752,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "info",
-            message: "Steer queued — waiting for current turn to complete.",
+            message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
             turnId: runtime.activeTurnId ?? undefined,
           });
           return;
@@ -5808,7 +5809,7 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
-          message: "Steer queued — waiting for current turn to complete.",
+          message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
           turnId: runtime.activeTurnId ?? undefined,
         });
         return;

@@ -139,7 +139,7 @@ export function createEpisodicSummaryService(args: {
     const decisions = (episode.decisionsMade ?? []).filter(Boolean);
     if (decisions.length > 0) lines.push(`Decisions: ${decisions.join("; ")}`);
     // Preserve structured data for procedural learning parser
-    lines.push(`\n<!--episode:${JSON.stringify(episode)}-->`);
+    lines.push(`\n<!--episode:${Buffer.from(JSON.stringify(episode)).toString("base64")}-->`);
     return lines.join("\n");
   };
 

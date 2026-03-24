@@ -244,7 +244,7 @@ function toEpisodeContent(args: {
     createdAt: nowIso(),
     ...(args.fileScopePattern ? { fileScopePattern: args.fileScopePattern } : {}),
   };
-  lines.push(`\n<!--episode:${JSON.stringify(episode)}-->`);
+  lines.push(`\n<!--episode:${Buffer.from(JSON.stringify(episode)).toString("base64")}-->`);
   return lines.join("\n");
 }
 

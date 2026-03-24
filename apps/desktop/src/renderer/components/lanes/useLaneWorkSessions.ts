@@ -46,7 +46,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const [loading, setLoading] = useState(false);
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
   const refreshInFlightRef = useRef(false);
-  const refreshQueuedRef = useRef(false);
+  const refreshQueuedRef = useRef<{ showLoading: boolean; force: boolean } | null>(null);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const hasActiveSessionsRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
@@ -88,7 +88,10 @@ export function useLaneWorkSessions(laneId: string | null) {
       }
       const showLoading = options.showLoading ?? true;
       if (refreshInFlightRef.current) {
-        refreshQueuedRef.current = true;
+        refreshQueuedRef.current = {
+          showLoading: (refreshQueuedRef.current?.showLoading ?? false) || showLoading,
+          force: (refreshQueuedRef.current?.force ?? false) || Boolean(options.force),
+        };
         return;
       }
       refreshInFlightRef.current = true;
@@ -105,9 +108,10 @@ export function useLaneWorkSessions(laneId: string | null) {
       } finally {
         if (showLoading) setLoading(false);
         refreshInFlightRef.current = false;
-        if (refreshQueuedRef.current) {
-          refreshQueuedRef.current = false;
-          void refresh({ showLoading: false });
+        const queued = refreshQueuedRef.current;
+        refreshQueuedRef.current = null;
+        if (queued) {
+          void refresh(queued);
         }
       }
     },

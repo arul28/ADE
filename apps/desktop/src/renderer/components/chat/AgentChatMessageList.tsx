@@ -392,15 +392,20 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     const nextItem = event.itemId ?? null;
     // Require at least one identity field to prevent merging anonymous chunks
     if (nextTurn || nextItem) {
-      // Search backwards for a matching text row, but stop if we hit an explicit
-      // tool lifecycle row. Command/file-change rows can still belong to the same
-      // assistant message, so they should not split the text bubble.
+      // Search backwards for a matching text row, but stop if we hit any
+      // structured work row so later text stays after the work it describes.
       let matchIndex = -1;
       for (let i = out.length - 1; i >= 0; i--) {
         const candidate = out[i];
         const ct = candidate.event.type;
-        // Stop searching if we hit a tool boundary — text across tool calls must stay separate
-        if (ct === "tool_invocation" || ct === "tool_call" || ct === "tool_result") {
+        // Stop at any structured work row so later text stays after the work it describes.
+        if (
+          ct === "tool_invocation"
+          || ct === "tool_call"
+          || ct === "tool_result"
+          || ct === "command"
+          || ct === "file_change"
+        ) {
           break;
         }
         if (

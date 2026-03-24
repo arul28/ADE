@@ -1794,13 +1794,25 @@ function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[]): Unifi
   const items: UnifiedCheckItem[] = [];
   const coveredNames = new Set<string>();
 
-  // First: add all jobs from action runs (these have the most detail)
+  // Collapse reruns: for each workflow name, keep only the newest run
+  // (multiple runs with the same name are reruns of the same workflow)
+  const latestRunByWorkflow = new Map<string, PrActionRun>();
   for (const run of actionRuns) {
+    const existing = latestRunByWorkflow.get(run.name);
+    if (!existing || new Date(run.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+      latestRunByWorkflow.set(run.name, run);
+    }
+  }
+  const dedupedRuns = Array.from(latestRunByWorkflow.values());
+
+  // First: add all jobs from the latest action runs (these have the most detail)
+  for (const run of dedupedRuns) {
     for (const job of run.jobs) {
       // Build the canonical name to match against checks API
       const canonicalName = `${run.name} / ${job.name}`;
       coveredNames.add(canonicalName.toLowerCase());
-      coveredNames.add(job.name.toLowerCase());
+      // Use composite key to avoid collisions across workflows (e.g. two workflows both having a "build" job)
+      coveredNames.add(`${run.name}/${job.name}`.toLowerCase());
 
       const duration = job.startedAt && job.completedAt
         ? Math.round((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)
@@ -1829,8 +1841,10 @@ function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[]): Unifi
     // Also check if the check name matches "{workflow} / {job}" pattern
     const slashIdx = check.name.indexOf("/");
     if (slashIdx > 0) {
+      const workflowPart = check.name.slice(0, slashIdx).trim().toLowerCase();
       const jobPart = check.name.slice(slashIdx + 1).trim().toLowerCase();
-      if (coveredNames.has(jobPart)) continue;
+      // Use composite key to match against workflow/job keys stored above
+      if (coveredNames.has(`${workflowPart}/${jobPart}`)) continue;
     }
 
     const duration = check.startedAt && check.completedAt
@@ -1882,6 +1896,7 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
   const passing = unifiedChecks.filter(c => c.conclusion === "success").length;
   const failing = unifiedChecks.filter(c => c.conclusion === "failure").length;
   const pending = unifiedChecks.filter(c => c.status !== "completed").length;
+  const skipped = unifiedChecks.filter(c => c.status === "completed" && (c.conclusion === "neutral" || c.conclusion === "skipped" || c.conclusion === "cancelled")).length;
   const total = unifiedChecks.length;
 
   const toggleExpand = (id: string) => {
@@ -1892,11 +1907,17 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
     });
   };
 
-  const summaryText = failing > 0
-    ? `${failing} failing, ${passing} passing${pending > 0 ? `, ${pending} pending` : ""}`
-    : pending > 0
-      ? `${passing} passing, ${pending} pending`
-      : `All ${total} checks passing`;
+  const summaryText = total === 0
+    ? "No checks"
+    : failing > 0
+      ? `${failing} failing, ${passing} passing${pending > 0 ? `, ${pending} pending` : ""}${skipped > 0 ? `, ${skipped} skipped` : ""}`
+      : pending > 0
+        ? `${passing} passing, ${pending} pending${skipped > 0 ? `, ${skipped} skipped` : ""}`
+        : skipped > 0 && passing === 0
+          ? `All ${total} checks skipped`
+          : skipped > 0
+            ? `${passing} passing, ${skipped} skipped`
+            : `All ${total} checks passing`;
 
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1922,6 +1943,7 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
             {passing > 0 && <div style={{ flex: passing, background: "#22C55E", transition: "flex 300ms ease" }} />}
             {failing > 0 && <div style={{ flex: failing, background: "#EF4444", transition: "flex 300ms ease" }} />}
             {pending > 0 && <div style={{ flex: pending, background: "#F59E0B", transition: "flex 300ms ease" }} />}
+            {skipped > 0 && <div style={{ flex: skipped, background: "#6B7280", transition: "flex 300ms ease" }} />}
           </div>
         )}
       </div>

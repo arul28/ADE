@@ -161,23 +161,28 @@ export async function probeClaudeRuntimeHealth(args: {
     return;
   }
 
+  let claudeExecutablePath: string | null = null;
+
   const probe = (async (): Promise<ClaudeRuntimeProbeResult> => {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), PROBE_TIMEOUT_MS);
-    const claudeExecutable = resolveClaudeCodeExecutable();
-    const stream = claudeQuery({
-      prompt: "System initialization check. Respond with only the word READY.",
-      options: {
-        cwd: projectRoot,
-        permissionMode: "plan",
-        tools: [],
-        pathToClaudeCodeExecutable: claudeExecutable.path,
-        mcpServers: resolveProbeMcpServers(projectRoot) as any,
-        abortController,
-      },
-    });
+    let stream: ReturnType<typeof claudeQuery> | null = null;
 
     try {
+      const claudeExecutable = resolveClaudeCodeExecutable();
+      claudeExecutablePath = claudeExecutable.path;
+      stream = claudeQuery({
+        prompt: "System initialization check. Respond with only the word READY.",
+        options: {
+          cwd: projectRoot,
+          permissionMode: "plan",
+          tools: [],
+          pathToClaudeCodeExecutable: claudeExecutable.path,
+          mcpServers: resolveProbeMcpServers(projectRoot) as any,
+          abortController,
+        },
+      });
+
       for await (const message of stream) {
         const result = resultFromSdkMessage(message);
         if (result) {
@@ -199,7 +204,7 @@ export async function probeClaudeRuntimeHealth(args: {
     } finally {
       clearTimeout(timeout);
       try {
-        stream.close();
+        stream?.close();
       } catch {
         // Best effort cleanup — avoid leaving the probe subprocess running.
       }
@@ -217,7 +222,7 @@ export async function probeClaudeRuntimeHealth(args: {
         projectRoot,
         state: result.state,
         message: result.message,
-        claudeExecutablePath: resolveClaudeCodeExecutable().path,
+        claudeExecutablePath,
       });
     }
   } finally {

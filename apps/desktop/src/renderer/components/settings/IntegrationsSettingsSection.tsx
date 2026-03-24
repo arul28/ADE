@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ComputerUseSection } from "./ComputerUseSection";
 import { ExternalMcpSection } from "./ExternalMcpSection";
@@ -24,13 +24,7 @@ export function IntegrationsSettingsSection() {
   const [searchParams, setSearchParams] = useSearchParams();
   const integrationParam = searchParams.get("integration")?.trim().toLowerCase() ?? "";
   const canonicalIntegration = resolveIntegrationTab(integrationParam);
-  const [activeTab, setActiveTab] = useState<IntegrationTab>(canonicalIntegration ?? "github");
-
-  useEffect(() => {
-    if (canonicalIntegration && canonicalIntegration !== activeTab) {
-      setActiveTab(canonicalIntegration);
-    }
-  }, [activeTab, canonicalIntegration]);
+  const activeTab = canonicalIntegration ?? "github";
 
   useEffect(() => {
     if (!integrationParam || !canonicalIntegration || integrationParam === canonicalIntegration) return;
@@ -40,7 +34,6 @@ export function IntegrationsSettingsSection() {
   }, [canonicalIntegration, integrationParam, searchParams, setSearchParams]);
 
   const activateTab = useCallback((tab: IntegrationTab) => {
-    setActiveTab(tab);
     const nextParams = new URLSearchParams(searchParams);
     if (tab === "github") {
       nextParams.delete("integration");

@@ -43,10 +43,14 @@ function resolveFromPathEntries(command: string, pathValue: string | undefined):
 }
 
 function findClaudeAuthPath(auth?: DetectedAuth[]): string | null {
-  const entry = auth?.find((item) => item.type === "cli-subscription" && item.cli === "claude");
-  if (!entry) return null;
-  if (entry.type !== "cli-subscription") return null;
-  return entry.path.trim().length > 0 ? entry.path : null;
+  for (const entry of auth ?? []) {
+    if (entry.type !== "cli-subscription" || entry.cli !== "claude") continue;
+    const candidate = entry.path.trim();
+    if (candidate && isExecutableFile(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 export function resolveClaudeCodeExecutable(args?: {

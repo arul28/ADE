@@ -765,7 +765,7 @@ export function MemoryHealthTab() {
     const commentMatch = content.match(/<!--episode:([\s\S]*?)-->/);
     if (commentMatch) {
       try {
-        const parsed = JSON.parse(commentMatch[1]);
+        const parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(commentMatch[1]), (c) => c.charCodeAt(0))));
         if (parsed && typeof parsed === "object" && typeof parsed.taskDescription === "string" && typeof parsed.approachTaken === "string") {
           return parsed;
         }

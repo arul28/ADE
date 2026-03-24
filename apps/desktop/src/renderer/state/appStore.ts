@@ -250,11 +250,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshLanes: async (options) => {
+    const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
     const lanes = await window.ade.lanes.list({
       includeArchived: false,
       includeStatus: options?.includeStatus ?? true,
     });
     const projectKey = normalizeProjectKey(get().project?.rootPath);
+    if (projectKey !== requestedProjectKey) {
+      return;
+    }
     const selected = get().selectedLaneId;
     const runLane = get().runLaneId;
     const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;

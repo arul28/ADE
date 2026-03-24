@@ -2,7 +2,7 @@
 // Episode Format — shared parsing and formatting for episodic memory content.
 //
 // Episodic memories use a dual-format: human-readable text followed by
-// structured JSON in an HTML comment (<!--episode:{...}-->). Legacy entries
+// structured JSON in an HTML comment (<!--episode:<base64>-->). Legacy entries
 // store only raw JSON. This module handles both.
 // ---------------------------------------------------------------------------
 
@@ -39,7 +39,7 @@ export function parseEpisode(content: string): EpisodicMemoryFields | null {
   const commentMatch = content.match(/<!--episode:([\s\S]*?)-->/);
   if (commentMatch) {
     try {
-      const parsed = JSON.parse(commentMatch[1]) as EpisodicMemoryFields;
+      const parsed = JSON.parse(Buffer.from(commentMatch[1], "base64").toString("utf-8")) as EpisodicMemoryFields;
       if (parsed && typeof parsed === "object"
         && typeof parsed.taskDescription === "string"
         && typeof parsed.approachTaken === "string") {
@@ -85,6 +85,6 @@ export function formatEpisodeContent(episode: EpisodicMemoryFields): string {
   const decisions = uniqueLines(episode.decisionsMade ?? []);
   if (decisions.length > 0) lines.push(`Decisions: ${decisions.join("; ")}`);
 
-  lines.push(`\n<!--episode:${JSON.stringify(episode)}-->`);
+  lines.push(`\n<!--episode:${Buffer.from(JSON.stringify(episode)).toString("base64")}-->`);
   return lines.join("\n");
 }
