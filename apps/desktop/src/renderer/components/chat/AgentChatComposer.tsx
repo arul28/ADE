@@ -55,12 +55,17 @@ const CODEX_DEFAULT_COMMANDS: SlashCommandEntry[] = [
   { command: "/help", label: "Help", description: "Show available commands", source: "sdk" },
 ];
 
+const DEFAULT_COMMANDS_BY_FAMILY: Record<string, SlashCommandEntry[]> = {
+  anthropic: CLAUDE_DEFAULT_COMMANDS,
+  openai: CODEX_DEFAULT_COMMANDS,
+};
+
 /** Build the effective slash command list by merging SDK-provided commands with local ones. */
 function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: string): SlashCommandEntry[] {
   const result: SlashCommandEntry[] = [];
   const seen = new Set<string>();
 
-  // SDK commands first — they take priority
+  // SDK commands first -- they take priority
   for (const cmd of sdkCommands) {
     const name = cmd.name.startsWith("/") ? cmd.name : `/${cmd.name}`;
     if (seen.has(name)) continue;
@@ -76,9 +81,7 @@ function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: 
 
   // If no SDK commands loaded yet, show well-known defaults for the provider
   if (sdkCommands.length === 0) {
-    const defaults = modelFamily === "anthropic" ? CLAUDE_DEFAULT_COMMANDS
-      : modelFamily === "openai" ? CODEX_DEFAULT_COMMANDS
-      : [];
+    const defaults = (modelFamily ? DEFAULT_COMMANDS_BY_FAMILY[modelFamily] : undefined) ?? [];
     for (const cmd of defaults) {
       if (!seen.has(cmd.command)) {
         seen.add(cmd.command);
@@ -165,7 +168,6 @@ type AdvancedSettingsPopoverProps = {
   onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
   computerUsePolicy: ComputerUsePolicy;
   computerUseSnapshot: ComputerUseOwnerSnapshot | null;
-  onToggleComputerUse: () => void;
   onOpenComputerUseDetails: () => void;
   proofOpen: boolean;
   proofArtifactCount: number;
@@ -180,7 +182,6 @@ function AdvancedSettingsPopover({
   onExecutionModeChange,
   computerUsePolicy,
   computerUseSnapshot,
-  onToggleComputerUse,
   onOpenComputerUseDetails,
   proofOpen,
   proofArtifactCount,
@@ -189,7 +190,6 @@ function AdvancedSettingsPopover({
   onIncludeProjectDocsChange,
 }: AdvancedSettingsPopoverProps) {
   const [hoveredExecutionMode, setHoveredExecutionMode] = useState<AgentChatExecutionMode | null>(null);
-  const computerUseAllowed = computerUsePolicy.mode !== "off";
   const activeBackend = computerUseSnapshot?.activeBackend?.name ?? (computerUsePolicy.allowLocalFallback ? "Fallback allowed" : "No fallback");
   const activeExecutionMode = executionModeOptions.find((option) => option.value === executionMode) ?? executionModeOptions[0] ?? null;
   const helpMode = hoveredExecutionMode
@@ -267,38 +267,6 @@ function AdvancedSettingsPopover({
         ) : null}
 
         <div className="grid gap-3 md:grid-cols-2">
-          <button
-            type="button"
-            className={cn(
-              "rounded-[18px] border px-3 py-3 text-left transition-colors",
-              computerUseAllowed
-                ? "border-sky-400/22 bg-sky-500/10"
-                : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
-            )}
-            onClick={onToggleComputerUse}
-            aria-pressed={computerUseAllowed}
-            title="Allow the agent to use connected browser or desktop tools for this chat"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-sans text-[12px] font-medium text-fg/84">Computer use</span>
-              <span className={cn(
-                "rounded-md border px-2 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.14em]",
-                computerUseAllowed
-                  ? "border-sky-400/25 bg-sky-500/10 text-sky-200"
-                  : "border-white/[0.08] bg-white/[0.03] text-fg/45",
-              )}>
-                {computerUseAllowed ? "On" : "Off"}
-              </span>
-            </div>
-            <div className="mt-1 text-[11px] leading-5 text-fg/58">
-              Let the agent inspect or control a connected browser or desktop runtime for this chat.
-            </div>
-            <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-fg/42">
-              <span>Backend: {activeBackend}</span>
-              <span>Proof: {computerUsePolicy.retainArtifacts ? "retained" : "not retained"}</span>
-            </div>
-          </button>
-
           <button
             type="button"
             className={cn(
@@ -389,8 +357,7 @@ function ComputerUseSettingsModal({
 }) {
   if (!open) return null;
 
-  const computerUseAllowed = policy.mode !== "off";
-  const activeBackend = snapshot?.activeBackend?.name ?? (policy.allowLocalFallback ? "Fallback allowed" : "No fallback");
+  const activeBackend = snapshot?.activeBackend?.name ?? "None";
   const artifactCount = snapshot?.artifacts.length ?? 0;
 
   return (
@@ -400,20 +367,20 @@ function ComputerUseSettingsModal({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-2xl overflow-hidden rounded-[28px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(15,21,34,0.96),rgba(10,13,22,0.94))] shadow-[0_28px_110px_-36px_rgba(0,0,0,0.82)]">
+      <div className="w-full max-w-sm overflow-hidden rounded-[28px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(15,21,34,0.96),rgba(10,13,22,0.94))] shadow-[0_28px_110px_-36px_rgba(0,0,0,0.82)]">
         <div className="border-b border-white/[0.05] bg-[linear-gradient(90deg,rgba(56,189,248,0.12),transparent)] px-5 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <div className="font-sans text-[15px] font-semibold tracking-tight text-fg/88">Computer use</div>
-              <div className="max-w-[44rem] text-[12px] leading-6 text-fg/58">
-                Let the agent inspect or control a connected browser or desktop runtime for this chat. If you want it to keep checking a site while it edits, tell it to re-validate after each meaningful change.
+              <div className="text-[12px] leading-5 text-fg/58">
+                ADE captures proof from your agent's tool calls automatically.
               </div>
             </div>
             <button
               type="button"
               className="rounded-[var(--chat-radius-pill)] border border-white/[0.08] bg-white/[0.03] px-3 py-1 font-sans text-[11px] font-medium text-fg/60 transition-colors hover:text-fg/85"
               onClick={onClose}
-              title="Close computer-use settings"
+              title="Close"
             >
               Close
             </button>
@@ -421,111 +388,27 @@ function ComputerUseSettingsModal({
         </div>
 
         <div className="space-y-4 px-5 py-5">
-          <div className="grid gap-3 md:grid-cols-[minmax(0,1.25fr)_minmax(0,0.9fr)]">
-            <div className="rounded-[22px] border border-white/[0.06] bg-white/[0.03] p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="font-sans text-[11px] font-medium uppercase tracking-[0.16em] text-sky-200/60">Access</div>
-                  <div className="mt-1 text-[13px] text-fg/82">
-                    {computerUseAllowed
-                      ? "Connected tools may be used when the task calls for them."
-                      : "The agent will stay text-only for this chat."}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className={cn(
-                    "rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-sans text-[11px] font-medium transition-colors",
-                    computerUseAllowed
-                      ? "border-sky-400/28 bg-sky-500/12 text-sky-200"
-                      : "border-white/[0.08] bg-white/[0.03] text-muted-fg/50 hover:text-fg/72",
-                  )}
-                  onClick={() => onChange({ ...policy, mode: computerUseAllowed ? "off" : "enabled" })}
-                  title="Allow the agent to use connected browser or desktop tooling in this chat"
-                >
-                  {computerUseAllowed ? "Allowed" : "Blocked"}
-                </button>
-              </div>
-
-              <div className="mt-4 grid gap-2 sm:grid-cols-3">
-                <div className="rounded-[18px] border border-white/[0.05] bg-black/10 px-3 py-2">
-                  <div className="font-sans text-[10px] uppercase tracking-[0.16em] text-muted-fg/32">Backend</div>
-                  <div className="mt-1 text-[12px] text-fg/78">{activeBackend}</div>
-                </div>
-                <div className="rounded-[18px] border border-white/[0.05] bg-black/10 px-3 py-2">
-                  <div className="font-sans text-[10px] uppercase tracking-[0.16em] text-muted-fg/32">Proof</div>
-                  <div className="mt-1 text-[12px] text-fg/78">{policy.retainArtifacts ? "Retained" : "Not retained"}</div>
-                </div>
-                <div className="rounded-[18px] border border-white/[0.05] bg-black/10 px-3 py-2">
-                  <div className="font-sans text-[10px] uppercase tracking-[0.16em] text-muted-fg/32">Artifacts</div>
-                  <div className="mt-1 text-[12px] text-fg/78">{artifactCount}</div>
-                </div>
-              </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-sans text-[11px] uppercase tracking-[0.14em] text-muted-fg/40">Backend</span>
+              <span className="text-[12px] text-fg/78">{activeBackend}</span>
             </div>
-
-            <div className="rounded-[22px] border border-white/[0.06] bg-[linear-gradient(180deg,rgba(18,24,37,0.95),rgba(11,14,23,0.95))] p-4">
-              <div className="font-sans text-[11px] font-medium uppercase tracking-[0.16em] text-emerald-200/58">How to use it</div>
-              <div className="mt-3 space-y-2 text-[12px] leading-6 text-fg/62">
-                <div>Ask directly: “Open `http://localhost:3000`, check desktop and mobile, and keep proof.”</div>
-                <div>For ongoing validation, say “re-check after every major UI change.”</div>
-                <div>The proof drawer keeps screenshots, traces, logs, and verification output for this chat.</div>
-              </div>
-              <button
-                type="button"
-                className="mt-4 rounded-[var(--chat-radius-pill)] border border-emerald-400/20 bg-emerald-500/10 px-3 py-1.5 font-sans text-[11px] font-medium text-emerald-200/85 transition-colors hover:bg-emerald-500/14"
-                onClick={onOpenProof}
-                title="Open the proof drawer for this chat"
-              >
-                Open proof drawer
-              </button>
+            <div className="flex items-center justify-between">
+              <span className="font-sans text-[11px] uppercase tracking-[0.14em] text-muted-fg/40">Artifacts</span>
+              <span className="text-[12px] text-fg/78">{artifactCount} captured</span>
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3">
             <button
               type="button"
-              className={cn(
-                "rounded-[22px] border px-4 py-3 text-left transition-colors",
-                policy.retainArtifacts
-                  ? "border-emerald-400/20 bg-emerald-500/10"
-                  : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.1]",
-              )}
-              onClick={() => onChange({ ...policy, retainArtifacts: !policy.retainArtifacts })}
-              title="Retain screenshots, traces, logs, and other proof artifacts for this chat"
+              className="rounded-[18px] border border-white/[0.06] bg-white/[0.03] px-4 py-2.5 font-sans text-[12px] font-medium text-fg/78 transition-colors hover:border-white/[0.12] hover:text-fg/90"
+              onClick={onOpenProof}
+              title="Open the proof drawer"
             >
-              <div className="font-sans text-[12px] font-medium text-fg/84">Retain proof</div>
-              <div className="mt-1 text-[11px] leading-5 text-fg/56">
-                {policy.retainArtifacts
-                  ? "Artifacts stay attached to this chat so you can inspect them in the proof drawer."
-                  : "Artifacts are not explicitly retained for review after the tool run finishes."}
-              </div>
-            </button>
-
-            <button
-              type="button"
-              className={cn(
-                "rounded-[22px] border px-4 py-3 text-left transition-colors",
-                policy.allowLocalFallback
-                  ? "border-amber-400/20 bg-amber-500/10"
-                  : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.1]",
-              )}
-              onClick={() => onChange({ ...policy, allowLocalFallback: !policy.allowLocalFallback })}
-              title="Allow ADE's local fallback tools if an external computer-use backend is unavailable"
-            >
-              <div className="font-sans text-[12px] font-medium text-fg/84">Allow local fallback</div>
-              <div className="mt-1 text-[11px] leading-5 text-fg/56">
-                {policy.allowLocalFallback
-                  ? "ADE may fall back to its local runtime when a connected backend is missing or unavailable."
-                  : "The chat must rely on connected external tooling only."}
-              </div>
+              Open proof drawer
             </button>
           </div>
-
-          {snapshot?.summary ? (
-            <div className="rounded-[20px] border border-white/[0.05] bg-black/10 px-4 py-3 text-[11px] leading-6 text-fg/56">
-              {snapshot.summary}
-            </div>
-          ) : null}
         </div>
       </div>
     </div>
@@ -652,7 +535,6 @@ export function AgentChatComposer({
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
-  const computerUseAllowed = computerUsePolicy.mode !== "off";
 
   const effectiveSlashCommands = useMemo(
     () => buildSlashCommands(sdkSlashCommands, selectedModel?.family),
@@ -1113,12 +995,6 @@ export function AgentChatComposer({
                       onExecutionModeChange={onExecutionModeChange}
                       computerUsePolicy={computerUsePolicy}
                       computerUseSnapshot={computerUseSnapshot ?? null}
-                      onToggleComputerUse={() => {
-                        onComputerUsePolicyChange({
-                          ...computerUsePolicy,
-                          mode: computerUseAllowed ? "off" : "enabled",
-                        });
-                      }}
                       onOpenComputerUseDetails={() => {
                         setAdvancedMenuOpen(false);
                         setComputerUseModalOpen(true);

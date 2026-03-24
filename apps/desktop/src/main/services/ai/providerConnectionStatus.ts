@@ -83,16 +83,18 @@ export async function buildProviderConnections(
   }
 
   // Apply runtime health overrides.
-  // Only an explicit auth failure should downgrade status. Transient probe
-  // failures (process abort, timeout) should not block a user with valid creds.
+  // If ADE cannot launch the actual provider runtime from this app session,
+  // surface that as not runtime-available even when auth artifacts exist.
   function applyRuntimeHealth(
     status: AiProviderConnectionStatus,
     health: ReturnType<typeof getProviderRuntimeHealth>,
   ): void {
-    if (health?.state === "auth-failed") {
+    if (health?.state === "auth-failed" || health?.state === "runtime-failed") {
       status.runtimeAvailable = false;
       status.blocker = health.message
-        ?? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`;
+        ?? (health.state === "auth-failed"
+          ? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`
+          : `${status.provider} runtime was detected, but ADE could not launch it from this app session.`);
     } else if (health?.state === "ready") {
       status.runtimeAvailable = true;
       status.authAvailable = true;
@@ -100,59 +102,70 @@ export async function buildProviderConnections(
     }
   }
 
-  const claude = createUnavailableStatus("claude", checkedAt);
-  claude.authAvailable = claudeFlags.authAvailable;
-  claude.runtimeDetected = claudeFlags.runtimeDetected;
-  claude.runtimeAvailable = claudeFlags.runtimeAvailable;
-  claude.usageAvailable = Boolean(claudeLocalCreds);
-  claude.path = claudeCli?.path ?? null;
-  claude.sources = [
-    {
-      kind: "local-credentials",
-      detected: Boolean(claudeLocalCreds),
-      source: claudeLocalCreds?.source,
-    },
-    {
-      kind: "cli",
-      detected: Boolean(claudeCli?.installed),
-      authenticated: claudeCli?.authenticated,
-      verified: claudeCli?.verified,
-      path: claudeCli?.path ?? null,
-    },
-  ];
-  claude.blocker = resolveBlocker("Claude", "claude auth login", claudeFlags);
-  applyRuntimeHealth(claude, claudeRuntimeHealth);
+  function buildStatus(args: {
+    provider: "claude" | "codex";
+    flags: ReturnType<typeof deriveProviderFlags>;
+    usageAvailable: boolean;
+    cli: CliAuthStatus | null;
+    localCreds: Awaited<ReturnType<typeof readClaudeCredentials>> | Awaited<ReturnType<typeof readCodexCredentials>>;
+    credentialExtras?: Record<string, unknown>;
+    label: string;
+    loginHint: string;
+    extraBlocker?: string | null;
+    health: ReturnType<typeof getProviderRuntimeHealth>;
+  }): AiProviderConnectionStatus {
+    const status = createUnavailableStatus(args.provider, checkedAt);
+    status.authAvailable = args.flags.authAvailable;
+    status.runtimeDetected = args.flags.runtimeDetected;
+    status.runtimeAvailable = args.flags.runtimeAvailable;
+    status.usageAvailable = args.usageAvailable;
+    status.path = args.cli?.path ?? null;
+    status.sources = [
+      {
+        kind: "local-credentials",
+        detected: Boolean(args.localCreds),
+        source: args.localCreds?.source,
+        ...args.credentialExtras,
+      },
+      {
+        kind: "cli",
+        detected: Boolean(args.cli?.installed),
+        authenticated: args.cli?.authenticated,
+        verified: args.cli?.verified,
+        path: args.cli?.path ?? null,
+      },
+    ];
+    status.blocker = resolveBlocker(args.label, args.loginHint, args.flags, args.extraBlocker);
+    applyRuntimeHealth(status, args.health);
+    return status;
+  }
 
-  const codex = createUnavailableStatus("codex", checkedAt);
-  codex.authAvailable = codexFlags.authAvailable;
-  codex.runtimeDetected = codexFlags.runtimeDetected;
-  codex.runtimeAvailable = codexFlags.runtimeAvailable;
-  codex.usageAvailable = codexUsageAvailable;
-  codex.path = codexCli?.path ?? null;
-  codex.sources = [
-    {
-      kind: "local-credentials",
-      detected: Boolean(codexLocalCreds),
-      source: codexLocalCreds?.source,
-      stale: Boolean(codexLocalCreds && isCodexTokenStale(codexLocalCreds)),
-    },
-    {
-      kind: "cli",
-      detected: Boolean(codexCli?.installed),
-      authenticated: codexCli?.authenticated,
-      verified: codexCli?.verified,
-      path: codexCli?.path ?? null,
-    },
-  ];
-  codex.blocker = resolveBlocker(
-    "Codex",
-    "codex login",
-    codexFlags,
-    codexLocalCreds && isCodexTokenStale(codexLocalCreds)
+  const claude = buildStatus({
+    provider: "claude",
+    flags: claudeFlags,
+    usageAvailable: Boolean(claudeLocalCreds),
+    cli: claudeCli,
+    localCreds: claudeLocalCreds,
+    label: "Claude",
+    loginHint: "claude auth login",
+    health: claudeRuntimeHealth,
+  });
+
+  const codexTokenStale = Boolean(codexLocalCreds && isCodexTokenStale(codexLocalCreds));
+  const codex = buildStatus({
+    provider: "codex",
+    flags: codexFlags,
+    usageAvailable: codexUsageAvailable,
+    cli: codexCli,
+    localCreds: codexLocalCreds,
+    credentialExtras: { stale: codexTokenStale },
+    label: "Codex",
+    loginHint: "codex login",
+    extraBlocker: codexTokenStale
       ? "Codex local auth exists, but the stored token looks stale for usage polling."
       : null,
-  );
-  applyRuntimeHealth(codex, codexRuntimeHealth);
+    health: codexRuntimeHealth,
+  });
 
   return { claude, codex };
 }

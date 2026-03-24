@@ -271,7 +271,7 @@ export function WorkerEditorPanel({
             blockedServers: draft.externalMcpBlockedServers,
           }}
           availableServers={availableExternalMcpServers}
-          description="These rules control which ADE-managed external MCP servers this worker can see in direct chat or delegated work."
+          description="These rules control which ADE-managed MCP servers this worker can see in direct chat or delegated work."
           onChange={(next) => setDraft((current) => ({
             ...current,
             externalMcpAllowAll: next.allowAll,

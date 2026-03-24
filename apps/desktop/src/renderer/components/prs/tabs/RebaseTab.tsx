@@ -9,6 +9,7 @@ import { UrgencyGroup } from "../shared/UrgencyGroup";
 import { StatusDot } from "../shared/StatusDot";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
+import { formatTimeAgo } from "../shared/prFormatters";
 
 type RebaseTabProps = {
   rebaseNeeds: RebaseNeed[];
@@ -32,17 +33,6 @@ function categorize(need: RebaseNeed): UrgencyCategory {
   if (need.behindBy === 0) return "upToDate";
   if (need.conflictPredicted) return "attention";
   return "clean";
-}
-
-function timeAgo(dateStr: string): string {
-  const ms = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
 }
 
 /* ── inline style constants ── */
@@ -811,7 +801,7 @@ export function RebaseTab({
                                 className="font-mono"
                                 style={{ fontSize: 10, color: S.textDisabled, flexShrink: 0 }}
                               >
-                                {timeAgo(commit.authoredAt)}
+                                {formatTimeAgo(commit.authoredAt)}
                               </span>
                               {isExpanded
                                 ? <CaretDown size={10} style={{ color: S.textMuted, flexShrink: 0 }} />

@@ -1711,5 +1711,8 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       setLevel: (_level: number) => {},
       getFactor: () => 1,
     },
+    updateCheckForUpdates: resolved(undefined),
+    updateQuitAndInstall: resolved(undefined),
+    onUpdateEvent: noop,
   };
 }

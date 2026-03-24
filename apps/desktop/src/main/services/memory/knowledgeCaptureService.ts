@@ -73,6 +73,19 @@ function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
+const GENERIC_PR_FEEDBACK_PATTERNS = [
+  /^preview deployment\b/i,
+  /^learn more about\b/i,
+  /^read more about\b/i,
+  /^see more\b/i,
+  /^click here\b/i,
+];
+
+const DERIVABLE_PR_FEEDBACK_PATTERNS = [
+  /^fixed in [0-9a-f]{7,}\b/i,
+  /^updated in [0-9a-f]{7,}\b/i,
+];
+
 function splitGuidanceLines(value: string): string[] {
   return value
     .split(/\n+|(?<=[.!?])\s+/)
@@ -135,10 +148,16 @@ function inferCaptureCategory(value: string): CaptureCategory | null {
 
 function inferConfidence(category: CaptureCategory, text: string): number {
   const normalized = normalizeText(text);
-  if (category === "gotcha") return normalized.includes("break") || normalized.includes("regression") ? 0.72 : 0.62;
-  if (category === "convention") return normalized.includes("must") || normalized.includes("never") ? 0.68 : 0.58;
-  if (category === "pattern") return 0.56;
-  return 0.52;
+  switch (category) {
+    case "gotcha":
+      return normalized.includes("break") || normalized.includes("regression") ? 0.72 : 0.62;
+    case "convention":
+      return normalized.includes("must") || normalized.includes("never") ? 0.68 : 0.58;
+    case "pattern":
+      return 0.56;
+    default:
+      return 0.52;
+  }
 }
 
 function inferImportance(category: CaptureCategory): "medium" | "high" {
@@ -157,6 +176,39 @@ function lexicalSimilarity(left: string, right: string): number {
   return union > 0 ? overlap / union : 0;
 }
 
+function hasDurablePrFeedbackSignals(value: string): boolean {
+  const normalized = normalizeText(value);
+  if (!normalized) return false;
+  return (
+    normalized.includes("always ")
+    || normalized.includes("never ")
+    || normalized.includes("must ")
+    || normalized.includes("should ")
+    || normalized.includes("prefer ")
+    || normalized.includes("unless ")
+    || normalized.includes("before ")
+    || normalized.includes("after ")
+    || normalized.includes("break")
+    || normalized.includes("regression")
+    || normalized.includes("coverage")
+    || normalized.includes("fallback")
+    || normalized.includes("validation")
+  );
+}
+
+function isLowSignalPrFeedbackContent(value: string): boolean {
+  const trimmed = cleanText(value);
+  if (!trimmed.length) return true;
+  if (GENERIC_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
+  if (DERIVABLE_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
+
+  const withoutUrls = trimmed.replace(/https?:\/\/\S+/gi, " ").replace(/\s+/g, " ").trim();
+  const wordCount = withoutUrls.split(/\s+/).filter(Boolean).length;
+  if (/https?:\/\//i.test(trimmed) && wordCount <= 8) return true;
+
+  return !hasDurablePrFeedbackSignals(trimmed) && wordCount < 7;
+}
+
 function toEpisodeContent(args: {
   sourceLabel: string;
   summary: string;
@@ -167,7 +219,17 @@ function toEpisodeContent(args: {
   sessionId?: string | null;
   fileScopePattern?: string | null;
 }): string {
-  return JSON.stringify({
+  const lines: string[] = [];
+  if (args.sourceLabel) lines.push(args.sourceLabel);
+  if (args.summary && args.summary !== args.sourceLabel) lines.push(args.summary);
+  const patterns = (args.patterns ?? []).filter(Boolean);
+  if (patterns.length > 0) lines.push(`Patterns: ${patterns.join("; ")}`);
+  const gotchas = (args.gotchas ?? []).filter(Boolean);
+  if (gotchas.length > 0) lines.push(`Pitfalls: ${gotchas.join("; ")}`);
+  const decisions = (args.decisions ?? []).filter(Boolean);
+  if (decisions.length > 0) lines.push(`Decisions: ${decisions.join("; ")}`);
+  // Preserve structured data for procedural learning parser
+  const episode = {
     id: randomUUID(),
     ...(args.sessionId ? { sessionId: args.sessionId } : {}),
     ...(args.missionId ? { missionId: args.missionId } : {}),
@@ -181,7 +243,9 @@ function toEpisodeContent(args: {
     duration: 0,
     createdAt: nowIso(),
     ...(args.fileScopePattern ? { fileScopePattern: args.fileScopePattern } : {}),
-  });
+  };
+  lines.push(`\n<!--episode:${Buffer.from(JSON.stringify(episode)).toString("base64")}-->`);
+  return lines.join("\n");
 }
 
 function firstFileScopePattern(raw: unknown): string | null {
@@ -594,28 +658,17 @@ export function createKnowledgeCaptureService(args: {
       if (readLedger("pr_feedback", sourceKey)) continue;
       const draft = extractPrFeedbackDraft(stripHtmlTags(body), cleanText(comment.path) || null);
       if (!draft) continue;
+      if (isLowSignalPrFeedbackContent(draft.content)) continue;
       const memory = recordCandidate({
         sourceType: "pr_feedback",
         sourceKey,
         draft,
         sourceId: `pr:${argsInput.prId}:${sourceKey}`,
       });
-      const episodeId = memory
-        ? await saveCompanionEpisode({
-            sourceType: "pr_feedback",
-            sourceKey,
-            sourceLabel: `PR feedback for ${argsInput.prNumber ? `#${argsInput.prNumber}` : argsInput.prId}`,
-            summary: draft.content,
-            category: draft.category,
-            sessionId: `pr:${argsInput.prId}`,
-            fileScopePattern: draft.fileScopePattern ?? null,
-          })
-        : null;
       writeLedger({
         sourceType: "pr_feedback",
         sourceKey,
         memoryId: memory?.id ?? null,
-        episodeMemoryId: episodeId,
         metadata: {
           prId: argsInput.prId,
           path: comment.path ?? null,
@@ -636,27 +689,17 @@ export function createKnowledgeCaptureService(args: {
       const fallbackCategory = review.state === "changes_requested" ? "convention" : null;
       const draft = extractActionableDrafts(splitGuidanceLines(strippedBody), fallbackCategory)[0];
       if (!draft) continue;
+      if (isLowSignalPrFeedbackContent(draft.content)) continue;
       const memory = recordCandidate({
         sourceType: "pr_feedback",
         sourceKey,
         draft,
         sourceId: `pr:${argsInput.prId}:${sourceKey}`,
       });
-      const episodeId = memory
-        ? await saveCompanionEpisode({
-            sourceType: "pr_feedback",
-            sourceKey,
-            sourceLabel: `PR review feedback for ${argsInput.prNumber ? `#${argsInput.prNumber}` : argsInput.prId}`,
-            summary: draft.content,
-            category: draft.category,
-            sessionId: `pr:${argsInput.prId}`,
-          })
-        : null;
       writeLedger({
         sourceType: "pr_feedback",
         sourceKey,
         memoryId: memory?.id ?? null,
-        episodeMemoryId: episodeId,
         metadata: {
           prId: argsInput.prId,
           reviewer: review.reviewer,

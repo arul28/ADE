@@ -111,9 +111,11 @@ describe("gitOperationsService.generateCommitMessage", () => {
     expect(capturedPrompt).not.toContain("Staged diff stat");
     expect(capturedPrompt).not.toContain("Staged patch preview");
     expect(capturedPrompt).not.toContain("Branch:");
+    expect(capturedPrompt).toContain("Diff:");
     expect(mockGit.runGit.mock.calls.map((call) => call[0])).toEqual([
       ["diff", "--cached", "--name-status", "--find-renames"],
       ["show", "--name-status", "--format=", "--find-renames", "HEAD"],
+      ["diff", "--cached", "--no-color", "-U2", "--find-renames"],
     ]);
   });
 });

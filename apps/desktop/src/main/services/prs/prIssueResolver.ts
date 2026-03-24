@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import { getModelById } from "../../../shared/modelRegistry";
 import type {
-  AgentChatPermissionMode,
   LaneSummary,
   PrActionRun,
   PrCheck,
@@ -17,11 +16,11 @@ import type {
   PrSummary,
 } from "../../../shared/types";
 import { getPrIssueResolutionAvailability } from "../../../shared/prIssueResolution";
-import { runGit } from "../git/git";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPrService } from "./prService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
+import { mapPermissionMode, readRecentCommits } from "./resolverUtils";
 
 type IssueResolutionPromptArgs = {
   pr: PrSummary;
@@ -50,12 +49,6 @@ type PreparedIssueResolutionPrompt = {
   prompt: string;
   title: string;
 };
-
-function mapIssueResolverPermissionMode(mode: PrIssueResolutionStartArgs["permissionMode"]): AgentChatPermissionMode {
-  if (mode === "full_edit") return "full-auto";
-  if (mode === "read_only") return "plan";
-  return "edit";
-}
 
 function truncateText(value: string, max: number): string {
   const normalized = value.trim();
@@ -332,23 +325,6 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
   return promptSections.join("\n");
 }
 
-async function readRecentCommits(worktreePath: string): Promise<Array<{ sha: string; subject: string }>> {
-  const result = await runGit(["log", "--format=%H%x09%s", "-n", "8"], { cwd: worktreePath, timeoutMs: 10_000 });
-  if (result.exitCode !== 0) return [];
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [sha, ...subjectParts] = line.split("\t");
-      return {
-        sha: (sha ?? "").trim(),
-        subject: subjectParts.join("\t").trim(),
-      };
-    })
-    .filter((entry) => entry.sha.length > 0 && entry.subject.length > 0);
-}
-
 async function preparePrIssueResolutionPrompt(
   deps: PrIssueResolutionLaunchDeps,
   args: PrIssueResolutionStartArgs | PrIssueResolutionPromptPreviewArgs,
@@ -433,7 +409,7 @@ export async function launchPrIssueResolutionChat(
     model: descriptor.id,
     modelId: descriptor.id,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    permissionMode: mapIssueResolverPermissionMode(args.permissionMode),
+    permissionMode: mapPermissionMode(args.permissionMode),
     surface: "work",
     sessionProfile: "workflow",
   });

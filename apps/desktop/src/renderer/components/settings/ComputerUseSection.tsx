@@ -1,127 +1,118 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import type { ComputerUseSettingsSnapshot } from "../../../shared/types";
+import React, { useCallback, useEffect, useState } from "react";
+import type { ComputerUseSettingsSnapshot, ComputerUseExternalBackendStatus } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
-import { formatComputerUseKind } from "../../lib/computerUse";
 
-const cardStyle: React.CSSProperties = {
-  background: COLORS.cardBg,
-  border: `1px solid ${COLORS.border}`,
-  padding: 14,
-};
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
-const sectionLabel: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 700,
-  fontFamily: MONO_FONT,
-  textTransform: "uppercase",
-  letterSpacing: "1px",
-  color: COLORS.textMuted,
-};
-
-function StatusPill({ label, tone }: { label: string; tone: "success" | "warning" | "muted" | "info" }) {
-  const color = tone === "success"
-    ? COLORS.success
-    : tone === "warning"
-      ? COLORS.warning
-      : tone === "info"
-        ? COLORS.info
-        : COLORS.textDim;
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        padding: "2px 8px",
-        fontSize: 9,
-        fontWeight: 700,
-        fontFamily: MONO_FONT,
-        textTransform: "uppercase",
-        letterSpacing: "1px",
-        color,
-        border: `1px solid ${color}35`,
-        background: `${color}12`,
-      }}
-    >
-      {label}
-    </span>
-  );
+function backendStatusLabel(
+  backend: ComputerUseExternalBackendStatus,
+  ghostConnected: boolean,
+): { label: string; color: string } {
+  if (backend.name === "Ghost OS") {
+    if (ghostConnected && backend.available) return { label: "Installed, connected", color: COLORS.success };
+    if (backend.available) return { label: "Installed", color: COLORS.success };
+    if (backend.state === "installed") return { label: "Installed, not connected", color: COLORS.warning };
+    return { label: "Not detected", color: COLORS.textDim };
+  }
+  if (backend.available) return { label: "Installed", color: COLORS.success };
+  if (backend.state === "installed") return { label: "Installed", color: COLORS.success };
+  return { label: "Not detected", color: COLORS.textDim };
 }
 
-function BackendCard({
-  title,
-  tone,
+/* ------------------------------------------------------------------ */
+/*  Expandable backend row                                             */
+/* ------------------------------------------------------------------ */
+
+function BackendRow({
+  name,
+  available,
+  statusLabel,
+  statusColor,
   detail,
-  helper,
-  diagnostics,
-  badges,
-  actions,
 }: {
-  title: string;
-  tone: "success" | "warning" | "muted" | "info";
-  detail: string;
-  helper: string;
-  diagnostics?: string[];
-  badges?: Array<{ label: string; tone: "success" | "warning" | "muted" | "info" }>;
-  actions?: Array<{ label: string; onClick: () => void }>;
+  name: string;
+  available: boolean;
+  statusLabel: string;
+  statusColor: string;
+  detail: string | null;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
   return (
-    <div style={cardStyle}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div style={sectionLabel}>{title}</div>
-          <div
-            className="mt-2 text-[13px] font-semibold"
-            style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
-          >
-            {detail}
-          </div>
-          <div
-            className="mt-2 text-[11px]"
-            style={{ color: COLORS.textSecondary, lineHeight: 1.5 }}
-          >
-            {helper}
-          </div>
-        </div>
-        <StatusPill
-          label={tone === "success" ? "Ready" : tone === "warning" ? "Attention" : tone === "info" ? "Supported" : "Unavailable"}
-          tone={tone}
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded((p) => !p)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          width: "100%",
+          padding: "8px 0",
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          fontFamily: SANS_FONT,
+          fontSize: 13,
+          color: COLORS.textPrimary,
+          textAlign: "left",
+        }}
+      >
+        {/* status dot */}
+        <span
+          style={{
+            display: "inline-block",
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            background: available ? COLORS.success : COLORS.textDim,
+            flexShrink: 0,
+          }}
         />
-      </div>
-      {badges?.length ? (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {badges.map((badge) => (
-            <StatusPill key={badge.label} label={badge.label} tone={badge.tone} />
-          ))}
-        </div>
-      ) : null}
-      {diagnostics?.length ? (
-        <div
-          className="mt-3 grid gap-1 text-[10px]"
-          style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT, lineHeight: 1.5 }}
+
+        {/* name */}
+        <span style={{ flex: 1, fontWeight: 500 }}>{name}</span>
+
+        {/* status text */}
+        <span style={{ fontSize: 12, color: statusColor, fontWeight: 400 }}>{statusLabel}</span>
+
+        {/* chevron */}
+        <span
+          style={{
+            fontSize: 10,
+            color: COLORS.textDim,
+            transform: expanded ? "rotate(90deg)" : "none",
+            transition: "transform 0.15s ease",
+          }}
         >
-          {diagnostics.map((line) => (
-            <div key={line}>{line}</div>
-          ))}
-        </div>
-      ) : null}
-      {actions?.length ? (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {actions.map((action) => (
-            <button key={action.label} type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })} onClick={action.onClick}>
-              {action.label}
-            </button>
-          ))}
+          {"\u25B8"}
+        </span>
+      </button>
+
+      {expanded && detail ? (
+        <div
+          style={{
+            paddingLeft: 17,
+            paddingBottom: 6,
+            fontSize: 12,
+            lineHeight: 1.5,
+            color: COLORS.textSecondary,
+          }}
+        >
+          {detail}
         </div>
       ) : null}
     </div>
   );
 }
 
-export function ComputerUseSection({
-  onOpenExternalMcp,
-}: {
-  onOpenExternalMcp: () => void;
-}) {
+/* ------------------------------------------------------------------ */
+/*  Main section                                                       */
+/* ------------------------------------------------------------------ */
+
+export function ComputerUseSection() {
   const [snapshot, setSnapshot] = useState<ComputerUseSettingsSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -147,12 +138,7 @@ export function ComputerUseSection({
     };
   }, []);
 
-  useEffect(() => {
-    const cancel = refresh();
-    return () => {
-      cancel();
-    };
-  }, [refresh]);
+  useEffect(() => refresh(), [refresh]);
 
   useEffect(() => {
     if (!window.ade?.externalMcp?.onEvent) return undefined;
@@ -161,161 +147,155 @@ export function ComputerUseSection({
     });
   }, [refresh]);
 
-  const availableBackends = useMemo(
-    () => snapshot?.backendStatus.backends.filter((backend) => backend.available) ?? [],
-    [snapshot],
-  );
+  const backends = snapshot?.backendStatus.backends ?? [];
+
+  /* ---- loading / error states ---- */
 
   if (loading) {
-    return <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 12 }}>Loading computer-use readiness...</div>;
-  }
-
-  if (!snapshot) {
     return (
-      <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 12 }}>
-        {error ?? "Computer-use readiness is unavailable."}
+      <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
+        Loading...
       </div>
     );
   }
 
-  const ghostOs = snapshot.backendStatus.backends.find((backend) => backend.name === "Ghost OS") ?? null;
-  const agentBrowser = snapshot.backendStatus.backends.find((backend) => backend.name === "agent-browser") ?? null;
+  if (!snapshot) {
+    return (
+      <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
+        {error ?? "Computer-use settings unavailable."}
+      </div>
+    );
+  }
+
   const ghostCheck = snapshot.ghostOsCheck;
-  const ghostProcessHealthTone = ghostCheck.processHealth?.state === "healthy"
-    ? "success"
-    : ghostCheck.processHealth?.state === "stale"
-      ? "warning"
-      : "info";
+  const localFallback = snapshot.backendStatus.localFallback;
 
   return (
-    <div style={{ maxWidth: 980, display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={cardStyle}>
-        <div style={sectionLabel}>Computer Use</div>
-        <div className="mt-2 text-[18px] font-semibold" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-          ADE is the proof and artifact control plane.
+    <div style={{ maxWidth: 640, display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* ---- header ---- */}
+      <div>
+        <div
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            fontFamily: MONO_FONT,
+            textTransform: "uppercase",
+            letterSpacing: "1px",
+            color: COLORS.textMuted,
+          }}
+        >
+          Computer Use
         </div>
-        <div className="mt-3 max-w-4xl text-[12px]" style={{ color: COLORS.textSecondary, lineHeight: 1.6 }}>
-          {snapshot.guidance.overview}
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <StatusPill label={availableBackends.length > 0 ? `${availableBackends.length} external backend${availableBackends.length === 1 ? "" : "s"} ready` : "no external backends ready"} tone={availableBackends.length > 0 ? "success" : "warning"} />
-          <StatusPill label={snapshot.backendStatus.localFallback.available ? "local fallback available" : "local fallback unavailable"} tone={snapshot.backendStatus.localFallback.available ? "info" : "muted"} />
-          <StatusPill label={snapshot.preferredBackend ? `preferred ${snapshot.preferredBackend}` : "auto backend selection"} tone="info" />
-        </div>
+
+        <p
+          style={{
+            marginTop: 8,
+            fontSize: 13,
+            lineHeight: 1.55,
+            color: COLORS.textSecondary,
+            fontFamily: SANS_FONT,
+          }}
+        >
+          ADE automatically captures proof from any screenshot, recording, trace, or log tool
+          visible in ADE chat. Use Managed MCP only when missions, workers, or CTO need ADE to
+          broker the same server directly; provider-native chat tools can still feed the proof
+          drawer without being re-added there.
+        </p>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <BackendCard
-          title="Ghost OS (External MCP)"
-          tone={ghostCheck.processHealth?.state === "stale"
-            ? "warning"
-            : ghostCheck.adeConnected
-              ? "success"
-              : ghostCheck.cliInstalled
-                ? "warning"
-                : "muted"}
-          detail={ghostCheck.summary}
-          helper={snapshot.guidance.ghostOs}
-          badges={[
-            {
-              label: ghostCheck.cliInstalled ? "ghost installed" : "ghost missing",
-              tone: ghostCheck.cliInstalled ? "success" : "muted",
-            },
-            {
-              label:
-                ghostCheck.setupState === "ready"
-                  ? "setup ready"
-                  : ghostCheck.setupState === "needs_setup"
-                    ? "needs ghost setup"
-                    : ghostCheck.setupState === "not_installed"
-                      ? "setup blocked"
-                      : "setup unknown",
-              tone:
-                ghostCheck.setupState === "ready"
-                  ? "success"
-                  : ghostCheck.setupState === "unknown"
-                    ? "info"
-                    : "warning",
-            },
-            {
-              label: ghostCheck.adeConfigured ? "ade configured" : "not in ade",
-              tone: ghostCheck.adeConfigured ? "info" : "warning",
-            },
-            {
-              label: ghostCheck.adeConnected ? "ade connected" : "not connected",
-              tone: ghostCheck.adeConnected ? "success" : "warning",
-            },
-            {
-              label:
-                ghostCheck.processHealth?.state === "healthy"
-                  ? "process healthy"
-                  : ghostCheck.processHealth?.state === "stale"
-                    ? "process stale"
-                    : "process unknown",
-              tone: ghostProcessHealthTone,
-            },
-          ]}
-          diagnostics={ghostCheck.details}
-          actions={[
-            { label: "Open External MCP", onClick: onOpenExternalMcp },
-            { label: "Ghost OS Repo", onClick: () => void window.ade.app.openExternal(ghostCheck.repoUrl) },
-          ]}
-        />
-        <BackendCard
-          title="agent-browser (External CLI)"
-          tone={agentBrowser?.available ? "success" : "warning"}
-          detail={agentBrowser?.detail ?? "Install agent-browser on the host machine so ADE can detect CLI-backed browser proof workflows."}
-          helper={snapshot.guidance.agentBrowser}
-          actions={[
-            { label: "agent-browser Docs", onClick: () => void window.ade.app.openExternal("https://github.com/vercel-labs/agent-browser") },
-          ]}
-        />
-        <BackendCard
-          title="ADE Local Fallback"
-          tone={snapshot.backendStatus.localFallback.available ? "info" : "muted"}
-          detail={snapshot.backendStatus.localFallback.detail}
-          helper={snapshot.guidance.fallback}
-        />
-      </div>
-
-      <div style={cardStyle}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div style={sectionLabel}>Readiness Matrix</div>
-            <div className="mt-2 text-[12px]" style={{ color: COLORS.textSecondary }}>
-              Proof kinds ADE can normalize today, and which backend can currently satisfy each one.
-            </div>
-          </div>
-          <button type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })} onClick={() => void window.ade.app.openExternal("https://github.com/ghostwright/ghost-os")}>
-            View Backend Setup
+      {/* ---- Ghost OS recommendation ---- */}
+      {!ghostCheck.adeConnected ? (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "10px 14px",
+            fontSize: 12,
+            lineHeight: 1.5,
+            fontFamily: SANS_FONT,
+            color: COLORS.accent,
+            background: COLORS.accentSubtle,
+            border: `1px solid ${COLORS.accentBorder}`,
+            borderRadius: 8,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            We recommend{" "}
+            <strong>Ghost OS</strong>{" "}
+            for full desktop automation.
+          </span>
+          <button
+            type="button"
+            style={{
+              ...outlineButton({ height: 26, padding: "0 10px", fontSize: 11 }),
+              color: COLORS.accent,
+              borderColor: COLORS.accentBorder,
+              flexShrink: 0,
+            }}
+            onClick={() => void window.ade.app.openExternal(ghostCheck.repoUrl)}
+          >
+            Set up Ghost OS
           </button>
         </div>
-        <div className="mt-4 overflow-x-auto">
-          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: MONO_FONT, fontSize: 10 }}>
-            <thead>
-              <tr style={{ color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "1px" }}>
-                <th style={{ textAlign: "left", padding: "0 0 8px" }}>Proof Kind</th>
-                <th style={{ textAlign: "left", padding: "0 0 8px" }}>External Coverage</th>
-                <th style={{ textAlign: "left", padding: "0 0 8px" }}>Fallback</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshot.capabilityMatrix.map((row) => (
-                <tr key={row.kind} style={{ borderTop: `1px solid ${COLORS.border}` }}>
-                  <td style={{ padding: "10px 0", color: COLORS.textPrimary }}>{formatComputerUseKind(row.kind)}</td>
-                  <td style={{ padding: "10px 0", color: COLORS.textSecondary }}>
-                    {row.externalBackends.length > 0 ? row.externalBackends.join(", ") : "No approved external backend detected"}
-                  </td>
-                  <td style={{ padding: "10px 0", color: row.localFallbackAvailable ? COLORS.info : COLORS.textDim }}>
-                    {row.localFallbackAvailable ? "Fallback available" : "No local fallback"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      ) : null}
+
+      {/* ---- detected backends ---- */}
+      <div
+        style={{
+          background: COLORS.cardBg,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 10,
+          padding: "4px 14px",
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            fontFamily: MONO_FONT,
+            textTransform: "uppercase",
+            letterSpacing: "1px",
+            color: COLORS.textMuted,
+            padding: "10px 0 2px",
+          }}
+        >
+          Detected backends
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {backends.map((b) => {
+            const status = backendStatusLabel(b, ghostCheck.adeConnected);
+            return (
+              <div
+                key={b.name}
+                style={{ borderTop: `1px solid ${COLORS.border}` }}
+              >
+                <BackendRow
+                  name={b.name}
+                  available={b.available}
+                  statusLabel={status.label}
+                  statusColor={status.color}
+                  detail={b.detail}
+                />
+              </div>
+            );
+          })}
+
+          {/* ADE Local fallback — always show */}
+          <div style={{ borderTop: `1px solid ${COLORS.border}` }}>
+            <BackendRow
+              name="ADE Local"
+              available={false}
+              statusLabel={localFallback.available ? "Available as fallback" : "Unavailable"}
+              statusColor={localFallback.available ? COLORS.info : COLORS.textDim}
+              detail={localFallback.detail}
+            />
+          </div>
         </div>
       </div>
 
+      {/* ---- transient error ---- */}
       {error ? (
         <div style={{ color: COLORS.warning, fontFamily: MONO_FONT, fontSize: 10 }}>
           {error}

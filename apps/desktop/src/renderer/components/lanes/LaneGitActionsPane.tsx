@@ -1082,7 +1082,7 @@ export function LaneGitActionsPane({
               autoRebaseStatus.state === "rebaseConflict" ? (
                 <button
                   type="button"
-                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }}
+                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
                   disabled={!laneId || busyAction != null}
                   onClick={() => {
                     if (laneId) onResolveRebaseConflict?.(laneId, rebaseConflictParentLaneId);
@@ -1093,7 +1093,7 @@ export function LaneGitActionsPane({
               ) : (
                 <button
                   type="button"
-                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }}
+                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
                   disabled={!laneId || busyAction != null}
                   onClick={() => runRebaseAndPushFlow(true)}
                 >
@@ -1153,7 +1153,7 @@ export function LaneGitActionsPane({
               style={{
                 ...outlineButton({ height: 30, padding: "0 8px", fontSize: 10, borderRadius: 6 }),
                 color: amendCommit ? COLORS.warning : COLORS.textDim,
-                borderColor: amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder,
+                border: `1px solid ${amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder}`,
                 background: amendCommit ? `${COLORS.warning}10` : "transparent",
               }}
               disabled={busyAction != null}
@@ -1190,7 +1190,7 @@ export function LaneGitActionsPane({
                   style={{
                     ...outlineButton({ height: 26, padding: "0 6px", fontSize: 9, borderRadius: 4 }),
                     color: syncMode === mode ? COLORS.accent : COLORS.textDim,
-                    borderColor: syncMode === mode ? `${COLORS.accent}40` : "transparent",
+                    border: `1px solid ${syncMode === mode ? `${COLORS.accent}40` : "transparent"}`,
                     background: syncMode === mode ? `${COLORS.accent}10` : "transparent",
                     opacity: !laneId || busyAction != null ? 0.5 : 1,
                   }}
@@ -1204,7 +1204,7 @@ export function LaneGitActionsPane({
               type="button"
               style={{
                 ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                ...(nextActionHint?.action === "pull" ? { color: COLORS.accent, borderColor: `${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+                ...(nextActionHint?.action === "pull" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
               }}
               disabled={!laneId || busyAction != null}
               onClick={() => runPull(syncMode)}
@@ -1217,7 +1217,7 @@ export function LaneGitActionsPane({
               type="button"
               style={{
                 ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                ...(nextActionHint?.action === "push" ? { color: COLORS.accent, borderColor: `${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+                ...(nextActionHint?.action === "push" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
               }}
               disabled={!laneId || busyAction != null}
               onClick={() => runPush(false)}
@@ -1231,7 +1231,7 @@ export function LaneGitActionsPane({
                 type="button"
                 style={{
                   ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                  ...(nextActionHint?.action === "rebase_push" ? { color: COLORS.accent, borderColor: `${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+                  ...(nextActionHint?.action === "rebase_push" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
                   opacity: (!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty) ? 0.45 : 1,
                 }}
                 disabled={!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty}
@@ -1252,7 +1252,7 @@ export function LaneGitActionsPane({
               style={{
                 ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
                 color: showAdvanced ? COLORS.accent : COLORS.textMuted,
-                borderColor: showAdvanced ? `${COLORS.accent}30` : COLORS.outlineBorder,
+                border: `1px solid ${showAdvanced ? `${COLORS.accent}30` : COLORS.outlineBorder}`,
               }}
               onClick={() => setShowAdvanced((prev) => !prev)}
               title="Advanced git operations"

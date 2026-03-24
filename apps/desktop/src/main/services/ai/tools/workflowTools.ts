@@ -166,12 +166,6 @@ export function createWorkflowTools(
           .describe("Optional description of what the screenshot shows"),
       }),
       execute: async ({ title, description }) => {
-        if (!isComputerUseModeEnabled(resolvedComputerUsePolicy.mode)) {
-          return {
-            success: false,
-            error: "Computer use is disabled for this chat session.",
-          };
-        }
         if (!resolvedComputerUsePolicy.allowLocalFallback) {
           return {
             success: false,

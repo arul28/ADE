@@ -104,13 +104,10 @@ describe("AgentChatComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
 
     fireEvent.click(screen.getByRole("button", { name: /^Parallel/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Computer use.*\b(On|Off)\b/i }));
     fireEvent.click(screen.getByRole("button", { name: /^Proof\b/i }));
     fireEvent.click(screen.getByRole("button", { name: /^Project Context\b/i }));
 
     expect(onExecutionModeChange).toHaveBeenCalledWith("parallel");
-    expect(onComputerUsePolicyChange).toHaveBeenCalledTimes(1);
-    expect(onComputerUsePolicyChange.mock.calls[0]?.[0]?.mode).toBe("off");
     expect(onToggleProof).toHaveBeenCalledTimes(1);
     expect(onIncludeProjectDocsChange).toHaveBeenCalledWith(true);
 

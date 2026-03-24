@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-15
+> Last updated: 2026-03-24
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -257,9 +257,10 @@ On startup and project switch, the AI integration service probes for available p
 
 - **`authDetector.ts`**: Detects CLI subscriptions (`claude`, `codex`), configured API keys, OpenRouter keys, and local model endpoints. Returns a `DetectedAuth[]` array used for mode derivation and model availability filtering.
 - **`providerCredentialSources.ts`**: Reads local credential files (Claude OAuth credentials, Codex auth tokens, macOS Keychain) and checks token freshness.
-- **`providerConnectionStatus.ts`**: Builds a structured `AiProviderConnections` object with per-provider `authAvailable`, `runtimeDetected`, `runtimeAvailable`, `usageAvailable`, `blocker`, and `sources` fields.
+- **`providerConnectionStatus.ts`**: Builds a structured `AiProviderConnections` object with per-provider `authAvailable`, `runtimeDetected`, `runtimeAvailable`, `usageAvailable`, `blocker`, and `sources` fields. Both `auth-failed` and `runtime-failed` health states now mark a provider as not runtime-available, with distinct blocker messages for each failure mode.
 - **`providerRuntimeHealth.ts`**: Tracks runtime health state (`ready`, `auth-failed`, `runtime-failed`) per provider. Health version increments on state changes, invalidating the status cache.
-- **`claudeRuntimeProbe.ts`**: On forced refresh, performs a lightweight Claude Agent SDK query to confirm the Claude runtime can authenticate and start from the current app session.
+- **`claudeRuntimeProbe.ts`**: On forced refresh, performs a lightweight Claude Agent SDK query to confirm the Claude runtime can authenticate and start from the current app session. The probe resolves the Claude Code executable path via `claudeCodeExecutable.ts` and injects a minimal ADE MCP server configuration so the probe runs under conditions closer to real session startup.
+- **`claudeCodeExecutable.ts`**: Resolves the Claude Code CLI binary path, consulting detected auth sources for known installation locations. Used by both the runtime probe and the provider resolver to ensure consistent executable discovery.
 
 If no usable provider is detected, ADE operates in guest mode: all deterministic features (packs, diffs, conflict detection) work normally, but AI-generated content (narratives, proposals, PR descriptions) is unavailable. The UI clearly indicates which features require a CLI subscription.
 
@@ -273,7 +274,7 @@ At startup, the AI integration service also initializes the models.dev integrati
 4. **Enrich**: Calls `updateModelPricing()` to merge live pricing into the `MODEL_PRICING` Proxy object, and `enrichModelRegistry()` to update context windows and capabilities in the registry.
 5. **Refresh**: Repeats every 6 hours (non-blocking).
 
-The model registry (`modelRegistry.ts`) contains 40+ models across 8 provider families (Anthropic, OpenAI, Google, DeepSeek, Mistral, xAI, OpenRouter, local providers such as Ollama/LM Studio/vLLM), classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). Each `ModelDescriptor` now includes pricing fields directly, with a `getModelPricing()` accessor for cost lookups. Provider-to-CLI resolution uses a flat `FAMILY_TO_CLI` lookup map instead of nested ternaries. Model profiles (`modelProfiles.ts`) are derived from `MODEL_REGISTRY` rather than maintained as parallel lists, ensuring profiles stay in sync with the registry automatically. The `UnifiedModelSelector` groups models by auth type and only shows models that are currently configured/detected -- a "Configure more..." link navigates to Settings.
+The model registry (`modelRegistry.ts`) contains 40+ models across 8 provider families (Anthropic, OpenAI, Google, DeepSeek, Mistral, xAI, OpenRouter, local providers such as Ollama/LM Studio/vLLM), classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). Each `ModelDescriptor` now includes pricing fields directly, with a `getModelPricing()` accessor for cost lookups. Provider-to-CLI resolution uses a flat `FAMILY_TO_CLI` lookup map instead of nested ternaries. `resolveProviderGroupForModel()` maps any descriptor to its provider group (`"claude"` | `"codex"` | `"unified"`), simplifying call sites that need to know the runtime family without inspecting CLI-wrapping details. Model profiles (`modelProfiles.ts`) are derived from `MODEL_REGISTRY` rather than maintained as parallel lists, ensuring profiles stay in sync with the registry automatically. The `UnifiedModelSelector` groups models by auth type and only shows models that are currently configured/detected -- a "Configure more..." link navigates to Settings.
 
 #### Provider Options (Reasoning Tier Passthrough)
 
@@ -379,6 +380,7 @@ The MCP server is a standalone package (`apps/mcp-server`) that exposes ADE's in
 - **Socket transport**: Used in embedded mode -- the desktop app serves `.ade/mcp.sock` and external agents connect via Unix socket
 - **Lifecycle**: Headless mode runs standalone with its own AI backend; embedded mode shares the desktop app's service instances
 - **Smart entry point**: Auto-detects `.ade/mcp.sock` to choose proxy (embedded) vs headless mode
+- **Session identity**: The MCP server propagates a `chatSessionId` field through `SessionIdentity`, resolved from the `ADE_CHAT_SESSION_ID` environment variable or the `initialize` handshake params. This links MCP tool calls back to their originating chat session for artifact ownership, computer use proof association, and audit logging. For standalone chat sessions (no mission/run/step context), the server infers the chat session from the caller ID when not explicitly provided.
 
 #### Available Tools
 
@@ -462,6 +464,8 @@ Status note (2026-03-12): this section describes the target computer-use archite
 Current implementation note: orchestrator closeout can reason about screenshot/browser-verification/video evidence from declared or discovered artifacts, and Linear closeout can publish artifact links, but automatic ADE-managed screenshot/video capture and PR-body embedding are not shipped end-to-end yet.
 
 **Permission control**: Computer use tools require `full-auto` / `bypassPermissions` permission level. Agents in `read-only` or `edit` modes cannot use GUI interaction tools (screenshot capture is allowed in all modes).
+
+**Computer use policy**: The `ComputerUsePolicy` mode is either `"auto"` (default) or `"enabled"`. The former `"off"` mode has been removed -- computer use is always available. Agents are directed to prefer Ghost OS (`ghost mcp`) for desktop or browser control when available, then other approved external backends, and only fall back to ADE-local computer use when explicitly allowed. When a task needs verification or proof, agents capture screenshots, videos, traces, or console logs and call `ingest_computer_use_artifacts` to file evidence in ADE's proof drawer.
 
 ### AI Orchestrator
 

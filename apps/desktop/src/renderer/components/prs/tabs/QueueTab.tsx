@@ -30,6 +30,7 @@ import { usePrs } from "../state/PrsContext";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
 import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
+import { formatError } from "../shared/prFormatters";
 import {
   buildManualLandWarnings,
   findQueueMemberSelection,
@@ -92,10 +93,6 @@ const THEME_AMBER: ColorTheme = { color: "#F59E0B", bg: "rgba(245,158,11,0.08)",
 const THEME_BLUE: ColorTheme = { color: "#60A5FA", bg: "rgba(96,165,250,0.08)", border: "rgba(96,165,250,0.24)" };
 const THEME_MUTED: ColorTheme = { color: "#A1A1AA", bg: "rgba(161,161,170,0.08)", border: "rgba(161,161,170,0.20)" };
 const BADGE_CLASS = "font-mono font-bold uppercase tracking-[1px]";
-
-function formatError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");

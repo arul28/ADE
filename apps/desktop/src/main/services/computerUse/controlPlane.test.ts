@@ -5,6 +5,18 @@ vi.mock("../ai/utils", () => ({
   commandExists: vi.fn(() => true),
 }));
 
+vi.mock("./localComputerUse", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./localComputerUse")>();
+  return {
+    ...actual,
+    getGhostDoctorProcessHealth: vi.fn(() => ({
+      state: "stale" as const,
+      processCount: 34,
+      detail: "34 ghost MCP processes found (expect 0 or 1).",
+    })),
+  };
+});
+
 vi.mock("node:child_process", () => ({
   spawnSync: vi.fn((command: string, args: string[]) => {
     if (command === "ghost" && args[0] === "doctor") {

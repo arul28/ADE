@@ -238,23 +238,12 @@ export function ChatSubagentStrip({
     [hoveredTaskId, snapshots],
   );
   const summaryText = useMemo(() => {
-    const activeLabel = activeCount === 1 ? "1 active agent" : `${activeCount} active agents`;
-    const backgroundLabel = backgroundRunningCount > 0
-      ? backgroundRunningCount === 1
-        ? "1 background"
-        : `${backgroundRunningCount} background`
-      : null;
-    const completedLabel = completedCount > 0
-      ? completedCount === 1
-        ? "1 done"
-        : `${completedCount} done`
-      : null;
-    const failedLabel = failedCount > 0
-      ? failedCount === 1
-        ? "1 failed"
-        : `${failedCount} failed`
-      : null;
-    return [activeLabel, backgroundLabel, completedLabel, failedLabel].filter((part): part is string => Boolean(part)).join(" · ");
+    const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+    const parts: string[] = [plural(activeCount, "active agent")];
+    if (backgroundRunningCount > 0) parts.push(`${backgroundRunningCount} background`);
+    if (completedCount > 0) parts.push(`${completedCount} done`);
+    if (failedCount > 0) parts.push(`${failedCount} failed`);
+    return parts.join(" \u00b7 ");
   }, [activeCount, backgroundRunningCount, completedCount, failedCount]);
 
   if (!snapshots.length) return null;

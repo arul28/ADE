@@ -69,6 +69,7 @@ import { createMissionMemoryLifecycleService } from "./services/memory/missionMe
 import { createEpisodicSummaryService } from "./services/memory/episodicSummaryService";
 import { createHumanWorkDigestService } from "./services/memory/humanWorkDigestService";
 import { createProceduralLearningService } from "./services/memory/proceduralLearningService";
+import { createMemoryRepairService } from "./services/memory/memoryRepairService";
 import { createSkillRegistryService } from "./services/memory/skillRegistryService";
 import { createKnowledgeCaptureService } from "./services/memory/knowledgeCaptureService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
@@ -954,6 +955,8 @@ app.whenReady().then(async () => {
       logger,
       cacheDir: path.join(app.getPath("userData"), "transformers-cache"),
     });
+    // Auto-detect previously downloaded embedding model at startup
+    void embeddingService.probeCache().catch(() => { /* best-effort */ });
     const hybridSearchService = createHybridSearchService({
       db,
       embeddingService,
@@ -994,6 +997,11 @@ app.whenReady().then(async () => {
       logger,
       projectId,
       onStatus: (event) => emitProjectEvent(projectRoot, IPC.memorySweepStatus, event)
+    });
+    const memoryRepairService = createMemoryRepairService({
+      db,
+      projectId,
+      logger,
     });
     const embeddingWorkerService = createEmbeddingWorkerService({
       db,
@@ -1103,6 +1111,15 @@ app.whenReady().then(async () => {
         }
       } catch (error) {
         logger.warn("ade.project.integrity_check_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      try {
+        memoryRepairService.runRepair();
+      } catch (error) {
+        logger.warn("memory.repair.failed", {
           projectRoot,
           error: error instanceof Error ? error.message : String(error),
         });

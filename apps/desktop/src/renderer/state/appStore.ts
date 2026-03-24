@@ -56,6 +56,13 @@ function normalizeProjectKey(projectRoot: string | null | undefined): string {
   return typeof projectRoot === "string" ? projectRoot.trim() : "";
 }
 
+function normalizeLaneWorkScopeKey(projectRoot: string | null | undefined, laneId: string | null | undefined): string {
+  const projectKey = normalizeProjectKey(projectRoot);
+  const normalizedLaneId = typeof laneId === "string" ? laneId.trim() : "";
+  if (!projectKey || !normalizedLaneId) return "";
+  return `${projectKey}::${normalizedLaneId}`;
+}
+
 function readInitialTheme(): ThemeId {
   try {
     const raw = window.localStorage.getItem("ade.theme");
@@ -92,6 +99,7 @@ type AppState = {
   keybindings: KeybindingsSnapshot | null;
   terminalAttention: TerminalAttentionSnapshot;
   workViewByProject: Record<string, WorkProjectViewState>;
+  laneWorkViewByScope: Record<string, WorkProjectViewState>;
 
   setProject: (project: ProjectInfo | null) => void;
   setShowWelcome: (show: boolean) => void;
@@ -105,6 +113,14 @@ type AppState = {
   getWorkViewState: (projectRoot: string | null | undefined) => WorkProjectViewState;
   setWorkViewState: (
     projectRoot: string | null | undefined,
+    next:
+      | Partial<WorkProjectViewState>
+      | ((prev: WorkProjectViewState) => WorkProjectViewState)
+  ) => void;
+  getLaneWorkViewState: (projectRoot: string | null | undefined, laneId: string | null | undefined) => WorkProjectViewState;
+  setLaneWorkViewState: (
+    projectRoot: string | null | undefined,
+    laneId: string | null | undefined,
     next:
       | Partial<WorkProjectViewState>
       | ((prev: WorkProjectViewState) => WorkProjectViewState)
@@ -157,6 +173,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   keybindings: null,
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
   workViewByProject: {},
+  laneWorkViewByScope: {},
 
   setProject: (project) => set({ project }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
@@ -201,6 +218,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     });
   },
+  getLaneWorkViewState: (projectRoot, laneId) => {
+    const key = normalizeLaneWorkScopeKey(projectRoot, laneId);
+    if (!key) return createDefaultWorkProjectViewState();
+    return get().laneWorkViewByScope[key] ?? createDefaultWorkProjectViewState();
+  },
+  setLaneWorkViewState: (projectRoot, laneId, next) => {
+    const key = normalizeLaneWorkScopeKey(projectRoot, laneId);
+    if (!key) return;
+    set((prev) => {
+      const current = prev.laneWorkViewByScope[key] ?? createDefaultWorkProjectViewState();
+      const updated =
+        typeof next === "function"
+          ? next(current)
+          : {
+              ...current,
+              ...next,
+            };
+      return {
+        laneWorkViewByScope: {
+          ...prev.laneWorkViewByScope,
+          [key]: updated,
+        },
+      };
+    });
+  },
 
   refreshProject: async () => {
     const project = await window.ade.app.getProject();
@@ -208,10 +250,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshLanes: async (options) => {
+    const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
     const lanes = await window.ade.lanes.list({
       includeArchived: false,
       includeStatus: options?.includeStatus ?? true,
     });
+    const projectKey = normalizeProjectKey(get().project?.rootPath);
+    if (projectKey !== requestedProjectKey) {
+      return;
+    }
     const selected = get().selectedLaneId;
     const runLane = get().runLaneId;
     const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;
@@ -219,10 +266,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((prev) => {
       const allowed = new Set(lanes.map((lane) => lane.id));
       const nextTabs: Record<string, LaneInspectorTab> = {};
+      const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
       for (const [laneId, tab] of Object.entries(prev.laneInspectorTabs)) {
         if (allowed.has(laneId)) nextTabs[laneId] = tab as LaneInspectorTab;
       }
-      return { lanes, selectedLaneId: nextSelected, runLaneId: nextRunLane, laneInspectorTabs: nextTabs };
+      for (const [scopeKey, viewState] of Object.entries(prev.laneWorkViewByScope)) {
+        if (!projectKey || !scopeKey.startsWith(`${projectKey}::`)) {
+          nextLaneWorkViews[scopeKey] = viewState;
+          continue;
+        }
+        const laneId = scopeKey.slice(projectKey.length + 2);
+        if (allowed.has(laneId)) nextLaneWorkViews[scopeKey] = viewState;
+      }
+      return {
+        lanes,
+        selectedLaneId: nextSelected,
+        runLaneId: nextRunLane,
+        laneInspectorTabs: nextTabs,
+        laneWorkViewByScope: nextLaneWorkViews,
+      };
     });
   },
 

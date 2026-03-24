@@ -125,12 +125,30 @@ export function createEpisodicSummaryService(args: {
     }
   };
 
+  const formatEpisodeContent = (episode: EpisodicMemory): string => {
+    const lines: string[] = [];
+    if (episode.taskDescription) lines.push(episode.taskDescription);
+    if (episode.approachTaken && episode.approachTaken !== episode.taskDescription) {
+      lines.push(`Approach: ${episode.approachTaken}`);
+    }
+    if (episode.outcome && episode.outcome !== "partial") lines.push(`Outcome: ${episode.outcome}`);
+    const patterns = (episode.patternsDiscovered ?? []).filter(Boolean);
+    if (patterns.length > 0) lines.push(`Patterns: ${patterns.join("; ")}`);
+    const gotchas = (episode.gotchas ?? []).filter(Boolean);
+    if (gotchas.length > 0) lines.push(`Pitfalls: ${gotchas.join("; ")}`);
+    const decisions = (episode.decisionsMade ?? []).filter(Boolean);
+    if (decisions.length > 0) lines.push(`Decisions: ${decisions.join("; ")}`);
+    // Preserve structured data for procedural learning parser
+    lines.push(`\n<!--episode:${Buffer.from(JSON.stringify(episode)).toString("base64")}-->`);
+    return lines.join("\n");
+  };
+
   const saveEpisode = async (episode: EpisodicMemory, sourceType: "mission_promotion" | "system", sourceId: string) => {
     const memory = args.memoryService.addMemory({
       projectId: args.projectId,
       scope: "project",
       category: "episode",
-      content: JSON.stringify(episode),
+      content: formatEpisodeContent(episode),
       importance: "medium",
       sourceType,
       sourceId,
@@ -204,7 +222,7 @@ export function createEpisodicSummaryService(args: {
     const summary = String(input.summary ?? "").trim();
     const duration = durationSeconds(input.startedAt, input.endedAt);
     const isTrivialSummary =
-      duration < 60
+      duration < 120
       && decisions.length === 0
       && gotchas.length === 0
       && toolsUsed.length === 0

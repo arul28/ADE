@@ -1073,6 +1073,16 @@ export function resolveCliProviderForModel(
   return null;
 }
 
+/**
+ * Resolve a model descriptor to its provider group ("claude" | "codex" | "unified").
+ * CLI-wrapped models map to their CLI runtime; all others map to "unified".
+ */
+export function resolveProviderGroupForModel(
+  descriptor: ModelDescriptor,
+): ModelProviderGroup {
+  return resolveCliProviderForModel(descriptor) ?? "unified";
+}
+
 export function classifyWorkerExecutionPath(
   descriptor: ModelDescriptor,
 ): WorkerExecutionPath {

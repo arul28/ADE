@@ -43,6 +43,18 @@ the abort infrastructure. When a turn exceeds this limit, an error event
 is emitted and the turn is terminated, preventing a single stalled
 provider call from blocking the session indefinitely.
 
+### Text Batching
+
+Streaming assistant text events from Codex and unified providers are
+batched before emission to the renderer. The `chatTextBatching` module
+accumulates text fragments for up to 100ms before flushing them as a
+single assistant-text event. This reduces renderer re-render frequency
+during fast streaming without introducing perceptible latency. The
+buffer is also flushed immediately on non-text events (tool calls, turn
+boundaries, errors) to preserve event ordering. When transcript entries
+are read via `getRecentEntries`, any pending buffered text is flushed
+first so the transcript always reflects the latest content.
+
 ## CTO Chat vs. Regular Chat
 
 A regular chat is an ephemeral coding assistant scoped to a lane.
@@ -178,6 +190,16 @@ provider-specific handling:
 The composer saves pasted or dropped images to a temporary location via
 the `saveTempAttachment` IPC handler. The service validates MIME types
 before sending to each provider.
+
+## Session Identity Propagation
+
+Each chat session propagates a `chatSessionId` to the MCP server via
+the `ADE_CHAT_SESSION_ID` environment variable. This links MCP tool
+calls (especially computer use artifact ingestion) back to the
+originating chat session. The MCP server resolves the chat session
+owner through a cascade: explicit tool argument, session identity
+field, and finally an implicit fallback for standalone chat sessions
+(no mission/run/step context) using the caller ID.
 
 ## Identity Session Filtering
 

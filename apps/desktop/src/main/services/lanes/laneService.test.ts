@@ -123,6 +123,9 @@ describe("laneService rebaseStart", () => {
           resolveRebase = resolve;
         });
       }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+      }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
 

@@ -574,7 +574,18 @@ export function createPtyService({
             break;
           } catch (err) {
             lastErr = err;
-            logger.warn("pty.spawn_retry", { ptyId, sessionId, shell: shell.file, err: String(err) });
+            logger.warn("pty.spawn_retry", {
+              ptyId,
+              sessionId,
+              shell: shell.file,
+              cwd,
+              toolType: toolTypeHint,
+              startupCommandPresent: Boolean(startupCommand),
+              envShell: process.env.SHELL ?? "",
+              envPath: process.env.PATH ?? "",
+              resourcesPath: process.resourcesPath ?? "",
+              err: String(err),
+            });
           }
         }
         if (!created) {
@@ -582,7 +593,19 @@ export function createPtyService({
         }
         pty = created;
       } catch (err) {
-        logger.error("pty.spawn_failed", { ptyId, sessionId, err: String(err) });
+        logger.error("pty.spawn_failed", {
+          ptyId,
+          sessionId,
+          cwd,
+          toolType: toolTypeHint,
+          startupCommandPresent: Boolean(startupCommand),
+          selectedShell: selectedShell?.file ?? null,
+          shellCandidates: shellCandidates.map((shell) => shell.file),
+          envShell: process.env.SHELL ?? "",
+          envPath: process.env.PATH ?? "",
+          resourcesPath: process.resourcesPath ?? "",
+          err: String(err),
+        });
         for (const cleanupPath of enrichedLaunch.cleanupPaths) {
           try {
             fs.unlinkSync(cleanupPath);
@@ -708,7 +731,15 @@ export function createPtyService({
           setRuntimeState(sessionId, "running");
           scheduleIdleTransition(sessionId);
         } catch (err) {
-          logger.warn("pty.startup_command_failed", { ptyId, sessionId, err: String(err) });
+          logger.warn("pty.startup_command_failed", {
+            ptyId,
+            sessionId,
+            cwd,
+            toolType: toolTypeHint,
+            envShell: process.env.SHELL ?? "",
+            envPath: process.env.PATH ?? "",
+            err: String(err),
+          });
         }
       }
 

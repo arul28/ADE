@@ -2219,6 +2219,7 @@ create table if not exists external_mcp_usage_events (
       safety text not null,
       caller_role text not null,
       caller_id text not null,
+      chat_session_id text,
       mission_id text,
       run_id text,
       step_id text,
@@ -2230,7 +2231,11 @@ create table if not exists external_mcp_usage_events (
       created_at text not null
     );
 
+alter table external_mcp_usage_events add column chat_session_id text;
+
 create index if not exists idx_external_mcp_usage_events_project_occurred on external_mcp_usage_events(project_id, occurred_at);
+
+create index if not exists idx_external_mcp_usage_events_chat on external_mcp_usage_events(project_id, chat_session_id, occurred_at);
 
 create index if not exists idx_external_mcp_usage_events_mission on external_mcp_usage_events(project_id, mission_id, occurred_at);
 

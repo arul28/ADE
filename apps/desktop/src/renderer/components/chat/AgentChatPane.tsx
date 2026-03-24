@@ -8,6 +8,7 @@ import {
   type AgentChatEventEnvelope,
   type AgentChatFileRef,
   type AgentChatPermissionMode,
+  type AiProviderConnectionStatus,
   type AgentChatSessionProfile,
   type ChatSurfaceChip,
   type ChatSurfaceProfile,
@@ -47,15 +48,15 @@ const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
 
-export function resolveChatSessionProfile(computerUsePolicy: ComputerUsePolicy): AgentChatSessionProfile {
-  return computerUsePolicy.mode === "off" ? "light" : "workflow";
+export function resolveChatSessionProfile(_computerUsePolicy: ComputerUsePolicy): AgentChatSessionProfile {
+  return "workflow";
 }
 
 export function shouldPromoteSessionForComputerUse(
   session: Pick<AgentChatSessionSummary, "sessionProfile"> | null | undefined,
-  computerUsePolicy: ComputerUsePolicy,
+  _computerUsePolicy: ComputerUsePolicy,
 ): boolean {
-  return computerUsePolicy.mode !== "off" && session?.sessionProfile !== "workflow";
+  return session?.sessionProfile !== "workflow";
 }
 
 type ExecutionModeOption = {
@@ -307,9 +308,11 @@ function resolveCliRegistryModelId(provider: "codex" | "claude", value: string |
 }
 
 function chatToolTypeForProvider(provider: string | null | undefined): "codex-chat" | "claude-chat" | "ai-chat" {
-  if (provider === "codex") return "codex-chat";
-  if (provider === "claude") return "claude-chat";
-  return "ai-chat";
+  switch (provider) {
+    case "codex": return "codex-chat";
+    case "claude": return "claude-chat";
+    default: return "ai-chat";
+  }
 }
 
 function normalizeChatLabel(raw: string | null | undefined): string | null {
@@ -375,13 +378,11 @@ function chatSessionTitle(session: AgentChatSessionSummary): string {
 }
 
 function completionBadgeClass(status: NonNullable<AgentChatSessionSummary["completion"]>["status"]): string {
-  if (status === "completed") {
-    return "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300";
+  switch (status) {
+    case "completed": return "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300";
+    case "blocked": return "border-red-400/20 bg-red-400/[0.08] text-red-300";
+    default: return "border-amber-400/20 bg-amber-400/[0.08] text-amber-300";
   }
-  if (status === "blocked") {
-    return "border-red-400/20 bg-red-400/[0.08] text-red-300";
-  }
-  return "border-amber-400/20 bg-amber-400/[0.08] text-amber-300";
 }
 
 export function AgentChatPane({
@@ -432,6 +433,10 @@ export function AgentChatPane({
     surfaceProfile === "persistent_identity" ? "full-auto" : "plan",
   );
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
+  const [providerConnections, setProviderConnections] = useState<{
+    claude: AiProviderConnectionStatus | null;
+    codex: AiProviderConnectionStatus | null;
+  } | null>(null);
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [includeProjectDocs, setIncludeProjectDocs] = useState(false);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
@@ -478,6 +483,11 @@ export function AgentChatPane({
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
+  const activeProviderConnection = selectedSession?.provider === "claude"
+    ? (providerConnections?.claude ?? null)
+    : selectedSession?.provider === "codex"
+      ? (providerConnections?.codex ?? null)
+      : null;
   const pendingApproval = selectedSessionId ? (approvalsBySession[selectedSessionId]?.[0] ?? null) : null;
   const pendingQuestion = useMemo(() => extractAskUserQuestion(pendingApproval), [pendingApproval]);
   const selectedModelDesc = getModelById(modelId);
@@ -616,6 +626,18 @@ export function AgentChatPane({
     }
   }, []);
 
+  const refreshProviderConnections = useCallback(async () => {
+    try {
+      const status = await window.ade.ai.getStatus();
+      setProviderConnections({
+        claude: status.providerConnections?.claude ?? null,
+        codex: status.providerConnections?.codex ?? null,
+      });
+    } catch {
+      setProviderConnections(null);
+    }
+  }, []);
+
   const refreshSessions = useCallback(async () => {
     if (!laneId) {
       setSessions([]);
@@ -652,6 +674,18 @@ export function AgentChatPane({
       return nextSelectedSessionId;
     });
   }, [forceDraft, laneId, lockSessionId, preferDraftStart]);
+
+  useEffect(() => {
+    void refreshProviderConnections();
+  }, [refreshProviderConnections, selectedSession?.provider]);
+
+  useEffect(() => {
+    if (!turnActive || !selectedSession?.provider) return;
+    const timer = window.setInterval(() => {
+      void refreshProviderConnections();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [refreshProviderConnections, selectedSession?.provider, turnActive]);
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
@@ -1695,6 +1729,16 @@ export function AgentChatPane({
         {error ? (
           <div className="border-b border-red-500/10 px-4 py-2 font-mono text-[10px] text-red-300/80">
             {error}
+          </div>
+        ) : null}
+        {selectedSessionId && activeProviderConnection?.blocker && !activeProviderConnection.runtimeAvailable ? (
+          <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
+            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
+              {activeProviderConnection.provider === "claude" ? "Claude runtime" : "Codex runtime"}
+            </div>
+            <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
+              {activeProviderConnection.blocker}
+            </div>
           </div>
         ) : null}
 

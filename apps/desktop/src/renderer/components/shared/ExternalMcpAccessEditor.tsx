@@ -29,7 +29,7 @@ export function ExternalMcpAccessEditor({
   value,
   availableServers,
   onChange,
-  title = "External MCP Access",
+  title = "ADE-managed MCP access",
   description,
 }: {
   value?: ExternalMcpAccessPolicy | null;
@@ -58,12 +58,12 @@ export function ExternalMcpAccessEditor({
           checked={policy.allowAll}
           onChange={(event) => update({ allowAll: event.target.checked })}
         />
-        Allow all configured external MCP servers by default
+        Allow all configured ADE-managed MCP servers by default
       </label>
 
       {serverNames.length === 0 ? (
         <div className="rounded border border-dashed border-border/30 bg-surface/40 px-3 py-2 font-mono text-[10px] text-muted-fg/60">
-          Add an external MCP server in Settings before assigning access here.
+          Add an ADE-managed MCP server in Settings before assigning access here.
         </div>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">

@@ -5,6 +5,7 @@ import type { GitHubPrListItem, GitHubPrSnapshot, LaneSummary, MergeMethod, PrSu
 import { EmptyState } from "../../ui/EmptyState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { PrDetailPane } from "../detail/PrDetailPane";
+import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatters";
 import { usePrs } from "../state/PrsContext";
 
 type GitHubTabProps = {
@@ -18,30 +19,6 @@ type GitHubTabProps = {
 };
 
 type GitHubFilter = "open" | "closed" | "merged" | "all";
-
-function formatTimestampLabel(iso: string | null): string {
-  if (!iso) return "---";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-function timeAgo(iso: string | null): string {
-  if (!iso) return "";
-  const now = Date.now();
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "";
-  const diffMs = now - then;
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d`;
-  const months = Math.floor(days / 30);
-  return `${months}mo`;
-}
 
 function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
   if (filter === "all") return true;
@@ -321,7 +298,7 @@ function GitHubReadOnlyPane({
           </div>
           <div>
             <div style={LABEL_STYLE}>Updated</div>
-            <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>{formatTimestampLabel(item.updatedAt)}</div>
+            <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>{formatTimestampShort(item.updatedAt)}</div>
           </div>
         </div>
       </div>
@@ -785,7 +762,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
               const linkedPr = item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null;
               const ci = ciDotColor(linkedPr);
               const review = reviewIndicator(linkedPr);
-              const ago = timeAgo(item.updatedAt);
+              const ago = formatTimeAgoCompact(item.updatedAt);
               return (
                 <button
                   key={item.id}
@@ -1002,7 +979,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                 externalItems.map((item) => {
                   const selected = item.id === selectedItemId;
                   const sc = stateColor(item.state);
-                  const ago = timeAgo(item.updatedAt);
+                  const ago = formatTimeAgoCompact(item.updatedAt);
                   return (
                     <button
                       key={item.id}

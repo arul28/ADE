@@ -1,11 +1,16 @@
+import fs from "node:fs";
+import path from "node:path";
 import { query as claudeQuery, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
+import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
+import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
+import { normalizeCliMcpServers } from "./providerResolver";
 
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CACHE_TTL_MS = 30_000;
@@ -22,6 +27,7 @@ type ClaudeRuntimeProbeResult =
 /** Cache and in-flight probe keyed by projectRoot to avoid cross-project contamination. */
 const probeCache = new Map<string, { checkedAtMs: number; result: ClaudeRuntimeProbeResult }>();
 const inFlightProbes = new Map<string, Promise<ClaudeRuntimeProbeResult>>();
+let runtimeRootCache: string | null = null;
 
 function normalizeErrorMessage(error: unknown): string {
   const text = getErrorMessage(error).trim();
@@ -84,16 +90,52 @@ function cacheResult(projectRoot: string, result: ClaudeRuntimeProbeResult): Cla
   return result;
 }
 
+function resolveProbeRuntimeRoot(): string {
+  if (runtimeRootCache !== null) return runtimeRootCache;
+  const startPoints = [process.cwd(), __dirname];
+  for (const start of startPoints) {
+    let dir = path.resolve(start);
+    for (let i = 0; i < 12; i += 1) {
+      if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
+        runtimeRootCache = dir;
+        return dir;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  runtimeRootCache = process.cwd();
+  return runtimeRootCache;
+}
+
+function resolveProbeMcpServers(projectRoot: string): Record<string, Record<string, unknown>> | undefined {
+  const launch = resolveAdeMcpServerLaunch({
+    workspaceRoot: projectRoot,
+    runtimeRoot: resolveProbeRuntimeRoot(),
+    defaultRole: "agent",
+  });
+  return normalizeCliMcpServers("claude", {
+    ade: {
+      command: launch.command,
+      args: launch.cmdArgs,
+      env: launch.env,
+    },
+  });
+}
+
 function publishResult(result: ClaudeRuntimeProbeResult): void {
-  if (result.state === "ready") {
-    reportProviderRuntimeReady("claude");
-    return;
+  switch (result.state) {
+    case "ready":
+      reportProviderRuntimeReady("claude");
+      break;
+    case "auth-failed":
+      reportProviderRuntimeAuthFailure("claude", result.message);
+      break;
+    case "runtime-failed":
+      reportProviderRuntimeFailure("claude", result.message);
+      break;
   }
-  if (result.state === "auth-failed") {
-    reportProviderRuntimeAuthFailure("claude", result.message);
-    return;
-  }
-  reportProviderRuntimeFailure("claude", result.message);
 }
 
 export function resetClaudeRuntimeProbeCache(): void {
@@ -119,20 +161,28 @@ export async function probeClaudeRuntimeHealth(args: {
     return;
   }
 
+  let claudeExecutablePath: string | null = null;
+
   const probe = (async (): Promise<ClaudeRuntimeProbeResult> => {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), PROBE_TIMEOUT_MS);
-    const stream = claudeQuery({
-      prompt: "System initialization check. Respond with only the word READY.",
-      options: {
-        cwd: projectRoot,
-        permissionMode: "plan",
-        tools: [],
-        abortController,
-      },
-    });
+    let stream: ReturnType<typeof claudeQuery> | null = null;
 
     try {
+      const claudeExecutable = resolveClaudeCodeExecutable();
+      claudeExecutablePath = claudeExecutable.path;
+      stream = claudeQuery({
+        prompt: "System initialization check. Respond with only the word READY.",
+        options: {
+          cwd: projectRoot,
+          permissionMode: "plan",
+          tools: [],
+          pathToClaudeCodeExecutable: claudeExecutable.path,
+          mcpServers: resolveProbeMcpServers(projectRoot) as any,
+          abortController,
+        },
+      });
+
       for await (const message of stream) {
         const result = resultFromSdkMessage(message);
         if (result) {
@@ -154,7 +204,7 @@ export async function probeClaudeRuntimeHealth(args: {
     } finally {
       clearTimeout(timeout);
       try {
-        stream.close();
+        stream?.close();
       } catch {
         // Best effort cleanup — avoid leaving the probe subprocess running.
       }
@@ -172,6 +222,7 @@ export async function probeClaudeRuntimeHealth(args: {
         projectRoot,
         state: result.state,
         message: result.message,
+        claudeExecutablePath,
       });
     }
   } finally {

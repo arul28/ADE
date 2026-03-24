@@ -66,6 +66,7 @@ import type {
   AgentChatSteerArgs,
   AgentChatSendArgs,
   AgentChatUpdateSessionArgs,
+  ComputerUseBackendStatus,
   ComputerUsePolicy,
   TerminalSessionStatus,
   TerminalToolType,
@@ -78,6 +79,7 @@ import {
   listModelDescriptorsForProvider,
   MODEL_REGISTRY,
   resolveModelAlias,
+  resolveProviderGroupForModel,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
@@ -106,6 +108,7 @@ import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearDispatcherService } from "../cto/linearDispatcherService";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import { createProofObserver } from "../computerUse/proofObserver";
 import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
@@ -263,6 +266,15 @@ function extractCodexTurnId(value: unknown): string | undefined {
   return pickCodexTurnId(record.turnId, record.turn_id, nestedTurn?.id);
 }
 
+function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true } | { ready: false; reason: string } {
+  if (managed.closed) return { ready: false, reason: "Session is disposed" };
+  if (!managed.runtime) return { ready: false, reason: "No runtime initialized" };
+  const rt = managed.runtime;
+  if ((rt.kind === "unified" || rt.kind === "claude") && rt.busy) return { ready: false, reason: "Turn already active" };
+  if (rt.kind === "unified" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
+  return { ready: true };
+}
+
 type ManagedChatSession = {
   session: AgentChatSession;
   transcriptPath: string;
@@ -297,6 +309,7 @@ type ManagedChatSession = {
     text: string;
     turnId?: string;
   }>;
+  eventSequence: number;
 };
 
 type AgentChatTranscriptEntry = {
@@ -356,6 +369,8 @@ type ResolvedChatConfig = {
   summaryEnabled: boolean;
   summaryModelId: string | null;
 };
+
+const MAX_PENDING_STEERS = 10;
 
 const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
 const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
@@ -825,36 +840,89 @@ function isLiteralSlashCommand(text: string): boolean {
   return extractSlashCommand(text) != null;
 }
 
-export function buildComputerUseDirective(policy: ComputerUsePolicy | null | undefined): string | null {
+export function buildComputerUseDirective(
+  policy: ComputerUsePolicy | null | undefined,
+  backendStatus: ComputerUseBackendStatus | null,
+): string | null {
   const effective = createDefaultComputerUsePolicy(policy ?? undefined);
-  if (effective.mode === "off") {
-    return [
-      "[ADE computer-use policy]",
-      "Computer use is OFF for this chat session.",
-      "Do not call ADE or external computer-use tools, do not request screenshots/videos/traces, and do not capture new computer-use proof in this session.",
-    ].join("\n");
+
+  const hasExternalBackends = backendStatus
+    ? backendStatus.backends.some((b) => b.available)
+    : false;
+  const hasLocalFallback = effective.allowLocalFallback;
+
+  // No backends and no local fallback → skip the directive entirely.
+  if (!hasExternalBackends && !hasLocalFallback && backendStatus != null) {
+    return null;
   }
 
-  const lines = [
-    "[ADE computer-use policy]",
-    effective.mode === "enabled"
-      ? "Computer use is explicitly ENABLED for this chat session."
-      : "Computer use is available in AUTO mode for this chat session.",
-    "External tools perform computer use. ADE should ingest and manage the resulting proof artifacts.",
-    "Use `get_computer_use_backend_status` to choose the best available backend first. Prefer Ghost OS (`ghost mcp`) for desktop or browser control, then other approved browser automation backends such as agent-browser or Electron browser automation if they are available.",
-    "If the user asks for proof or the task needs verification, capture screenshots, videos, traces, console logs, or verification output and call `ingest_computer_use_artifacts` so the evidence shows up in ADE's proof drawer.",
-    "Prefer approved external backends first and use ADE-local computer-use only as fallback compatibility support when explicitly allowed.",
-    effective.retainArtifacts
-      ? "If computer use produces screenshots, videos, traces, verification output, or logs, ingest and retain those artifacts in ADE."
-      : "If computer use is used, keep retained proof to the minimum necessary for the task.",
-  ];
-  if (!effective.allowLocalFallback) {
-    lines.push("Do not use ADE-local fallback computer-use tools in this chat.");
+  const sections: string[] = [];
+
+  // --- Header (always when we have any capability) ---
+  sections.push(
+    [
+      "## Computer Use",
+      "You have computer-use capabilities available. ADE will automatically capture screenshots and other artifacts from your tool calls into the proof drawer — you do not need to manually call ingest_computer_use_artifacts.",
+      "",
+      "Call `get_computer_use_backend_status` to check available backends before attempting computer use.",
+    ].join("\n"),
+  );
+
+  // --- Ghost OS section (only if a Ghost OS backend is detected) ---
+  const ghostOsBackend = backendStatus?.backends.find(
+    (b) => b.available && /ghost/i.test(b.name),
+  );
+  if (ghostOsBackend) {
+    sections.push(
+      [
+        "### Ghost OS (Desktop Automation)",
+        "Ghost OS is available for full desktop and browser automation. You can:",
+        "- See any app: ghost_screenshot, ghost_annotate, ghost_context, ghost_find, ghost_read",
+        "- Control any app: ghost_click, ghost_type, ghost_press, ghost_hotkey, ghost_scroll, ghost_drag",
+        "- Automate workflows: ghost_recipes, ghost_run",
+        "",
+        "Tips:",
+        "- Always call ghost_context before interacting with an app to orient yourself",
+        "- For Electron dev apps (like ADE itself), the app may register as \"Electron\" — use ghost_find or text queries rather than app-targeted commands",
+        "- Use ghost_annotate for a labeled screenshot with clickable coordinates",
+        "- For web apps in Chrome, prefer dom_id for clicking elements",
+        "- Use ghost_wait after clicks in web apps to wait for state changes",
+      ].join("\n"),
+    );
   }
-  if (effective.preferredBackend) {
-    lines.push(`Preferred backend: ${effective.preferredBackend}.`);
+
+  // --- agent-browser section (only if detected) ---
+  const agentBrowserBackend = backendStatus?.backends.find(
+    (b) => b.available && /agent-browser/i.test(b.name),
+  );
+  if (agentBrowserBackend) {
+    sections.push(
+      [
+        "### agent-browser (Browser Automation)",
+        "agent-browser is available for browser automation. Use it for web interactions, form filling, screenshots, and trace capture.",
+      ].join("\n"),
+    );
   }
-  return lines.join("\n");
+
+  // --- Local fallback section ---
+  if (hasLocalFallback) {
+    sections.push(
+      [
+        "### ADE Local (Fallback)",
+        "ADE local screenshot capture is available as a fallback if external backends are unavailable.",
+      ].join("\n"),
+    );
+  }
+
+  // --- Proof instructions (always) ---
+  sections.push(
+    [
+      "### Proof Capture",
+      "ADE automatically captures artifacts from your computer-use tool calls. Screenshots, recordings, and traces are saved to the proof drawer automatically. You can also explicitly call `ingest_computer_use_artifacts` if you need to add additional context or artifacts from non-standard sources.",
+    ].join("\n"),
+  );
+
+  return sections.join("\n\n");
 }
 
 function activityForToolName(
@@ -1093,6 +1161,10 @@ export function createAgentChatService(args: {
 
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
 
+  let proofObserver = computerUseArtifactBrokerRef
+    ? createProofObserver({ broker: computerUseArtifactBrokerRef })
+    : null;
+
   const layout = resolveAdeLayout(projectRoot);
   const chatSessionsDir = layout.chatSessionsDir;
   const chatTranscriptsDir = layout.chatTranscriptsDir;
@@ -1103,6 +1175,15 @@ export function createAgentChatService(args: {
   const managedSessions = new Map<string, ManagedChatSession>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
+  const AUTO_MEMORY_CATEGORY_ALLOWLIST = new Set([
+    "fact",
+    "preference",
+    "pattern",
+    "decision",
+    "gotcha",
+    "convention",
+    "procedure",
+  ]);
 
   const ensureSubagentSnapshotMap = (sessionId: string): Map<string, AgentChatSubagentSnapshot> => {
     let collection = subagentStates.get(sessionId);
@@ -1111,6 +1192,75 @@ export function createAgentChatService(args: {
       subagentStates.set(sessionId, collection);
     }
     return collection;
+  };
+
+  const compactMemorySnippet = (value: string, maxChars = 260): string => {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    if (normalized.length <= maxChars) return normalized;
+    return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+  };
+
+  const shouldInjectAutoMemory = (promptText: string): boolean => {
+    const trimmed = promptText.trim();
+    if (trimmed.length < 12) return false;
+    if (trimmed.startsWith("/")) return false;
+    if (/^before context compaction runs\b/i.test(trimmed)) return false;
+    if (/^review this conversation and persist\b/i.test(trimmed)) return false;
+    return true;
+  };
+
+  const buildAutoMemoryTurnContext = async (
+    managed: ManagedChatSession,
+    promptText: string,
+  ): Promise<string> => {
+    if (!memoryService || !projectId) return "";
+    if (isLightweightSession(managed.session)) return "";
+    if (!shouldInjectAutoMemory(promptText)) return "";
+
+    const query = promptText.trim().slice(0, 300);
+    const agentScopeOwnerId = managed.session.identityKey ?? managed.session.id;
+
+    const [projectHits, agentHits] = await Promise.all([
+      memoryService.search({
+        projectId,
+        query,
+        scope: "project",
+        status: "promoted",
+        tiers: [1, 2],
+        limit: 12,
+      }).catch(() => []),
+      memoryService.search({
+        projectId,
+        query,
+        scope: "agent",
+        scopeOwnerId: agentScopeOwnerId,
+        status: "promoted",
+        tiers: [1, 2],
+        limit: 6,
+      }).catch(() => []),
+    ]);
+
+    const seen = new Set<string>();
+    const memories = [...projectHits, ...agentHits]
+      .filter((memory) => AUTO_MEMORY_CATEGORY_ALLOWLIST.has(String(memory.category ?? "").trim()))
+      .filter((memory) => {
+        if (seen.has(memory.id)) return false;
+        seen.add(memory.id);
+        return true;
+      })
+      .sort((left, right) => {
+        if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+        if (left.tier !== right.tier) return left.tier - right.tier;
+        return right.compositeScore - left.compositeScore;
+      })
+      .slice(0, 6);
+
+    if (memories.length === 0) return "";
+
+    return [
+      "Relevant ADE memory for this turn (use it when helpful; current code and files win if they disagree):",
+      ...memories.map((memory) => `- [${memory.scope}/${memory.category}] ${compactMemorySnippet(memory.content)}`),
+    ].join("\n");
   };
 
   const clearSubagentSnapshots = (sessionId: string): void => {
@@ -1912,11 +2062,17 @@ export function createAgentChatService(args: {
     const envelope: AgentChatEventEnvelope = {
       sessionId: managed.session.id,
       timestamp: nowIso(),
-      event
+      event,
+      sequence: ++managed.eventSequence,
     };
 
     writeTranscript(managed, envelope);
     onEvent?.(envelope);
+
+    // Passive proof capture: observe tool results for screenshots/artifacts.
+    if (proofObserver && event.type === "tool_result") {
+      proofObserver.observe(event, managed.session.id);
+    }
 
     const collector = sessionTurnCollectors.get(managed.session.id);
     if (!collector) return;
@@ -2340,6 +2496,7 @@ export function createAgentChatService(args: {
       previewTextBuffer: null,
       bufferedText: null,
       recentConversationEntries: [],
+      eventSequence: 0,
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
@@ -2368,6 +2525,7 @@ export function createAgentChatService(args: {
     const runtime = managed.runtime;
     const attachments = args.attachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
 
     // Intercept /review command — route to review/start RPC instead of turn/start
     if (args.promptText.trim().startsWith("/review")) {
@@ -2383,17 +2541,11 @@ export function createAgentChatService(args: {
       return;
     }
 
-    const input: Array<Record<string, unknown>> = [
-      {
-        type: "text",
-        text: args.promptText,
-        text_elements: []
-      }
-    ];
+    const input: Array<Record<string, unknown>> = [];
 
     const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
     if (reconstructionContext.length) {
-      input.unshift({
+      input.push({
         type: "text",
         text: [
           "System context (CTO reconstruction, do not echo verbatim):",
@@ -2403,6 +2555,18 @@ export function createAgentChatService(args: {
       });
       managed.pendingReconstructionContext = null;
     }
+    if (autoMemoryContext.length) {
+      input.push({
+        type: "text",
+        text: autoMemoryContext,
+        text_elements: [],
+      });
+    }
+    input.push({
+      type: "text",
+      text: args.promptText,
+      text_elements: []
+    });
 
     for (const attachment of attachments) {
       if (attachment.type === "image") {
@@ -2534,8 +2698,10 @@ export function createAgentChatService(args: {
     if (runtime?.kind !== "claude") {
       throw new Error(`Claude runtime is not available for session '${managed.session.id}'.`);
     }
-    if (runtime.busy) {
-      throw new Error("A turn is already active. Use steer or interrupt.");
+    const validation = validateSessionReadyForTurn(managed);
+    if (!validation.ready) {
+      logger.warn("agent_chat.turn_not_ready", { sessionId: managed.session.id, reason: validation.reason });
+      throw new Error(validation.reason);
     }
 
     const turnId = randomUUID();
@@ -2546,22 +2712,6 @@ export function createAgentChatService(args: {
 
     const attachments = args.attachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-
-    const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-    const basePromptText = [
-      reconstructionContext.length
-        ? [
-            "System context (identity reconstruction, do not echo verbatim):",
-            reconstructionContext,
-          ].join("\n")
-        : null,
-      args.promptText,
-    ].filter((section): section is string => Boolean(section)).join("\n\n");
-    if (reconstructionContext.length) {
-      managed.pendingReconstructionContext = null;
-      persistChatState(managed);
-    }
-
     emitChatEvent(managed, { type: "user_message", text: displayText, attachments, turnId });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
 
@@ -2570,6 +2720,7 @@ export function createAgentChatService(args: {
     let costUsd: number | null = null;
     const turnStartedAt = Date.now();
     let firstStreamEventLogged = false;
+    const emittedClaudeToolIds = new Set<string>();
     const markFirstStreamEvent = (kind: string): void => {
       if (firstStreamEventLogged) return;
       firstStreamEventLogged = true;
@@ -2581,11 +2732,35 @@ export function createAgentChatService(args: {
         latencyMs: Date.now() - turnStartedAt,
       });
     };
+    const buildClaudeContentItemId = (
+      kind: "thinking" | "tool",
+      contentIndex: number | null | undefined,
+      explicitId?: string | null,
+    ): string | undefined => {
+      const normalizedExplicitId = explicitId?.trim();
+      if (normalizedExplicitId) return normalizedExplicitId;
+      if (typeof contentIndex !== "number" || !Number.isFinite(contentIndex)) return undefined;
+      return `claude-${kind}:${turnId}:${contentIndex}`;
+    };
 
     try {
-      const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
-      const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
+      const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
 
+      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
+      const basePromptText = [
+        reconstructionContext.length
+          ? [
+              "System context (identity reconstruction, do not echo verbatim):",
+              reconstructionContext,
+            ].join("\n")
+          : null,
+        autoMemoryContext.length ? autoMemoryContext : null,
+        args.promptText,
+      ].filter((section): section is string => Boolean(section)).join("\n\n");
+      if (reconstructionContext.length) {
+        managed.pendingReconstructionContext = null;
+        persistChatState(managed);
+      }
       // ── V2 persistent session with background pre-warming ──
       // The pre-warm was kicked off in ensureClaudeSessionRuntime. Wait for it.
       if (runtime.v2WarmupDone) {
@@ -2827,7 +3002,7 @@ export function createAgentChatService(args: {
           const assistantMsg = msg as any;
           const betaMessage = assistantMsg.message;
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
-            for (const block of betaMessage.content) {
+            for (const [blockIndex, block] of betaMessage.content.entries()) {
               if (block.type === "text") {
                 assistantText += block.text ?? "";
                 emitChatEvent(managed, {
@@ -2837,6 +3012,7 @@ export function createAgentChatService(args: {
                 });
               } else if (block.type === "thinking") {
                 const thinkingText = block.thinking ?? block.text ?? "";
+                const reasoningItemId = buildClaudeContentItemId("thinking", blockIndex);
                 emitChatEvent(managed, {
                   type: "activity",
                   activity: "thinking",
@@ -2846,24 +3022,33 @@ export function createAgentChatService(args: {
                 emitChatEvent(managed, {
                   type: "reasoning",
                   text: thinkingText,
+                  ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
                   turnId,
                 });
               } else if (block.type === "tool_use") {
                 const toolName = String(block.name ?? "tool");
+                const itemId = buildClaudeContentItemId(
+                  "tool",
+                  blockIndex,
+                  typeof block.id === "string" ? block.id : null,
+                ) ?? randomUUID();
                 const nextActivity = activityForToolName(toolName);
-                emitChatEvent(managed, {
-                  type: "activity",
-                  activity: nextActivity.activity,
-                  detail: nextActivity.detail,
-                  turnId,
-                });
-                emitChatEvent(managed, {
-                  type: "tool_call",
-                  tool: toolName,
-                  args: block.input ?? {},
-                  itemId: String(block.id ?? randomUUID()),
-                  turnId,
-                });
+                if (!emittedClaudeToolIds.has(itemId)) {
+                  emittedClaudeToolIds.add(itemId);
+                  emitChatEvent(managed, {
+                    type: "activity",
+                    activity: nextActivity.activity,
+                    detail: nextActivity.detail,
+                    turnId,
+                  });
+                  emitChatEvent(managed, {
+                    type: "tool_call",
+                    tool: toolName,
+                    args: block.input ?? {},
+                    itemId,
+                    turnId,
+                  });
+                }
               }
             }
           }
@@ -2882,6 +3067,7 @@ export function createAgentChatService(args: {
           const streamMsg = msg as any;
           const event = streamMsg.event;
           if (!event) continue;
+          const contentIndex = typeof event.index === "number" ? event.index : null;
 
           if (event.type === "content_block_delta") {
             const delta = event.delta;
@@ -2894,13 +3080,19 @@ export function createAgentChatService(args: {
             } else if (delta?.type === "thinking_delta") {
               const text = delta.thinking ?? delta.text ?? "";
               if (text.length) {
+                const reasoningItemId = buildClaudeContentItemId("thinking", contentIndex);
                 emitChatEvent(managed, {
                   type: "activity",
                   activity: "thinking",
                   detail: REASONING_ACTIVITY_DETAIL,
                   turnId,
                 });
-                emitChatEvent(managed, { type: "reasoning", text, turnId });
+                emitChatEvent(managed, {
+                  type: "reasoning",
+                  text,
+                  ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
+                  turnId,
+                });
               }
             } else if (delta?.type === "input_json_delta") {
               // Tool input streaming — just emit activity
@@ -2914,6 +3106,7 @@ export function createAgentChatService(args: {
           } else if (event.type === "content_block_start") {
             const block = event.content_block;
             if (block?.type === "thinking") {
+              const reasoningItemId = buildClaudeContentItemId("thinking", contentIndex);
               emitChatEvent(managed, {
                 type: "activity",
                 activity: "thinking",
@@ -2923,17 +3116,37 @@ export function createAgentChatService(args: {
               // Some SDK versions include initial thinking text on block start
               const startText = block.thinking ?? block.text ?? "";
               if (startText.length) {
-                emitChatEvent(managed, { type: "reasoning", text: startText, turnId });
+                emitChatEvent(managed, {
+                  type: "reasoning",
+                  text: startText,
+                  ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
+                  turnId,
+                });
               }
             } else if (block?.type === "tool_use") {
               const toolName = String(block.name ?? "tool");
+              const itemId = buildClaudeContentItemId(
+                "tool",
+                contentIndex,
+                typeof block.id === "string" ? block.id : null,
+              ) ?? randomUUID();
               const nextActivity = activityForToolName(toolName);
-              emitChatEvent(managed, {
-                type: "activity",
-                activity: nextActivity.activity,
-                detail: nextActivity.detail,
-                turnId,
-              });
+              if (!emittedClaudeToolIds.has(itemId)) {
+                emittedClaudeToolIds.add(itemId);
+                emitChatEvent(managed, {
+                  type: "activity",
+                  activity: nextActivity.activity,
+                  detail: nextActivity.detail,
+                  turnId,
+                });
+                emitChatEvent(managed, {
+                  type: "tool_call",
+                  tool: toolName,
+                  args: block.input ?? {},
+                  itemId,
+                  turnId,
+                });
+              }
             }
           } else if (event.type === "message_start") {
             const msgUsage = event.message?.usage;
@@ -3077,8 +3290,8 @@ export function createAgentChatService(args: {
 
       persistChatState(managed);
 
-      // Process queued steers
-      if (runtime.pendingSteers.length) {
+      // Process queued steers (skip if session was disposed during execution)
+      if (!managed.closed && runtime.pendingSteers.length) {
         const steerText = runtime.pendingSteers.shift() ?? "";
         if (steerText.trim().length) {
           await runClaudeTurn(managed, { promptText: steerText, displayText: steerText, attachments: [] });
@@ -3169,8 +3382,10 @@ export function createAgentChatService(args: {
     }
 
     const runtime = managed.runtime as UnifiedRuntime;
-    if (runtime.busy) {
-      throw new Error("A turn is already active. Use steer or interrupt.");
+    const validation = validateSessionReadyForTurn(managed);
+    if (!validation.ready) {
+      logger.warn("agent_chat.turn_not_ready", { sessionId: managed.session.id, reason: validation.reason });
+      throw new Error(validation.reason);
     }
     const turnId = randomUUID();
     runtime.busy = true;
@@ -3179,56 +3394,8 @@ export function createAgentChatService(args: {
     managed.session.status = "active";
     const attachments = args.attachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-
-    const attachmentHint = attachments.length
-      ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
-      : "";
-    const userContent = `${args.promptText}${attachmentHint}`;
-
-    applyReconstructionContextToStreamingRuntime(managed, runtime);
-
-    runtime.messages.push({ role: "user", content: userContent });
     emitChatEvent(managed, { type: "user_message", text: displayText, attachments, turnId });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-
-    const abortController = new AbortController();
-    runtime.abortController = abortController;
-
-    // Turn-level timeout: abort if the entire turn exceeds the limit
-    const turnTimeout = setTimeout(() => {
-      logger.warn("agent_chat.turn_timeout", {
-        sessionId: managed.session.id,
-        turnId,
-        timeoutMs: TURN_TIMEOUT_MS,
-      });
-      emitChatEvent(managed, {
-        type: "error",
-        message: `Turn timed out after ${TURN_TIMEOUT_MS / 1000}s. The agent loop was aborted.`,
-        turnId,
-      });
-      runtime.interrupted = true;
-      abortController.abort();
-    }, TURN_TIMEOUT_MS);
-
-    const streamMessages = runtime.messages.map((message, index): ModelMessage => {
-      const isCurrentUserMessage = index === runtime.messages.length - 1 && message.role === "user";
-      if (!isCurrentUserMessage) {
-        return {
-          role: message.role as "user" | "assistant",
-          content: message.content,
-        };
-      }
-
-      return {
-        role: "user",
-        content: buildStreamingUserContent({
-          baseText: args.promptText,
-          attachments,
-          runtimeKind: "unified",
-          modelDescriptor: runtime.modelDescriptor,
-        }),
-      };
-    });
 
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
@@ -3247,7 +3414,64 @@ export function createAgentChatService(args: {
       });
     };
 
+    let turnTimeout: ReturnType<typeof setTimeout> | undefined;
+
     try {
+      const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
+
+      const attachmentHint = attachments.length
+        ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
+        : "";
+      const userContent = [
+        autoMemoryContext.length ? autoMemoryContext : null,
+        `${args.promptText}${attachmentHint}`,
+      ].filter((section): section is string => Boolean(section)).join("\n\n");
+      const streamingBaseText = autoMemoryContext.length
+        ? `${autoMemoryContext}\n\n${args.promptText}`
+        : args.promptText;
+
+      applyReconstructionContextToStreamingRuntime(managed, runtime);
+
+      runtime.messages.push({ role: "user", content: userContent });
+
+      const abortController = new AbortController();
+      runtime.abortController = abortController;
+
+      // Turn-level timeout: abort if the entire turn exceeds the limit
+      turnTimeout = setTimeout(() => {
+        logger.warn("agent_chat.turn_timeout", {
+          sessionId: managed.session.id,
+          turnId,
+          timeoutMs: TURN_TIMEOUT_MS,
+        });
+        emitChatEvent(managed, {
+          type: "error",
+          message: `Turn timed out after ${TURN_TIMEOUT_MS / 1000}s. The agent loop was aborted.`,
+          turnId,
+        });
+        runtime.interrupted = true;
+        abortController.abort();
+      }, TURN_TIMEOUT_MS);
+
+      const streamMessages = runtime.messages.map((message, index): ModelMessage => {
+        const isCurrentUserMessage = index === runtime.messages.length - 1 && message.role === "user";
+        if (!isCurrentUserMessage) {
+          return {
+            role: message.role as "user" | "assistant",
+            content: message.content,
+          };
+        }
+
+        return {
+          role: "user",
+          content: buildStreamingUserContent({
+            baseText: streamingBaseText,
+            attachments,
+            runtimeKind: "unified",
+            modelDescriptor: runtime.modelDescriptor,
+          }),
+        };
+      });
       const lightweight = isLightweightSession(managed.session);
       const tools = lightweight
         ? {}
@@ -3645,8 +3869,8 @@ export function createAgentChatService(args: {
 
       persistChatState(managed);
 
-      // Process queued steers
-      if (runtime.pendingSteers.length) {
+      // Process queued steers (skip if session was disposed during execution)
+      if (!managed.closed && runtime.pendingSteers.length) {
         const steerText = runtime.pendingSteers.shift() ?? "";
         if (steerText.trim().length) {
           await runTurn(managed, { promptText: steerText, displayText: steerText, attachments: [] });
@@ -4109,7 +4333,11 @@ export function createAgentChatService(args: {
         totalUsage?: unknown;
         error?: { message?: unknown; codexErrorInfo?: unknown } | null;
       } | null) ?? null;
-      const turnId = typeof turn?.id === "string" ? turn.id : runtime.activeTurnId ?? randomUUID();
+      const resolvedTurnId = typeof turn?.id === "string" ? turn.id : runtime.activeTurnId ?? undefined;
+      if (!resolvedTurnId) {
+        logger.warn(`[codex] turn/completed missing turnId for session ${managed.session.id}`);
+      }
+      const turnId = resolvedTurnId ?? randomUUID();
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
       runtime.itemTurnIdByItemId.clear();
@@ -4295,7 +4523,11 @@ export function createAgentChatService(args: {
     }
 
     if (method === "turn/aborted" || method === "codex/event/turn_aborted") {
-      const turnId = turnIdFromParams ?? runtime.activeTurnId ?? randomUUID();
+      const resolvedAbortTurnId = turnIdFromParams ?? runtime.activeTurnId ?? undefined;
+      if (!resolvedAbortTurnId) {
+        logger.warn(`[codex] turn/aborted missing turnId for session ${managed.session.id}`);
+      }
+      const turnId = resolvedAbortTurnId ?? randomUUID();
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
       managed.session.status = "idle";
@@ -4982,6 +5214,7 @@ export function createAgentChatService(args: {
       previewTextBuffer: null,
       bufferedText: null,
       recentConversationEntries: [],
+      eventSequence: 0,
     };
 
     let runtime: CodexRuntime | null = null;
@@ -5151,22 +5384,14 @@ export function createAgentChatService(args: {
     let normalizedModel = normalizedInputModel;
 
     if (resolvedDescriptor) {
-      if (resolvedDescriptor.isCliWrapped) {
-        if (resolvedDescriptor.family === "openai") {
-          effectiveProvider = "codex";
-          normalizedModel = resolvedDescriptor.shortId;
-        } else if (resolvedDescriptor.family === "anthropic") {
-          effectiveProvider = "claude";
-          normalizedModel = resolvedDescriptor.shortId;
-        } else if (provider === "unified") {
-          throw new Error(
-            `Model '${resolvedDescriptor.id}' is CLI-only but does not map to a supported chat runtime.`,
-          );
-        }
-      } else {
-        effectiveProvider = "unified";
-        normalizedModel = resolvedDescriptor.id;
+      const resolved = resolveProviderGroupForModel(resolvedDescriptor);
+      if (resolvedDescriptor.isCliWrapped && resolved === "unified") {
+        throw new Error(
+          `Model '${resolvedDescriptor.id}' is CLI-only but does not map to a supported chat runtime.`,
+        );
       }
+      effectiveProvider = resolved;
+      normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.shortId : resolvedDescriptor.id;
     }
 
     const rawEffort = effectiveProvider === "codex"
@@ -5233,6 +5458,7 @@ export function createAgentChatService(args: {
       previewTextBuffer: null,
       bufferedText: null,
       recentConversationEntries: [],
+      eventSequence: 0,
     };
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
@@ -5317,7 +5543,10 @@ export function createAgentChatService(args: {
       ? trimmed
       : composeLaunchDirectives(trimmed, [
           buildExecutionModeDirective(executionMode, managed.session.provider),
-          buildComputerUseDirective(managed.session.computerUse),
+          buildComputerUseDirective(
+            managed.session.computerUse,
+            computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
+          ),
         ]);
     if (executionMode) {
       managed.session.executionMode = executionMode;
@@ -5518,10 +5747,26 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "unified") {
       const runtime = managed.runtime;
       if (runtime.busy) {
+        if (runtime.pendingSteers.length >= MAX_PENDING_STEERS) {
+          logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          return;
+        }
         runtime.pendingSteers.push(trimmed);
         emitChatEvent(managed, {
           type: "user_message",
           text: trimmed,
+          turnId: runtime.activeTurnId ?? undefined,
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Message queued — will be sent when the current turn completes.",
           turnId: runtime.activeTurnId ?? undefined,
         });
         persistChatState(managed);
@@ -5559,11 +5804,27 @@ export function createAgentChatService(args: {
 
     const runtime = ensureClaudeSessionRuntime(managed);
     if (runtime.busy) {
+      if (runtime.pendingSteers.length >= MAX_PENDING_STEERS) {
+        logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
+          turnId: runtime.activeTurnId ?? undefined,
+        });
+        return;
+      }
       runtime.pendingSteers.push(trimmed);
       emitChatEvent(managed, {
         type: "user_message",
         text: trimmed,
-        turnId: runtime.activeTurnId ?? undefined
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "Message queued — will be sent when the current turn completes.",
+        turnId: runtime.activeTurnId ?? undefined,
       });
       persistChatState(managed);
       return;
@@ -5575,10 +5836,14 @@ export function createAgentChatService(args: {
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
 
-    // Unified runtime interrupt
+    // Unified runtime interrupt — auto-decline pending approvals to prevent orphans
     if (managed.runtime?.kind === "unified") {
       managed.runtime.interrupted = true;
       managed.runtime.abortController?.abort();
+      for (const [itemId, approval] of managed.runtime.pendingApprovals) {
+        approval.resolve({ decision: "decline" });
+        managed.runtime.pendingApprovals.delete(itemId);
+      }
       return;
     }
 
@@ -6039,12 +6304,7 @@ export function createAgentChatService(args: {
         throw new Error(`Unknown model '${nextModelId}'.`);
       }
 
-      const nextProvider: AgentChatProvider = (() => {
-        if (!descriptor.isCliWrapped) return "unified";
-        if (descriptor.family === "openai") return "codex";
-        if (descriptor.family === "anthropic") return "claude";
-        return managed.session.provider;
-      })();
+      const nextProvider: AgentChatProvider = resolveProviderGroupForModel(descriptor);
       const nextModel = descriptor.isCliWrapped ? descriptor.shortId : descriptor.id;
       const previousModelId = managed.session.modelId
         ?? resolveModelIdFromStoredValue(managed.session.model, managed.session.provider)
@@ -6155,7 +6415,7 @@ export function createAgentChatService(args: {
       const nextComputerUse = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
       const prevComputerUse = managed.session.computerUse;
       managed.session.computerUse = nextComputerUse;
-      const nextSessionProfile = managed.session.computerUse.mode === "off" ? "light" : "workflow";
+      const nextSessionProfile = "workflow" as const;
       if (managed.session.sessionProfile !== nextSessionProfile) {
         managed.session.sessionProfile = nextSessionProfile;
         resetRuntimeForComputerUse = true;
@@ -6442,6 +6702,7 @@ export function createAgentChatService(args: {
     },
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {
       computerUseArtifactBrokerRef = svc;
+      proofObserver = createProofObserver({ broker: svc });
     },
   };
 }

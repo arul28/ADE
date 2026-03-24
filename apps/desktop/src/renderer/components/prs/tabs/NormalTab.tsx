@@ -13,23 +13,13 @@ import { usePrs } from "../state/PrsContext";
 import { IntegrationPrContextPanel } from "../shared/IntegrationPrContextPanel";
 import { COLORS, MONO_FONT, LABEL_STYLE, outlineButton } from "../../lanes/laneDesignTokens";
 import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
+import { formatTimeAgoCompact } from "../shared/prFormatters";
 
 function statusDotColor(state: string): string {
   if (state === "open") return COLORS.success;
   if (state === "merged") return COLORS.accent;
   if (state === "draft") return COLORS.warning;
   return COLORS.textMuted;
-}
-
-function formatRelative(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const diff = Date.now() - d.getTime();
-  if (diff < 60_000) return "now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
-  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d`;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 /* ---- Filter types ---- */
@@ -264,7 +254,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
                         {laneName}
                       </span>
                       <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
-                        {formatRelative(pr.updatedAt)}
+                        {formatTimeAgoCompact(pr.updatedAt)}
                       </span>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, flexWrap: "wrap" }}>

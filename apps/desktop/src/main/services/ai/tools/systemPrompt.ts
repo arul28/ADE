@@ -88,10 +88,20 @@ export function buildCodingAgentSystemPrompt(args: {
           ...(hasCoreMemoryTool
             ? ["**Keep the project brief current:** Use memoryUpdateCore when the project summary, standing conventions, user preferences, or active focus changes. Use memoryAdd for reusable lessons that should survive beyond the current brief."]
             : []),
-          "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight, not a paragraph.",
-          "GOOD memories: \"Convention: always use snake_case for DB columns — ORM breaks with camelCase\", \"Decision: chose Postgres over Mongo for ACID transactions in payments\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
-          "DO NOT save: file paths or directory listings, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
-          "Format: lead with the concrete rule or fact, then a brief WHY if the reasoning is non-obvious.",
+          "**Write sparingly and well:** Only save knowledge that is NOT derivable from the code, git history, or project files. Ask yourself: could a developer find this by reading the codebase? If yes, do not save it.",
+          "GOOD memories (non-obvious, high-value):",
+          "- \"Convention: always use snake_case for DB columns — ORM breaks with camelCase\"",
+          "- \"Decision: chose Postgres over Mongo for ACID transactions in payments — discussed in design review 2025-12\"",
+          "- \"Pitfall: CI silently skips tests if file doesn't match *.test.ts — cost us a week of debugging\"",
+          "- \"User prefers terse responses with no trailing summaries\"",
+          "BAD memories (never save these):",
+          "- File paths, directory listings, or code structure (use grep/find)",
+          "- Raw error messages or stack traces without a lesson learned",
+          "- Task progress, status updates, or session summaries",
+          "- Git history, recent changes, or who-changed-what (use git log/blame)",
+          "- Obvious patterns already visible in the codebase",
+          "- Debugging solutions or fix recipes (the fix is in the code; the commit message has the context)",
+          "Format: lead with the concrete rule or fact, then a brief WHY. One actionable insight per memory.",
         ]
       : []),
     ...(hasWorkflowTools

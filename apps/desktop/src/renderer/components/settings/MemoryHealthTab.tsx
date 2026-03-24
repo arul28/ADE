@@ -169,27 +169,35 @@ function fmtPct(value: number): string {
 /* ── User-friendly label maps ── */
 
 function scopeLabel(scope: string): string {
-  if (scope === "project") return "Shared";
-  if (scope === "agent") return "Agent";
-  return "Mission";
+  switch (scope) {
+    case "project": return "Shared";
+    case "agent": return "Agent";
+    default: return "Mission";
+  }
 }
 
 function scopeDescription(scope: string): string {
-  if (scope === "project") return "Available to all AI agents working on this project";
-  if (scope === "agent") return "Knowledge specific to individual AI agents (like the CTO)";
-  return "Temporary knowledge from a specific mission run";
+  switch (scope) {
+    case "project": return "Available to all AI agents working on this project";
+    case "agent": return "Knowledge specific to individual AI agents (like the CTO)";
+    default: return "Temporary knowledge from a specific mission run";
+  }
 }
 
 function tierLabel(tier: number): string {
-  if (tier === 1) return "Pinned";
-  if (tier === 2) return "Active";
-  return "Fading";
+  switch (tier) {
+    case 1: return "Pinned";
+    case 2: return "Active";
+    default: return "Fading";
+  }
 }
 
 function statusLabel(status: MemoryStatus): string {
-  if (status === "candidate") return "Pending";
-  if (status === "promoted") return "Active";
-  return "Archived";
+  switch (status) {
+    case "candidate": return "Pending";
+    case "promoted": return "Active";
+    default: return "Archived";
+  }
 }
 
 function categoryLabel(cat: string): string {
@@ -752,13 +760,68 @@ export function MemoryHealthTab() {
      Render helpers
      ═══════════════════════════════════════════════════════════════════════ */
 
+  function tryParseEpisode(content: string): { taskDescription: string; approachTaken: string; outcome?: string; patternsDiscovered?: string[]; gotchas?: string[]; decisionsMade?: string[] } | null {
+    // New format: human-readable text with JSON in HTML comment
+    const commentMatch = content.match(/<!--episode:([\s\S]*?)-->/);
+    if (commentMatch) {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(commentMatch[1]), (c) => c.charCodeAt(0))));
+        if (parsed && typeof parsed === "object" && typeof parsed.taskDescription === "string" && typeof parsed.approachTaken === "string") {
+          return parsed;
+        }
+      } catch { /* fall through */ }
+    }
+    // Legacy format: raw JSON content
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === "object" && typeof parsed.taskDescription === "string" && typeof parsed.approachTaken === "string") {
+        return parsed;
+      }
+    } catch { /* not JSON */ }
+    return null;
+  }
+
+  /** Strip hidden episode comment from content for display */
+  function stripEpisodeComment(content: string): string {
+    return content.replace(/\n?<!--episode:[\s\S]*?-->/, "").trim();
+  }
+
   function renderContent(entry: MemoryEntry) {
-    const isLong = entry.content.length > CONTENT_TRUNCATE_LENGTH;
+    // Try to render episode memories as structured cards
+    if (entry.category === "episode") {
+      const ep = tryParseEpisode(entry.content);
+      if (ep) {
+        const items: Array<{ label: string; value: string }> = [];
+        if (ep.taskDescription) items.push({ label: "Task", value: ep.taskDescription });
+        if (ep.approachTaken) items.push({ label: "Approach", value: ep.approachTaken });
+        if (ep.outcome) items.push({ label: "Outcome", value: ep.outcome });
+        const patterns = (ep.patternsDiscovered ?? []).filter(Boolean);
+        if (patterns.length > 0) items.push({ label: "Patterns", value: patterns.join(", ") });
+        const gotchas = (ep.gotchas ?? []).filter(Boolean);
+        if (gotchas.length > 0) items.push({ label: "Pitfalls", value: gotchas.join(", ") });
+        const decisions = (ep.decisionsMade ?? []).filter(Boolean);
+        if (decisions.length > 0) items.push({ label: "Decisions", value: decisions.join(", ") });
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {items.map((item) => (
+              <div key={item.label} style={{ fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: COLORS.textSecondary }}>
+                <span style={{ fontWeight: 600, color: COLORS.textPrimary, marginRight: 6 }}>{item.label}:</span>
+                {item.value}
+              </div>
+            ))}
+          </div>
+        );
+      }
+    }
+
+    // Default: render as text, strip hidden episode comments
+    const displayContent = stripEpisodeComment(entry.content);
+    const isLong = displayContent.length > CONTENT_TRUNCATE_LENGTH;
     const isExpanded = expandedIds.has(entry.id);
-    const text = isLong && !isExpanded ? entry.content.slice(0, CONTENT_TRUNCATE_LENGTH) + "\u2026" : entry.content;
+    const text = isLong && !isExpanded ? displayContent.slice(0, CONTENT_TRUNCATE_LENGTH) + "\u2026" : displayContent;
     return (
       <div>
-        <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{text}</div>
+        <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{text}</div>
         {isLong ? (
           <button
             type="button"
@@ -796,8 +859,12 @@ export function MemoryHealthTab() {
           <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>{actions}</div>
         </div>
         {renderContent(entry)}
-        <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
-          {statusLabel(entry.status)} \u00B7 {entry.importance} importance \u00B7 confidence {Math.round(entry.confidence * 100)}% \u00B7 accessed {entry.accessCount}x \u00B7 {fmtRelative(entry.lastAccessedAt || entry.createdAt)}
+        <div style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <span>{statusLabel(entry.status)}</span>
+          <span>{entry.importance} importance</span>
+          <span>{Math.round(entry.confidence * 100)}% confidence</span>
+          <span>accessed {entry.accessCount}x</span>
+          <span>{fmtRelative(entry.lastAccessedAt || entry.createdAt)}</span>
         </div>
       </div>
     );
@@ -1105,12 +1172,30 @@ export function MemoryHealthTab() {
         {/* Pending review */}
         {candidateEntries.length > 0 ? (
           <section style={cardStyle({ padding: 16, display: "flex", flexDirection: "column", gap: 8 })}>
-            <div style={SECTION_LABEL}>
-              PENDING REVIEW
-              <Tip text={TIPS.pending} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={SECTION_LABEL}>
+                PENDING REVIEW
+                <Tip text={TIPS.pending} />
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  type="button"
+                  style={primaryButton({ height: 24, padding: "0 10px", fontSize: 10 })}
+                  onClick={() => { for (const e of candidateEntries) void handlePromote(e.id); }}
+                >
+                  Approve All
+                </button>
+                <button
+                  type="button"
+                  style={outlineButton({ height: 24, padding: "0 10px", fontSize: 10 })}
+                  onClick={() => { for (const e of candidateEntries) void handleArchive(e.id); }}
+                >
+                  Archive All
+                </button>
+              </div>
             </div>
             <p style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, margin: 0, lineHeight: 1.5 }}>
-              These memories were captured automatically but haven't been confirmed yet. Approve to keep, or archive to discard.
+              Captured automatically. Approve to keep, or archive to discard.
             </p>
             {candidateEntries.map((e) => renderEntryCard(e, entryActions(e)))}
           </section>
