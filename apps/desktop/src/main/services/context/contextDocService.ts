@@ -12,6 +12,9 @@ import {
 import { getErrorMessage, nowIso, toOptionalString } from "../shared/utils";
 import type { AdeDb } from "../state/kvDb";
 import type {
+  ContextDocGenerationEvent,
+  ContextDocGenerationSource,
+  ContextDocGenerationStatus,
   ContextDocPrefs,
   ContextDocStatus,
   ContextGenerateDocsArgs,
@@ -22,14 +25,7 @@ import type {
 } from "../../../shared/types";
 
 /** Event names that can trigger auto-refresh of context docs. */
-export type ContextRefreshEventName =
-  | "session_end"
-  | "commit"
-  | "pr_create"
-  | "pr_land"
-  | "mission_start"
-  | "mission_end"
-  | "lane_create";
+export type ContextRefreshEventName = ContextDocGenerationEvent;
 
 type ContextDocRefreshPrefs = {
   cadence: ContextRefreshTrigger;
@@ -38,6 +34,16 @@ type ContextDocRefreshPrefs = {
   modelId: string | null;
   reasoningEffort: string | null;
   updatedAt: string;
+};
+
+type GenerationRunMeta = {
+  source: ContextDocGenerationStatus["source"];
+  event?: ContextDocGenerationStatus["event"];
+  reason?: string | null;
+  requestedAt?: string | null;
+  provider?: ContextDocGenerationStatus["provider"];
+  modelId?: string | null;
+  reasoningEffort?: string | null;
 };
 
 const CONTEXT_DOC_PREFS_KEY = "context:docs:preferences.v1";
@@ -102,6 +108,28 @@ function normalizeEvents(value: unknown): ContextRefreshEvents {
     }
   }
   return events;
+}
+
+function normalizeGenerationEvent(value: unknown): ContextDocGenerationEvent | null {
+  const normalized = String(value ?? "").trim();
+  if (
+    normalized === "session_end"
+    || normalized === "commit"
+    || normalized === "pr_create"
+    || normalized === "pr_land"
+    || normalized === "mission_start"
+    || normalized === "mission_end"
+    || normalized === "lane_create"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeGenerationSource(value: unknown): ContextDocGenerationSource | null {
+  const normalized = String(value ?? "").trim();
+  if (normalized === "manual" || normalized === "auto") return normalized;
+  return null;
 }
 
 export function createContextDocService(args: {
@@ -179,12 +207,36 @@ export function createContextDocService(args: {
 
   const readGenerationStatus = (): ContextStatus["generation"] => {
     const raw = db.getJson<Record<string, unknown>>(CONTEXT_DOC_GENERATION_STATUS_KEY);
-    const state = raw?.state === "running" || raw?.state === "failed" ? raw.state : "idle";
+    const finishedAt = toOptionalString(raw?.finishedAt) ?? null;
+    const error = toOptionalString(raw?.error) ?? null;
+    const rawState = toOptionalString(raw?.state);
+    const state: ContextDocGenerationStatus["state"] = (() => {
+      if (
+        rawState === "pending"
+        || rawState === "running"
+        || rawState === "succeeded"
+        || rawState === "failed"
+      ) {
+        return rawState;
+      }
+      if (rawState === "idle" && finishedAt && !error) return "succeeded";
+      return "idle";
+    })();
+    const sourceValue = normalizeGenerationSource(raw?.source);
+    const eventValue = normalizeGenerationEvent(raw?.event);
+    const providerValue = toOptionalString(raw?.provider);
     return {
       state,
+      requestedAt: toOptionalString(raw?.requestedAt) ?? null,
       startedAt: toOptionalString(raw?.startedAt) ?? null,
-      finishedAt: toOptionalString(raw?.finishedAt) ?? null,
-      error: toOptionalString(raw?.error) ?? null,
+      finishedAt,
+      error,
+      source: sourceValue,
+      event: eventValue,
+      reason: toOptionalString(raw?.reason) ?? null,
+      provider: providerValue === "codex" || providerValue === "claude" || providerValue === "unified" ? providerValue : null,
+      modelId: toOptionalString(raw?.modelId) ?? null,
+      reasoningEffort: toOptionalString(raw?.reasoningEffort) ?? null,
     };
   };
 
@@ -192,40 +244,108 @@ export function createContextDocService(args: {
     db.setJson(CONTEXT_DOC_GENERATION_STATUS_KEY, next);
   };
 
+  const buildGenerationStatus = (args: {
+    state: ContextDocGenerationStatus["state"];
+    requestedAt?: string | null;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    error?: string | null;
+    meta?: GenerationRunMeta | null;
+    previous?: ContextDocGenerationStatus | null;
+  }): ContextDocGenerationStatus => {
+    const previous = args.previous ?? readGenerationStatus();
+    return {
+      state: args.state,
+      requestedAt: args.requestedAt ?? args.meta?.requestedAt ?? previous.requestedAt ?? null,
+      startedAt: args.startedAt ?? previous.startedAt ?? null,
+      finishedAt: args.finishedAt ?? previous.finishedAt ?? null,
+      error: args.error ?? null,
+      source: args.meta?.source ?? previous.source ?? null,
+      event: args.meta?.event ?? previous.event ?? null,
+      reason: args.meta?.reason ?? previous.reason ?? null,
+      provider: args.meta?.provider ?? previous.provider ?? null,
+      modelId: args.meta?.modelId ?? previous.modelId ?? null,
+      reasoningEffort: args.meta?.reasoningEffort ?? previous.reasoningEffort ?? null,
+    };
+  };
+
   let activeGeneration: Promise<ContextGenerateDocsResult> | null = null;
 
-  const generateDocs = async (docArgs: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
+  const generateDocsInternal = async (
+    docArgs: ContextGenerateDocsArgs,
+    meta: GenerationRunMeta,
+  ): Promise<ContextGenerateDocsResult> => {
     // If generation is already in-flight, wait for it instead of starting a second one
     if (activeGeneration) {
-      logger.info("context_docs.generation_already_running", {});
+      logger.info("context_docs.generation_already_running", {
+        source: meta.source,
+        event: meta.event ?? null,
+        reason: meta.reason ?? null,
+      });
       return activeGeneration;
     }
 
+    const provider = normalizeContextProvider(docArgs.provider);
+    const modelId = toOptionalString(docArgs.modelId);
+    const reasoningEffort = toOptionalString(docArgs.reasoningEffort);
+    const requestedAt = meta.requestedAt ?? nowIso();
+    const startedAt = nowIso();
+
     persistContextDocRefreshPrefs(docArgs);
-    writeGenerationStatus({
-      state: "running",
-      startedAt: nowIso(),
-      finishedAt: null,
-      error: null,
-    });
+    writeGenerationStatus(
+      buildGenerationStatus({
+        state: "running",
+        requestedAt,
+        startedAt,
+        finishedAt: null,
+        error: null,
+        meta: {
+          ...meta,
+          requestedAt,
+          provider,
+          modelId,
+          reasoningEffort,
+        },
+      })
+    );
 
     const run = async (): Promise<ContextGenerateDocsResult> => {
       try {
         const result = await runContextDocGenerationImpl(projectPackBuilderDeps, docArgs);
-        writeGenerationStatus({
-          state: "idle",
-          startedAt: readGenerationStatus().startedAt,
-          finishedAt: result.generatedAt,
-          error: null,
-        });
+        writeGenerationStatus(
+          buildGenerationStatus({
+            state: "succeeded",
+            requestedAt,
+            startedAt,
+            finishedAt: result.generatedAt,
+            error: null,
+            meta: {
+              ...meta,
+              requestedAt,
+              provider,
+              modelId,
+              reasoningEffort,
+            },
+          })
+        );
         return result;
       } catch (error) {
-        writeGenerationStatus({
-          state: "failed",
-          startedAt: readGenerationStatus().startedAt,
-          finishedAt: nowIso(),
-          error: getErrorMessage(error),
-        });
+        writeGenerationStatus(
+          buildGenerationStatus({
+            state: "failed",
+            requestedAt,
+            startedAt,
+            finishedAt: nowIso(),
+            error: getErrorMessage(error),
+            meta: {
+              ...meta,
+              requestedAt,
+              provider,
+              modelId,
+              reasoningEffort,
+            },
+          })
+        );
         throw error;
       } finally {
         activeGeneration = null;
@@ -235,6 +355,15 @@ export function createContextDocService(args: {
     activeGeneration = run();
     return activeGeneration;
   };
+
+  const generateDocs = async (docArgs: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
+    await generateDocsInternal(docArgs, {
+      source: "manual",
+      reason: "manual_generate",
+      provider: normalizeContextProvider(docArgs.provider),
+      modelId: toOptionalString(docArgs.modelId),
+      reasoningEffort: toOptionalString(docArgs.reasoningEffort),
+    });
 
   /**
    * Resolves which events are enabled, merging project config with stored prefs.
@@ -266,9 +395,30 @@ export function createContextDocService(args: {
     const eventKey = EVENT_NAME_TO_KEY[event];
     if (!eventKey) return null;
 
+    const generationBeforeAttempt = readGenerationStatus();
+    const requestedAt = nowIso();
+    const pendingMeta = (prefs: ContextDocRefreshPrefs | null): GenerationRunMeta => ({
+      source: "auto",
+      event,
+      reason: docArgs.reason ?? null,
+      requestedAt,
+      provider: prefs?.provider ?? null,
+      modelId: prefs?.modelId ?? null,
+      reasoningEffort: prefs?.reasoningEffort ?? null,
+    });
+    const settlePendingWithoutRun = (): void => {
+      if (activeGeneration) return;
+      const restored =
+        generationBeforeAttempt.state === "running" || generationBeforeAttempt.state === "pending"
+          ? { ...generationBeforeAttempt, state: "idle" as const, error: null }
+          : generationBeforeAttempt;
+      writeGenerationStatus(restored);
+    };
+
     // Check if this event is enabled
     const enabledEvents = resolveEnabledEvents();
     if (!enabledEvents[eventKey]) {
+      settlePendingWithoutRun();
       logger.debug("context_docs.auto_refresh_event_disabled", {
         event,
         reason: docArgs.reason ?? null,
@@ -278,13 +428,30 @@ export function createContextDocService(args: {
 
     // Need stored prefs for provider/model info
     const prefs = readContextDocRefreshPrefs();
-    if (!prefs) return null;
+    if (!prefs) {
+      settlePendingWithoutRun();
+      return null;
+    }
+
+    if (!activeGeneration) {
+      writeGenerationStatus(
+        buildGenerationStatus({
+          state: "pending",
+          requestedAt,
+          startedAt: null,
+          finishedAt: null,
+          error: null,
+          meta: pendingMeta(prefs),
+        })
+      );
+    }
 
     // Throttle: check min interval
     const minIntervalMs = AUTO_REFRESH_MIN_INTERVAL_MS[event];
     if (!docArgs.force) {
       const lastRunAt = readLastContextDocRunAt();
       if (lastRunAt != null && Date.now() - lastRunAt < minIntervalMs) {
+        settlePendingWithoutRun();
         logger.debug("context_docs.auto_refresh_skipped_recent", {
           event,
           reason: docArgs.reason ?? null,
@@ -301,11 +468,18 @@ export function createContextDocService(args: {
         provider: prefs.provider,
         modelId: prefs.modelId,
       });
-      return await generateDocs({
+      return await generateDocsInternal({
         provider: prefs.provider,
         ...(prefs.modelId ? { modelId: prefs.modelId } : {}),
         ...(prefs.reasoningEffort ? { reasoningEffort: prefs.reasoningEffort } : {}),
         events: enabledEvents,
+      }, {
+        source: "auto",
+        event,
+        reason: docArgs.reason ?? null,
+        provider: prefs.provider,
+        modelId: prefs.modelId,
+        reasoningEffort: prefs.reasoningEffort,
       });
     } catch (error) {
       logger.warn("context_docs.auto_refresh_failed", {

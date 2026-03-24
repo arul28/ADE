@@ -46,6 +46,16 @@ import {
   runContextDocGeneration,
 } from "./contextDocBuilder";
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function createLogger() {
   return {
     debug: () => {},
@@ -220,5 +230,100 @@ describe("contextDocService", () => {
 
     expect(service.getDocPath("prd_ade")).toBe(path.join(projectRoot, "prd_ade.md"));
     expect(resolveContextDocPath).toHaveBeenCalledWith(projectRoot, "prd_ade");
+  });
+
+  it("persists active auto-refresh status as pending/running with trigger metadata", async () => {
+    const { service } = await createFixture();
+    const deferred = createDeferred<Awaited<ReturnType<typeof runContextDocGeneration>>>();
+    vi.mocked(runContextDocGeneration).mockReturnValueOnce(deferred.promise as ReturnType<typeof runContextDocGeneration>);
+
+    await service.savePrefs({
+      provider: "unified",
+      modelId: "gpt-5",
+      reasoningEffort: "medium",
+      events: { onPrLand: true },
+    });
+
+    const refreshPromise = service.maybeAutoRefreshDocs({
+      event: "pr_land",
+      reason: "prs_land:123",
+    });
+
+    const duringRun = service.getStatus().generation;
+    expect(["pending", "running"]).toContain(duringRun.state);
+    expect(duringRun.source).toBe("auto");
+    expect(duringRun.event).toBe("pr_land");
+    expect(duringRun.reason).toBe("prs_land:123");
+    expect(duringRun.provider).toBe("unified");
+    expect(duringRun.modelId).toBe("gpt-5");
+    expect(duringRun.reasoningEffort).toBe("medium");
+
+    deferred.resolve({
+      provider: "unified",
+      generatedAt: "2026-03-05T12:01:00.000Z",
+      prdPath: "/tmp/PRD.ade.md",
+      architecturePath: "/tmp/ARCHITECTURE.ade.md",
+      usedFallbackPath: false,
+      warnings: [],
+      outputPreview: "generated",
+    });
+
+    await expect(refreshPromise).resolves.toMatchObject({
+      provider: "unified",
+      generatedAt: "2026-03-05T12:01:00.000Z",
+    });
+
+    expect(service.getStatus().generation).toMatchObject({
+      state: "succeeded",
+      source: "auto",
+      event: "pr_land",
+      reason: "prs_land:123",
+      provider: "unified",
+      modelId: "gpt-5",
+      reasoningEffort: "medium",
+      finishedAt: "2026-03-05T12:01:00.000Z",
+    });
+  });
+
+  it("records manual generation metadata on completion", async () => {
+    const { service } = await createFixture();
+
+    await service.generateDocs({
+      provider: "codex",
+      modelId: "gpt-5-codex",
+      reasoningEffort: "high",
+      events: { onPrCreate: true },
+    });
+
+    expect(service.getStatus().generation).toMatchObject({
+      state: "succeeded",
+      source: "manual",
+      event: null,
+      reason: "manual_generate",
+      provider: "codex",
+      modelId: "gpt-5-codex",
+      reasoningEffort: "high",
+      finishedAt: "2026-03-05T12:00:00.000Z",
+    });
+  });
+
+  it("maps legacy idle generation records with a finish time to succeeded", async () => {
+    const { db, service } = await createFixture();
+
+    db.setJson("context:docs:generationStatus.v1", {
+      state: "idle",
+      finishedAt: "2026-03-05T09:30:00.000Z",
+      source: "auto",
+      event: "pr_create",
+      reason: "legacy_run",
+    });
+
+    expect(service.getStatus().generation).toMatchObject({
+      state: "succeeded",
+      source: "auto",
+      event: "pr_create",
+      reason: "legacy_run",
+      finishedAt: "2026-03-05T09:30:00.000Z",
+    });
   });
 });

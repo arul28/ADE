@@ -67,6 +67,15 @@ const EVENT_TOGGLES: { key: keyof ContextRefreshEvents; label: string; help: str
 
 const DEFAULT_EVENTS: ContextRefreshEvents = { onPrCreate: true, onMissionStart: true };
 
+function isContextGenerationActive(status: ContextStatus["generation"] | null | undefined): boolean {
+  return status?.state === "pending" || status?.state === "running";
+}
+
+function hasReadyContextDocs(status: ContextStatus | null): boolean {
+  const docs = status?.docs;
+  return !!docs?.length && docs.every((doc) => doc.exists && doc.sizeBytes >= 200);
+}
+
 export function ProjectSetupPage() {
   const navigate = useNavigate();
   const project = useAppStore((s) => s.project);
@@ -146,15 +155,15 @@ export function ProjectSetupPage() {
   // Poll while generating
   const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
-    if (contextStatus?.generation.state === "running" && !pollRef.current) {
+    if (isContextGenerationActive(contextStatus?.generation) && !pollRef.current) {
       pollRef.current = setInterval(() => { void reloadContextStatus(); }, 2500);
     }
-    if (contextStatus?.generation.state !== "running" && pollRef.current) {
+    if (!isContextGenerationActive(contextStatus?.generation) && pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-  }, [contextStatus?.generation.state, reloadContextStatus]);
+  }, [contextStatus?.generation, reloadContextStatus]);
 
   const progressLabel = useMemo(() => `${stepIndex + 1} / ${STEP_ORDER.length}`, [stepIndex]);
 
@@ -234,7 +243,7 @@ export function ProjectSetupPage() {
     return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
   }, [prefsLoaded, contextModelId, contextReasoningEffort, contextEvents]);
 
-  const isGenerating = contextStatus?.generation.state === "running";
+  const isGenerating = isContextGenerationActive(contextStatus?.generation);
 
   const stepContent = (() => {
     if (step === "tools") return <DevToolsSection onStatusChange={setGitInstalled} />;
@@ -269,14 +278,16 @@ export function ProjectSetupPage() {
             {contextLoading
               ? "Checking status..."
               : isGenerating
-                ? "Generating docs — this can take a minute or two depending on your model and repo size."
+                ? (contextStatus?.generation.state === "pending"
+                  ? "Doc generation is queued and will start shortly."
+                  : "Generating docs — this can take a minute or two depending on your model and repo size.")
                 : contextStatus?.generation.state === "failed"
                   ? `Last generation failed${contextStatus.generation.error ? `: ${contextStatus.generation.error}` : "."}`
-                  : contextStatus?.docs?.every((d) => d.exists)
+                  : hasReadyContextDocs(contextStatus)
                     ? "Both docs are present. You can regenerate if needed."
                     : !contextModelId.trim()
                       ? "Select a model above to generate docs."
-                      : `Missing: ${contextStatus?.docs?.filter((d) => !d.exists).map((d) => d.label).join(", ") || "checking..."}`}
+                      : `Missing or incomplete: ${contextStatus?.docs?.filter((d) => !d.exists || d.sizeBytes < 200).map((d) => d.label).join(", ") || "checking..."}`}
           </div>
 
           {isGenerating ? (

@@ -531,9 +531,16 @@ export function readContextStatus(deps: {
     warnings: latestWarnings,
     generation: {
       state: "idle",
+      requestedAt: null,
       startedAt: null,
       finishedAt: null,
       error: null,
+      source: null,
+      event: null,
+      reason: null,
+      provider: null,
+      modelId: null,
+      reasoningEffort: null,
     },
   };
 }
