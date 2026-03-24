@@ -1,17 +1,15 @@
 import fs from "node:fs";
 import { getModelById } from "../../../shared/modelRegistry";
 import type {
-  AgentChatPermissionMode,
-  AiPermissionMode,
   LaneSummary,
   RebaseResolutionStartArgs,
   RebaseResolutionStartResult,
 } from "../../../shared/types";
-import { runGit } from "../git/git";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createConflictService } from "../conflicts/conflictService";
+import { mapPermissionMode, readRecentCommits } from "./resolverUtils";
 
 export type RebaseResolutionLaunchDeps = {
   laneService: Pick<ReturnType<typeof createLaneService>, "list" | "getLaneBaseAndBranch">;
@@ -19,26 +17,6 @@ export type RebaseResolutionLaunchDeps = {
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   conflictService: Pick<ReturnType<typeof createConflictService>, "getRebaseNeed">;
 };
-
-function mapPermissionMode(mode: AiPermissionMode | undefined): AgentChatPermissionMode {
-  if (mode === "full_edit") return "full-auto";
-  if (mode === "read_only") return "plan";
-  return "edit";
-}
-
-async function readRecentCommits(worktreePath: string, count: number): Promise<Array<{ sha: string; subject: string }>> {
-  const result = await runGit(["log", "--format=%H%x09%s", "-n", String(count)], { cwd: worktreePath, timeoutMs: 10_000 });
-  if (result.exitCode !== 0) return [];
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [sha, ...subjectParts] = line.split("\t");
-      return { sha: (sha ?? "").trim(), subject: subjectParts.join("\t").trim() };
-    })
-    .filter((entry) => entry.sha.length > 0 && entry.subject.length > 0);
-}
 
 function buildRebaseResolutionPrompt(args: {
   lane: LaneSummary;

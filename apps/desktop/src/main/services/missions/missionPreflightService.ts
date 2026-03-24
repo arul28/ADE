@@ -154,7 +154,7 @@ export function createMissionPreflightService(args: {
               requiredKinds: requiredComputerUseKinds,
               backendStatus,
             })
-          : computerUsePolicy.mode === "off")
+          : false)
         || missingComputerUseKinds.length > 0
       );
 
@@ -313,11 +313,6 @@ export function createMissionPreflightService(args: {
 
     const capabilityIssues: string[] = [];
     const capabilityWarnings: string[] = [];
-    if (requiredComputerUseKinds.length > 0 && computerUsePolicy.mode === "off") {
-      capabilityIssues.push(
-        `Computer use is turned off for this mission, but required proof kinds are configured: ${requiredComputerUseKinds.join(", ")}.`
-      );
-    }
     if (fallbackOnlyKinds.length > 0) {
       capabilityWarnings.push(
         `Required proof currently depends on ADE-local fallback-only support for: ${fallbackOnlyKinds.join(", ")}.`

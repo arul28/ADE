@@ -9,6 +9,7 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import type { DetectedAuth } from "./authDetector";
+import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { wrapWithMiddleware, type WrapMiddlewareOpts } from "./middleware";
 import { resolveViaAdeProviderRegistry } from "./adeProviderRegistry";
 export { buildProviderOptions } from "./providerOptions";
@@ -180,6 +181,13 @@ export type ResolveModelOpts = {
   };
 };
 
+function firstNonEmptyString(...candidates: unknown[]): string | undefined {
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return undefined;
+}
+
 export function normalizeCliMcpServers(
   provider: "claude" | "codex",
   mcpServers?: Record<string, Record<string, unknown>>,
@@ -196,23 +204,12 @@ export function normalizeCliMcpServers(
       const { type, transport, ...rest } = record;
 
       if (provider === "codex") {
-        const resolvedTransport =
-          typeof transport === "string" && transport.trim().length > 0
-            ? transport
-            : typeof type === "string" && type.trim().length > 0
-              ? type
-              : "stdio";
+        const resolvedTransport = firstNonEmptyString(transport, type) ?? "stdio";
         return [name, { ...rest, transport: resolvedTransport }];
       }
 
-      const resolvedType =
-        typeof type === "string" && type.trim().length > 0
-          ? type
-          : typeof transport === "string" && transport.trim().length > 0
-            ? transport
-            : typeof rest.command === "string" && rest.command.trim().length > 0
-              ? "stdio"
-            : undefined;
+      const resolvedType = firstNonEmptyString(type, transport)
+        ?? (typeof rest.command === "string" && rest.command.trim().length > 0 ? "stdio" : undefined);
       return [name, resolvedType ? { ...rest, type: resolvedType } : { ...rest }];
     }),
   );
@@ -221,6 +218,7 @@ export function normalizeCliMcpServers(
 function buildCliDefaultSettings(
   provider: "claude" | "codex",
   opts?: ResolveModelOpts,
+  auth?: DetectedAuth[],
 ): Record<string, unknown> {
   const settings: Record<string, unknown> = {};
   const cwd = opts?.cwd?.trim() || process.cwd();
@@ -237,6 +235,9 @@ function buildCliDefaultSettings(
   }
   if (provider === "claude" && settings.systemPrompt == null) {
     settings.systemPrompt = { type: "preset", preset: "claude_code" };
+  }
+  if (provider === "claude" && settings.pathToClaudeCodeExecutable == null) {
+    settings.pathToClaudeCodeExecutable = resolveClaudeCodeExecutable({ auth }).path;
   }
   return settings;
 }
@@ -282,7 +283,7 @@ async function resolveCliWrapped(
     }
     const createClaudeCode = await loadClaudeCodeProvider();
     const provider = createClaudeCode({
-      defaultSettings: buildCliDefaultSettings("claude", opts),
+      defaultSettings: buildCliDefaultSettings("claude", opts, auth),
     });
     return provider(descriptor.sdkModelId) as LanguageModel;
   }
@@ -295,7 +296,7 @@ async function resolveCliWrapped(
     }
     const createCodexCli = await loadCodexCliProvider();
     const provider = createCodexCli({
-      defaultSettings: buildCliDefaultSettings("codex", opts),
+      defaultSettings: buildCliDefaultSettings("codex", opts, auth),
     });
     return provider(descriptor.sdkModelId) as LanguageModel;
   }

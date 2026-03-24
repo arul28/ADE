@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-14
+> Last updated: 2026-03-24
 
 This document describes the Electron runtime in `apps/desktop`, with emphasis on the current startup contract, background-service model, and the safeguards that keep the app responsive while project services come online.
 
@@ -132,7 +132,7 @@ The current default dev-enabled background set includes:
 Three details matter for stability:
 
 - **Linear ingress** only auto-starts when its realtime relay/local webhook configuration is actually present.
-- **Embedding worker** starts on a long delay and is no longer part of the first usable paint.
+- **Embedding worker** starts on a long delay and is no longer part of the first usable paint. At startup, `embeddingService.probeCache()` checks whether model files already exist in the local HuggingFace cache directory and, if so, auto-loads the model without requiring the user to click "Download Model" again. This probe is best-effort and does not block startup.
 - **Memory UI** is consolidated in **Settings > Memory** only. The embedding health poll runs at 10s intervals (not the earlier 1.5s) to avoid unnecessary renderer churn. There are no other memory surfaces in the renderer.
 
 ---

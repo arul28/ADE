@@ -546,7 +546,7 @@ export function ExternalMcpSection() {
       setUsageEvents(nextUsage);
       setAuthRecords(nextAuthRecords);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load external MCP state.");
+      setError(err instanceof Error ? err.message : "Failed to load ADE-managed MCP state.");
     } finally {
       setLoading(false);
     }
@@ -611,7 +611,7 @@ export function ExternalMcpSection() {
 
   const buildAuthRecordInput = (): ExternalConnectionAuthRecordInput | null => {
     if (draft.authMode === "none") return null;
-    const displayName = draft.authDisplayName.trim() || `${draft.name.trim() || "External MCP"} auth`;
+    const displayName = draft.authDisplayName.trim() || `${draft.name.trim() || "ADE-managed MCP"} auth`;
     if (draft.authMode === "oauth") {
       return {
         ...(draft.authId.trim() ? { id: draft.authId.trim() } : {}),
@@ -665,7 +665,7 @@ export function ExternalMcpSection() {
       setEditingServerName(null);
       setDraft(draftFromConfig());
       setSelectedTemplateId(null);
-      setNotice(`Saved external MCP server '${draft.name.trim()}'.`);
+      setNotice(`Saved ADE-managed MCP server '${draft.name.trim()}'.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save server.");
     } finally {
@@ -789,7 +789,7 @@ export function ExternalMcpSection() {
 
   const handleRemove = async (serverName: string) => {
     if (!window.ade?.externalMcp) return;
-    const confirmed = window.confirm(`Remove external MCP server '${serverName}'?`);
+    const confirmed = window.confirm(`Remove ADE-managed MCP server '${serverName}'?`);
     if (!confirmed) return;
     setBusyServerName(serverName);
     setError(null);
@@ -812,9 +812,12 @@ export function ExternalMcpSection() {
       <div style={cardStyle({ padding: 16 })}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div>
-            <div style={sectionLabelStyle}>External MCP</div>
+            <div style={sectionLabelStyle}>ADE-managed MCP</div>
             <div style={{ fontSize: 12, color: COLORS.textSecondary, fontFamily: MONO_FONT, lineHeight: 1.5 }}>
-              Configure external MCP once in ADE. Mission workers, direct worker chats, and CTO sessions then inherit the filtered tool surface through ADE’s own MCP layer.
+              Use this when ADE itself needs to broker a third-party MCP server: missions, worker chats,
+              CTO sessions, allowlists, budgets, and proof ownership all run through this layer.
+              If a tool only needs to exist inside Claude or Codex direct chat, keep it in that provider's
+              own MCP config instead.
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -1240,12 +1243,12 @@ export function ExternalMcpSection() {
         </div>
         {loading ? (
           <div style={cardStyle({ padding: 16 })}>
-            <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>Loading external MCP registry…</div>
+            <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>Loading ADE-managed MCP registry…</div>
           </div>
         ) : configs.length === 0 ? (
           <div style={cardStyle({ padding: 16 })}>
             <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-              No external MCP servers are configured yet.
+              No ADE-managed MCP servers are configured yet.
             </div>
           </div>
         ) : (
@@ -1344,11 +1347,11 @@ export function ExternalMcpSection() {
       <div style={cardStyle({ padding: 16 })}>
         <div style={sectionLabelStyle}>Usage</div>
         <div style={{ ...helperTextStyle, marginBottom: 10 }}>
-          ADE records which external MCP tools ran, who called them, and the attached cost hint when available.
+          ADE records which ADE-managed MCP tools ran, who called them, and the attached cost hint when available.
         </div>
         {usageEvents.length === 0 ? (
           <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-            No external MCP tool usage has been recorded yet.
+            No ADE-managed MCP tool usage has been recorded yet.
           </div>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>

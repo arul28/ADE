@@ -601,4 +601,50 @@ describe("AgentChatMessageList transcript rendering", () => {
       "/files::{\"laneId\":\"lane-123\"}",
     );
   });
+
+  it("keeps reasoning blocks separated across Claude tool boundaries", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "reasoning",
+          text: "First thought.",
+          itemId: "claude-thinking:turn-1:0",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "tool_call",
+          tool: "functions.exec_command",
+          args: { cmd: "pwd" },
+          itemId: "claude-tool:turn-1:1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "reasoning",
+          text: "Second thought.",
+          itemId: "claude-thinking:turn-1:2",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    const reasoningButtons = screen.getAllByRole("button", { name: /Thought for/i });
+    expect(reasoningButtons).toHaveLength(2);
+
+    fireEvent.click(reasoningButtons[0]!);
+    fireEvent.click(reasoningButtons[1]!);
+
+    expect(screen.getByText("First thought.")).toBeTruthy();
+    expect(screen.getByText("Second thought.")).toBeTruthy();
+    expect(screen.queryByText("First thought.Second thought.")).toBeNull();
+  });
 });

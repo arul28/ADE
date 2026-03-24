@@ -31,44 +31,14 @@ function summarizeNotification(args: { kind: PrNotificationKind; pr: PrSummary }
   return { title: `Merge ready ${prLabel}`, message: args.pr.title || "A pull request looks merge-ready." };
 }
 
-function summarizePrForFingerprint(pr: PrSummary): {
-  id: string;
-  laneId: string;
-  repoOwner: string;
-  repoName: string;
-  githubPrNumber: number;
-  githubUrl: string;
-  githubNodeId: string | null;
-  title: string;
-  state: PrSummary["state"];
-  baseBranch: string;
-  headBranch: string;
-  checksStatus: PrSummary["checksStatus"];
-  reviewStatus: PrSummary["reviewStatus"];
-  additions: number;
-  deletions: number;
-} {
-  return {
-    id: pr.id,
-    laneId: pr.laneId,
-    repoOwner: pr.repoOwner,
-    repoName: pr.repoName,
-    githubPrNumber: pr.githubPrNumber,
-    githubUrl: pr.githubUrl,
-    githubNodeId: pr.githubNodeId,
-    title: pr.title,
-    state: pr.state,
-    baseBranch: pr.baseBranch,
-    headBranch: pr.headBranch,
-    checksStatus: pr.checksStatus,
-    reviewStatus: pr.reviewStatus,
-    additions: pr.additions,
-    deletions: pr.deletions,
-  };
-}
-
+/**
+ * Build a fingerprint string from a PR, excluding volatile timing fields
+ * (lastSyncedAt, createdAt, updatedAt, projectId) so that the polling
+ * loop only fires events when meaningful PR data actually changes.
+ */
 function getPrFingerprint(pr: PrSummary): string {
-  return JSON.stringify(summarizePrForFingerprint(pr));
+  const { projectId: _, lastSyncedAt: _ls, createdAt: _ca, updatedAt: _ua, ...stable } = pr;
+  return JSON.stringify(stable);
 }
 
 export function createPrPollingService({
@@ -256,11 +226,16 @@ export function createPrPollingService({
             prId: pr.id,
             prNumber: pr.githubPrNumber,
             title: summary.title,
+            prTitle: pr.title ?? null,
             githubUrl: pr.githubUrl,
             message: summary.message,
             state: pr.state,
             checksStatus: pr.checksStatus,
-            reviewStatus: pr.reviewStatus
+            reviewStatus: pr.reviewStatus,
+            repoOwner: pr.repoOwner ?? null,
+            repoName: pr.repoName ?? null,
+            headBranch: pr.headBranch ?? null,
+            baseBranch: pr.baseBranch ?? null
           });
         }
 

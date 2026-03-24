@@ -57,5 +57,13 @@ export function useChatMcpSummary(enabled = true): ChatMcpSummary | null {
     };
   }, [enabled]);
 
+  useEffect(() => {
+    if (!enabled || !window.ade?.externalMcp?.onEvent) return undefined;
+    return window.ade.externalMcp.onEvent(() => {
+      cachedSummary = null;
+      void fetchChatMcpSummary().then(setSummary).catch(() => {});
+    });
+  }, [enabled]);
+
   return summary;
 }

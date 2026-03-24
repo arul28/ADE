@@ -94,7 +94,7 @@ export type ComputerUseArtifactIngestionResult = {
   links: ComputerUseArtifactLink[];
 };
 
-export type ComputerUsePolicyMode = "off" | "auto" | "enabled";
+export type ComputerUsePolicyMode = "auto" | "enabled";
 
 export type ComputerUsePolicy = {
   mode: ComputerUsePolicyMode;
@@ -264,7 +264,8 @@ function toOptionalString(value: unknown): string | null {
 
 export function normalizeComputerUsePolicy(value: unknown, fallback: Partial<ComputerUsePolicy> = {}): ComputerUsePolicy {
   const record = isRecord(value) ? value : {};
-  const mode = record.mode === "off" || record.mode === "enabled" ? record.mode : "auto";
+  // Migrate persisted "off" mode to "auto" — "off" is no longer a valid mode.
+  const rawMode = record.mode === "enabled" ? "enabled" : "auto";
   const allowLocalFallback = typeof record.allowLocalFallback === "boolean"
     ? record.allowLocalFallback
     : fallback.allowLocalFallback ?? true;
@@ -272,7 +273,7 @@ export function normalizeComputerUsePolicy(value: unknown, fallback: Partial<Com
     ? record.retainArtifacts
     : fallback.retainArtifacts ?? true;
   return {
-    mode: (fallback.mode === "off" || fallback.mode === "enabled" ? fallback.mode : mode) ?? "auto",
+    mode: (fallback.mode === "enabled" ? fallback.mode : rawMode) ?? "auto",
     allowLocalFallback,
     retainArtifacts,
     preferredBackend: toOptionalString(record.preferredBackend) ?? fallback.preferredBackend ?? null,
@@ -288,6 +289,7 @@ export function createDefaultComputerUsePolicy(overrides: Partial<ComputerUsePol
   });
 }
 
-export function isComputerUseModeEnabled(mode: ComputerUsePolicyMode | null | undefined): boolean {
-  return mode === "auto" || mode === "enabled";
+/** Shim kept for call-site compatibility — always returns true now that "off" mode is removed. */
+export function isComputerUseModeEnabled(_mode: ComputerUsePolicyMode | null | undefined): boolean {
+  return true;
 }

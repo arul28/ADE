@@ -337,10 +337,10 @@ export function WorkerPermissionsEditor({
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", color: COLORS.textPrimary }}>
-              External MCP
+              ADE-managed MCP
             </span>
             <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-              Mission-level external tool surface
+              Mission-level ADE-brokered tool surface
             </span>
           </div>
 
@@ -350,7 +350,7 @@ export function WorkerPermissionsEditor({
               checked={externalSelection.enabled === true}
               onChange={(event) => updateExternalMcp({ ...externalSelection, enabled: event.target.checked })}
             />
-            Enable ADE-managed external MCP tools for this mission
+            Enable ADE-managed MCP tools for this mission
           </label>
 
           {externalRegistryError && (
@@ -363,7 +363,7 @@ export function WorkerPermissionsEditor({
             <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
               {availableServers.length === 0 ? (
                 <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                  No external MCP servers are configured in ADE yet.
+                  No ADE-managed MCP servers are configured in ADE yet.
                 </div>
               ) : (
                 <div>

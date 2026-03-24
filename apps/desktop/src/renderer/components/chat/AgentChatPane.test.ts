@@ -60,11 +60,7 @@ describe("resolveNextSelectedSessionId", () => {
 });
 
 describe("resolveChatSessionProfile", () => {
-  it("keeps computer-use-off chats lightweight", () => {
-    expect(resolveChatSessionProfile({ ...createDefaultComputerUsePolicy(), mode: "off" })).toBe("light");
-  });
-
-  it("promotes computer-use-enabled chats to workflow sessions", () => {
+  it("always returns workflow now that off mode is removed", () => {
     expect(resolveChatSessionProfile(createDefaultComputerUsePolicy())).toBe("workflow");
     expect(resolveChatSessionProfile({ ...createDefaultComputerUsePolicy(), mode: "enabled" })).toBe("workflow");
   });
@@ -77,6 +73,5 @@ describe("shouldPromoteSessionForComputerUse", () => {
     expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" }, policy)).toBe(true);
     expect(shouldPromoteSessionForComputerUse({ sessionProfile: undefined }, policy)).toBe(true);
     expect(shouldPromoteSessionForComputerUse({ sessionProfile: "workflow" }, policy)).toBe(false);
-    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" }, { ...policy, mode: "off" })).toBe(false);
   });
 });

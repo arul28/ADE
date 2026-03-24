@@ -124,4 +124,43 @@ describe("buildProviderConnections", () => {
     expect(result.codex.blocker).toContain("Codex CLI reports no active login");
     expect(result.codex.blocker).toContain("codex login");
   });
+
+  it("treats runtime probe failures as launch blockers", async () => {
+    mockState.readClaudeCredentials.mockResolvedValue({
+      accessToken: "token",
+      source: "claude-credentials-file",
+    });
+    mockState.getProviderRuntimeHealth.mockImplementation((provider: string) => (
+      provider === "claude"
+        ? {
+            provider: "claude",
+            state: "runtime-failed",
+            message: "ADE could not launch Claude from this app session.",
+            checkedAt: new Date().toISOString(),
+          }
+        : null
+    ));
+
+    const result = await buildProviderConnections([
+      {
+        cli: "claude",
+        installed: true,
+        path: "/Users/arul/.local/bin/claude",
+        authenticated: true,
+        verified: true,
+      },
+      {
+        cli: "codex",
+        installed: false,
+        path: null,
+        authenticated: false,
+        verified: false,
+      },
+    ]);
+
+    expect(result.claude.authAvailable).toBe(true);
+    expect(result.claude.runtimeDetected).toBe(true);
+    expect(result.claude.runtimeAvailable).toBe(false);
+    expect(result.claude.blocker).toBe("ADE could not launch Claude from this app session.");
+  });
 });

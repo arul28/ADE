@@ -260,8 +260,10 @@ export function createMemoryLifecycleService(opts: CreateMemoryLifecycleServiceO
             FROM unified_memories
             WHERE project_id = ?
               AND status = 'candidate'
-              AND confidence >= 0.7
-              AND observation_count >= 2
+              AND (
+                (confidence >= 0.7 AND observation_count >= 2)
+                OR (confidence >= 0.6 AND source_type = 'system')
+              )
           `,
           [projectId],
         );

@@ -171,15 +171,17 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     }
   }
 
+  function finiteOrKeep(value: number | undefined, current: number | null): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : current;
+  }
+
   function handleProgress(event: EmbeddingProgressEvent) {
-    progress = typeof event.progress === "number" && Number.isFinite(event.progress) ? event.progress : progress;
-    loaded = typeof event.loaded === "number" && Number.isFinite(event.loaded) ? event.loaded : loaded;
-    total = typeof event.total === "number" && Number.isFinite(event.total) ? event.total : total;
-    file = typeof event.file === "string" && event.file.trim().length > 0
-      ? event.file.trim()
-      : typeof event.name === "string" && event.name.trim().length > 0
-        ? event.name.trim()
-        : file;
+    progress = finiteOrKeep(event.progress, progress);
+    loaded = finiteOrKeep(event.loaded, loaded);
+    total = finiteOrKeep(event.total, total);
+
+    const eventFile = event.file?.trim() || event.name?.trim() || null;
+    if (eventFile) file = eventFile;
 
     if (state !== "ready") {
       state = "loading";
@@ -295,6 +297,29 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     await ensureExtractor(opts.forceRetry === true);
   }
 
+  /**
+   * Check if the model files exist in the cache dir and auto-load if so.
+   * Call this at startup so that previously-downloaded models are recognized
+   * without requiring the user to click "Download Model" again.
+   */
+  async function probeCache(): Promise<void> {
+    if (state === "ready" || state === "loading") return;
+    try {
+      // The HuggingFace transformers cache stores model files in a subdirectory
+      // If the cache dir has files, attempt a (fast, local-only) load
+      const entries = fs.readdirSync(cacheDir);
+      if (entries.length === 0) return;
+      logger.info("memory.embedding.probe_cache", { modelId, cacheDir, entries: entries.length });
+      await ensureExtractor();
+    } catch (error) {
+      // Probe is best-effort — don't block startup
+      logger.warn("memory.embedding.probe_cache_failed", {
+        modelId,
+        error: getErrorMessage(error),
+      });
+    }
+  }
+
   let embeddingsProcessed = 0;
   const originalEmbed = embed;
   async function trackedEmbed(text: string): Promise<Float32Array> {
@@ -333,6 +358,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     embed: trackedEmbed,
     dispose,
     preload,
+    probeCache,
     getModelId: () => modelId,
     getStatus,
     hashContent: hashEmbeddingContent,

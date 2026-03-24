@@ -323,6 +323,7 @@ export type AgentChatEventEnvelope = {
   sessionId: string;
   timestamp: string;
   event: AgentChatEvent;
+  sequence?: number;
   provenance?: {
     messageId?: string;
     threadId?: string | null;

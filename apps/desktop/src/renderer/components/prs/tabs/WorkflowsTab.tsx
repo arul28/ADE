@@ -19,6 +19,7 @@ import type {
 } from "../../../../shared/types";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
+import { formatTimestampShort } from "../shared/prFormatters";
 import { QueueTab } from "./QueueTab";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
@@ -72,13 +73,6 @@ function cleanupBadgeStyle(cleanupState: string | null | undefined): React.CSSPr
     default:
       return null;
   }
-}
-
-function formatTimestamp(iso: string | null): string {
-  if (!iso) return "---";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function buildQueueWorkflowGroups(args: {
@@ -242,7 +236,7 @@ function RebaseHistoryPanel({
               <span style={inlineBadge(badgeColor, { background: `${badgeColor}18`, fontWeight: 600, borderRadius: 8 })}>{statusLabel}</span>
             </div>
             <div style={{ marginTop: 10, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-              {timestamp ? <>Updated <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestamp(timestamp)}</span></> : "Captured in workflow history."}
+              {timestamp ? <>Updated <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestampShort(timestamp)}</span></> : "Captured in workflow history."}
             </div>
           </div>
         );
@@ -434,7 +428,7 @@ function IntegrationWorkflowsTab({
                   {selectedWorkflow.title || selectedWorkflow.integrationLaneName || "Integration workflow"}
                 </div>
                 <div style={{ marginTop: 6, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                  Created <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestamp(selectedWorkflow.createdAt)}</span>
+                  Created <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestampShort(selectedWorkflow.createdAt)}</span>
                 </div>
               </div>
               <button type="button" onClick={() => void onRefresh()} style={outlineButton({ borderColor: theme.border, color: theme.color })}>
@@ -581,7 +575,7 @@ function IntegrationWorkflowsTab({
                   </span>
                   <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
                     {selectedWorkflow.cleanupState === "completed"
-                      ? <>Cleanup finished <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestamp(selectedWorkflow.cleanupCompletedAt ?? null)}</span>.</>
+                      ? <>Cleanup finished <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestampShort(selectedWorkflow.cleanupCompletedAt ?? null)}</span>.</>
                       : "Cleanup will be offered when the linked PR is closed or merged."}
                   </div>
                 </div>

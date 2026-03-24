@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-23
+> Last updated: 2026-03-24
 
 ADE's PR surface manages lane-backed pull requests, queue workflows, integration proposals, and GitHub inspection. The current implementation still centers on local git truth for simulation and merge planning, but the UI data-loading model is now much lighter than the earlier eager version.
 
@@ -56,7 +56,7 @@ Current behavior:
 - queue state only loads for workflow-oriented tabs
 - merge contexts load lazily
 - selected PR detail still loads status, checks, reviews, and comments on demand
-- background PR refresh only updates a small stale subset instead of every PR on every cycle
+- background PR refresh runs on a 60-second default interval and uses fingerprint-based change detection to skip re-renders when nothing changed, only updating a stale subset instead of every PR on every cycle
 
 This keeps the default PR surface from paying for queue/integration orchestration when the user is just browsing ordinary PRs.
 
@@ -140,7 +140,11 @@ These tools keep the agent loop self-contained: the agent can inspect issues, fi
 
 ### Review thread management
 
-The PR service now exposes review thread data through a dedicated GraphQL-backed `getReviewThreads` method and supports thread replies and resolution via `replyToReviewThread` and `resolveReviewThread`. These are available through IPC for both the renderer UI and agent tool surfaces.
+The PR service exposes review thread data through a dedicated GraphQL-backed `getReviewThreads` method and supports thread replies and resolution via `replyToReviewThread` and `resolveReviewThread`. These are available through IPC for both the renderer UI and agent tool surfaces. Review thread comments and PR reviews now include `authorAvatarUrl` / `reviewerAvatarUrl` fields for richer UI presentation.
+
+### Queue-aware rebase
+
+Rebase suggestions for queued PRs are now queue-aware. The conflict service calls `fetchQueueTargetTrackingBranches()` before scanning rebase needs, then uses `resolveQueueRebaseOverride()` per lane to determine the correct comparison ref. When a lane belongs to an active merge queue, the rebase targets the queue's tracking branch rather than the lane's static base branch. Queue group context is propagated into the rebase need for display in the rebase UI. AI-assisted rebase (`rebaseLane`) also respects the queue override, and the rebase request now accepts `modelId`, `reasoningEffort`, and `permissionMode` parameters for finer control over the AI rebase agent.
 
 ---
 
@@ -160,3 +164,15 @@ This keeps queue tab rendering logic testable and separated from the component t
 ## PR route state
 
 PR page tab navigation is now URL-driven through `prsRouteState.ts`. The route state encodes the active tab, workflow sub-tab, selected PR, queue group, and lane into URL search parameters. This makes PR tab state shareable and preserves selection across navigation.
+
+---
+
+## Conflict marker parsing
+
+The PR service's conflict marker parser (`parseConflictMarkers`) now handles `\r\n` line endings alongside `\n`, improving compatibility with Windows-style line endings in conflict files. The parser is extracted as a shared utility used by both `readConflictFilePreviewFromWorktree` and integration merge flows.
+
+---
+
+## Workflow tool checks status logic
+
+The `prRefreshIssueInventory` workflow tool now evaluates checks status with a failure-first priority: if any check has `conclusion === "failure"`, the status is `"failing"` regardless of other check states. Previously, a mix of passing and failing checks could incorrectly report `"passing"` when all-success was checked first.

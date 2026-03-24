@@ -232,9 +232,62 @@ describe("knowledgeCaptureService", () => {
       status: ["candidate", "promoted"],
       limit: 20,
     });
+    const episodes = fixture.memoryService.listMemories({
+      projectId: fixture.projectId,
+      scope: "project",
+      categories: ["episode"],
+      limit: 20,
+    });
 
     expect(memories.some((memory) => memory.fileScopePattern === "src/validation/rules.ts")).toBe(true);
     expect(memories.some((memory) => memory.category === "gotcha" || memory.category === "convention")).toBe(true);
+    expect(episodes).toHaveLength(0);
+  });
+
+  it("ignores low-signal PR nudges that should not become durable memory", async () => {
+    const fixture = await createFixture();
+    const service = createKnowledgeCaptureService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      memoryService: fixture.memoryService,
+      proceduralLearningService: { onEpisodeSaved: vi.fn().mockResolvedValue(undefined) },
+      prService: {
+        getComments: async () => [
+          {
+            id: "comment-link",
+            author: "reviewer",
+            authorAvatarUrl: null,
+            body: "Learn more about https://vercel.link/github-learn-more",
+            source: "issue",
+            url: null,
+            path: null,
+            line: null,
+            createdAt: null,
+            updatedAt: null,
+          },
+        ],
+        getReviews: async () => [
+          {
+            reviewer: "lead",
+            reviewerAvatarUrl: null,
+            state: "commented",
+            body: "Preview deployment for your docs.",
+            submittedAt: "2026-03-11T13:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    await service.capturePrFeedback({ prId: "pr-2", prNumber: 43 });
+
+    const memories = fixture.memoryService.listMemories({
+      projectId: fixture.projectId,
+      scope: "project",
+      status: ["candidate", "promoted"],
+      limit: 20,
+    });
+
+    expect(memories).toHaveLength(0);
   });
 
   it("feeds repeated intervention captures into procedural learning", async () => {

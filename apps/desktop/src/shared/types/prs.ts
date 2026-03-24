@@ -156,6 +156,11 @@ export type PrEventPayload =
       state: PrState;
       checksStatus: PrChecksStatus;
       reviewStatus: PrReviewStatus;
+      prTitle: string | null;
+      repoOwner: string | null;
+      repoName: string | null;
+      headBranch: string | null;
+      baseBranch: string | null;
     }
   | {
       type: "queue-step";

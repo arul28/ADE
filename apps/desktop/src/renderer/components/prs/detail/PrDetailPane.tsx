@@ -18,30 +18,11 @@ import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outl
 import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 import { PrIssueResolverModal } from "../shared/PrIssueResolverModal";
 import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
+import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
 import { usePrs } from "../state/PrsContext";
 
 // ---- Sub-tab type ----
 type DetailTab = "overview" | "files" | "checks" | "activity";
-
-function formatTs(iso: string | null): string {
-  if (!iso) return "---";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const now = Date.now();
-  const diff = now - d.getTime();
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function formatTsFull(iso: string | null): string {
-  if (!iso) return "---";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
-}
 
 // ---- Avatar component ----
 function Avatar({ user, size = 20 }: { user: { login: string; avatarUrl?: string | null }; size?: number }) {
@@ -378,7 +359,7 @@ export function PrDetailPane({
   const [showReviewModal, setShowReviewModal] = React.useState(false);
   const [reviewBody, setReviewBody] = React.useState("");
   const [reviewEvent, setReviewEvent] = React.useState<"APPROVE" | "REQUEST_CHANGES" | "COMMENT">("APPROVE");
-  const [expandedRun, setExpandedRun] = React.useState<number | null>(null);
+  // expandedRun state removed — the unified ChecksTab manages its own expand state
   const [expandedFile, setExpandedFile] = React.useState<string | null>(null);
   const detailLoadSeqRef = React.useRef(0);
 
@@ -545,7 +526,8 @@ export function PrDetailPane({
     setIssueResolverCopyNotice(null);
     setShowIssueResolverModal(true);
     void loadDetail();
-  }, [loadDetail]);
+    void onRefresh(); // Also refresh checks/status from PrsContext
+  }, [loadDetail, onRefresh]);
 
   const handleLaunchIssueResolver = React.useCallback(async (
     args: { scope: "checks" | "comments" | "both"; additionalInstructions: string },
@@ -615,7 +597,7 @@ export function PrDetailPane({
   const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
     { id: "overview", label: "Overview", icon: Eye },
     { id: "files", label: "Files", icon: Code, count: files.length },
-    { id: "checks", label: "CI / Checks", icon: Play, count: checks.length },
+    { id: "checks", label: "CI / Checks", icon: Play, count: checks.length + actionRuns.reduce((sum, run) => sum + run.jobs.length, 0) },
     { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: activity.length > 0 ? activity.length : (comments.length + reviews.length) },
   ];
 
@@ -818,8 +800,8 @@ export function PrDetailPane({
         )}
         {activeTab === "checks" && (
           <ChecksTab
-            checks={checks} actionRuns={actionRuns} expandedRun={expandedRun}
-            setExpandedRun={setExpandedRun} actionBusy={actionBusy}
+            checks={checks} actionRuns={actionRuns}
+            actionBusy={actionBusy}
             onRerunChecks={handleRerunChecks}
             showIssueResolverAction={issueResolutionAvailability.hasAnyActionableIssues}
             onOpenIssueResolver={handleOpenIssueResolver}
@@ -1299,7 +1281,7 @@ function OverviewTab(props: OverviewTabProps) {
                             {typeof ev.metadata?.beforeSha === "string" ? `${String(ev.metadata.beforeSha).slice(0, 7)} → ${String(ev.metadata?.afterSha ?? "").slice(0, 7)}` : "branch updated"}
                           </span>
                         )}
-                        <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted, flexShrink: 0 }}>{formatTs(ev.timestamp)}</span>
+                        <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted, flexShrink: 0 }}>{formatTimeAgo(ev.timestamp)}</span>
                         {isComment && typeof ev.metadata?.url === "string" && (
                           <CommentMenu url={String(ev.metadata.url)} />
                         )}
@@ -1639,8 +1621,8 @@ function OverviewTab(props: OverviewTabProps) {
         {/* Quick Stats */}
         <SidebarSection title="Stats">
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <StatRow label="Created" value={formatTsFull(pr.createdAt)} />
-            <StatRow label="Updated" value={formatTsFull(pr.updatedAt)} />
+            <StatRow label="Created" value={formatTimestampFull(pr.createdAt)} />
+            <StatRow label="Updated" value={formatTimestampFull(pr.updatedAt)} />
             <StatRow label="Checks" value={`${checks.filter(c => c.conclusion === "success").length}/${checks.length} passing`} />
             <StatRow label="Reviews" value={`${reviews.filter(r => r.state === "approved").length} approved`} />
             <StatRow label="Additions" value={`+${pr.additions}`} />
@@ -1794,81 +1776,142 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
 // CHECKS TAB
 // ================================================================
 
-function ChecksTab({ checks, actionRuns, expandedRun, setExpandedRun, actionBusy, onRerunChecks, showIssueResolverAction, onOpenIssueResolver }: {
+type UnifiedCheckItem = {
+  id: string;
+  name: string;
+  displayName: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
+  duration: number | null; // seconds
+  detailsUrl: string | null;
+  source: "actions_job" | "check";
+  // Actions job details
+  steps?: Array<{ number: number; name: string; status: string; conclusion: string | null }>;
+  workflowName?: string;
+};
+
+function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[]): UnifiedCheckItem[] {
+  const items: UnifiedCheckItem[] = [];
+  const coveredNames = new Set<string>();
+
+  // First: add all jobs from action runs (these have the most detail)
+  for (const run of actionRuns) {
+    for (const job of run.jobs) {
+      // Build the canonical name to match against checks API
+      const canonicalName = `${run.name} / ${job.name}`;
+      coveredNames.add(canonicalName.toLowerCase());
+      coveredNames.add(job.name.toLowerCase());
+
+      const duration = job.startedAt && job.completedAt
+        ? Math.round((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)
+        : null;
+
+      items.push({
+        id: `job-${job.id}`,
+        name: canonicalName,
+        displayName: canonicalName,
+        status: job.status,
+        conclusion: job.conclusion,
+        duration,
+        detailsUrl: run.htmlUrl,
+        source: "actions_job",
+        steps: job.steps,
+        workflowName: run.name,
+      });
+    }
+  }
+
+  // Second: add checks that aren't covered by action run jobs (third-party checks)
+  for (const check of checks) {
+    const lowerName = check.name.toLowerCase();
+    // Skip if this check is already covered by an action run job
+    if (coveredNames.has(lowerName)) continue;
+    // Also check if the check name matches "{workflow} / {job}" pattern
+    const slashIdx = check.name.indexOf("/");
+    if (slashIdx > 0) {
+      const jobPart = check.name.slice(slashIdx + 1).trim().toLowerCase();
+      if (coveredNames.has(jobPart)) continue;
+    }
+
+    const duration = check.startedAt && check.completedAt
+      ? Math.round((new Date(check.completedAt).getTime() - new Date(check.startedAt).getTime()) / 1000)
+      : null;
+
+    items.push({
+      id: `check-${check.name}`,
+      name: check.name,
+      displayName: check.name,
+      status: check.status,
+      conclusion: check.conclusion,
+      duration,
+      detailsUrl: check.detailsUrl,
+      source: "check",
+    });
+  }
+
+  // Sort: failures first, then in-progress, then by name
+  items.sort((a, b) => {
+    const aPriority = a.conclusion === "failure" ? 0 : a.status !== "completed" ? 1 : 2;
+    const bPriority = b.conclusion === "failure" ? 0 : b.status !== "completed" ? 1 : 2;
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    return a.name.localeCompare(b.name);
+  });
+
+  return items;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+}
+
+function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueResolverAction, onOpenIssueResolver }: {
   checks: PrCheck[];
   actionRuns: PrActionRun[];
-  expandedRun: number | null;
-  setExpandedRun: (id: number | null) => void;
   actionBusy: boolean;
   onRerunChecks: () => void;
   showIssueResolverAction: boolean;
   onOpenIssueResolver: () => void;
 }) {
-  const [collapsedGroups, setCollapsedGroups] = React.useState<Record<string, boolean>>({});
+  const [expandedItems, setExpandedItems] = React.useState<Set<string>>(new Set());
 
-  const passing = checks.filter(c => c.conclusion === "success").length;
-  const failing = checks.filter(c => c.conclusion === "failure").length;
-  const pending = checks.filter(c => c.status !== "completed").length;
-  const total = checks.length;
+  const unifiedChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
 
-  // Group checks by provider: slash-delimited prefix or "CI" default
-  const checkGroups = React.useMemo(() => {
-    const groups: Record<string, PrCheck[]> = {};
-    for (const check of checks) {
-      const slashIdx = check.name.indexOf("/");
-      const provider = slashIdx > 0 ? check.name.slice(0, slashIdx).trim() : "CI";
-      if (!groups[provider]) groups[provider] = [];
-      groups[provider].push(check);
-    }
-    // Sort: groups with failures first, then alphabetically
-    return Object.entries(groups).sort(([aName, aChecks], [bName, bChecks]) => {
-      const aFail = aChecks.some(c => c.conclusion === "failure") ? 0 : 1;
-      const bFail = bChecks.some(c => c.conclusion === "failure") ? 0 : 1;
-      if (aFail !== bFail) return aFail - bFail;
-      return aName.localeCompare(bName);
+  const passing = unifiedChecks.filter(c => c.conclusion === "success").length;
+  const failing = unifiedChecks.filter(c => c.conclusion === "failure").length;
+  const pending = unifiedChecks.filter(c => c.status !== "completed").length;
+  const total = unifiedChecks.length;
+
+  const toggleExpand = (id: string) => {
+    setExpandedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
     });
-  }, [checks]);
-
-  // Group action runs by workflow name
-  const runGroups = React.useMemo(() => {
-    const groups: Record<string, PrActionRun[]> = {};
-    for (const run of actionRuns) {
-      if (!groups[run.name]) groups[run.name] = [];
-      groups[run.name].push(run);
-    }
-    return Object.entries(groups);
-  }, [actionRuns]);
-
-  const toggleGroup = (key: string) => {
-    setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  const groupStateColor = (items: PrCheck[]) => {
-    if (items.some(c => c.conclusion === "failure")) return "#EF4444";
-    if (items.some(c => c.status !== "completed")) return "#F59E0B";
-    return "#22C55E";
   };
 
   const summaryText = failing > 0
     ? `${failing} failing, ${passing} passing${pending > 0 ? `, ${pending} pending` : ""}`
     : pending > 0
       ? `${passing} passing, ${pending} pending`
-      : `${passing}/${total} checks passing`;
+      : `All ${total} checks passing`;
 
   return (
-    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Summary bar with segmented progress */}
+    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Summary bar */}
       <div style={cardStyle({ padding: 0, overflow: "hidden" })}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px" }}>
           <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
             {summaryText}
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {showIssueResolverAction ? (
+            {showIssueResolverAction && (
               <button type="button" onClick={onOpenIssueResolver} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}>
                 <Sparkle size={14} weight="fill" /> Resolve issues with agent
               </button>
-            ) : null}
+            )}
             <button type="button" disabled={actionBusy} onClick={onRerunChecks} style={outlineButton({ height: 30, color: COLORS.warning, borderColor: `${COLORS.warning}40` })}>
               <ArrowsClockwise size={14} /> Re-run Failed
             </button>
@@ -1883,215 +1926,115 @@ function ChecksTab({ checks, actionRuns, expandedRun, setExpandedRun, actionBusy
         )}
       </div>
 
-      {/* Grouped check runs */}
-      {checks.length === 0 ? (
+      {/* Unified check list */}
+      {total === 0 ? (
         <div style={cardStyle()}>
           <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>No checks found</div>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {checkGroups.map(([provider, groupChecks]) => {
-            const groupKey = `check-${provider}`;
-            const isCollapsed = collapsedGroups[groupKey] ?? false;
-            const groupPassing = groupChecks.filter(c => c.conclusion === "success").length;
-            const groupTotal = groupChecks.length;
-            const stateColor = groupStateColor(groupChecks);
-            const allPassing = groupPassing === groupTotal;
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {unifiedChecks.map((item) => {
+            const isExpanded = expandedItems.has(item.id);
+            const hasSteps = item.source === "actions_job" && item.steps && item.steps.length > 0;
+            const stateColor = item.conclusion === "success" ? COLORS.success
+              : item.conclusion === "failure" ? COLORS.danger
+              : item.status === "in_progress" ? COLORS.warning
+              : item.status === "queued" ? COLORS.textMuted
+              : COLORS.textMuted;
+
+            const conclusionLabel = item.conclusion === "failure" ? "FAILED"
+              : item.conclusion === "success" ? "PASSED"
+              : item.conclusion === "neutral" ? "NEUTRAL"
+              : item.conclusion === "skipped" ? "SKIPPED"
+              : item.conclusion === "cancelled" ? "CANCELLED"
+              : item.status === "in_progress" ? "RUNNING"
+              : item.status === "queued" ? "QUEUED"
+              : "PENDING";
 
             return (
-              <div key={groupKey} style={cardStyle({ padding: 0, overflow: "hidden" })}>
-                {/* Provider group header */}
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(groupKey)}
+              <div key={item.id} style={cardStyle({ padding: 0, overflow: "hidden" })}>
+                <div
+                  role={hasSteps ? "button" : undefined}
+                  tabIndex={hasSteps ? 0 : undefined}
+                  onClick={hasSteps ? () => toggleExpand(item.id) : undefined}
+                  onKeyDown={hasSteps ? (e) => { if (e.key === "Enter") toggleExpand(item.id); } : undefined}
                   style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%",
-                    padding: "11px 16px", border: "none", cursor: "pointer", textAlign: "left",
-                    background: `${stateColor}08`,
-                    transition: "background 120ms ease",
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "10px 16px",
+                    background: item.conclusion === "failure" ? `${COLORS.danger}06` : "transparent",
+                    cursor: hasSteps ? "pointer" : "default",
+                    transition: "background 100ms ease",
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {isCollapsed
-                      ? <CaretRight size={12} style={{ color: COLORS.textMuted }} />
-                      : <CaretDown size={12} style={{ color: stateColor }} />}
-                    <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>{provider}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
+                    {hasSteps && (
+                      isExpanded
+                        ? <CaretDown size={11} style={{ color: stateColor, flexShrink: 0 }} />
+                        : <CaretRight size={11} style={{ color: COLORS.textMuted, flexShrink: 0 }} />
+                    )}
+                    {item.conclusion === "success" ? <CheckCircle size={15} weight="fill" style={{ color: COLORS.success, flexShrink: 0 }} /> :
+                     item.conclusion === "failure" ? <XCircle size={15} weight="fill" style={{ color: COLORS.danger, flexShrink: 0 }} /> :
+                     item.status === "in_progress" ? <CircleNotch size={15} className="animate-spin" style={{ color: COLORS.warning, flexShrink: 0 }} /> :
+                     <Circle size={15} style={{ color: COLORS.textMuted, flexShrink: 0 }} />}
+                    <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 500, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {item.displayName}
+                    </span>
+                    {item.source === "check" && (
+                      <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim, flexShrink: 0, padding: "1px 5px", border: `1px solid ${COLORS.border}` }}>
+                        3RD PARTY
+                      </span>
+                    )}
                   </div>
-                  <span style={{
-                    fontFamily: MONO_FONT, fontSize: 11, fontWeight: 600,
-                    color: allPassing ? "#22C55E" : "#EF4444",
-                    padding: "2px 8px", borderRadius: 6,
-                    background: allPassing ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
-                  }}>
-                    {groupPassing}/{groupTotal}
-                  </span>
-                </button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                    {item.duration != null && (
+                      <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
+                        {formatDuration(item.duration)}
+                      </span>
+                    )}
+                    <span style={{
+                      fontFamily: MONO_FONT, fontSize: 9, fontWeight: 600, textTransform: "uppercase",
+                      color: stateColor, padding: "2px 8px",
+                      background: `${stateColor}14`, border: `1px solid ${stateColor}30`,
+                    }}>
+                      {conclusionLabel}
+                    </span>
+                    {item.detailsUrl && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); void window.ade.app.openExternal(item.detailsUrl!); }}
+                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10, gap: 4 })}
+                      >
+                        <GithubLogo size={11} /> View
+                      </button>
+                    )}
+                  </div>
+                </div>
 
-                {/* Individual checks within group */}
-                {!isCollapsed && (
-                  <div style={{ display: "flex", flexDirection: "column" }}>
-                    {groupChecks.map((check, idx) => {
-                      // Strip provider prefix from display name for slash-grouped checks
-                      const slashIdx = check.name.indexOf("/");
-                      const displayName = slashIdx > 0 && check.name.slice(0, slashIdx).trim() === provider
-                        ? check.name.slice(slashIdx + 1).trim()
-                        : check.name;
-
+                {/* Expanded steps for GitHub Actions jobs */}
+                {isExpanded && hasSteps && (
+                  <div style={{ borderTop: `1px solid ${COLORS.border}`, background: "rgba(0,0,0,0.08)", padding: "8px 16px 8px 52px" }}>
+                    {item.steps!.map((step) => {
+                      const stepColor = step.conclusion === "success" ? COLORS.success
+                        : step.conclusion === "failure" ? COLORS.danger
+                        : step.conclusion === "skipped" ? COLORS.textDim
+                        : COLORS.warning;
                       return (
-                        <div key={`${check.name}-${idx}`} style={{
-                          display: "flex", alignItems: "center", justifyContent: "space-between",
-                          padding: "9px 16px", borderTop: `1px solid ${COLORS.border}`,
-                          background: check.conclusion === "failure" ? `${COLORS.danger}06` : "transparent",
-                          transition: "background 100ms ease",
-                        }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                            <CheckIcon check={check} />
-                            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}>{displayName}</span>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                            {check.startedAt && check.completedAt && (
-                              <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
-                                {Math.round((new Date(check.completedAt).getTime() - new Date(check.startedAt).getTime()) / 1000)}s
-                              </span>
-                            )}
-                            {check.detailsUrl && (
-                              <button type="button" onClick={() => void window.ade.app.openExternal(check.detailsUrl!)} style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10, gap: 4 })}>
-                                <GithubLogo size={11} /> View
-                              </button>
-                            )}
-                          </div>
+                        <div key={step.number} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+                          {step.conclusion === "success" ? <CheckCircle size={12} weight="fill" style={{ color: COLORS.success }} /> :
+                           step.conclusion === "failure" ? <XCircle size={12} weight="fill" style={{ color: COLORS.danger }} /> :
+                           step.conclusion === "skipped" ? <Circle size={12} style={{ color: COLORS.textDim }} /> :
+                           <CircleNotch size={12} className="animate-spin" style={{ color: COLORS.warning }} />}
+                          <span style={{
+                            fontFamily: SANS_FONT, fontSize: 11,
+                            color: step.conclusion === "failure" ? COLORS.danger
+                              : step.conclusion === "success" ? COLORS.textSecondary
+                              : COLORS.textMuted,
+                          }}>{step.name}</span>
                         </div>
                       );
                     })}
                   </div>
                 )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Action runs grouped by workflow */}
-      {runGroups.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {runGroups.map(([workflowName, runs]) => {
-            const groupKey = `run-${workflowName}`;
-            const isGroupCollapsed = collapsedGroups[groupKey] ?? false;
-            const latestRun = runs[0];
-            const wfColor = latestRun.conclusion === "success" ? COLORS.success
-              : latestRun.conclusion === "failure" ? COLORS.danger
-              : latestRun.status === "in_progress" ? COLORS.warning
-              : COLORS.textMuted;
-
-            return (
-              <div key={groupKey} style={cardStyle({ padding: 0, overflow: "hidden" })}>
-                {/* Workflow group header */}
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(groupKey)}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%",
-                    padding: "11px 16px", border: "none", cursor: "pointer", textAlign: "left",
-                    background: `${wfColor}08`,
-                    transition: "background 120ms ease",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {isGroupCollapsed
-                      ? <CaretRight size={12} style={{ color: COLORS.textMuted }} />
-                      : <CaretDown size={12} style={{ color: wfColor }} />}
-                    {latestRun.conclusion === "success" ? <CheckCircle size={15} weight="fill" style={{ color: COLORS.success }} /> :
-                     latestRun.conclusion === "failure" ? <XCircle size={15} weight="fill" style={{ color: COLORS.danger }} /> :
-                     latestRun.status === "in_progress" ? <CircleNotch size={15} className="animate-spin" style={{ color: COLORS.warning }} /> :
-                     <Circle size={15} style={{ color: COLORS.textMuted }} />}
-                    <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>{workflowName}</span>
-                    {runs.length > 1 && (
-                      <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted }}>{runs.length} runs</span>
-                    )}
-                  </div>
-                  <span style={{
-                    fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, textTransform: "uppercase",
-                    color: wfColor, padding: "2px 8px", borderRadius: 4, background: `${wfColor}12`,
-                  }}>
-                    {latestRun.conclusion ?? latestRun.status}
-                  </span>
-                </button>
-
-                {/* Expanded runs inside the workflow group */}
-                {!isGroupCollapsed && runs.map((run) => {
-                  const isExpanded = expandedRun === run.id;
-                  const runColor = run.conclusion === "success" ? COLORS.success
-                    : run.conclusion === "failure" ? COLORS.danger
-                    : run.status === "in_progress" ? COLORS.warning
-                    : COLORS.textMuted;
-
-                  return (
-                    <div key={run.id} style={{ borderTop: `1px solid ${COLORS.border}` }}>
-                      {/* Run row */}
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => setExpandedRun(isExpanded ? null : run.id)}
-                        onKeyDown={(e) => { if (e.key === "Enter") setExpandedRun(isExpanded ? null : run.id); }}
-                        style={{
-                          display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%",
-                          padding: "9px 16px 9px 32px", border: "none",
-                          background: isExpanded ? `${runColor}06` : "transparent",
-                          cursor: "pointer", textAlign: "left", transition: "background 120ms ease",
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          {isExpanded
-                            ? <CaretDown size={11} style={{ color: runColor }} />
-                            : <CaretRight size={11} style={{ color: COLORS.textMuted }} />}
-                          <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textSecondary }}>#{run.id}</span>
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>{formatTs(run.createdAt)}</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); void window.ade.app.openExternal(run.htmlUrl); }}
-                          style={outlineButton({ height: 22, padding: "0 8px", fontSize: 10, gap: 4 })}
-                        >
-                          <GithubLogo size={11} /> View
-                        </button>
-                      </div>
-
-                      {/* Expanded jobs and steps */}
-                      {isExpanded && run.jobs.length > 0 && (
-                        <div style={{ paddingLeft: 32, background: "rgba(0,0,0,0.12)" }}>
-                          {run.jobs.map((job, jIdx) => (
-                            <div key={job.id} style={{ padding: "10px 14px", borderBottom: jIdx < run.jobs.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                                {job.conclusion === "success" ? <CheckCircle size={14} weight="fill" style={{ color: COLORS.success }} /> :
-                                 job.conclusion === "failure" ? <XCircle size={14} weight="fill" style={{ color: COLORS.danger }} /> :
-                                 <CircleNotch size={14} className="animate-spin" style={{ color: COLORS.warning }} />}
-                                <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>{job.name}</span>
-                              </div>
-                              {job.steps.length > 0 && (
-                                <div style={{ paddingLeft: 22 }}>
-                                  {job.steps.map((step) => (
-                                    <div key={step.number} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
-                                      {step.conclusion === "success" ? <CheckCircle size={11} weight="fill" style={{ color: COLORS.success }} /> :
-                                       step.conclusion === "failure" ? <XCircle size={11} weight="fill" style={{ color: COLORS.danger }} /> :
-                                       step.conclusion === "skipped" ? <Circle size={11} style={{ color: COLORS.textDim }} /> :
-                                       <CircleNotch size={11} className="animate-spin" style={{ color: COLORS.warning }} />}
-                                      <span style={{
-                                        fontFamily: SANS_FONT, fontSize: 11,
-                                        color: step.conclusion === "failure" ? COLORS.danger
-                                          : step.conclusion === "success" ? COLORS.textSecondary
-                                          : COLORS.textMuted,
-                                      }}>{step.name}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
               </div>
             );
           })}
@@ -2216,7 +2159,7 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
                           {typeof event.metadata?.beforeSha === "string" ? `${String(event.metadata.beforeSha).slice(0, 7)} → ${String(event.metadata?.afterSha ?? "").slice(0, 7)}` : "branch updated"}
                         </span>
                       )}
-                      <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: "#8B7355" }}>{formatTs(event.timestamp)}</span>
+                      <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: "#8B7355" }}>{formatTimeAgo(event.timestamp)}</span>
                     </div>
                     {event.body && (
                       <div style={{ padding: "4px 0 4px 0" }}>

@@ -23,6 +23,7 @@ import {
   MagnifyingGlass,
   Globe,
   ShieldCheck,
+  CopySimple,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -176,6 +177,9 @@ function renderSubagentUsage(usage: {
 const GLASS_CARD_CLASS =
   "overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#121216]";
 
+const WORK_LOG_CARD_CLASS =
+  "border border-white/[0.06] bg-[#111317]/70";
+
 const RECESSED_BLOCK_CLASS =
   "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09090b] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
 
@@ -209,6 +213,13 @@ function surfaceInlineCardStyle(): React.CSSProperties {
   return {
     borderColor: "rgba(255, 255, 255, 0.08)",
     background: "#14161a",
+  };
+}
+
+function assistantMessageCardStyle(): React.CSSProperties {
+  return {
+    borderColor: "rgba(148, 163, 184, 0.14)",
+    background: "#101318",
   };
 }
 
@@ -254,6 +265,44 @@ type RenderEnvelope = {
     status: "running" | "completed" | "failed";
   };
 };
+
+function MessageCopyButton({
+  value,
+  className,
+}: {
+  value: string;
+  className?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
+    void navigator.clipboard.writeText(value)
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1_500);
+      })
+      .catch(() => {
+        setCopied(false);
+      });
+  }, [value]);
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-fg/45 transition-all hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-fg/72",
+        className,
+      )}
+      onClick={handleCopy}
+      title={copied ? "Copied" : "Copy message"}
+      aria-label={copied ? "Copied" : "Copy message"}
+    >
+      {copied ? <Checks size={10} weight="bold" /> : <CopySimple size={10} weight="regular" />}
+      <span>{copied ? "Copied" : "Copy"}</span>
+    </button>
+  );
+}
 
 function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnvelope, sequence: number): void {
   const { event } = envelope;
@@ -304,20 +353,27 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     const nextTurn = event.turnId ?? null;
     const nextItemId = event.itemId ?? null;
     const nextSummaryIndex = event.summaryIndex ?? null;
-    const matchIndex = [...out]
-      .reverse()
-      .findIndex((candidate) =>
-        candidate.event.type === "reasoning"
-        && (
-          (nextTurn !== null && (candidate.event.turnId ?? null) === nextTurn)
-          || (nextItemId !== null && (candidate.event.itemId ?? null) === nextItemId && (candidate.event.summaryIndex ?? null) === nextSummaryIndex)
-        ),
-      );
+    let matchIndex = -1;
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      const candidate = out[i];
+      if (!candidate || candidate.event.type !== "reasoning") {
+        break;
+      }
+      const sameReasoningBlock = nextItemId !== null
+        ? (candidate.event.itemId ?? null) === nextItemId
+          && (candidate.event.summaryIndex ?? null) === nextSummaryIndex
+        : nextTurn !== null
+          && (candidate.event.turnId ?? null) === nextTurn
+          && (candidate.event.itemId ?? null) === null;
+      if (sameReasoningBlock) {
+        matchIndex = i;
+        break;
+      }
+    }
     if (matchIndex >= 0) {
-      const actualIndex = out.length - 1 - matchIndex;
-      const existing = out[actualIndex];
+      const existing = out[matchIndex];
       if (existing?.event.type === "reasoning") {
-        out[actualIndex] = {
+        out[matchIndex] = {
           ...existing,
           timestamp: envelope.timestamp,
           event: {
@@ -336,15 +392,15 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     const nextItem = event.itemId ?? null;
     // Require at least one identity field to prevent merging anonymous chunks
     if (nextTurn || nextItem) {
-      // Search backwards for a matching text row, but stop if we hit a tool-related
-      // row — that means the new text belongs to a different content block and should
-      // NOT be merged with text from before the tool call.
+      // Search backwards for a matching text row, but stop if we hit an explicit
+      // tool lifecycle row. Command/file-change rows can still belong to the same
+      // assistant message, so they should not split the text bubble.
       let matchIndex = -1;
       for (let i = out.length - 1; i >= 0; i--) {
         const candidate = out[i];
         const ct = candidate.event.type;
         // Stop searching if we hit a tool boundary — text across tool calls must stay separate
-        if (ct === "tool_invocation" || ct === "tool_call" || ct === "tool_result" || ct === "command" || ct === "file_change") {
+        if (ct === "tool_invocation" || ct === "tool_call" || ct === "tool_result") {
           break;
         }
         if (
@@ -1275,17 +1331,6 @@ function resolveAssistantPresentation({
   return { label, glyph };
 }
 
-function commandStatusBadgeCls(status: "running" | "completed" | "failed"): string {
-  switch (status) {
-    case "completed":
-      return "border-emerald-500/25 bg-emerald-500/10 text-emerald-400";
-    case "failed":
-      return "border-red-500/25 bg-red-500/10 text-red-400";
-    default:
-      return "border-amber-500/25 bg-amber-500/10 text-amber-400";
-  }
-}
-
 function aggregateCommandStatus(commands: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "command" }> }>): "running" | "completed" | "failed" {
   if (commands.some((entry) => entry.event.status === "failed")) return "failed";
   if (commands.some((entry) => entry.event.status === "running")) return "running";
@@ -1352,6 +1397,7 @@ function CommandEventCard({
     <InlineDisclosureRow
       defaultOpen={event.status === "failed"}
       summary={timelineSummary}
+      className={WORK_LOG_CARD_CLASS}
     >
       {commandBody}
     </InlineDisclosureRow>
@@ -1390,6 +1436,7 @@ function FileChangeEventCard({
     <InlineDisclosureRow
       defaultOpen={event.status === "failed"}
       summary={summary}
+      className={WORK_LOG_CARD_CLASS}
     >
       {hasDiff ? (
         <DiffPreview diff={event.diff} />
@@ -1410,6 +1457,7 @@ function CommandGroupCard({
   return (
     <InlineDisclosureRow
       defaultOpen={status === "failed"}
+      className={WORK_LOG_CARD_CLASS}
       summary={
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
           <span className={cn(
@@ -1456,6 +1504,7 @@ function FileChangeGroupCard({
   return (
     <InlineDisclosureRow
       defaultOpen={status === "failed"}
+      className={WORK_LOG_CARD_CLASS}
       summary={
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
           <span className={cn(
@@ -1497,15 +1546,13 @@ function renderEvent(
   }
 ) {
   const event = envelope.event;
-  const hideInternalExecution = false;
-  const hideReasoning = false;
 
   /* ── User message ── */
   if (event.type === "user_message") {
     const deliveryChip = describeUserDeliveryState(event);
     return (
       <div className="flex justify-end">
-        <div className={cn(GLASS_CARD_CLASS, "max-w-[82%] px-4 py-3")} style={messageCardStyle()}>
+        <div className={cn(GLASS_CARD_CLASS, "group max-w-[82%] px-4 py-3")} style={messageCardStyle()}>
           <div className="mb-2 flex items-center gap-2">
             <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-amber-300/20 bg-amber-400/[0.10]">
               <User size={10} weight="regular" className="text-amber-200/90" />
@@ -1516,7 +1563,10 @@ function renderEvent(
                 {deliveryChip.label}
               </span>
             ) : null}
-            <span className="ml-auto font-sans text-[10px] text-amber-100/55">{formatTime(envelope.timestamp)}</span>
+            <div className="ml-auto flex items-center gap-2">
+              <MessageCopyButton value={event.text} className="opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100" />
+              <span className="font-sans text-[10px] text-amber-100/55">{formatTime(envelope.timestamp)}</span>
+            </div>
           </div>
           <div className="whitespace-pre-wrap break-words text-[13px] leading-[1.7] text-fg/96">{event.text}</div>
           {event.attachments?.length ? (
@@ -1535,22 +1585,32 @@ function renderEvent(
     });
     return (
       <div className="flex justify-start">
-        <div className={cn("max-w-[94%] py-1.5", options?.turnActive ? "min-h-[5.5rem]" : null)}>
-          <div className="mb-1.5 flex items-center gap-2 px-1">
+        <div
+          className={cn(
+            GLASS_CARD_CLASS,
+            "group max-w-[94%] px-4 py-3 transition-[min-height] duration-300 ease-out",
+            options?.turnActive ? "min-h-[5.5rem]" : "min-h-0",
+          )}
+          style={assistantMessageCardStyle()}
+        >
+          <div className="mb-2 flex items-center gap-2">
             <span className="inline-flex h-4.5 w-4.5 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03]">
               {assistant.glyph}
             </span>
-            <span className="font-sans text-[10px] font-medium text-fg/58">{assistant.label}</span>
-            <span className="ml-auto font-sans text-[10px] text-fg/34">{formatTime(envelope.timestamp)}</span>
+            <span className="font-sans text-[10px] font-medium text-fg/72">{assistant.label}</span>
+            {options?.turnModel?.label ? (
+              <span className="inline-flex items-center rounded-full border border-white/[0.07] bg-white/[0.03] px-2 py-0.5 font-sans text-[9px] text-fg/44">
+                {options.turnModel.label}
+              </span>
+            ) : null}
+            <div className="ml-auto flex items-center gap-2">
+              <MessageCopyButton value={event.text} className="opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100" />
+              <span className="font-sans text-[10px] text-fg/34">{formatTime(envelope.timestamp)}</span>
+            </div>
           </div>
-          <div className={cn("px-1", options?.turnActive ? "min-h-[4.75rem]" : null)}>
+          <div className={cn("transition-[min-height] duration-300 ease-out", options?.turnActive ? "min-h-[4.75rem]" : "min-h-0")}>
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
-          {options?.turnModel?.label ? (
-            <div className="mt-2 px-1 font-sans text-[10px] text-fg/38">
-              {options.turnModel.label}
-            </div>
-          ) : null}
         </div>
       </div>
     );
@@ -1568,9 +1628,6 @@ function renderEvent(
 
   /* ── Plan ── */
   if (event.type === "plan") {
-    if (hideInternalExecution) {
-      return null;
-    }
     const completedCount = event.steps.filter((step) => step.status === "completed").length;
     return (
       <InlineDisclosureRow
@@ -1773,12 +1830,22 @@ function renderEvent(
   /* ── Subagent Started ── */
   if (event.type === "subagent_started") {
     return (
-      <div className="flex items-center gap-2 rounded-lg px-1.5 py-1 font-mono text-[11px] text-fg/50">
-        <span className="inline-flex h-1.5 w-1.5 rounded-full bg-violet-400/85" />
-        <span className="font-medium text-fg/62">Spawning agent</span>
-        <span className="truncate text-fg/78">
-          {event.description}
-        </span>
+      <div className={cn("overflow-hidden rounded-xl border p-0", "border-violet-500/10 bg-gradient-to-br from-violet-950/20 via-[#0d0b14] to-[#0d0d10]")}>
+        <div className="h-px w-full bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
+        <div className="flex items-center gap-3 px-4 py-3">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-500/10">
+            <SpinnerGap size={14} weight="bold" className="animate-spin text-violet-400/80" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-violet-300/55">Agent</span>
+              {event.background ? (
+                <span className="rounded-md border border-violet-500/12 bg-violet-500/[0.06] px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-violet-300/50">background</span>
+              ) : null}
+            </div>
+            <div className="mt-0.5 truncate text-[12px] text-fg/70">{event.description}</div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -1791,17 +1858,22 @@ function renderEvent(
         defaultOpen={false}
         summary={
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
-            <span className="inline-flex h-1.5 w-1.5 rounded-full bg-violet-400/85" />
+            <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-violet-500/10">
+              <SpinnerGap size={11} weight="bold" className="animate-spin text-violet-400/70" />
+            </div>
             <span className="font-medium text-fg/62">Agent running</span>
+            {event.lastToolName?.trim() ? (
+              <span className="rounded-md border border-violet-500/10 bg-violet-500/[0.05] px-1.5 py-0.5 text-[9px] text-violet-300/55">
+                {replaceInternalToolNames(event.lastToolName.trim())}
+              </span>
+            ) : null}
             {summaryText ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryText}</span> : null}
           </div>
         }
       >
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-muted-fg/45">
-            <span>Task {event.taskId}</span>
             {event.description?.trim() ? <span>{event.description.trim()}</span> : null}
-            {event.lastToolName?.trim() ? <span>Tool {event.lastToolName.trim()}</span> : null}
           </div>
           <div className="text-[12px] leading-relaxed text-fg/70">
             {event.summary.trim() || "Waiting for the next progress update."}
@@ -1822,8 +1894,14 @@ function renderEvent(
         defaultOpen={defaultOpen}
         summary={
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
-            <span className={cn("inline-flex h-1.5 w-1.5 rounded-full", isSuccess ? "bg-emerald-400/85" : "bg-red-400/85")} />
-            <span className="font-medium text-fg/62">{isSuccess ? "Agent finished" : "Agent failed"}</span>
+            <div className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded-md", isSuccess ? "bg-emerald-500/10" : "bg-red-500/10")}>
+              {isSuccess ? (
+                <CheckCircle size={12} weight="bold" className="text-emerald-400/80" />
+              ) : (
+                <XCircle size={12} weight="bold" className="text-red-400/80" />
+              )}
+            </div>
+            <span className={cn("font-medium", isSuccess ? "text-emerald-200/70" : "text-red-200/70")}>{isSuccess ? "Agent finished" : "Agent failed"}</span>
             {summaryTruncated ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryTruncated}</span> : null}
           </div>
         }
@@ -1871,9 +1949,6 @@ function renderEvent(
 
   /* ── Tool Use Summary ── */
   if (event.type === "tool_use_summary") {
-    if (hideInternalExecution) {
-      return null;
-    }
     const summaryText = event.summary;
     const toolCount = event.toolUseIds.length;
     return (
@@ -1896,9 +1971,6 @@ function renderEvent(
 
   /* ── Context Compact ── */
   if (event.type === "context_compact") {
-    if (hideInternalExecution) {
-      return null;
-    }
     const isAuto = event.trigger === "auto";
     const freedLabel = event.preTokens != null ? `~${formatTokenCount(event.preTokens)} tokens freed` : null;
     return (
@@ -1976,7 +2048,6 @@ function renderEvent(
 
   /* ── Reasoning ── */
   if (event.type === "reasoning") {
-    if (hideReasoning) return null;
     const reasoningText = event.text.trim();
     const isLive = Boolean(options?.turnActive);
 
@@ -1991,7 +2062,7 @@ function renderEvent(
         defaultOpen={false}
         forceOpen={isLive ? true : undefined}
         summary={
-          <span className="font-mono text-[12px] text-fg/40">
+          <span className="font-mono text-[12px] text-fg/52">
             {isLive ? (
               <span className="flex items-center gap-2">
                 <ThinkingDots toneClass="bg-fg/40" />
@@ -2002,7 +2073,7 @@ function renderEvent(
             )}
           </span>
         }
-        className="border-transparent bg-transparent"
+        className={WORK_LOG_CARD_CLASS}
       >
         <div className="text-fg/55 text-[12px] leading-relaxed">
           <MarkdownBlock markdown={reasoningText.length ? event.text : "Thinking..."} />
@@ -2018,9 +2089,6 @@ function renderEvent(
 
   /* ── Tool call ── */
   if (event.type === "tool_invocation") {
-    if (hideInternalExecution) {
-      return null;
-    }
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
@@ -2051,7 +2119,7 @@ function renderEvent(
           </div>
         }
         className={cn(
-          "border-transparent bg-transparent",
+          WORK_LOG_CARD_CLASS,
           event.parentItemId ? "ml-5" : null,
         )}
       >
@@ -2082,9 +2150,6 @@ function renderEvent(
   }
 
   if (event.type === "tool_call") {
-    if (hideInternalExecution) {
-      return null;
-    }
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
     const toolDisplay = describeToolIdentifier(event.tool);
@@ -2133,7 +2198,7 @@ function renderEvent(
             <span className="truncate">{label}</span>
           </div>
         }
-        className="border-transparent bg-transparent"
+        className={WORK_LOG_CARD_CLASS}
       >
         {argsDisplay}
       </CollapsibleCard>
@@ -2230,17 +2295,30 @@ function renderEvent(
   /* ── Error ── */
   if (event.type === "error") {
     return (
-      <div className={cn(GLASS_CARD_CLASS, "border-red-500/12 p-4")} style={surfaceInlineCardStyle()}>
-        <div className="mb-2 flex items-center gap-2">
-          <Warning size={13} weight="bold" className="text-red-500" />
-          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">Error</span>
-        </div>
-        <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg/80">{event.message}</div>
-        {event.errorInfo ? (
-          <div className="mt-2 font-mono text-[10px] text-muted-fg/40">
-            {typeof event.errorInfo === "string" ? event.errorInfo : `[${event.errorInfo.category}]${event.errorInfo.provider ? ` ${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}
+      <div className={cn(GLASS_CARD_CLASS, "group border-red-500/12 p-0")} style={surfaceInlineCardStyle()}>
+        <div className="h-px w-full bg-gradient-to-r from-transparent via-red-500/40 to-transparent" />
+        <div className="p-4">
+          <div className="mb-2 flex items-center gap-2">
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-red-500/10">
+              <Warning size={13} weight="bold" className="text-red-400/90" />
+            </div>
+            <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">Error</span>
+            {event.errorInfo && typeof event.errorInfo !== "string" && event.errorInfo.category ? (
+              <span className="inline-flex items-center rounded-md border border-red-500/12 bg-red-500/[0.06] px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-red-300/70">
+                {event.errorInfo.category}
+              </span>
+            ) : null}
+            <div className="ml-auto">
+              <MessageCopyButton value={event.message} className="opacity-0 group-hover:opacity-100 focus-within:opacity-100" />
+            </div>
           </div>
-        ) : null}
+          <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg/80">{event.message}</div>
+          {event.errorInfo ? (
+            <div className="mt-2 font-mono text-[10px] text-muted-fg/40">
+              {typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}
+            </div>
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -2390,7 +2468,7 @@ function ToolGroupCard({ group }: { group: ToolGroup }) {
   const ToolIcon = meta.icon;
 
   return (
-    <div className="rounded-lg">
+    <div className={cn("rounded-lg border border-white/[0.06] bg-[#111317]/70")}>
       <button
         type="button"
         className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left font-mono text-[11px] text-fg/52 transition-colors hover:bg-white/[0.03] hover:text-fg/72"
@@ -2655,6 +2733,39 @@ function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
   return null;
 }
 
+function deriveTurnStartedAt(events: AgentChatEventEnvelope[], turnId: string | null): string | null {
+  if (!turnId) return null;
+  for (const envelope of events) {
+    const eventTurnId = getEventTurnId(envelope.event);
+    if (eventTurnId !== turnId) continue;
+    if (envelope.event.type === "status" && envelope.event.turnStatus === "started") {
+      return envelope.timestamp;
+    }
+  }
+  for (const envelope of events) {
+    if (getEventTurnId(envelope.event) === turnId) {
+      return envelope.timestamp;
+    }
+  }
+  return null;
+}
+
+function formatElapsedTimer(startedAt: string | null, nowMs: number): string | null {
+  if (!startedAt) return null;
+  const startedMs = Date.parse(startedAt);
+  if (!Number.isFinite(startedMs)) return null;
+  const totalSeconds = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
 function getGroupedTurnId(envelope: GroupedRenderEnvelope | undefined): string | null {
   if (!envelope) return null;
   if (envelope.event.type === "tool_group") {
@@ -2695,13 +2806,20 @@ const EventRow = React.memo(function EventRow({
 }: EventRowProps) {
   return (
     <div className="space-y-3">
-      {showTurnDivider && turnDividerLabel ? (
-        <div className="flex items-center gap-3 py-2">
-          <div className="h-px flex-1 bg-white/[0.06]" />
-          <span className="font-sans text-[10px] text-fg/20">
-            {turnDividerLabel}
+      {showTurnDivider ? (
+        <div className="my-1 flex items-center gap-3">
+          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
+          <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 font-sans text-[10px] text-fg/30">
+            {turnModel?.label ? (
+              <>
+                <ModelGlyph modelId={turnModel.modelId} model={turnModel.model} size={10} className="text-fg/25" />
+                <span className="text-fg/25">{turnModel.label}</span>
+                <span className="text-fg/12">&middot;</span>
+              </>
+            ) : null}
+            <span>{turnDividerLabel ?? "Turn"}</span>
           </span>
-          <div className="h-px flex-1 bg-white/[0.06]" />
+          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
         </div>
       ) : null}
       {envelope.event.type === "tool_group"
@@ -2780,6 +2898,7 @@ export function AgentChatMessageList({
   });
   const [stickToBottom, setStickToBottom] = useState(true);
   const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const stickToBottomRef = useRef(true);
   const onApprovalRef = useRef(onApproval);
 
@@ -2806,6 +2925,10 @@ export function AgentChatMessageList({
   const groupedRows = useMemo(() => groupConsecutiveStructuredRows(groupConsecutiveTools(rows)), [rows]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
+  const activeTurnStartedAt = useMemo(
+    () => (showStreamingIndicator ? deriveTurnStartedAt(events, activeTurnId) : null),
+    [activeTurnId, events, showStreamingIndicator],
+  );
   const turnSummary = useMemo(() => deriveTurnSummary(events), [events]);
   const currentLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
     ? (location.state as { laneId: string }).laneId
@@ -2890,6 +3013,15 @@ export function AgentChatMessageList({
   useEffect(() => {
     stickToBottomRef.current = stickToBottom;
   }, [stickToBottom]);
+
+  useEffect(() => {
+    if (!activeTurnId) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [activeTurnId]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -2998,6 +3130,14 @@ export function AgentChatMessageList({
     }
   }, [shouldVirtualize]);
 
+  const jumpToLiveOutput = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stickToBottomRef.current = true;
+    setStickToBottom(true);
+  }, []);
+
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: GroupedRenderEnvelope, index: number, virtualized: boolean) => {
     const currentTurn = getGroupedTurnId(envelope);
@@ -3073,6 +3213,35 @@ export function AgentChatMessageList({
   const turnSummaryCard = turnSummary ? (
     <TurnSummaryCard summary={turnSummary} onReviewChanges={turnSummary.files.length > 0 ? handleReviewChanges : undefined} />
   ) : null;
+  const activeElapsedLabel = activeTurnId ? formatElapsedTimer(activeTurnStartedAt, nowMs) : null;
+  const stickyStreamingBanner = showStreamingIndicator && activeTurnId ? (
+    <div className="sticky top-3 z-20 mb-4 flex animate-[fadeSlideIn_200ms_ease-out] justify-center px-1">
+      <div
+        className="flex w-full max-w-[32rem] items-center gap-3 rounded-[14px] border border-sky-400/18 bg-[#10161d]/96 px-3.5 py-2.5 shadow-[0_12px_40px_rgba(3,7,18,0.35)] backdrop-blur transition-all duration-200"
+      >
+        <span className="inline-flex items-center gap-1 text-sky-200/85">
+          <ThinkingDots toneClass="bg-sky-300/75" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-sans text-[12px] font-medium text-sky-100/90">
+            {latestActivity?.detail ? replaceInternalToolNames(latestActivity.detail) : "Still working"}
+          </div>
+          <div className="truncate font-mono text-[10px] uppercase tracking-[0.16em] text-sky-200/55">
+            {activeElapsedLabel ? `Working for ${activeElapsedLabel}` : "Turn running"}
+          </div>
+        </div>
+        {!stickToBottom ? (
+          <button
+            type="button"
+            className="rounded-full border border-sky-300/18 bg-sky-400/[0.08] px-2.5 py-1 font-sans text-[10px] font-medium text-sky-100 transition-colors hover:bg-sky-400/[0.14]"
+            onClick={jumpToLiveOutput}
+          >
+            Jump to live output
+          </button>
+        ) : null}
+      </div>
+    </div>
+  ) : null;
 
   return (
     <div
@@ -3080,6 +3249,7 @@ export function AgentChatMessageList({
       className={cn("h-full min-h-0 overflow-auto bg-[#09090b] px-4 pt-5 pb-8", className)}
       onScroll={handleScroll}
     >
+      {stickyStreamingBanner}
       {rows.length === 0 && !streamingIndicator ? (
         <div className="flex h-full flex-col items-center justify-center gap-5">
           <div className="relative flex h-20 w-20 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)]">
@@ -3087,7 +3257,7 @@ export function AgentChatMessageList({
             <div className="absolute inset-0 animate-pulse rounded-full bg-[var(--chat-accent-glow)] blur-2xl" />
           </div>
           <div className="space-y-1 text-center">
-            <div className="font-sans text-[18px] font-semibold tracking-tight text-fg/78">Chat feels alive here now.</div>
+            <div className="font-sans text-[18px] font-semibold tracking-tight text-fg/78">Start a chat session</div>
             <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/28">
               {surfaceMode === "resolver" ? "Launch the resolver to start the transcript" : "Start a conversation"}
             </span>

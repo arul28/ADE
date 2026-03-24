@@ -5,6 +5,20 @@ const mockState = vi.hoisted(() => ({
   reportProviderRuntimeReady: vi.fn(),
   reportProviderRuntimeAuthFailure: vi.fn(),
   reportProviderRuntimeFailure: vi.fn(),
+  resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/usr/local/bin/claude", source: "path" })),
+  normalizeCliMcpServers: vi.fn(() => ({
+    ade: {
+      type: "stdio",
+      command: "node",
+      args: ["probe.js"],
+      env: { ADE_PROJECT_ROOT: "/tmp/project" },
+    },
+  })),
+  resolveAdeMcpServerLaunch: vi.fn(() => ({
+    command: "node",
+    cmdArgs: ["probe.js"],
+    env: { ADE_PROJECT_ROOT: "/tmp/project" },
+  })),
 }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
@@ -15,6 +29,18 @@ vi.mock("./providerRuntimeHealth", () => ({
   reportProviderRuntimeReady: (...args: unknown[]) => mockState.reportProviderRuntimeReady(...args),
   reportProviderRuntimeAuthFailure: (...args: unknown[]) => mockState.reportProviderRuntimeAuthFailure(...args),
   reportProviderRuntimeFailure: (...args: unknown[]) => mockState.reportProviderRuntimeFailure(...args),
+}));
+
+vi.mock("./claudeCodeExecutable", () => ({
+  resolveClaudeCodeExecutable: mockState.resolveClaudeCodeExecutable,
+}));
+
+vi.mock("./providerResolver", () => ({
+  normalizeCliMcpServers: mockState.normalizeCliMcpServers,
+}));
+
+vi.mock("../orchestrator/unifiedOrchestratorAdapter", () => ({
+  resolveAdeMcpServerLaunch: mockState.resolveAdeMcpServerLaunch,
 }));
 
 let probeClaudeRuntimeHealth: typeof import("./claudeRuntimeProbe").probeClaudeRuntimeHealth;
@@ -40,6 +66,9 @@ beforeEach(async () => {
   mockState.reportProviderRuntimeReady.mockReset();
   mockState.reportProviderRuntimeAuthFailure.mockReset();
   mockState.reportProviderRuntimeFailure.mockReset();
+  mockState.resolveClaudeCodeExecutable.mockClear();
+  mockState.normalizeCliMcpServers.mockClear();
+  mockState.resolveAdeMcpServerLaunch.mockClear();
   const mod = await import("./claudeRuntimeProbe");
   probeClaudeRuntimeHealth = mod.probeClaudeRuntimeHealth;
   resetClaudeRuntimeProbeCache = mod.resetClaudeRuntimeProbeCache;
@@ -66,6 +95,15 @@ describe("claudeRuntimeProbe", () => {
     expect(query.close).toHaveBeenCalledTimes(1);
     expect(mockState.reportProviderRuntimeAuthFailure).toHaveBeenCalledTimes(1);
     expect(mockState.reportProviderRuntimeFailure).not.toHaveBeenCalled();
+    expect(mockState.query).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        cwd: "/tmp/project",
+        pathToClaudeCodeExecutable: "/usr/local/bin/claude",
+        mcpServers: expect.objectContaining({
+          ade: expect.any(Object),
+        }),
+      }),
+    }));
   });
 
   it("treats Anthropic 401 invalid credentials responses as auth failures", async () => {

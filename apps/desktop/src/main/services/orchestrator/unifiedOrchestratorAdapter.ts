@@ -8,6 +8,7 @@ import {
   resolveCliProviderForModel,
   resolveModelAlias,
   resolveModelDescriptor,
+  resolveProviderGroupForModel,
 } from "../../../shared/modelRegistry";
 import type {
   AgentChatExecutionMode,
@@ -244,18 +245,25 @@ function writeWorkerPromptFile(args: {
  * Walks up from cwd looking for package.json with the monorepo marker.
  */
 export function resolveUnifiedRuntimeRoot(): string {
-  // The adapter runs inside the desktop Electron process.
-  // The project root is the monorepo root (parent of apps/).
-  // Walk up from __dirname to find the root containing apps/mcp-server.
-  let dir = process.cwd();
-  for (let i = 0; i < 10; i++) {
-    if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
-      return dir;
+  const startPoints = [
+    process.cwd(),
+    __dirname,
+    path.resolve(process.cwd(), ".."),
+    path.resolve(process.cwd(), "..", ".."),
+  ];
+
+  for (const start of startPoints) {
+    let dir = path.resolve(start);
+    for (let i = 0; i < 12; i++) {
+      if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
+        return dir;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
   }
+
   return process.cwd();
 }
 
@@ -292,17 +300,13 @@ export function buildCodexMcpConfigFlags(args: {
   const flags: string[] = [
     "-c", shellEscapeArg(`mcp_servers.ade.command="${launch.command}"`),
     "-c", shellEscapeArg(`mcp_servers.ade.args=${argsToml}`),
-    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_PROJECT_ROOT="${launch.env.ADE_PROJECT_ROOT}"`),
-    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_WORKSPACE_ROOT="${launch.env.ADE_WORKSPACE_ROOT}"`),
-    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_MISSION_ID="${launch.env.ADE_MISSION_ID}"`),
-    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_RUN_ID="${launch.env.ADE_RUN_ID}"`),
-    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_STEP_ID="${launch.env.ADE_STEP_ID}"`),
-    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_ATTEMPT_ID="${launch.env.ADE_ATTEMPT_ID}"`),
-    "-c", shellEscapeArg(`mcp_servers.ade.env.ADE_DEFAULT_ROLE="${launch.env.ADE_DEFAULT_ROLE}"`)
+    ...Object.entries(launch.env)
+      .filter(([, value]) => value.trim().length > 0)
+      .flatMap(([key, value]) => [
+        "-c",
+        shellEscapeArg(`mcp_servers.ade.env.${key}="${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`),
+      ]),
   ];
-  if (launch.env.ADE_OWNER_ID?.trim()) {
-    flags.push("-c", shellEscapeArg(`mcp_servers.ade.env.ADE_OWNER_ID="${launch.env.ADE_OWNER_ID}"`));
-  }
   return flags;
 }
 
@@ -359,6 +363,8 @@ function cleanupStaleMcpConfigFiles(projectRoot: string): void {
   );
 }
 
+const VALID_PERMISSION_MODES = new Set<string>(["default", "plan", "edit", "full-auto", "config-toml"]);
+
 function resolveManagedPermissionMode(args: {
   provider: "claude" | "codex" | "unified";
   permissionConfig: LegacyPermissionConfig | undefined;
@@ -366,16 +372,9 @@ function resolveManagedPermissionMode(args: {
 }): AgentChatPermissionMode | undefined {
   if (args.readOnlyExecution) return "plan";
   const providers = args.permissionConfig?._providers;
-  let candidate: unknown;
-  if (args.provider === "claude") candidate = providers?.claude;
-  else if (args.provider === "codex") candidate = providers?.codex;
-  else candidate = providers?.unified;
-  return candidate === "default"
-    || candidate === "plan"
-    || candidate === "edit"
-    || candidate === "full-auto"
-    || candidate === "config-toml"
-    ? candidate
+  const candidate = providers?.[args.provider] as string | undefined;
+  return typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
+    ? candidate as AgentChatPermissionMode
     : undefined;
 }
 
@@ -674,11 +673,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
         workerRuntime: "in_process",
         memoryBriefing: args.memoryBriefing,
       });
-      let provider: "claude" | "codex" | "unified" = "unified";
-      if (descriptor.isCliWrapped) {
-        if (descriptor.family === "openai") provider = "codex";
-        else if (descriptor.family === "anthropic") provider = "claude";
-      }
+      const provider = resolveProviderGroupForModel(descriptor);
       const model = descriptor.isCliWrapped ? descriptor.shortId : descriptor.id;
       const reasoningEffort =
         typeof args.step.metadata?.reasoningEffort === "string" && args.step.metadata.reasoningEffort.trim().length > 0

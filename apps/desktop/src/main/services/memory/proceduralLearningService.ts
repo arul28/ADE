@@ -8,6 +8,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, toMemoryEntryDto } from "../shared/utils";
 import type { Memory, UnifiedMemoryService } from "./unifiedMemoryService";
+import { parseEpisode as parseEpisodeContent } from "./episodeFormat";
 
 type ProcedureDetailRow = {
   memory_id: string;
@@ -44,15 +45,31 @@ function toLineList(value: ReadonlyArray<string> | undefined): string[] {
   return [...new Set((value ?? []).map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))];
 }
 
-function parseEpisode(memoryContent: string): EpisodicMemory | null {
-  try {
-    const parsed = JSON.parse(memoryContent) as EpisodicMemory;
-    if (!parsed || typeof parsed !== "object") return null;
-    if (typeof parsed.taskDescription !== "string" || typeof parsed.approachTaken !== "string") return null;
-    return parsed;
-  } catch {
-    return null;
+function isPrFeedbackEpisode(memory: Memory): boolean {
+  return String(memory.sourceId ?? "").trim().startsWith("pr_feedback:");
+}
+
+function isLowSignalEpisode(episode: EpisodicMemory): boolean {
+  const normalizedTask = normalizeText(episode.taskDescription ?? "");
+  const normalizedApproach = normalizeText(episode.approachTaken ?? "");
+  const combined = `${normalizedTask} ${normalizedApproach}`.trim();
+  if (!combined.length) return true;
+  if (
+    combined.startsWith("preview deployment")
+    || combined.startsWith("learn more about")
+    || combined.includes("https vercel link github")
+  ) {
+    return true;
   }
+  const signalCount =
+    toLineList(episode.patternsDiscovered).length
+    + toLineList(episode.decisionsMade).length
+    + toLineList(episode.gotchas).length;
+  return signalCount === 0 && combined.split(/\s+/).length < 8;
+}
+
+function parseEpisode(memoryContent: string): EpisodicMemory | null {
+  return parseEpisodeContent(memoryContent) as EpisodicMemory | null;
 }
 
 function overlapScore(left: string[], right: string[]): number {
@@ -280,13 +297,26 @@ export function createProceduralLearningService(args: {
         .map((row) => memoryService.getMemory(row.episode_memory_id))
         .filter((entry): entry is Memory => Boolean(entry))
         .map((entry) => toMemoryEntryDto(entry)),
-      confidenceHistory: historyRows.map((row) => ({
-        id: row.id,
-        confidence: Number(row.confidence ?? memory.confidence) || memory.confidence,
-        outcome: row.outcome === "failure" ? "failure" : row.outcome === "manual" ? "manual" : row.outcome === "observation" ? "observation" : "success",
-        reason: row.reason ?? null,
-        recordedAt: row.recorded_at,
-      })),
+      confidenceHistory: historyRows.map((row) => {
+        type Outcome = "success" | "failure" | "manual" | "observation";
+        let outcome: Outcome;
+        switch (row.outcome) {
+          case "failure":
+          case "manual":
+          case "observation":
+            outcome = row.outcome;
+            break;
+          default:
+            outcome = "success";
+        }
+        return {
+          id: row.id,
+          confidence: Number(row.confidence ?? memory.confidence) || memory.confidence,
+          outcome,
+          reason: row.reason ?? null,
+          recordedAt: row.recorded_at,
+        };
+      }),
     };
   };
 
@@ -356,14 +386,18 @@ export function createProceduralLearningService(args: {
   const onEpisodeSaved = async (memoryId: string): Promise<void> => {
     const episodeMemory = memoryService.getMemory(memoryId);
     if (!episodeMemory || episodeMemory.category !== "episode") return;
+    if (isPrFeedbackEpisode(episodeMemory)) return;
     const episode = parseEpisode(episodeMemory.content);
     if (!episode) return;
+    if (isLowSignalEpisode(episode)) return;
 
     const allEpisodes = listEpisodeMemories();
     const matchableCurrentSignals = toLineList([...episode.patternsDiscovered, ...episode.decisionsMade]);
     if (matchableCurrentSignals.length === 0) return;
 
     const similarEpisodes = allEpisodes.filter((candidate) => {
+      if (isPrFeedbackEpisode(candidate.memory)) return false;
+      if (isLowSignalEpisode(candidate.episode)) return false;
       const sameId = candidate.memory.id === episodeMemory.id;
       if (sameId) return true;
       const overlap = overlapScore(

@@ -11,10 +11,7 @@ export function formatComputerUseKind(kind: ComputerUseArtifactKind | string): s
 }
 
 export function formatComputerUseMode(policy: ComputerUsePolicy | null | undefined): string {
-  const mode = policy?.mode ?? "auto";
-  if (mode === "off") return "Off";
-  if (mode === "enabled") return "Enabled";
-  return "Auto";
+  return policy?.mode === "enabled" ? "Enabled" : "Auto";
 }
 
 export function describeComputerUseOwner(owner: ComputerUseArtifactOwner | Pick<ComputerUseArtifactLink, "ownerKind" | "ownerId">): string {

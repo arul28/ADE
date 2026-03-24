@@ -51,24 +51,27 @@ export function createMemoryTools(
   });
 
   const memoryAdd = tool({
-    description: `Save a durable insight that would help a developer who has never seen this project before.
+    description: `Save a durable insight that is NOT derivable from the code, git history, or project files.
 
 If the standing CTO brief itself changed (project summary, conventions, user preferences, or active focus), use memoryUpdateCore instead of memoryAdd.
 
-GOOD memories (save these):
+Before saving, ask yourself: could a developer find this by reading the codebase, running git log, or grepping? If yes, DO NOT save it.
+
+GOOD memories (non-obvious knowledge worth preserving):
 - "Convention: always use snake_case for database columns — the ORM breaks with camelCase"
 - "Decision: chose PostgreSQL over MongoDB because we need ACID transactions for payment processing"
 - "Pitfall: the CI pipeline silently skips tests if the test file doesn't match *.test.ts pattern"
-- "Pattern: all API routes must call validateSession() before accessing req.user — middleware doesn't cover /internal/* paths"
+- "User prefers terse responses with no trailing summaries"
 
-BAD memories (never save these):
-- File paths or doc paths (derivable from the project with search)
-- Raw error messages without a lesson learned
-- Task progress or status updates
-- Things findable via git log or git blame
+BAD memories (NEVER save these):
+- File paths, directory listings, or code structure (use search tools)
+- Raw error messages or stack traces without a lesson learned
+- Task progress, status updates, or session summaries
+- Git history, recent changes, or who-changed-what (use git log/blame)
+- Debugging solutions or fix recipes (the fix is in the code already)
 - Obvious patterns already visible in the codebase
 
-Format: Lead with the concrete rule or fact, then brief context for WHY it matters. One actionable insight per memory, not a paragraph of narrative.`,
+Format: Lead with the concrete rule or fact, then brief context for WHY it matters. One actionable insight per memory.`,
     inputSchema: z.object({
       content: z.string().describe("The information to remember"),
       category: z.enum(["fact", "convention", "pattern", "decision", "gotcha", "preference"]).describe("Category of the memory"),

@@ -37,7 +37,6 @@ const TAB_ALIASES: Record<string, SectionId> = {
   github: "integrations",
   linear: "integrations",
   "computer-use": "integrations",
-  "external-mcp": "integrations",
   keybindings: "general",
 };
 

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-14
+> Last updated: 2026-03-24
 
 ADE is a local-first development control plane built around a trusted Electron main process, an untrusted renderer, and a provider-flexible AI/runtime layer. The current architecture is designed around three goals:
 
@@ -222,7 +222,7 @@ Missions remain ADE's structured multi-worker execution system, but the mission 
 
 ### PRs and GitHub
 
-The PR system still supports local simulation, stacked workflows, and integration proposals, but GitHub snapshot loading is now cached and integration simulation is manually triggered instead of auto-running on tab entry. PR issue resolution is now available: agents can be launched from the PR detail surface to fix failing CI checks and address unresolved review threads, with dedicated workflow tools for refreshing issue state, rerunning checks, and managing review threads.
+The PR system still supports local simulation, stacked workflows, and integration proposals, but GitHub snapshot loading is now cached and integration simulation is manually triggered instead of auto-running on tab entry. PR issue resolution is available: agents can be launched from the PR detail surface to fix failing CI checks and address unresolved review threads, with dedicated workflow tools for refreshing issue state, rerunning checks, and managing review threads. PR polling now runs on a 60-second default interval (up from 25s) and uses fingerprint-based change detection to avoid cascading re-renders when nothing changed. Rebase suggestions are queue-aware: the conflict service fetches queue target tracking branches and resolves rebase overrides so that queued PRs rebase against the correct comparison ref rather than always using the lane's base branch.
 
 ### Workspace Graph
 
@@ -231,6 +231,8 @@ The graph still provides topology, risk, PR, and activity overlays, but it now s
 ### Memory
 
 The memory system has been consolidated into a unified SQLite-backed store with three scopes and three tiers, replacing the earlier multi-surface approach. All agent types receive improved memory instructions with concrete examples and quality criteria. The pre-compaction flush prompt now includes explicit SAVE/DO-NOT-SAVE guidance so agents produce fewer, higher-quality memories. CTO core memory files coexist as a separate persistence layer. The only memory UI surface is Settings > Memory.
+
+The memory pipeline now includes quality filters at multiple stages. PR feedback capture filters out low-signal content (generic deployment previews, link-only comments, short URL-heavy messages, and content without durable guidance signals like "always", "never", "must", etc.) before creating memory candidates. Episodic memories are stored in a human-readable format with structured JSON preserved in an HTML comment for downstream parsing. The procedural learning service skips PR-feedback-sourced episodes and low-signal episodes to avoid polluting the procedural knowledge base. Memory candidate promotion now also accepts system-sourced entries at a lower confidence threshold (0.6 with any observation count) alongside the existing 0.7/2-observation gate for other sources.
 
 ---
 

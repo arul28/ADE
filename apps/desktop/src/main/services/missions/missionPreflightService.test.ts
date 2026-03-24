@@ -514,7 +514,7 @@ describe("missionPreflightService", () => {
     expect(result.computerUse?.blocked).toBe(false);
   });
 
-  it("blocks launch when proof is required but mission computer use is turned off", async () => {
+  it("blocks launch when proof is required but no backends are available and fallback is off", async () => {
     const profiles = createProfiles();
     const phases = profiles[0]!.phases.map((phase, index) => index === 0
       ? {
@@ -567,16 +567,7 @@ describe("missionPreflightService", () => {
       } as any,
       computerUseArtifactBrokerService: {
         getBackendStatus: () => ({
-          backends: [
-            {
-              name: "Ghost OS",
-              style: "external_mcp",
-              available: true,
-              state: "connected",
-              detail: "Connected",
-              supportedKinds: ["screenshot"],
-            },
-          ],
+          backends: [],
           localFallback: {
             available: false,
             detail: "Fallback unavailable",
@@ -592,7 +583,7 @@ describe("missionPreflightService", () => {
         phaseProfileId: profiles[0]!.id,
         phaseOverride: phases,
         computerUse: {
-          mode: "off",
+          mode: "auto",
           allowLocalFallback: false,
           retainArtifacts: true,
           preferredBackend: null,

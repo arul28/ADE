@@ -196,14 +196,10 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
                   fontFamily: MONO,
                 }}
                 onClick={onOpenMcpSettings}
-                title="Open External MCP settings"
+                title="Open ADE-managed MCP settings"
               >
                 <Database size={10} weight="bold" />
-                {mcpSummary.connectedCount > 0
-                  ? `MCP ${mcpSummary.connectedCount}/${mcpSummary.configuredCount}`
-                  : mcpSummary.configuredCount > 0
-                    ? `MCP ${mcpSummary.configuredCount} configured`
-                    : "MCP setup"}
+                {formatMcpBadgeLabel(mcpSummary)}
               </button>
             ) : null}
             {agentRuntimeConfig && selectedChannel?.kind !== "worker" ? (
@@ -330,6 +326,12 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
 });
 
 // ── Small helper components ──
+
+function formatMcpBadgeLabel(mcp: ChatMcpSummary): string {
+  if (mcp.connectedCount > 0) return `ADE MCP ${mcp.connectedCount}/${mcp.configuredCount}`;
+  if (mcp.configuredCount > 0) return `ADE MCP ${mcp.configuredCount} configured`;
+  return "ADE MCP";
+}
 
 function workerBadgeLabel(status: string, phaseLabel: string | null): string {
   const suffix = status === "active" ? "worker" : "history";
