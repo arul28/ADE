@@ -16,7 +16,7 @@ export function LaneDialogShell({
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
-  icon?: ComponentType<{ size?: number; className?: string }>;
+  icon?: ComponentType<{ size?: number | string; className?: string }>;
   widthClassName?: string;
   busy?: boolean;
   children: ReactNode;
