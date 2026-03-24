@@ -93,7 +93,7 @@ export function buildManualLandWarnings(args: {
   if (reviewStatus === "changes_requested") warnings.push("The current PR has requested changes.");
   if (args.status?.mergeConflicts) warnings.push("GitHub reports merge conflicts on the current PR.");
   if (args.status && !args.status.isMergeable && !args.status.mergeConflicts) {
-    warnings.push("GitHub has not marked the current PR as mergeable yet.");
+    warnings.push("GitHub has not marked the current PR as mergeable yet. Manual land can still succeed if GitHub allows a bypass merge.");
   }
 
   return warnings;

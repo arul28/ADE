@@ -140,4 +140,61 @@ describe("prPollingService", () => {
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(refresh).toHaveBeenLastCalledWith({ prIds: ["pr-1"] });
   });
+
+  it("emits informative PR notifications with PR metadata", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let summary = createSummary({
+      title: "Fix lanes tab",
+      headBranch: "fix-lanes-tab",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+    });
+    let refreshCount = 0;
+    const events: any[] = [];
+
+    const prService = {
+      listAll: () => [summary],
+      refresh: vi.fn(async () => {
+        refreshCount += 1;
+        if (refreshCount >= 2) {
+          summary = {
+            ...summary,
+            checksStatus: "failing",
+            updatedAt: new Date(Date.now()).toISOString(),
+          };
+        }
+        return [summary];
+      }),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "pr-notification",
+      kind: "checks_failing",
+      title: "Checks failing",
+      prTitle: "Fix lanes tab",
+      repoOwner: "acme",
+      repoName: "ade",
+      baseBranch: "main",
+      headBranch: "fix-lanes-tab",
+      message: "One or more required CI checks failed on this pull request.",
+    }));
+  });
 });

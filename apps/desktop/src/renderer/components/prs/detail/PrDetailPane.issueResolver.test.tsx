@@ -165,6 +165,7 @@ function renderPane(args: {
   onNavigate?: (path: string) => void;
   activity?: PrActivityEvent[];
   statusOverrides?: Partial<PrStatus>;
+  mergeMethod?: "merge" | "squash" | "rebase";
 }) {
   const issueResolutionStart = vi.fn().mockResolvedValue({
     sessionId: "session-1",
@@ -177,6 +178,16 @@ function renderPane(args: {
   });
   const getReviewThreads = vi.fn().mockResolvedValue(args.reviewThreads);
   const writeClipboardText = vi.fn().mockResolvedValue(undefined);
+  const land = vi.fn().mockResolvedValue({
+    prId: "pr-80",
+    prNumber: 80,
+    success: true,
+    mergeCommitSha: "sha-merge",
+    branchDeleted: false,
+    laneArchived: false,
+    error: null,
+  });
+  const onRefresh = vi.fn().mockResolvedValue(undefined);
   Object.assign(window, {
     ade: {
       prs: {
@@ -197,6 +208,7 @@ function renderPane(args: {
         getReviewThreads,
         issueResolutionStart,
         issueResolutionPreviewPrompt,
+        land,
         openInGitHub: vi.fn().mockResolvedValue(undefined),
       },
       app: {
@@ -211,6 +223,8 @@ function renderPane(args: {
     issueResolutionPreviewPrompt,
     getReviewThreads,
     writeClipboardText,
+    land,
+    onRefresh,
     ...render(
       <PrDetailPane
         pr={makePr()}
@@ -220,8 +234,8 @@ function renderPane(args: {
         comments={[]}
         detailBusy={false}
         lanes={args.lanes ?? [makeLane()]}
-        mergeMethod="squash"
-        onRefresh={vi.fn().mockResolvedValue(undefined)}
+        mergeMethod={args.mergeMethod ?? "squash"}
+        onRefresh={onRefresh}
         onNavigate={args.onNavigate ?? vi.fn()}
       />,
     ),
@@ -267,6 +281,54 @@ describe("PrDetailPane issue resolver CTA", () => {
 
     await waitFor(() => {
       expect(screen.getAllByRole("button", { name: /resolve issues with agent/i }).length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("keeps the merge readiness checks row in a running state while failed checks are still in flight", async () => {
+    renderPane({
+      checks: [
+        makeCheck({ name: "ci / unit", conclusion: "success" }),
+        makeCheck({ name: "ci / e2e", conclusion: "failure" }),
+        makeCheck({ name: "ci / lint", status: "in_progress", conclusion: null }),
+      ],
+      reviewThreads: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Some checks failing")).toBeTruthy();
+      expect(screen.getByText("1/3 checks passing, 1 still running")).toBeTruthy();
+      expect(screen.getAllByLabelText("CI running").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("lets the operator attempt a bypass merge and uses the selected merge method", async () => {
+    const user = userEvent.setup();
+    const { land, onRefresh } = renderPane({
+      checks: [makeCheck()],
+      reviewThreads: [],
+      mergeMethod: "squash",
+      statusOverrides: {
+        checksStatus: "failing",
+        reviewStatus: "changes_requested",
+        isMergeable: false,
+        mergeConflicts: false,
+      },
+    });
+
+    const mergeButton = await screen.findByRole("button", { name: /merge pull request/i });
+    expect((mergeButton as HTMLButtonElement).disabled).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: /create merge commit/i }));
+    await user.click(screen.getByRole("checkbox", { name: /attempt merge anyway if github allows bypass rules/i }));
+
+    const bypassButton = screen.getByRole("button", { name: /attempt merge anyway/i });
+    expect((bypassButton as HTMLButtonElement).disabled).toBe(false);
+
+    await user.click(bypassButton);
+
+    await waitFor(() => {
+      expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "merge" });
+      expect(onRefresh).toHaveBeenCalled();
     });
   });
 

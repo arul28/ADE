@@ -18,17 +18,28 @@ function jitterMs(value: number): number {
 }
 
 function summarizeNotification(args: { kind: PrNotificationKind; pr: PrSummary }): { title: string; message: string } {
-  const prLabel = args.pr.githubPrNumber ? `#${args.pr.githubPrNumber}` : "PR";
   if (args.kind === "checks_failing") {
-    return { title: `Checks failing ${prLabel}`, message: args.pr.title || "A pull request has failing checks." };
+    return {
+      title: "Checks failing",
+      message: "One or more required CI checks failed on this pull request.",
+    };
   }
   if (args.kind === "review_requested") {
-    return { title: `Review requested ${prLabel}`, message: args.pr.title || "A pull request needs review." };
+    return {
+      title: "Review requested",
+      message: "This pull request is waiting on an approving review.",
+    };
   }
   if (args.kind === "changes_requested") {
-    return { title: `Changes requested ${prLabel}`, message: args.pr.title || "A pull request has requested changes." };
+    return {
+      title: "Changes requested",
+      message: "A reviewer requested changes before this pull request can merge.",
+    };
   }
-  return { title: `Merge ready ${prLabel}`, message: args.pr.title || "A pull request looks merge-ready." };
+  return {
+    title: "Ready to merge",
+    message: "Required checks are passing and the pull request has approval.",
+  };
 }
 
 /**

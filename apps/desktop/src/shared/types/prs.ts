@@ -151,6 +151,11 @@ export type PrEventPayload =
       prId: string;
       prNumber: number;
       title: string;
+      prTitle: string;
+      repoOwner: string;
+      repoName: string;
+      baseBranch: string;
+      headBranch: string;
       githubUrl: string;
       message: string;
       state: PrState;

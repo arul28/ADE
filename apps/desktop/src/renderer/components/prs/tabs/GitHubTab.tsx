@@ -6,6 +6,7 @@ import { EmptyState } from "../../ui/EmptyState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatters";
+import { PrCiRunningIndicator } from "../shared/prVisuals";
 import { usePrs } from "../state/PrsContext";
 
 type GitHubTabProps = {
@@ -761,6 +762,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
               const sc = stateColor(item.state);
               const linkedPr = item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null;
               const ci = ciDotColor(linkedPr);
+              const ciRunning = linkedPr?.checksStatus === "pending";
               const review = reviewIndicator(linkedPr);
               const ago = formatTimeAgoCompact(item.updatedAt);
               return (
@@ -856,9 +858,10 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                       </span>
                     )}
                     {ci ? (
-                      <span title={ci.title} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontFamily: SANS_FONT, color: ci.color }}>
+                      <span title={ci.title} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: SANS_FONT, color: ci.color }}>
                         <span style={{ width: 6, height: 6, borderRadius: "50%", background: ci.color, display: "inline-block", boxShadow: `0 0 4px ${ci.color}44` }} />
                         CI
+                        {ciRunning ? <PrCiRunningIndicator color={ci.color} /> : null}
                       </span>
                     ) : null}
                     {review ? (

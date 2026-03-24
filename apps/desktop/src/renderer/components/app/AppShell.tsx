@@ -1,9 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowSquareOut,
+  CheckCircle,
+  GitBranch,
+  GithubLogo,
+  GitPullRequest,
+  WarningCircle,
+  XCircle,
+} from "@phosphor-icons/react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
 import { RightEdgeFloatingPane } from "./RightEdgeFloatingPane";
+import { getPrToastHeadline, getPrToastMeta, getPrToastSummary, getPrToastTone, type PrToastTone } from "./prToastPresentation";
 import { TabBackground } from "../ui/TabBackground";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -54,6 +64,51 @@ function shortId(id: string): string {
   const trimmed = (id ?? "").trim();
   if (!trimmed) return "";
   return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
+}
+
+function getPrToastToneClasses(tone: PrToastTone): {
+  panel: string;
+  badge: string;
+  iconWrap: string;
+  iconClass: string;
+} {
+  if (tone === "danger") {
+    return {
+      panel: "border-red-500/25 bg-card/95",
+      badge: "border border-red-500/30 bg-red-500/10 text-red-300",
+      iconWrap: "border border-red-500/30 bg-red-500/12",
+      iconClass: "text-red-300",
+    };
+  }
+  if (tone === "warning") {
+    return {
+      panel: "border-amber-500/25 bg-card/95",
+      badge: "border border-amber-500/30 bg-amber-500/10 text-amber-300",
+      iconWrap: "border border-amber-500/30 bg-amber-500/12",
+      iconClass: "text-amber-300",
+    };
+  }
+  if (tone === "success") {
+    return {
+      panel: "border-emerald-500/25 bg-card/95",
+      badge: "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+      iconWrap: "border border-emerald-500/30 bg-emerald-500/12",
+      iconClass: "text-emerald-300",
+    };
+  }
+  return {
+    panel: "border-sky-500/25 bg-card/95",
+    badge: "border border-sky-500/30 bg-sky-500/10 text-sky-300",
+    iconWrap: "border border-sky-500/30 bg-sky-500/12",
+    iconClass: "text-sky-300",
+  };
+}
+
+function getPrToastIcon(kind: PrToast["event"]["kind"]) {
+  if (kind === "checks_failing") return XCircle;
+  if (kind === "changes_requested") return WarningCircle;
+  if (kind === "merge_ready") return CheckCircle;
+  return GitPullRequest;
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -614,53 +669,95 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
               {prToasts.map((toast) => {
                 const laneName = lanes.find((lane) => lane.id === toast.event.laneId)?.name ?? toast.event.laneId;
+                const tone = getPrToastTone(toast.event.kind);
+                const toneClasses = getPrToastToneClasses(tone);
+                const Icon = getPrToastIcon(toast.event.kind);
+                const headline = getPrToastHeadline(toast.event);
+                const summary = getPrToastSummary(toast.event);
+                const meta = getPrToastMeta(toast.event, laneName);
                 return (
-                  <div key={toast.id} className="pointer-events-auto rounded border border-border/50 bg-card px-3 py-2 text-[11px] font-mono shadow-float">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-semibold text-fg truncate">{toast.event.title}</div>
-                        <div className="mt-0.5 truncate text-muted-fg">{laneName}</div>
+                  <div
+                    key={toast.id}
+                    className={cn(
+                      "pointer-events-auto overflow-hidden rounded-xl border px-3 py-3 shadow-float backdrop-blur",
+                      toneClasses.panel,
+                    )}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className={cn("mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg", toneClasses.iconWrap)}>
+                        <Icon size={16} weight="fill" className={toneClasses.iconClass} />
                       </div>
-                      <button
-                        type="button"
-                        className="shrink-0 text-muted-fg hover:text-fg"
-                        onClick={() => {
-                          setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
-                          const timer = toastTimersRef.current.get(toast.id);
-                          if (timer != null) window.clearTimeout(timer);
-                          toastTimersRef.current.delete(toast.id);
-                        }}
-                        title="Dismiss"
-                      >
-                        ×
-                      </button>
-                    </div>
-                    <div className="mt-1 text-[11px] text-muted-fg line-clamp-2">{toast.event.message}</div>
-                    <div className="mt-2 flex justify-end gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-[11px]"
-                        onClick={() => {
-                          selectLane(toast.event.laneId);
-                          setLaneInspectorTab(toast.event.laneId, "merge");
-                          window.location.hash = `#/lanes?laneId=${encodeURIComponent(toast.event.laneId)}&focus=single&inspectorTab=merge`;
-                          setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
-                        }}
-                      >
-                        View PR
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        className="h-7 px-2 text-[11px]"
-                        onClick={() => {
-                          void window.ade.prs.openInGitHub(toast.event.prId).catch(() => { });
-                          setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
-                        }}
-                      >
-                        Open in GitHub
-                      </Button>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={cn("inline-flex items-center rounded-full px-2 py-1 text-[10px] font-medium", toneClasses.badge)}>
+                                {toast.event.title}
+                              </span>
+                              <span className="text-[11px] font-medium text-muted-fg">#{toast.event.prNumber}</span>
+                            </div>
+                            <div className="mt-2 line-clamp-2 text-[13px] font-semibold leading-tight text-fg">
+                              {headline}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+                            onClick={() => {
+                              setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
+                              const timer = toastTimersRef.current.get(toast.id);
+                              if (timer != null) window.clearTimeout(timer);
+                              toastTimersRef.current.delete(toast.id);
+                            }}
+                            title="Dismiss"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        {meta.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                            {meta.map((item, index) => (
+                              <span
+                                key={`${toast.id}-meta-${index}`}
+                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/50 bg-black/10 px-2 py-1 text-[10px] text-muted-fg"
+                              >
+                                {index === 0 ? <GitPullRequest size={10} /> : index === 1 ? <GitBranch size={10} /> : <GithubLogo size={10} />}
+                                <span className="truncate">{item}</span>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div className="mt-2 line-clamp-3 text-[12px] leading-relaxed text-muted-fg">{summary}</div>
+                        <div className="mt-3 flex justify-end gap-2">
+                          <button
+                            type="button"
+                            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-transparent px-3 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg"
+                            onClick={() => {
+                              selectLane(toast.event.laneId);
+                              setLaneInspectorTab(toast.event.laneId, "merge");
+                              window.location.hash = `#/lanes?laneId=${encodeURIComponent(toast.event.laneId)}&focus=single&inspectorTab=merge`;
+                              setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
+                            }}
+                          >
+                            <GitPullRequest size={12} />
+                            Open in ADE
+                          </button>
+                          <button
+                            type="button"
+                            className={cn(
+                              "inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[11px] font-medium text-[#0F0D14] transition-colors hover:brightness-110",
+                              tone === "danger" ? "bg-red-300" : tone === "warning" ? "bg-amber-300" : tone === "success" ? "bg-emerald-300" : "bg-[#A78BFA]",
+                            )}
+                            onClick={() => {
+                              void window.ade.prs.openInGitHub(toast.event.prId).catch(() => { });
+                              setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
+                            }}
+                          >
+                            <ArrowSquareOut size={12} />
+                            Open on GitHub
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 );

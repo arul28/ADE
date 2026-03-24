@@ -196,6 +196,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Rebase state
   const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>([]);
   const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>([]);
+  const rebaseNeedsRef = React.useRef<RebaseNeed[]>([]);
+  rebaseNeedsRef.current = rebaseNeeds;
+  const autoRebaseStatusesRef = React.useRef<AutoRebaseLaneStatus[]>([]);
+  autoRebaseStatusesRef.current = autoRebaseStatuses;
 
   // Queue state
   const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>({});
@@ -315,12 +319,20 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     try {
       await window.ade.prs.refresh().catch(() => {});
       const shouldLoadWorkflowState = activeTab !== "normal";
-      const [prList, laneList, queueStateList] = await Promise.all([
+      const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
         window.ade.prs.listWithConflicts(),
         window.ade.lanes.list({ includeStatus: true }),
         shouldLoadWorkflowState
           ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
           : Promise.resolve([] as QueueLandingState[]),
+        window.ade.rebase.scanNeeds().catch((err) => {
+          console.warn("[PrsContext] Failed to refresh rebase needs:", err);
+          return rebaseNeedsRef.current;
+        }),
+        window.ade.lanes.listAutoRebaseStatuses().catch((err) => {
+          console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err);
+          return autoRebaseStatusesRef.current;
+        }),
       ]);
       const changedPrIds = diffPrIds(prsRef.current, prList);
 
@@ -328,6 +340,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       // to avoid unnecessary re-render cascades in child components.
       setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
       setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
+      setRebaseNeeds((prev) => (jsonEqual(prev, refreshedRebaseNeeds) ? prev : refreshedRebaseNeeds));
+      setAutoRebaseStatuses((prev) => (jsonEqual(prev, refreshedAutoRebaseStatuses) ? prev : refreshedAutoRebaseStatuses));
       setQueueStates((prev) => {
         const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
         return jsonEqual(prev, next) ? prev : next;

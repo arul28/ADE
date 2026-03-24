@@ -98,9 +98,9 @@ describe("GitHubTab", () => {
   beforeEach(() => {
     mockUsePrs.mockReturnValue({
       prs: [
-        { id: "pr-open" },
-        { id: "pr-merged" },
-        { id: "pr-queue" },
+        { id: "pr-open", checksStatus: "pending", reviewStatus: "requested", additions: 12, deletions: 3 },
+        { id: "pr-merged", checksStatus: "passing", reviewStatus: "approved", additions: 5, deletions: 1 },
+        { id: "pr-queue", checksStatus: "passing", reviewStatus: "approved", additions: 7, deletions: 2 },
       ] satisfies Partial<PrWithConflicts>[],
       mergeContextByPrId: {
         "pr-queue": { groupType: "queue", groupId: "queue-group-1", members: [] },
@@ -178,6 +178,14 @@ describe("GitHubTab", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("queue-context").textContent).toContain("queue-group-1");
+    });
+  });
+
+  it("shows a running CI indicator for PR cards with pending checks", async () => {
+    renderTab();
+
+    await waitFor(() => {
+      expect(screen.getAllByLabelText("CI running").length).toBeGreaterThan(0);
     });
   });
 });

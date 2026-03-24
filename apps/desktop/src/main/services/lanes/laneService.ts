@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 import { isWithinDir } from "../shared/utils";
-import { resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
+import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
 import type { createOperationService } from "../history/operationService";
 import type {
@@ -224,6 +224,59 @@ async function computeLaneStatus(worktreePath: string, baseRef: string, branchRe
   }
 
   return { dirty, ahead, behind, remoteBehind, rebaseInProgress };
+}
+
+async function resolveParentRebaseTarget(args: {
+  projectRoot: string;
+  parent: LaneRow;
+}): Promise<{ headSha: string; label: string }> {
+  const { projectRoot, parent } = args;
+
+  if (parent.lane_type === "primary") {
+    await fetchRemoteTrackingBranch({
+      projectRoot,
+      targetBranch: parent.branch_ref,
+    }).catch(() => false);
+
+    const candidateRefs: string[] = [];
+    const upstreamRes = await runGit(
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      { cwd: parent.worktree_path, timeoutMs: 5_000 },
+    );
+    if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
+      candidateRefs.push(upstreamRes.stdout.trim());
+    }
+    const originRef = `origin/${parent.branch_ref}`;
+    if (!candidateRefs.includes(originRef)) {
+      candidateRefs.push(originRef);
+    }
+
+    for (const candidateRef of candidateRefs) {
+      const candidateRes = await runGit(
+        ["rev-parse", "--verify", candidateRef],
+        { cwd: parent.worktree_path, timeoutMs: 5_000 },
+      );
+      if (candidateRes.exitCode === 0 && candidateRes.stdout.trim()) {
+        return {
+          headSha: candidateRes.stdout.trim(),
+          label: candidateRef,
+        };
+      }
+    }
+  }
+
+  const headSha = await getHeadSha(parent.worktree_path);
+  if (!headSha) {
+    throw new Error(`Unable to resolve parent HEAD for ${parent.name}`);
+  }
+  return {
+    headSha,
+    label: parent.name,
+  };
+}
+
+function describeParentRebaseTarget(parent: LaneRow, label: string): string {
+  return label === parent.name ? parent.name : `${parent.name} (${label})`;
 }
 
 function computeStackDepth(args: {
@@ -1274,11 +1327,20 @@ export function createLaneService({
           break;
         }
 
-        const parentHead = await getHeadSha(parent.worktree_path);
-        if (!parentHead) {
-          failRunAtLane(laneItem, lane.id, index, `Unable to resolve parent HEAD for ${parent.name}`);
+        let parentTarget: { headSha: string; label: string };
+        try {
+          parentTarget = await resolveParentRebaseTarget({ projectRoot, parent });
+        } catch (error) {
+          failRunAtLane(
+            laneItem,
+            lane.id,
+            index,
+            error instanceof Error ? error.message : `Unable to resolve parent HEAD for ${parent.name}`,
+          );
           break;
         }
+        const parentHead = parentTarget.headSha;
+        const parentTargetLabel = describeParentRebaseTarget(parent, parentTarget.label);
 
         run.currentLaneId = lane.id;
         laneItem.preHeadSha = await getHeadSha(lane.worktree_path);
@@ -1298,7 +1360,7 @@ export function createLaneService({
           emitRunLog({
             runId,
             laneId: lane.id,
-            message: `${lane.name} is already up to date with ${parent.name}; skipping rebase.`,
+            message: `${lane.name} is already up to date with ${parentTargetLabel}; skipping rebase.`,
           });
           emitRunUpdated(run);
           continue;
@@ -1323,7 +1385,7 @@ export function createLaneService({
         emitRunLog({
           runId,
           laneId: lane.id,
-          message: `Rebasing ${lane.name} onto ${parent.name} (${parentHead.slice(0, 8)})`
+          message: `Rebasing ${lane.name} onto ${parentTargetLabel} (${parentHead.slice(0, 8)})`
         });
 
         const operation = operationService?.start({

@@ -11,7 +11,7 @@ vi.mock("../git/git", () => ({
   runGitOrThrow: vi.fn(),
 }));
 
-import { getHeadSha, runGit } from "../git/git";
+import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 
 function createLogger() {
   return {
@@ -61,6 +61,7 @@ describe("laneService rebaseStart", () => {
   beforeEach(() => {
     vi.mocked(getHeadSha).mockReset();
     vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
   });
 
   it("skips rebasing when the parent head is already an ancestor of the lane head", async () => {
@@ -154,5 +155,55 @@ describe("laneService rebaseStart", () => {
     });
     const completed = await firstRun;
     expect(completed.run.state).toBe("completed");
+  });
+
+  it("rebases against the primary lane remote tracking ref when it is available", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-primary-remote-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-primary-remote", repoRoot });
+
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/parent")) return "sha-parent";
+      return "sha-main";
+    });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (
+        args[0] === "rev-parse"
+        && args[1] === "--abbrev-ref"
+        && args[2] === "--symbolic-full-name"
+        && args[3] === "@{upstream}"
+      ) {
+        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        expect(args[2]).toBe("sha-origin-main");
+        expect(args[3]).toBe("sha-parent");
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rebase") {
+        expect(args[1]).toBe("sha-origin-main");
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-primary-remote",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+
+    expect(result.run.state).toBe("completed");
+    expect(result.run.error).toBeNull();
+    expect(result.run.lanes[0]?.status).toBe("succeeded");
+    expect(vi.mocked(runGitOrThrow)).toHaveBeenCalled();
   });
 });
