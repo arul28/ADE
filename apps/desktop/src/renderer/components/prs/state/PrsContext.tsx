@@ -197,9 +197,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>([]);
   const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>([]);
   const rebaseNeedsRef = React.useRef<RebaseNeed[]>([]);
-  rebaseNeedsRef.current = rebaseNeeds;
   const autoRebaseStatusesRef = React.useRef<AutoRebaseLaneStatus[]>([]);
-  autoRebaseStatusesRef.current = autoRebaseStatuses;
+  React.useEffect(() => { rebaseNeedsRef.current = rebaseNeeds; }, [rebaseNeeds]);
+  React.useEffect(() => { autoRebaseStatusesRef.current = autoRebaseStatuses; }, [autoRebaseStatuses]);
 
   // Queue state
   const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>({});
@@ -252,13 +252,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Concurrency guard for refresh
   const refreshInFlight = React.useRef(false);
   const prsRef = React.useRef<PrWithConflicts[]>([]);
-  prsRef.current = prs;
   const mergeContextByPrIdRef = React.useRef<Record<string, PrMergeContext>>({});
-  mergeContextByPrIdRef.current = mergeContextByPrId;
+  React.useEffect(() => { prsRef.current = prs; }, [prs]);
+  React.useEffect(() => { mergeContextByPrIdRef.current = mergeContextByPrId; }, [mergeContextByPrId]);
 
   // Refs for detail polling
   const selectedPrIdRef = React.useRef<string | null>(null);
-  selectedPrIdRef.current = selectedPrId;
+  React.useEffect(() => { selectedPrIdRef.current = selectedPrId; }, [selectedPrId]);
   const detailFetchInProgress = React.useRef(false);
 
   const refreshMergeContexts = useCallback(async (prIds: string[]) => {

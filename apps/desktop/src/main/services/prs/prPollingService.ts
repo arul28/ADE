@@ -37,8 +37,8 @@ function summarizeNotification(args: { kind: PrNotificationKind; pr: PrSummary }
     };
   }
   return {
-    title: "Ready to merge",
-    message: "Required checks are passing and the pull request has approval.",
+    title: "Checks passing & approved",
+    message: "Required checks are passing and the pull request has approval. Other merge requirements (e.g. base branch currency) may still apply.",
   };
 }
 

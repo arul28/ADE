@@ -737,6 +737,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                               setLaneInspectorTab(toast.event.laneId, "merge");
                               window.location.hash = `#/lanes?laneId=${encodeURIComponent(toast.event.laneId)}&focus=single&inspectorTab=merge`;
                               setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
+                              const timer = toastTimersRef.current.get(toast.id);
+                              if (timer != null) window.clearTimeout(timer);
+                              toastTimersRef.current.delete(toast.id);
                             }}
                           >
                             <GitPullRequest size={12} />
@@ -751,6 +754,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             onClick={() => {
                               void window.ade.prs.openInGitHub(toast.event.prId).catch(() => { });
                               setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
+                              const timer = toastTimersRef.current.get(toast.id);
+                              if (timer != null) window.clearTimeout(timer);
+                              toastTimersRef.current.delete(toast.id);
                             }}
                           >
                             <ArrowSquareOut size={12} />

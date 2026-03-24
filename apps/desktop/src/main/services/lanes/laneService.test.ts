@@ -119,6 +119,9 @@ describe("laneService rebaseStart", () => {
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return Promise.resolve({ exitCode: 1, stdout: "", stderr: "" });
       }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+      }
       if (args[0] === "rebase") {
         return new Promise((resolve) => {
           resolveRebase = resolve;
@@ -183,6 +186,9 @@ describe("laneService rebaseStart", () => {
         expect(args[2]).toBe("sha-origin-main");
         expect(args[3]).toBe("sha-parent");
         return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rebase") {
         expect(args[1]).toBe("sha-origin-main");

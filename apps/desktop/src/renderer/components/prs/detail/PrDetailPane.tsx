@@ -1092,6 +1092,11 @@ function OverviewTab(props: OverviewTabProps) {
     setLocalMergeMethod(mergeMethod);
   }, [mergeMethod]);
 
+  // Reset bypass opt-in when the selected PR changes
+  React.useEffect(() => {
+    setAllowBlockedMerge(false);
+  }, [pr.id]);
+
   // Sort comments chronologically (oldest first, like GitHub)
   const sortedComments = React.useMemo(
     () => [...comments].sort((a, b) => {
@@ -1413,20 +1418,22 @@ function OverviewTab(props: OverviewTabProps) {
 
           {/* Checks status */}
           <MergeStatusRow
-            color={allChecksPassed ? COLORS.success : checksRunning ? COLORS.warning : someChecksFailing ? COLORS.danger : COLORS.warning}
+            color={allChecksPassed ? COLORS.success : someChecksFailing ? COLORS.danger : checksRunning ? COLORS.warning : checks.length === 0 ? COLORS.textMuted : COLORS.warning}
             icon={
               allChecksPassed
                 ? <CheckCircle size={18} weight="fill" style={{ color: COLORS.success, filter: "drop-shadow(0 0 4px rgba(34,197,94,0.4))" }} />
-                : checksRunning
-                  ? <CircleNotch size={18} className="animate-spin" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />
-                  : someChecksFailing
-                    ? <XCircle size={18} weight="fill" style={{ color: COLORS.danger, filter: "drop-shadow(0 0 4px rgba(239,68,68,0.4))" }} />
-                    : <CircleNotch size={18} className="animate-spin" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />
+                : someChecksFailing
+                  ? <XCircle size={18} weight="fill" style={{ color: COLORS.danger, filter: "drop-shadow(0 0 4px rgba(239,68,68,0.4))" }} />
+                  : checksRunning
+                    ? <CircleNotch size={18} className="animate-spin" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />
+                    : checks.length === 0
+                      ? <CheckCircle size={18} weight="fill" style={{ color: COLORS.textMuted }} />
+                      : <CircleNotch size={18} className="animate-spin" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />
             }
             title={
               allChecksPassed ? "All checks have passed"
-                : checksRunning ? "Checks in progress"
-                  : someChecksFailing ? "Some checks failing"
+                : someChecksFailing ? "Some checks failing"
+                  : checksRunning ? "Checks in progress"
                     : checks.length === 0 ? "No checks" : "Checks in progress"
             }
             titleAccessory={checksRunning ? <PrCiRunningIndicator showLabel label="running" /> : undefined}

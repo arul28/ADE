@@ -288,8 +288,12 @@ function resolveLaneRebaseTarget(args: {
   const parent = args.lane.parentLaneId ? args.lanesById.get(args.lane.parentLaneId) ?? null : null;
   const parentBranchRef = parent?.branchRef?.trim() ?? "";
   if (parentBranchRef) {
+    // For primary lanes, prefer the remote tracking ref (origin/<branch>) to stay
+    // consistent with laneService.resolveParentRebaseTarget which rebases against
+    // the remote tracking ref rather than the local HEAD.
+    const comparisonRef = parent?.laneType === "primary" ? `origin/${parentBranchRef}` : parentBranchRef;
     return {
-      comparisonRef: parentBranchRef,
+      comparisonRef,
       displayBaseBranch: parentBranchRef,
     };
   }
