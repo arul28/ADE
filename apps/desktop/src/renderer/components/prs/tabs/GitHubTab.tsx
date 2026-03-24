@@ -13,7 +13,7 @@ type GitHubTabProps = {
   selectedPrId: string | null;
   onSelectPr: (id: string | null) => void;
   onRefreshAll: () => Promise<void>;
-  onOpenRebaseTab?: () => void;
+  onOpenRebaseTab?: (laneId?: string) => void;
   onOpenQueueView?: (groupId: string) => void;
 };
 

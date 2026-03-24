@@ -23,6 +23,27 @@ function generateId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+/** Parse "KEY=value" lines into a Record. Ignores blank lines and comments. */
+function parseEnvText(text: string): Record<string, string> | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  const env: Record<string, string> = {};
+  for (const line of trimmed.split("\n")) {
+    const l = line.trim();
+    if (!l || l.startsWith("#")) continue;
+    const eqIdx = l.indexOf("=");
+    if (eqIdx < 1) continue;
+    env[l.slice(0, eqIdx)] = l.slice(eqIdx + 1);
+  }
+  return Object.keys(env).length > 0 ? env : undefined;
+}
+
+/** Serialize a Record back to "KEY=value" lines. */
+function envToText(env: Record<string, string> | undefined): string {
+  if (!env) return "";
+  return Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n");
+}
+
 function WelcomeScreen() {
   const openRepo = useAppStore((s) => s.openRepo);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
@@ -335,7 +356,31 @@ export function RunPage() {
     } else {
       await window.ade.processes.startAll({ laneId: effectiveLaneId });
     }
-  }, [effectiveLaneId, selectedStackId]);
+    // Create inspector terminals for each process being started so the user
+    // gets a shell tab per process (matching the behavior of handleRun).
+    const targetDefs = selectedStackId
+      ? (() => {
+          const stack = stacks.find((s) => s.id === selectedStackId);
+          if (!stack) return definitions;
+          const ids = new Set(stack.processIds);
+          return definitions.filter((d) => ids.has(d.id));
+        })()
+      : definitions;
+    for (const def of targetDefs) {
+      try {
+        await window.ade.pty.create({
+          laneId: effectiveLaneId,
+          cols: 120,
+          rows: 30,
+          title: `${def.name} inspector`,
+          tracked: true,
+          toolType: "run-shell",
+        });
+      } catch {
+        // Terminal creation is best-effort
+      }
+    }
+  }, [effectiveLaneId, selectedStackId, definitions, stacks]);
 
   const handleStopAll = useCallback(async () => {
     if (!effectiveLaneId) return;
@@ -354,6 +399,7 @@ export function RunPage() {
       stackId: string | null;
       newStackName: string | null;
       cwd: string;
+      env: string;
     }) => {
       if (!config) return;
       const processId = generateId();
@@ -362,6 +408,7 @@ export function RunPage() {
         name: cmd.name,
         command: parseCommandLine(cmd.command),
         cwd: cmd.cwd === "." ? undefined : cmd.cwd,
+        env: parseEnvText(cmd.env),
       };
 
       const shared = { ...config.shared };
@@ -404,6 +451,7 @@ export function RunPage() {
         stackId: string | null;
         newStackName: string | null;
         cwd: string;
+        env: string;
       }
     ) => {
       if (!config) return;
@@ -417,6 +465,7 @@ export function RunPage() {
               name: cmd.name,
               command: parseCommandLine(cmd.command),
               cwd: cmd.cwd === "." ? undefined : cmd.cwd,
+              env: parseEnvText(cmd.env),
             }
           : p
       );
@@ -518,6 +567,7 @@ export function RunPage() {
           command: commandArrayToLine(def.command),
           stackId: currentStack?.id ?? null,
           cwd: def.cwd || ".",
+          env: envToText(def.env),
         },
       });
     },

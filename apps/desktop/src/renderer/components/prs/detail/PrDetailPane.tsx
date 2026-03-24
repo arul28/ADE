@@ -319,7 +319,7 @@ type PrDetailPaneProps = {
   onRefresh: () => Promise<void>;
   onNavigate: (path: string) => void;
   onShowInGraph?: (laneId: string) => void;
-  onOpenRebaseTab?: () => void;
+  onOpenRebaseTab?: (laneId?: string) => void;
   queueContext?: { groupId: string; label?: string | null } | null;
   onOpenQueueView?: (groupId: string) => void;
 };
@@ -1077,7 +1077,7 @@ type OverviewTabProps = {
   onReopen: () => void;
   onAiSummary: () => void;
   onNavigate: (path: string) => void;
-  onOpenRebaseTab?: () => void;
+  onOpenRebaseTab?: (laneId?: string) => void;
   localBehindCount: number;
   activity: PrActivityEvent[];
   lanes: LaneSummary[];
@@ -1165,7 +1165,7 @@ function OverviewTab(props: OverviewTabProps) {
                 {props.onOpenRebaseTab && (
                   <button
                     type="button"
-                    onClick={props.onOpenRebaseTab}
+                    onClick={() => props.onOpenRebaseTab?.(pr.laneId)}
                     style={outlineButton({
                       height: 30, padding: "0 14px",
                       color: hasConflicts ? COLORS.danger : COLORS.warning,

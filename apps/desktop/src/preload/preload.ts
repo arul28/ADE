@@ -319,6 +319,8 @@ import type {
   PrIssueResolutionPromptPreviewArgs,
   PrIssueResolutionPromptPreviewResult,
   PrIssueResolutionStartResult,
+  RebaseResolutionStartArgs,
+  RebaseResolutionStartResult,
   PrAiResolutionGetSessionArgs,
   PrAiResolutionGetSessionResult,
   PrAiResolutionInputArgs,
@@ -1393,6 +1395,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsIssueResolutionStart, args),
     issueResolutionPreviewPrompt: (args: PrIssueResolutionPromptPreviewArgs): Promise<PrIssueResolutionPromptPreviewResult> =>
       ipcRenderer.invoke(IPC.prsIssueResolutionPreviewPrompt, args),
+    rebaseResolutionStart: (args: RebaseResolutionStartArgs): Promise<RebaseResolutionStartResult> =>
+      ipcRenderer.invoke(IPC.prsRebaseResolutionStart, args),
     onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PrAiResolutionEventPayload) => cb(payload);
       ipcRenderer.on(IPC.prsAiResolutionEvent, listener);

@@ -294,7 +294,10 @@ function PRsPageInner() {
             selectedPrId={selectedPrId}
             onSelectPr={setSelectedPrId}
             onRefreshAll={handleRefresh}
-            onOpenRebaseTab={() => setActiveTab("rebase")}
+            onOpenRebaseTab={(laneId) => {
+              if (laneId) setSelectedRebaseItemId(laneId);
+              setActiveTab("rebase");
+            }}
             onOpenQueueView={(groupId) => {
               setSelectedQueueGroupId(groupId);
               setActiveTab("queue");

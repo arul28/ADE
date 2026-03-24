@@ -344,6 +344,7 @@ export const IPC = {
   prsAiResolutionEvent: "ade.prs.aiResolution.event",
   prsIssueResolutionStart: "ade.prs.issueResolution.start",
   prsIssueResolutionPreviewPrompt: "ade.prs.issueResolution.previewPrompt",
+  prsRebaseResolutionStart: "ade.prs.rebaseResolution.start",
   prsGetDetail: "ade.prs.getDetail",
   prsGetFiles: "ade.prs.getFiles",
   prsGetActionRuns: "ade.prs.getActionRuns",

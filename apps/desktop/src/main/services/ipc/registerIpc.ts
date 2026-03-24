@@ -8,6 +8,7 @@ import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
+import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import type {
   ApplyConflictProposalArgs,
@@ -123,6 +124,8 @@ import type {
   PrIssueResolutionPromptPreviewResult,
   PrIssueResolutionStartArgs,
   PrIssueResolutionStartResult,
+  RebaseResolutionStartArgs,
+  RebaseResolutionStartResult,
   LinkPrToLaneArgs,
   LandResult,
   LandStackEnhancedArgs,
@@ -4801,6 +4804,19 @@ export function registerIpc({
         laneService: ctx.laneService,
         agentChatService: ctx.agentChatService,
         sessionService: ctx.sessionService,
+      },
+      arg,
+    );
+  });
+
+  ipcMain.handle(IPC.prsRebaseResolutionStart, async (_event, arg: RebaseResolutionStartArgs): Promise<RebaseResolutionStartResult> => {
+    const ctx = getCtx();
+    return await launchRebaseResolutionChat(
+      {
+        laneService: ctx.laneService,
+        agentChatService: ctx.agentChatService,
+        sessionService: ctx.sessionService,
+        conflictService: ctx.conflictService,
       },
       arg,
     );

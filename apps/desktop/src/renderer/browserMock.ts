@@ -1489,6 +1489,11 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         laneId: "lane-dashboard",
         href: "/work?laneId=lane-dashboard&sessionId=mock-pr-issue-session",
       }),
+      rebaseResolutionStart: async () => ({
+        sessionId: "mock-rebase-session",
+        laneId: "lane-dashboard",
+        href: "/work?laneId=lane-dashboard&sessionId=mock-rebase-session",
+      }),
       issueResolutionPreviewPrompt: async () => ({
         title: "Resolve PR #1 issues",
         prompt: "Mock PR issue resolver prompt",

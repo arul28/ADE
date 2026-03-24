@@ -59,6 +59,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
   const {
     detailStatus, detailChecks, detailReviews, detailComments, detailBusy,
     setActiveTab,
+    setSelectedRebaseItemId,
   } = usePrs();
 
   const [filters, setFilters] = React.useState<FilterState>(INITIAL_FILTERS);
@@ -326,7 +327,10 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
                 onRefresh={onRefresh}
                 onNavigate={(path) => navigate(path)}
                 onShowInGraph={(laneId) => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
-                onOpenRebaseTab={() => setActiveTab("rebase")}
+                onOpenRebaseTab={(laneId) => {
+                  if (laneId) setSelectedRebaseItemId(laneId);
+                  setActiveTab("rebase");
+                }}
               />
             </div>
           </div>

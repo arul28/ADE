@@ -618,6 +618,19 @@ export type PrIssueResolutionPromptPreviewResult = {
   prompt: string;
 };
 
+export type RebaseResolutionStartArgs = {
+  laneId: string;
+  modelId: string;
+  reasoning?: string | null;
+  permissionMode?: AiPermissionMode;
+};
+
+export type RebaseResolutionStartResult = {
+  sessionId: string;
+  laneId: string;
+  href: string;
+};
+
 export type ReplyToPrReviewThreadArgs = {
   prId: string;
   threadId: string;

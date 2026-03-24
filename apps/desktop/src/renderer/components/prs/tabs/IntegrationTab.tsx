@@ -478,6 +478,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     rebaseNeeds,
     autoRebaseStatuses,
     setActiveTab,
+    setSelectedRebaseItemId,
     resolverModel,
     resolverReasoningLevel,
     resolverPermissionMode,
@@ -1499,7 +1500,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {/* ---- Rebase banners for source lanes ---- */}
         {mergeSourcesResolved.map((s) => (
           <div key={s.laneId} style={{ marginBottom: 12 }}>
-            <PrRebaseBanner laneId={s.laneId} rebaseNeeds={rebaseNeeds} autoRebaseStatuses={autoRebaseStatuses} onTabChange={(tab) => setActiveTab(tab as "normal" | "queue" | "integration" | "rebase")} />
+            <PrRebaseBanner laneId={s.laneId} rebaseNeeds={rebaseNeeds} autoRebaseStatuses={autoRebaseStatuses} onTabChange={(tab) => {
+              if (tab === "rebase") setSelectedRebaseItemId(s.laneId);
+              setActiveTab(tab as "normal" | "queue" | "integration" | "rebase");
+            }} />
           </div>
         ))}
 
@@ -1847,7 +1851,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               onNavigate={(path) => {
                 window.location.hash = path.startsWith("/") ? `#${path}` : path;
               }}
-              onOpenRebaseTab={() => setActiveTab("rebase")}
+              onOpenRebaseTab={(laneId) => {
+                if (laneId) setSelectedRebaseItemId(laneId);
+                setActiveTab("rebase");
+              }}
               onShowInGraph={(laneId) => {
                 window.location.hash = laneId
                   ? `#/graph?focusLane=${encodeURIComponent(laneId)}`

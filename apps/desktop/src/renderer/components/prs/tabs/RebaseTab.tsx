@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle, GitCommit, FileText, CaretDown, CaretRight, ArrowRight } from "@phosphor-icons/react";
+import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle, GitCommit, FileText, CaretDown, CaretRight, ArrowRight, CircleNotch } from "@phosphor-icons/react";
 import type { AiPermissionMode, GitCommitSummary, LaneSummary, RebaseNeed, RebaseRun, RebaseScope } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
@@ -8,7 +8,7 @@ import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
 import { StatusDot } from "../shared/StatusDot";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
-import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
+import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
 
 type RebaseTabProps = {
   rebaseNeeds: RebaseNeed[];
@@ -21,6 +21,7 @@ type RebaseTabProps = {
   onResolverChange: (model: string, level: string) => void;
   onResolverPermissionChange: (mode: AiPermissionMode) => void;
   onRefresh: () => Promise<void>;
+  onNavigate: (path: string) => void;
 };
 
 type UrgencyCategory = "attention" | "clean" | "recent" | "upToDate";
@@ -75,12 +76,14 @@ export function RebaseTab({
   onResolverChange,
   onResolverPermissionChange,
   onRefresh,
+  onNavigate,
 }: RebaseTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
   const [rebaseBusy, setRebaseBusy] = React.useState(false);
   const [rebaseError, setRebaseError] = React.useState<string | null>(null);
-  const [resolverOpen, setResolverOpen] = React.useState(false);
+  const [resolverLaunching, setResolverLaunching] = React.useState(false);
+  const [resolverExpanded, setResolverExpanded] = React.useState(false);
   const [runScope, setRunScope] = React.useState<RebaseScope>("lane_only");
   const [activeRun, setActiveRun] = React.useState<RebaseRun | null>(null);
   const [runLogs, setRunLogs] = React.useState<string[]>([]);
@@ -250,11 +253,20 @@ export function RebaseTab({
     setRebaseError(null);
 
     if (aiAssisted) {
-      if (!resolverTargetLaneId) {
-        setRebaseError(`Cannot find a lane matching base branch "${selectedNeed.baseBranch}". Create the lane first or sync manually.`);
-        return;
+      setResolverLaunching(true);
+      try {
+        const result = await window.ade.prs.rebaseResolutionStart({
+          laneId: selectedNeed.laneId,
+          modelId: resolverModel,
+          reasoning: resolverReasoningLevel || null,
+          permissionMode: resolverPermissionMode,
+        });
+        onNavigate(result.href);
+      } catch (err: unknown) {
+        setRebaseError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setResolverLaunching(false);
       }
-      setResolverOpen(true);
       return;
     }
 
@@ -967,13 +979,21 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="primary"
-                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
-                  onClick={() => void handleRebase(true)}
+                  disabled={rebaseBusy || resolverLaunching || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
+                  onClick={() => {
+                    if (resolverExpanded) {
+                      void handleRebase(true);
+                    } else {
+                      setResolverExpanded(true);
+                    }
+                  }}
                   style={{ borderRadius: 0 }}
                 >
-                  <Sparkle size={14} weight="regular" className="mr-1" />
+                  {resolverLaunching
+                    ? <CircleNotch size={14} className="mr-1 animate-spin" />
+                    : <Sparkle size={14} weight="regular" className="mr-1" />}
                   <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>
-                    REBASE WITH AI
+                    {resolverLaunching ? "LAUNCHING..." : "REBASE WITH AI"}
                   </span>
                 </Button>
                 <Button
@@ -1040,141 +1060,282 @@ export function RebaseTab({
                 </div>
               )}
 
-              {/* AI Resolver (inline) */}
-              {resolverOpen && resolverTargetLaneId ? (
-                <div style={{ marginBottom: 14 }}>
-                  <PrAiResolverPanel
-                    key={selectedNeed.laneId}
-                    title="REBASE AI RESOLVER"
-                    description="Launch the resolver inline, watch tool calls and reasoning stream into chat, and follow up without leaving this pane."
-                    context={{
-                      sourceTab: "rebase",
-                      sourceLaneId: selectedNeed.laneId,
-                      targetLaneId: resolverTargetLaneId,
-                      laneId: selectedNeed.laneId,
-                      scenario: "single-merge",
-                    }}
-                    modelId={resolverModel}
-                    reasoningEffort={resolverReasoningLevel}
-                    permissionMode={resolverPermissionMode}
-                    onModelChange={onResolverChange}
-                    onPermissionModeChange={onResolverPermissionChange}
-                    onCompleted={() => {
-                      void onRefresh();
-                    }}
-                    onDismiss={() => setResolverOpen(false)}
-                    startLabel="Start Rebase Resolver"
-                  />
+              {/* AI Resolver config — only shown after clicking "Rebase with AI" */}
+              {resolverExpanded && (
+                <div
+                  data-resolver-config
+                  style={{
+                    backgroundColor: S.headerBg,
+                    border: `1px solid ${S.accentBorder}`,
+                    padding: "12px 14px",
+                    marginBottom: 14,
+                  }}
+                >
+                  <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
+                    <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px", color: S.accent }}>
+                      AI REBASE CONFIGURATION
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setResolverExpanded(false)}
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}
+                    >
+                      <XCircle size={14} style={{ color: S.textMuted }} />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <PrResolverLaunchControls
+                      modelId={resolverModel}
+                      reasoningEffort={resolverReasoningLevel}
+                      permissionMode={resolverPermissionMode}
+                      onModelChange={(nextModelId) => onResolverChange(nextModelId, resolverReasoningLevel)}
+                      onReasoningEffortChange={(nextReasoning) => onResolverChange(resolverModel, nextReasoning)}
+                      onPermissionModeChange={onResolverPermissionChange}
+                      disabled={resolverLaunching}
+                    />
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={resolverLaunching || selectedNeed.behindBy === 0}
+                      onClick={() => void handleRebase(true)}
+                      style={{ borderRadius: 0 }}
+                    >
+                      {resolverLaunching
+                        ? <CircleNotch size={14} className="mr-1 animate-spin" />
+                        : <Sparkle size={14} className="mr-1" />}
+                      <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>
+                        {resolverLaunching ? "LAUNCHING..." : "LAUNCH AI RESOLVER"}
+                      </span>
+                    </Button>
+                  </div>
                 </div>
-              ) : null}
+              )}
 
               {/* Active run status */}
-              {activeRun ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, borderTop: `1px solid ${S.borderDefault}`, paddingTop: 14 }}>
-                  <div className="flex items-center justify-between">
-                    <div
-                      className="font-mono font-bold uppercase"
-                      style={{ fontSize: 10, letterSpacing: "1px", color: S.textSecondary }}
-                    >
-                      ACTIVE RUN
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" variant="outline" disabled={rebaseBusy || activeRun.state !== "running"} onClick={() => void handleAbortRun()}>
-                        ABORT
-                      </Button>
-                      <Button size="sm" variant="outline" disabled={rebaseBusy || !activeRun.canRollback} onClick={() => void handleRollbackRun()}>
-                        ROLLBACK
-                      </Button>
-                      <Button size="sm" variant="primary" disabled={rebaseBusy || selectedPushLaneIds.length === 0} onClick={() => void handlePushSelected()}>
-                        PUSH SELECTED
-                      </Button>
-                    </div>
-                  </div>
+              {activeRun ? (() => {
+                const isFailed = activeRun.state === "failed";
+                const conflictLane = activeRun.lanes.find((l) => l.status === "conflict");
+                const conflictFiles = conflictLane?.conflictingFiles ?? [];
 
-                  <div
-                    style={{
-                      background: S.headerBg,
-                      border: `1px solid ${S.borderSubtle}`,
-                      padding: "8px 12px",
-                      fontSize: 11,
-                      color: S.textSecondary,
-                      fontFamily: "JetBrains Mono, monospace",
-                    }}
-                  >
-                    run {activeRun.runId.slice(0, 8)} | {activeRun.scope === "lane_only" ? "lane only" : "lane + children"} | state:{" "}
-                    <span style={{
-                      color: activeRun.state === "completed" ? S.success
-                        : activeRun.state === "failed" ? S.error
-                        : activeRun.state === "running" ? S.info
-                        : S.textSecondary
-                    }}>
-                      {activeRun.state.toUpperCase()}
-                    </span>
-                  </div>
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12, borderTop: `1px solid ${S.borderDefault}`, paddingTop: 14 }}>
+                    {/* Conflict summary for failed runs */}
+                    {isFailed && conflictLane ? (
+                      <div style={{
+                        backgroundColor: "#EF44440A",
+                        border: `1px solid #EF444430`,
+                        padding: 16,
+                      }}>
+                        <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+                          <Warning size={16} weight="fill" style={{ color: S.error }} />
+                          <span style={{ fontSize: 13, fontWeight: 600, color: S.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
+                            Rebase failed — conflicts detected
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 12, color: S.textSecondary, marginBottom: 12, lineHeight: 1.5 }}>
+                          The rebase of <span style={{ color: S.textPrimary, fontWeight: 600 }}>{conflictLane.laneName}</span> onto{" "}
+                          <span style={{ color: S.textPrimary, fontWeight: 600 }}>{selectedNeed.baseBranch}</span> hit merge conflicts.
+                          The worktree has been automatically restored to its pre-rebase state.
+                        </div>
+                        {conflictFiles.length > 0 && (
+                          <div style={{ marginBottom: 12 }}>
+                            <div className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px", color: S.textMuted, marginBottom: 6 }}>
+                              CONFLICTING FILES
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                              {conflictFiles.map((f) => (
+                                <div
+                                  key={f}
+                                  className="font-mono flex items-center gap-2"
+                                  style={{
+                                    backgroundColor: "#EF44440A",
+                                    border: "1px solid #EF444420",
+                                    padding: "6px 10px",
+                                    fontSize: 11,
+                                    color: "#FCA5A5",
+                                  }}
+                                >
+                                  <FileText size={12} style={{ color: S.error, flexShrink: 0 }} />
+                                  {f}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => {
+                              setResolverExpanded(true);
+                              // Scroll up so the config panel is visible
+                              setTimeout(() => {
+                                document.querySelector("[data-resolver-config]")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                              }, 50);
+                            }}
+                            style={{ borderRadius: 0 }}
+                          >
+                            <Sparkle size={14} className="mr-1" />
+                            <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>
+                              RESOLVE WITH AI
+                            </span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={rebaseBusy}
+                            onClick={() => {
+                              setActiveRun(null);
+                              setRunLogs([]);
+                            }}
+                            style={{ borderRadius: 0, borderColor: S.borderSubtle }}
+                          >
+                            <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>
+                              DISMISS
+                            </span>
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Normal run status header */
+                      <>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div
+                              className="font-mono font-bold uppercase"
+                              style={{ fontSize: 10, letterSpacing: "1px", color: S.textSecondary }}
+                            >
+                              {activeRun.state === "running" ? "REBASING" : activeRun.state === "completed" ? "REBASE COMPLETE" : "REBASE RUN"}
+                            </div>
+                            <span
+                              className="font-mono font-bold uppercase"
+                              style={{
+                                fontSize: 9,
+                                letterSpacing: "1px",
+                                padding: "2px 6px",
+                                color: activeRun.state === "completed" ? S.success
+                                  : activeRun.state === "running" ? S.info
+                                  : S.textMuted,
+                                backgroundColor: activeRun.state === "completed" ? "#22C55E18"
+                                  : activeRun.state === "running" ? "#3B82F618"
+                                  : "transparent",
+                                border: `1px solid ${
+                                  activeRun.state === "completed" ? "#22C55E30"
+                                  : activeRun.state === "running" ? "#3B82F630"
+                                  : S.borderSubtle
+                                }`,
+                              }}
+                            >
+                              {activeRun.state.toUpperCase()}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {activeRun.state === "running" && (
+                              <Button size="sm" variant="outline" disabled={rebaseBusy} onClick={() => void handleAbortRun()} style={{ borderRadius: 0, borderColor: S.borderSubtle }}>
+                                <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>ABORT</span>
+                              </Button>
+                            )}
+                            {activeRun.canRollback && (
+                              <Button size="sm" variant="outline" disabled={rebaseBusy} onClick={() => void handleRollbackRun()} style={{ borderRadius: 0, borderColor: S.borderSubtle }}>
+                                <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>ROLLBACK</span>
+                              </Button>
+                            )}
+                            {selectedPushLaneIds.length > 0 && (
+                              <Button size="sm" variant="primary" disabled={rebaseBusy} onClick={() => void handlePushSelected()} style={{ borderRadius: 0 }}>
+                                <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>PUSH</span>
+                              </Button>
+                            )}
+                          </div>
+                        </div>
 
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {activeRun.lanes.map((lane) => {
-                      const statusColor = lane.status === "succeeded"
-                        ? S.success
-                        : lane.status === "running"
-                          ? S.info
-                          : lane.status === "conflict"
-                            ? S.error
-                            : lane.status === "blocked"
-                              ? S.warning
-                              : S.textMuted;
-                      const pushable = lane.status === "succeeded" && !activeRun.pushedLaneIds.includes(lane.laneId);
-                      return (
-                        <label
-                          key={lane.laneId}
-                          className="flex items-center gap-2"
+                        {/* Lane statuses */}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {activeRun.lanes.map((lane) => {
+                            const statusColor = lane.status === "succeeded"
+                              ? S.success
+                              : lane.status === "running"
+                                ? S.info
+                                : lane.status === "conflict"
+                                  ? S.error
+                                  : lane.status === "blocked"
+                                    ? S.warning
+                                    : S.textMuted;
+                            const pushable = lane.status === "succeeded" && !activeRun.pushedLaneIds.includes(lane.laneId);
+                            return (
+                              <div
+                                key={lane.laneId}
+                                className="flex items-center gap-3"
+                                style={{
+                                  border: `1px solid ${S.borderSubtle}`,
+                                  background: S.headerBg,
+                                  padding: "8px 12px",
+                                }}
+                              >
+                                {pushable ? (
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedPushLaneIds.includes(lane.laneId)}
+                                    onChange={(event) => {
+                                      const checked = event.target.checked;
+                                      setSelectedPushLaneIds((prev) => {
+                                        if (checked) return [...new Set([...prev, lane.laneId])];
+                                        return prev.filter((id) => id !== lane.laneId);
+                                      });
+                                    }}
+                                    style={{ flexShrink: 0 }}
+                                  />
+                                ) : (
+                                  <StatusDot color={statusColor} pulse={lane.status === "running"} />
+                                )}
+                                <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: S.textPrimary, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600 }}>
+                                  {lane.laneName}
+                                </span>
+                                <span
+                                  className="font-mono font-bold uppercase"
+                                  style={{
+                                    fontSize: 9,
+                                    letterSpacing: "1px",
+                                    color: statusColor,
+                                    padding: "2px 6px",
+                                    backgroundColor: `${statusColor}18`,
+                                    border: `1px solid ${statusColor}30`,
+                                  }}
+                                >
+                                  {lane.status === "conflict" ? "CONFLICTS" : lane.status.toUpperCase()}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+
+                    {/* Run logs — collapsed by default, toggleable */}
+                    {runLogs.length > 0 && (
+                      <details style={{ fontSize: 10, color: S.textMuted }}>
+                        <summary className="font-mono" style={{ cursor: "pointer", userSelect: "none", padding: "4px 0" }}>
+                          Run logs ({runLogs.length})
+                        </summary>
+                        <div
                           style={{
                             border: `1px solid ${S.borderSubtle}`,
                             background: S.headerBg,
-                            padding: "6px 8px",
-                            fontSize: 11,
-                            color: S.textSecondary,
-                            fontFamily: "JetBrains Mono, monospace"
+                            maxHeight: 140,
+                            overflow: "auto",
+                            padding: "8px 10px",
+                            fontFamily: "JetBrains Mono, monospace",
+                            marginTop: 4,
                           }}
                         >
-                          <input
-                            type="checkbox"
-                            disabled={!pushable}
-                            checked={selectedPushLaneIds.includes(lane.laneId)}
-                            onChange={(event) => {
-                              const checked = event.target.checked;
-                              setSelectedPushLaneIds((prev) => {
-                                if (checked) return [...new Set([...prev, lane.laneId])];
-                                return prev.filter((id) => id !== lane.laneId);
-                              });
-                            }}
-                          />
-                          <span style={{ minWidth: 140, color: S.textPrimary }}>{lane.laneName}</span>
-                          <span style={{ color: statusColor }}>{lane.status.toUpperCase()}</span>
-                          {lane.error ? <span style={{ color: S.error }} className="truncate">{lane.error}</span> : null}
-                        </label>
-                      );
-                    })}
+                          {runLogs.map((line, index) => (
+                            <div key={`${line}-${index}`}>{line}</div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                   </div>
-
-                  <div
-                    style={{
-                      border: `1px solid ${S.borderSubtle}`,
-                      background: S.headerBg,
-                      maxHeight: 160,
-                      overflow: "auto",
-                      padding: "8px 10px",
-                      fontSize: 10,
-                      color: S.textMuted,
-                      fontFamily: "JetBrains Mono, monospace"
-                    }}
-                  >
-                    {(runLogs.length > 0 ? runLogs : ["No run logs yet."]).map((line, index) => (
-                      <div key={`${line}-${index}`}>{line}</div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
+                );
+              })() : (
                 <div style={{
                   fontSize: 11,
                   color: S.textMuted,
@@ -1230,8 +1391,8 @@ export function RebaseTab({
       resolverReasoningLevel,
       rebaseBusy,
       rebaseError,
-      resolverOpen,
-      resolverTargetLaneId,
+      resolverLaunching,
+      resolverExpanded,
       runScope,
       activeRun,
       runLogs,
@@ -1244,8 +1405,11 @@ export function RebaseTab({
       expandedCommitSha,
       driftTouchedFiles,
       onSelectItem,
+      resolverPermissionMode,
       onRefresh,
       onResolverChange,
+      onResolverPermissionChange,
+      onNavigate,
     ],
   );
 

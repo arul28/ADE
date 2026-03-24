@@ -9,6 +9,7 @@ export type AddCommandInitialValues = {
   command: string;
   stackId: string | null;
   cwd: string;
+  env: string;
 };
 
 export type AddCommandDialogProps = {
@@ -22,6 +23,7 @@ export type AddCommandDialogProps = {
     stackId: string | null;
     newStackName: string | null;
     cwd: string;
+    env: string;
   }) => void;
   /** When provided, the dialog operates in "edit" mode with pre-filled values. */
   initialValues?: AddCommandInitialValues | null;
@@ -46,6 +48,7 @@ export function AddCommandDialog({
   const [stackId, setStackId] = React.useState<string>("__none__");
   const [newStackName, setNewStackName] = React.useState("");
   const [cwd, setCwd] = React.useState(".");
+  const [envText, setEnvText] = React.useState("");
   const nameRef = React.useRef<HTMLInputElement>(null);
 
   const dialogTitle = title ?? "Add Command";
@@ -69,11 +72,13 @@ export function AddCommandDialog({
         setCommand(initialValues.command);
         setStackId(initialValues.stackId ?? "__none__");
         setCwd(initialValues.cwd || ".");
+        setEnvText(initialValues.env || "");
       } else {
         setName("");
         setCommand("");
         setStackId("__none__");
         setCwd(".");
+        setEnvText("");
       }
       setNewStackName("");
       setTimeout(() => nameRef.current?.focus(), 50);
@@ -102,6 +107,7 @@ export function AddCommandDialog({
       stackId: stackId === "__none__" ? null : stackId === "__new__" ? null : stackId,
       newStackName: stackId === "__new__" ? newStackName.trim() || null : null,
       cwd: cwd.trim() || ".",
+      env: envText.trim(),
     });
     onClose();
   };
@@ -287,6 +293,34 @@ export function AddCommandDialog({
                 Lane root
               </button>
               {normalizedLaneRoot ? <span>{normalizedLaneRoot}</span> : null}
+            </div>
+          </div>
+
+          <div>
+            <label style={labelStyle}>Environment Variables</label>
+            <textarea
+              value={envText}
+              onChange={(e) => setEnvText(e.target.value)}
+              placeholder={"KEY=value\nANOTHER=value"}
+              rows={3}
+              style={{
+                ...inputStyle,
+                height: "auto",
+                padding: "8px 10px",
+                resize: "vertical",
+                lineHeight: 1.5,
+              }}
+            />
+            <div
+              style={{
+                marginTop: 6,
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                color: COLORS.textDim,
+                lineHeight: 1.5,
+              }}
+            >
+              One KEY=value per line. FORCE_COLOR=1 is set by default for all processes.
             </div>
           </div>
 

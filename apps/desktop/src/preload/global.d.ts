@@ -278,6 +278,8 @@ import type {
   PrIssueResolutionPromptPreviewResult,
   PrIssueResolutionStartArgs,
   PrIssueResolutionStartResult,
+  RebaseResolutionStartArgs,
+  RebaseResolutionStartResult,
   PrLabel,
   PrMergeContext,
   PrReview,
@@ -967,6 +969,7 @@ declare global {
         onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => () => void;
         issueResolutionStart(args: PrIssueResolutionStartArgs): Promise<PrIssueResolutionStartResult>;
         issueResolutionPreviewPrompt(args: PrIssueResolutionPromptPreviewArgs): Promise<PrIssueResolutionPromptPreviewResult>;
+        rebaseResolutionStart(args: RebaseResolutionStartArgs): Promise<RebaseResolutionStartResult>;
         landStackEnhanced: (args: LandStackEnhancedArgs) => Promise<LandResult[]>;
         landQueueNext: (args: LandQueueNextArgs) => Promise<LandResult>;
         startQueueAutomation: (args: StartQueueAutomationArgs) => Promise<QueueLandingState>;

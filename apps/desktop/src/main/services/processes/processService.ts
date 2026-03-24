@@ -718,6 +718,11 @@ export function createProcessService({
     const cwd = path.isAbsolute(configuredCwd) ? configuredCwd : path.join(laneRoot, configuredCwd);
     const env = {
       ...process.env,
+      // Inject color-friendly defaults for processes running without a PTY.
+      // Many CLI tools (SST, Vite, Next.js) check isTTY and suppress colors;
+      // these vars override that heuristic so log output stays readable.
+      FORCE_COLOR: "1",
+      TERM: "xterm-256color",
       ...definition.env,
       ...(opts.overlay?.env ?? {})
     };

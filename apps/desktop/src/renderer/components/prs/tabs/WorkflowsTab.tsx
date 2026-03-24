@@ -623,6 +623,7 @@ export function WorkflowsTab({
     setResolverPermissionMode,
   } = usePrs();
 
+  const navigate = useNavigate();
   const [view, setView] = React.useState<WorkflowView>("active");
   const [integrationWorkflows, setIntegrationWorkflows] = React.useState<IntegrationProposal[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -849,6 +850,7 @@ export function WorkflowsTab({
               }}
               onResolverPermissionChange={setResolverPermissionMode}
               onRefresh={refreshWorkflows}
+              onNavigate={(path) => navigate(path)}
             />
           ) : (
             <RebaseHistoryPanel needs={rebaseByView.history} />
