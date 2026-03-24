@@ -714,7 +714,6 @@ export function createProcessService({
     error: unknown;
   }) => {
     const { entry, laneId, definition, runId, startedAt, endedAt, logPath, cwd, error } = args;
-    const message = error instanceof Error ? error.message : String(error);
 
     entry.child = null;
     entry.processGroupId = null;
@@ -742,7 +741,7 @@ export function createProcessService({
       envPath: process.env.PATH ?? "",
       envShell: process.env.SHELL ?? "",
       resourcesPath: process.resourcesPath ?? "",
-      error: message,
+      error: error instanceof Error ? error.message : String(error),
     });
   };
 

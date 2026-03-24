@@ -25,13 +25,6 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: (...args: unknown[]) => mockState.query(...args),
 }));
 
-vi.mock("./claudeCodeExecutable", () => ({
-  resolveClaudeCodeExecutable: () => ({
-    path: "/mock/bin/claude",
-    source: "auth",
-  }),
-}));
-
 vi.mock("./providerRuntimeHealth", () => ({
   reportProviderRuntimeReady: (...args: unknown[]) => mockState.reportProviderRuntimeReady(...args),
   reportProviderRuntimeAuthFailure: (...args: unknown[]) => mockState.reportProviderRuntimeAuthFailure(...args),
@@ -102,7 +95,7 @@ describe("claudeRuntimeProbe", () => {
     expect(query.close).toHaveBeenCalledTimes(1);
     expect(mockState.query).toHaveBeenCalledWith(expect.objectContaining({
       options: expect.objectContaining({
-        pathToClaudeCodeExecutable: "/mock/bin/claude",
+        pathToClaudeCodeExecutable: "/usr/local/bin/claude",
         mcpServers: expect.objectContaining({
           ade: expect.any(Object),
         }),

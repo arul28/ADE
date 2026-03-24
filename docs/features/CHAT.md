@@ -12,8 +12,8 @@ Chat sessions are provider-agnostic. The `AgentChatProvider` type accepts:
 
 | Provider key | Runtime | Notes |
 |---|---|---|
-| `claude` | Claude Agent SDK V2 (`@anthropic-ai/claude-agent-sdk`) | Persistent session via `unstable_v2_createSession` — subprocess + MCP servers stay alive between turns. Supports inline image content blocks (base64) for image attachments. |
-| `codex` | OpenAI Codex CLI | Persistent subprocess, communicates over JSON-RPC |
+| `claude` | Claude Agent SDK V2 (`@anthropic-ai/claude-agent-sdk`) | Persistent session via `unstable_v2_createSession` — subprocess + MCP servers stay alive between turns. Supports inline image content blocks (base64) for image attachments. The Claude Code executable path is resolved via `claudeCodeExecutable.ts` and passed to the SDK at session creation. |
+| `codex` | OpenAI Codex CLI | Persistent subprocess (`codex app-server`), communicates over JSON-RPC. Spawn failures are caught and surfaced as error events to the user, with the session ended gracefully rather than left in a broken state. |
 | `unified` | Vercel AI SDK (`ai` package) | Covers OpenRouter, local models, any provider with an `ai`-compatible adapter |
 
 Model selection is driven by `modelRegistry.ts`. The user picks a model
@@ -200,6 +200,16 @@ originating chat session. The MCP server resolves the chat session
 owner through a cascade: explicit tool argument, session identity
 field, and finally an implicit fallback for standalone chat sessions
 (no mission/run/step context) using the caller ID.
+
+## Diagnostic Logging
+
+Chat runtime startup emits structured diagnostic logs that include MCP
+launch mode, resolved entry path, socket path, packaged-build status,
+and the Claude executable path. Codex runtime startup logs include the
+working directory and shell environment. Claude V2 prewarm failures
+include MCP launch details for troubleshooting. These diagnostics make
+it possible to isolate packaging or PATH-related failures without
+attaching a debugger.
 
 ## Identity Session Filtering
 

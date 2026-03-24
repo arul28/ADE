@@ -219,10 +219,7 @@ function writeWorkerPromptFile(args: {
   return promptPath;
 }
 
-/**
- * Resolve the project root from the current working directory.
- * Walks up from cwd looking for package.json with the monorepo marker.
- */
+/** Resolve the monorepo runtime root (delegates to the shared adeMcpLaunch resolver). */
 export function resolveUnifiedRuntimeRoot(): string {
   return resolveRepoRuntimeRoot();
 }

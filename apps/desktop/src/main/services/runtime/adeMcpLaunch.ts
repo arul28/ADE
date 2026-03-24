@@ -36,20 +36,22 @@ function pathExists(targetPath: string | null | undefined): targetPath is string
   return Boolean(targetPath && fs.existsSync(targetPath));
 }
 
+function resolveResourcesPath(): string | null {
+  return typeof process.resourcesPath === "string" && process.resourcesPath.trim().length > 0
+    ? process.resourcesPath
+    : null;
+}
+
 function resolveBundledProxyPath(overridePath?: string): string | null {
-  const packagedCandidates = (() => {
-    const resourcesPath = typeof process.resourcesPath === "string" && process.resourcesPath.trim().length > 0
-      ? process.resourcesPath
-      : null;
-    if (!resourcesPath) return [];
-    return [
-      path.join(resourcesPath, "app.asar.unpacked", "dist", "main", "adeMcpProxy.cjs"),
-      path.join(resourcesPath, "dist", "main", "adeMcpProxy.cjs"),
-    ];
-  })();
+  const resourcesPath = resolveResourcesPath();
   const candidates = [
     overridePath,
-    ...packagedCandidates,
+    ...(resourcesPath
+      ? [
+        path.join(resourcesPath, "app.asar.unpacked", "dist", "main", "adeMcpProxy.cjs"),
+        path.join(resourcesPath, "dist", "main", "adeMcpProxy.cjs"),
+      ]
+      : []),
     path.join(__dirname, "adeMcpProxy.cjs"),
     path.resolve(process.cwd(), "dist", "main", "adeMcpProxy.cjs"),
     path.resolve(process.cwd(), "apps", "desktop", "dist", "main", "adeMcpProxy.cjs"),
@@ -127,9 +129,7 @@ export function resolveDesktopAdeMcpLaunch(args: AdeMcpLaunchArgs): AdeMcpLaunch
     : path.resolve(args.workspaceRoot);
   const workspaceRoot = path.resolve(args.workspaceRoot);
   const socketPath = resolveAdeLayout(projectRoot).socketPath;
-  const resourcesPath = typeof process.resourcesPath === "string" && process.resourcesPath.trim().length > 0
-    ? process.resourcesPath
-    : null;
+  const resourcesPath = resolveResourcesPath();
   const env = buildLaunchEnv({
     projectRoot,
     workspaceRoot,

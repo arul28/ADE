@@ -46,6 +46,7 @@ Main-process responsibilities include:
 - PR and GitHub/Linear integration services
 - memory lifecycle, digest, and embedding services
 - external MCP, OpenClaw, and automation ingress services
+- bundled MCP proxy for packaged builds (relays worker stdio over `.ade/mcp.sock`)
 - dev tools detection (git, gh CLI availability)
 - multi-device sync service (cr-sqlite replication, WebSocket host/peer, device registry)
 
@@ -57,6 +58,25 @@ The renderer in `apps/desktop/src/renderer` renders feature surfaces and delegat
 
 `apps/desktop/src/preload/preload.ts` exposes a typed `window.ade` contract. `contextIsolation` remains enabled and `nodeIntegration` remains disabled.
 
+### Build entry points
+
+The desktop build (`tsup.config.ts`) produces three CJS entry points:
+
+| Entry | Source | Purpose |
+|-------|--------|---------|
+| `main/main.cjs` | `src/main/main.ts` | Electron main process |
+| `main/adeMcpProxy.cjs` | `src/main/adeMcpProxy.ts` | Bundled MCP proxy binary for packaged builds. Runs as a standalone Node process (via `ELECTRON_RUN_AS_NODE=1`) that relays stdio over the desktop's `.ade/mcp.sock` Unix socket. Injects worker identity (mission/run/step/attempt) into the MCP `initialize` handshake. Supports a `--probe` flag for diagnostic checks. |
+| `main/packagedRuntimeSmoke.cjs` | `src/main/packagedRuntimeSmoke.ts` | Packaged runtime smoke test. Validates that PTY spawning, Claude Agent SDK startup, Codex SDK availability, and the MCP proxy probe all function correctly within the packaged app bundle. |
+| `preload/preload.cjs` | `src/preload/preload.ts` | Renderer preload bridge |
+
+### Packaged runtime hardening
+
+Packaged macOS builds include additional post-packaging steps to ensure native binaries function correctly:
+
+- **Binary permissions** (`scripts/runtimeBinaryPermissions.cjs`): Ensures executable permissions on `node-pty` spawn helpers, Codex CLI vendor binaries, and Claude SDK ripgrep helpers. Also patches `node-pty`'s `unixTerminal.js` to resolve `.asar.unpacked` paths correctly in Electron's ASAR archive environment.
+- **Runtime validation** (`scripts/validate-mac-artifacts.mjs`): Validates that packaged artifacts contain expected binaries and that code signing is intact.
+- **After-pack fixes** (`scripts/after-pack-runtime-fixes.cjs`): Applies binary permission normalization as an electron-builder after-pack hook.
+
 ---
 
 ## Startup lifecycle
@@ -65,7 +85,7 @@ The renderer in `apps/desktop/src/renderer` renders feature surfaces and delegat
 
 Before ADE creates services or child processes, the main process normalizes the shell `PATH` and applies Electron runtime switches:
 
-- `fixElectronShellPath()` repairs shell resolution on macOS and dev machines.
+- `fixElectronShellPath()` repairs shell resolution on macOS and dev machines. The check detects both Homebrew paths (`/usr/local/bin`, `/opt/homebrew/bin`) and user-local paths (`.local/bin`) independently, so the fix activates when either set is missing rather than requiring both to be absent.
 - Hardware acceleration is disabled only when `ADE_DISABLE_HARDWARE_ACCEL=1` is explicitly set. Dev mode no longer automatically disables hardware acceleration -- this reduces GPU-related dev instability reports while keeping acceleration available for normal development.
 - Dev builds disable the renderer HTTP cache to avoid stale Vite optimized-dependency artifacts.
 

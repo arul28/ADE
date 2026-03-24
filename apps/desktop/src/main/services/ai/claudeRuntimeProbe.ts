@@ -25,6 +25,7 @@ type ClaudeRuntimeProbeResult =
 /** Cache and in-flight probe keyed by projectRoot to avoid cross-project contamination. */
 const probeCache = new Map<string, { checkedAtMs: number; result: ClaudeRuntimeProbeResult }>();
 const inFlightProbes = new Map<string, Promise<ClaudeRuntimeProbeResult>>();
+
 function normalizeErrorMessage(error: unknown): string {
   const text = getErrorMessage(error).trim();
   return text.length > 0 ? text : DEFAULT_RUNTIME_FAILURE;
