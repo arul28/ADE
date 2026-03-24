@@ -336,18 +336,30 @@ function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnv
     const nextItem = event.itemId ?? null;
     // Require at least one identity field to prevent merging anonymous chunks
     if (nextTurn || nextItem) {
-      const matchIndex = [...out]
-        .reverse()
-        .findIndex((candidate) =>
-          candidate.event.type === "text"
+      // Search backwards for a matching text row, but stop if we hit a tool-related
+      // row — that means the new text belongs to a different content block and should
+      // NOT be merged with text from before the tool call.
+      let matchIndex = -1;
+      for (let i = out.length - 1; i >= 0; i--) {
+        const candidate = out[i];
+        const ct = candidate.event.type;
+        // Stop searching if we hit a tool boundary — text across tool calls must stay separate
+        if (ct === "tool_invocation" || ct === "tool_call" || ct === "tool_result" || ct === "command" || ct === "file_change") {
+          break;
+        }
+        if (
+          ct === "text"
           && (candidate.event.turnId ?? null) === nextTurn
-          && (candidate.event.itemId ?? null) === nextItem,
-        );
+          && (candidate.event.itemId ?? null) === nextItem
+        ) {
+          matchIndex = i;
+          break;
+        }
+      }
       if (matchIndex >= 0) {
-        const actualIndex = out.length - 1 - matchIndex;
-        const existing = out[actualIndex];
+        const existing = out[matchIndex];
         if (existing?.event.type === "text") {
-          out[actualIndex] = {
+          out[matchIndex] = {
             ...existing,
             timestamp: envelope.timestamp,
             event: {
