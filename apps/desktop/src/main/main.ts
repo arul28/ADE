@@ -562,6 +562,7 @@ app.whenReady().then(async () => {
     let rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null = null;
     let autoRebaseService: ReturnType<typeof createAutoRebaseService> | null = null;
     let humanWorkDigestService: ReturnType<typeof createHumanWorkDigestService> | null = null;
+    let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
     let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null = null;
 
@@ -622,7 +623,17 @@ app.whenReady().then(async () => {
       worktreesDir: adePaths.worktreesDir,
       operationService,
       onHeadChanged: handleHeadChanged,
-      onRebaseEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesRebaseEvent, event)
+      onRebaseEvent: (event) => {
+        emitProjectEvent(projectRoot, IPC.lanesRebaseEvent, event);
+        if (event.type === "rebase-run-updated" && event.run.state !== "running") {
+          void conflictServiceRef?.scanRebaseNeeds().catch((error) => {
+            logger.warn("rebase.needs_refresh_failed", {
+              runId: event.run.runId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
+      }
     });
     await laneService.ensurePrimaryLane();
 
@@ -775,6 +786,7 @@ app.whenReady().then(async () => {
         }
       }
     });
+    conflictServiceRef = conflictService;
 
     autoRebaseService = createAutoRebaseService({
       db,

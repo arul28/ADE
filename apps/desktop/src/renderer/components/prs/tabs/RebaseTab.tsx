@@ -87,6 +87,14 @@ export function RebaseTab({
   const [selectedPushLaneIds, setSelectedPushLaneIds] = React.useState<string[]>([]);
   const activeRunIdRef = React.useRef<string | null>(null);
 
+  const refreshRebaseNeeds = React.useCallback(async () => {
+    try {
+      await window.ade.rebase.scanNeeds();
+    } catch {
+      /* best effort */
+    }
+  }, []);
+
   // Drift commits state
   const [driftCommits, setDriftCommits] = React.useState<GitCommitSummary[]>([]);
   const [driftCommitsLoading, setDriftCommitsLoading] = React.useState(false);
@@ -177,6 +185,9 @@ export function RebaseTab({
           if (!selectedNeed || event.run.rootLaneId !== selectedNeed.laneId) return prev;
           return event.run;
         });
+        if (event.run.state !== "running") {
+          void refreshRebaseNeeds();
+        }
       } else if (event.type === "rebase-run-log") {
         setRunLogs((prev) => {
           const activeRunId = activeRunIdRef.current;
@@ -188,7 +199,7 @@ export function RebaseTab({
       }
     });
     return unsubscribe;
-  }, [selectedNeed]);
+  }, [refreshRebaseNeeds, selectedNeed]);
 
   // Fetch drift commits when selected need changes
   React.useEffect(() => {
@@ -268,6 +279,7 @@ export function RebaseTab({
         setActiveRun(pushed);
         setRunLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Push complete`].slice(-80));
       }
+      await refreshRebaseNeeds();
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -276,6 +288,15 @@ export function RebaseTab({
     }
   };
   const selectedRunIsActive = activeRun?.state === "running";
+  const selectedRunLane = React.useMemo(
+    () => (selectedNeed ? activeRun?.lanes.find((lane) => lane.laneId === selectedNeed.laneId) ?? null : null),
+    [activeRun, selectedNeed],
+  );
+  const selectedNeedResolvedByRun = Boolean(
+    selectedRunLane
+      && activeRun?.state === "completed"
+      && (selectedRunLane.status === "succeeded" || selectedRunLane.status === "skipped"),
+  );
 
   const handleAbortRun = async () => {
     if (!activeRun) return;
@@ -284,6 +305,7 @@ export function RebaseTab({
     try {
       const next = await window.ade.lanes.rebaseAbort({ runId: activeRun.runId });
       setActiveRun(next);
+      await refreshRebaseNeeds();
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -299,6 +321,7 @@ export function RebaseTab({
     try {
       const next = await window.ade.lanes.rebaseRollback({ runId: activeRun.runId });
       setActiveRun(next);
+      await refreshRebaseNeeds();
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -314,6 +337,7 @@ export function RebaseTab({
     try {
       const next = await window.ade.lanes.rebasePush({ runId: activeRun.runId, laneIds: selectedPushLaneIds });
       setActiveRun(next);
+      await refreshRebaseNeeds();
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -943,7 +967,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="primary"
-                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive}
+                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
                   onClick={() => void handleRebase(true)}
                   style={{ borderRadius: 0 }}
                 >
@@ -955,7 +979,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive}
+                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
                   onClick={() => void handleRebase(false, "none")}
                   style={{ borderRadius: 0, borderColor: S.borderSubtle }}
                 >
@@ -966,7 +990,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive}
+                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
                   onClick={() => void handleRebase(false, "review_then_push")}
                   style={{ borderRadius: 0, borderColor: S.borderSubtle }}
                 >
