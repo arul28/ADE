@@ -183,6 +183,7 @@ type CodexRuntime = {
   activeTurnId: string | null;
   startedTurnId: string | null;
   threadResumed: boolean;
+  itemTurnIdByItemId: Map<string, string>;
   commandOutputByItemId: Map<string, string>;
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
@@ -239,6 +240,28 @@ type UnifiedRuntime = {
 };
 
 type ChatRuntime = CodexRuntime | ClaudeRuntime | UnifiedRuntime;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function pickCodexTurnId(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return undefined;
+}
+
+function extractCodexTurnId(value: unknown): string | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const nestedTurn = asRecord(record.turn);
+  return pickCodexTurnId(record.turnId, record.turn_id, nestedTurn?.id);
+}
 
 type ManagedChatSession = {
   session: AgentChatSession;
@@ -802,7 +825,7 @@ function isLiteralSlashCommand(text: string): boolean {
   return extractSlashCommand(text) != null;
 }
 
-function buildComputerUseDirective(policy: ComputerUsePolicy | null | undefined): string | null {
+export function buildComputerUseDirective(policy: ComputerUsePolicy | null | undefined): string | null {
   const effective = createDefaultComputerUsePolicy(policy ?? undefined);
   if (effective.mode === "off") {
     return [
@@ -818,6 +841,8 @@ function buildComputerUseDirective(policy: ComputerUsePolicy | null | undefined)
       ? "Computer use is explicitly ENABLED for this chat session."
       : "Computer use is available in AUTO mode for this chat session.",
     "External tools perform computer use. ADE should ingest and manage the resulting proof artifacts.",
+    "Use `get_computer_use_backend_status` to choose the best available backend first. Prefer Ghost OS (`ghost mcp`) for desktop or browser control, then other approved browser automation backends such as agent-browser or Electron browser automation if they are available.",
+    "If the user asks for proof or the task needs verification, capture screenshots, videos, traces, console logs, or verification output and call `ingest_computer_use_artifacts` so the evidence shows up in ADE's proof drawer.",
     "Prefer approved external backends first and use ADE-local computer-use only as fallback compatibility support when explicitly allowed.",
     effective.retainArtifacts
       ? "If computer use produces screenshots, videos, traces, verification output, or logs, ingest and retain those artifacts in ADE."
@@ -1154,6 +1179,7 @@ export function createAgentChatService(args: {
     provider: "claude" | "codex",
     defaultRole: "agent" | "cto",
     ownerId?: string | null,
+    chatSessionId?: string | null,
     computerUsePolicy?: ComputerUsePolicy | null,
   ): Record<string, Record<string, unknown>> => {
     const launch = resolveAdeMcpServerLaunch({
@@ -1161,6 +1187,7 @@ export function createAgentChatService(args: {
       runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole,
       ownerId: ownerId ?? undefined,
+      chatSessionId: chatSessionId ?? undefined,
       computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
     });
     return providerResolver.normalizeCliMcpServers(provider, {
@@ -3745,11 +3772,24 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CodexRuntime,
     item: Record<string, unknown>,
-    eventKind: "started" | "completed"
+    eventKind: "started" | "completed",
+    turnIdHint?: string,
   ): void => {
     const itemId = String(item.id ?? randomUUID());
     const itemType = String(item.type ?? "");
-    const turnId = runtime.activeTurnId ?? undefined;
+    const turnId = (() => {
+      const explicitTurnId = turnIdHint ?? extractCodexTurnId(item);
+      if (eventKind === "started") {
+        const startedTurnId = explicitTurnId ?? runtime.activeTurnId ?? undefined;
+        if (startedTurnId) {
+          runtime.itemTurnIdByItemId.set(itemId, startedTurnId);
+        }
+        return startedTurnId;
+      }
+      const completedTurnId = explicitTurnId ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? undefined;
+      runtime.itemTurnIdByItemId.delete(itemId);
+      return completedTurnId;
+    })();
 
     if (itemType === "commandExecution") {
       emitChatEvent(managed, {
@@ -4034,6 +4074,7 @@ export function createAgentChatService(args: {
   const handleCodexNotification = async (managed: ManagedChatSession, runtime: CodexRuntime, payload: JsonRpcEnvelope): Promise<void> => {
     const method = typeof payload.method === "string" ? payload.method : "";
     const params = (payload.params as Record<string, unknown> | null) ?? {};
+    const turnIdFromParams = extractCodexTurnId(params);
 
     if (method === "turn/started") {
       const turn = (params.turn as { id?: unknown } | null) ?? null;
@@ -4071,6 +4112,7 @@ export function createAgentChatService(args: {
       const turnId = typeof turn?.id === "string" ? turn.id : runtime.activeTurnId ?? randomUUID();
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
+      runtime.itemTurnIdByItemId.clear();
       const status = mapCodexTurnStatus(turn?.status);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       managed.session.status = "idle";
@@ -4139,13 +4181,14 @@ export function createAgentChatService(args: {
     if (method === "item/commandExecution/outputDelta") {
       const itemId = String((params.itemId as string | undefined) ?? randomUUID());
       const delta = String((params.delta as string | undefined) ?? "");
+      const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? undefined;
       const next = `${runtime.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
       runtime.commandOutputByItemId.set(itemId, next);
       emitChatEvent(managed, {
         type: "activity",
         activity: "running_command",
         detail: "Shell command running",
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        turnId,
       });
       emitChatEvent(managed, {
         type: "command",
@@ -4153,7 +4196,7 @@ export function createAgentChatService(args: {
         cwd: managed.laneWorktreePath,
         output: delta,
         itemId,
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        turnId,
         status: "running"
       });
       return;
@@ -4162,13 +4205,14 @@ export function createAgentChatService(args: {
     if (method === "item/fileChange/outputDelta") {
       const itemId = String((params.itemId as string | undefined) ?? randomUUID());
       const delta = String((params.delta as string | undefined) ?? "");
+      const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? undefined;
       const next = `${runtime.fileDeltaByItemId.get(itemId) ?? ""}${delta}`;
       runtime.fileDeltaByItemId.set(itemId, next);
       emitChatEvent(managed, {
         type: "activity",
         activity: "editing_file",
         detail: "Applying file change",
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        turnId,
       });
 
       const knownChanges = runtime.fileChangesByItemId.get(itemId) ?? [];
@@ -4180,7 +4224,7 @@ export function createAgentChatService(args: {
             kind: change.kind,
             diff: delta,
             itemId,
-            turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+            turnId,
             status: "running"
           });
         }
@@ -4191,7 +4235,7 @@ export function createAgentChatService(args: {
           kind: "modify",
           diff: delta,
           itemId,
-          turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+          turnId,
           status: "running"
         });
       }
@@ -4227,14 +4271,73 @@ export function createAgentChatService(args: {
     if (method === "item/started") {
       const item = (params.item as Record<string, unknown> | null) ?? null;
       if (!item) return;
-      handleCodexItemEvent(managed, runtime, item, "started");
+      handleCodexItemEvent(managed, runtime, item, "started", turnIdFromParams);
       return;
     }
 
     if (method === "item/completed") {
       const item = (params.item as Record<string, unknown> | null) ?? null;
       if (!item) return;
-      handleCodexItemEvent(managed, runtime, item, "completed");
+      handleCodexItemEvent(managed, runtime, item, "completed", turnIdFromParams);
+      return;
+    }
+
+    if (method === "codex/event/item_started") {
+      const item = asRecord(params.item) ?? params;
+      handleCodexItemEvent(managed, runtime, item, "started", turnIdFromParams);
+      return;
+    }
+
+    if (method === "codex/event/item_completed") {
+      const item = asRecord(params.item) ?? params;
+      handleCodexItemEvent(managed, runtime, item, "completed", turnIdFromParams);
+      return;
+    }
+
+    if (method === "turn/aborted" || method === "codex/event/turn_aborted") {
+      const turnId = turnIdFromParams ?? runtime.activeTurnId ?? randomUUID();
+      runtime.activeTurnId = null;
+      runtime.startedTurnId = null;
+      managed.session.status = "idle";
+      emitChatEvent(managed, {
+        type: "status",
+        turnStatus: "interrupted",
+        turnId,
+      });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: "interrupted",
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
+      persistChatState(managed);
+      return;
+    }
+
+    if (method === "codex/event/web_search_begin") {
+      const query = pickCodexTurnId(params.query, params.searchQuery, params.input) ?? "";
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "web_searching",
+        detail: query || "Searching the web",
+        turnId: turnIdFromParams ?? runtime.activeTurnId ?? undefined,
+      });
+      emitChatEvent(managed, {
+        type: "web_search",
+        query,
+        itemId: typeof params.itemId === "string" ? params.itemId : randomUUID(),
+        turnId: turnIdFromParams ?? runtime.activeTurnId ?? undefined,
+        status: "running",
+      });
+      return;
+    }
+
+    if (
+      method === "thread/status/changed"
+      || method === "codex/event/task_started"
+      || method === "codex/event/mcp_startup_update"
+    ) {
       return;
     }
 
@@ -4365,6 +4468,7 @@ export function createAgentChatService(args: {
       activeTurnId: null,
       startedTurnId: null,
       threadResumed: false,
+      itemTurnIdByItemId: new Map<string, string>(),
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
@@ -4520,6 +4624,7 @@ export function createAgentChatService(args: {
           "codex",
           managed.session.identityKey === "cto" ? "cto" : "agent",
           resolveWorkerIdentityAgentId(managed.session.identityKey),
+          managed.session.id,
           managed.session.computerUse,
         );
     return { codexPolicy, mcpServers };
@@ -4614,6 +4719,7 @@ export function createAgentChatService(args: {
         "claude",
         managed.session.identityKey === "cto" ? "cto" : "agent",
         resolveWorkerIdentityAgentId(managed.session.identityKey),
+        managed.session.id,
         managed.session.computerUse,
       ) as any;
       if (canUseTool) opts.canUseTool = canUseTool as any;
@@ -5240,6 +5346,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "codex") {
       managed.runtime.activeTurnId = null;
       managed.runtime.startedTurnId = null;
+      managed.runtime.itemTurnIdByItemId.clear();
     }
     if (managed.runtime?.kind === "unified") {
       managed.runtime.busy = false;
@@ -5919,6 +6026,7 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     const isIdentitySession = Boolean(managed.session.identityKey);
     const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
+    let resetRuntimeForComputerUse = false;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -6044,7 +6152,22 @@ export function createAgentChatService(args: {
     }
 
     if (computerUse !== undefined) {
-      managed.session.computerUse = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
+      const nextComputerUse = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
+      const prevComputerUse = managed.session.computerUse;
+      managed.session.computerUse = nextComputerUse;
+      const nextSessionProfile = managed.session.computerUse.mode === "off" ? "light" : "workflow";
+      if (managed.session.sessionProfile !== nextSessionProfile) {
+        managed.session.sessionProfile = nextSessionProfile;
+        resetRuntimeForComputerUse = true;
+      }
+      if (JSON.stringify(prevComputerUse) !== JSON.stringify(nextComputerUse)) {
+        resetRuntimeForComputerUse = true;
+      }
+    }
+
+    if (resetRuntimeForComputerUse && managed.runtime) {
+      teardownRuntime(managed);
+      refreshReconstructionContext(managed, { includeConversationTail: true });
     }
 
     if (title !== undefined) {

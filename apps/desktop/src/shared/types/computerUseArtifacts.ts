@@ -109,6 +109,12 @@ export type ComputerUseArtifactReviewState =
   | "needs_more"
   | "dismissed";
 
+export type GhostDoctorProcessHealth = {
+  state: "healthy" | "stale" | "unknown";
+  processCount: number | null;
+  detail: string;
+};
+
 export type ComputerUseArtifactWorkflowState =
   | "evidence_only"
   | "promoted"
@@ -177,6 +183,7 @@ export type ComputerUseSettingsSnapshot = {
     setupState: "ready" | "needs_setup" | "not_installed" | "unknown";
     adeConfigured: boolean;
     adeConnected: boolean;
+    processHealth?: GhostDoctorProcessHealth;
     summary: string;
     details: string[];
   };
@@ -191,7 +198,15 @@ export type ComputerUseSettingsSnapshot = {
 export type ComputerUseActivityItem = {
   id: string;
   at: string;
-  kind: "artifact_ingested" | "linked" | "reviewed" | "proof_missing";
+  kind:
+    | "artifact_ingested"
+    | "linked"
+    | "reviewed"
+    | "proof_missing"
+    | "backend_tool_used"
+    | "backend_connected"
+    | "backend_available"
+    | "backend_unavailable";
   title: string;
   detail: string;
   artifactId?: string | null;

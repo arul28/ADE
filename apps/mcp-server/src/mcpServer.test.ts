@@ -876,6 +876,39 @@ describe("mcpServer", () => {
     expect(response.structuredContent.capabilities.proofRequirements).toBeTruthy();
   });
 
+  it("auto-links computer-use ingestion to standalone chat sessions", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+    });
+
+    await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "external_cli",
+      backendName: "agent-browser",
+      inputs: [
+        {
+          kind: "screenshot",
+          title: "Chat proof",
+          path: "/tmp/chat-proof.png",
+        },
+      ],
+    });
+
+    expect(runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owners: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "chat_session",
+            id: "chat-session-1",
+          }),
+        ]),
+      }),
+    );
+  });
+
   it("includes ADE-managed external MCP tools in tool discovery and preserves structured tool results", async () => {
     const fixture = createRuntime();
     fixture.runtime.externalMcpService.listToolsForIdentity = vi.fn(async () => [

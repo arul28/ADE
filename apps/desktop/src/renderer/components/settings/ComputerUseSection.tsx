@@ -181,6 +181,11 @@ export function ComputerUseSection({
   const ghostOs = snapshot.backendStatus.backends.find((backend) => backend.name === "Ghost OS") ?? null;
   const agentBrowser = snapshot.backendStatus.backends.find((backend) => backend.name === "agent-browser") ?? null;
   const ghostCheck = snapshot.ghostOsCheck;
+  const ghostProcessHealthTone = ghostCheck.processHealth?.state === "healthy"
+    ? "success"
+    : ghostCheck.processHealth?.state === "stale"
+      ? "warning"
+      : "info";
 
   return (
     <div style={{ maxWidth: 980, display: "flex", flexDirection: "column", gap: 16 }}>
@@ -202,7 +207,13 @@ export function ComputerUseSection({
       <div className="grid gap-4 lg:grid-cols-3">
         <BackendCard
           title="Ghost OS (External MCP)"
-          tone={ghostCheck.adeConnected ? "success" : ghostCheck.cliInstalled ? "warning" : "muted"}
+          tone={ghostCheck.processHealth?.state === "stale"
+            ? "warning"
+            : ghostCheck.adeConnected
+              ? "success"
+              : ghostCheck.cliInstalled
+                ? "warning"
+                : "muted"}
           detail={ghostCheck.summary}
           helper={snapshot.guidance.ghostOs}
           badges={[
@@ -233,6 +244,15 @@ export function ComputerUseSection({
             {
               label: ghostCheck.adeConnected ? "ade connected" : "not connected",
               tone: ghostCheck.adeConnected ? "success" : "warning",
+            },
+            {
+              label:
+                ghostCheck.processHealth?.state === "healthy"
+                  ? "process healthy"
+                  : ghostCheck.processHealth?.state === "stale"
+                    ? "process stale"
+                    : "process unknown",
+              tone: ghostProcessHealthTone,
             },
           ]}
           diagnostics={ghostCheck.details}

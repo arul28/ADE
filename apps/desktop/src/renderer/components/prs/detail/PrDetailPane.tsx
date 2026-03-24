@@ -1103,7 +1103,8 @@ function OverviewTab(props: OverviewTabProps) {
   const failing = checks.filter(c => c.conclusion === "failure").length;
   const pending = checks.filter(c => c.status !== "completed").length;
   const allChecksPassed = checks.length > 0 && failing === 0 && pending === 0;
-  const someChecksFailing = failing > 0;
+  const someChecksPending = pending > 0;
+  const someChecksFailing = failing > 0 && !someChecksPending;
 
   // Review status from pr
   const reviewStatus = pr.reviewStatus;
@@ -1397,13 +1398,16 @@ function OverviewTab(props: OverviewTabProps) {
             }
             title={
               allChecksPassed ? "All checks have passed"
-                : someChecksFailing ? "Some checks failing"
-                  : checks.length === 0 ? "No checks" : "Checks in progress"
+                : someChecksPending ? "Checks in progress"
+                  : someChecksFailing ? "Some checks failing"
+                    : checks.length === 0 ? "No checks" : "Checks in progress"
             }
             description={
               allChecksPassed ? `${passing} successful check${passing !== 1 ? "s" : ""}`
-                : someChecksFailing ? `${passing}/${checks.length} checks passing`
-                  : checks.length === 0 ? "No status checks are required" : `${pending} check${pending !== 1 ? "s" : ""} pending`
+                : someChecksPending && failing > 0 ? `${pending} pending, ${failing} failing`
+                  : someChecksPending ? `${pending} check${pending !== 1 ? "s" : ""} pending`
+                    : someChecksFailing ? `${passing}/${checks.length} checks passing`
+                      : checks.length === 0 ? "No status checks are required" : `${pending} check${pending !== 1 ? "s" : ""} pending`
             }
             expandable={checks.length > 0}
             expanded={checksExpanded}

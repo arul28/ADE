@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatSessionSummary } from "../../../shared/types";
-import { resolveNextSelectedSessionId } from "./AgentChatPane";
+import { createDefaultComputerUsePolicy } from "../../../shared/types";
+import {
+  resolveChatSessionProfile,
+  resolveNextSelectedSessionId,
+  shouldPromoteSessionForComputerUse,
+} from "./AgentChatPane";
 
 function buildSession(sessionId: string): AgentChatSessionSummary {
   return {
@@ -51,5 +56,27 @@ describe("resolveNextSelectedSessionId", () => {
       forceDraft: false,
       preferDraftStart: false,
     })).toBe("claude-existing");
+  });
+});
+
+describe("resolveChatSessionProfile", () => {
+  it("keeps computer-use-off chats lightweight", () => {
+    expect(resolveChatSessionProfile({ ...createDefaultComputerUsePolicy(), mode: "off" })).toBe("light");
+  });
+
+  it("promotes computer-use-enabled chats to workflow sessions", () => {
+    expect(resolveChatSessionProfile(createDefaultComputerUsePolicy())).toBe("workflow");
+    expect(resolveChatSessionProfile({ ...createDefaultComputerUsePolicy(), mode: "enabled" })).toBe("workflow");
+  });
+});
+
+describe("shouldPromoteSessionForComputerUse", () => {
+  it("promotes older light sessions when computer use is on", () => {
+    const policy = createDefaultComputerUsePolicy();
+
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" }, policy)).toBe(true);
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: undefined }, policy)).toBe(true);
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "workflow" }, policy)).toBe(false);
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" }, { ...policy, mode: "off" })).toBe(false);
   });
 });

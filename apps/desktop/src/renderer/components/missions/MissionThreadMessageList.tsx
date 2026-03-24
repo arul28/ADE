@@ -394,6 +394,7 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
     <>
       <div className="flex h-full min-h-0 flex-col">
         <AgentChatMessageList
+          key={sessionId ?? "mission-feed"}
           events={events}
           showStreamingIndicator={showStreamingIndicator}
           className={className}

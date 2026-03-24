@@ -43,6 +43,7 @@ type CommitMessagePromptContext = {
   hasStagedChanges: boolean;
   stagedFiles: string;
   headFiles: string;
+  diffSnippet: string;
 };
 
 function localBranchNameFromRemoteRef(ref: string): string {
@@ -173,18 +174,31 @@ export function createGitOperationsService({
 
     const stagedFiles = stagedFilesRes.exitCode === 0 ? stagedFilesRes.stdout.trim() : "";
     const headFiles = headFilesRes.exitCode === 0 ? headFilesRes.stdout.trim() : "";
+    const hasStagedChanges = stagedFiles.length > 0;
+
+    // Fetch a truncated diff so the model can see actual code changes, not just filenames.
+    const DIFF_CHAR_LIMIT = 8_000;
+    const diffCmd = hasStagedChanges
+      ? ["diff", "--cached", "--no-color", "-U2", "--find-renames"]
+      : ["show", "--no-color", "-U2", "--find-renames", "--format=", "HEAD"];
+    const diffRes = await runGit(diffCmd, { cwd: lane.worktreePath, timeoutMs: 10_000 });
+    let diffSnippet = diffRes.exitCode === 0 ? diffRes.stdout.trim() : "";
+    if (diffSnippet.length > DIFF_CHAR_LIMIT) {
+      diffSnippet = diffSnippet.slice(0, DIFF_CHAR_LIMIT) + "\n... (diff truncated)";
+    }
 
     return {
-      hasStagedChanges: stagedFiles.length > 0,
+      hasStagedChanges,
       stagedFiles,
-      headFiles
+      headFiles,
+      diffSnippet,
     };
   }
 
   function buildCommitMessagePrompt(_lane: LaneInfo, args: GitGenerateCommitMessageArgs, context: CommitMessagePromptContext): string {
     const changedFiles = context.hasStagedChanges ? context.stagedFiles : context.headFiles;
-    return [
-      "Write a single git commit subject for these changed files.",
+    const parts = [
+      "Write a single git commit subject based on the diff below.",
       "Return plain text only.",
       "Rules:",
       "- one line only",
@@ -194,12 +208,17 @@ export function createGitOperationsService({
       "- 72 characters or fewer",
       "- no quotes",
       "- no trailing period",
+      "- base the message on the actual code changes, not just filenames",
       "",
       `Amend mode: ${args.amend ? "yes" : "no"}`,
       "",
       "Changed files:",
-      changedFiles || "(none)"
-    ].join("\n");
+      changedFiles || "(none)",
+    ];
+    if (context.diffSnippet) {
+      parts.push("", "Diff:", context.diffSnippet);
+    }
+    return parts.join("\n");
   }
 
   function toCommitMessageGenerationError(error: unknown): Error {

@@ -2713,6 +2713,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       safety text not null,
       caller_role text not null,
       caller_id text not null,
+      chat_session_id text,
       mission_id text,
       run_id text,
       step_id text,
@@ -2724,7 +2725,9 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       created_at text not null
     )
   `);
+  try { db.run("alter table external_mcp_usage_events add column chat_session_id text"); } catch {}
   db.run("create index if not exists idx_external_mcp_usage_events_project_occurred on external_mcp_usage_events(project_id, occurred_at)");
+  db.run("create index if not exists idx_external_mcp_usage_events_chat on external_mcp_usage_events(project_id, chat_session_id, occurred_at)");
   db.run("create index if not exists idx_external_mcp_usage_events_mission on external_mcp_usage_events(project_id, mission_id, occurred_at)");
   db.run("create index if not exists idx_external_mcp_usage_events_run on external_mcp_usage_events(project_id, run_id, occurred_at)");
 

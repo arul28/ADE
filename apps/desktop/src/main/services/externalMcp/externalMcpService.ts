@@ -42,6 +42,7 @@ const BARE_ENV_TOKEN = /\$\{([A-Z0-9_]+)\}/g;
 type ExternalMcpSessionIdentity = {
   callerId: string;
   role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
+  chatSessionId: string | null;
   missionId: string | null;
   runId: string | null;
   stepId: string | null;
@@ -93,6 +94,7 @@ type PersistedUsageRow = {
   safety: string;
   caller_role: string;
   caller_id: string;
+  chat_session_id: string | null;
   mission_id: string | null;
   run_id: string | null;
   step_id: string | null;
@@ -421,6 +423,7 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
           safety,
           caller_role,
           caller_id,
+          chat_session_id,
           mission_id,
           run_id,
           step_id,
@@ -451,6 +454,7 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
           ? row.caller_role
           : "external",
       callerId: row.caller_id,
+      chatSessionId: row.chat_session_id,
       missionId: row.mission_id,
       runId: row.run_id,
       stepId: row.step_id,
@@ -939,6 +943,7 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
       safety,
       callerRole: identity.role,
       callerId: identity.callerId,
+      chatSessionId: identity.chatSessionId,
       missionId: identity.missionId,
       runId: identity.runId,
       stepId: identity.stepId,
@@ -961,6 +966,7 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
             safety,
             caller_role,
             caller_id,
+            chat_session_id,
             mission_id,
             run_id,
             step_id,
@@ -970,7 +976,7 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
             estimated,
             occurred_at,
             created_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           event.id,
@@ -981,6 +987,7 @@ export function createExternalMcpService(args: ExternalMcpServiceArgs) {
           event.safety,
           event.callerRole,
           event.callerId,
+          event.chatSessionId ?? null,
           event.missionId ?? null,
           event.runId ?? null,
           event.stepId ?? null,

@@ -37,6 +37,7 @@ type ToolSpec = {
 type SessionIdentity = {
   callerId: string;
   role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
+  chatSessionId: string | null;
   missionId: string | null;
   runId: string | null;
   stepId: string | null;
@@ -1484,7 +1485,26 @@ function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string
   add("orchestrator_step", session.identity.stepId);
   add("orchestrator_attempt", session.identity.attemptId, "produced_by");
   add("lane", asOptionalTrimmedString(toolArgs.laneId));
-  add("chat_session", asOptionalTrimmedString(toolArgs.chatSessionId));
+  const explicitChatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId);
+  if (explicitChatSessionId) {
+    add("chat_session", explicitChatSessionId);
+  } else if (session.identity.chatSessionId) {
+    add("chat_session", session.identity.chatSessionId);
+  } else {
+    const looksLikeStandaloneChat =
+      !session.identity.missionId
+      && !session.identity.runId
+      && !session.identity.stepId
+      && session.identity.role !== "orchestrator"
+      && session.identity.role !== "evaluator";
+    if (looksLikeStandaloneChat) {
+      const implicitChatSessionId =
+        asOptionalTrimmedString(session.identity.callerId) ?? asOptionalTrimmedString(session.identity.attemptId);
+      if (implicitChatSessionId && implicitChatSessionId !== "unknown") {
+        add("chat_session", implicitChatSessionId);
+      }
+    }
+  }
   add("automation_run", asOptionalTrimmedString(toolArgs.automationRunId));
   add("github_pr", asOptionalTrimmedString(toolArgs.prUrl), "published_to");
   add("linear_issue", asOptionalTrimmedString(toolArgs.linearIssueId), "published_to");
@@ -1887,6 +1907,7 @@ function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> 
 type CallerContext = {
   callerId: string | null;
   role: SessionIdentity["role"] | null;
+  chatSessionId: string | null;
   missionId: string | null;
   runId: string | null;
   stepId: string | null;
@@ -1916,9 +1937,11 @@ function resolveEnvCallerContext(): CallerContext {
     || envAllowLocalFallback != null
     || envRetainArtifacts != null
     || envPreferredBackend != null;
+  const envChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
   return {
-    callerId: process.env.ADE_ATTEMPT_ID?.trim() || null,
+    callerId: envChatSessionId ?? process.env.ADE_ATTEMPT_ID?.trim() ?? null,
     role: envRole,
+    chatSessionId: envChatSessionId,
     missionId: process.env.ADE_MISSION_ID?.trim() || null,
     runId: process.env.ADE_RUN_ID?.trim() || null,
     stepId: process.env.ADE_STEP_ID?.trim() || null,
@@ -1941,6 +1964,7 @@ function resolveCallerContext(session?: SessionState): CallerContext {
   return {
     callerId: asOptionalTrimmedString(session.identity.callerId),
     role: session.identity.role ?? envContext.role,
+    chatSessionId: session.identity.chatSessionId ?? envContext.chatSessionId,
     missionId: session.identity.missionId ?? envContext.missionId,
     runId: session.identity.runId ?? envContext.runId,
     stepId: session.identity.stepId ?? envContext.stepId,
@@ -2019,8 +2043,9 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
   const effectiveComputerUsePolicy = envContext.computerUsePolicy ?? requestedComputerUsePolicy;
 
   return {
-    callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.attemptId ?? "unknown",
+    callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.chatSessionId ?? envContext.attemptId ?? "unknown",
     role: validRole,
+    chatSessionId: asOptionalTrimmedString(identity.chatSessionId) ?? envContext.chatSessionId,
     missionId: asOptionalTrimmedString(identity.missionId) ?? envContext.missionId,
     runId: asOptionalTrimmedString(identity.runId) ?? envContext.runId,
     stepId: asOptionalTrimmedString(identity.stepId) ?? envContext.stepId,
@@ -4769,6 +4794,7 @@ export function createMcpRequestHandler(args: {
     identity: {
       callerId: "unknown",
       role: "external",
+      chatSessionId: null,
       missionId: null,
       runId: null,
       stepId: null,
@@ -4820,6 +4846,7 @@ export function createMcpRequestHandler(args: {
         tool: toolName,
         callerId: session.identity.callerId,
         role: session.identity.role,
+        chatSessionId: session.identity.chatSessionId,
         missionId: session.identity.missionId,
         runId: session.identity.runId,
         stepId: session.identity.stepId,

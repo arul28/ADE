@@ -181,6 +181,7 @@ export type ExternalMcpUsageEvent = {
   safety: ExternalMcpToolSafety;
   callerRole: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
   callerId: string;
+  chatSessionId?: string | null;
   missionId?: string | null;
   runId?: string | null;
   stepId?: string | null;

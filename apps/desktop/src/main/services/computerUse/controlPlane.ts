@@ -2,8 +2,10 @@ import { spawnSync } from "node:child_process";
 import type {
   ComputerUseArtifactKind,
   ComputerUseArtifactOwner,
+  ComputerUseActivityItem,
   ComputerUseArtifactView,
   ComputerUseBackendStatus,
+  ExternalMcpUsageEvent,
   ExternalMcpServerSnapshot,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
@@ -14,6 +16,7 @@ import type {
 import { createDefaultComputerUsePolicy, isComputerUseModeEnabled } from "../../../shared/types";
 import type { ComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
 import { commandExists } from "../ai/utils";
+import { getGhostDoctorProcessHealth } from "./localComputerUse";
 
 const COMPUTER_USE_KINDS: ComputerUseArtifactKind[] = [
   "screenshot",
@@ -41,6 +44,7 @@ function buildGhostOsCheck(args: {
 }): ComputerUseSettingsSnapshot["ghostOsCheck"] {
   const repoUrl = "https://github.com/ghostwright/ghost-os";
   const cliInstalled = commandExists("ghost");
+  const processHealth = getGhostDoctorProcessHealth();
   const matchingSnapshots = args.snapshots.filter(isGhostOsServer);
   const adeConfigured = matchingSnapshots.length > 0;
   const adeConnected = matchingSnapshots.some((snapshot) => snapshot.state === "connected");
@@ -57,10 +61,12 @@ function buildGhostOsCheck(args: {
       details: [
         "Install the Ghost OS CLI first.",
         "Then run `ghost setup` to grant permissions and install its local dependencies.",
+        processHealth.detail,
         adeConfigured
           ? "ADE already has a Ghost OS MCP entry, but it cannot start until the `ghost` CLI exists."
           : "After setup, add `ghost mcp` in ADE External MCP so ADE-launched sessions can use it.",
       ],
+      processHealth,
     };
   }
 
@@ -86,13 +92,21 @@ function buildGhostOsCheck(args: {
       setupState,
       adeConfigured,
       adeConnected,
-      summary: adeConnected
-        ? "Ghost OS is ready on this Mac and connected through ADE."
-        : adeConfigured
-          ? "Ghost OS is ready on this Mac. Connect the ADE MCP server to make it active."
-          : "Ghost OS is ready on this Mac, but ADE is not configured to launch it yet.",
+      processHealth,
+      summary:
+        processHealth.state === "stale"
+          ? `Ghost OS is ready, but ${processHealth.detail}`
+          : adeConnected
+            ? "Ghost OS is ready on this Mac and connected through ADE."
+            : adeConfigured
+              ? "Ghost OS is ready on this Mac. Connect the ADE MCP server to make it active."
+              : "Ghost OS is ready on this Mac, but ADE is not configured to launch it yet.",
       details: [
         ...(outputLines.length > 0 ? outputLines : ["`ghost status` reports ready."]),
+        processHealth.detail,
+        ...(processHealth.state === "stale"
+          ? ["Stop the stale `ghost mcp` processes, then rerun `ghost doctor`."]
+          : []),
         adeConfigured
           ? adeConnected
             ? "ADE has a matching `ghost mcp` server and it is currently connected."
@@ -109,11 +123,18 @@ function buildGhostOsCheck(args: {
     setupState,
     adeConfigured,
     adeConnected,
+    processHealth,
     summary: setupState === "needs_setup"
       ? "Ghost OS is installed, but this Mac still needs `ghost setup`."
-      : "Ghost OS is installed, but ADE could not verify whether setup is complete.",
+      : processHealth.state === "stale"
+        ? `Ghost OS is installed, but ${processHealth.detail}`
+        : "Ghost OS is installed, but ADE could not verify whether setup is complete.",
     details: [
       ...(outputLines.length > 0 ? outputLines : ["`ghost status` did not return a clear ready state."]),
+      processHealth.detail,
+      ...(processHealth.state === "stale"
+        ? ["Stop the stale `ghost mcp` processes, then rerun `ghost doctor`."]
+        : []),
       "Run `ghost setup` in Terminal on this Mac.",
       adeConfigured
         ? "After setup completes, reconnect the Ghost OS MCP entry in ADE."
@@ -166,7 +187,92 @@ function selectPreferredBackend(status: ComputerUseBackendStatus): string | null
   return status.backends.find((backend) => backend.available)?.name ?? null;
 }
 
-function buildActivity(artifacts: ComputerUseArtifactView[], missingKinds: ComputerUseArtifactKind[]) {
+function usageEventMatchesOwner(
+  usageEvent: ExternalMcpUsageEvent,
+  owner: ComputerUseArtifactOwner,
+): boolean {
+  if (owner.kind === "chat_session") {
+    return usageEvent.chatSessionId === owner.id || usageEvent.callerId === owner.id;
+  }
+  if (owner.kind === "mission") {
+    return usageEvent.missionId === owner.id;
+  }
+  if (owner.kind === "orchestrator_run") {
+    return usageEvent.runId === owner.id;
+  }
+  if (owner.kind === "orchestrator_step") {
+    return usageEvent.stepId === owner.id;
+  }
+  if (owner.kind === "orchestrator_attempt") {
+    return usageEvent.attemptId === owner.id;
+  }
+  return false;
+}
+
+function buildActivity(
+  owner: ComputerUseArtifactOwner,
+  artifacts: ComputerUseArtifactView[],
+  missingKinds: ComputerUseArtifactKind[],
+  backendStatus: ComputerUseBackendStatus,
+  usageEvents: ExternalMcpUsageEvent[],
+) : ComputerUseActivityItem[] {
+  const liveUsageActivity = usageEvents
+    .filter((usageEvent) => usageEventMatchesOwner(usageEvent, owner))
+    .slice(0, 6)
+    .map((usageEvent) => ({
+      id: `usage:${usageEvent.id}`,
+      at: usageEvent.occurredAt,
+      kind: "backend_tool_used" as const,
+      title: `${usageEvent.serverName} ran ${usageEvent.toolName}`,
+      detail: `${usageEvent.namespacedToolName} was used for this scope.`,
+      artifactId: null,
+      backendName: usageEvent.serverName,
+      severity: "info" as const,
+    }));
+
+  const liveBackendActivity: ComputerUseActivityItem[] = [];
+  for (const backend of backendStatus.backends.slice(0, 4)) {
+    const at = new Date().toISOString();
+    if (backend.available && backend.state === "connected") {
+      liveBackendActivity.push({
+        id: `backend:${backend.name}:connected`,
+        at,
+        kind: "backend_connected",
+        title: `${backend.name} connected`,
+        detail: backend.detail,
+        backendName: backend.name,
+        artifactId: null,
+        severity: "success",
+      });
+      continue;
+    }
+    if (backend.state === "disconnected" || backend.state === "reconnecting" || backend.state === "failed") {
+      liveBackendActivity.push({
+        id: `backend:${backend.name}:unavailable`,
+        at,
+        kind: "backend_unavailable",
+        title: `${backend.name} not connected`,
+        detail: backend.detail,
+        backendName: backend.name,
+        artifactId: null,
+        severity: "warning",
+      });
+      continue;
+    }
+    if (backend.available || backend.state === "installed") {
+      liveBackendActivity.push({
+        id: `backend:${backend.name}:available`,
+        at,
+        kind: "backend_available",
+        title: `${backend.name} ready`,
+        detail: backend.detail,
+        backendName: backend.name,
+        artifactId: null,
+        severity: "info",
+      });
+    }
+  }
+
   const artifactActivity = artifacts.slice(0, 6).map((artifact) => ({
     id: `artifact:${artifact.id}`,
     at: artifact.createdAt,
@@ -189,7 +295,7 @@ function buildActivity(artifacts: ComputerUseArtifactView[], missingKinds: Compu
     severity: "warning" as const,
   }));
 
-  return [...artifactActivity, ...missingActivity]
+  return [...liveUsageActivity, ...liveBackendActivity, ...artifactActivity, ...missingActivity]
     .sort((left, right) => Date.parse(right.at) - Date.parse(left.at))
     .slice(0, 8);
 }
@@ -206,7 +312,7 @@ export function buildComputerUseSettingsSnapshot(args: {
     ghostOsCheck,
     guidance: {
       overview: "External tools perform computer use. ADE discovers backends, ingests their artifacts, normalizes proof, links evidence to missions and chats, and helps operators decide what to do next.",
-      ghostOs: "Ghost OS is a local stdio MCP server. Run `ghost setup` on this Mac first, then add `ghost mcp` in ADE External MCP so ADE-launched sessions can use it.",
+      ghostOs: "Ghost OS is a local stdio MCP server. Run `ghost setup` on this Mac first, then add `ghost mcp` in ADE External MCP so ADE-launched sessions can use it. If `ghost doctor` reports stale processes, stop them before launching a new session.",
       agentBrowser: "agent-browser is a CLI-native browser automation backend, not an MCP server. Install the CLI locally, run it externally, and ingest its manifests or artifacts into ADE for proof tracking.",
       fallback: "ADE-local computer-use remains fallback-only compatibility support. It should only be used when approved external backends are unavailable for the required proof kind.",
     },
@@ -219,6 +325,7 @@ export function buildComputerUseOwnerSnapshot(args: {
   policy?: ComputerUsePolicy | null;
   requiredKinds?: ComputerUseArtifactKind[];
   limit?: number;
+  usageEvents?: ExternalMcpUsageEvent[];
 }): ComputerUseOwnerSnapshot {
   const policy = args.policy ? createDefaultComputerUsePolicy(args.policy) : null;
   const backendStatus = args.broker.getBackendStatus();
@@ -234,7 +341,11 @@ export function buildComputerUseOwnerSnapshot(args: {
   );
   const requiredKinds = uniqKinds((args.requiredKinds ?? []).filter((kind) => COMPUTER_USE_KINDS.includes(kind)));
   const missingKinds = requiredKinds.filter((kind) => !presentKinds.includes(kind));
+  const usageEvents = (args.usageEvents ?? []).filter((usageEvent) => usageEventMatchesOwner(usageEvent, args.owner));
+  const latestUsageEvent = usageEvents[0] ?? null;
   const latestArtifact = recentArtifacts[0] ?? null;
+  const connectedBackend = backendStatus.backends.find((backend) => backend.available && backend.state === "connected") ?? null;
+  const readyBackend = backendStatus.backends.find((backend) => backend.available) ?? null;
   const preferredBackend = policy?.preferredBackend
     ? backendStatus.backends.find((backend) => backend.name === policy.preferredBackend) ?? null
     : null;
@@ -276,7 +387,13 @@ export function buildComputerUseOwnerSnapshot(args: {
           : `Required proof is still missing: ${missingKinds.join(", ")}.`
       : recentArtifacts.length > 0
         ? `${recentArtifacts.length} computer-use artifact${recentArtifacts.length === 1 ? "" : "s"} retained for this scope.`
-        : "No computer-use artifacts have been ingested for this scope yet.",
+        : latestUsageEvent
+          ? `${latestUsageEvent.serverName} is already active for this scope, but ADE has not ingested proof artifacts yet.`
+        : connectedBackend
+          ? `${connectedBackend.name} is connected and ready to capture proof for this scope.`
+          : readyBackend
+            ? `${readyBackend.name} is available and ready to capture proof for this scope.`
+            : "No computer-use artifacts have been ingested for this scope yet.",
   ].join(" ");
 
   return {
@@ -287,7 +404,7 @@ export function buildComputerUseOwnerSnapshot(args: {
     activeBackend,
     artifacts,
     recentArtifacts,
-    activity: buildActivity(artifacts, missingKinds),
+    activity: buildActivity(args.owner, artifacts, missingKinds, backendStatus, args.usageEvents ?? []),
     proofCoverage: {
       requiredKinds,
       presentKinds,

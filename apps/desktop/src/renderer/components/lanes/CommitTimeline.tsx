@@ -270,29 +270,67 @@ export function CommitTimeline({
         <div
           className="pointer-events-none absolute z-50"
           style={{
-            width: 260,
-            background: COLORS.cardBg,
-            border: `1px solid ${COLORS.border}`,
-            padding: 10,
+            width: 280,
+            background: COLORS.cardBgSolid,
+            boxShadow: `0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px ${COLORS.border}`,
+            borderRadius: 8,
+            padding: 12,
             fontSize: 12,
-            left: Math.min(tooltipPos.x, (containerRef.current?.clientWidth ?? 300) - 270),
+            left: Math.min(tooltipPos.x, (containerRef.current?.clientWidth ?? 300) - 290),
             top: Math.max(0, tooltipPos.y - 8),
             transform: "translateY(-100%)",
           }}
         >
+          {/* SHA + timestamp */}
           <div className="flex items-center justify-between gap-2">
             <div className="truncate" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>{hovered.sha}</div>
             <div className="shrink-0" style={{ fontSize: 11, color: COLORS.textMuted }}>{formatTs(hovered.authoredAt)}</div>
           </div>
+
+          {/* Subject */}
           <div className="truncate" style={{ marginTop: 4, color: COLORS.textPrimary }}>{hovered.subject}</div>
+
+          {/* Author + file count */}
           <div style={{ marginTop: 4, fontSize: 11, color: COLORS.textMuted }}>
             {hovered.authorName}
             {hoveredMeta?.fileCount != null ? ` · ${hoveredMeta.fileCount} file${hoveredMeta.fileCount === 1 ? "" : "s"}` : ""}
           </div>
-          {hoveredMeta?.message ? (
-            <div style={{ marginTop: 4, maxHeight: 100, overflow: "hidden", whiteSpace: "pre-wrap", fontSize: 11, color: COLORS.textDim }}>
-              {hoveredMeta.message}
+
+          {/* Parent SHAs (merge info) */}
+          {hovered.parents.length > 1 ? (
+            <div style={{ marginTop: 6, fontSize: 11, color: COLORS.textDim }}>
+              <span style={{ color: COLORS.textMuted }}>Merge: </span>
+              {hovered.parents.map((p) => p.slice(0, 7)).join(" + ")}
             </div>
+          ) : null}
+
+          {/* Separator */}
+          <div style={{ marginTop: 8, marginBottom: 8, height: 1, background: COLORS.border }} />
+
+          {/* Pushed / local status */}
+          <div className="flex items-center gap-2" style={{ fontSize: 11 }}>
+            <span style={{ color: COLORS.textMuted }}>Status:</span>
+            {hovered.pushed ? (
+              <span style={{ color: COLORS.success }}>Pushed to remote</span>
+            ) : (
+              <span style={{ color: COLORS.warning }}>Local only</span>
+            )}
+          </div>
+
+          {/* PR placeholder */}
+          <div className="flex items-center gap-2" style={{ marginTop: 4, fontSize: 11 }}>
+            <span style={{ color: COLORS.textMuted }}>PR:</span>
+            <span style={{ color: COLORS.textDim }}>&mdash;</span>
+          </div>
+
+          {/* Extended commit message */}
+          {hoveredMeta?.message ? (
+            <>
+              <div style={{ marginTop: 8, marginBottom: 8, height: 1, background: COLORS.border }} />
+              <div style={{ maxHeight: 100, overflow: "hidden", whiteSpace: "pre-wrap", fontSize: 11, color: COLORS.textDim }}>
+                {hoveredMeta.message}
+              </div>
+            </>
           ) : null}
         </div>
       ) : null}

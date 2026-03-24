@@ -61,6 +61,7 @@ export function resolveAdeMcpServerLaunch(args: {
   runId?: string;
   stepId?: string;
   attemptId?: string;
+  chatSessionId?: string;
   defaultRole?: string;
   ownerId?: string;
   computerUsePolicy?: ComputerUsePolicy | null;
@@ -98,6 +99,7 @@ export function resolveAdeMcpServerLaunch(args: {
       ADE_RUN_ID: args.runId ?? "",
       ADE_STEP_ID: args.stepId ?? "",
       ADE_ATTEMPT_ID: args.attemptId ?? "",
+      ADE_CHAT_SESSION_ID: args.chatSessionId ?? "",
       ADE_DEFAULT_ROLE: args.defaultRole ?? "agent",
       ADE_OWNER_ID: args.ownerId ?? "",
       ADE_COMPUTER_USE_MODE: args.computerUsePolicy?.mode ?? "",

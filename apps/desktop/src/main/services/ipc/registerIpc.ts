@@ -3771,6 +3771,7 @@ export function registerIpc({
       policy: resolved.policy,
       requiredKinds: resolved.requiredKinds,
       limit: resolved.limit,
+      usageEvents: ctx.externalMcpService?.getUsageEvents(100) ?? [],
     });
   });
 

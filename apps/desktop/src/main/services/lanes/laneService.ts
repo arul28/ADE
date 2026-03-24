@@ -1308,6 +1308,15 @@ export function createLaneService({
           break;
         }
 
+        // Refuse to rebase a dirty worktree — git rebase will fail and leave confusing state.
+        const dirtyCheck = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktree_path, timeoutMs: 8_000 });
+        if (dirtyCheck.exitCode === 0 && dirtyCheck.stdout.trim().length > 0) {
+          failRunAtLane(laneItem, lane.id, index, `${lane.name} has uncommitted changes. Commit or stash before rebasing.`);
+          emitRunLog({ runId, laneId: lane.id, message: `Skipping ${lane.name}: worktree is dirty.` });
+          emitRunUpdated(run);
+          break;
+        }
+
         laneItem.status = "running";
         laneItem.error = null;
         emitRunUpdated(run);

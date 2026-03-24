@@ -2,15 +2,28 @@
 
 import React from "react";
 import { describe, expect, it, vi, beforeEach, afterEach, type Mock } from "vitest";
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { AgentChatMessageList } from "../chat/AgentChatMessageList";
 import { MissionThreadMessageList, mergeMissionThreadEvents, buildMissionThreadEventMergeKey } from "./MissionThreadMessageList";
 import { useMissionPolling } from "./useMissionPolling";
 
-vi.mock("../chat/AgentChatMessageList", () => ({
-  AgentChatMessageList: vi.fn(() => null),
-}));
+const agentListLifecycle = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
+
+vi.mock("../chat/AgentChatMessageList", async () => {
+  const React = await import("react");
+  return {
+    AgentChatMessageList: vi.fn(() => {
+      React.useEffect(() => {
+        agentListLifecycle.mounts += 1;
+        return () => {
+          agentListLifecycle.unmounts += 1;
+        };
+      }, []);
+      return null;
+    }),
+  };
+});
 
 vi.mock("./useMissionPolling", () => ({
   useMissionPolling: vi.fn(() => undefined),
@@ -178,7 +191,9 @@ describe("MissionThreadMessageList usage", () => {
   const originalAde = globalThis.window.ade;
 
   beforeEach(() => {
-    agentListMock.mockReset();
+    agentListMock.mockClear();
+    agentListLifecycle.mounts = 0;
+    agentListLifecycle.unmounts = 0;
     (useMissionPolling as unknown as Mock).mockClear();
     globalThis.window.ade = {
       sessions: {
@@ -205,5 +220,21 @@ describe("MissionThreadMessageList usage", () => {
       expect.objectContaining({ surfaceMode: "mission-thread" }),
       expect.anything(),
     );
+  });
+
+  it("remounts the transcript list when the selected session changes", async () => {
+    const { rerender } = render(React.createElement(MissionThreadMessageList, { messages: [], sessionId: "session-abc" }));
+
+    await waitFor(() => {
+      expect(agentListLifecycle.mounts).toBe(1);
+      expect(agentListLifecycle.unmounts).toBe(0);
+    });
+
+    rerender(React.createElement(MissionThreadMessageList, { messages: [], sessionId: "session-def" }));
+
+    await waitFor(() => {
+      expect(agentListLifecycle.mounts).toBe(2);
+      expect(agentListLifecycle.unmounts).toBe(1);
+    });
   });
 });

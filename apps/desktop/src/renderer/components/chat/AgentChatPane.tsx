@@ -8,6 +8,7 @@ import {
   type AgentChatEventEnvelope,
   type AgentChatFileRef,
   type AgentChatPermissionMode,
+  type AgentChatSessionProfile,
   type ChatSurfaceChip,
   type ChatSurfaceProfile,
   type ChatSurfacePresentation,
@@ -45,6 +46,17 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
+
+export function resolveChatSessionProfile(computerUsePolicy: ComputerUsePolicy): AgentChatSessionProfile {
+  return computerUsePolicy.mode === "off" ? "light" : "workflow";
+}
+
+export function shouldPromoteSessionForComputerUse(
+  session: Pick<AgentChatSessionSummary, "sessionProfile"> | null | undefined,
+  computerUsePolicy: ComputerUsePolicy,
+): boolean {
+  return computerUsePolicy.mode !== "off" && session?.sessionProfile !== "workflow";
+}
 
 type ExecutionModeOption = {
   value: AgentChatExecutionMode;
@@ -1075,6 +1087,18 @@ export function AgentChatPane({
   }, [refreshComputerUseSnapshot, selectedSessionId]);
 
   useEffect(() => {
+    const unsubscribe = window.ade.externalMcp.onEvent((event) => {
+      if (event.type !== "usage-recorded" || !selectedSessionId) return;
+      const usageEvent = event.usageEvent;
+      const usageChatSessionId = usageEvent?.chatSessionId ?? usageEvent?.callerId ?? null;
+      if (usageChatSessionId !== selectedSessionId) return;
+      setProofDrawerOpen(true);
+      void refreshComputerUseSnapshot(selectedSessionId, { force: true });
+    });
+    return unsubscribe;
+  }, [refreshComputerUseSnapshot, selectedSessionId]);
+
+  useEffect(() => {
     if (!selectedSessionId) {
       setProofDrawerOpen(false);
     }
@@ -1164,7 +1188,7 @@ export function AgentChatPane({
         ? (desc.family === "openai" ? "codex" : "claude")
         : "unified";
       const model = provider === "unified" ? modelId : (desc?.shortId ?? modelId);
-      const sessionProfile = !lockSessionId && !selectedSessionId ? "light" : "workflow";
+      const sessionProfile = resolveChatSessionProfile(computerUsePolicy);
       const created = await window.ade.agentChat.create({
         laneId,
         provider,
@@ -1195,8 +1219,10 @@ export function AgentChatPane({
   }, [computerUsePolicy, laneId, lockSessionId, modelId, onSessionCreated, permissionMode, reasoningEffort, refreshSessions, selectedSessionId]);
 
   // ── Eager session creation ──
-  // Create a lightweight session as soon as we have a model + lane, so slash
-  // commands, MCP status, and other pre-chat metadata are available immediately.
+  // Create a session as soon as we have a model + lane, so slash commands,
+  // MCP status, and other pre-chat metadata are available immediately.
+  // Computer-use-capable chats start as workflow sessions so ADE can wire the
+  // Ghost/proof harness before the first turn.
   // Skip when the pane is locked to an existing session or in forced-draft mode.
   const eagerCreateFiredRef = useRef(false);
   useEffect(() => {
@@ -1269,12 +1295,13 @@ export function AgentChatPane({
       }
 
       let sessionId = selectedSessionId;
+      const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession, computerUsePolicy);
       const selectedModelChanged =
         Boolean(selectedSessionId)
         && Boolean(selectedSessionModelId)
         && selectedSessionModelId !== modelId;
 
-      if (sessionId && !turnActive && (selectedModelChanged || hasComputerUseSelectionChanged)) {
+      if (sessionId && !turnActive && (selectedModelChanged || hasComputerUseSelectionChanged || shouldPromoteLightSession)) {
         await window.ade.agentChat.updateSession({
           sessionId,
           modelId,
@@ -1307,11 +1334,11 @@ export function AgentChatPane({
           executionMode: launchModeEditable ? executionMode : null,
         });
       }
-      await refreshSessions();
+      await refreshSessions().catch(() => {});
     } catch (submitError) {
+      const message = submitError instanceof Error ? submitError.message : String(submitError);
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
       setAttachments((current) => (current.length ? current : attachmentsSnapshot));
-      const message = submitError instanceof Error ? submitError.message : String(submitError);
       setError(message);
       if (
         /ade chat could not authenticate/i.test(message)
@@ -1715,6 +1742,7 @@ export function AgentChatPane({
                 </div>
               ) : null}
               <AgentChatMessageList
+                key={selectedSessionId ?? "chat-draft"}
                 events={selectedEvents}
                 showStreamingIndicator={turnActive}
                 className="min-h-0 border-0"

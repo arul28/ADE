@@ -351,6 +351,7 @@ export function LaneGitActionsPane({
   const [textPromptError, setTextPromptError] = useState<string | null>(null);
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
   const [amendCommit, setAmendCommit] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(null);
 
@@ -1104,125 +1105,29 @@ export function LaneGitActionsPane({
         );
       })() : null}
 
-      <div className="flex-1 min-h-0 overflow-hidden" style={{ padding: 10, display: "flex", flexDirection: "column", gap: 10 }}>
-        <SectionCard
-          title="Sync"
-          description="Compact sync controls with hover help."
-          dataTestId="sync-section"
-          aside={
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                style={{ ...LABEL_STYLE, color: nextActionHint ? COLORS.accent : COLORS.textDim }}
-                title={nextActionHint?.detail ?? "Local and remote are in sync."}
-              >
-                {nextActionHint ? `NEXT: ${nextActionHint.label}` : "UP TO DATE"}
-              </span>
-              <button
-                type="button"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 28,
-                  height: 28,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  background: "transparent",
-                  color: COLORS.textMuted,
-                  cursor: "pointer",
-                }}
-                onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})}
-                title="Refresh git state"
-              >
-                <ArrowsClockwise size={14} className={cn(loading && "animate-spin")} />
-              </button>
-            </div>
-          }
+      <div className="flex-1 min-h-0 overflow-hidden" style={{ display: "flex", flexDirection: "column" }}>
+        {/* ─── Compact Action Toolbar ─── */}
+        <div
+          className="shrink-0"
+          data-testid="action-toolbar"
+          style={{
+            padding: "6px 10px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            background: COLORS.cardBg,
+            borderBottom: `1px solid ${COLORS.border}`,
+          }}
         >
-          <div
-            className="flex flex-wrap items-center gap-2"
-            style={{ justifyContent: "space-between", rowGap: 8 }}
-          >
-            <div className="flex flex-wrap items-center gap-2" style={{ minWidth: 0 }}>
-              <span style={LABEL_STYLE}>PULL MODE</span>
-              {(["merge", "rebase"] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => setSyncMode(mode)}
-                  style={{
-                    ...outlineButton({ height: 26, padding: "0 8px", fontSize: 10 }),
-                    color: syncMode === mode ? COLORS.accent : COLORS.textSecondary,
-                    borderColor: syncMode === mode ? `${COLORS.accent}55` : COLORS.outlineBorder,
-                    background: syncMode === mode ? `${COLORS.accent}10` : "transparent",
-                    opacity: !laneId || busyAction != null ? 0.5 : 1,
-                  }}
-                  title={getPullModeSummary(mode)}
-                >
-                  {mode === "merge" ? "PULL MERGE" : "PULL REBASE"}
-                </button>
-              ))}
-            </div>
-            <div
-              className="flex flex-wrap items-center gap-2"
-              style={{ minWidth: 0, color: COLORS.textDim, fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
-            >
-              <span title={syncStatus?.hasUpstream ? `Tracking ${syncStatus.upstreamRef ?? "upstream"}` : "This lane has not been published to remote yet."}>
-                {!syncStatus ? "REMOTE …" : syncStatus.hasUpstream ? `REMOTE ↑${syncStatus.ahead} ↓${syncStatus.behind}` : "REMOTE UNPUBLISHED"}
-              </span>
-              {divergedSync ? <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>DIVERGED</span> : null}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: actionGridColumns, gap: 8 }}>
-            <ActionButton
-              title={`Pull (${syncMode})`}
-              detail={`Bring remote changes into this lane. ${getPullModeSummary(syncMode)}`}
-              icon={<ArrowDown size={14} weight="bold" />}
-              emphasis={nextActionHint?.action === "pull" ? "primary" : "secondary"}
-              badge={nextActionHint?.action === "pull" ? "NEXT" : null}
-              fullWidth={responsiveMode === "narrow"}
-              disabled={!laneId || busyAction != null}
-              onClick={() => runPull(syncMode)}
-            />
-            <ActionButton
-              title={primaryPushLabel}
-              detail={`${getPushSummary(syncStatus)}${divergedSync ? " Remote and local have both changed, so you may need Force Push (lease)." : ""}`}
-              icon={<Upload size={14} weight="bold" />}
-              emphasis={nextActionHint?.action === "push" ? "primary" : "secondary"}
-              badge={nextActionHint?.action === "push" ? "NEXT" : null}
-              fullWidth={responsiveMode === "narrow"}
-              disabled={!laneId || busyAction != null}
-              onClick={() => runPush(false)}
-            />
-            {lane?.parentLaneId ? (
-              <ActionButton
-                title="Rebase and push"
-                detail="Update this lane from its parent, then publish the rewritten history to remote in one flow."
-                icon={<Stack size={14} weight="bold" />}
-                emphasis={nextActionHint?.action === "rebase_push" ? "primary" : "secondary"}
-                badge={nextActionHint?.action === "rebase_push" ? "NEXT" : null}
-                fullWidth={responsiveMode === "narrow"}
-                disabled={!laneId || busyAction != null}
-                onClick={() => runRebaseAndPushFlow(true)}
-              />
-            ) : null}
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          title="Commit"
-          description="Compact commit controls with inline amend help."
-          dataTestId="commit-section"
-        >
-          <div style={{ display: "flex", flexDirection: responsiveMode === "narrow" ? "column" : "row", gap: 8 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+            {/* Commit controls */}
             <input
               disabled={busyAction != null}
               style={{
-                height: 34,
-                flex: 1,
+                height: 30,
+                flex: "1 1 180px",
                 minWidth: 0,
-                padding: "0 10px",
+                padding: "0 8px",
                 fontSize: 11,
                 fontFamily: MONO_FONT,
                 letterSpacing: "0.4px",
@@ -1230,9 +1135,9 @@ export function LaneGitActionsPane({
                 border: `1px solid ${COLORS.outlineBorder}`,
                 color: COLORS.textSecondary,
                 outline: "none",
+                borderRadius: 6,
                 opacity: busyAction != null ? 0.7 : 1,
               }}
-              title="Type a commit message. If blank, ADE can auto-generate one when Commit Messages AI is enabled."
               placeholder="Commit message"
               value={commitMessage}
               onChange={(event) => setCommitMessage(event.target.value)}
@@ -1246,8 +1151,8 @@ export function LaneGitActionsPane({
             <button
               type="button"
               style={{
-                ...outlineButton({ height: 34, padding: "0 10px", fontSize: 10 }),
-                color: amendCommit ? COLORS.warning : COLORS.textSecondary,
+                ...outlineButton({ height: 30, padding: "0 8px", fontSize: 10, borderRadius: 6 }),
+                color: amendCommit ? COLORS.warning : COLORS.textDim,
                 borderColor: amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder,
                 background: amendCommit ? `${COLORS.warning}10` : "transparent",
               }}
@@ -1255,48 +1160,284 @@ export function LaneGitActionsPane({
               onClick={() => setAmendCommit((prev) => !prev)}
               title={getAmendSummary(amendCommit)}
             >
-              {amendCommit ? "AMEND LAST COMMIT ON" : "AMEND LAST COMMIT"}
+              {amendCommit ? "AMEND ON" : "AMEND"}
             </button>
             <button
               type="button"
               style={{
-                ...primaryButton({ height: 34, padding: "0 14px", fontSize: 10 }),
+                ...primaryButton({ height: 30, padding: "0 12px", fontSize: 10, borderRadius: 6 }),
                 opacity: ((!hasStaged && !amendCommit) || busyAction != null) ? 0.45 : 1,
                 pointerEvents: ((!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
               }}
               disabled={(!hasStaged && !amendCommit) || busyAction != null}
-              onClick={() => {
-                void submitCommit();
-              }}
-              title={amendCommit ? "Rewrite the latest commit using the staged changes." : "Create a new commit from the staged changes."}
+              onClick={() => void submitCommit()}
+              title={amendCommit ? "Rewrite the latest commit" : "Create a new commit from staged changes"}
             >
               {commitButtonLabel}
             </button>
-          </div>
-          <div
-            className="flex flex-wrap items-center gap-3"
-            style={{ fontSize: 10, color: amendCommit ? COLORS.warning : isGeneratingCommitMessage ? COLORS.accent : COLORS.textMuted, lineHeight: 1.5 }}
-          >
-            <span style={{ minWidth: 0, flex: 1 }}>{commitHelperText}</span>
-            <span>{getAmendSummary(amendCommit)}</span>
-            {!commitMessage.trim() && (!commitMessageAi.enabled || !commitMessageAi.modelId) ? (
+
+            {/* Separator */}
+            <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
+
+            {/* Sync controls */}
+            <div className="flex items-center" style={{ gap: 2 }}>
+              {(["merge", "rebase"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => setSyncMode(mode)}
+                  style={{
+                    ...outlineButton({ height: 26, padding: "0 6px", fontSize: 9, borderRadius: 4 }),
+                    color: syncMode === mode ? COLORS.accent : COLORS.textDim,
+                    borderColor: syncMode === mode ? `${COLORS.accent}40` : "transparent",
+                    background: syncMode === mode ? `${COLORS.accent}10` : "transparent",
+                    opacity: !laneId || busyAction != null ? 0.5 : 1,
+                  }}
+                  title={getPullModeSummary(mode)}
+                >
+                  {mode === "merge" ? "MERGE" : "REBASE"}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              style={{
+                ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                ...(nextActionHint?.action === "pull" ? { color: COLORS.accent, borderColor: `${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+              }}
+              disabled={!laneId || busyAction != null}
+              onClick={() => runPull(syncMode)}
+              title={`Pull (${syncMode}). ${getPullModeSummary(syncMode)}`}
+            >
+              <ArrowDown size={12} weight="bold" style={{ marginRight: 4 }} />
+              PULL
+            </button>
+            <button
+              type="button"
+              style={{
+                ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                ...(nextActionHint?.action === "push" ? { color: COLORS.accent, borderColor: `${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+              }}
+              disabled={!laneId || busyAction != null}
+              onClick={() => runPush(false)}
+              title={getPushSummary(syncStatus)}
+            >
+              <Upload size={12} weight="bold" style={{ marginRight: 4 }} />
+              {syncStatus?.hasUpstream === false ? "PUBLISH" : "PUSH"}
+            </button>
+            {lane?.parentLaneId ? (
               <button
                 type="button"
-                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                onClick={onOpenSettings}
-                disabled={busyAction != null}
+                style={{
+                  ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                  ...(nextActionHint?.action === "rebase_push" ? { color: COLORS.accent, borderColor: `${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+                  opacity: (!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty) ? 0.45 : 1,
+                }}
+                disabled={!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty}
+                onClick={() => runRebaseAndPushFlow(true)}
+                title="Rebase from parent and push"
               >
-                AI SETTINGS
+                <Stack size={12} weight="bold" style={{ marginRight: 4 }} />
+                SYNC
               </button>
             ) : null}
-          </div>
-        </SectionCard>
 
+            {/* Separator */}
+            <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
+
+            {/* Advanced toggle */}
+            <button
+              type="button"
+              style={{
+                ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                color: showAdvanced ? COLORS.accent : COLORS.textMuted,
+                borderColor: showAdvanced ? `${COLORS.accent}30` : COLORS.outlineBorder,
+              }}
+              onClick={() => setShowAdvanced((prev) => !prev)}
+              title="Advanced git operations"
+            >
+              MORE {showAdvanced ? "\u25B4" : "\u25BE"}
+            </button>
+
+            {/* Refresh */}
+            <button
+              type="button"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 30,
+                height: 30,
+                border: `1px solid ${COLORS.outlineBorder}`,
+                background: "transparent",
+                color: COLORS.textMuted,
+                cursor: "pointer",
+                borderRadius: 6,
+                flexShrink: 0,
+              }}
+              onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})}
+              title="Refresh git state"
+            >
+              <ArrowsClockwise size={13} className={cn(loading && "animate-spin")} />
+            </button>
+          </div>
+
+          {/* Helper / status row */}
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.4 }}>
+            <span style={{ minWidth: 0, flex: "1 1 auto" }}>{commitHelperText}</span>
+            <div className="flex items-center gap-2" style={{ flexShrink: 0, fontSize: 10 }}>
+              {nextActionHint ? (
+                <span style={{ color: COLORS.accent, fontWeight: 500 }} title={nextActionHint.detail}>
+                  NEXT: {nextActionHint.label}
+                </span>
+              ) : (
+                <span style={{ color: COLORS.textDim }}>UP TO DATE</span>
+              )}
+              {divergedSync ? <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>DIVERGED</span> : null}
+            </div>
+          </div>
+        </div>
+
+        {/* ─── Advanced Git (collapsible) ─── */}
+        {showAdvanced ? (
+          <div
+            className="shrink-0"
+            data-testid="advanced-section"
+            style={{
+              padding: "8px 10px",
+              background: COLORS.recessedBg,
+              borderBottom: `1px solid ${COLORS.border}`,
+            }}
+          >
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+              <ActionButton
+                title="Fetch only"
+                detail="Download remote updates without changing your local branch."
+                disabled={!laneId || busyAction != null}
+                onClick={runFetchOnly}
+              />
+              <ActionButton
+                title="Force push (lease)"
+                detail="Overwrite the remote branch only if nobody else pushed in the meantime."
+                badge={nextActionHint?.action === "force_push_lease" || divergedSync ? "CHECK FIRST" : null}
+                disabled={!laneId || busyAction != null}
+                onClick={() => runPush(true)}
+              />
+              {lane?.parentLaneId ? (
+                <ActionButton
+                  title="Rebase local only"
+                  detail={lane?.status.behind === 0
+                    ? "Already up to date with parent."
+                    : lane?.status.dirty
+                      ? "Commit or stash uncommitted changes before rebasing."
+                      : "Update this lane from its parent without pushing anything yet."}
+                  disabled={!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty}
+                  onClick={() => {
+                    if (!laneId) return;
+                    if (onRebaseNowLocal) {
+                      void runAction("rebase", async () => {
+                        await onRebaseNowLocal(laneId);
+                      });
+                      return;
+                    }
+                    void runAction("rebase", async () => {
+                      const start = await window.ade.lanes.rebaseStart({
+                        laneId,
+                        scope: "lane_only",
+                        pushMode: "none",
+                        actor: "user"
+                      });
+                      if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
+                        throw new Error(start.run.error ?? "Rebase failed.");
+                      }
+                    });
+                  }}
+                />
+              ) : null}
+              {lane?.parentLaneId ? (
+                <ActionButton
+                  title="View rebase details"
+                  detail="See detailed rebase history, including conflicts and timing."
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => onViewRebaseDetails?.()}
+                />
+              ) : null}
+              <ActionButton
+                title="Revert commit"
+                detail="Create a new commit that undoes an earlier commit."
+                disabled={!laneId || busyAction != null}
+                onClick={() => {
+                  if (!laneId) return;
+                  void runAction("revert commit", async () => {
+                    const commits = await window.ade.git.listRecentCommits({ laneId, limit: 20 });
+                    const sha = await requestTextInput({
+                      title: "Commit SHA to revert",
+                      defaultValue: commits[0]?.sha ?? "",
+                      validate: (value) => (value ? null : "Commit SHA is required")
+                    });
+                    if (!sha) throw new Error("__ade_cancelled__");
+                    await window.ade.git.revertCommit({ laneId, commitSha: sha });
+                  });
+                }}
+              />
+              <ActionButton
+                title="Cherry-pick"
+                detail="Apply a commit from another branch onto this lane."
+                disabled={!laneId || busyAction != null}
+                onClick={() => {
+                  if (!laneId) return;
+                  void runAction("cherry-pick", async () => {
+                    const sha = await requestTextInput({
+                      title: "Commit SHA to cherry-pick",
+                      validate: (value) => (value ? null : "Commit SHA is required")
+                    });
+                    if (!sha) throw new Error("__ade_cancelled__");
+                    await window.ade.git.cherryPickCommit({ laneId, commitSha: sha });
+                  });
+                }}
+              />
+            </div>
+            {!autoRebaseEnabled && nextActionHint?.action === "rebase_push" ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: "8px 10px",
+                  fontSize: 10,
+                  fontFamily: MONO_FONT,
+                  letterSpacing: "0.5px",
+                  border: `1px solid ${COLORS.border}`,
+                  background: `${COLORS.info}08`,
+                  color: COLORS.info,
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 10,
+                  alignItems: "center",
+                  borderRadius: 6,
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 220 }}>
+                  Auto-rebase is off. Enable it in Settings {" > "} Lane Templates if you want child lanes rebased automatically when their parent advances.
+                </span>
+                <button
+                  type="button"
+                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), marginLeft: "auto" }}
+                  onClick={onOpenSettings}
+                >
+                  SETTINGS
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* ─── Files + History (maximized) ─── */}
         <div
           style={{
             display: "grid",
             gridTemplateColumns: responsiveMode === "narrow" ? "1fr" : "minmax(0, 1.15fr) minmax(320px, 0.85fr)",
             gridTemplateRows: responsiveMode === "narrow" ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)",
+            padding: 10,
             gap: 10,
             flex: "1 1 0",
             minWidth: 0,
@@ -1491,132 +1632,6 @@ export function LaneGitActionsPane({
             </div>
           </SectionCard>
         </div>
-
-        <SectionCard
-          title="Advanced Git"
-          description="Less common actions. Hover for details."
-          dataTestId="advanced-section"
-        >
-          <div style={{ display: "grid", gridTemplateColumns: actionGridColumns, gap: 8 }}>
-            <ActionButton
-              title="Fetch only"
-              detail="Download remote updates without changing your local branch. Good when you just want to inspect the latest remote state."
-              fullWidth={responsiveMode === "narrow"}
-              disabled={!laneId || busyAction != null}
-              onClick={runFetchOnly}
-            />
-            <ActionButton
-              title="Force push (lease)"
-              detail="Overwrite the remote branch only if nobody else pushed in the meantime. Use after rebase, amend, or other rewritten history."
-              badge={nextActionHint?.action === "force_push_lease" || divergedSync ? "CHECK FIRST" : null}
-              fullWidth={responsiveMode === "narrow"}
-              disabled={!laneId || busyAction != null}
-              onClick={() => runPush(true)}
-            />
-            {lane?.parentLaneId ? (
-              <ActionButton
-                title="Rebase local only"
-                detail="Update this lane from its parent without pushing anything yet."
-                fullWidth={responsiveMode === "narrow"}
-                disabled={!laneId || busyAction != null}
-                onClick={() => {
-                  if (!laneId) return;
-                  if (onRebaseNowLocal) {
-                    void runAction("rebase", async () => {
-                      await onRebaseNowLocal(laneId);
-                    });
-                    return;
-                  }
-                  void runAction("rebase", async () => {
-                    const start = await window.ade.lanes.rebaseStart({
-                      laneId,
-                      scope: "lane_only",
-                      pushMode: "none",
-                      actor: "user"
-                    });
-                    if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
-                      throw new Error(start.run.error ?? "Rebase failed.");
-                    }
-                  });
-                }}
-              />
-            ) : null}
-            {lane?.parentLaneId ? (
-              <ActionButton
-                title="View rebase details"
-                detail="See detailed rebase history, including conflicts and timing."
-                fullWidth={responsiveMode === "narrow"}
-                disabled={!laneId || busyAction != null}
-                onClick={() => onViewRebaseDetails?.()}
-              />
-            ) : null}
-            <ActionButton
-              title="Revert commit"
-              detail="Create a new commit that undoes an earlier commit without rewriting history."
-              fullWidth={responsiveMode === "narrow"}
-              disabled={!laneId || busyAction != null}
-              onClick={() => {
-                if (!laneId) return;
-                void runAction("revert commit", async () => {
-                  const commits = await window.ade.git.listRecentCommits({ laneId, limit: 20 });
-                  const sha = await requestTextInput({
-                    title: "Commit SHA to revert",
-                    defaultValue: commits[0]?.sha ?? "",
-                    validate: (value) => (value ? null : "Commit SHA is required")
-                  });
-                  if (!sha) throw new Error("__ade_cancelled__");
-                  await window.ade.git.revertCommit({ laneId, commitSha: sha });
-                });
-              }}
-            />
-            <ActionButton
-              title="Cherry-pick"
-              detail="Apply a commit from another branch onto this lane."
-              fullWidth={responsiveMode === "narrow"}
-              disabled={!laneId || busyAction != null}
-              onClick={() => {
-                if (!laneId) return;
-                void runAction("cherry-pick", async () => {
-                  const sha = await requestTextInput({
-                    title: "Commit SHA to cherry-pick",
-                    validate: (value) => (value ? null : "Commit SHA is required")
-                  });
-                  if (!sha) throw new Error("__ade_cancelled__");
-                  await window.ade.git.cherryPickCommit({ laneId, commitSha: sha });
-                });
-              }}
-            />
-          </div>
-        </SectionCard>
-
-        {!autoRebaseEnabled && nextActionHint?.action === "rebase_push" ? (
-          <div
-            style={{
-              padding: "10px 14px",
-              fontSize: 10,
-              fontFamily: MONO_FONT,
-              letterSpacing: "0.5px",
-              border: `1px solid ${COLORS.border}`,
-              background: `${COLORS.info}08`,
-              color: COLORS.info,
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 10,
-              alignItems: "center",
-            }}
-          >
-            <span style={{ flex: 1, minWidth: 220 }}>
-              Auto-rebase is off. Enable it in Settings {" > "} Lane Templates if you want child lanes rebased automatically when their parent advances.
-            </span>
-            <button
-              type="button"
-              style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), marginLeft: "auto" }}
-              onClick={onOpenSettings}
-            >
-              SETTINGS
-            </button>
-          </div>
-        ) : null}
       </div>
 
       {(notice || error || busyAction) ? (
