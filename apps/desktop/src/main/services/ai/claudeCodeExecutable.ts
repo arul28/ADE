@@ -46,7 +46,7 @@ function findClaudeAuthPath(auth?: DetectedAuth[]): string | null {
   for (const entry of auth ?? []) {
     if (entry.type !== "cli-subscription" || entry.cli !== "claude") continue;
     const candidate = entry.path.trim();
-    if (candidate && isExecutableFile(candidate)) {
+    if (candidate) {
       return candidate;
     }
   }

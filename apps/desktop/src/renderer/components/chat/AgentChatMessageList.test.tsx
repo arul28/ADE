@@ -267,7 +267,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
   });
 
-  it("coalesces text fragments even when structured events interleave", () => {
+  it("does not coalesce text fragments across command boundaries", () => {
     const view = renderMessageList([
       {
         sessionId: "session-1",
@@ -305,7 +305,10 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(view.container.textContent).toContain("Grouped output");
+    // Text should NOT merge across the command boundary
+    expect(view.container.textContent).not.toContain("Grouped output");
+    expect(view.container.textContent).toContain("Grouped");
+    expect(view.container.textContent).toContain("output");
     expect(screen.getByText("echo ok")).toBeTruthy();
   });
 

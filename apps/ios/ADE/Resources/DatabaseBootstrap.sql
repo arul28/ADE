@@ -2219,6 +2219,7 @@ create table if not exists external_mcp_usage_events (
       safety text not null,
       caller_role text not null,
       caller_id text not null,
+      chat_session_id text,
       mission_id text,
       run_id text,
       step_id text,
