@@ -710,6 +710,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             type="button"
                             className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
                             onClick={() => dismissPrToast(toast.id)}
+                            aria-label="Dismiss notification"
                             title="Dismiss"
                           >
                             ×
@@ -722,7 +723,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                                 key={`${toast.id}-meta-${index}`}
                                 className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/50 bg-black/10 px-2 py-1 text-[10px] text-muted-fg"
                               >
-                                {index === 0 ? <GitPullRequest size={10} /> : index === 1 ? <GitBranch size={10} /> : <GithubLogo size={10} />}
+                                {item.includes("/") ? <GitBranch size={10} /> : item.includes("#") || (toast.event.repoOwner && item.includes(toast.event.repoOwner)) ? <GithubLogo size={10} /> : <GitPullRequest size={10} />}
                                 <span className="truncate">{item}</span>
                               </span>
                             ))}
@@ -750,8 +751,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                               tone === "danger" ? "bg-red-300" : tone === "warning" ? "bg-amber-300" : tone === "success" ? "bg-emerald-300" : "bg-[#A78BFA]",
                             )}
                             onClick={() => {
-                              void window.ade.prs.openInGitHub(toast.event.prId).catch(() => { });
-                              dismissPrToast(toast.id);
+                              void window.ade.prs.openInGitHub(toast.event.prId).then(
+                                () => dismissPrToast(toast.id),
+                                () => { /* keep toast visible on failure */ },
+                              );
                             }}
                           >
                             <ArrowSquareOut size={12} />

@@ -1112,6 +1112,85 @@ describe("conflictService conflict context integrity", () => {
     }
   });
 
+  it("falls back to local branchRef when origin/ remote ref is unavailable for primary parent", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-primary-fallback-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = randomUUID();
+    const now = "2026-03-24T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now]
+      );
+
+      fs.writeFileSync(path.join(repoRoot, "file.txt"), "base\n", "utf8");
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "ade@test.local"]);
+      git(repoRoot, ["config", "user.name", "ADE Test"]);
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+
+      // Primary parent with local branch but no origin remote
+      git(repoRoot, ["checkout", "-b", "feature/primary-local"]);
+      fs.writeFileSync(path.join(repoRoot, "parent.txt"), "parent\n", "utf8");
+      git(repoRoot, ["add", "parent.txt"]);
+      git(repoRoot, ["commit", "-m", "parent advance"]);
+
+      git(repoRoot, ["checkout", "-b", "feature/child-of-primary"]);
+      git(repoRoot, ["checkout", "feature/primary-local"]);
+      fs.writeFileSync(path.join(repoRoot, "parent2.txt"), "more parent\n", "utf8");
+      git(repoRoot, ["add", "parent2.txt"]);
+      git(repoRoot, ["commit", "-m", "parent advance again"]);
+      git(repoRoot, ["checkout", "feature/child-of-primary"]);
+
+      const parentLane = {
+        ...createLaneSummary(repoRoot, {
+          id: "lane-primary",
+          name: "Primary",
+          branchRef: "feature/primary-local",
+          baseRef: "main",
+          parentLaneId: null,
+        }),
+        laneType: "primary" as const,
+      };
+      const childLane = createLaneSummary(repoRoot, {
+        id: "lane-child-primary",
+        name: "Child",
+        branchRef: "feature/child-of-primary",
+        baseRef: "main",
+        parentLaneId: "lane-primary",
+      });
+
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          list: async () => [parentLane, childLane],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/child-of-primary" }),
+        } as any,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" }, local: {} }),
+        } as any,
+      });
+
+      // origin/feature/primary-local doesn't exist, but the fallback to local
+      // feature/primary-local should still detect the child is behind.
+      const needs = await service.scanRebaseNeeds();
+      expect(needs).toHaveLength(1);
+      expect(needs[0]).toMatchObject({
+        laneId: "lane-child-primary",
+        baseBranch: "feature/primary-local",
+      });
+      expect(needs[0]!.behindBy).toBeGreaterThan(0);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to lane.baseRef when parent lane has no branchRef", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-no-parent-branch-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

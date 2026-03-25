@@ -276,6 +276,7 @@ function resolveLaneRebaseTarget(args: {
   queueOverride: QueueRebaseOverride | null;
 }): {
   comparisonRef: string;
+  fallbackRef?: string;
   displayBaseBranch: string;
 } {
   if (args.queueOverride) {
@@ -290,10 +291,12 @@ function resolveLaneRebaseTarget(args: {
   if (parentBranchRef) {
     // For primary lanes, prefer the remote tracking ref (origin/<branch>) to stay
     // consistent with laneService.resolveParentRebaseTarget which rebases against
-    // the remote tracking ref rather than the local HEAD.
+    // the remote tracking ref rather than the local HEAD. Fall back to the local
+    // branch ref when the remote ref is unavailable (e.g. before first fetch).
     const comparisonRef = parent?.laneType === "primary" ? `origin/${parentBranchRef}` : parentBranchRef;
     return {
       comparisonRef,
+      fallbackRef: parentBranchRef,
       displayBaseBranch: parentBranchRef,
     };
   }
@@ -4221,12 +4224,15 @@ export function createConflictService({
           projectRoot,
           laneId: lane.id,
         });
-        const { comparisonRef, displayBaseBranch } = resolveLaneRebaseTarget({
+        const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
           lane,
           lanesById,
           queueOverride,
         });
-        const baseHead = await readHeadSha(projectRoot, comparisonRef);
+        const baseHead = await readHeadSha(projectRoot, comparisonRef)
+          .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
+          .catch(() => "");
+        if (!baseHead) continue;
         const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
 
         // Count how many commits the lane is behind base
@@ -4294,12 +4300,15 @@ export function createConflictService({
         projectRoot,
         laneId: lane.id,
       });
-      const { comparisonRef, displayBaseBranch } = resolveLaneRebaseTarget({
+      const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
         lane,
         lanesById,
         queueOverride,
       });
-      const baseHead = await readHeadSha(projectRoot, comparisonRef);
+      const baseHead = await readHeadSha(projectRoot, comparisonRef)
+        .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
+        .catch(() => "");
+      if (!baseHead) return null;
       const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
 
       const behindRes = await runGit(

@@ -197,19 +197,25 @@ export function CreateLaneDialog({
               ) : (
                 <label className="mt-4 block">
                   <span className={LABEL_CLASS_NAME}>Base branch on primary</span>
-                  <select
-                    value={createBaseBranch}
-                    onChange={(event) => setCreateBaseBranch(event.target.value)}
-                    className={SELECT_CLASS_NAME}
-                    disabled={busy}
-                  >
-                    {localBranches.map((branch) => (
-                      <option key={branch.name} value={branch.name}>
-                        {branch.name}
-                        {branch.isCurrent ? " (current)" : ""}
-                      </option>
-                    ))}
-                  </select>
+                  {localBranches.length > 0 ? (
+                    <select
+                      value={createBaseBranch}
+                      onChange={(event) => setCreateBaseBranch(event.target.value)}
+                      className={SELECT_CLASS_NAME}
+                      disabled={busy}
+                    >
+                      {localBranches.map((branch) => (
+                        <option key={branch.name} value={branch.name}>
+                          {branch.name}
+                          {branch.isCurrent ? " (current)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="mt-1 rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-sm text-muted-fg">
+                      No local branches found.
+                    </div>
+                  )}
                   <div className="mt-2 text-xs text-muted-fg/80">
                     Lane will be created from primary/{createBaseBranch || "..."}.
                   </div>
@@ -241,7 +247,7 @@ export function CreateLaneDialog({
           </Button>
           <Button
             variant="primary"
-            disabled={busy || !createLaneName.trim() || (createAsChild && !createParentLaneId)}
+            disabled={busy || !createLaneName.trim() || (createAsChild ? !createParentLaneId : !createBaseBranch)}
             onClick={onSubmit}
           >
             {buttonLabel(busy, createAsChild, createParentLaneId, createBaseBranch)}

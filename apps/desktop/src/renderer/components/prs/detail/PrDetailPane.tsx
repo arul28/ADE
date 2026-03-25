@@ -1474,7 +1474,7 @@ function OverviewTab(props: OverviewTabProps) {
             color={checksRowVisuals.color}
             icon={getChecksRowIcon(checksSummary)}
             title={checksRowVisuals.title}
-            titleAccessory={checksRunning ? <PrCiRunningIndicator showLabel label="running" /> : undefined}
+            titleAccessory={checksRunning && checksSummary.total > 0 ? <PrCiRunningIndicator showLabel label="running" /> : undefined}
             description={checksRowVisuals.description}
             expandable={checks.length > 0}
             expanded={checksExpanded}
