@@ -68,6 +68,87 @@ async function validateSignedApp(appPath, description) {
   await execFileAsync("spctl", ["-a", "-vvv", "--type", "execute", appPath]);
 }
 
+async function validatePackagedRuntime(appPath, description) {
+  const appName = path.basename(appPath, ".app");
+  const executablePath = path.join(appPath, "Contents", "MacOS", appName);
+  const resourcesPath = path.join(appPath, "Contents", "Resources");
+  const appAsarPath = path.join(resourcesPath, "app.asar");
+  const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
+  const nodeModulesPath = path.join(unpackedPath, "node_modules");
+  const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
+  const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
+  const adeMcpProxyPath = path.join(unpackedPath, "dist", "main", "adeMcpProxy.cjs");
+
+  console.log(`[release:mac] Smoke testing packaged runtime payload for ${description}`);
+  await assertPathExists(executablePath, "packaged app executable");
+  await assertPathExists(appAsarPath, "app.asar payload");
+  await assertPathExists(unpackedPath, "app.asar.unpacked runtime payload");
+  await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
+  await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
+  await assertPathExists(adeMcpProxyPath, "unpacked ADE MCP proxy script");
+
+  const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);
+  if (!nodePtyAddon) {
+    throw new Error(`[release:mac] Missing node-pty native addon under ${nodePtyModulePath}`);
+  }
+  const nodePtySpawnHelper = await findNodePtySpawnHelper(nodePtyModulePath);
+  if (!nodePtySpawnHelper) {
+    throw new Error(`[release:mac] Missing node-pty spawn-helper under ${nodePtyModulePath}`);
+  }
+  await assertExecutable(nodePtySpawnHelper, "node-pty spawn-helper");
+
+  const { stdout } = await execFileAsync(executablePath, [smokeScriptPath], {
+    cwd: unpackedPath,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      NODE_PATH: nodeModulesPath,
+    },
+  });
+
+  const payload = JSON.parse(stdout.trim());
+  if (payload?.nodePty !== "function") {
+    throw new Error(`[release:mac] Packaged smoke expected node-pty.spawn to be a function, got ${String(payload?.nodePty)}`);
+  }
+  if (!payload?.ptyProbe?.ok) {
+    throw new Error("[release:mac] Packaged smoke failed to execute a PTY probe");
+  }
+  if (payload?.claudeQuery !== "function") {
+    throw new Error(`[release:mac] Packaged smoke expected Claude SDK query() to be available, got ${String(payload?.claudeQuery)}`);
+  }
+  if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
+    throw new Error("[release:mac] Packaged smoke did not report a Claude executable path");
+  }
+  if (payload.claudeExecutablePath.includes("app.asar")) {
+    throw new Error(
+      `[release:mac] Packaged smoke resolved Claude to an asar-backed path instead of the system CLI: ${payload.claudeExecutablePath}`
+    );
+  }
+  if (!payload?.claudeStartup || typeof payload.claudeStartup !== "object") {
+    throw new Error("[release:mac] Packaged smoke did not report a Claude startup result");
+  }
+  if (payload.claudeStartup.state === "binary-missing") {
+    console.warn(
+      `[release:mac] Claude CLI is not installed on this machine; skipping live Claude startup check for ${description}.`
+    );
+  }
+  if (payload.claudeStartup.state === "runtime-failed") {
+    throw new Error(
+      `[release:mac] Packaged smoke could not start Claude from the packaged app: ${String(payload.claudeStartup.message || "unknown error")}`
+    );
+  }
+  if (payload?.codexFactory !== "function") {
+    throw new Error(`[release:mac] Packaged smoke expected Codex provider factory to be available, got ${String(payload?.codexFactory)}`);
+  }
+  if (payload?.launchMode !== "bundled_proxy") {
+    throw new Error(`[release:mac] Packaged smoke expected bundled_proxy launch mode, got ${String(payload?.launchMode)}`);
+  }
+  if (!payload?.proxyProbe?.ok) {
+    throw new Error("[release:mac] Packaged smoke failed to launch the bundled ADE MCP proxy in probe mode");
+  }
+
+  console.log(`[release:mac] Packaged runtime smoke passed for ${description}: ${path.relative(appPath, nodePtyAddon)}`);
+}
 async function validateLatestMacYaml(latestMacPath, zipPath) {
   await assertPathExists(latestMacPath, "latest-mac.yml");
   const latestMac = parseYaml(await fs.readFile(latestMacPath, "utf8"));
