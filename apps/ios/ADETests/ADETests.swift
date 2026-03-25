@@ -67,6 +67,30 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(sleepCalls, [200, 200])
   }
 
+  func testInitialHydrationGateCancelsWhenConnectionGenerationChanges() async {
+    var activeGeneration = 1
+    var sleepCalls: [UInt64] = []
+
+    await XCTAssertThrowsErrorAsync(
+      try await InitialHydrationGate.waitForProjectRow(
+        timeoutNanoseconds: 1_000,
+        pollIntervalNanoseconds: 200,
+        currentProjectId: { nil },
+        shouldContinue: { activeGeneration == 1 },
+        sleep: { interval in
+          sleepCalls.append(interval)
+          if sleepCalls.count == 2 {
+            activeGeneration = 2
+          }
+        }
+      )
+    ) { error in
+      XCTAssertTrue(error is CancellationError)
+    }
+
+    XCTAssertEqual(sleepCalls, [200, 200])
+  }
+
   func testInitialHydrationGateTimesOutWithFriendlyMessage() async {
     await XCTAssertThrowsErrorAsync(
       try await InitialHydrationGate.waitForProjectRow(
@@ -135,6 +159,37 @@ final class ADETests: XCTestCase {
       userInfo: [NSLocalizedDescriptionKey: "Authentication failed.", "ADEErrorCode": "auth_failed"]
     )
     XCTAssertEqual(SyncUserFacingError.message(for: authError), "This phone is no longer paired with the host. Pair again from Settings.")
+
+    let invalidHelloError = NSError(
+      domain: "ADE",
+      code: 4,
+      userInfo: [NSLocalizedDescriptionKey: "Invalid hello response."]
+    )
+    XCTAssertEqual(SyncUserFacingError.message(for: invalidHelloError), "The host replied with unexpected pairing data. Reconnect and try again.")
+
+    let queuedOperationError = NSError(
+      domain: "ADE",
+      code: 5,
+      userInfo: [NSLocalizedDescriptionKey: "Unknown queued operation type."]
+    )
+    XCTAssertEqual(SyncUserFacingError.message(for: queuedOperationError), "Queued sync work on this phone became unreadable. Reconnect and try the action again.")
+
+    let compressedPayloadError = NSError(
+      domain: "ADE",
+      code: 6,
+      userInfo: [NSLocalizedDescriptionKey: "Unable to decode compressed sync payload."]
+    )
+    XCTAssertEqual(SyncUserFacingError.message(for: compressedPayloadError), "The host sent unreadable sync data. Reconnect and try again.")
+  }
+
+  func testStaleSendCallbackGuardOnlyHandlesActiveSocket() {
+    let url = URL(string: "ws://example.com:8787")!
+    let activeSocket = URLSession.shared.webSocketTask(with: url)
+    let staleSocket = URLSession.shared.webSocketTask(with: url)
+
+    XCTAssertTrue(shouldHandleSocketSendCompletionError(currentSocket: activeSocket, callbackSocket: activeSocket))
+    XCTAssertFalse(shouldHandleSocketSendCompletionError(currentSocket: activeSocket, callbackSocket: staleSocket))
+    XCTAssertFalse(shouldHandleSocketSendCompletionError(currentSocket: nil, callbackSocket: staleSocket))
   }
 
   func testDatabaseReplaceLaneSnapshotsWithoutProjectRowUsesFriendlyError() throws {

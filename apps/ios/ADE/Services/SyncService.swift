@@ -58,13 +58,20 @@ enum InitialHydrationGate {
     timeoutNanoseconds: UInt64 = defaultTimeoutNanoseconds,
     pollIntervalNanoseconds: UInt64 = defaultPollIntervalNanoseconds,
     currentProjectId: () -> String?,
+    shouldContinue: () -> Bool = { true },
     sleep: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
   ) async throws {
+    guard shouldContinue() else {
+      throw CancellationError()
+    }
     guard currentProjectId() == nil else { return }
 
     var waited: UInt64 = 0
     while waited < timeoutNanoseconds {
       try await sleep(pollIntervalNanoseconds)
+      guard shouldContinue() else {
+        throw CancellationError()
+      }
       waited += pollIntervalNanoseconds
       if currentProjectId() != nil {
         return
@@ -158,11 +165,17 @@ enum SyncUserFacingError {
         lowered.contains("cannot connect to host") {
       return "Can't reach the saved host right now. Make sure ADE is running on the host, then retry."
     }
+    if lowered.contains("no saved address is available for this host") {
+      return "This phone no longer has a saved address for the host. Open Settings to rediscover it or pair again."
+    }
     if lowered.contains("the host is offline") || lowered.contains("requires a live connection to the host") {
       return "The host is offline. Reconnect, then try again."
     }
     if lowered.contains("the host returned incomplete") {
       return "The host sent incomplete sync data. Retry the affected area or reconnect the host."
+    }
+    if lowered.contains("pairing secret missing from response") || lowered.contains("invalid hello response") {
+      return "The host replied with unexpected pairing data. Reconnect and try again."
     }
     if lowered.contains("authentication failed") {
       return "This phone is no longer paired with the host. Pair again from Settings."
@@ -170,11 +183,19 @@ enum SyncUserFacingError {
     if lowered.contains("invalid host address") {
       return "The host address looks invalid. Check it and try again."
     }
+    if lowered.contains("invalid queued operation payload") ||
+        lowered.contains("queued operation payload is invalid") ||
+        lowered.contains("unknown queued operation type") {
+      return "Queued sync work on this phone became unreadable. Reconnect and try the action again."
+    }
     if lowered.contains("remote command rejected") {
       return "The host couldn't accept that request right now. Try again in a moment."
     }
     if lowered.contains("file request failed") {
       return "The host couldn't finish that file request. Try again."
+    }
+    if lowered.contains("unable to start gzip decoder") || lowered.contains("unable to decode compressed sync payload") {
+      return "The host sent unreadable sync data. Reconnect and try again."
     }
 
     return rawMessage
@@ -190,6 +211,13 @@ enum SyncUserFacingError {
     userInfo[NSUnderlyingErrorKey] = userInfo[NSUnderlyingErrorKey] ?? error
     return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
   }
+}
+
+func shouldHandleSocketSendCompletionError(
+  currentSocket: URLSessionWebSocketTask?,
+  callbackSocket: URLSessionWebSocketTask
+) -> Bool {
+  currentSocket === callbackSocket
 }
 
 struct FilesNavigationRequest: Equatable, Identifiable {
@@ -239,12 +267,14 @@ final class SyncService: ObservableObject {
   private let encoder = JSONEncoder()
   private let compressionThresholdBytes = 4 * 1024
   private var relayTask: Task<Void, Never>?
+  private var hydrationTask: Task<Void, Never>?
   private var reconnectTask: Task<Void, Never>?
   private var databaseObserver: NSObjectProtocol?
   private var latestRemoteDbVersion = 0
   private var outboundLocalDbVersion = 0
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
+  private var connectionGeneration: UInt64 = 0
   private var allowAutoReconnect = true
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
@@ -310,6 +340,7 @@ final class SyncService: ObservableObject {
 
   deinit {
     relayTask?.cancel()
+    hydrationTask?.cancel()
     reconnectTask?.cancel()
     discoveryBrowser.stop()
     if let databaseObserver {
@@ -1198,9 +1229,7 @@ final class SyncService: ObservableObject {
   }
 
   private func openSocket(host: String, port: Int) async throws {
-    relayTask?.cancel()
-    socket?.cancel(with: .goingAway, reason: nil)
-    socket = nil
+    teardownSocket(closeCode: .goingAway)
     connectionState = .connecting
     hostName = activeHostProfile?.hostName
     currentAddress = host
@@ -1332,11 +1361,7 @@ final class SyncService: ObservableObject {
     )
     saveProfile(profile)
     startRelayLoop()
-
-    Task { @MainActor in
-      await self.performInitialHydration()
-      await self.flushPendingOperations()
-    }
+    startInitialHydrationTask(for: connectionGeneration)
   }
 
   private func failPendingRequests(with error: Error) {
@@ -1485,6 +1510,20 @@ final class SyncService: ObservableObject {
     }
   }
 
+  private func startInitialHydrationTask(for connectionGeneration: UInt64) {
+    hydrationTask?.cancel()
+    hydrationTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      await self.performInitialHydration(for: connectionGeneration)
+      guard self.isCurrentConnectionGeneration(connectionGeneration) else { return }
+      await self.flushPendingOperations()
+    }
+  }
+
+  private func isCurrentConnectionGeneration(_ generation: UInt64) -> Bool {
+    !Task.isCancelled && connectionGeneration == generation
+  }
+
   private func sendLocalChanges() {
     guard canSendLiveRequests() else { return }
     let currentDbVersion = database.currentDbVersion()
@@ -1536,6 +1575,7 @@ final class SyncService: ObservableObject {
 
   private func sendEnvelope(type: String, requestId: String?, payload: Any) {
     guard let socket else { return }
+    let sendSocket = socket
     guard let payloadData = try? JSONSerialization.data(withJSONObject: payload, options: []) else { return }
 
     let envelope: [String: Any]
@@ -1564,9 +1604,12 @@ final class SyncService: ObservableObject {
           let text = String(data: data, encoding: .utf8)
     else { return }
 
-    socket.send(.string(text)) { error in
+    sendSocket.send(.string(text)) { error in
       if let error {
         Task { @MainActor in
+          guard shouldHandleSocketSendCompletionError(currentSocket: self.socket, callbackSocket: sendSocket) else {
+            return
+          }
           self.handleTransportFailure(error)
         }
       }
@@ -1576,9 +1619,12 @@ final class SyncService: ObservableObject {
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
     relayTask?.cancel()
     relayTask = nil
+    hydrationTask?.cancel()
+    hydrationTask = nil
     socket?.cancel(with: closeCode, reason: reason?.data(using: .utf8))
     socket = nil
     currentAddress = nil
+    connectionGeneration &+= 1
   }
 
   private func handleTransportFailure(
@@ -1735,14 +1781,22 @@ final class SyncService: ObservableObject {
     return ["queued": true]
   }
 
-  private func performInitialHydration() async {
-    guard connectionState == .connected || connectionState == .syncing else { return }
+  private func performInitialHydration(for connectionGeneration: UInt64) async {
+    guard isCurrentConnectionGeneration(connectionGeneration),
+          connectionState == .connected || connectionState == .syncing
+    else { return }
 
     setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
 
     do {
-      try await InitialHydrationGate.waitForProjectRow(currentProjectId: { self.database.currentProjectId() })
+      try await InitialHydrationGate.waitForProjectRow(
+        currentProjectId: { self.database.currentProjectId() },
+        shouldContinue: { self.isCurrentConnectionGeneration(connectionGeneration) }
+      )
+    } catch is CancellationError {
+      return
     } catch {
+      guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
       lastError = friendlyMessage
       if connectionState == .disconnected || connectionState == .error {
@@ -1753,19 +1807,27 @@ final class SyncService: ObservableObject {
       return
     }
 
+    guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     do {
       try await refreshLaneSnapshots()
     } catch {
+      guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       lastError = SyncUserFacingError.message(for: error)
     }
+
+    guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     do {
       try await refreshWorkSessions()
     } catch {
+      guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       lastError = SyncUserFacingError.message(for: error)
     }
+
+    guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     do {
       try await refreshPullRequestSnapshots()
     } catch {
+      guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       lastError = SyncUserFacingError.message(for: error)
     }
   }
