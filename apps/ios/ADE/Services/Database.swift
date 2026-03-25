@@ -359,7 +359,7 @@ final class DatabaseService {
   func replaceLaneSnapshots(_ lanes: [LaneSummary], snapshots: [LaneListSnapshot]? = nil) throws {
     guard db != nil else { return }
     guard let projectId = currentProjectId() else {
-      throw sqliteError("Unable to hydrate lanes because no project row is available yet.")
+      throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
     }
 
     shouldCaptureLocalChanges = false
@@ -658,7 +658,7 @@ final class DatabaseService {
   func replacePullRequestHydration(_ payload: PullRequestRefreshPayload) throws {
     guard db != nil else { return }
     guard let projectId = currentProjectId() else {
-      throw sqliteError("Unable to hydrate pull requests because no project row is available yet.")
+      throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
     }
 
     shouldCaptureLocalChanges = false
@@ -1211,7 +1211,7 @@ final class DatabaseService {
     }
   }
 
-  private func currentProjectId() -> String? {
+  func currentProjectId() -> String? {
     queryString("select id from projects order by created_at asc limit 1")
   }
 

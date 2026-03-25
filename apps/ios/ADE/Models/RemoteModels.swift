@@ -114,8 +114,15 @@ enum SyncDomain: String, CaseIterable, Hashable {
   case prs
 }
 
+enum SyncHydrationMessaging {
+  static let initialData = "Syncing initial data..."
+  static let waitingForProjectData = "Waiting for host to sync project data..."
+  static let projectDataTimeout = "Timed out waiting for host to sync project data. Try reconnecting."
+}
+
 enum SyncDomainPhase: String, Codable, Equatable {
   case disconnected
+  case syncingInitialData
   case hydrating
   case ready
   case failed

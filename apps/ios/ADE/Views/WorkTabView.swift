@@ -179,6 +179,15 @@ struct WorkTabView: View {
         actionTitle: nil,
         action: nil
       )
+    case .syncingInitialData:
+      return ADENoticeCard(
+        title: "Syncing initial data",
+        message: "Waiting for the host to finish syncing core project data before Work hydrates session state.",
+        icon: "arrow.trianglehead.2.clockwise.rotate.90",
+        tint: ADEPalette.warning,
+        actionTitle: nil,
+        action: nil
+      )
     case .failed:
       return ADENoticeCard(
         title: "Session hydration failed",

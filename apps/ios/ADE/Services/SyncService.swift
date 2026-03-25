@@ -49,6 +49,36 @@ func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLab
   }
 }
 
+enum InitialHydrationGate {
+  static let defaultTimeoutNanoseconds: UInt64 = 15_000_000_000
+  static let defaultPollIntervalNanoseconds: UInt64 = 200_000_000
+
+  @MainActor
+  static func waitForProjectRow(
+    timeoutNanoseconds: UInt64 = defaultTimeoutNanoseconds,
+    pollIntervalNanoseconds: UInt64 = defaultPollIntervalNanoseconds,
+    currentProjectId: () -> String?,
+    sleep: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
+  ) async throws {
+    guard currentProjectId() == nil else { return }
+
+    var waited: UInt64 = 0
+    while waited < timeoutNanoseconds {
+      try await sleep(pollIntervalNanoseconds)
+      waited += pollIntervalNanoseconds
+      if currentProjectId() != nil {
+        return
+      }
+    }
+
+    throw NSError(
+      domain: "ADE",
+      code: 22,
+      userInfo: [NSLocalizedDescriptionKey: SyncHydrationMessaging.projectDataTimeout]
+    )
+  }
+}
+
 struct FilesNavigationRequest: Equatable, Identifiable {
   let id: String
   let workspaceId: String
@@ -1494,6 +1524,22 @@ final class SyncService: ObservableObject {
   }
 
   private func performInitialHydration() async {
+    guard connectionState == .connected || connectionState == .syncing else { return }
+
+    setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
+
+    do {
+      try await InitialHydrationGate.waitForProjectRow(currentProjectId: { self.database.currentProjectId() })
+    } catch {
+      lastError = error.localizedDescription
+      if connectionState == .disconnected || connectionState == .error {
+        setDomainStatus(SyncDomain.allCases, phase: .disconnected)
+      } else {
+        setDomainStatus(SyncDomain.allCases, phase: .failed, error: error.localizedDescription)
+      }
+      return
+    }
+
     do {
       try await refreshLaneSnapshots()
     } catch {

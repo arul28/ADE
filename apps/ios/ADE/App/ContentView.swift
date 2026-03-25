@@ -445,7 +445,7 @@ private struct SyncDomainStatusRow: View {
         Text(title)
           .font(.body.weight(.medium))
         Spacer()
-        if status.phase == .hydrating {
+        if status.phase == .syncingInitialData || status.phase == .hydrating {
           ProgressView()
             .controlSize(.mini)
         }
@@ -508,6 +508,8 @@ private struct SyncDomainStatusRow: View {
     switch status.phase {
     case .disconnected:
       return "offline"
+    case .syncingInitialData:
+      return "syncing initial data"
     case .hydrating:
       return "hydrating"
     case .ready:
@@ -521,6 +523,8 @@ private struct SyncDomainStatusRow: View {
     switch status.phase {
     case .disconnected:
       return "Waiting for a live host connection."
+    case .syncingInitialData:
+      return SyncHydrationMessaging.initialData
     case .hydrating:
       return "Refreshing host state on this device."
     case .ready:
@@ -534,6 +538,8 @@ private struct SyncDomainStatusRow: View {
     switch status.phase {
     case .disconnected:
       return ADEPalette.textSecondary
+    case .syncingInitialData:
+      return ADEPalette.warning
     case .hydrating:
       return ADEPalette.warning
     case .ready:

@@ -48,6 +48,66 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testInitialHydrationGateWaitsUntilProjectRowArrives() async throws {
+    var projectId: String?
+    var sleepCalls: [UInt64] = []
+
+    try await InitialHydrationGate.waitForProjectRow(
+      timeoutNanoseconds: 1_000,
+      pollIntervalNanoseconds: 200,
+      currentProjectId: { projectId },
+      sleep: { interval in
+        sleepCalls.append(interval)
+        if sleepCalls.count == 2 {
+          projectId = "project-1"
+        }
+      }
+    )
+
+    XCTAssertEqual(sleepCalls, [200, 200])
+  }
+
+  func testInitialHydrationGateTimesOutWithFriendlyMessage() async {
+    await XCTAssertThrowsErrorAsync(
+      try await InitialHydrationGate.waitForProjectRow(
+        timeoutNanoseconds: 600,
+        pollIntervalNanoseconds: 200,
+        currentProjectId: { nil },
+        sleep: { _ in }
+      )
+    ) { error in
+      XCTAssertEqual((error as NSError).localizedDescription, SyncHydrationMessaging.projectDataTimeout)
+    }
+  }
+
+  func testDatabaseReplaceLaneSnapshotsWithoutProjectRowUsesFriendlyError() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeLaneHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    XCTAssertThrowsError(try database.replaceLaneSnapshots([])) { error in
+      XCTAssertEqual((error as NSError).localizedDescription, SyncHydrationMessaging.waitingForProjectData)
+    }
+
+    database.close()
+  }
+
+  func testDatabaseReplacePullRequestHydrationWithoutProjectRowUsesFriendlyError() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    XCTAssertThrowsError(
+      try database.replacePullRequestHydration(
+        PullRequestRefreshPayload(refreshedCount: 0, prs: [], snapshots: [])
+      )
+    ) { error in
+      XCTAssertEqual((error as NSError).localizedDescription, SyncHydrationMessaging.waitingForProjectData)
+    }
+
+    database.close()
+  }
+
   func testConnectionDraftRoundTrip() throws {
     let draft = ConnectionDraft(
       host: "127.0.0.1",
@@ -383,13 +443,13 @@ final class ADETests: XCTestCase {
       ]
     )
 
-    let activeSnapshots = try database.fetchLaneListSnapshots(includeArchived: false)
+    let activeSnapshots = database.fetchLaneListSnapshots(includeArchived: false)
     XCTAssertEqual(activeSnapshots.map(\.lane.id), ["lane-child"])
     XCTAssertEqual(activeSnapshots.first?.runtime.bucket, "running")
     XCTAssertEqual(activeSnapshots.first?.rebaseSuggestion?.behindCount, 1)
     XCTAssertEqual(activeSnapshots.first?.stateSnapshot?.agentSummary?["summary"], .string("Codex running"))
 
-    let allSnapshots = try database.fetchLaneListSnapshots(includeArchived: true)
+    let allSnapshots = database.fetchLaneListSnapshots(includeArchived: true)
     XCTAssertEqual(Set(allSnapshots.map(\.lane.id)), Set(["lane-child", "lane-archived"]))
     database.close()
   }
@@ -504,7 +564,7 @@ final class ADETests: XCTestCase {
     )
 
     try database.replaceLaneDetail(detail)
-    let mirrored = try database.fetchLaneDetail(laneId: "lane-primary")
+    let mirrored = database.fetchLaneDetail(laneId: "lane-primary")
     XCTAssertEqual(mirrored?.runtime.bucket, "awaiting-input")
     XCTAssertEqual(mirrored?.overlaps.first?.files.first?.path, "Sources/App.swift")
     XCTAssertEqual(mirrored?.syncStatus?.behind, 2)
@@ -1133,5 +1193,19 @@ final class ADETests: XCTestCase {
 
   private struct DummyHydrationPayload: Decodable {
     let refreshedCount: Int
+  }
+}
+
+private func XCTAssertThrowsErrorAsync<T>(
+  _ expression: @autoclosure () async throws -> T,
+  _ errorHandler: (Error) -> Void,
+  file: StaticString = #filePath,
+  line: UInt = #line
+) async {
+  do {
+    _ = try await expression()
+    XCTFail("Expected expression to throw an error", file: file, line: line)
+  } catch {
+    errorHandler(error)
   }
 }
