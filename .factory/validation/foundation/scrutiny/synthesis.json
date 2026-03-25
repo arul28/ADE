@@ -1,7 +1,7 @@
 {
   "milestone": "foundation",
-  "round": 1,
-  "status": "fail",
+  "round": 2,
+  "status": "pass",
   "validatorsRun": {
     "test": {
       "passed": true,
@@ -20,74 +20,21 @@
     }
   },
   "reviewsSummary": {
-    "total": 3,
-    "passed": 0,
-    "failed": 3,
-    "failedFeatures": [
-      "sync-hydration-race-fix",
-      "sync-reliability-and-ux",
-      "design-system-overhaul"
-    ]
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
   },
-  "blockingIssues": [
-    {
-      "featureId": "sync-hydration-race-fix",
-      "severity": "blocking",
-      "description": "Initial hydration is launched in an untracked task, so a stale 15-second wait from an older connection can survive disconnect/reconnect and later overwrite a newer healthy connection's domain statuses."
-    },
-    {
-      "featureId": "sync-reliability-and-ux",
-      "severity": "blocking",
-      "description": "sendEnvelope handles any send callback error as active, so a late cancellation error from an intentionally closed socket can tear down a newly connected socket during reconnect or host switching."
-    },
-    {
-      "featureId": "sync-reliability-and-ux",
-      "severity": "blocking",
-      "description": "SyncUserFacingError still falls back to raw technical strings like `Invalid hello response.` and `Unknown queued operation type.`, so the feature does not fully meet the user-friendly sync error requirement."
-    },
-    {
-      "featureId": "design-system-overhaul",
-      "severity": "blocking",
-      "description": "VAL-DS-007 remains unmet because Files swipe actions do not expose delete/rename and Work swipe actions do not expose archive/pin, even though the feature claims that assertion."
-    }
-  ],
-  "appliedUpdates": [
-    {
-      "target": "services.yaml",
-      "description": "Removed `xcodebuild ... | tail` pipelines from the iOS build/test commands and added explicit `typecheck` and `lint` commands so scrutiny validators preserve real exit codes.",
-      "sourceFeature": "sync-reliability-and-ux"
-    },
-    {
-      "target": "library",
-      "description": "Documented in `.factory/library/architecture.md` that long-lived `SyncService` tasks and WebSocket callbacks must be scoped to the active connection and canceled or ignored on disconnect/host switch.",
-      "sourceFeature": "sync-hydration-race-fix"
-    }
-  ],
+  "blockingIssues": [],
+  "appliedUpdates": [],
   "suggestedGuidanceUpdates": [
     {
-      "target": "skill",
-      "suggestion": "Update `.factory/skills/ios-worker/SKILL.md` to use raw `xcodebuild` commands (or `set -o pipefail`) instead of `| tail` pipelines in its validation procedure and examples.",
-      "evidence": "The sync-reliability-and-ux review found the skill still recommends tailed `xcodebuild` commands, and that worker explicitly had to deviate because the pipeline can hide failing exit codes.",
-      "isSystemic": true
-    },
-    {
       "target": "AGENTS.md",
-      "suggestion": "Update the generated iOS mission AGENTS template to use direct `xcodebuild` commands, or require `pipefail` when truncating output for display.",
-      "evidence": "The sync-reliability-and-ux review found this mission's AGENTS instructions still used tailed build/test commands, which conflicts with trustworthy validator execution.",
-      "isSystemic": true
-    },
-    {
-      "target": "skill",
-      "suggestion": "Resolve the ios-worker skill's simulator-verification contradiction by removing simulator-based `interactiveChecks` from the example handoff or changing the procedure if simulator interaction is actually expected.",
-      "evidence": "The design-system-overhaul review found the skill tells workers not to launch the simulator or take screenshots, but its example handoff still includes simulator-based interactive checks.",
-      "isSystemic": true
+      "suggestion": "Clarify the iOS mission boundary so required mission-artifact bookkeeping updates, such as reassigning assertion ownership in mission `features.json`, are either explicitly exempt from the `apps/ios/`-only edit rule or handled by a separate mission-management step.",
+      "evidence": "The `foundation-scrutiny-fixes` review found `/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/AGENTS.md` still says iOS workers may only modify `apps/ios/`, but this fix feature explicitly needed a `features.json` edit to move `VAL-DS-007` ownership and the worker recorded that as a procedural deviation.",
+      "isSystemic": false
     }
   ],
-  "rejectedObservations": [
-    {
-      "observation": "A worker launched the simulator and captured screenshots even though the mission AGENTS file and ios-worker skill already forbid that for iOS validation.",
-      "reason": "already-documented; existing instructions are explicit, so this is a worker compliance/handoff accuracy problem rather than a missing shared-state update"
-    }
-  ],
-  "previousRound": null
+  "rejectedObservations": [],
+  "previousRound": ".factory/validation/foundation/scrutiny/synthesis.round1.json"
 }
