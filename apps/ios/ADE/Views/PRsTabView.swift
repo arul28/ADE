@@ -566,6 +566,7 @@ struct PRsTabView: View {
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("PRs")
+      .navigationBarTitleDisplayMode(.inline)
       .searchable(text: $searchText, prompt: "Search PR titles")
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {

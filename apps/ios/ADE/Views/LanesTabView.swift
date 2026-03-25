@@ -240,6 +240,7 @@ struct LanesTabView: View {
       .adeNavigationGlass()
       .searchable(text: $searchText, prompt: "Filter by lane, branch, is:dirty...")
       .navigationTitle("Lanes")
+      .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {
           Menu {

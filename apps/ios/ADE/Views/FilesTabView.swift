@@ -345,6 +345,7 @@ struct FilesTabView: View {
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("Files")
+      .navigationBarTitleDisplayMode(.inline)
       .navigationDestination(for: FilesRoute.self) { route in
         switch route {
         case .directory(let workspaceId, let parentPath):

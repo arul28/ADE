@@ -296,6 +296,7 @@ struct WorkTabView: View {
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("Work")
+      .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
           Button {
