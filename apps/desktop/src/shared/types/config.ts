@@ -971,7 +971,7 @@ export type AiChatConfig = {
   /** Reasoning effort for auto-title generation */
   autoTitleReasoningEffort?: string | null;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
+  claudePermissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
   /** Default permission mode for new unified/API-model chat sessions */
   unifiedPermissionMode?: AiInProcessPermissionMode;

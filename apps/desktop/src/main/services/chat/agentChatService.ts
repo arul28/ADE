@@ -46,17 +46,24 @@ import {
 } from "../../../shared/types";
 import type {
   AgentChatApprovalDecision,
+  AgentChatClaudePermissionMode,
   AgentChatCompletionReport,
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexConfigSource,
+  AgentChatCodexSandbox,
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
   AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatFileRef,
+  AgentChatHandoffArgs,
+  AgentChatHandoffResult,
   AgentChatIdentityKey,
   AgentChatInterruptArgs,
   AgentChatModelInfo,
   AgentChatProvider,
+  AgentChatRespondToInputArgs,
   AgentChatSession,
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
@@ -66,6 +73,9 @@ import type {
   AgentChatSurface,
   AgentChatSteerArgs,
   AgentChatSendArgs,
+  AgentChatUnifiedPermissionMode,
+  PendingInputQuestion,
+  PendingInputRequest,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
   ComputerUsePolicy,
@@ -100,7 +110,7 @@ import {
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
-import type { createMemoryService } from "../memory/memoryService";
+import type { createMemoryService, Memory } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
@@ -113,6 +123,7 @@ import { createProofObserver } from "../computerUse/proofObserver";
 import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "../orchestrator/unifiedOrchestratorAdapter";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
+import type { MemoryWriteEvent, TurnMemoryPolicyState } from "../ai/tools/memoryTools";
 
 type JsonRpcEnvelope = {
   jsonrpc?: string;
@@ -148,6 +159,11 @@ type PersistedChatState = {
   sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
   permissionMode?: AgentChatSession["permissionMode"];
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
@@ -169,11 +185,16 @@ type PendingRpc = {
 
 type PendingCodexApproval = {
   requestId: string | number;
-  kind: "command" | "file_change";
+  kind: "command" | "file_change" | "permissions" | "structured_question";
+  request?: PendingInputRequest;
+  permissions?: Record<string, unknown> | null;
 };
 
 type PendingClaudeApproval = {
-  resolve: (decision: AgentChatApprovalDecision) => void;
+  kind: "approval" | "question";
+  questionIds?: string[];
+  resolve: (response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }) => void;
+  request?: PendingInputRequest;
 };
 
 type CodexRuntime = {
@@ -221,11 +242,13 @@ type ClaudeRuntime = {
   interrupted: boolean;
   /** Set when a reasoning effort change is requested mid-turn; flushed when idle. */
   pendingSessionReset?: boolean;
+  turnMemoryPolicyState: TurnMemoryPolicyState | null;
 };
 
 type PendingUnifiedApproval = {
   category: "bash" | "write" | "askUser";
-  resolve: (response: { decision: AgentChatApprovalDecision; responseText?: string | null }) => void;
+  request?: PendingInputRequest;
+  resolve: (response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }) => void;
 };
 
 type UnifiedRuntime = {
@@ -276,6 +299,24 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   return { ready: true };
 }
 
+function trimLine(value: string | null | undefined): string | null {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed.length ? trimmed : null;
+}
+
+function uniqueNonEmpty(values: Array<string | null | undefined>, limit = values.length): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = trimLine(value);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
 type ManagedChatSession = {
   session: AgentChatSession;
   transcriptPath: string;
@@ -320,6 +361,12 @@ type AgentChatTranscriptEntry = {
   turnId?: string;
 };
 
+type HandoffArtifacts = {
+  commands: string[];
+  fileChanges: string[];
+  errors: string[];
+};
+
 type SessionTurnCollector = {
   resolve: (value: {
     sessionId: string;
@@ -359,10 +406,10 @@ type PreparedSendMessage = {
 };
 
 type ResolvedChatConfig = {
-  codexApprovalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
-  codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
-  claudePermissionMode: "plan" | "acceptEdits" | "bypassPermissions";
-  unifiedPermissionMode: PermissionMode;
+  codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+  codexSandboxMode: AgentChatCodexSandbox;
+  claudePermissionMode: AgentChatClaudePermissionMode;
+  unifiedPermissionMode: AgentChatUnifiedPermissionMode;
   sessionBudgetUsd: number | null;
   autoTitleEnabled: boolean;
   autoTitleModelId: string | null;
@@ -979,11 +1026,237 @@ const PLAN_STEP_STATUS_MAP: Record<string, "pending" | "in_progress" | "complete
 
 const VALID_PERMISSION_MODES = new Set(["default", "plan", "edit", "full-auto", "config-toml"]);
 const VALID_EXECUTION_MODES = new Set(["focused", "parallel", "subagents", "teams"]);
+const VALID_CLAUDE_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "bypassPermissions"]);
+const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-failure", "never"]);
+const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
+const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
+const VALID_UNIFIED_PERMISSION_MODES = new Set(["plan", "edit", "full-auto"]);
 
-function normalizePersistedPermissionMode(value: unknown): AgentChatSession["permissionMode"] | undefined {
+function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
-  return VALID_PERMISSION_MODES.has(trimmed) ? trimmed as AgentChatSession["permissionMode"] : undefined;
+  return validSet.has(trimmed) ? trimmed as T : undefined;
+}
+
+function normalizePersistedPermissionMode(value: unknown): AgentChatSession["permissionMode"] | undefined {
+  return normalizePersistedEnum(value, VALID_PERMISSION_MODES);
+}
+
+function normalizePersistedClaudePermissionMode(value: unknown): AgentChatClaudePermissionMode | undefined {
+  return normalizePersistedEnum(value, VALID_CLAUDE_PERMISSION_MODES);
+}
+
+function normalizePersistedCodexApprovalPolicy(value: unknown): AgentChatCodexApprovalPolicy | undefined {
+  return normalizePersistedEnum(value, VALID_CODEX_APPROVAL_POLICIES);
+}
+
+function normalizePersistedCodexSandbox(value: unknown): AgentChatCodexSandbox | undefined {
+  return normalizePersistedEnum(value, VALID_CODEX_SANDBOXES);
+}
+
+function normalizePersistedCodexConfigSource(value: unknown): AgentChatCodexConfigSource | undefined {
+  return normalizePersistedEnum(value, VALID_CODEX_CONFIG_SOURCES);
+}
+
+function normalizePersistedUnifiedPermissionMode(value: unknown): AgentChatUnifiedPermissionMode | undefined {
+  return normalizePersistedEnum(value, VALID_UNIFIED_PERMISSION_MODES);
+}
+
+function legacyPermissionModeToClaudePermissionMode(
+  mode: AgentChatSession["permissionMode"] | undefined,
+): AgentChatClaudePermissionMode | undefined {
+  if (!mode) return undefined;
+  return mapPermissionToClaude(mode);
+}
+
+function legacyPermissionModeToCodexApprovalPolicy(
+  mode: AgentChatSession["permissionMode"] | undefined,
+): AgentChatCodexApprovalPolicy | undefined {
+  if (!mode) return undefined;
+  if (mode === "config-toml") return undefined;
+  return mapPermissionToCodex(mode)?.approvalPolicy;
+}
+
+function legacyPermissionModeToCodexSandbox(
+  mode: AgentChatSession["permissionMode"] | undefined,
+): AgentChatCodexSandbox | undefined {
+  if (!mode) return undefined;
+  if (mode === "config-toml") return undefined;
+  return mapPermissionToCodex(mode)?.sandbox;
+}
+
+function legacyPermissionModeToCodexConfigSource(
+  mode: AgentChatSession["permissionMode"] | undefined,
+): AgentChatCodexConfigSource | undefined {
+  if (!mode) return undefined;
+  return mode === "config-toml" ? "config-toml" : "flags";
+}
+
+function legacyPermissionModeToUnifiedPermissionMode(
+  mode: AgentChatSession["permissionMode"] | undefined,
+): AgentChatUnifiedPermissionMode | undefined {
+  if (!mode) return undefined;
+  return mode === "default" || mode === "config-toml" ? "edit" : mapToUnifiedPermissionMode(mode);
+}
+
+function syncLegacyPermissionMode(session: Pick<
+  AgentChatSession,
+  "provider" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode"
+>): AgentChatSession["permissionMode"] | undefined {
+  if (session.provider === "claude") {
+    switch (session.claudePermissionMode) {
+      case "default":
+        return "default";
+      case "plan":
+        return "plan";
+      case "acceptEdits":
+        return "edit";
+      case "bypassPermissions":
+        return "full-auto";
+      default:
+        return undefined;
+    }
+  }
+
+  if (session.provider === "codex") {
+    if (session.codexConfigSource === "config-toml") return "config-toml";
+    if (session.codexApprovalPolicy === "never" && session.codexSandbox === "danger-full-access") return "full-auto";
+    if (session.codexApprovalPolicy === "on-failure" && session.codexSandbox === "workspace-write") return "edit";
+    if (session.codexApprovalPolicy === "untrusted" && session.codexSandbox === "read-only") return "plan";
+    return undefined;
+  }
+
+  switch (session.unifiedPermissionMode) {
+    case "plan":
+    case "edit":
+    case "full-auto":
+      return session.unifiedPermissionMode;
+    default:
+      return undefined;
+  }
+}
+
+function applyLegacyPermissionModeToNativeControls(
+  session: Pick<
+    AgentChatSession,
+    "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode"
+  >,
+  mode: AgentChatSession["permissionMode"] | undefined,
+): void {
+  session.permissionMode = mode;
+  if (!mode) return;
+
+  if (session.provider === "claude") {
+    session.claudePermissionMode = legacyPermissionModeToClaudePermissionMode(mode);
+    return;
+  }
+
+  if (session.provider === "codex") {
+    session.codexApprovalPolicy = legacyPermissionModeToCodexApprovalPolicy(mode);
+    session.codexSandbox = legacyPermissionModeToCodexSandbox(mode);
+    session.codexConfigSource = legacyPermissionModeToCodexConfigSource(mode);
+    return;
+  }
+
+  session.unifiedPermissionMode = legacyPermissionModeToUnifiedPermissionMode(mode);
+}
+
+function hydrateNativePermissionControls(
+  session: Pick<
+    AgentChatSession,
+    "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode"
+  >,
+): void {
+  if (session.provider === "claude") {
+    session.claudePermissionMode = session.claudePermissionMode ?? legacyPermissionModeToClaudePermissionMode(session.permissionMode);
+  } else if (session.provider === "codex") {
+    session.codexApprovalPolicy = session.codexApprovalPolicy ?? legacyPermissionModeToCodexApprovalPolicy(session.permissionMode);
+    session.codexSandbox = session.codexSandbox ?? legacyPermissionModeToCodexSandbox(session.permissionMode);
+    session.codexConfigSource = session.codexConfigSource ?? legacyPermissionModeToCodexConfigSource(session.permissionMode);
+  } else {
+    session.unifiedPermissionMode = session.unifiedPermissionMode ?? legacyPermissionModeToUnifiedPermissionMode(session.permissionMode);
+  }
+
+  session.permissionMode = syncLegacyPermissionMode(session);
+}
+
+function resolveSessionClaudePermissionMode(
+  session: Pick<AgentChatSession, "claudePermissionMode" | "permissionMode">,
+  fallback: AgentChatClaudePermissionMode,
+): AgentChatClaudePermissionMode {
+  return session.claudePermissionMode
+    ?? legacyPermissionModeToClaudePermissionMode(session.permissionMode)
+    ?? fallback;
+}
+
+function resolveSessionCodexApprovalPolicy(
+  session: Pick<AgentChatSession, "codexApprovalPolicy" | "permissionMode">,
+  fallback: AgentChatCodexApprovalPolicy,
+): AgentChatCodexApprovalPolicy {
+  return session.codexApprovalPolicy
+    ?? legacyPermissionModeToCodexApprovalPolicy(session.permissionMode)
+    ?? fallback;
+}
+
+function resolveSessionCodexSandbox(
+  session: Pick<AgentChatSession, "codexSandbox" | "permissionMode">,
+  fallback: AgentChatCodexSandbox,
+): AgentChatCodexSandbox {
+  return session.codexSandbox
+    ?? legacyPermissionModeToCodexSandbox(session.permissionMode)
+    ?? fallback;
+}
+
+function resolveSessionCodexConfigSource(
+  session: Pick<AgentChatSession, "codexConfigSource" | "permissionMode">,
+): AgentChatCodexConfigSource {
+  return session.codexConfigSource
+    ?? legacyPermissionModeToCodexConfigSource(session.permissionMode)
+    ?? "flags";
+}
+
+function resolveSessionUnifiedPermissionMode(
+  session: Pick<AgentChatSession, "unifiedPermissionMode" | "permissionMode">,
+  fallback: AgentChatUnifiedPermissionMode,
+): AgentChatUnifiedPermissionMode {
+  return session.unifiedPermissionMode
+    ?? legacyPermissionModeToUnifiedPermissionMode(session.permissionMode)
+    ?? fallback;
+}
+
+function normalizeSessionNativePermissionControls(
+  session: Pick<
+    AgentChatSession,
+    "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode"
+  >,
+  config: ResolvedChatConfig,
+): void {
+  if (session.provider === "claude") {
+    session.claudePermissionMode = resolveSessionClaudePermissionMode(session, config.claudePermissionMode);
+    delete session.codexApprovalPolicy;
+    delete session.codexSandbox;
+    delete session.codexConfigSource;
+    delete session.unifiedPermissionMode;
+  } else if (session.provider === "codex") {
+    session.codexConfigSource = resolveSessionCodexConfigSource(session);
+    if (session.codexConfigSource === "config-toml") {
+      delete session.codexApprovalPolicy;
+      delete session.codexSandbox;
+    } else {
+      session.codexApprovalPolicy = resolveSessionCodexApprovalPolicy(session, config.codexApprovalPolicy);
+      session.codexSandbox = resolveSessionCodexSandbox(session, config.codexSandboxMode);
+    }
+    delete session.claudePermissionMode;
+    delete session.unifiedPermissionMode;
+  } else {
+    session.unifiedPermissionMode = resolveSessionUnifiedPermissionMode(session, config.unifiedPermissionMode);
+    delete session.claudePermissionMode;
+    delete session.codexApprovalPolicy;
+    delete session.codexSandbox;
+    delete session.codexConfigSource;
+  }
+
+  session.permissionMode = syncLegacyPermissionMode(session);
 }
 
 function normalizePersistedExecutionMode(value: unknown): AgentChatExecutionMode | undefined {
@@ -1172,6 +1445,32 @@ export function createAgentChatService(args: {
     "procedure",
   ]);
 
+  type AutoMemoryTurnClassification = "none" | "soft" | "required";
+
+  type AutoMemoryTurnTelemetry = {
+    searched: boolean;
+    projectHits: number;
+    agentHits: number;
+    totalHits: number;
+    injectedCount: number;
+    includedProcedure: boolean;
+  };
+
+  type AutoMemoryTurnPlan = {
+    classification: AutoMemoryTurnClassification;
+    contextText: string;
+    telemetry: AutoMemoryTurnTelemetry;
+  };
+
+  const EMPTY_MEMORY_TELEMETRY: AutoMemoryTurnTelemetry = {
+    searched: false,
+    projectHits: 0,
+    agentHits: 0,
+    totalHits: 0,
+    injectedCount: 0,
+    includedProcedure: false,
+  };
+
   const ensureSubagentSnapshotMap = (sessionId: string): Map<string, AgentChatSubagentSnapshot> => {
     let collection = subagentStates.get(sessionId);
     if (!collection) {
@@ -1187,22 +1486,103 @@ export function createAgentChatService(args: {
     return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
   };
 
-  const shouldInjectAutoMemory = (promptText: string): boolean => {
+  const AUTO_MEMORY_REQUIRED_RE = /\b(?:fix|debug|investigat(?:e|ing|ion)|implement|refactor|patch|edit|write|add|remove|rename|update|change|test(?:s|ing)?|failing|error|exception|stack trace|crash|bug|diff|pull request|regression|build|compile|lint|typecheck)\b/i;
+  const AUTO_MEMORY_SOFT_RE = /\b(?:explain|why|how|walk through|summari[sz]e|context|overview|review|plan|brainstorm|design|architecture|tradeoff|decision|pattern|convention|gotcha)\b/i;
+  const AUTO_MEMORY_META_RE = /^(?:hi|hello|hey|thanks|thank you|ok(?:ay)?|cool|sounds good|nice|what model are you|who are you|are you there|can you help)\b/i;
+  const AUTO_MEMORY_FILE_PATH_RE = /(?:^|\s)(?:\/|\.{1,2}\/|[A-Za-z]:\\|[A-Za-z0-9_.-]+\/)[^\s]+\.(?:ts|tsx|js|jsx|json|md|yml|yaml|py|go|rs|java|rb|sh)\b/i;
+  const CLAUDE_MUTATING_TOOL_RE = /\b(?:bash|write|edit|multiedit|notebookedit)\b/;
+  const CHAT_MEMORY_GUARD_MESSAGE = "Search memory before mutating files or running mutating commands for this turn.";
+  const CLAUDE_MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
+
+  const classifyAutoMemoryTurn = (
+    promptText: string,
+    attachmentCount = 0,
+  ): AutoMemoryTurnClassification => {
     const trimmed = promptText.trim();
-    if (trimmed.length < 12) return false;
-    if (trimmed.startsWith("/")) return false;
-    if (/^before context compaction runs\b/i.test(trimmed)) return false;
-    if (/^review this conversation and persist\b/i.test(trimmed)) return false;
-    return true;
+    if (trimmed.length < 12) return "none";
+    if (trimmed.startsWith("/")) return "none";
+    if (/^before context compaction runs\b/i.test(trimmed)) return "none";
+    if (/^review this conversation and persist\b/i.test(trimmed)) return "none";
+    if (attachmentCount > 0) return "required";
+    if (/```/.test(trimmed) || AUTO_MEMORY_FILE_PATH_RE.test(trimmed)) return "required";
+    if (AUTO_MEMORY_REQUIRED_RE.test(trimmed)) return "required";
+    if (AUTO_MEMORY_SOFT_RE.test(trimmed)) return "soft";
+    if (AUTO_MEMORY_META_RE.test(trimmed) && trimmed.length <= 80) return "none";
+    return "none";
   };
 
-  const buildAutoMemoryTurnContext = async (
+  const selectAutoMemoryEntries = (
+    memories: Memory[],
+    maxEntries = 4,
+  ): Memory[] => {
+    const seen = new Set<string>();
+    return memories
+      .filter((memory) => AUTO_MEMORY_CATEGORY_ALLOWLIST.has(String(memory.category ?? "").trim()))
+      .filter((memory) => {
+        if (seen.has(memory.id)) return false;
+        seen.add(memory.id);
+        return true;
+      })
+      .sort((left, right) => {
+        if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+        if (left.tier !== right.tier) return left.tier - right.tier;
+        return right.compositeScore - left.compositeScore;
+      })
+      .slice(0, maxEntries);
+  };
+
+  const buildAutoMemorySystemNotice = (plan: AutoMemoryTurnPlan): {
+    message: string;
+    detail: string;
+  } | null => {
+    if (!plan.telemetry.searched) return null;
+    const message = `Checked memory: ${plan.telemetry.totalHits} hit${plan.telemetry.totalHits === 1 ? "" : "s"}, injected ${plan.telemetry.injectedCount} relevant entr${plan.telemetry.injectedCount === 1 ? "y" : "ies"}`;
+    const detail = [
+      `Policy: ${plan.classification}`,
+      `Project hits: ${plan.telemetry.projectHits}`,
+      `Agent hits: ${plan.telemetry.agentHits}`,
+      ...(plan.telemetry.includedProcedure ? ["Included procedure memory in the injected set."] : []),
+    ].join("\n");
+    return { message, detail };
+  };
+
+  const buildMemoryWriteNotice = (event: MemoryWriteEvent): {
+    message: string;
+    detail?: string;
+  } => {
+    if (!event.saved) {
+      return {
+        message: `Skipped memory write: ${event.reason ?? "write rejected"}`,
+      };
+    }
+
+    const detail = [
+      `Durability: ${event.durability}`,
+      ...(typeof event.tier === "number" ? [`Tier: ${event.tier}`] : []),
+      ...(event.deduped ? ["Merged with existing memory."] : []),
+      ...(event.mergedIntoId ? [`Merged into: ${event.mergedIntoId}`] : []),
+      ...(event.reason ? [`Reason: ${event.reason}`] : []),
+    ].join("\n");
+
+    const message = event.durability === "candidate"
+      ? "Saved to memory as candidate, not promoted"
+      : "Saved to memory as promoted knowledge";
+
+    return { message, detail };
+  };
+
+  const buildAutoMemoryTurnPlan = async (
     managed: ManagedChatSession,
     promptText: string,
-  ): Promise<string> => {
-    if (!memoryService || !projectId) return "";
-    if (isLightweightSession(managed.session)) return "";
-    if (!shouldInjectAutoMemory(promptText)) return "";
+    attachments: AgentChatFileRef[] = [],
+  ): Promise<AutoMemoryTurnPlan> => {
+    const classification = classifyAutoMemoryTurn(promptText, attachments.length);
+    if (!memoryService || !projectId) {
+      return { classification: "none", contextText: "", telemetry: EMPTY_MEMORY_TELEMETRY };
+    }
+    if (isLightweightSession(managed.session) || classification === "none") {
+      return { classification, contextText: "", telemetry: EMPTY_MEMORY_TELEMETRY };
+    }
 
     const query = promptText.trim().slice(0, 300);
     const agentScopeOwnerId = managed.session.identityKey ?? managed.session.id;
@@ -1227,27 +1607,73 @@ export function createAgentChatService(args: {
       }).catch(() => []),
     ]);
 
-    const seen = new Set<string>();
-    const memories = [...projectHits, ...agentHits]
-      .filter((memory) => AUTO_MEMORY_CATEGORY_ALLOWLIST.has(String(memory.category ?? "").trim()))
-      .filter((memory) => {
-        if (seen.has(memory.id)) return false;
-        seen.add(memory.id);
-        return true;
-      })
-      .sort((left, right) => {
-        if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
-        if (left.tier !== right.tier) return left.tier - right.tier;
-        return right.compositeScore - left.compositeScore;
-      })
-      .slice(0, 6);
+    const allQualifying = selectAutoMemoryEntries([...projectHits, ...agentHits], 32);
+    const selected = allQualifying.slice(0, 4);
+    const contextText = selected.length === 0
+      ? ""
+      : [
+          "Relevant ADE memory for this turn (use it when helpful; current code and files win if they disagree):",
+          ...selected.map((memory) => `- [${memory.scope}/${memory.category}] ${compactMemorySnippet(memory.content, 180)}`),
+        ].join("\n");
 
-    if (memories.length === 0) return "";
+    return {
+      classification,
+      contextText,
+      telemetry: {
+        searched: true,
+        projectHits: projectHits.length,
+        agentHits: agentHits.length,
+        totalHits: allQualifying.length,
+        injectedCount: selected.length,
+        includedProcedure: selected.some((memory) => memory.category === "procedure"),
+      },
+    };
+  };
 
-    return [
-      "Relevant ADE memory for this turn (use it when helpful; current code and files win if they disagree):",
-      ...memories.map((memory) => `- [${memory.scope}/${memory.category}] ${compactMemorySnippet(memory.content)}`),
-    ].join("\n");
+  const bashInputLikelyMutates = (input: Record<string, unknown>): boolean => {
+    let command = "";
+    if (typeof input.command === "string") {
+      command = input.command;
+    } else if (typeof input.cmd === "string") {
+      command = input.cmd;
+    }
+    return CLAUDE_MUTATING_BASH_RE.test(command) || /(?:>|>>|tee|cp\s|mv\s|write|edit)/.test(command);
+  };
+
+  const normalizeToolNameForPolicy = (toolName: string): string =>
+    toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+
+  const isMemorySearchToolName = (toolName: string): boolean => {
+    const normalized = normalizeToolNameForPolicy(toolName);
+    return normalized.includes("memory_search") || normalized.includes("memorysearch");
+  };
+
+  const isClaudeMutatingToolCall = (toolName: string, input: Record<string, unknown>): boolean => {
+    const normalized = normalizeToolNameForPolicy(toolName);
+    if (!CLAUDE_MUTATING_TOOL_RE.test(normalized)) return false;
+    if (normalized.includes("bash")) return bashInputLikelyMutates(input);
+    return true;
+  };
+
+  const buildClaudeCanUseTool = (
+    runtime: ClaudeRuntime,
+  ): ClaudeSDKOptions["canUseTool"] => async (toolName, input): Promise<ClaudePermissionResult> => {
+    const state = runtime.turnMemoryPolicyState;
+    if (isMemorySearchToolName(toolName) && state) {
+      state.explicitSearchPerformed = true;
+      state.orientationSatisfied = true;
+      return { behavior: "allow" };
+    }
+    if (!state || state.classification !== "required" || state.orientationSatisfied || state.explicitSearchPerformed) {
+      return { behavior: "allow" };
+    }
+    if (!isClaudeMutatingToolCall(toolName, input)) {
+      return { behavior: "allow" };
+    }
+    return {
+      behavior: "deny",
+      message: CHAT_MEMORY_GUARD_MESSAGE,
+    };
   };
 
   const clearSubagentSnapshots = (sessionId: string): void => {
@@ -1480,6 +1906,105 @@ export function createAgentChatService(args: {
     };
   };
 
+  const readTranscriptEnvelopes = (managed: ManagedChatSession): AgentChatEventEnvelope[] => {
+    try {
+      return parseAgentChatTranscript(fs.readFileSync(managed.transcriptPath, "utf8"))
+        .filter((entry) => entry.sessionId === managed.session.id);
+    } catch {
+      return [];
+    }
+  };
+
+  const deriveTranscriptTurnActive = (entries: AgentChatEventEnvelope[]): boolean => {
+    let turnActive = false;
+    for (const entry of entries) {
+      if (entry.event.type === "status") {
+        turnActive = entry.event.turnStatus === "started";
+        continue;
+      }
+      if (entry.event.type === "done") {
+        turnActive = false;
+      }
+    }
+    return turnActive;
+  };
+
+  const normalizeEventStatus = (status: string | undefined): string => {
+    if (status === "failed") return "failed";
+    if (status === "completed") return "completed";
+    return "running";
+  };
+
+  const formatHandoffCommand = (event: Extract<AgentChatEvent, { type: "command" }>): string | null => {
+    const command = trimLine(event.command);
+    if (!command) return null;
+    const cwd = trimLine(event.cwd);
+    const status = normalizeEventStatus(event.status);
+    return cwd ? `${command} (${status}) in ${cwd}` : `${command} (${status})`;
+  };
+
+  const formatHandoffFileChange = (event: Extract<AgentChatEvent, { type: "file_change" }>): string | null => {
+    const filePath = trimLine(event.path);
+    if (!filePath) return null;
+    return `${event.kind} ${filePath} (${normalizeEventStatus(event.status)})`;
+  };
+
+  const collectHandoffArtifacts = (entries: AgentChatEventEnvelope[]): HandoffArtifacts => {
+    const commands: string[] = [];
+    const fileChanges: string[] = [];
+    const errors: string[] = [];
+
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const event = entries[index]?.event;
+      if (!event) continue;
+      if (commands.length < 4 && event.type === "command") {
+        const formatted = formatHandoffCommand(event);
+        if (formatted) commands.push(formatted);
+        continue;
+      }
+      if (fileChanges.length < 6 && event.type === "file_change") {
+        const formatted = formatHandoffFileChange(event);
+        if (formatted) fileChanges.push(formatted);
+        continue;
+      }
+      if (errors.length < 4 && event.type === "error") {
+        const formatted = trimLine(event.message);
+        if (formatted) errors.push(formatted);
+      }
+    }
+
+    return {
+      commands: uniqueNonEmpty(commands, 4).reverse(),
+      fileChanges: uniqueNonEmpty(fileChanges, 6).reverse(),
+      errors: uniqueNonEmpty(errors, 4).reverse(),
+    };
+  };
+
+  const selectPreferredReasoningTier = (tiers: string[]): string | null => {
+    const normalized = uniqueNonEmpty(tiers.map((tier) => normalizeReasoningEffort(tier)));
+    if (!normalized.length) return null;
+    for (const candidate of ["medium", "high", "low", "xhigh", "max", "none"]) {
+      if (normalized.includes(candidate)) return candidate;
+    }
+    return normalized[0] ?? null;
+  };
+
+  const pickHandoffReasoningEffort = (
+    descriptor: ModelDescriptor,
+    sourceReasoningEffort: string | null | undefined,
+  ): string | null => {
+    if (!descriptor.capabilities.reasoning) return null;
+    const supported = uniqueNonEmpty(
+      (descriptor.reasoningTiers ?? []).map((tier) => normalizeReasoningEffort(tier)),
+    );
+    if (!supported.length) return normalizeReasoningEffort(sourceReasoningEffort);
+    const normalizedSource = normalizeReasoningEffort(sourceReasoningEffort);
+    if (normalizedSource && supported.includes(normalizedSource)) {
+      return normalizedSource;
+    }
+    return selectPreferredReasoningTier(supported);
+  };
+
   const buildRecentConversationContext = (managed: ManagedChatSession, limit = 6): string => {
     const liveEntries = managed.recentConversationEntries.map((entry) =>
       `${entry.role === "user" ? "User" : "Assistant"}: ${entry.text}`,
@@ -1573,6 +2098,212 @@ export function createAgentChatService(args: {
     return detectAllAuth(configApiKeys);
   };
 
+  const resolveHandoffBlockedReason = (managed: ManagedChatSession): string | null => {
+    if (managed.closed) return "This chat is no longer available for handoff.";
+    if (managed.session.status === "active") {
+      return "Wait for the current response to finish before handing off this chat.";
+    }
+    if (!managed.runtime) {
+      return deriveTranscriptTurnActive(readTranscriptEnvelopes(managed))
+        ? "Wait for the current response to finish before handing off this chat."
+        : null;
+    }
+
+    const runtime = managed.runtime;
+    if (runtime.kind === "claude") {
+      if (runtime.busy || runtime.activeTurnId) {
+        return "Wait for the current response to finish before handing off this chat.";
+      }
+      if (runtime.approvals.size > 0) {
+        return "Resolve the current approval or question before handing off this chat.";
+      }
+    }
+    if (runtime.kind === "unified") {
+      if (runtime.busy || runtime.activeTurnId || runtime.abortController) {
+        return "Wait for the current response to finish before handing off this chat.";
+      }
+      if (runtime.pendingApprovals.size > 0) {
+        return "Resolve the current approval or question before handing off this chat.";
+      }
+    }
+    if (runtime.kind === "codex") {
+      if (runtime.activeTurnId || runtime.startedTurnId) {
+        return "Wait for the current response to finish before handing off this chat.";
+      }
+      if (runtime.approvals.size > 0) {
+        return "Resolve the current approval or question before handing off this chat.";
+      }
+    }
+
+    return deriveTranscriptTurnActive(readTranscriptEnvelopes(managed))
+      ? "Wait for the current response to finish before handing off this chat."
+      : null;
+  };
+
+  const ensureSessionIdleForHandoff = (managed: ManagedChatSession): void => {
+    const blockedReason = resolveHandoffBlockedReason(managed);
+    if (blockedReason) {
+      throw new Error(blockedReason);
+    }
+  };
+
+  const buildDeterministicHandoffBrief = (args: {
+    sourceSession: AgentChatSessionSummary;
+    targetDescriptor: ModelDescriptor;
+    transcript: Awaited<ReturnType<typeof getChatTranscript>>;
+    artifacts: HandoffArtifacts;
+  }): string => {
+    const { sourceSession, transcript, artifacts } = args;
+    const summaryLines = uniqueNonEmpty([
+      sourceSession.summary,
+      sourceSession.completion?.summary,
+      sourceSession.lastOutputPreview,
+    ], 3);
+    const goal = trimLine(sourceSession.goal)
+      ?? summaryLines[0]
+      ?? trimLine(sourceSession.title)
+      ?? "Continue the same ADE work item from the previous chat.";
+    const preservedContext = uniqueNonEmpty([
+      trimLine(sourceSession.title) ? `Previous title: ${trimLine(sourceSession.title)}` : null,
+      trimLine(sourceSession.summary) ? `Existing session summary: ${trimLine(sourceSession.summary)}` : null,
+      trimLine(sourceSession.completion?.summary) ? `Completion summary: ${trimLine(sourceSession.completion?.summary)}` : null,
+      sourceSession.completion?.status ? `Completion status: ${sourceSession.completion.status}` : null,
+      sourceSession.completion?.blockerDescription ? `Blocker: ${trimLine(sourceSession.completion.blockerDescription)}` : null,
+      trimLine(sourceSession.lastOutputPreview) ? `Latest output preview: ${trimLine(sourceSession.lastOutputPreview)}` : null,
+    ], 6);
+    const fileCommandErrorLines = uniqueNonEmpty([
+      ...artifacts.fileChanges.map((entry) => `File change: ${entry}`),
+      ...artifacts.commands.map((entry) => `Command: ${entry}`),
+      ...artifacts.errors.map((entry) => `Error: ${entry}`),
+    ], 10);
+    const transcriptLines = transcript.entries.map((entry) => {
+      const speaker = entry.role === "user" ? "User" : "Assistant";
+      return `${speaker}: ${entry.text}`;
+    });
+    const nextAction = trimLine(sourceSession.completion?.blockerDescription)
+      ?? transcriptLines[transcriptLines.length - 1]
+      ?? "Continue from the preserved context and resolve the next open issue without restarting discovery.";
+
+    return [
+      "## Current goal",
+      `- ${goal}`,
+      "",
+      "## Important decisions and preserved context",
+      ...(preservedContext.length ? preservedContext.map((line) => `- ${line}`) : ["- No explicit summary was available, so rely on the transcript excerpt below."]),
+      ...(summaryLines.length && !preservedContext.some((line) => line.includes(summaryLines[0]!))
+        ? summaryLines.map((line) => `- Recent summary note: ${line}`)
+        : []),
+      transcriptLines.length
+        ? [
+            "",
+            "Transcript excerpt:",
+            ...transcriptLines.map((line) => `> ${line}`),
+          ]
+        : [],
+      "",
+      "## Files, commands, and errors to preserve",
+      ...(fileCommandErrorLines.length ? fileCommandErrorLines.map((line) => `- ${line}`) : ["- No concrete file changes, commands, or errors were captured in the transcript tail."]),
+      "",
+      "## Next action or open issue",
+      `- ${nextAction}`,
+    ].flat().join("\n");
+  };
+
+  const generateHandoffBrief = async (args: {
+    managed: ManagedChatSession;
+    sourceSession: AgentChatSessionSummary;
+    targetDescriptor: ModelDescriptor;
+    transcript: Awaited<ReturnType<typeof getChatTranscript>>;
+    artifacts: HandoffArtifacts;
+  }): Promise<{ brief: string; usedFallbackSummary: boolean }> => {
+    const deterministicBrief = buildDeterministicHandoffBrief(args);
+    const auth = await detectAuth();
+    const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+    const preferredModelId = [
+      resolveChatConfig().summaryModelId,
+      "openai/gpt-5.4-mini",
+      "openai/gpt-5.2",
+      DEFAULT_AUTO_TITLE_MODEL_ID,
+      availableModels[0]?.id,
+    ].find((candidate) => {
+      const modelId = typeof candidate === "string" ? candidate.trim() : "";
+      return modelId.length > 0 && availableModels.some((descriptor) => descriptor.id === modelId);
+    }) ?? null;
+
+    if (!preferredModelId) {
+      return { brief: deterministicBrief, usedFallbackSummary: true };
+    }
+
+    const descriptor = getModelById(preferredModelId);
+    if (!descriptor) {
+      return { brief: deterministicBrief, usedFallbackSummary: true };
+    }
+
+    const transcriptText = args.transcript.entries.map((entry) => {
+      const speaker = entry.role === "user" ? "User" : "Assistant";
+      return `${speaker}: ${entry.text}`;
+    }).join("\n");
+    const prompt = [
+      "You are ADE's chat handoff assistant.",
+      "Rewrite the source context into a compact Markdown handoff brief for another coding model.",
+      "Return exactly these headings in this order:",
+      "## Current goal",
+      "## Important decisions and preserved context",
+      "## Files, commands, and errors to preserve",
+      "## Next action or open issue",
+      "Keep the brief concrete, factual, and concise. Do not invent missing details.",
+      "",
+      `Previous model: ${resolveSessionModelDescriptor(args.managed.session)?.displayName ?? args.managed.session.model}`,
+      `New model: ${args.targetDescriptor.displayName}`,
+      trimLine(args.sourceSession.title) ? `Previous title: ${trimLine(args.sourceSession.title)}` : null,
+      trimLine(args.sourceSession.goal) ? `Current goal: ${trimLine(args.sourceSession.goal)}` : null,
+      trimLine(args.sourceSession.summary) ? `Existing summary: ${trimLine(args.sourceSession.summary)}` : null,
+      trimLine(args.sourceSession.completion?.summary) ? `Completion summary: ${trimLine(args.sourceSession.completion?.summary)}` : null,
+      args.sourceSession.completion?.blockerDescription ? `Current blocker: ${trimLine(args.sourceSession.completion.blockerDescription)}` : null,
+      transcriptText.length ? `Transcript excerpt:\n${transcriptText}` : null,
+      args.artifacts.commands.length ? `Recent commands:\n${args.artifacts.commands.map((line) => `- ${line}`).join("\n")}` : null,
+      args.artifacts.fileChanges.length ? `Recent file changes:\n${args.artifacts.fileChanges.map((line) => `- ${line}`).join("\n")}` : null,
+      args.artifacts.errors.length ? `Recent errors:\n${args.artifacts.errors.map((line) => `- ${line}`).join("\n")}` : null,
+      "",
+      "Fallback brief:",
+      deterministicBrief,
+    ].filter(Boolean).join("\n");
+
+    try {
+      const resolvedModel = await providerResolver.resolveModel(descriptor.id, auth, {
+        cwd: args.managed.laneWorktreePath,
+        middleware: false,
+      });
+      const result = await generateText({
+        model: resolvedModel,
+        prompt,
+      });
+      const brief = result.text.trim();
+      if (!brief.length) {
+        return { brief: deterministicBrief, usedFallbackSummary: true };
+      }
+      return { brief, usedFallbackSummary: false };
+    } catch (error) {
+      logger.warn("agent_chat.handoff_summary_failed", {
+        sessionId: args.managed.session.id,
+        modelId: descriptor.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { brief: deterministicBrief, usedFallbackSummary: true };
+    }
+  };
+
+  const buildHandoffPrompt = (brief: string): string => {
+    return [
+      "This message was injected automatically by ADE during a chat handoff.",
+      "You are taking over from a previous ADE work chat that the user is handing off to this new model.",
+      "Continue the same task in the same lane. Do not restart discovery from scratch unless the brief below is clearly missing a required detail.",
+      "The user will keep discussing the same work in this new chat.",
+      "",
+      brief.trim(),
+    ].join("\n");
+  };
+
   const setManagedSessionTitle = (managed: ManagedChatSession, rawTitle: string): string | null => {
     const title = sanitizeAutoTitle(rawTitle);
     if (!title) return null;
@@ -1618,8 +2349,8 @@ export function createAgentChatService(args: {
         config.autoTitleModelId,
         DEFAULT_AUTO_TITLE_MODEL_ID,
         "anthropic/claude-haiku-4-5",
-        "openai/codex-mini-latest",
-        "openai/gpt-4.1-mini",
+        "openai/gpt-5.4-mini",
+        "openai/gpt-5.2",
         "openai/gpt-5.4",
         availableModels[0]?.id,
       ].find((candidate) => {
@@ -1703,8 +2434,10 @@ export function createAgentChatService(args: {
     });
 
     const chatConfig = resolveChatConfig();
-    const permMode: PermissionMode = mapToUnifiedPermissionMode(managed.session.permissionMode)
-      ?? chatConfig.unifiedPermissionMode;
+    const permMode: PermissionMode = resolveSessionUnifiedPermissionMode(
+      managed.session,
+      chatConfig.unifiedPermissionMode,
+    );
 
     const runtime: UnifiedRuntime = {
       kind: "unified",
@@ -1723,6 +2456,8 @@ export function createAgentChatService(args: {
 
     managed.runtime = runtime;
     managed.session.provider = "unified";
+    managed.session.unifiedPermissionMode = permMode;
+    managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     managed.session.capabilityMode = "fallback";
     return "handled";
   };
@@ -1755,7 +2490,7 @@ export function createAgentChatService(args: {
       if (chat.claudePermissionMode) return chat.claudePermissionMode;
       if (cliMode === "read-only") return "plan" as const;
       if (cliMode === "full-auto") return "bypassPermissions" as const;
-      return "acceptEdits" as const;
+      return "default" as const;
     })();
 
     const unifiedPermissionMode = (() => {
@@ -1824,6 +2559,11 @@ export function createAgentChatService(args: {
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
+      ...(managed.session.claudePermissionMode ? { claudePermissionMode: managed.session.claudePermissionMode } : {}),
+      ...(managed.session.codexApprovalPolicy ? { codexApprovalPolicy: managed.session.codexApprovalPolicy } : {}),
+      ...(managed.session.codexSandbox ? { codexSandbox: managed.session.codexSandbox } : {}),
+      ...(managed.session.codexConfigSource ? { codexConfigSource: managed.session.codexConfigSource } : {}),
+      ...(managed.session.unifiedPermissionMode ? { unifiedPermissionMode: managed.session.unifiedPermissionMode } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
       ...(managed.session.surface ? { surface: managed.session.surface } : {}),
@@ -1870,6 +2610,11 @@ export function createAgentChatService(args: {
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
       const permissionMode = normalizePersistedPermissionMode(record.permissionMode);
+      const claudePermissionMode = normalizePersistedClaudePermissionMode(record.claudePermissionMode);
+      const codexApprovalPolicy = normalizePersistedCodexApprovalPolicy(record.codexApprovalPolicy);
+      const codexSandbox = normalizePersistedCodexSandbox(record.codexSandbox);
+      const codexConfigSource = normalizePersistedCodexConfigSource(record.codexConfigSource);
+      const unifiedPermissionMode = normalizePersistedUnifiedPermissionMode(record.unifiedPermissionMode);
       const identityKey = normalizeIdentityKey(record.identityKey);
       const surface = record.surface === "automation" ? "automation" : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
@@ -1886,7 +2631,7 @@ export function createAgentChatService(args: {
             })
         : undefined;
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length ? record.sdkSessionId.trim() : undefined;
-      return {
+      const hydrated: PersistedChatState = {
         version: 1,
         sessionId,
         laneId,
@@ -1896,6 +2641,11 @@ export function createAgentChatService(args: {
         ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(executionMode ? { executionMode } : {}),
+        ...(claudePermissionMode ? { claudePermissionMode } : {}),
+        ...(codexApprovalPolicy ? { codexApprovalPolicy } : {}),
+        ...(codexSandbox ? { codexSandbox } : {}),
+        ...(codexConfigSource ? { codexConfigSource } : {}),
+        ...(unifiedPermissionMode ? { unifiedPermissionMode } : {}),
         ...(permissionMode ? { permissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         surface,
@@ -1915,6 +2665,8 @@ export function createAgentChatService(args: {
         ...(messages?.length ? { messages } : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
+      hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
+      return hydrated;
     } catch {
       return null;
     }
@@ -2237,6 +2989,68 @@ export function createAgentChatService(args: {
     commitChatEvent(managed, event);
   };
 
+  const emitPendingInputRequest = (
+    managed: ManagedChatSession,
+    request: PendingInputRequest,
+    args?: {
+      kind?: "command" | "file_change" | "tool_call";
+      description?: string;
+      detail?: Record<string, unknown>;
+    },
+  ): void => {
+    const firstQuestion = request.questions[0] ?? null;
+    const description = args?.description
+      ?? request.description
+      ?? request.title
+      ?? firstQuestion?.question
+      ?? "Input requested";
+    emitChatEvent(managed, {
+      type: "approval_request",
+      itemId: request.itemId ?? request.requestId,
+      kind: args?.kind ?? "tool_call",
+      description,
+      detail: {
+        ...(args?.detail ?? {}),
+        request,
+      },
+      turnId: request.turnId ?? undefined,
+    });
+  };
+
+  const normalizePendingInputAnswers = (
+    request: PendingInputRequest | undefined,
+    answers: Record<string, string | string[]> | undefined,
+    responseText?: string | null,
+  ): Record<string, string[]> => {
+    const normalized: Record<string, string[]> = {};
+    const trimValues = (values: string[]): string[] => values.map((value) => value.trim()).filter((value) => value.length > 0);
+
+    if (request?.questions.length) {
+      for (const question of request.questions) {
+        const raw = answers?.[question.id];
+        let nextValues: string[];
+        if (Array.isArray(raw)) {
+          nextValues = trimValues(raw.filter((value): value is string => typeof value === "string"));
+        } else if (typeof raw === "string") {
+          nextValues = trimValues([raw]);
+        } else {
+          nextValues = [];
+        }
+        if (nextValues.length > 0) {
+          normalized[question.id] = nextValues;
+        }
+      }
+    }
+
+    const trimmedResponse = typeof responseText === "string" ? responseText.trim() : "";
+    if (trimmedResponse.length > 0) {
+      const fallbackQuestionId = request?.questions[0]?.id ?? "response";
+      normalized[fallbackQuestionId] = [trimmedResponse];
+    }
+
+    return normalized;
+  };
+
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
   const teardownRuntime = (managed: ManagedChatSession): void => {
     flushBufferedReasoning(managed);
@@ -2259,7 +3073,7 @@ export function createAgentChatService(args: {
       managed.runtime.v2WarmupDone = null;
       managed.runtime.activeSubagents.clear();
       for (const pending of managed.runtime.approvals.values()) {
-        pending.resolve("cancel");
+        pending.resolve({ decision: "cancel" });
       }
       managed.runtime.approvals.clear();
       managed.runtime = null;
@@ -2300,7 +3114,8 @@ export function createAgentChatService(args: {
         config.summaryModelId,
         DEFAULT_AUTO_TITLE_MODEL_ID,
         "anthropic/claude-haiku-4-5",
-        "openai/codex-mini-latest",
+        "openai/gpt-5.4-mini",
+        "openai/gpt-5.2",
         availableModels[0]?.id,
       ].find((candidate) => {
         const modelId = typeof candidate === "string" ? candidate.trim() : "";
@@ -2480,6 +3295,11 @@ export function createAgentChatService(args: {
         ...(persisted?.sessionProfile ? { sessionProfile: persisted.sessionProfile } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         executionMode: persisted?.executionMode ?? null,
+        ...(persisted?.claudePermissionMode ? { claudePermissionMode: persisted.claudePermissionMode } : {}),
+        ...(persisted?.codexApprovalPolicy ? { codexApprovalPolicy: persisted.codexApprovalPolicy } : {}),
+        ...(persisted?.codexSandbox ? { codexSandbox: persisted.codexSandbox } : {}),
+        ...(persisted?.codexConfigSource ? { codexConfigSource: persisted.codexConfigSource } : {}),
+        ...(persisted?.unifiedPermissionMode ? { unifiedPermissionMode: persisted.unifiedPermissionMode } : {}),
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
@@ -2511,6 +3331,7 @@ export function createAgentChatService(args: {
       recentConversationEntries: [],
       eventSequence: 0,
     };
+    normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
 
@@ -2538,7 +3359,8 @@ export function createAgentChatService(args: {
     const runtime = managed.runtime;
     const attachments = args.attachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-    const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
+    const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, attachments);
+    const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
 
     // Intercept /review command — route to review/start RPC instead of turn/start
     if (args.promptText.trim().startsWith("/review")) {
@@ -2568,10 +3390,10 @@ export function createAgentChatService(args: {
       });
       managed.pendingReconstructionContext = null;
     }
-    if (autoMemoryContext.length) {
+    if (autoMemoryPlan.contextText.length) {
       input.push({
         type: "text",
-        text: autoMemoryContext,
+        text: autoMemoryPlan.contextText,
         text_elements: [],
       });
     }
@@ -2592,6 +3414,14 @@ export function createAgentChatService(args: {
 
     managed.session.status = "active";
     emitChatEvent(managed, { type: "user_message", text: displayText, attachments });
+    if (autoMemoryNotice) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "memory",
+        message: autoMemoryNotice.message,
+        detail: autoMemoryNotice.detail,
+      });
+    }
 
     const result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
       threadId: managed.session.threadId,
@@ -2757,7 +3587,23 @@ export function createAgentChatService(args: {
     };
 
     try {
-      const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
+      const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
+      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+      runtime.turnMemoryPolicyState = {
+        classification: autoMemoryPlan.classification,
+        orientationSatisfied: autoMemoryPlan.telemetry.searched,
+        explicitSearchPerformed: false,
+      };
+      if (autoMemoryNotice) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "memory",
+          message: autoMemoryNotice.message,
+          detail: autoMemoryNotice.detail,
+          turnId,
+        });
+      }
 
       const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
       const basePromptText = [
@@ -2767,7 +3613,7 @@ export function createAgentChatService(args: {
               reconstructionContext,
             ].join("\n")
           : null,
-        autoMemoryContext.length ? autoMemoryContext : null,
+        autoMemoryPlan.contextText.length ? autoMemoryPlan.contextText : null,
         args.promptText,
       ].filter((section): section is string => Boolean(section)).join("\n\n");
       if (reconstructionContext.length) {
@@ -3265,6 +4111,7 @@ export function createAgentChatService(args: {
       runtime.activeQuery = null;
       runtime.busy = false;
       runtime.activeTurnId = null;
+      runtime.turnMemoryPolicyState = null;
       managed.session.status = "idle";
       reportProviderRuntimeReady("claude");
 
@@ -3314,6 +4161,7 @@ export function createAgentChatService(args: {
       runtime.activeQuery = null;
       runtime.busy = false;
       runtime.activeTurnId = null;
+      runtime.turnMemoryPolicyState = null;
 
       // Close V2 session on error so the next turn starts fresh
       try { runtime.v2Session?.close(); } catch { /* ignore */ }
@@ -3430,17 +4278,35 @@ export function createAgentChatService(args: {
     let turnTimeout: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      const autoMemoryContext = await buildAutoMemoryTurnContext(managed, args.promptText);
+      const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
+      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+      const turnMemoryPolicyState: TurnMemoryPolicyState | undefined = memoryService && projectId
+        ? {
+            classification: autoMemoryPlan.classification,
+            orientationSatisfied: autoMemoryPlan.telemetry.searched,
+            explicitSearchPerformed: false,
+          }
+        : undefined;
+      if (autoMemoryNotice) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "memory",
+          message: autoMemoryNotice.message,
+          detail: autoMemoryNotice.detail,
+          turnId,
+        });
+      }
 
       const attachmentHint = attachments.length
         ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
         : "";
       const userContent = [
-        autoMemoryContext.length ? autoMemoryContext : null,
+        autoMemoryPlan.contextText.length ? autoMemoryPlan.contextText : null,
         `${args.promptText}${attachmentHint}`,
       ].filter((section): section is string => Boolean(section)).join("\n\n");
-      const streamingBaseText = autoMemoryContext.length
-        ? `${autoMemoryContext}\n\n${args.promptText}`
+      const streamingBaseText = autoMemoryPlan.contextText.length
+        ? `${autoMemoryPlan.contextText}\n\n${args.promptText}`
         : args.promptText;
 
       applyReconstructionContextToStreamingRuntime(managed, runtime);
@@ -3492,6 +4358,17 @@ export function createAgentChatService(args: {
             permissionMode: runtime.permissionMode,
             ...(memoryService && projectId ? { memoryService, projectId } : {}),
             agentScopeOwnerId: managed.session.identityKey ?? managed.session.id,
+            ...(turnMemoryPolicyState ? { turnMemoryPolicyState } : {}),
+            onMemoryWriteEvent: (event) => {
+              const notice = buildMemoryWriteNotice(event);
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "memory",
+                message: notice.message,
+                ...(notice.detail ? { detail: notice.detail } : {}),
+                turnId,
+              });
+            },
             ...(() => {
               if (managed.session.identityKey === "cto" && ctoStateService) {
                 return {
@@ -3528,17 +4405,32 @@ export function createAgentChatService(args: {
               }
 
               const approvalItemId = randomUUID();
-              emitChatEvent(managed, {
-                type: "approval_request",
+              const request: PendingInputRequest = {
+                requestId: approvalItemId,
                 itemId: approvalItemId,
+                source: "unified",
+                kind: "approval",
+                description,
+                questions: [],
+                allowsFreeform: false,
+                blocking: true,
+                canProceedWithoutAnswer: false,
+                providerMetadata: {
+                  category,
+                  detail,
+                },
+                turnId,
+              };
+              emitPendingInputRequest(managed, request, {
                 kind: category === "bash" ? "command" : "file_change",
                 description,
-                detail,
-                turnId,
+                detail: detail && typeof detail === "object" && !Array.isArray(detail)
+                  ? { ...(detail as Record<string, unknown>) }
+                  : {},
               });
 
-              const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
-                runtime.pendingApprovals.set(approvalItemId, { category, resolve });
+              const response = await new Promise<{ decision?: AgentChatApprovalDecision; responseText?: string | null; answers?: Record<string, string | string[]> }>((resolve) => {
+                runtime.pendingApprovals.set(approvalItemId, { category, request, resolve });
               });
               runtime.pendingApprovals.delete(approvalItemId);
 
@@ -3560,21 +4452,42 @@ export function createAgentChatService(args: {
             },
             onAskUser: async (question) => {
               const askItemId = randomUUID();
-              emitChatEvent(managed, {
-                type: "approval_request",
+              const request: PendingInputRequest = {
+                requestId: askItemId,
                 itemId: askItemId,
+                source: "unified",
+                kind: "question",
+                description: question,
+                questions: [
+                  {
+                    id: "response",
+                    header: "Question",
+                    question,
+                    allowsFreeform: true,
+                  },
+                ],
+                allowsFreeform: true,
+                blocking: true,
+                canProceedWithoutAnswer: false,
+                providerMetadata: {
+                  tool: "askUser",
+                  inputType: "text",
+                },
+                turnId,
+              };
+              emitPendingInputRequest(managed, request, {
                 kind: "tool_call",
                 description: question,
                 detail: { tool: "askUser", question, inputType: "text" },
-                turnId,
               });
 
-              const response = await new Promise<{ decision: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
-                runtime.pendingApprovals.set(askItemId, { category: "askUser", resolve });
+              const response = await new Promise<{ decision?: AgentChatApprovalDecision; responseText?: string | null; answers?: Record<string, string | string[]> }>((resolve) => {
+                runtime.pendingApprovals.set(askItemId, { category: "askUser", request, resolve });
               });
               runtime.pendingApprovals.delete(askItemId);
-              const trimmedResponse = typeof response.responseText === "string" ? response.responseText.trim() : "";
-              if (trimmedResponse.length) return trimmedResponse;
+              const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
+              const answer = normalizedAnswers.response?.[0] ?? "";
+              if (answer.length) return answer;
               if (response.decision === "accept") return "yes";
               if (response.decision === "decline") return "no";
               return String(response.decision);
@@ -3959,18 +4872,33 @@ export function createAgentChatService(args: {
         return;
       }
       const itemId = String(params.itemId ?? randomUUID());
-      runtime.approvals.set(itemId, { requestId: id, kind: "command" });
-      emitChatEvent(managed, {
-        type: "approval_request",
+      const description = params.reason?.trim() || `Run command: ${params.command ?? "command"}`;
+      const request: PendingInputRequest = {
+        requestId: String(id),
         itemId,
+        source: "codex",
+        kind: "approval",
+        description,
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          command: params.command ?? null,
+          cwd: params.cwd ?? null,
+          reason: params.reason ?? null,
+        },
+        turnId: runtime.activeTurnId ?? null,
+      };
+      runtime.approvals.set(itemId, { requestId: id, kind: "command", request });
+      emitPendingInputRequest(managed, request, {
         kind: "command",
-        description: params.reason?.trim() || `Run command: ${params.command ?? "command"}`,
+        description,
         detail: {
           command: params.command ?? null,
           cwd: params.cwd ?? null,
-          reason: params.reason ?? null
+          reason: params.reason ?? null,
         },
-        turnId: runtime.activeTurnId ?? undefined
       });
       return;
     }
@@ -3987,17 +4915,144 @@ export function createAgentChatService(args: {
         return;
       }
       const itemId = String(params.itemId ?? randomUUID());
-      runtime.approvals.set(itemId, { requestId: id, kind: "file_change" });
-      emitChatEvent(managed, {
-        type: "approval_request",
+      const description = params.reason?.trim() || "Approve file changes";
+      const request: PendingInputRequest = {
+        requestId: String(id),
         itemId,
+        source: "codex",
+        kind: "approval",
+        description,
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          grantRoot: params.grantRoot ?? null,
+          reason: params.reason ?? null,
+        },
+        turnId: runtime.activeTurnId ?? null,
+      };
+      runtime.approvals.set(itemId, { requestId: id, kind: "file_change", request });
+      emitPendingInputRequest(managed, request, {
         kind: "file_change",
-        description: params.reason?.trim() || "Approve file changes",
+        description,
         detail: {
           grantRoot: params.grantRoot ?? null,
-          reason: params.reason ?? null
+          reason: params.reason ?? null,
         },
-        turnId: runtime.activeTurnId ?? undefined
+      });
+      return;
+    }
+
+    if (method === "item/permissions/requestApproval") {
+      const params = (payload.params as {
+        itemId?: string;
+        permissions?: Record<string, unknown> | null;
+        reason?: string | null;
+        threadId?: string;
+        turnId?: string;
+      } | null) ?? {};
+      const itemId = String(params.itemId ?? randomUUID());
+      const description = typeof params.reason === "string" && params.reason.trim().length
+        ? params.reason.trim()
+        : "Codex requested additional permissions";
+      const request: PendingInputRequest = {
+        requestId: String(id),
+        itemId,
+        source: "codex",
+        kind: "permissions",
+        title: "Additional permissions requested",
+        description,
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          permissions: params.permissions ?? null,
+          threadId: params.threadId ?? null,
+          turnId: params.turnId ?? null,
+        },
+        turnId: typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null,
+      };
+      runtime.approvals.set(itemId, {
+        requestId: id,
+        kind: "permissions",
+        permissions: params.permissions ?? null,
+        request,
+      });
+      emitPendingInputRequest(managed, request, {
+        kind: "tool_call",
+        description,
+        detail: {
+          permissions: params.permissions ?? null,
+          reason: params.reason ?? null,
+        },
+      });
+      return;
+    }
+
+    if (method === "item/tool/requestUserInput") {
+      const params = (payload.params as {
+        itemId?: string;
+        threadId?: string;
+        turnId?: string;
+        questions?: Array<{
+          id?: string;
+          header?: string;
+          question?: string;
+          isOther?: boolean;
+          isSecret?: boolean;
+          options?: Array<{ label?: string; description?: string }> | null;
+        }>;
+      } | null) ?? {};
+      const itemId = String(params.itemId ?? randomUUID());
+      const questions: PendingInputQuestion[] = Array.isArray(params.questions)
+        ? params.questions.flatMap((question, index) => {
+            const questionId = typeof question?.id === "string" && question.id.trim().length ? question.id.trim() : `question_${index + 1}`;
+            const questionText = typeof question?.question === "string" ? question.question.trim() : "";
+            if (!questionText.length) return [];
+            const options = Array.isArray(question?.options)
+              ? question.options.flatMap((option) => {
+                  const label = typeof option?.label === "string" ? option.label.trim() : "";
+                  if (!label.length) return [];
+                  const description = typeof option?.description === "string" ? option.description.trim() : "";
+                  return [{
+                    label,
+                    value: label,
+                    ...(description ? { description } : {}),
+                  }];
+                })
+              : [];
+            return [{
+              id: questionId,
+              header: typeof question?.header === "string" && question.header.trim().length ? question.header.trim() : `Question ${index + 1}`,
+              question: questionText,
+              allowsFreeform: question?.isOther === true || options.length === 0,
+              isSecret: question?.isSecret === true,
+              ...(options.length ? { options } : {}),
+            }];
+          })
+        : [];
+      const request: PendingInputRequest = {
+        requestId: String(id),
+        itemId,
+        source: "codex",
+        kind: "structured_question",
+        title: "Input requested",
+        description: questions[0]?.question ?? "Codex requested input",
+        questions,
+        allowsFreeform: questions.some((question) => question.allowsFreeform !== false),
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null,
+        providerMetadata: {
+          threadId: params.threadId ?? null,
+        },
+      };
+      runtime.approvals.set(itemId, { requestId: id, kind: "structured_question", request });
+      emitPendingInputRequest(managed, request, {
+        kind: "tool_call",
+        description: request.description ?? "Codex requested input",
       });
       return;
     }
@@ -4891,18 +5946,31 @@ export function createAgentChatService(args: {
   };
 
   type CodexPolicy = {
-    approvalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
-    sandbox: "read-only" | "workspace-write" | "danger-full-access";
+    approvalPolicy: AgentChatCodexApprovalPolicy;
+    sandbox: AgentChatCodexSandbox;
   } | null;
 
-    const resolveCodexThreadParams = (managed: ManagedChatSession): {
-      codexPolicy: CodexPolicy;
-      mcpServers: Record<string, Record<string, unknown>>;
-    } => {
-      const config = resolveChatConfig();
-      const codexPolicy = managed.session.permissionMode
-        ? mapPermissionToCodex(managed.session.permissionMode)
-        : { approvalPolicy: config.codexApprovalPolicy, sandbox: config.codexSandboxMode };
+  const resolveCodexThreadParams = (managed: ManagedChatSession): {
+    codexPolicy: CodexPolicy;
+    mcpServers: Record<string, Record<string, unknown>>;
+  } => {
+    const config = resolveChatConfig();
+    const codexConfigSource = resolveSessionCodexConfigSource(managed.session);
+    managed.session.codexConfigSource = codexConfigSource;
+    const codexPolicy = codexConfigSource === "config-toml"
+      ? null
+      : {
+          approvalPolicy: resolveSessionCodexApprovalPolicy(managed.session, config.codexApprovalPolicy),
+          sandbox: resolveSessionCodexSandbox(managed.session, config.codexSandboxMode),
+        };
+    if (codexPolicy) {
+      managed.session.codexApprovalPolicy = codexPolicy.approvalPolicy;
+      managed.session.codexSandbox = codexPolicy.sandbox;
+    } else {
+      delete managed.session.codexApprovalPolicy;
+      delete managed.session.codexSandbox;
+    }
+    managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const mcpServers = isLightweightSession(managed.session)
       ? {}
       : buildAdeMcpServers(
@@ -4970,12 +6038,14 @@ export function createAgentChatService(args: {
   const buildClaudeV2SessionOpts = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
-    canUseTool?: ClaudeSDKOptions["canUseTool"],
   ): { model: string } & ClaudeSDKOptions => {
     const chatConfig = resolveChatConfig();
-    const claudePermissionMode = managed.session.permissionMode
-      ? mapPermissionToClaude(managed.session.permissionMode)
-      : chatConfig.claudePermissionMode;
+    const claudePermissionMode = resolveSessionClaudePermissionMode(
+      managed.session,
+      chatConfig.claudePermissionMode,
+    );
+    managed.session.claudePermissionMode = claudePermissionMode;
+    managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
     const claudeExecutable = resolveClaudeCodeExecutable();
     const opts: ClaudeSDKOptions = {
@@ -5009,7 +6079,7 @@ export function createAgentChatService(args: {
         managed.session.id,
         managed.session.computerUse,
       ) as any;
-      if (canUseTool) opts.canUseTool = canUseTool as any;
+      opts.canUseTool = buildClaudeCanUseTool(runtime) as any;
 
       // Enable MCP tool search for sessions with many MCP tools.
       // When enabled, the SDK defers tool definitions and loads them on-demand
@@ -5240,6 +6310,7 @@ export function createAgentChatService(args: {
       pendingSteers: [],
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
+      turnMemoryPolicyState: null,
     };
     managed.runtime = runtime;
 
@@ -5408,6 +6479,11 @@ export function createAgentChatService(args: {
     modelId,
     sessionProfile,
     reasoningEffort,
+    claudePermissionMode: requestedClaudePermissionMode,
+    codexApprovalPolicy: requestedCodexApprovalPolicy,
+    codexSandbox: requestedCodexSandbox,
+    codexConfigSource: requestedCodexConfigSource,
+    unifiedPermissionMode: requestedUnifiedPermissionMode,
     permissionMode: requestedPermMode,
     identityKey,
     surface,
@@ -5468,6 +6544,38 @@ export function createAgentChatService(args: {
     const effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(requestedPermMode, effectiveProvider)
       : requestedPermMode;
+    const chatConfig = resolveChatConfig();
+
+    const nativePermissionFields = (() => {
+      if (effectiveProvider === "claude") {
+        const claudePermissionMode = requestedClaudePermissionMode
+          ?? legacyPermissionModeToClaudePermissionMode(effectivePermissionMode)
+          ?? chatConfig.claudePermissionMode;
+        return { claudePermissionMode };
+      }
+      if (effectiveProvider === "codex") {
+        const codexConfigSource = requestedCodexConfigSource
+          ?? legacyPermissionModeToCodexConfigSource(effectivePermissionMode)
+          ?? "flags";
+        if (codexConfigSource === "config-toml") {
+          return { codexConfigSource };
+        }
+        return {
+          codexApprovalPolicy: requestedCodexApprovalPolicy
+            ?? legacyPermissionModeToCodexApprovalPolicy(effectivePermissionMode)
+            ?? chatConfig.codexApprovalPolicy,
+          codexSandbox: requestedCodexSandbox
+            ?? legacyPermissionModeToCodexSandbox(effectivePermissionMode)
+            ?? chatConfig.codexSandboxMode,
+          codexConfigSource,
+        };
+      }
+      return {
+        unifiedPermissionMode: requestedUnifiedPermissionMode
+          ?? legacyPermissionModeToUnifiedPermissionMode(effectivePermissionMode)
+          ?? chatConfig.unifiedPermissionMode,
+      };
+    })();
 
     sessionService.create({
       sessionId,
@@ -5490,6 +6598,7 @@ export function createAgentChatService(args: {
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         sessionProfile: sessionProfile ?? "workflow",
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
+        ...nativePermissionFields,
         ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         surface: surface ?? "work",
@@ -5523,6 +6632,7 @@ export function createAgentChatService(args: {
       recentConversationEntries: [],
       eventSequence: 0,
     };
+    normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
 
@@ -5558,6 +6668,99 @@ export function createAgentChatService(args: {
     // user sends their first message (the ~30s cold-start runs in background).
     persistChatState(managed);
     return managed.session;
+  };
+
+  const handoffSession = async ({
+    sourceSessionId,
+    targetModelId,
+  }: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
+    const sourceId = sourceSessionId.trim();
+    const targetId = targetModelId.trim();
+    if (!sourceId.length) {
+      throw new Error("A source session is required to hand off a chat.");
+    }
+    if (!targetId.length) {
+      throw new Error("Select a target model before handing off this chat.");
+    }
+
+    const managed = ensureManagedSession(sourceId);
+    const sourceSession = await getSessionSummary(sourceId);
+    if (!sourceSession) {
+      throw new Error(`Unable to load chat session '${sourceId}' for handoff.`);
+    }
+    if ((sourceSession.surface ?? managed.session.surface ?? "work") !== "work") {
+      throw new Error("Chat handoff is only available for work chats.");
+    }
+
+    ensureSessionIdleForHandoff(managed);
+
+    const targetDescriptor = getModelById(targetId) ?? resolveModelAlias(targetId);
+    if (!targetDescriptor || targetDescriptor.deprecated) {
+      throw new Error(`Unknown model '${targetId}'.`);
+    }
+
+    const targetProvider = resolveProviderGroupForModel(targetDescriptor);
+    const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.shortId : targetDescriptor.id;
+    const targetReasoningEffort = pickHandoffReasoningEffort(
+      targetDescriptor,
+      managed.session.reasoningEffort ?? sourceSession.reasoningEffort,
+    );
+    const transcript = await getChatTranscript({
+      sessionId: sourceId,
+      limit: 12,
+      maxChars: 12_000,
+    });
+    const artifacts = collectHandoffArtifacts(readTranscriptEnvelopes(managed));
+    const { brief, usedFallbackSummary } = await generateHandoffBrief({
+      managed,
+      sourceSession,
+      targetDescriptor,
+      transcript,
+      artifacts,
+    });
+
+    const created = await createSession({
+      laneId: managed.session.laneId,
+      provider: targetProvider,
+      model: targetModel,
+      modelId: targetDescriptor.id,
+      sessionProfile: managed.session.sessionProfile,
+      reasoningEffort: targetReasoningEffort,
+      claudePermissionMode: managed.session.claudePermissionMode,
+      codexApprovalPolicy: managed.session.codexApprovalPolicy,
+      codexSandbox: managed.session.codexSandbox,
+      codexConfigSource: managed.session.codexConfigSource,
+      unifiedPermissionMode: managed.session.unifiedPermissionMode,
+      permissionMode: managed.session.permissionMode,
+      surface: managed.session.surface,
+      computerUse: managed.session.computerUse,
+    });
+
+    const createdManaged = ensureManagedSession(created.id);
+    createdManaged.session.executionMode = managed.session.executionMode ?? sourceSession.executionMode ?? null;
+    const inheritedGoal = trimLine(sourceSession.goal)
+      ?? trimLine(sourceSession.summary)
+      ?? trimLine(sourceSession.title);
+    if (inheritedGoal) {
+      sessionService.updateMeta({
+        sessionId: created.id,
+        goal: inheritedGoal,
+      });
+    }
+    persistChatState(createdManaged);
+
+    await sendMessage({
+      sessionId: created.id,
+      text: buildHandoffPrompt(brief),
+      displayText: "Chat handoff from previous session",
+      reasoningEffort: targetReasoningEffort,
+      executionMode: createdManaged.session.executionMode ?? null,
+    });
+
+    return {
+      session: createdManaged.session,
+      usedFallbackSummary,
+    };
   };
 
   const prepareSendMessage = ({
@@ -6013,11 +7216,12 @@ export function createAgentChatService(args: {
         if (persistedMessages?.length) {
           managed.runtime.messages = persistedMessages.map((m) => ({ role: m.role, content: m.content }));
         }
-        // Restore permission mode
-        if (persisted?.permissionMode) {
-          managed.runtime.permissionMode = persisted.permissionMode as any;
-          managed.session.permissionMode = persisted.permissionMode as any;
-        }
+        managed.session.unifiedPermissionMode = persisted?.unifiedPermissionMode ?? managed.session.unifiedPermissionMode;
+        managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+        managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
+          managed.session,
+          resolveChatConfig().unifiedPermissionMode,
+        );
         sessionService.setResumeCommand(sessionId, `chat:unified:${sessionId}`);
       } else {
         if (managed.session.provider === "unified") {
@@ -6063,6 +7267,11 @@ export function createAgentChatService(args: {
       goal: row.goal ?? null,
       reasoningEffort: persisted?.reasoningEffort ?? null,
       executionMode: persisted?.executionMode ?? null,
+      ...(persisted?.claudePermissionMode ? { claudePermissionMode: persisted.claudePermissionMode } : {}),
+      ...(persisted?.codexApprovalPolicy ? { codexApprovalPolicy: persisted.codexApprovalPolicy } : {}),
+      ...(persisted?.codexSandbox ? { codexSandbox: persisted.codexSandbox } : {}),
+      ...(persisted?.codexConfigSource ? { codexConfigSource: persisted.codexConfigSource } : {}),
+      ...(persisted?.unifiedPermissionMode ? { unifiedPermissionMode: persisted.unifiedPermissionMode } : {}),
       ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
       ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
       surface: persisted?.surface ?? "work",
@@ -6135,6 +7344,8 @@ export function createAgentChatService(args: {
         args.permissionMode ?? managed.session.permissionMode,
         managed.session.provider,
       );
+      applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
+      normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
       refreshReconstructionContext(managed);
       persistChatState(managed);
 
@@ -6204,17 +7415,13 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  const approveToolUse = async ({
+  const respondToInput = async ({
     sessionId,
     itemId,
     decision,
+    answers,
     responseText,
-  }: {
-    sessionId: string;
-    itemId: string;
-    decision: AgentChatApprovalDecision;
-    responseText?: string | null;
-  }): Promise<void> => {
+  }: AgentChatRespondToInputArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
 
     if (managed.runtime?.kind === "codex") {
@@ -6222,10 +7429,27 @@ export function createAgentChatService(args: {
       if (!pending) {
         throw new Error(`No pending approval found for item '${itemId}'.`);
       }
-
-      const mapped = mapApprovalDecisionForCodex(decision);
-      managed.runtime.sendResponse(pending.requestId, { decision: mapped });
       managed.runtime.approvals.delete(itemId);
+      if (pending.kind === "permissions") {
+        const approved = decision === "accept" || decision === "accept_for_session";
+        managed.runtime.sendResponse(pending.requestId, {
+          permissions: approved ? (pending.permissions ?? {}) : {},
+          scope: decision === "accept_for_session" ? "session" : "turn",
+        });
+        return;
+      }
+      if (pending.kind === "structured_question") {
+        const normalizedAnswers = normalizePendingInputAnswers(pending.request, answers, responseText);
+        managed.runtime.sendResponse(pending.requestId, {
+          answers: Object.fromEntries(
+            Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
+          ),
+        });
+        return;
+      }
+
+      const mapped = mapApprovalDecisionForCodex(decision ?? "decline");
+      managed.runtime.sendResponse(pending.requestId, { decision: mapped });
       return;
     }
 
@@ -6235,7 +7459,7 @@ export function createAgentChatService(args: {
         throw new Error(`No pending approval found for item '${itemId}'.`);
       }
       managed.runtime.approvals.delete(itemId);
-      pending.resolve(decision);
+      pending.resolve({ decision, answers, responseText });
       return;
     }
 
@@ -6248,18 +7472,38 @@ export function createAgentChatService(args: {
         managed.runtime.approvalOverrides.add(pending.category);
         if (pending.category === "bash") {
           managed.runtime.permissionMode = "full-auto";
-          managed.session.permissionMode = "full-auto";
+          managed.session.unifiedPermissionMode = "full-auto";
         } else if (managed.runtime.permissionMode === "plan") {
           managed.runtime.permissionMode = "edit";
-          managed.session.permissionMode = "edit";
+          managed.session.unifiedPermissionMode = "edit";
         }
+        managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       }
       managed.runtime.pendingApprovals.delete(itemId);
-      pending.resolve({ decision, responseText });
+      pending.resolve({ decision, answers, responseText });
       return;
     }
 
     throw new Error(`Session '${sessionId}' does not have a live runtime for approvals.`);
+  };
+
+  const approveToolUse = async ({
+    sessionId,
+    itemId,
+    decision,
+    responseText,
+  }: {
+    sessionId: string;
+    itemId: string;
+    decision: AgentChatApprovalDecision;
+    responseText?: string | null;
+  }): Promise<void> => {
+    await respondToInput({
+      sessionId,
+      itemId,
+      decision,
+      responseText,
+    });
   };
 
   const getAvailableModels = async ({ provider }: { provider: AgentChatProvider }): Promise<AgentChatModelInfo[]> => {
@@ -6348,10 +7592,16 @@ export function createAgentChatService(args: {
     title,
     modelId,
     reasoningEffort,
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+    unifiedPermissionMode,
     permissionMode,
     computerUse,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const managed = ensureManagedSession(sessionId);
+    const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
     const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
     let resetRuntimeForComputerUse = false;
@@ -6418,7 +7668,9 @@ export function createAgentChatService(args: {
           managed.session.permissionMode,
           nextProvider,
         );
+        applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       }
+      normalizeSessionNativePermissionControls(managed.session, chatConfig);
 
       // Apply reasoningEffort BEFORE pre-warming so the V2 session is created
       // with the correct thinking configuration.
@@ -6469,8 +7721,43 @@ export function createAgentChatService(args: {
       managed.session.permissionMode = isIdentitySession
         ? normalizeIdentityPermissionMode(permissionMode, managed.session.provider)
         : permissionMode;
+      applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
+    }
+
+    if (claudePermissionMode !== undefined) {
+      managed.session.claudePermissionMode = claudePermissionMode;
+    }
+
+    if (codexApprovalPolicy !== undefined) {
+      managed.session.codexApprovalPolicy = codexApprovalPolicy;
+    }
+
+    if (codexSandbox !== undefined) {
+      managed.session.codexSandbox = codexSandbox;
+    }
+
+    if (codexConfigSource !== undefined) {
+      managed.session.codexConfigSource = codexConfigSource;
+    }
+
+    if (unifiedPermissionMode !== undefined) {
+      managed.session.unifiedPermissionMode = unifiedPermissionMode;
+    }
+
+    if (
+      permissionMode !== undefined
+      || claudePermissionMode !== undefined
+      || codexApprovalPolicy !== undefined
+      || codexSandbox !== undefined
+      || codexConfigSource !== undefined
+      || unifiedPermissionMode !== undefined
+    ) {
+      normalizeSessionNativePermissionControls(managed.session, chatConfig);
       if (managed.runtime?.kind === "unified") {
-        managed.runtime.permissionMode = mapToUnifiedPermissionMode(managed.session.permissionMode) ?? "edit";
+        managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
+          managed.session,
+          chatConfig.unifiedPermissionMode,
+        );
       }
     }
 
@@ -6555,12 +7842,15 @@ export function createAgentChatService(args: {
     const nextMode = managed.session.identityKey
       ? normalizeIdentityPermissionMode(permissionMode, managed.session.provider)
       : permissionMode;
-
-    if (managed.runtime?.kind === "unified") {
-      managed.runtime.permissionMode = mapToUnifiedPermissionMode(nextMode) ?? "edit";
-    }
-
     managed.session.permissionMode = nextMode;
+    applyLegacyPermissionModeToNativeControls(managed.session, nextMode);
+    normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
+    if (managed.runtime?.kind === "unified") {
+      managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
+        managed.session,
+        resolveChatConfig().unifiedPermissionMode,
+      );
+    }
     persistChatState(managed);
 
     logger.info("agent_chat.permission_mode_changed", {
@@ -6724,6 +8014,7 @@ export function createAgentChatService(args: {
 
   return {
     createSession,
+    handoffSession,
     sendMessage,
     runSessionTurn,
     steer,
@@ -6734,6 +8025,7 @@ export function createAgentChatService(args: {
     getChatTranscript,
     ensureIdentitySession,
     approveToolUse,
+    respondToInput,
     getAvailableModels,
     getSlashCommands,
     codexFuzzyFileSearch,

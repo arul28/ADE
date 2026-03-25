@@ -381,7 +381,13 @@ export type ContextDocStatus = {
   fingerprint: string | null;
   staleReason: string | null;
   fallbackCount: number;
+  health: ContextDocHealth;
+  source: ContextDocOutputSource;
 };
+
+export type ContextDocHealth = "missing" | "incomplete" | "fallback" | "stale" | "ready";
+
+export type ContextDocOutputSource = "ai" | "deterministic" | "previous_good";
 
 export type ContextDocGenerationWarning = {
   code: string;
@@ -474,6 +480,13 @@ export type ContextGenerateDocsResult = {
   prdPath: string;
   architecturePath: string;
   usedFallbackPath: boolean;
+  degraded: boolean;
+  docResults: Array<{
+    id: ContextDocStatus["id"];
+    health: ContextDocHealth;
+    source: ContextDocOutputSource;
+    sizeBytes: number;
+  }>;
   warnings: ContextDocGenerationWarning[];
   outputPreview: string;
 };

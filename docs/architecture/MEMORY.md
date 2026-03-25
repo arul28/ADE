@@ -27,7 +27,7 @@ The unified memory system uses these tables:
 | `memory_procedure_details` | Extended metadata for procedure-type memories: trigger, procedure_markdown, success/failure counts, export state. |
 | `memory_procedure_sources` | Join table linking procedure memories to their source episode memories. |
 | `memory_procedure_history` | Confidence history log for procedures: outcome, confidence value, reason, timestamp. |
-| `memory_skill_index` | Index of exported skill files linked to their source memory entries. |
+| `memory_skill_index` | File registry for exported/imported skill files, including the linked memory entry used for retrieval and dedupe. |
 | `knowledge_capture_ledger` | Deduplication ledger for the knowledge capture service. Tracks which source events have already been processed. |
 | `cto_core_memory_state` | Single-row-per-project store for CTO core memory, used alongside the JSON file for dual persistence. |
 
@@ -35,7 +35,8 @@ The unified memory system uses these tables:
 
 Core types are defined in two locations:
 
-- `apps/desktop/src/main/services/memory/unifiedMemoryService.ts` -- `Memory`, `AddMemoryOpts`, `WriteMemoryOpts`, `WriteMemoryResult`, `SearchMemoryOpts`, `MemoryTier` (1 | 2 | 3), `MemoryCategory`, `MemoryImportance`, `MemoryStatus`, `MemorySourceType`, `MemorySearchMode`, `WriteGateMode`
+- `apps/desktop/src/main/services/memory/unifiedMemoryService.ts` -- `Memory`, `AddMemoryOpts`, `WriteMemoryOpts`, `WriteMemoryResult`, `SearchMemoryOpts`, `MemoryTier` (1 | 2 | 3), `MemoryCategory`, `MemoryImportance`, `MemoryStatus`, `MemorySourceType`, `MemorySearchMode`, `WriteGateMode`, `AgentMemoryWritePolicy`, `MemoryUpsertEvent`
+- `apps/desktop/src/main/services/ai/tools/memoryTools.ts` -- `TurnMemoryPolicyState`, `MemoryWriteEvent`
 - `apps/desktop/src/shared/types/memory.ts` -- DTOs and result types: `MemoryEntryDto`, `EpisodicMemory`, `ProceduralMemory`, `ProcedureListItem`, `ProcedureDetail`, `ChangeDigest`, `KnowledgeSyncStatus`, `MemoryHealthStats`, `MemoryEmbeddingHealthStats`, etc.
 
 Memory scopes: `"project" | "agent" | "mission"`. Legacy aliases `"user"` and `"lane"` are normalized to `"agent"` and `"mission"` respectively.
@@ -46,7 +47,7 @@ Memory categories: `"fact" | "preference" | "pattern" | "decision" | "gotcha" | 
 
 Memory enters the system through these services:
 
-1. **Agent tool (`memoryAdd`)** -- Defined in `memoryTools.ts`. Any agent can call this during a conversation. Writes go through `unifiedMemoryService.addMemory()` or `addCandidateMemory()`.
+1. **Agent tool (`memoryAdd`)** -- Defined in `memoryTools.ts`. Any agent can call this during a conversation. Writes go through `unifiedMemoryService.writeMemory()` with an `AgentMemoryWritePolicy` that determines initial status, tier, and confidence. The tool emits `MemoryWriteEvent` callbacks that the chat service uses for turn-level memory telemetry.
 2. **Episodic summary service** -- `episodicSummaryService.ts`. Runs after agent sessions. Uses AI to extract a structured `EpisodicMemory` (task, approach, outcome, gotchas, patterns, decisions, tools used, duration) and writes it as an `episode` category entry.
 3. **Knowledge capture service** -- `knowledgeCaptureService.ts`. Processes interventions, error clusters, and PR feedback. Extracts `convention`, `preference`, `pattern`, and `gotcha` entries. Uses a ledger (`knowledge_capture_ledger`) to avoid reprocessing the same source event.
 4. **Human work digest service** -- `humanWorkDigestService.ts`. Detects new git commits, builds a `ChangeDigest` (commit summaries, diffstat, file clusters), writes a `digest` category memory.
@@ -58,8 +59,19 @@ Memory enters the system through these services:
 
 - **Deduplication** -- Every write normalizes content (whitespace collapse, lowercase, tokenize) and computes Jaccard similarity against existing entries in the same scope. At 0.85 similarity or above, the write is merged into the existing entry (observation count incremented, content updated if the new version is richer, importance takes the higher value). Exact dedupe_key matches are merged unconditionally.
 - **Write gate** -- `WriteGateMode` (`"default" | "strict"`). In strict mode, only entries in `convention`, `pattern`, `gotcha`, and `decision` categories are accepted.
+- **Code-derivable content rejection** -- The write path runs `rejectCodeDerivableContent()` which rejects content that belongs in source control or can be reconstructed on demand. Each check is a standalone heuristic function: `looksLikeRawDiffOrCodeDump` (fenced code blocks, unified diff headers), `looksLikeRawStackTrace` (Python tracebacks, JS `at` frames, exception patterns), `looksLikeSessionSummary` (status/progress/summary prefixes), `looksLikeRawGitHistory` (commit SHAs, author/date lines), and `looksLikePathDump` (3+ path-like lines). Each rejection returns a descriptive reason string.
 - **Category allowlist** -- Only the 10 defined categories are accepted. Invalid categories are rejected.
 - **Prompt guidance** -- Agent system prompts contain explicit instructions about what constitutes a good vs. bad memory to reduce noise at the source.
+
+### Agent Memory Write Policy
+
+When an agent writes memory via the `memoryAdd` tool, `resolveAgentMemoryWritePolicy()` determines the initial status, tier, and confidence based on two inputs:
+
+- `pin` -- If true, the memory is promoted to tier 1 with confidence 1.0 and status `promoted`.
+- `writeGateMode` -- If `"strict"`, the memory is promoted to tier 2 with confidence 1.0 and status `promoted`.
+- Otherwise, the memory enters as a `candidate` at tier 3 with confidence 0.6.
+
+The `AgentMemoryWritePolicy` type (exported from `unifiedMemoryService.ts`) carries `status`, `tier`, and `confidence` fields. `resolveAgentMemoryWritePolicy` is used by both the desktop `memoryTools.ts` and the MCP server's `memory_write` tool, ensuring consistent write semantics across all agent entry points. The MCP server now calls `writeMemory()` (not `addMemory()`) with the full write policy, returning `durability`, `tier`, `deduped`, and `mergedIntoId` fields in the tool response.
 
 ### Read Paths
 
@@ -184,10 +196,25 @@ Memory-related instructions are embedded in agent prompts in these files:
 | File | What It Contains |
 |---|---|
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Base system prompt with memory usage instructions |
-| `apps/desktop/src/main/services/ai/tools/memoryTools.ts` | `memoryAdd` and `memorySearch` tool definitions with quality guidance |
+| `apps/desktop/src/main/services/ai/tools/memoryTools.ts` | `memoryAdd` and `memorySearch` tool definitions with quality guidance, `TurnMemoryPolicyState` tracking, and `MemoryWriteEvent` emission |
+| `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Turn-level memory guard that blocks mutating bash/write/edit tools until the agent has searched memory when the turn classification requires it |
 | `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` | Coordinator-level memory tools |
 | `apps/desktop/src/main/services/orchestrator/coordinatorAgent.ts` | Coordinator agent memory integration |
 | `apps/desktop/src/main/services/memory/compactionFlushService.ts` | Pre-compaction flush prompt that instructs agents to save observations |
+
+## Turn-Level Memory Guard
+
+The universal tool set enforces a per-turn memory orientation policy via `TurnMemoryPolicyState`. When the chat service classifies a user turn as `"required"` (based on prompt intent heuristics -- e.g., the turn mentions fix, debug, implement, refactor, etc.), mutating tools (`bash`, `writeFile`, `editFile`) are blocked until the agent has performed an explicit `memorySearch`. The guard prevents agents from charging into file mutations without first consulting project memory.
+
+Classification tiers:
+
+- `"required"` -- turn references mutating work; memory search is mandatory before mutations.
+- `"soft"` -- turn references exploratory work (explain, review, design); memory is auto-injected but not gated.
+- `"none"` -- meta/greeting turns; no memory injection or gating.
+
+The `memorySearch` tool call sets `orientationSatisfied` and `explicitSearchPerformed` on the policy state, lifting the guard for the remainder of the turn.
+
+The chat service also auto-injects relevant memory context into the system prompt for `"required"` and `"soft"` turns, and emits `system_notice` events with `noticeKind: "memory"` when the guard fires or when memory write events are noteworthy.
 
 ## Key Service Files
 

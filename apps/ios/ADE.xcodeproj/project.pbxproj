@@ -9,12 +9,10 @@
 /* Begin PBXBuildFile section */
 		0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */; };
 		0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */; };
-		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9411193AF56B236BA32EFF5 /* ADEApp.swift */; };
 		1A0D93D06509796A389A4CAA /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		26C8992F8D661707E9360503 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51942BAC0965C7D0CCE6E8B8 /* Database.swift */; };
 		28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B5024B0A05F3D9754101F1 /* SyncService.swift */; };
-		493041A1D11B75220D2C04BA /* PreviewHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9B604C3DA0CCF88E7C31A47 /* PreviewHostApp.swift */; };
 		4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B17472FAC08845853BC6B4 /* ContentView.swift */; };
 		56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */; };
 		60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
@@ -23,8 +21,8 @@
 		6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */ = {isa = PBXBuildFile; fileRef = 2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */; };
 		7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
-		BE6DE22072CF77B9D7F61849 /* _PreviewGenerated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 299EFB5C0DFB103946352014 /* _PreviewGenerated.swift */; };
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
+		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
 /* End PBXBuildFile section */
 
@@ -43,11 +41,9 @@
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
-		299EFB5C0DFB103946352014 /* _PreviewGenerated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = _PreviewGenerated.swift; path = "/Users/admin/Projects/ADE/.ade/worktrees/phase-6-w6-14727791/apps/ios/.preview-host-5215/_PreviewGenerated.swift"; sourceTree = "<absolute>"; };
 		31EC445F22FD38F90C16343E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
-		4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEDesignSystem.swift; path = ADE/Views/Components/ADEDesignSystem.swift; sourceTree = "<group>"; };
-		D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesCodeSupport.swift; path = ADE/Views/Components/FilesCodeSupport.swift; sourceTree = "<group>"; };
 		483C5F1818BAE74B19B84617 /* RemoteModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteModels.swift; path = ADE/Models/RemoteModels.swift; sourceTree = "<group>"; };
+		4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEDesignSystem.swift; path = ADE/Views/Components/ADEDesignSystem.swift; sourceTree = "<group>"; };
 		4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesTabView.swift; path = ADE/Views/FilesTabView.swift; sourceTree = "<group>"; };
 		51942BAC0965C7D0CCE6E8B8 /* Database.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Database.swift; path = ADE/Services/Database.swift; sourceTree = "<group>"; };
 		5EE4D463D21266B62B422D11 /* PRsTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsTabView.swift; path = ADE/Views/PRsTabView.swift; sourceTree = "<group>"; };
@@ -58,18 +54,11 @@
 		B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = KeychainService.swift; path = ADE/Services/KeychainService.swift; sourceTree = "<group>"; };
 		C9411193AF56B236BA32EFF5 /* ADEApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEApp.swift; path = ADE/App/ADEApp.swift; sourceTree = "<group>"; };
 		CCAB2414C359E971B780BF99 /* PreviewHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PreviewHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesCodeSupport.swift; path = ADE/Views/Components/FilesCodeSupport.swift; sourceTree = "<group>"; };
 		E3A5721EB84321D201716BC3 /* ADETests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ADETests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		F9B604C3DA0CCF88E7C31A47 /* PreviewHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PreviewHostApp.swift; path = "/Users/admin/Projects/ADE/.ade/worktrees/phase-6-w6-14727791/apps/ios/.preview-host-5215/PreviewHostApp.swift"; sourceTree = "<absolute>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		A2277063AB920F24E252FC26 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		DE00988229EE6003DBF8D8FA /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -145,16 +134,6 @@
 				7A6120AF79287BB301D63A58 /* ADE */,
 				C77DE76E58CC8D681F4D4619 /* ADETests */,
 			);
-			sourceTree = "<group>";
-		};
-		57F0F581E90BCD6667ADB538 /* PreviewHost */ = {
-			isa = PBXGroup;
-			children = (
-				F9B604C3DA0CCF88E7C31A47 /* PreviewHostApp.swift */,
-				299EFB5C0DFB103946352014 /* _PreviewGenerated.swift */,
-			);
-			name = PreviewHost;
-			path = PreviewHost;
 			sourceTree = "<group>";
 		};
 		6AC81F4E8475EA47F592B212 /* Frameworks */ = {
@@ -259,6 +238,13 @@
 				LastSwiftUpdateCheck = 1600;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
+					62C217CE2C1C31B3127D1ACF = {
+						DevelopmentTeam = VQ372F39G6;
+					};
+					928432ECB10B6E8870725B02 = {
+						DevelopmentTeam = VQ372F39G6;
+						ProvisioningStyle = Automatic;
+					};
 				};
 			};
 			buildConfigurationList = 966E640F465400271B948B96 /* Build configuration list for PBXProject "ADE" */;
@@ -270,28 +256,18 @@
 				Base,
 			);
 			mainGroup = 564208E3878DD0F0137C7E86;
-			minimizedProjectReferenceProxies = 0;
-			preferredProjectObjectVersion = 77;
 			productRefGroup = 7FAD2BF35AA6A286BCF68D49 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				928432ECB10B6E8870725B02 /* ADE */,
 				62C217CE2C1C31B3127D1ACF /* ADETests */,
-				472C95015F096F262DBDFB0B,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		0C78157439BD019931D9CBAD /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		55E96B18CA5590B7FE2D1B9E /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -309,25 +285,7 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
-/* Begin PBXTargetDependency section */
-		A17C7B6209E54B4FAE0D11A2 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			name = ADE;
-			target = 928432ECB10B6E8870725B02 /* ADE */;
-			targetProxy = A17C7B6209E54B4FAE0D11A1 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
-
 /* Begin PBXSourcesBuildPhase section */
-		569BFAD3D473FA50C6E4A50F /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				493041A1D11B75220D2C04BA /* PreviewHostApp.swift in Sources */,
-				BE6DE22072CF77B9D7F61849 /* _PreviewGenerated.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		73ED0BCB9618AA29B41D84DA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -357,6 +315,15 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		A17C7B6209E54B4FAE0D11A2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ADE;
+			target = 928432ECB10B6E8870725B02 /* ADE */;
+			targetProxy = A17C7B6209E54B4FAE0D11A1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
 		46C95E3D8691C9E33C8FBF15 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -364,6 +331,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = NO;
+				DEVELOPMENT_TEAM = VQ372F39G6;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.tests;
@@ -380,7 +348,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
-				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = VQ372F39G6;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = ADE/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -389,25 +360,6 @@
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		4DE7553D2E083BB93BC7E68A /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.preview.host;
-				PRODUCT_NAME = PreviewHost;
-				SDKROOT = iphoneos;
-				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
 		};
@@ -459,8 +411,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_OPTIMIZATION_LEVEL = "-Owholemodule";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
@@ -471,7 +422,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
-				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = VQ372F39G6;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = ADE/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -481,25 +435,6 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
-		};
-		AD48606A456393537FF98AB9 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.preview.host;
-				PRODUCT_NAME = PreviewHost;
-				SDKROOT = iphoneos;
-				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};
@@ -570,6 +505,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = NO;
+				DEVELOPMENT_TEAM = VQ372F39G6;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.tests;
@@ -610,15 +546,6 @@
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
-		};
-		EF4AAAB241B4F2BB518D04DA = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				4DE7553D2E083BB93BC7E68A /* Debug */,
-				AD48606A456393537FF98AB9 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 	};

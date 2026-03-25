@@ -82,7 +82,7 @@ describe("executionPolicy", () => {
         missionMetadata: { planning: { mode: "manual_review" } }
       });
       expect(policy.planning.mode).toBe("manual_review");
-      expect(policy.implementation.model).toBe("openai/gpt-5.3-codex"); // from default
+      expect(policy.implementation.model).toBe("openai/gpt-5.4-codex"); // from default
     });
   });
 

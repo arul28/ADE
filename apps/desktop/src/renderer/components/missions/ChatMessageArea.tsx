@@ -66,6 +66,7 @@ export type ChatMessageAreaProps = {
     itemId: string,
     decision: "accept" | "accept_for_session" | "decline" | "cancel",
     responseText?: string | null,
+    answers?: Record<string, string | string[]>,
   ) => void;
 };
 

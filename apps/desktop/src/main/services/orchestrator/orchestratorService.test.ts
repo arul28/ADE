@@ -3590,7 +3590,7 @@ describe("orchestratorService", () => {
             laneId: fixture.laneId,
             executorKind: "unified",
             metadata: {
-              modelId: "openai/gpt-4.1"
+              modelId: "openai/gpt-5.4"
             }
           }
         ]
@@ -3660,7 +3660,7 @@ describe("orchestratorService", () => {
             laneId: fixture.laneId,
             executorKind: "unified",
             metadata: {
-              modelId: "openai/gpt-4.1",
+              modelId: "openai/gpt-5.4",
             },
           },
         ],

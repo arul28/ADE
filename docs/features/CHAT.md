@@ -29,7 +29,7 @@ Every chat creates an `AgentChatSession`:
   working directory) is injected into the agent's system prompt.
 - **provider / model / modelId** -- What is powering the session.
 - **status** -- `active | idle | ended`.
-- **permissionMode** -- Controls what the agent may do autonomously.
+- **Permission controls** -- Provider-native fields control what the agent may do autonomously: `claudePermissionMode` (Claude), `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource` (Codex), `unifiedPermissionMode` (unified/API). The legacy `permissionMode` field is maintained for backward compatibility.
 - **identityKey** -- Optional. `"cto"` for the CTO agent, `"agent:<id>"`
   for named employees.
 - **executionMode** -- `focused | parallel | subagents | teams`.
@@ -83,8 +83,8 @@ a `memoryService` is available:
 
 | Tool | Purpose |
 |---|---|
-| `memorySearch` | Semantic search over the project's episodic memory store |
-| `memoryAdd` | Persist a new memory (fact, decision, context) |
+| `memorySearch` | Semantic search over the project's episodic memory store. Also satisfies the turn-level memory guard. |
+| `memoryAdd` | Persist a new memory (fact, decision, context). Returns `durability` (`candidate`, `promoted`, or `rejected`), tier, and dedup metadata. Emits `MemoryWriteEvent` callbacks for telemetry. |
 | `memoryPin` | Pin a memory so it is always included in future context |
 
 CTO and named-employee sessions additionally receive:
@@ -95,6 +95,10 @@ CTO and named-employee sessions additionally receive:
 
 Memory tool names are detected during system-prompt composition so the
 prompt can include usage guidance only when the tools are actually present.
+
+### Turn-Level Memory Guard
+
+The chat service classifies each user turn by intent (required, soft, none) and when the turn is classified as `"required"` (mutating work like fix, debug, implement, refactor), mutating tools (bash, writeFile, editFile) are blocked until the agent has called `memorySearch`. This ensures agents consult project knowledge before making changes. The guard state is tracked via `TurnMemoryPolicyState` and resets per turn. See the [Memory Architecture doc](../architecture/MEMORY.md) for details.
 
 ### Compaction Flush
 
@@ -130,35 +134,79 @@ The four PR issue resolution tools (`prRefreshIssueInventory`, `prRerunFailedChe
 
 ## Permission Modes
 
-The `AgentChatPermissionMode` controls human-in-the-loop gating:
+Permission controls are now provider-native rather than using a single unified enum. Each provider has its own control surface:
+
+### Claude
+
+`AgentChatClaudePermissionMode` controls Claude Agent SDK behavior:
 
 | Mode | Behavior |
 |---|---|
-| `plan` | Agent may only read/inspect. Writing or executing is blocked. Used for planning-only workers. |
-| `edit` | Agent may read and write files but must ask before running shell commands. |
-| `full-auto` | Agent proceeds without asking. Approval requests are auto-accepted. |
 | `default` | Provider-native behavior (Claude CLI's built-in permission flow). |
-| `config-toml` | Defers to the project's `.claude/config.toml` settings. |
+| `plan` | Agent may only read/inspect. Writing or executing is blocked. |
+| `acceptEdits` | Agent may read and write files but must ask before running shell commands. |
+| `bypassPermissions` | Agent proceeds without asking. |
 
-The mode can be changed mid-session via `updateSession`.
+### Codex
 
-## Approval Flow (Human-in-the-Loop)
+Codex sessions have two independent controls:
 
-When an agent operating below `full-auto` wants to perform a gated
-action, the service emits an `approval_request` event containing:
+- `AgentChatCodexApprovalPolicy`: `untrusted | on-request | on-failure | never`
+- `AgentChatCodexSandbox`: `read-only | workspace-write | danger-full-access`
+- `AgentChatCodexConfigSource`: `flags | config-toml` -- when `config-toml`, the approval policy and sandbox are deferred to the project's `.codex/config.toml`.
 
-- `itemId` -- opaque identifier the agent is waiting on.
-- `kind` -- `"command" | "file_change" | "tool_call"`.
-- `description` -- human-readable explanation of what the agent wants.
+### Unified (API models)
 
-The renderer shows an **AgentQuestionModal** with Accept / Accept for
-Session / Decline / Cancel buttons. The user's decision is sent back as
-an `AgentChatApprovalDecision`, and the agent resumes or aborts
-accordingly.
+`AgentChatUnifiedPermissionMode` maps to the in-process tool permission system:
 
-For `structured_question` events (the agent needs clarification, not
-permission), the same modal is reused with free-text input or
-predefined option buttons.
+| Mode | Behavior |
+|---|---|
+| `plan` | Agent may only read/inspect. |
+| `edit` | Agent may read and write files. Bash commands are gated. |
+| `full-auto` | Agent proceeds without asking. |
+
+### Legacy compatibility
+
+The deprecated `AgentChatPermissionMode` (`default | plan | edit | full-auto | config-toml`) is still persisted for backward compatibility. The service bidirectionally maps between legacy and provider-native controls via `hydrateNativePermissionControls` and `syncLegacyPermissionMode`. New code should use the provider-native fields.
+
+All controls can be changed mid-session via `updateSession`.
+
+## Pending Input System (Human-in-the-Loop)
+
+When an agent needs human input -- either permission to proceed or answers to questions -- the service emits events that the renderer derives into `PendingInputRequest` objects. These are a unified abstraction across all providers:
+
+- `requestId` -- unique identifier for the request.
+- `source` -- `"claude" | "codex" | "unified" | "mission"`.
+- `kind` -- `"approval" | "question" | "structured_question" | "permissions"`.
+- `questions` -- array of `PendingInputQuestion` with optional predefined options, freeform input, and impact descriptions.
+- `blocking` / `canProceedWithoutAnswer` -- whether the agent is blocked or can continue with a default assumption.
+
+The renderer derives pending inputs from the event stream via `derivePendingInputRequests()` (in `pendingInput.ts`), which replaces the previous `PendingApproval` model. The derivation function processes `approval_request` events (including embedded `PendingInputRequest` payloads in the detail field and legacy `askUser` tool calls) and `structured_question` events. A `done` event clears all pending inputs for that session. Tool results, command completions, and file changes auto-resolve their corresponding pending items.
+
+The `AgentQuestionModal` renders the first pending input with Accept / Accept for Session / Decline / Cancel buttons and optional freeform text. User responses are sent back via the `respondToInput` IPC channel (which accepts `AgentChatRespondToInputArgs` with structured `answers` and optional `decision`), or the legacy `approve` channel for backward compatibility.
+
+Codex `permissions` requests and Claude `structured_question` events both flow through the same pending input abstraction.
+
+## Chat Transcript and Work Log
+
+The chat message list renders events through a two-layer pipeline defined in `chatTranscriptRows.ts`:
+
+1. **Render events** -- Raw `AgentChatEventEnvelope` events are mapped to `ChatTranscriptRenderEvent` values. Tool calls, commands, file changes, and web searches are collapsed into `ChatWorkLogEntry` objects (with status, label, diff stats, and output). Text, reasoning, plans, user messages, status updates, and other visible events pass through directly.
+
+2. **Grouped envelopes** -- Adjacent work log entries in the same turn are grouped into `work_log_group` blocks so the message list can render them as a single collapsible card (`ChatWorkLogBlock`) rather than individual rows. This keeps the transcript compact when the agent performs many tool operations in a single turn.
+
+Each work log entry carries a `collapseKey` derived from the turn, item, and tool/command identity. Streaming updates for the same tool call or command merge into the existing entry rather than appending new rows.
+
+The `ChatWorkLogBlock` component renders grouped entries with:
+
+- Collapsible header showing entry count and a summary of operations
+- Per-entry rows with tool/command icons, labels, status indicators, and expandable detail sections
+- File change summaries with addition/deletion counts
+- Operator navigation suggestions extracted from tool results (linking to Work, Missions, Lanes, or CTO surfaces)
+
+## Model Handoff
+
+When a user switches model families mid-session (e.g., from Claude to Codex), the chat service performs a session handoff via `handoffSession`. The current session is summarized, ended gracefully, and a new session is created with the target model. The handoff preserves context by injecting the summarized transcript into the new session. The `AgentChatHandoffResult` reports whether a fallback summary was used.
 
 ## Where Chat Lives in the UI
 
@@ -173,7 +221,10 @@ predefined option buttons.
 
 The composer (`AgentChatComposer`) supports file/image attachments,
 model switching, reasoning-effort control, context-pack injection, and
-slash commands sourced from the active SDK session.
+slash commands sourced from the active SDK session. Permission controls
+are rendered inline as provider-native dropdowns (Claude permission mode,
+Codex approval policy/sandbox, unified permission mode) rather than a
+single unified permission selector.
 
 ## Image Attachments
 

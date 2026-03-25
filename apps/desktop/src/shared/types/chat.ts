@@ -48,6 +48,11 @@ export type ChatSurfacePresentation = {
 };
 
 export type AgentChatApprovalDecision = "accept" | "accept_for_session" | "decline" | "cancel";
+export type AgentChatClaudePermissionMode = "default" | "plan" | "acceptEdits" | "bypassPermissions";
+export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-failure" | "never";
+export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
+export type AgentChatCodexConfigSource = "flags" | "config-toml";
+export type AgentChatUnifiedPermissionMode = "plan" | "edit" | "full-auto";
 
 export type AgentChatFileRef = {
   path: string;
@@ -281,7 +286,7 @@ export type AgentChatEvent =
     }
   | {
       type: "system_notice";
-      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info";
+      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory";
       message: string;
       detail?: string;
       turnId?: string;
@@ -341,6 +346,42 @@ export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" 
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
 export type AgentChatSurface = "work" | "automation";
+export type PendingInputSource = "claude" | "codex" | "unified" | "mission";
+export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions";
+
+export type PendingInputOption = {
+  label: string;
+  value: string;
+  description?: string;
+  recommended?: boolean;
+};
+
+export type PendingInputQuestion = {
+  id: string;
+  header?: string;
+  question: string;
+  options?: PendingInputOption[] | null;
+  allowsFreeform?: boolean;
+  isSecret?: boolean;
+  defaultAssumption?: string | null;
+  impact?: string | null;
+};
+
+export type PendingInputRequest = {
+  requestId: string;
+  itemId?: string;
+  source: PendingInputSource;
+  kind: PendingInputKind;
+  title?: string | null;
+  description?: string | null;
+  questions: PendingInputQuestion[];
+  allowsFreeform: boolean;
+  blocking: boolean;
+  canProceedWithoutAnswer: boolean;
+  options?: PendingInputOption[];
+  providerMetadata?: Record<string, unknown>;
+  turnId?: string | null;
+};
 
 export type AgentChatSession = {
   id: string;
@@ -351,6 +392,12 @@ export type AgentChatSession = {
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  /** @deprecated Use provider-native control fields instead. */
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
@@ -376,6 +423,12 @@ export type AgentChatSessionSummary = {
   goal?: string | null;
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  /** @deprecated Use provider-native control fields instead. */
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
@@ -452,12 +505,28 @@ export type AgentChatCreateArgs = {
   modelId?: ModelId;
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  /** @deprecated Use provider-native control fields instead. */
   permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
   automationRunId?: string | null;
   computerUse?: ComputerUsePolicy | null;
+};
+
+export type AgentChatHandoffArgs = {
+  sourceSessionId: string;
+  targetModelId: ModelId;
+};
+
+export type AgentChatHandoffResult = {
+  session: AgentChatSession;
+  usedFallbackSummary: boolean;
 };
 
 export type AgentChatListArgs = {
@@ -498,6 +567,14 @@ export type AgentChatApproveArgs = {
   responseText?: string | null;
 };
 
+export type AgentChatRespondToInputArgs = {
+  sessionId: string;
+  itemId: string;
+  decision?: AgentChatApprovalDecision;
+  answers?: Record<string, string | string[]>;
+  responseText?: string | null;
+};
+
 export type AgentChatModelsArgs = {
   provider: AgentChatProvider;
 };
@@ -516,6 +593,12 @@ export type AgentChatUpdateSessionArgs = {
   title?: string | null;
   modelId?: ModelId;
   reasoningEffort?: string | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  /** @deprecated Use provider-native control fields instead. */
   permissionMode?: AgentChatPermissionMode;
   computerUse?: ComputerUsePolicy | null;
 };

@@ -136,7 +136,7 @@ const CLAUDE_SONNET: ModelConfig = { provider: "claude", modelId: "anthropic/cla
 const CLAUDE_HAIKU: ModelConfig = { provider: "claude", modelId: "anthropic/claude-haiku-4-5", thinkingLevel: "low" };
 const CLAUDE_OPUS: ModelConfig = { provider: "claude", modelId: "anthropic/claude-opus-4-6", thinkingLevel: "high" };
 const CODEX_STANDARD: ModelConfig = { provider: "codex", modelId: DEFAULT_CODEX_MODEL_ID, thinkingLevel: "medium" };
-const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "openai/codex-mini-latest", thinkingLevel: "low" };
+const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "openai/gpt-5.1-codex-mini", thinkingLevel: "low" };
 
 export const BUILT_IN_PROFILES: MissionModelProfile[] = [
   {

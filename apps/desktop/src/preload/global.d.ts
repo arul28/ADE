@@ -25,6 +25,7 @@ import type {
   ConflictStatus,
   CreateLaneArgs,
   CreateChildLaneArgs,
+  CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
   DeleteMissionArgs,
   DevToolsCheckResult,
@@ -62,10 +63,13 @@ import type {
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
+  AgentChatHandoffArgs,
+  AgentChatHandoffResult,
   AgentChatInterruptArgs,
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
+  AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
   AgentChatSession,
@@ -741,6 +745,7 @@ declare global {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
         create: (args: CreateLaneArgs) => Promise<LaneSummary>;
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
+        createFromUnstaged: (args: CreateLaneFromUnstagedArgs) => Promise<LaneSummary>;
         importBranch: (args: ImportBranchLaneArgs) => Promise<LaneSummary>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         adoptAttached: (args: AdoptAttachedLaneArgs) => Promise<LaneSummary>;
@@ -815,11 +820,13 @@ declare global {
         list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;
         getSummary: (args: AgentChatGetSummaryArgs) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
+        handoff: (args: AgentChatHandoffArgs) => Promise<AgentChatHandoffResult>;
         send: (args: AgentChatSendArgs) => Promise<void>;
         steer: (args: AgentChatSteerArgs) => Promise<void>;
         interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
         resume: (args: AgentChatResumeArgs) => Promise<AgentChatSession>;
         approve: (args: AgentChatApproveArgs) => Promise<void>;
+        respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
         dispose: (args: AgentChatDisposeArgs) => Promise<void>;
         updateSession: (args: AgentChatUpdateSessionArgs) => Promise<AgentChatSession>;
@@ -928,6 +935,7 @@ declare global {
         openDoc: (args: ContextOpenDocArgs) => Promise<void>;
         getPrefs: () => Promise<import("../shared/types").ContextDocPrefs>;
         savePrefs: (prefs: import("../shared/types").ContextDocPrefs) => Promise<import("../shared/types").ContextDocPrefs>;
+        onStatusChanged: (cb: (status: ContextStatus) => void) => () => void;
       };
       github: {
         getStatus: () => Promise<GitHubStatus>;

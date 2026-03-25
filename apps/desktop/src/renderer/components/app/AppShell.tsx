@@ -33,6 +33,7 @@ import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
 import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
 import { cn } from "../ui/cn";
+import { describeContextDocHealth, listActionableContextDocs, listContextDocsByHealth } from "../context/contextShared";
 
 type PrToast = {
   id: string;
@@ -369,17 +370,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [project?.rootPath]);
 
-  // Poll context status while generation is running so banners update in real-time
   useEffect(() => {
     if (!project?.rootPath) return;
-    if (contextStatus?.generation.state !== "pending" && contextStatus?.generation.state !== "running") return;
-    const poll = window.setInterval(() => {
-      void window.ade.context.getStatus().then((status) => {
-        setContextStatus(status);
-      }).catch(() => {});
-    }, 3_000);
-    return () => window.clearInterval(poll);
-  }, [project?.rootPath, contextStatus?.generation.state]);
+    return window.ade.context?.onStatusChanged?.((status) => {
+      setContextStatus(status);
+    }) ?? (() => {});
+  }, [project?.rootPath]);
 
   useEffect(() => {
     if (!project?.rootPath || showWelcome) return;
@@ -412,8 +408,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [aiStatus]);
 
   const missingContextDocs = useMemo(
-    () => contextStatus?.docs?.filter((doc) => !doc.exists || doc.sizeBytes < 200) ?? [],
+    () => listContextDocsByHealth(contextStatus, "missing"),
     [contextStatus],
+  );
+
+  const actionableContextDocs = useMemo(
+    () => listActionableContextDocs(contextStatus),
+    [contextStatus],
+  );
+
+  const actionableContextSummary = useMemo(
+    () => actionableContextDocs.map((doc) => `${doc.label} (${describeContextDocHealth(doc)})`).join(", "),
+    [actionableContextDocs],
+  );
+
+  const missingContextSummary = useMemo(
+    () => missingContextDocs.map((doc) => doc.label).join(", "),
+    [missingContextDocs],
   );
 
   const commandPaletteBinding = useMemo(
@@ -639,10 +650,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar && project?.rootPath && !showWelcome && contextStatus?.generation.state !== "pending" && contextStatus?.generation.state !== "running" && missingContextDocs.length > 0 ? (
+      {!hideSidebar && project?.rootPath && !showWelcome && contextStatus?.generation.state !== "pending" && contextStatus?.generation.state !== "running" && actionableContextDocs.length > 0 ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          Missing ADE context docs:
-          {missingContextDocs.map((doc) => ` ${doc.label}`).join(", ")}.
+          {missingContextDocs.length > 0
+            ? `Missing ADE context docs: ${missingContextSummary}.`
+            : `ADE context docs need regeneration: ${actionableContextSummary}.`}
           <Link to="/settings?tab=workspace" className="ml-2 underline">Generate docs</Link>
         </div>
       ) : null}

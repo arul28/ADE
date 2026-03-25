@@ -214,7 +214,7 @@ The service routes each AI task to the appropriate provider based on task type a
 | Task Type | Default Model | Rationale |
 |-----------|--------------|-----------|
 | `planning` | `anthropic/claude-sonnet-4-6` | Strong multi-step reasoning for mission decomposition |
-| `implementation` | `openai/gpt-5.3-codex` | Optimized code generation with sandbox isolation |
+| `implementation` | `openai/gpt-5.4-codex` | Optimized code generation with sandbox isolation |
 | `review` | `anthropic/claude-sonnet-4-6` | Detailed analysis with explanation capabilities |
 | `conflict_resolution` | `anthropic/claude-sonnet-4-6` | Reasoning over overlapping changes with full context |
 | `commit_message` | `anthropic/claude-haiku-4-5` | Short-form generation, low latency |
@@ -306,7 +306,7 @@ ai:
       timeoutMs: 45000
     implementation:
       provider: "codex"
-      model: "openai/gpt-5.3-codex"
+      model: "openai/gpt-5.4-codex"
       timeoutMs: 120000
     review:
       provider: "claude"
@@ -1360,7 +1360,7 @@ ADE supports fine-grained control over which `modelId` handles each type of AI t
 | Task Type | Description | Default Model ID |
 |-----------|-------------|-----------------|
 | `planning` | Mission decomposition into steps | `anthropic/claude-sonnet-4-6` |
-| `implementation` | Code generation and modification | `openai/gpt-5.3-codex` |
+| `implementation` | Code generation and modification | `openai/gpt-5.4-codex` |
 | `review` | Code review and analysis | `anthropic/claude-sonnet-4-6` |
 | `conflict_resolution` | Merge conflict analysis and resolution | `anthropic/claude-sonnet-4-6` |
 | `narrative` | Lane narrative generation | `anthropic/claude-haiku-4-5` |
@@ -1378,7 +1378,7 @@ ai:
       model: "anthropic/claude-sonnet-4-6"
       timeoutMs: 45000
     implementation:
-      model: "openai/gpt-5.3-codex"
+      model: "openai/gpt-5.4-codex"
       timeoutMs: 120000
     review:
       model: "anthropic/claude-sonnet-4-6"

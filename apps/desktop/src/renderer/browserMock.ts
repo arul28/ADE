@@ -1153,6 +1153,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       interrupt: resolvedArg(undefined),
       resume: resolvedArg({ id: "mock" }),
       approve: resolvedArg(undefined),
+      respondToInput: resolvedArg(undefined),
       models: resolvedArg([]),
       dispose: resolvedArg(undefined),
       updateSession: resolvedArg({ id: "mock" }),

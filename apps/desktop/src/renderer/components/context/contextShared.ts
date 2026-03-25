@@ -1,5 +1,7 @@
 /** Shared utilities and types for context/docs renderer surfaces. */
 
+import type { ContextDocStatus, ContextStatus } from "../../../shared/types";
+
 /** Returns a human-readable relative time for a timestamp (or "never" if null). */
 export function relativeTime(ts: string | null | undefined): string {
   if (!ts) return "never";
@@ -17,6 +19,37 @@ export function shortId(value: string | null | undefined, size = 10): string {
   const raw = (value ?? "").trim();
   if (!raw) return "-";
   return raw.length > size ? raw.slice(0, size) : raw;
+}
+
+export function isContextDocReady(doc: ContextDocStatus | null | undefined): boolean {
+  return doc?.health === "ready";
+}
+
+export function listContextDocsByHealth(
+  status: ContextStatus | null | undefined,
+  health: ContextDocStatus["health"],
+): ContextDocStatus[] {
+  return status?.docs?.filter((doc) => doc.health === health) ?? [];
+}
+
+export function listActionableContextDocs(status: ContextStatus | null | undefined): ContextDocStatus[] {
+  return status?.docs?.filter((doc) => doc.health !== "ready") ?? [];
+}
+
+export function describeContextDocHealth(doc: ContextDocStatus): string {
+  switch (doc.health) {
+    case "missing":
+      return "missing";
+    case "incomplete":
+      return "incomplete";
+    case "fallback":
+      return "deterministic fallback";
+    case "stale":
+      return "stale";
+    case "ready":
+    default:
+      return "ready";
+  }
 }
 
 /** Regex to strip internal ADE markers from pack body. */

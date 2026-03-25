@@ -1077,7 +1077,8 @@ app.whenReady().then(async () => {
       packsDir: adePaths.packsDir,
       laneService,
       projectConfigService,
-      aiIntegrationService
+      aiIntegrationService,
+      onStatusChanged: (status) => emitProjectEvent(projectRoot, IPC.contextStatusChanged, status),
     });
 
     const ctoStateService = createCtoStateService({

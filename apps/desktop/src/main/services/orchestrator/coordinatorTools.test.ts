@@ -2042,7 +2042,7 @@ describe("coordinatorTools budget hard-cap guards", () => {
           metadata: {
             phaseRuntime: {
               currentPhaseModel: {
-                modelId: "openai/gpt-4.1",
+                modelId: "openai/gpt-5.4",
                 provider: "openai"
               }
             }
@@ -2061,7 +2061,7 @@ describe("coordinatorTools budget hard-cap guards", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      modelId: "openai/gpt-4.1",
+      modelId: "openai/gpt-5.4",
     });
     expect(orchestratorService.addSteps).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2412,7 +2412,7 @@ describe("coordinatorTools delegate_parallel", () => {
           },
           phaseRuntime: {
             currentPhaseModel: {
-              modelId: "openai/gpt-4.1",
+              modelId: "openai/gpt-5.4",
               provider: "openai",
             },
           },
@@ -2461,8 +2461,8 @@ describe("coordinatorTools delegate_parallel", () => {
       ok: true,
       children: [
         expect.objectContaining({ name: "explicit-model", modelId: "openai/gpt-5.3-codex" }),
-        expect.objectContaining({ name: "role-default", modelId: "openai/gpt-4.1" }),
-        expect.objectContaining({ name: "parent-fallback", modelId: "openai/gpt-4.1" }),
+        expect.objectContaining({ name: "role-default", modelId: "openai/gpt-5.4" }),
+        expect.objectContaining({ name: "parent-fallback", modelId: "openai/gpt-5.4" }),
       ],
     });
 
@@ -2474,7 +2474,7 @@ describe("coordinatorTools delegate_parallel", () => {
     expect(secondBatch).toMatchObject({
       ok: true,
       children: [
-        expect.objectContaining({ name: "phase-fallback", modelId: "openai/gpt-4.1" }),
+        expect.objectContaining({ name: "phase-fallback", modelId: "openai/gpt-5.4" }),
       ],
     });
   });

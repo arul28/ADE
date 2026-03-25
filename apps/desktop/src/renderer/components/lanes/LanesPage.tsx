@@ -1238,7 +1238,7 @@ export function LanesPage() {
               <CaretDown size={12} style={{ opacity: 0.6 }} />
             </button>
             {branchDropdownOpen ? (
-              <div className="absolute left-0 top-full z-50 mt-1 max-h-80 overflow-auto" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
+              <div className="absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-auto" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
                 <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>LOCAL BRANCHES</div>
                 {localPrimaryBranches.map((branch) => (
                   <button
@@ -1388,7 +1388,7 @@ export function LanesPage() {
             <Plus size={12} /> NEW LANE
           </button>
           {addLaneDropdownOpen ? (
-            <div className="absolute left-0 top-full z-50 mt-2 w-60 rounded-xl border border-white/[0.06] bg-bg/80 p-1 shadow-float backdrop-blur-xl">
+            <div className="absolute left-0 top-full z-[200] mt-2 w-60 rounded-xl border border-white/[0.06] bg-bg/80 p-1 shadow-float backdrop-blur-xl">
               <button
                 type="button"
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"

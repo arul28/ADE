@@ -48,6 +48,7 @@ function installAdeMocks(options?: {
   sendError?: Error;
   steerError?: Error;
   listError?: Error;
+  handoffResult?: { session: { id: string }; usedFallbackSummary: boolean };
 }) {
   const send = options?.sendError
     ? vi.fn().mockRejectedValue(options.sendError)
@@ -58,6 +59,10 @@ function installAdeMocks(options?: {
   const list = options?.listError
     ? vi.fn().mockRejectedValue(options.listError)
     : vi.fn().mockResolvedValue([buildSession("session-1")]);
+  const handoff = vi.fn().mockResolvedValue(options?.handoffResult ?? {
+    session: { id: "handoff-session-1" },
+    usedFallbackSummary: false,
+  });
 
   globalThis.window.ade = {
     projectConfig: {
@@ -77,16 +82,19 @@ function installAdeMocks(options?: {
     agentChat: {
       models: vi.fn().mockImplementation(async ({ provider }: { provider: string }) => {
         if (provider === "codex") return [{ id: "gpt-5.4" }];
+        if (provider === "unified") return [{ id: "openai/gpt-5.4-mini" }];
         return [];
       }),
       slashCommands: vi.fn().mockResolvedValue([]),
       onEvent: vi.fn().mockImplementation(() => () => undefined),
+      handoff,
       send,
       steer,
       list,
       updateSession: vi.fn().mockResolvedValue(undefined),
       interrupt: vi.fn().mockResolvedValue(undefined),
       approve: vi.fn().mockResolvedValue(undefined),
+      respondToInput: vi.fn().mockResolvedValue(undefined),
       warmupModel: vi.fn().mockResolvedValue(undefined),
       fileSearch: vi.fn().mockResolvedValue([]),
       create: vi.fn().mockResolvedValue({ id: "created-session" }),
@@ -109,7 +117,7 @@ function installAdeMocks(options?: {
     },
   } as any;
 
-  return { send, steer, list };
+  return { send, steer, list, handoff };
 }
 
 const originalAde = globalThis.window.ade;
@@ -135,6 +143,20 @@ function renderPane(session: AgentChatSessionSummary) {
         lockSessionId={session.sessionId}
         hideSessionTabs
         initialSessionSummary={session}
+      />
+    </MemoryRouter>,
+  );
+}
+
+function renderResolverPane(session: AgentChatSessionSummary) {
+  return render(
+    <MemoryRouter>
+      <AgentChatPane
+        laneId={session.laneId}
+        lockSessionId={session.sessionId}
+        hideSessionTabs
+        initialSessionSummary={session}
+        presentation={{ mode: "resolver" }}
       />
     </MemoryRouter>,
   );
@@ -202,6 +224,70 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(send).toHaveBeenCalled();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry after the failure.");
+    });
+  });
+
+  it("shows chat handoff only for standard locked work chats", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks();
+    renderPane(session);
+
+    expect(await screen.findByRole("button", { name: "Chat handoff" })).not.toBeNull();
+
+    cleanup();
+    installAdeMocks();
+    renderResolverPane(session);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Chat handoff" })).toBeNull();
+    });
+  });
+
+  it("disables chat handoff while the current turn is still active", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks({
+      transcript: buildStatusStartedTranscript(session.sessionId),
+    });
+
+    renderPane(session);
+
+    const button = await screen.findByRole("button", { name: "Chat handoff" });
+    await waitFor(() => {
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
+
+  it("creates a sibling handoff chat and opens the returned work tab", async () => {
+    const session = buildSession("session-1");
+    const onSessionCreated = vi.fn().mockResolvedValue(undefined);
+    const { handoff } = installAdeMocks({
+      handoffResult: {
+        session: { id: "session-2" },
+        usedFallbackSummary: false,
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          onSessionCreated={onSessionCreated}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Chat handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
+
+    await waitFor(() => {
+      expect(handoff).toHaveBeenCalledWith({
+        sourceSessionId: session.sessionId,
+        targetModelId: "openai/gpt-5.4-mini",
+      });
+      expect(onSessionCreated).toHaveBeenCalledWith("session-2");
     });
   });
 });

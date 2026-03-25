@@ -10,7 +10,7 @@ import { grepSearchTool } from "./grepSearch";
 import { globSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
-import { createMemoryTools } from "./memoryTools";
+import { createMemoryTools, type MemoryWriteEvent, type TurnMemoryPolicyState } from "./memoryTools";
 import type { createUnifiedMemoryService } from "../../memory/unifiedMemoryService";
 import type { AgentChatApprovalDecision, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
@@ -27,6 +27,8 @@ export interface UniversalToolSetOptions {
   runId?: string;
   stepId?: string;
   agentScopeOwnerId?: string;
+  turnMemoryPolicyState?: TurnMemoryPolicyState;
+  onMemoryWriteEvent?: (event: MemoryWriteEvent) => void;
   /** Optional CTO core-memory updater for fallback/unified runtimes. */
   onMemoryUpdateCore?: (patch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>) => {
     version: number;
@@ -128,6 +130,17 @@ function compileSandbox(config: WorkerSandboxConfig): CompiledSandbox {
 }
 
 const WRITE_COMMAND_RE = /(?:>|>>|tee|cp\s|mv\s|rm\s|write|edit)/;
+const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
+
+const MEMORY_GUARD_REASON = "Search memory before mutating files or running mutating commands for this turn.";
+
+function requiresTurnMemoryGuard(state?: TurnMemoryPolicyState): boolean {
+  return !!state && state.classification === "required" && !state.orientationSatisfied && !state.explicitSearchPerformed;
+}
+
+function bashCommandLikelyMutates(command: string): boolean {
+  return MUTATING_BASH_RE.test(command) || WRITE_COMMAND_RE.test(command);
+}
 
 function resolveAllowedWriteRoots(cwd: string, sandboxConfig?: WorkerSandboxConfig): string[] {
   const roots = new Set<string>([path.resolve(cwd)]);
@@ -304,6 +317,7 @@ function createBashTool(
   mode: PermissionMode,
   sandboxConfig?: WorkerSandboxConfig,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+  turnMemoryPolicyState?: TurnMemoryPolicyState,
 ) {
   return tool({
     description:
@@ -319,6 +333,14 @@ function createBashTool(
     }),
     ...((() => { const a = makeApproval(mode, "bash", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
     execute: async ({ command, timeout }) => {
+      if (requiresTurnMemoryGuard(turnMemoryPolicyState) && bashCommandLikelyMutates(command)) {
+        return {
+          stdout: "",
+          stderr: `EXECUTION DENIED: ${MEMORY_GUARD_REASON}`,
+          exitCode: 126,
+        };
+      }
+
       const approval = await maybeRequestApproval({
         mode,
         category: "bash",
@@ -400,6 +422,7 @@ function createWriteFileTool(
   mode: PermissionMode,
   sandboxConfig?: WorkerSandboxConfig,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+  turnMemoryPolicyState?: TurnMemoryPolicyState,
 ) {
   return tool({
     description:
@@ -411,6 +434,13 @@ function createWriteFileTool(
     }),
     ...((() => { const a = makeApproval(mode, "write", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
     execute: async ({ file_path, content }) => {
+      if (requiresTurnMemoryGuard(turnMemoryPolicyState)) {
+        return {
+          success: false,
+          message: `Execution denied: ${MEMORY_GUARD_REASON}`,
+        };
+      }
+
       const approval = await maybeRequestApproval({
         mode,
         category: "write",
@@ -454,6 +484,7 @@ function createWriteFileTool(
 function createEditFileTool(
   mode: PermissionMode,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+  turnMemoryPolicyState?: TurnMemoryPolicyState,
 ) {
   return tool({
     description:
@@ -471,6 +502,13 @@ function createEditFileTool(
     }),
     ...((() => { const a = makeApproval(mode, "write", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
     execute: async ({ file_path, old_string, new_string, replace_all }) => {
+      if (requiresTurnMemoryGuard(turnMemoryPolicyState)) {
+        return {
+          success: false,
+          message: `Execution denied: ${MEMORY_GUARD_REASON}`,
+        };
+      }
+
       const approval = await maybeRequestApproval({
         mode,
         category: "write",
@@ -757,6 +795,8 @@ export function createUniversalToolSet(
     runId,
     stepId,
     agentScopeOwnerId,
+    turnMemoryPolicyState,
+    onMemoryWriteEvent,
     onAskUser,
     onApprovalRequest,
     onMemoryUpdateCore,
@@ -778,12 +818,12 @@ export function createUniversalToolSet(
     webSearch: webSearchTool,
 
     // Write tools (auto in edit+full-auto, gated in plan)
-    editFile: createEditFileTool(permissionMode, onApprovalRequest),
-    writeFile: createWriteFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest),
+    editFile: createEditFileTool(permissionMode, onApprovalRequest, turnMemoryPolicyState),
+    writeFile: createWriteFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
 
     // Bash (auto only in full-auto, gated in plan+edit)
     // Default sandbox applies unless the caller provides an explicit override.
-    bash: createBashTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest),
+    bash: createBashTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
 
     // Interactive
     askUser: createAskUserTool(onAskUser),
@@ -791,7 +831,13 @@ export function createUniversalToolSet(
 
   // Conditionally add memory tools
   if (memoryService && projectId) {
-    const memTools = createMemoryTools(memoryService, projectId, { runId, stepId, agentScopeOwnerId });
+    const memTools = createMemoryTools(memoryService, projectId, {
+      runId,
+      stepId,
+      agentScopeOwnerId,
+      turnMemoryPolicyState,
+      onMemoryWriteEvent,
+    });
     Object.assign(tools, memTools);
   }
 

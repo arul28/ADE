@@ -282,17 +282,24 @@ function createRuntime() {
     } as any,
     fileService: null,
     memoryService: {
-      addMemory: vi.fn(() => ({
-        id: "memory-1",
-        scope: "project",
-        status: "promoted",
-        category: "fact",
-        content: "x",
-        importance: "medium",
-        confidence: 1,
-        promotedAt: new Date().toISOString(),
-        sourceRunId: null,
-        createdAt: new Date().toISOString()
+      writeMemory: vi.fn(() => ({
+        accepted: true,
+        memory: {
+          id: "memory-1",
+          scope: "project",
+          status: "candidate",
+          tier: 3,
+          category: "fact",
+          content: "x",
+          importance: "medium",
+          confidence: 0.6,
+          promotedAt: null,
+          sourceRunId: null,
+          createdAt: new Date().toISOString()
+        },
+        deduped: false,
+        mergedIntoId: null,
+        reason: null,
       })),
       addSharedFact: vi.fn(() => ({
         id: "shared-fact-1"
@@ -2045,16 +2052,32 @@ describe("mcpServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.memoryService.addMemory).toHaveBeenCalledWith(
+    expect(fixture.runtime.memoryService.writeMemory).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: "mission",
         scopeOwnerId: "run-from-identity",
+        status: "candidate",
+        tier: 3,
+        confidence: 0.6,
       })
     );
     expect(fixture.runtime.memoryService.addSharedFact).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: "run-from-identity",
         stepId: "step-from-identity",
+      })
+    );
+    expect(response.structuredContent.memory).toEqual(
+      expect.objectContaining({
+        written: true,
+        durability: "candidate",
+        tier: 3,
+      })
+    );
+    expect(response.structuredContent).toEqual(
+      expect.objectContaining({
+        saved: true,
+        durability: "candidate",
       })
     );
     expect(response.structuredContent.sharedFact.written).toBe(true);

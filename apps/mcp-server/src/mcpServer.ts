@@ -11,6 +11,7 @@ import {
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
 import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPayload } from "../../desktop/src/main/services/computerUse/agentBrowserArtifactAdapter";
+import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/memory/unifiedMemoryService";
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { runGit } from "../../desktop/src/main/services/git/git";
@@ -3697,24 +3698,56 @@ async function runTool(args: {
     const requestedScope = parseMemoryToolScope(toolArgs.scope, callerCtx.runId ? "mission" : "project");
     const serviceScope = mapMemoryToolScopeToServiceScope(requestedScope);
     const scopeOwnerId = resolveMemoryToolScopeOwnerId(requestedScope, callerCtx);
+    const writePolicy = resolveAgentMemoryWritePolicy({ pin: false, writeGateMode: "default" });
 
-    let memoryWritten = false;
-    let memoryId: string | null = null;
-    let memoryError: string | null = null;
+    type MemoryWriteOutcome = {
+      written: boolean;
+      id: string | null;
+      error: string | null;
+      reason: string | null;
+      durability: "candidate" | "promoted" | "rejected";
+      tier: number | null;
+      deduped: boolean;
+      mergedIntoId: string | null;
+    };
+
+    let memoryOutcome: MemoryWriteOutcome;
     try {
-      const memory = runtime.memoryService.addMemory({
+      const result = runtime.memoryService.writeMemory({
         projectId: runtime.projectId,
         scope: serviceScope,
         ...(scopeOwnerId ? { scopeOwnerId } : {}),
+        tier: writePolicy.tier,
         category,
         content,
         importance,
+        status: writePolicy.status,
+        confidence: writePolicy.confidence,
+        writeGateMode: "default",
         ...(callerCtx.runId ? { sourceRunId: callerCtx.runId } : {})
       });
-      memoryWritten = true;
-      memoryId = memory.id;
+      if (result.accepted && result.memory) {
+        memoryOutcome = {
+          written: true,
+          id: result.memory.id,
+          error: null,
+          reason: result.reason ?? null,
+          durability: result.memory.status as "candidate" | "promoted",
+          tier: result.memory.tier,
+          deduped: result.deduped === true,
+          mergedIntoId: result.mergedIntoId ?? null,
+        };
+      } else {
+        memoryOutcome = {
+          written: false, id: null, error: result.reason ?? "memory write rejected",
+          reason: null, durability: "rejected", tier: null, deduped: false, mergedIntoId: null,
+        };
+      }
     } catch (error) {
-      memoryError = error instanceof Error ? error.message : String(error);
+      memoryOutcome = {
+        written: false, id: null, error: error instanceof Error ? error.message : String(error),
+        reason: null, durability: "rejected", tier: null, deduped: false, mergedIntoId: null,
+      };
     }
 
     const sharedFactAttempted = Boolean(callerCtx.runId) && requestedScope === "mission";
@@ -3752,9 +3785,13 @@ async function runTool(args: {
       importance,
       scope: requestedScope,
       memory: {
-        written: memoryWritten,
-        id: memoryId,
-        ...(memoryError ? { error: memoryError } : {})
+        written: memoryOutcome.written,
+        durability: memoryOutcome.durability,
+        id: memoryOutcome.id,
+        tier: memoryOutcome.tier,
+        deduped: memoryOutcome.deduped,
+        mergedIntoId: memoryOutcome.mergedIntoId,
+        ...(memoryOutcome.error ? { error: memoryOutcome.error } : {})
       },
       sharedFact: {
         attempted: sharedFactAttempted,
@@ -3769,7 +3806,12 @@ async function runTool(args: {
           : {}),
         ...(sharedFactError ? { error: sharedFactError } : {})
       },
-      wroteAny: memoryWritten || sharedFactWritten
+      wroteAny: memoryOutcome.written || sharedFactWritten,
+      saved: memoryOutcome.written,
+      durability: memoryOutcome.durability,
+      reason: memoryOutcome.written ? memoryOutcome.reason : (memoryOutcome.error ?? "memory write rejected"),
+      deduped: memoryOutcome.deduped,
+      mergedIntoId: memoryOutcome.mergedIntoId,
     };
   }
 

@@ -26,10 +26,41 @@ export function extractFirstJsonObject(text: string): string | null {
   }
 
   const first = raw.indexOf("{");
-  const last = raw.lastIndexOf("}");
-  if (first >= 0 && last > first) {
-    const candidate = raw.slice(first, last + 1).trim();
-    if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
+  if (first >= 0) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = first; index < raw.length; index += 1) {
+      const char = raw[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === "\"") {
+        inString = true;
+        continue;
+      }
+      if (char === "{") {
+        depth += 1;
+        continue;
+      }
+      if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          return raw.slice(first, index + 1);
+        }
+      }
+    }
   }
 
   return null;

@@ -6,6 +6,14 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 
+function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
+  const match = screen.getAllByRole("button").find((button) => matcher.test(button.textContent ?? ""));
+  if (!match) {
+    throw new Error(`Unable to find button matching ${String(matcher)}`);
+  }
+  return match as HTMLButtonElement;
+}
+
 function LocationProbe() {
   const location = useLocation();
   return (
@@ -130,7 +138,25 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
-  it("groups consecutive commands into one expandable card", () => {
+  it("renders memory system notices in the transcript", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "memory",
+          message: "Checked memory: 5 hits, injected 3 relevant entries",
+          detail: "Policy: required\nProject hits: 4\nAgent hits: 1",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("memory")).toBeTruthy();
+    expect(screen.getByText("Checked memory: 5 hits, injected 3 relevant entries")).toBeTruthy();
+  });
+
+  it("groups consecutive commands into one compact work log block", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -164,13 +190,16 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: /2 commands/i }));
+    expect(screen.getByText("Work log (2)")).toBeTruthy();
+
+    fireEvent.click(findButtonByTextContent(/npm test/i));
+    fireEvent.click(findButtonByTextContent(/npm run lint/i));
 
     expect(screen.getAllByText("npm test").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("npm run lint").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("groups consecutive file changes into one expandable card", () => {
+  it("groups consecutive file changes into one compact work log block", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -200,11 +229,42 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: /2 files/i }));
+    expect(screen.getByText("Work log (2)")).toBeTruthy();
+
+    fireEvent.click(findButtonByTextContent(/foo\.ts/i));
+    fireEvent.click(findButtonByTextContent(/bar\.ts/i));
 
     const body = document.body.textContent ?? "";
     expect(body).toContain("foo.ts");
     expect(body).toContain("bar.ts");
+  });
+
+  it("shows the newest six work-log entries by default and expands overflow on demand", () => {
+    renderMessageList(
+      Array.from({ length: 7 }, (_, index) => ({
+        sessionId: "session-1",
+        timestamp: `2026-03-17T10:00:0${index}.000Z`,
+        event: {
+          type: "command" as const,
+          command: `echo ${index + 1}`,
+          cwd: "/Users/admin/project",
+          output: String(index + 1),
+          itemId: `command-${index + 1}`,
+          turnId: "turn-1",
+          status: "completed" as const,
+          exitCode: 0,
+        },
+      })),
+    );
+
+    expect(screen.getByText("Work log (7)")).toBeTruthy();
+    expect(screen.getByText("Show 1 more")).toBeTruthy();
+    expect(screen.queryByText(/Shell - echo 1/i)).toBeNull();
+    expect(findButtonByTextContent(/echo 7/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 more" }));
+
+    expect(findButtonByTextContent(/echo 1/i)).toBeTruthy();
   });
 
   it("makes workspace markdown links open the Files tab", () => {
@@ -309,7 +369,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(view.container.textContent).not.toContain("Grouped output");
     expect(view.container.textContent).toContain("Grouped");
     expect(view.container.textContent).toContain("output");
-    expect(screen.getByText("echo ok")).toBeTruthy();
+    expect(findButtonByTextContent(/echo ok/i)).toBeTruthy();
   });
 
   it("keeps activity rows in the streaming indicator instead of the transcript", () => {

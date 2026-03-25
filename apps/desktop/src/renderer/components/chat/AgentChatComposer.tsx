@@ -3,24 +3,22 @@ import { At, CaretDown, Image, Paperclip, Square, X, PaperPlaneTilt, Lightning }
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
+  type AgentChatClaudePermissionMode,
+  type AgentChatCodexApprovalPolicy,
+  type AgentChatCodexConfigSource,
+  type AgentChatCodexSandbox,
   type AgentChatExecutionMode,
   type AgentChatFileRef,
-  type AgentChatPermissionMode,
   type AgentChatSlashCommand,
+  type AgentChatUnifiedPermissionMode,
   type ComputerUseOwnerSnapshot,
-  type ChatSurfaceProfile,
   type ChatSurfaceMode,
   type ComputerUsePolicy,
+  type PendingInputRequest,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
-import {
-  getPermissionOptions,
-  safetyBadgeLabel,
-  safetyColors,
-  type PermissionOption,
-} from "../shared/permissionOptions";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ChatSubagentStrip } from "./ChatSubagentStrip";
@@ -100,67 +98,36 @@ function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: 
   return result;
 }
 
-/* ── Permission hover pane ── */
-function PermissionHoverPane({ opt }: { opt: PermissionOption }) {
-  const colors = safetyColors(opt.safety);
-  const badgeLabel = safetyBadgeLabel(opt.safety);
+const CLAUDE_PERMISSION_OPTIONS: Array<{ value: AgentChatClaudePermissionMode; label: string }> = [
+  { value: "default", label: "Default" },
+  { value: "plan", label: "Plan" },
+  { value: "acceptEdits", label: "Accept edits" },
+  { value: "bypassPermissions", label: "Bypass" },
+];
 
-  return (
-    <div
-      className={cn(
-        "pointer-events-none absolute z-50 w-[260px]",
-        "rounded-xl border border-white/[0.08] bg-card shadow-[var(--shadow-float)]",
-        "border-l-2",
-        colors.border
-      )}
-      style={{ bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)" }}
-    >
-      <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2">
-        <span className="font-sans text-[11px] font-bold uppercase tracking-wider text-fg/85">{opt.label}</span>
-        <span className={cn("ml-auto font-sans text-[9px] font-bold uppercase tracking-widest", colors.badge)}>{badgeLabel}</span>
-      </div>
-      <div className="space-y-2.5 px-3 py-2.5">
-        <p className="font-sans text-[11px] leading-[1.5] text-fg/75">{opt.shortDesc}</p>
-        <p className="font-sans text-[11px] leading-[1.5] text-fg/60">{opt.detail}</p>
-        {opt.allows.length > 0 && (
-          <div className="space-y-1">
-            {opt.allows.map((item) => (
-              <div key={item} className="flex items-start gap-1.5">
-                <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 bg-emerald-400/70" />
-                <span className="font-mono text-[10px] text-emerald-400/80">{item}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {opt.gates && opt.gates.length > 0 && (
-          <div className="space-y-1">
-            {opt.gates.map((item) => (
-              <div key={item} className="flex items-start gap-1.5">
-                <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 bg-amber-400/70" />
-                <span className="font-mono text-[10px] text-amber-400/70">{item}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {opt.blocks && opt.blocks.length > 0 && (
-          <div className="space-y-1">
-            {opt.blocks.map((item) => (
-              <div key={item} className="flex items-start gap-1.5">
-                <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 bg-red-400/70" />
-                <span className="font-mono text-[10px] text-red-400/70">{item}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {opt.warning && (
-          <div className="rounded-md border border-red-500/20 bg-red-500/[0.08] px-2 py-1.5">
-            <span className="font-sans text-[10px] leading-[1.4] text-red-400/80">{opt.warning}</span>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+const CODEX_APPROVAL_OPTIONS: Array<{ value: AgentChatCodexApprovalPolicy; label: string }> = [
+  { value: "untrusted", label: "Untrusted" },
+  { value: "on-request", label: "On request" },
+  { value: "on-failure", label: "On failure" },
+  { value: "never", label: "Never" },
+];
+
+const CODEX_SANDBOX_OPTIONS: Array<{ value: AgentChatCodexSandbox; label: string }> = [
+  { value: "read-only", label: "Read only" },
+  { value: "workspace-write", label: "Workspace write" },
+  { value: "danger-full-access", label: "Danger full access" },
+];
+
+const CODEX_CONFIG_SOURCE_OPTIONS: Array<{ value: AgentChatCodexConfigSource; label: string }> = [
+  { value: "flags", label: "ADE flags" },
+  { value: "config-toml", label: "config.toml" },
+];
+
+const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode; label: string }> = [
+  { value: "plan", label: "Plan" },
+  { value: "edit", label: "Edit" },
+  { value: "full-auto", label: "Full auto" },
+];
 
 type AdvancedSettingsPopoverProps = {
   executionModeOptions: ExecutionModeOption[];
@@ -417,21 +384,22 @@ function ComputerUseSettingsModal({
 
 export function AgentChatComposer({
   surfaceMode = "standard",
-  surfaceProfile = "standard",
   sdkSlashCommands = [],
   modelId,
   availableModelIds,
   reasoningEffort,
   draft,
   attachments,
-  pendingApproval,
+  pendingInput,
   turnActive,
   sendOnEnter,
   busy,
-  laneId,
-  permissionMode,
   sessionProvider,
-  sessionIsCliWrapped,
+  claudePermissionMode,
+  codexApprovalPolicy,
+  codexSandbox,
+  codexConfigSource,
+  unifiedPermissionMode,
   executionMode,
   computerUsePolicy,
   computerUseSnapshot,
@@ -452,7 +420,11 @@ export function AgentChatComposer({
   onRemoveAttachment,
   onSearchAttachments,
   onExecutionModeChange,
-  onPermissionModeChange,
+  onClaudePermissionModeChange,
+  onCodexApprovalPolicyChange,
+  onCodexSandboxChange,
+  onCodexConfigSourceChange,
+  onUnifiedPermissionModeChange,
   includeProjectDocs,
   onIncludeProjectDocsChange,
   onComputerUsePolicyChange,
@@ -462,25 +434,22 @@ export function AgentChatComposer({
   subagentSnapshots = [],
 }: {
   surfaceMode?: ChatSurfaceMode;
-  surfaceProfile?: ChatSurfaceProfile;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
   reasoningEffort: string | null;
   draft: string;
   attachments: AgentChatFileRef[];
-  pendingApproval: {
-    itemId: string;
-    description: string;
-    kind: "command" | "file_change" | "tool_call";
-  } | null;
+  pendingInput: PendingInputRequest | null;
   turnActive: boolean;
   sendOnEnter: boolean;
   busy: boolean;
-  laneId?: string;
-  permissionMode?: AgentChatPermissionMode;
   sessionProvider?: string;
-  sessionIsCliWrapped?: boolean;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
   executionMode?: AgentChatExecutionMode | null;
   computerUsePolicy: ComputerUsePolicy;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
@@ -501,7 +470,11 @@ export function AgentChatComposer({
   onRemoveAttachment: (path: string) => void;
   onSearchAttachments: (query: string) => Promise<AgentChatFileRef[]>;
   onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
-  onPermissionModeChange?: (mode: AgentChatPermissionMode) => void;
+  onClaudePermissionModeChange?: (mode: AgentChatClaudePermissionMode) => void;
+  onCodexApprovalPolicyChange?: (policy: AgentChatCodexApprovalPolicy) => void;
+  onCodexSandboxChange?: (sandbox: AgentChatCodexSandbox) => void;
+  onCodexConfigSourceChange?: (source: AgentChatCodexConfigSource) => void;
+  onUnifiedPermissionModeChange?: (mode: AgentChatUnifiedPermissionMode) => void;
   includeProjectDocs?: boolean;
   onIncludeProjectDocsChange?: (checked: boolean) => void;
   onComputerUsePolicyChange: (policy: ComputerUsePolicy) => void;
@@ -510,7 +483,6 @@ export function AgentChatComposer({
   promptSuggestion?: string | null;
   subagentSnapshots?: ChatSubagentSnapshot[];
 }) {
-  const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
@@ -521,7 +493,6 @@ export function AgentChatComposer({
   const [slashQuery, setSlashQuery] = useState("");
   const [slashCursor, setSlashCursor] = useState(0);
 
-  const [hoveredMode, setHoveredMode] = useState<AgentChatPermissionMode | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [advancedMenuOpen, setAdvancedMenuOpen] = useState(false);
   const [computerUseModalOpen, setComputerUseModalOpen] = useState(false);
@@ -644,7 +615,10 @@ export function AgentChatComposer({
         // Read the blob, save to a temp file via IPC, then attach.
         try {
           const buf = await file.arrayBuffer();
-          const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+          const bytes = new Uint8Array(buf);
+          let binary = "";
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          const base64 = btoa(binary);
           const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
             data: base64,
             filename: file.name || "clipboard.png",
@@ -667,11 +641,63 @@ export function AgentChatComposer({
     onDraftChange(`${cmd.command}${hint}`);
   };
 
-  const permissionOptions = getPermissionOptions({
-    family: selectedModel?.family ?? sessionProvider ?? "unified",
-    isCliWrapped: sessionIsCliWrapped ?? false,
-    profile: surfaceProfile,
-  });
+  const nativeControlsDisabled = permissionModeLocked;
+  const showCodexFlagControls = codexConfigSource !== "config-toml";
+  const nativeControlPanel = useMemo(() => {
+    const renderSelect = <T extends string,>(
+      label: string,
+      value: T | undefined,
+      options: Array<{ value: T; label: string }>,
+      onChange: ((value: T) => void) | undefined,
+      disabled = false,
+    ) => (
+      <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
+        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{label}</span>
+        <select
+          value={value}
+          disabled={disabled || !onChange}
+          onChange={(event) => onChange?.(event.target.value as T)}
+          className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+
+    if (sessionProvider === "claude") {
+      return renderSelect("Claude", claudePermissionMode, CLAUDE_PERMISSION_OPTIONS, onClaudePermissionModeChange, nativeControlsDisabled);
+    }
+
+    if (sessionProvider === "codex") {
+      return (
+        <div className="flex flex-wrap items-center gap-2">
+          {renderSelect("Config", codexConfigSource, CODEX_CONFIG_SOURCE_OPTIONS, onCodexConfigSourceChange, nativeControlsDisabled)}
+          {renderSelect("Approval", codexApprovalPolicy, CODEX_APPROVAL_OPTIONS, onCodexApprovalPolicyChange, nativeControlsDisabled || !showCodexFlagControls)}
+          {renderSelect("Sandbox", codexSandbox, CODEX_SANDBOX_OPTIONS, onCodexSandboxChange, nativeControlsDisabled || !showCodexFlagControls)}
+        </div>
+      );
+    }
+
+    return renderSelect("ADE", unifiedPermissionMode, UNIFIED_PERMISSION_OPTIONS, onUnifiedPermissionModeChange, nativeControlsDisabled);
+  }, [
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexConfigSource,
+    codexSandbox,
+    nativeControlsDisabled,
+    onClaudePermissionModeChange,
+    onCodexApprovalPolicyChange,
+    onCodexConfigSourceChange,
+    onCodexSandboxChange,
+    onUnifiedPermissionModeChange,
+    sessionProvider,
+    showCodexFlagControls,
+    unifiedPermissionMode,
+  ]);
   /* ── Keyboard handler for textarea ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
@@ -705,7 +731,7 @@ export function AgentChatComposer({
     if (event.key === "Escape") {
       event.preventDefault();
       if (attachmentPickerOpen) { setAttachmentPickerOpen(false); return; }
-      if (pendingApproval) { onApproval("cancel"); return; }
+      if (pendingInput) { onApproval("cancel"); return; }
       if (draft.length) { onDraftChange(""); }
       return;
     }
@@ -762,20 +788,30 @@ export function AgentChatComposer({
       <ChatComposerShell
       mode={surfaceMode}
       className="m-3 mt-0 rounded-[var(--chat-radius-shell)]"
-      pendingBanner={pendingApproval ? (
+      pendingBanner={pendingInput ? (
         <div className="px-4 py-3">
           <div className="mb-2 flex items-center gap-2">
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
               <Lightning size={11} weight="bold" className="text-amber-300" />
             </span>
-            <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200">Approval · {pendingApproval.kind}</span>
+            <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200">
+              {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? "Approval" : "Input needed"} · {pendingInput.source}
+            </span>
           </div>
-          <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/68">{pendingApproval.description}</div>
-          <div className="flex items-center gap-1.5">
-            <button type="button" className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20" onClick={() => onApproval("accept")}>Accept</button>
-            <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10" onClick={() => onApproval("accept_for_session")}>Accept All</button>
-            <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Decline</button>
+          <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/68">
+            {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
           </div>
+          {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
+            <div className="flex items-center gap-1.5">
+              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20" onClick={() => onApproval("accept")}>Accept</button>
+              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10" onClick={() => onApproval("accept_for_session")}>Accept all</button>
+              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Decline</button>
+            </div>
+          ) : (
+            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
+              Open the question modal to answer and continue.
+            </div>
+          )}
         </div>
       ) : undefined}
       trays={
@@ -891,39 +927,7 @@ export function AgentChatComposer({
         <div className="space-y-2 px-3 py-2">
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-              {permissionMode && permissionOptions.length > 0 ? (
-                <div className="relative flex shrink-0 flex-wrap items-center gap-px rounded-md border border-white/[0.06] bg-white/[0.02]">
-                  {permissionOptions.map((opt) => {
-                    const isActive = permissionMode === opt.value;
-                    const isLocked = permissionModeLocked || !onPermissionModeChange;
-                    const colors = safetyColors(opt.safety);
-                    const isHovered = hoveredMode === opt.value;
-                    return (
-                      <div key={opt.value} className="relative">
-                        <button
-                          type="button"
-                          className={cn(
-                            "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
-                            isActive ? `${colors.activeBg} text-fg/80` : "text-muted-fg/25 hover:text-muted-fg/50",
-                            isLocked ? "cursor-not-allowed opacity-70" : "",
-                          )}
-                          disabled={isLocked}
-                          onClick={() => onPermissionModeChange?.(opt.value)}
-                          onMouseEnter={() => {
-                            if (!isLocked && !isPersistentIdentitySurface) setHoveredMode(opt.value);
-                          }}
-                          onMouseLeave={() => setHoveredMode(null)}
-                          title={isLocked ? `${opt.label} is locked for this surface` : `${opt.shortDesc} — ${opt.detail}`}
-                          aria-pressed={isActive}
-                        >
-                          {opt.label}
-                        </button>
-                        {isHovered && !isPersistentIdentitySurface ? <PermissionHoverPane opt={opt} /> : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
+              {nativeControlPanel}
             </div>
 
             <div className="min-w-0 shrink">

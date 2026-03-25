@@ -23,7 +23,7 @@ export function ChatSurfaceShell({
   return (
     <section
       className={cn(
-        "relative flex h-full min-h-0 flex-col overflow-hidden border border-white/[0.05] bg-[#09090b]",
+        "relative flex h-full min-h-0 flex-col border border-white/[0.05] bg-[#09090b]",
         className,
       )}
       style={chatSurfaceVars(mode, accentColor)}
@@ -33,7 +33,7 @@ export function ChatSurfaceShell({
           {header}
         </div>
       ) : null}
-      <div className={cn("relative min-h-0 flex-1 bg-[#09090b]", bodyClassName)}>
+      <div className={cn("relative min-h-0 flex-1 overflow-hidden bg-[#09090b]", bodyClassName)}>
         {children}
       </div>
       {footer ? (

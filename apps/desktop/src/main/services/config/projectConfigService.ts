@@ -189,7 +189,7 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
     chat.codexSandbox = codexSandbox;
   }
   const claudePermissionMode = asString(value.claudePermissionMode)?.trim();
-  if (claudePermissionMode === "plan" || claudePermissionMode === "acceptEdits" || claudePermissionMode === "bypassPermissions") {
+  if (claudePermissionMode === "default" || claudePermissionMode === "plan" || claudePermissionMode === "acceptEdits" || claudePermissionMode === "bypassPermissions") {
     chat.claudePermissionMode = claudePermissionMode;
   }
   const sessionBudgetUsd = asNumber(value.sessionBudgetUsd);

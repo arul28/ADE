@@ -4,11 +4,15 @@ import {
   createDefaultComputerUsePolicy,
   inferAttachmentType,
   type AgentChatApprovalDecision,
+  type AgentChatClaudePermissionMode,
+  type AgentChatCodexApprovalPolicy,
+  type AgentChatCodexConfigSource,
+  type AgentChatCodexSandbox,
   type AgentChatExecutionMode,
   type AgentChatEventEnvelope,
   type AgentChatFileRef,
-  type AgentChatPermissionMode,
   type AiProviderConnectionStatus,
+  type AgentChatUnifiedPermissionMode,
   type AgentChatSessionProfile,
   type ChatSurfaceChip,
   type ChatSurfaceProfile,
@@ -30,15 +34,10 @@ import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
-import { normalizePermissionModeForProfile } from "../shared/permissionOptions";
 import { deriveChatSubagentSnapshots } from "./chatExecutionSummary";
-
-type PendingApproval = {
-  itemId: string;
-  description: string;
-  kind: "command" | "file_change" | "tool_call";
-  detail?: unknown;
-};
+import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
+import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { useClickOutside } from "../../hooks/useClickOutside";
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
@@ -90,35 +89,11 @@ function getExecutionModeOptions(model: ModelDescriptor | null | undefined): Exe
   return [];
 }
 
-function readRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function extractAskUserQuestion(approval: PendingApproval | null): { question: string; options?: Array<{ label: string; value: string }> } | null {
-  if (!approval || approval.kind !== "tool_call") return null;
-  const detail = readRecord(approval.detail);
-  const tool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
-  const question = typeof detail?.question === "string" ? detail.question.trim() : "";
-  if (tool !== "askUser" || !question.length) return null;
-  let options: Array<{ label: string; value: string }> | undefined;
-  if (Array.isArray(detail?.options)) {
-    const parsed = (detail.options as unknown[]).filter(
-      (opt): opt is { label: string; value: string } =>
-        opt !== null && typeof opt === "object" && typeof (opt as Record<string, unknown>).label === "string" && typeof (opt as Record<string, unknown>).value === "string",
-    );
-    if (parsed.length > 0) options = parsed;
-  }
-  return { question, options };
-}
-
 function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   turnActive: boolean;
-  pendingApprovals: PendingApproval[];
+  pendingInputs: DerivedPendingInput[];
 } {
   let turnActive = false;
-  const pending = new Map<string, PendingApproval>();
 
   for (const envelope of events) {
     const event = envelope.event;
@@ -130,28 +105,85 @@ function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
 
     if (event.type === "done") {
       turnActive = false;
-      pending.clear();
       continue;
-    }
-
-    if (event.type === "approval_request") {
-      pending.set(event.itemId, {
-        itemId: event.itemId,
-        description: event.description,
-        kind: event.kind,
-        detail: event.detail,
-      });
-      continue;
-    }
-
-    if (event.type === "tool_result" || event.type === "command" || event.type === "file_change") {
-      pending.delete(event.itemId);
     }
   }
 
   return {
     turnActive,
-    pendingApprovals: [...pending.values()]
+    pendingInputs: derivePendingInputRequests(events),
+  };
+}
+
+type NativeControlState = {
+  claudePermissionMode: AgentChatClaudePermissionMode;
+  codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+  codexSandbox: AgentChatCodexSandbox;
+  codexConfigSource: AgentChatCodexConfigSource;
+  unifiedPermissionMode: AgentChatUnifiedPermissionMode;
+};
+
+function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
+  if (profile === "persistent_identity") {
+    return {
+      claudePermissionMode: "bypassPermissions",
+      codexApprovalPolicy: "never",
+      codexSandbox: "danger-full-access",
+      codexConfigSource: "flags",
+      unifiedPermissionMode: "full-auto",
+    };
+  }
+  return {
+    claudePermissionMode: "default",
+    codexApprovalPolicy: "on-request",
+    codexSandbox: "workspace-write",
+    codexConfigSource: "flags",
+    unifiedPermissionMode: "edit",
+  };
+}
+
+function summarizeNativeControls(
+  provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "unified",
+  controls: NativeControlState,
+): Pick<
+  AgentChatSessionSummary,
+  "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode" | "permissionMode"
+> {
+  if (provider === "claude") {
+    let permissionMode: AgentChatSessionSummary["permissionMode"];
+    if (controls.claudePermissionMode === "bypassPermissions") {
+      permissionMode = "full-auto";
+    } else if (controls.claudePermissionMode === "acceptEdits") {
+      permissionMode = "edit";
+    } else {
+      permissionMode = controls.claudePermissionMode;
+    }
+    return {
+      claudePermissionMode: controls.claudePermissionMode,
+      permissionMode,
+    };
+  }
+  if (provider === "codex") {
+    let permissionMode: AgentChatSessionSummary["permissionMode"];
+    if (controls.codexConfigSource === "config-toml") {
+      permissionMode = "config-toml";
+    } else if (controls.codexApprovalPolicy === "never" && controls.codexSandbox === "danger-full-access") {
+      permissionMode = "full-auto";
+    } else if (controls.codexApprovalPolicy === "on-failure" && controls.codexSandbox === "workspace-write") {
+      permissionMode = "edit";
+    } else if (controls.codexApprovalPolicy === "untrusted" && controls.codexSandbox === "read-only") {
+      permissionMode = "plan";
+    }
+    return {
+      codexApprovalPolicy: controls.codexApprovalPolicy,
+      codexSandbox: controls.codexSandbox,
+      codexConfigSource: controls.codexConfigSource,
+      ...(permissionMode ? { permissionMode } : {}),
+    };
+  }
+  return {
+    unifiedPermissionMode: controls.unifiedPermissionMode,
+    permissionMode: controls.unifiedPermissionMode,
   };
 }
 
@@ -233,6 +265,17 @@ function selectReasoningEffort(args: {
     return args.preferred;
   }
   return args.tiers.includes("medium") ? "medium" : args.tiers[0]!;
+}
+
+function resolveAssistantLabel(
+  model: ModelDescriptor | null | undefined,
+  sessionProvider: string | null | undefined,
+): string {
+  if (model?.family === "anthropic" || model?.cliCommand === "claude") return "Claude";
+  if (model?.family === "openai" || model?.cliCommand === "codex") return "Codex";
+  if (sessionProvider === "claude") return "Claude";
+  if (sessionProvider === "codex") return "Codex";
+  return "Assistant";
 }
 
 function byStartedDesc(a: AgentChatSessionSummary, b: AgentChatSessionSummary): number {
@@ -420,18 +463,21 @@ export function AgentChatPane({
   const surfaceProfile: ChatSurfaceProfile = presentation?.profile ?? "standard";
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
+  const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
-  const [approvalsBySession, setApprovalsBySession] = useState<Record<string, PendingApproval[]>>({});
+  const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
   const [modelId, setModelId] = useState<string>("");
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
-  const [permissionMode, setPermissionMode] = useState<AgentChatPermissionMode>(
-    surfaceProfile === "persistent_identity" ? "full-auto" : "plan",
-  );
+  const [claudePermissionMode, setClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(initialNativeControls.claudePermissionMode);
+  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<AgentChatCodexApprovalPolicy>(initialNativeControls.codexApprovalPolicy);
+  const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
+  const [codexConfigSource, setCodexConfigSource] = useState<AgentChatCodexConfigSource>(initialNativeControls.codexConfigSource);
+  const [unifiedPermissionMode, setUnifiedPermissionMode] = useState<AgentChatUnifiedPermissionMode>(initialNativeControls.unifiedPermissionMode);
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
   const [providerConnections, setProviderConnections] = useState<{
     claude: AiProviderConnectionStatus | null;
@@ -451,6 +497,9 @@ export function AgentChatPane({
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
+  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [handoffModelId, setHandoffModelId] = useState("");
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
@@ -467,6 +516,7 @@ export function AgentChatPane({
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
+  const handoffRef = useRef<HTMLDivElement | null>(null);
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
@@ -488,8 +538,7 @@ export function AgentChatPane({
     : selectedSession?.provider === "codex"
       ? (providerConnections?.codex ?? null)
       : null;
-  const pendingApproval = selectedSessionId ? (approvalsBySession[selectedSessionId]?.[0] ?? null) : null;
-  const pendingQuestion = useMemo(() => extractAskUserQuestion(pendingApproval), [pendingApproval]);
+  const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
   const surfaceMode = presentation?.mode ?? "standard";
@@ -506,44 +555,28 @@ export function AgentChatPane({
     return "unified";
   }, [selectedSession, modelSelectionDiffersFromSession, modelId]);
 
-  const sessionIsCliWrapped = useMemo(() => {
-    if (selectedSessionModelId && !modelSelectionDiffersFromSession) {
-      const desc = getModelById(selectedSessionModelId);
-      return desc?.isCliWrapped ?? false;
-    }
-    return selectedModelDesc?.isCliWrapped ?? false;
-  }, [selectedSessionModelId, modelSelectionDiffersFromSession, selectedModelDesc]);
-  const permissionFamily = useMemo(
-    () => selectedModelDesc?.family
-      ?? (sessionProvider === "claude" ? "anthropic" : sessionProvider === "codex" ? "openai" : "unified"),
-    [selectedModelDesc?.family, sessionProvider],
-  );
-  const permissionIsCliWrapped = useMemo(
-    () => selectedModelDesc?.isCliWrapped ?? sessionIsCliWrapped ?? false,
-    [selectedModelDesc?.isCliWrapped, sessionIsCliWrapped],
-  );
-  const coercePermissionMode = useCallback(
-    (mode?: AgentChatPermissionMode | null): AgentChatPermissionMode =>
-      normalizePermissionModeForProfile({
-        profile: surfaceProfile,
-        family: permissionFamily,
-        isCliWrapped: permissionIsCliWrapped,
-        mode: mode ?? (surfaceProfile === "persistent_identity" ? "full-auto" : "plan"),
-      }),
-    [permissionFamily, permissionIsCliWrapped, surfaceProfile],
-  );
-
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
-    if (!session) return;
+    if (!session) {
+      setClaudePermissionMode(initialNativeControls.claudePermissionMode);
+      setCodexApprovalPolicy(initialNativeControls.codexApprovalPolicy);
+      setCodexSandbox(initialNativeControls.codexSandbox);
+      setCodexConfigSource(initialNativeControls.codexConfigSource);
+      setUnifiedPermissionMode(initialNativeControls.unifiedPermissionMode);
+      return;
+    }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
     if (nextModelId) {
       setModelId(nextModelId);
     }
     setReasoningEffort(session.reasoningEffort ?? null);
     setExecutionMode(session.executionMode ?? "focused");
-    setPermissionMode(coercePermissionMode(session.permissionMode));
+    setClaudePermissionMode(session.claudePermissionMode ?? initialNativeControls.claudePermissionMode);
+    setCodexApprovalPolicy(session.codexApprovalPolicy ?? initialNativeControls.codexApprovalPolicy);
+    setCodexSandbox(session.codexSandbox ?? initialNativeControls.codexSandbox);
+    setCodexConfigSource(session.codexConfigSource ?? initialNativeControls.codexConfigSource);
+    setUnifiedPermissionMode(session.unifiedPermissionMode ?? initialNativeControls.unifiedPermissionMode);
     setComputerUsePolicy(session.computerUse ?? createDefaultComputerUsePolicy());
-  }, [coercePermissionMode]);
+  }, [initialNativeControls]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
     [selectedModelDesc],
@@ -560,15 +593,7 @@ export function AgentChatPane({
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : laneDisplayLabel?.trim() || "Chat");
   const assistantLabel = presentation?.assistantLabel?.trim()
-    || (selectedModelDesc?.family === "anthropic" || selectedModelDesc?.cliCommand === "claude"
-      ? "Claude"
-      : selectedModelDesc?.family === "openai" || selectedModelDesc?.cliCommand === "codex"
-        ? "Codex"
-        : selectedSession?.provider === "claude"
-          ? "Claude"
-          : selectedSession?.provider === "codex"
-            ? "Codex"
-            : "Assistant");
+    || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
   const messagePlaceholder = presentation?.messagePlaceholder?.trim()
     || (assistantLabel === "Assistant" ? "Message the assistant..." : `Message ${assistantLabel}...`);
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
@@ -585,6 +610,28 @@ export function AgentChatPane({
       policy: modelSwitchPolicy,
     });
   }, [availableModelIds, availableModelIdsOverride, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length]);
+  const handoffAvailableModelIds = useMemo(() => {
+    const merged = new Set<string>(availableModelIdsOverride?.length ? availableModelIdsOverride : availableModelIds);
+    if (selectedSessionModelId) {
+      merged.add(selectedSessionModelId);
+    }
+    return MODEL_REGISTRY
+      .filter((model) => !model.deprecated && merged.has(model.id))
+      .map((model) => model.id);
+  }, [availableModelIds, availableModelIdsOverride, selectedSessionModelId]);
+  const canShowHandoff = Boolean(
+    lockSessionId
+      && selectedSessionId
+      && selectedSession
+      && handoffAvailableModelIds.length > 0
+      && surfaceMode === "standard"
+      && !isPersistentIdentitySurface
+      && (selectedSession.surface ?? "work") === "work",
+  );
+  const handoffBlocked = turnActive || Boolean(pendingInput) || handoffBusy;
+  const handoffButtonTitle = handoffBlocked
+    ? "Wait for the current output or approval to finish before handing off this chat."
+    : "Create a new work chat on another model and seed it with a summary of this chat.";
 
   const refreshAvailableModels = useCallback(async () => {
     try {
@@ -775,7 +822,7 @@ export function AgentChatPane({
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
       setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: derived.turnActive }));
-      setApprovalsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingApprovals }));
+      setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
     } catch {
       // Ignore transcript history failures.
     }
@@ -910,13 +957,6 @@ export function AgentChatPane({
   }, [executionMode, executionModeOptions]);
 
   useEffect(() => {
-    const nextMode = selectedSession
-      ? coercePermissionMode(selectedSession.permissionMode)
-      : coercePermissionMode(undefined);
-    setPermissionMode((current) => (current === nextMode ? current : nextMode));
-  }, [coercePermissionMode, selectedSession]);
-
-  useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
   }, [selectedSessionId]);
 
@@ -929,6 +969,19 @@ export function AgentChatPane({
     for (const sessionId of optimisticSessionIdsRef.current) next.add(sessionId);
     knownSessionIdsRef.current = next;
   }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
+
+  useClickOutside(handoffRef, () => setHandoffOpen(false), handoffOpen);
+
+  useEffect(() => {
+    if (!handoffOpen) return;
+    const preferredTargetId = handoffAvailableModelIds.find((id) => id !== selectedSessionModelId) ?? handoffAvailableModelIds[0] ?? "";
+    setHandoffModelId((current) => {
+      if (current && handoffAvailableModelIds.includes(current)) {
+        return current;
+      }
+      return preferredTargetId;
+    });
+  }, [handoffAvailableModelIds, handoffOpen, selectedSessionModelId]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -956,6 +1009,8 @@ export function AgentChatPane({
   useEffect(() => {
     setAttachments([]);
     setPromptSuggestion(null);
+    setHandoffOpen(false);
+    setHandoffBusy(false);
   }, [selectedSessionId]);
 
   // Fetch SDK slash commands when session changes
@@ -1022,17 +1077,17 @@ export function AgentChatPane({
 
     // Derive turnActive and approvals from the fully-updated event lists.
     const activePatch: Record<string, boolean> = {};
-    const approvalPatch: Record<string, PendingApproval[]> = {};
+    const pendingInputPatch: Record<string, DerivedPendingInput[]> = {};
     for (const sessionId of touchedSessionIds) {
       const derived = deriveRuntimeState(next[sessionId] ?? []);
       activePatch[sessionId] = derived.turnActive;
-      approvalPatch[sessionId] = derived.pendingApprovals;
+      pendingInputPatch[sessionId] = derived.pendingInputs;
     }
 
     // All three setters fire synchronously — React 18 batches them into one render.
     setEventsBySession(next);
     setTurnActiveBySession((activePrev) => ({ ...activePrev, ...activePatch }));
-    setApprovalsBySession((approvalPrev) => ({ ...approvalPrev, ...approvalPatch }));
+    setPendingInputsBySession((pendingPrev) => ({ ...pendingPrev, ...pendingInputPatch }));
   }, []);
 
   const scheduleQueuedEventFlush = useCallback(() => {
@@ -1211,6 +1266,24 @@ export function AgentChatPane({
     )));
   }, []);
 
+  const currentNativeControls = useMemo<NativeControlState>(() => ({
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+    unifiedPermissionMode,
+  }), [
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+    unifiedPermissionMode,
+  ]);
+
+  const buildNativeControlPayload = useCallback((provider: "claude" | "codex" | "unified") => {
+    return summarizeNativeControls(provider, currentNativeControls);
+  }, [currentNativeControls]);
+
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
       return createSessionPromiseRef.current;
@@ -1230,7 +1303,7 @@ export function AgentChatPane({
         modelId,
         sessionProfile,
         reasoningEffort,
-        permissionMode,
+        ...buildNativeControlPayload(provider),
         computerUse: computerUsePolicy,
       });
       loadedHistoryRef.current.delete(created.id);
@@ -1250,7 +1323,26 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [computerUsePolicy, laneId, lockSessionId, modelId, onSessionCreated, permissionMode, reasoningEffort, refreshSessions, selectedSessionId]);
+  }, [buildNativeControlPayload, computerUsePolicy, laneId, modelId, onSessionCreated, reasoningEffort, refreshSessions]);
+
+  const handoffSession = useCallback(async () => {
+    if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
+    setError(null);
+    setHandoffBusy(true);
+    try {
+      const result = await window.ade.agentChat.handoff({
+        sourceSessionId: selectedSessionId,
+        targetModelId: handoffModelId,
+      });
+      setHandoffOpen(false);
+      await onSessionCreated?.(result.session.id);
+      void refreshSessions().catch(() => {});
+    } catch (handoffError) {
+      setError(handoffError instanceof Error ? handoffError.message : String(handoffError));
+    } finally {
+      setHandoffBusy(false);
+    }
+  }, [canShowHandoff, handoffBlocked, handoffModelId, onSessionCreated, refreshSessions, selectedSessionId]);
 
   // ── Eager session creation ──
   // Create a session as soon as we have a model + lane, so slash commands,
@@ -1282,7 +1374,15 @@ export function AgentChatPane({
     if (!selectedSessionId || selectedEvents.length > 0 || turnActive) return;
     void (async () => {
       try {
-        await window.ade.agentChat.updateSession({ sessionId: selectedSessionId, modelId });
+        const desc = getModelById(modelId);
+        const provider = desc?.isCliWrapped
+          ? (desc.family === "openai" ? "codex" : "claude")
+          : "unified";
+        await window.ade.agentChat.updateSession({
+          sessionId: selectedSessionId,
+          modelId,
+          ...buildNativeControlPayload(provider),
+        });
         await refreshSessions();
         window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
           .then(setSdkSlashCommands)
@@ -1297,7 +1397,7 @@ export function AgentChatPane({
         eagerCreateFiredRef.current = false; // allow eager effect to re-fire
       }
     })();
-  }, [isPersistentIdentitySurface, modelId, selectedSessionId, selectedEvents.length, turnActive, refreshSessions]);
+  }, [buildNativeControlPayload, isPersistentIdentitySurface, modelId, selectedSessionId, selectedEvents.length, turnActive, refreshSessions]);
 
   const submit = useCallback(async () => {
     if (submitInFlightRef.current || busy) return;
@@ -1336,11 +1436,15 @@ export function AgentChatPane({
         && selectedSessionModelId !== modelId;
 
       if (sessionId && !turnActive && (selectedModelChanged || hasComputerUseSelectionChanged || shouldPromoteLightSession)) {
+        const desc = getModelById(modelId);
+        const provider = desc?.isCliWrapped
+          ? (desc.family === "openai" ? "codex" : "claude")
+          : "unified";
         await window.ade.agentChat.updateSession({
           sessionId,
           modelId,
           reasoningEffort,
-          permissionMode,
+          ...buildNativeControlPayload(provider),
           computerUse: computerUsePolicy,
         });
         await refreshSessions();
@@ -1387,6 +1491,7 @@ export function AgentChatPane({
     }
   }, [
     attachments,
+    buildNativeControlPayload,
     busy,
     createSession,
     computerUsePolicy,
@@ -1399,7 +1504,6 @@ export function AgentChatPane({
     modelId,
     reasoningEffort,
     refreshSessions,
-    permissionMode,
     selectedEvents.length,
     selectedSessionId,
     selectedSessionModelId,
@@ -1416,52 +1520,78 @@ export function AgentChatPane({
     }
   }, [selectedSessionId]);
 
-  const approve = useCallback(async (decision: AgentChatApprovalDecision, responseText?: string | null) => {
+  const approve = useCallback(async (
+    decision: AgentChatApprovalDecision,
+    responseText?: string | null,
+    answers?: Record<string, string | string[]>,
+  ) => {
     if (!selectedSessionId) return;
-    const approval = approvalsBySession[selectedSessionId]?.[0];
-    if (!approval) return;
+    const request = pendingInputsBySession[selectedSessionId]?.[0];
+    if (!request) return;
     try {
-      await window.ade.agentChat.approve({
+      await window.ade.agentChat.respondToInput({
         sessionId: selectedSessionId,
-        itemId: approval.itemId,
+        itemId: request.itemId,
         decision,
         responseText,
+        ...(answers ? { answers } : {}),
       });
-      setApprovalsBySession((prev) => ({
+      setPendingInputsBySession((prev) => ({
         ...prev,
-        [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== approval.itemId)
+        [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== request.itemId)
       }));
     } catch (approvalError) {
       setError(approvalError instanceof Error ? approvalError.message : String(approvalError));
     }
-  }, [approvalsBySession, selectedSessionId]);
+  }, [pendingInputsBySession, selectedSessionId]);
 
-  const handlePermissionModeChange = useCallback(async (mode: AgentChatPermissionMode) => {
-    const nextMode = coercePermissionMode(mode);
-    if (nextMode === permissionMode) return;
+  const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;
-    setPermissionMode(nextMode);
-    if (selectedSessionId) {
-      patchSessionSummary(selectedSessionId, { permissionMode: nextMode });
+
+    const nextControls: NativeControlState = {
+      ...currentNativeControls,
+      ...patch,
+    };
+
+    setClaudePermissionMode(nextControls.claudePermissionMode);
+    setCodexApprovalPolicy(nextControls.codexApprovalPolicy);
+    setCodexSandbox(nextControls.codexSandbox);
+    setCodexConfigSource(nextControls.codexConfigSource);
+    setUnifiedPermissionMode(nextControls.unifiedPermissionMode);
+
+    if (!selectedSessionId) return;
+
+    const provider = selectedSession?.provider ?? sessionProvider;
+    const nextSummary = summarizeNativeControls(provider, nextControls);
+    patchSessionSummary(selectedSessionId, nextSummary);
+    if (isPersistentIdentitySurface) {
+      setSessionMutationKind("permission");
+    }
+
+    try {
+      await window.ade.agentChat.updateSession({
+        sessionId: selectedSessionId,
+        ...nextSummary,
+      });
+      void refreshSessions().catch(() => {});
+    } catch (err) {
+      void refreshSessions().catch(() => {});
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
       if (isPersistentIdentitySurface) {
-        setSessionMutationKind("permission");
-      }
-      try {
-        await window.ade.agentChat.changePermissionMode({
-          sessionId: selectedSessionId,
-          permissionMode: nextMode
-        });
-        void refreshSessions().catch(() => {});
-      } catch (err) {
-        void refreshSessions().catch(() => {});
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (isPersistentIdentitySurface) {
-          setSessionMutationKind(null);
-        }
+        setSessionMutationKind(null);
       }
     }
-  }, [coercePermissionMode, isPersistentIdentitySurface, patchSessionSummary, permissionMode, refreshSessions, selectedSessionId, sessionMutationKind]);
+  }, [
+    currentNativeControls,
+    isPersistentIdentitySurface,
+    patchSessionSummary,
+    refreshSessions,
+    selectedSession,
+    selectedSessionId,
+    sessionMutationKind,
+    sessionProvider,
+  ]);
 
   const handleComputerUsePolicyChange = useCallback(async (nextPolicy: ComputerUsePolicy) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -1506,6 +1636,59 @@ export function AgentChatPane({
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {canShowHandoff ? (
+            <div ref={handoffRef} className="relative">
+              <button
+                type="button"
+                className="inline-flex items-center rounded-md border border-white/[0.06] px-2.5 py-1 font-sans text-[11px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => {
+                  setError(null);
+                  setHandoffOpen((current) => !current);
+                }}
+                disabled={handoffBlocked}
+                title={handoffButtonTitle}
+              >
+                Chat handoff
+              </button>
+              {handoffOpen ? (
+                <div className="absolute right-0 top-full z-30 mt-2 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(18,20,28,0.98),rgba(10,12,18,0.98))] p-3 shadow-[0_24px_90px_-40px_rgba(0,0,0,0.88)] backdrop-blur-xl">
+                  <div className="space-y-1">
+                    <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
+                    <div className="text-[11px] leading-5 text-fg/54">
+                      ADE will create a new work chat, inject a handoff summary from this session, and route you into the new tab.
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <UnifiedModelSelector
+                      value={handoffModelId}
+                      onChange={setHandoffModelId}
+                      availableModelIds={handoffAvailableModelIds}
+                      showReasoning={false}
+                    />
+                  </div>
+                  <div className="mt-3 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      className="rounded-md border border-white/[0.06] px-2.5 py-1 font-sans text-[11px] text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg"
+                      onClick={() => setHandoffOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={() => {
+                        void handoffSession();
+                      }}
+                      disabled={!handoffModelId || handoffBusy}
+                    >
+                      {handoffBusy ? "Starting..." : "Create handoff chat"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {isPersistentIdentitySurface && selectedSessionId ? (
             <button
               type="button"
@@ -1513,6 +1696,7 @@ export function AgentChatPane({
               onClick={() => {
                 eventsBySessionRef.current = { ...eventsBySessionRef.current, [selectedSessionId]: [] };
                 setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
+                setPendingInputsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
               }}
             >
               Clear view
@@ -1606,21 +1790,22 @@ export function AgentChatPane({
         footer={
           <AgentChatComposer
             surfaceMode={surfaceMode}
-            surfaceProfile={surfaceProfile}
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}
             reasoningEffort={reasoningEffort}
             draft={draft}
             attachments={attachments}
-            pendingApproval={pendingApproval}
+            pendingInput={pendingInput?.request ?? null}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
             busy={busy}
-            laneId={laneId ?? undefined}
-            permissionMode={permissionMode}
             sessionProvider={sessionProvider}
-            sessionIsCliWrapped={sessionIsCliWrapped}
+            claudePermissionMode={claudePermissionMode}
+            codexApprovalPolicy={codexApprovalPolicy}
+            codexSandbox={codexSandbox}
+            codexConfigSource={codexConfigSource}
+            unifiedPermissionMode={unifiedPermissionMode}
             executionMode={selectedExecutionMode?.value ?? "focused"}
             computerUsePolicy={computerUsePolicy}
             computerUseSnapshot={computerUseSnapshot}
@@ -1631,7 +1816,11 @@ export function AgentChatPane({
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
             messagePlaceholder={messagePlaceholder}
             onExecutionModeChange={setExecutionMode}
-            onPermissionModeChange={handlePermissionModeChange}
+            onClaudePermissionModeChange={(value) => { void updateNativeControls({ claudePermissionMode: value }); }}
+            onCodexApprovalPolicyChange={(value) => { void updateNativeControls({ codexApprovalPolicy: value }); }}
+            onCodexSandboxChange={(value) => { void updateNativeControls({ codexSandbox: value }); }}
+            onCodexConfigSourceChange={(value) => { void updateNativeControls({ codexConfigSource: value }); }}
+            onUnifiedPermissionModeChange={(value) => { void updateNativeControls({ unifiedPermissionMode: value }); }}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
             onToggleProof={() => setProofDrawerOpen((current) => !current)}
             onModelChange={(nextModelId) => {
@@ -1662,12 +1851,13 @@ export function AgentChatPane({
                   model: nextModel,
                   modelId: nextModelId,
                   reasoningEffort: nextReasoningEffort,
+                  ...buildNativeControlPayload(nextProvider),
                 });
                 void window.ade.agentChat.updateSession({
                   sessionId: selectedSessionId,
                   modelId: nextModelId,
                   reasoningEffort: nextReasoningEffort,
-                  permissionMode,
+                  ...buildNativeControlPayload(nextProvider),
                   computerUse: computerUsePolicy,
                 }).then(() => {
                   window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
@@ -1718,6 +1908,7 @@ export function AgentChatPane({
               if (selectedSessionId) {
                 eventsBySessionRef.current = { ...eventsBySessionRef.current, [selectedSessionId]: [] };
                 setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
+                setPendingInputsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
               }
             }}
             promptSuggestion={promptSuggestion}
@@ -1795,8 +1986,8 @@ export function AgentChatPane({
                 assistantLabel={assistantLabel}
                 onApproval={(itemId, decision, responseText) => {
                   if (!selectedSessionId) return;
-                  window.ade.agentChat.approve({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
-                    setApprovalsBySession((prev) => ({
+                  window.ade.agentChat.respondToInput({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
+                    setPendingInputsBySession((prev) => ({
                       ...prev,
                       [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId)
                     }));
@@ -1846,15 +2037,14 @@ export function AgentChatPane({
           )}
         </div>
       </ChatSurfaceShell>
-      {pendingQuestion && selectedSessionId ? (
+      {pendingInput && selectedSessionId && (pendingInput.request.kind === "question" || pendingInput.request.kind === "structured_question") ? (
         <AgentQuestionModal
-          question={pendingQuestion.question}
-          options={pendingQuestion.options}
+          request={pendingInput.request}
           onClose={() => {
             void approve("cancel");
           }}
-          onSubmit={(answer) => {
-            void approve("accept", answer);
+          onSubmit={({ answers, responseText }) => {
+            void approve("accept", responseText, answers);
           }}
           onDecline={() => {
             void approve("decline");

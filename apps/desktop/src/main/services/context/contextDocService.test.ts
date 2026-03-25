@@ -35,6 +35,11 @@ vi.mock("./contextDocBuilder", () => ({
     prdPath: "/tmp/PRD.ade.md",
     architecturePath: "/tmp/ARCHITECTURE.ade.md",
     usedFallbackPath: false,
+    degraded: false,
+    docResults: [
+      { id: "prd_ade", health: "ready", source: "ai", sizeBytes: 512 },
+      { id: "architecture_ade", health: "ready", source: "ai", sizeBytes: 640 },
+    ],
     warnings: [],
     outputPreview: "generated",
   })),
@@ -78,7 +83,10 @@ function createMockProjectConfigService(overrides?: { contextRefreshEvents?: Rec
   } as any;
 }
 
-async function createFixture(opts?: { contextRefreshEvents?: Record<string, boolean> }) {
+async function createFixture(opts?: {
+  contextRefreshEvents?: Record<string, boolean>;
+  onStatusChanged?: (status: unknown) => void;
+}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-context-doc-service-"));
   const packsDir = path.join(projectRoot, ".ade", "packs");
   fs.mkdirSync(packsDir, { recursive: true });
@@ -92,6 +100,7 @@ async function createFixture(opts?: { contextRefreshEvents?: Record<string, bool
     packsDir,
     laneService: {} as any,
     projectConfigService: createMockProjectConfigService(opts),
+    onStatusChanged: opts?.onStatusChanged as ((status: any) => void) | undefined,
   });
 
   return { db, projectRoot, service };
@@ -264,6 +273,11 @@ describe("contextDocService", () => {
       prdPath: "/tmp/PRD.ade.md",
       architecturePath: "/tmp/ARCHITECTURE.ade.md",
       usedFallbackPath: false,
+      degraded: false,
+      docResults: [
+        { id: "prd_ade", health: "ready", source: "ai", sizeBytes: 512 },
+        { id: "architecture_ade", health: "ready", source: "ai", sizeBytes: 640 },
+      ],
       warnings: [],
       outputPreview: "generated",
     });
@@ -305,6 +319,40 @@ describe("contextDocService", () => {
       reasoningEffort: "high",
       finishedAt: "2026-03-05T12:00:00.000Z",
     });
+  });
+
+  it("emits status updates when generation state changes", async () => {
+    const onStatusChanged = vi.fn();
+    const { service } = await createFixture({ onStatusChanged });
+    const deferred = createDeferred<Awaited<ReturnType<typeof runContextDocGeneration>>>();
+    vi.mocked(runContextDocGeneration).mockReturnValueOnce(deferred.promise as ReturnType<typeof runContextDocGeneration>);
+
+    const generatePromise = service.generateDocs({
+      provider: "unified",
+      modelId: "gpt-5",
+    });
+
+    expect(onStatusChanged).toHaveBeenCalled();
+    expect(onStatusChanged.mock.calls.at(-1)?.[0]?.generation?.state).toBe("running");
+
+    deferred.resolve({
+      provider: "unified",
+      generatedAt: "2026-03-05T12:02:00.000Z",
+      prdPath: "/tmp/PRD.ade.md",
+      architecturePath: "/tmp/ARCHITECTURE.ade.md",
+      usedFallbackPath: false,
+      degraded: false,
+      docResults: [
+        { id: "prd_ade", health: "ready", source: "ai", sizeBytes: 512 },
+        { id: "architecture_ade", health: "ready", source: "ai", sizeBytes: 640 },
+      ],
+      warnings: [],
+      outputPreview: "generated",
+    });
+
+    await generatePromise;
+
+    expect(onStatusChanged.mock.calls.at(-1)?.[0]?.generation?.state).toBe("succeeded");
   });
 
   it("maps legacy idle generation records with a finish time to succeeded", async () => {

@@ -1,10 +1,10 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import type { ContextStatus, ContextRefreshEvents, ContextDocPrefs, SkillIndexEntry } from "../../../shared/types";
+import type { ContextDocStatus, ContextStatus, ContextRefreshEvents, SkillIndexEntry } from "../../../shared/types";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { EmptyState } from "../ui/EmptyState";
-import { relativeTime } from "../context/contextShared";
+import { describeContextDocHealth, relativeTime } from "../context/contextShared";
 import {
   COLORS,
   MONO_FONT,
@@ -50,6 +50,28 @@ function isContextGenerationActive(status: ContextStatus["generation"] | null | 
   return status?.state === "pending" || status?.state === "running";
 }
 
+function docStatusText(doc: ContextDocStatus, generation: ContextStatus["generation"]): string {
+  if (isContextGenerationActive(generation)) {
+    return generation.state === "pending" ? "queued..." : "generating...";
+  }
+  switch (doc.health) {
+    case "ready": return `ready \u00b7 updated ${relativeTime(doc.updatedAt)}`;
+    case "fallback": return `deterministic fallback \u00b7 updated ${relativeTime(doc.updatedAt)}`;
+    case "stale": return "stale \u00b7 regenerate recommended";
+    case "incomplete": return "incomplete \u00b7 regenerate recommended";
+    default: return "not generated";
+  }
+}
+
+function docStatusColor(doc: ContextDocStatus, generation: ContextStatus["generation"]): string {
+  if (isContextGenerationActive(generation)) return COLORS.info;
+  return doc.health === "ready" ? COLORS.success : COLORS.warning;
+}
+
+function genResultColor(message: string): string {
+  return message.includes("fallback") || message.includes("degraded") ? COLORS.warning : COLORS.success;
+}
+
 function describeGenerationSource(status: ContextStatus["generation"] | null | undefined): string | null {
   if (!status || !isContextGenerationActive(status)) return null;
   if (status.source !== "auto") return null;
@@ -88,17 +110,22 @@ export function ContextSection() {
   const [genError, setGenError] = React.useState<string | null>(null);
   const [genWarnings, setGenWarnings] = React.useState<string[]>([]);
 
+  const applyDocsStatus = React.useCallback((status: ContextStatus | null) => {
+    setDocsStatus(status);
+    setGenerating(isContextGenerationActive(status?.generation));
+  }, []);
+
   const reloadDocs = React.useCallback(async () => {
     setDocsLoading(true);
     try {
       const status = await window.ade.context.getStatus();
-      setDocsStatus(status);
+      applyDocsStatus(status);
     } catch {
-      setDocsStatus(null);
+      applyDocsStatus(null);
     } finally {
       setDocsLoading(false);
     }
-  }, []);
+  }, [applyDocsStatus]);
 
   // Load saved prefs + available models on mount
   React.useEffect(() => {
@@ -134,6 +161,10 @@ export function ContextSection() {
     return () => { cancelled = true; };
   }, [reloadDocs]);
 
+  React.useEffect(() => {
+    return window.ade.context?.onStatusChanged?.(applyDocsStatus) ?? (() => {});
+  }, [applyDocsStatus]);
+
   // Auto-save prefs to backend whenever events/model/effort change (after initial load)
   const saveTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => {
@@ -156,44 +187,11 @@ export function ContextSection() {
     setEvents((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  // Poll generation status while running (including background generation from setup page)
-  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
-  const startStatusPoll = React.useCallback(() => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      try {
-        const status = await window.ade.context.getStatus();
-        setDocsStatus(status);
-        if (!isContextGenerationActive(status.generation)) {
-          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-          setGenerating(false);
-        }
-      } catch { /* best-effort */ }
-    }, 2000);
-  }, []);
-
-  React.useEffect(() => {
-    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-  }, []);
-
-  // When docsStatus updates, detect if generation is running (e.g. kicked off from setup page)
-  const genState = docsStatus?.generation.state;
-  React.useEffect(() => {
-    if (genState === "pending" || genState === "running") {
-      setGenerating(true);
-      if (!pollRef.current) startStatusPoll();
-    } else if (generating && !pollRef.current) {
-      // Generation finished between loads
-      setGenerating(false);
-    }
-  }, [genState, generating, startStatusPoll]);
-
   const handleGenerate = async () => {
     setGenerating(true);
     setGenError(null);
     setGenResult(null);
     setGenWarnings([]);
-    startStatusPoll();
     try {
       const result = await window.ade.context.generateDocs({
         provider: "unified",
@@ -203,15 +201,18 @@ export function ContextSection() {
       });
       await reloadDocs();
 
-      // Check for failures/fallbacks
-      const fallbackWarnings = result.warnings.filter(
-        (w) => w.code === "generator_failed" || w.code.startsWith("generator_fallback_"),
+      const fallbackWarnings = result.warnings.filter((w) =>
+        w.code === "generator_failed"
+        || w.code.startsWith("generator_fallback_")
+        || w.code.startsWith("generator_preserved_previous_")
+        || w.code.startsWith("generator_invalid_")
+        || w.code === "generator_overlap_rejected"
       );
       const sizeWarnings = result.warnings.filter((w) => w.code === "omitted_due_size");
 
-      if (fallbackWarnings.length > 0) {
+      if (result.degraded || fallbackWarnings.length > 0) {
         setGenWarnings(fallbackWarnings.map((w) => w.message));
-        setGenResult("Docs written using deterministic fallback (AI generation failed). Check your model configuration.");
+        setGenResult("Docs were refreshed in degraded mode. ADE kept previous good docs or used deterministic fallbacks where the generated output did not validate.");
       } else {
         setGenResult(`Docs generated successfully at ${new Date(result.generatedAt).toLocaleString()}`);
         if (sizeWarnings.length > 0) {
@@ -222,7 +223,6 @@ export function ContextSection() {
       setGenError(err instanceof Error ? err.message : String(err));
     } finally {
       setGenerating(false);
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     }
   };
 
@@ -236,14 +236,17 @@ export function ContextSection() {
             Canonical docs remain the stable source for bootstrap and memory ingestion.
           </div>
 
-          {isContextGenerationActive(docsStatus?.generation) ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.info, padding: "8px 12px", borderRadius: 8, background: `${COLORS.info}08`, border: `1px solid ${COLORS.info}18` }}>
-              {docsStatus?.generation.state === "pending"
-                ? "Context doc generation is queued and will start shortly."
-                : "Context docs are being generated. This may take a minute depending on your model and project size."}
-              {describeGenerationSource(docsStatus?.generation) ? ` ${describeGenerationSource(docsStatus?.generation)}` : ""}
-            </div>
-          ) : null}
+          {isContextGenerationActive(docsStatus?.generation) ? (() => {
+            const sourceNote = describeGenerationSource(docsStatus?.generation);
+            return (
+              <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.info, padding: "8px 12px", borderRadius: 8, background: `${COLORS.info}08`, border: `1px solid ${COLORS.info}18` }}>
+                {docsStatus?.generation.state === "pending"
+                  ? "Context doc generation is queued and will start shortly."
+                  : "Context docs are being generated. This may take a minute depending on your model and project size."}
+                {sourceNote ? ` ${sourceNote}` : ""}
+              </div>
+            );
+          })() : null}
 
           {docsStatus?.generation.state === "failed" ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.danger, padding: "8px 12px", borderRadius: 8, background: `${COLORS.danger}08`, border: `1px solid ${COLORS.danger}18` }}>
@@ -256,17 +259,9 @@ export function ContextSection() {
           ) : docsStatus?.docs?.length ? (
             docsStatus.docs.map((doc) => {
               const isGenerating = isContextGenerationActive(docsStatus.generation);
-              const MIN_DOC_SIZE = 200;
-              const hasContent = doc.exists && doc.sizeBytes >= MIN_DOC_SIZE;
-              const statusColor = isGenerating ? COLORS.info : hasContent ? COLORS.success : COLORS.warning;
-              const statusText = isGenerating
-                ? (docsStatus.generation.state === "pending" ? "queued..." : "generating...")
-                : hasContent
-                  ? `ready \u00b7 updated ${relativeTime(doc.updatedAt)}`
-                  : doc.exists
-                    ? "incomplete \u00b7 regenerate recommended"
-                    : "not generated";
-              const canOpen = hasContent && !isGenerating;
+              const statusColor = docStatusColor(doc, docsStatus.generation);
+              const statusText = docStatusText(doc, docsStatus.generation);
+              const canOpen = doc.exists && !isGenerating;
               return (
                 <div key={doc.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, borderRadius: 10, padding: "10px 12px" }}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
@@ -276,6 +271,9 @@ export function ContextSection() {
                         <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: COLORS.info, animation: "pulse 1.5s infinite" }} />
                       ) : null}
                       {statusText}
+                    </div>
+                    <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
+                      {describeContextDocHealth(doc)} via {doc.source}
                     </div>
                     <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {doc.preferredPath}
@@ -387,19 +385,22 @@ export function ContextSection() {
               ) : null}
             </div>
 
-            {genResult ? (
-              <div style={{
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                color: genResult.includes("fallback") ? COLORS.warning : COLORS.success,
-                padding: "8px 12px",
-                borderRadius: 8,
-                background: genResult.includes("fallback") ? `${COLORS.warning}08` : `${COLORS.success}08`,
-                border: `1px solid ${genResult.includes("fallback") ? `${COLORS.warning}18` : `${COLORS.success}18`}`,
-              }}>
-                {genResult}
-              </div>
-            ) : null}
+            {genResult ? (() => {
+              const color = genResultColor(genResult);
+              return (
+                <div style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  color,
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: `${color}08`,
+                  border: `1px solid ${color}18`,
+                }}>
+                  {genResult}
+                </div>
+              );
+            })() : null}
             {genWarnings.length > 0 ? (
               <div style={{
                 fontFamily: SANS_FONT,
@@ -478,7 +479,9 @@ function SkillFilesSection() {
       <div style={{ ...cardStyle({ padding: 16 }), display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textSecondary, flex: 1, minWidth: 0 }}>
-            Reusable instruction files that AI agents can reference. Scanned from .ade/skills/, .claude/skills/, .claude/commands/, CLAUDE.md, and agents.md.
+            Reusable instruction files and legacy command files that AI agents can reference. ADE indexes them for retrieval and dedupe, but
+            manages the files here instead of showing them as standalone entries in the generic Memory browser. Scanned from .ade/skills/,
+            .claude/skills/, .claude/commands/, CLAUDE.md, and agents.md.
           </div>
           <button
             type="button"

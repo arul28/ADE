@@ -124,6 +124,7 @@ import type {
   ConflictStatus,
   CreateLaneArgs,
   CreateChildLaneArgs,
+  CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
   DevToolsCheckResult,
   DiffChanges,
@@ -220,10 +221,13 @@ import type {
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
+  AgentChatHandoffArgs,
+  AgentChatHandoffResult,
   AgentChatInterruptArgs,
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
+  AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
   AgentChatSession,
@@ -957,6 +961,8 @@ contextBridge.exposeInMainWorld("ade", {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesList, args),
     create: async (args: CreateLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreate, args),
     createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreateChild, args),
+    createFromUnstaged: async (args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> =>
+      ipcRenderer.invoke(IPC.lanesCreateFromUnstaged, args),
     importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesImportBranch, args),
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAttach, args),
     adoptAttached: async (args: AdoptAttachedLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAdoptAttached, args),
@@ -1114,6 +1120,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatGetSummary, args),
     create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
       ipcRenderer.invoke(IPC.agentChatCreate, args),
+    handoff: async (args: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> =>
+      ipcRenderer.invoke(IPC.agentChatHandoff, args),
     send: async (args: AgentChatSendArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatSend, args),
     steer: async (args: AgentChatSteerArgs): Promise<void> =>
@@ -1124,6 +1132,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatResume, args),
     approve: async (args: AgentChatApproveArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatApprove, args),
+    respondToInput: async (args: AgentChatRespondToInputArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatRespondToInput, args),
     models: async (args: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> =>
       ipcRenderer.invoke(IPC.agentChatModels, args),
     dispose: async (args: AgentChatDisposeArgs): Promise<void> =>
@@ -1307,6 +1317,11 @@ contextBridge.exposeInMainWorld("ade", {
     getPrefs: async (): Promise<import("../shared/types").ContextDocPrefs> => ipcRenderer.invoke(IPC.contextGetPrefs),
     savePrefs: async (prefs: import("../shared/types").ContextDocPrefs): Promise<import("../shared/types").ContextDocPrefs> =>
       ipcRenderer.invoke(IPC.contextSavePrefs, prefs),
+    onStatusChanged: (cb: (status: ContextStatus) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ContextStatus) => cb(payload);
+      ipcRenderer.on(IPC.contextStatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.contextStatusChanged, listener);
+    },
   },
   github: {
     getStatus: async (): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubGetStatus),

@@ -9,7 +9,7 @@ describe("chatModelSwitching", () => {
           "anthropic/claude-sonnet-4-6",
           "anthropic/claude-sonnet-4-6-api",
           "openai/gpt-5.4-codex",
-          "openai/gpt-5-chat-latest",
+          "openai/gpt-5.2",
         ],
         activeSessionModelId: "anthropic/claude-sonnet-4-6",
         hasConversation: true,
@@ -26,7 +26,7 @@ describe("chatModelSwitching", () => {
         availableModelIds: [
           "anthropic/claude-sonnet-4-6",
           "openai/gpt-5.4-codex",
-          "openai/gpt-5-chat-latest",
+          "openai/gpt-5.2",
         ],
         activeSessionModelId: "anthropic/claude-sonnet-4-6",
         hasConversation: true,
@@ -35,7 +35,7 @@ describe("chatModelSwitching", () => {
     ).toEqual([
       "anthropic/claude-sonnet-4-6",
       "openai/gpt-5.4-codex",
-      "openai/gpt-5-chat-latest",
+      "openai/gpt-5.2",
     ]);
   });
 
@@ -43,7 +43,7 @@ describe("chatModelSwitching", () => {
     expect(
       canSwitchChatSessionModel({
         currentModelId: "openai/gpt-5.4-codex",
-        nextModelId: "openai/gpt-5-chat-latest",
+        nextModelId: "openai/gpt-5.2",
         hasConversation: true,
       }),
     ).toBe(true);

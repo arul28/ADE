@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowsClockwise, Check, Stack, Upload, Warning } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
@@ -318,8 +319,10 @@ export function LaneGitActionsPane({
   selectedMode: "staged" | "unstaged" | null;
   selectedCommitSha: string | null;
 }) {
+  const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const selectLane = useAppStore((s) => s.selectLane);
 
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
   const parentLane = useMemo(() => {
@@ -353,10 +356,12 @@ export function LaneGitActionsPane({
   const [amendCommit, setAmendCommit] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(null);
+  const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(null);
 
   const stagedCount = changes.staged.length;
   const hasStaged = stagedCount > 0;
+  const hasUnstaged = changes.unstaged.length > 0;
   const responsiveMode = getResponsiveMode(paneWidth);
   const actionGridColumns =
     responsiveMode === "wide" ? "repeat(3, minmax(0, 1fr))" : responsiveMode === "medium" ? "repeat(2, minmax(0, 1fr))" : "1fr";
@@ -452,8 +457,10 @@ export function LaneGitActionsPane({
     }
     if (conflictResult.status === "fulfilled") {
       const cs = conflictResult.value;
+      setConflictState(cs);
       setStuckRebase(cs.kind === "rebase" && cs.inProgress ? cs : null);
     } else {
+      setConflictState(null);
       setStuckRebase(null);
     }
   };
@@ -524,22 +531,15 @@ export function LaneGitActionsPane({
     setError(null);
     try {
       await fn();
-      const shouldFetchRemote =
+      const isRemoteAction =
         actionName === "pull" ||
         actionName === "fetch" ||
         actionName === "push" ||
         actionName === "force push" ||
         actionName === "rebase" ||
         actionName === "rebase and push";
-      await refreshAll({ fetchRemote: shouldFetchRemote });
-      if (
-        actionName === "push" ||
-        actionName === "force push" ||
-        actionName === "pull" ||
-        actionName === "fetch" ||
-        actionName === "rebase" ||
-        actionName === "rebase and push"
-      ) {
+      await refreshAll({ fetchRemote: isRemoteAction });
+      if (isRemoteAction) {
         setForcePushSuggested(false);
       }
       setNotice(`${actionName} completed`);
@@ -611,6 +611,7 @@ export function LaneGitActionsPane({
     setAmendCommit(false);
     setCommitMessageAi({ enabled: false, modelId: null });
     setAutoRebaseStatus(null);
+    setConflictState(null);
     setStuckRebase(null);
     if (!laneId) return;
     refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -673,6 +674,22 @@ export function LaneGitActionsPane({
     return paths.size;
   }, [changes]);
 
+  const rescueButtonTitle = useMemo(() => {
+    if (!laneId) return "Select a lane first.";
+    if (busyAction != null) return "Wait for the current git action to finish.";
+    if (conflictState?.inProgress) {
+      return conflictState.kind === "merge"
+        ? "Finish the current merge before moving changes to a new lane."
+        : "Finish the current rebase before moving changes to a new lane.";
+    }
+    if (hasStaged) return "Unstage all changes before moving unstaged work to a new lane.";
+    if (!hasUnstaged) return "This lane has no unstaged changes to move.";
+    return "Create a new child lane from this lane's current HEAD, then move unstaged and untracked changes into it while keeping them unstaged.";
+  }, [busyAction, conflictState, hasStaged, hasUnstaged, laneId]);
+
+  const showRescueButton = Boolean(laneId) && (hasUnstaged || hasStaged);
+  const rescueButtonDisabled = !laneId || busyAction != null || hasStaged || !hasUnstaged || Boolean(conflictState?.inProgress);
+
   const stagedPathSet = useMemo(() => new Set(changes.staged.map((file) => file.path)), [changes.staged]);
   const unstagedPathSet = useMemo(() => new Set(changes.unstaged.map((file) => file.path)), [changes.unstaged]);
 
@@ -692,6 +709,46 @@ export function LaneGitActionsPane({
       await window.ade.git.stageAll({ laneId, paths: changes.unstaged.map((file) => file.path) });
     });
   };
+
+  const moveUnstagedToNewLane = useCallback(async () => {
+    if (!laneId || busyAction != null) return;
+    if (hasStaged) {
+      setError("This lane has staged changes. Unstage all changes before moving unstaged work to a new lane.");
+      return;
+    }
+    if (!hasUnstaged) {
+      setError("This lane has no unstaged changes to move.");
+      return;
+    }
+    if (conflictState?.inProgress) {
+      const kindLabel = conflictState.kind === "merge" ? "merge" : "rebase";
+      setError(`Finish the current ${kindLabel} before moving changes to a new lane.`);
+      return;
+    }
+
+    const name = await requestTextInput({
+      title: "Move unstaged to new lane",
+      message: "Create a child lane from this lane's current HEAD and move unstaged plus untracked changes into it.",
+      placeholder: "e.g. feature/rescue-work",
+      confirmLabel: "Create lane",
+      validate: (value) => (value.trim().length ? null : "Lane name is required."),
+    });
+    if (name == null) return;
+
+    setBusyAction("move unstaged");
+    setNotice(null);
+    setError(null);
+    try {
+      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: laneId, name });
+      await refreshLanes();
+      selectLane(created.id);
+      navigate(`/lanes?laneId=${encodeURIComponent(created.id)}&focus=single`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  }, [busyAction, conflictState, hasStaged, hasUnstaged, laneId, navigate, refreshLanes, requestTextInput, selectLane]);
 
   const unstageAll = () => {
     if (!laneId) return;
@@ -1472,6 +1529,19 @@ export function LaneGitActionsPane({
                     onClick={unstageAll}
                   >
                     UNSTAGE ALL
+                  </button>
+                ) : null}
+                {showRescueButton ? (
+                  <button
+                    type="button"
+                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                    disabled={rescueButtonDisabled}
+                    title={rescueButtonTitle}
+                    onClick={() => {
+                      void moveUnstagedToNewLane();
+                    }}
+                  >
+                    CREATE NEW LANE WITH CURRENT CHANGES
                   </button>
                 ) : null}
               </div>

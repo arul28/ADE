@@ -390,8 +390,21 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     } catch (err) { console.error("[MissionChatV2] handleSend failed:", err); } finally { setSending(false); }
   }, [attachments, chatBlocked, sending, selectedChannel, threads, missionId, runId, refreshThreads, refreshThreadMessages]);
 
-  const handleApproval = useCallback(async (sessionId: string, itemId: string, decision: "accept" | "accept_for_session" | "decline" | "cancel", responseText?: string | null) => {
-    try { await window.ade.agentChat.approve({ sessionId, itemId, decision, responseText }); setJumpNotice(null); await refreshThreads(); if (selectedChannel?.threadId) await refreshThreadMessages(selectedChannel.threadId); } catch (error) { setJumpNotice(error instanceof Error ? error.message : String(error)); }
+  const handleApproval = useCallback(async (
+    sessionId: string,
+    itemId: string,
+    decision: "accept" | "accept_for_session" | "decline" | "cancel",
+    responseText?: string | null,
+    answers?: Record<string, string | string[]>,
+  ) => {
+    try {
+      await window.ade.agentChat.respondToInput({ sessionId, itemId, decision, responseText, answers });
+      setJumpNotice(null);
+      await refreshThreads();
+      if (selectedChannel?.threadId) await refreshThreadMessages(selectedChannel.threadId);
+    } catch (error) {
+      setJumpNotice(error instanceof Error ? error.message : String(error));
+    }
   }, [refreshThreadMessages, refreshThreads, selectedChannel]);
 
   const refreshMissionWorkspace = useCallback(async () => {

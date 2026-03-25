@@ -26,7 +26,7 @@ Each memory entry has a tier that determines how aggressively it is surfaced:
 
 Memory enters the system through multiple paths:
 
-- **Agent tools** -- Any AI agent can call the `memoryAdd` tool to save a durable insight during a conversation. The tool enforces quality guidance: good memories capture conventions, patterns, gotchas, and decisions. Bad memories (status updates, task-specific details, obvious facts) are rejected by prompt guidance.
+- **Agent tools** -- Any AI agent can call the `memoryAdd` tool to save a durable insight during a conversation. The tool enforces quality guidance: good memories capture conventions, patterns, gotchas, and decisions. Bad memories (status updates, task-specific details, obvious facts) are rejected by prompt guidance. Additionally, the write path rejects code-derivable content such as raw diffs, stack traces, session summaries, git history output, and file-path dumps -- these belong in source control, not memory. Writes return a `durability` field (`"candidate"`, `"promoted"`, or `"rejected"`) so agents know whether the memory was accepted and at what tier.
 - **Compaction flush** -- When a chat session approaches its context window limit, the compaction flush service injects a hidden prompt asking the agent to persist important observations via `memoryAdd` before context is compacted. This is fully wired into `agentChatService` so no durable discoveries are lost to compaction.
 - **Episodic summaries** -- After agent work sessions complete, the episodic summary service extracts a structured record of what was attempted, what worked, and what failed.
 - **Knowledge capture** -- The knowledge capture service monitors interventions, error clusters, and PR feedback, then extracts conventions, patterns, and gotchas into memory entries. It also fires on mission failures and agent session errors to capture failure-related gotchas.
@@ -42,6 +42,16 @@ Memory is not permanent. A lifecycle system keeps it healthy:
 - **Sweep** -- A daily sweep runs at startup (or manually). It applies decay, demotes entries whose score drops below threshold, promotes candidates that have gained enough confidence, and archives entries that exceed scope limits.
 - **Consolidation** -- A weekly consolidation pass (or manual trigger) clusters similar memories by scope and category, then uses AI to merge them into a single improved entry. The originals are archived.
 - **Deduplication** -- On every write, the system checks for lexical similarity (Jaccard threshold of 0.85). Exact or near-duplicate content is merged into the existing entry rather than creating a new one.
+
+## Automatic Memory Orientation
+
+ADE classifies each user turn by intent and enforces a memory orientation policy:
+
+- **Required turns** (fix, debug, implement, refactor, etc.) -- ADE auto-injects relevant memory context into the agent's system prompt and blocks mutating tools (bash, file writes, edits) until the agent has called `memorySearch` at least once. This prevents agents from making changes without consulting project memory.
+- **Soft turns** (explain, review, design, etc.) -- Memory context is auto-injected but mutations are not blocked.
+- **Meta turns** (greetings, thanks, etc.) -- No memory injection or gating.
+
+This policy is transparent to the user. When the guard fires, the chat surface shows a system notice indicating that memory search is required before mutations can proceed.
 
 ## Smart Search
 
@@ -122,9 +132,9 @@ Failures & feedback
 
 ## Where to Manage Memory
 
-Memory is managed in **Settings -> Memory** tab. This is the only surface for viewing, searching, pinning, and deleting memory entries. It also shows health stats (scope usage, last sweep, last consolidation, embedding status).
+Learned memory entries are managed in **Settings -> Memory** tab. This is the only surface for viewing, searching, pinning, and deleting learned knowledge. It also shows health stats (scope usage, last sweep, last consolidation, embedding status). Memories that back indexed skill files are intentionally hidden from the generic memory browser to avoid duplication; the Memory tab shows a summary card linking to the Workspace skill-file surface instead.
 
-Skill files (reusable instructions and commands) are not memory. They are managed separately in **Settings -> Context & Docs**.
+Skill files (reusable instructions and legacy command files) are managed separately in **Settings -> Context & Docs -> Skill Files**. ADE indexes them internally as procedure knowledge for retrieval, ranking, and dedupe, but the file-backed entries are managed in the workspace skill-file surface rather than the generic Memory browser.
 
 ## Further Reading
 

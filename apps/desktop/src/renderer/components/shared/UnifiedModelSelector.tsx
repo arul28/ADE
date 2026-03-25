@@ -101,19 +101,11 @@ const MODEL_CALLOUTS: Record<string, { label: string; tone: string }> = {
     label: "Latest",
     tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
   },
-  "openai/gpt-5-chat-latest": {
-    label: "ChatGPT",
-    tone: "border-green-400/25 bg-green-400/10 text-green-200",
-  },
-  "openai/gpt-5.4-pro": {
-    label: "Latest Pro",
-    tone: "border-cyan-400/25 bg-cyan-400/10 text-cyan-200",
+  "openai/gpt-5.4-mini": {
+    label: "Fast",
+    tone: "border-sky-400/25 bg-sky-400/10 text-sky-200",
   },
   "openai/gpt-5.3-codex": {
-    label: "Coding",
-    tone: "border-amber-400/25 bg-amber-400/10 text-amber-200",
-  },
-  "openai/gpt-5.3-codex-api": {
     label: "Coding",
     tone: "border-amber-400/25 bg-amber-400/10 text-amber-200",
   },

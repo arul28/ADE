@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
-import { getPermissionOptions } from "../shared/permissionOptions";
 import { AgentChatComposer } from "./AgentChatComposer";
 
 afterEach(cleanup);
@@ -16,13 +15,16 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
     reasoningEffort: null,
     draft: "Need a steer message",
     attachments: [],
-    pendingApproval: null,
+    pendingInput: null,
     turnActive: true,
     sendOnEnter: true,
     busy: false,
-    permissionMode: "full-auto",
     sessionProvider: "codex",
-    sessionIsCliWrapped: true,
+    claudePermissionMode: "default",
+    codexApprovalPolicy: "on-request",
+    codexSandbox: "workspace-write",
+    codexConfigSource: "flags",
+    unifiedPermissionMode: "edit",
     executionMode: "focused",
     computerUsePolicy: createDefaultComputerUsePolicy(),
     onModelChange: vi.fn(),
@@ -36,7 +38,11 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
     onRemoveAttachment: vi.fn(),
     onSearchAttachments: vi.fn().mockResolvedValue([]),
     onExecutionModeChange: vi.fn(),
-    onPermissionModeChange: vi.fn(),
+    onClaudePermissionModeChange: vi.fn(),
+    onCodexApprovalPolicyChange: vi.fn(),
+    onCodexSandboxChange: vi.fn(),
+    onCodexConfigSourceChange: vi.fn(),
+    onUnifiedPermissionModeChange: vi.fn(),
     onComputerUsePolicyChange: vi.fn(),
     ...overrides,
   };
@@ -82,8 +88,12 @@ describe("AgentChatComposer", () => {
     expect(props.onClearDraft).not.toHaveBeenCalled();
   });
 
-  it("labels the Codex plan permission mode as Plan", () => {
-    expect(getPermissionOptions({ family: "openai", isCliWrapped: true })[0]?.label).toBe("Plan");
+  it("shows native Codex runtime controls", () => {
+    renderComposer();
+
+    expect(screen.getByDisplayValue("ADE flags")).toBeTruthy();
+    expect(screen.getByDisplayValue("On request")).toBeTruthy();
+    expect(screen.getByDisplayValue("Workspace write")).toBeTruthy();
   });
 
   it("opens the advanced popover and wires the advanced controls", () => {

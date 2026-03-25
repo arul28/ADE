@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { generateText, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 
 vi.mock("../ai/providerResolver", () => ({
   normalizeCliMcpServers: vi.fn(() => ({})),
+  resolveModel: vi.fn(async () => ({})),
   resolveProvider: vi.fn(),
 }));
 
@@ -160,6 +162,9 @@ import {
   buildComputerUseDirective,
   createAgentChatService,
 } from "./agentChatService";
+import { detectAllAuth } from "../ai/authDetector";
+import * as providerResolver from "../ai/providerResolver";
+import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import type { ComputerUseBackendStatus, AgentChatProvider } from "../../../shared/types";
 
@@ -235,6 +240,7 @@ function createMockSessionService() {
       const row = sessions.get(args.sessionId);
       if (row) {
         if (args.title !== undefined) row.title = args.title;
+        if (args.goal !== undefined) row.goal = args.goal;
         if (args.toolType !== undefined) row.toolType = args.toolType;
         if (args.resumeCommand !== undefined) row.resumeCommand = args.resumeCommand;
       }
@@ -299,6 +305,11 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tmpRoot, ".ade", "transcripts", "chat"), { recursive: true });
   mockState.sessions.clear();
   mockState.uuidCounter = 0;
+  vi.mocked(streamText).mockReset();
+  vi.mocked(generateText).mockReset();
+  vi.mocked(detectAllAuth).mockResolvedValue([]);
+  vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
+  vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
 });
 
 afterEach(() => {
@@ -409,6 +420,7 @@ describe("createAgentChatService", () => {
   it("returns an object with all expected methods", () => {
     const { service } = createService();
     expect(service.createSession).toBeTypeOf("function");
+    expect(service.handoffSession).toBeTypeOf("function");
     expect(service.sendMessage).toBeTypeOf("function");
     expect(service.steer).toBeTypeOf("function");
     expect(service.interrupt).toBeTypeOf("function");
@@ -512,6 +524,7 @@ describe("createAgentChatService", () => {
         provider: "unified",
         model: "",
         modelId: "anthropic/claude-sonnet-4-6-api",
+        sessionProfile: "light",
       });
 
       expect(session.surface).toBe("work");
@@ -593,6 +606,7 @@ describe("createAgentChatService", () => {
         provider: "unified",
         model: "",
         modelId: "anthropic/claude-sonnet-4-6-api",
+        sessionProfile: "light",
       });
 
       const chatTranscriptsDir = path.join(tmpRoot, ".ade", "transcripts", "chat");
@@ -603,6 +617,237 @@ describe("createAgentChatService", () => {
       const parsed = JSON.parse(content);
       expect(parsed.type).toBe("session_init");
       expect(parsed.sessionId).toBe(session.id);
+    });
+  });
+
+  describe("handoffSession", () => {
+    it("rejects handoff while the source chat is still outputting", async () => {
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "openai/gpt-5.4",
+      });
+      source.status = "active";
+
+      await expect(
+        service.handoffSession({
+          sourceSessionId: source.id,
+          targetModelId: "openai/gpt-5.4-mini",
+        }),
+      ).rejects.toThrow("Wait for the current response to finish before handing off this chat.");
+    });
+
+    it("clones chat settings and auto-sends the first handoff prompt", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "openai/gpt-5.4",
+        sessionProfile: "light",
+        reasoningEffort: "high",
+        unifiedPermissionMode: "full-auto",
+        computerUse: {
+          mode: "enabled",
+          allowLocalFallback: false,
+          retainArtifacts: true,
+          preferredBackend: null,
+        },
+      });
+      source.executionMode = "parallel";
+      sessionService.updateMeta({
+        sessionId: source.id,
+        goal: "Fix the work-tab handoff UI.",
+      });
+      const sourceRow = mockState.sessions.get(source.id);
+      if (sourceRow) {
+        sourceRow.summary = "The bug is narrowed to the work-tab header and OpenAI model registry.";
+      }
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.4-mini",
+      });
+
+      expect(result.usedFallbackSummary).toBe(true);
+      expect(result.session.laneId).toBe(source.laneId);
+      expect(result.session.modelId).toBe("openai/gpt-5.4-mini");
+      expect(result.session.sessionProfile).toBe("light");
+      expect(result.session.reasoningEffort).toBe("high");
+      expect(result.session.unifiedPermissionMode).toBe("full-auto");
+      expect(result.session.computerUse?.mode).toBe("enabled");
+      expect(result.session.executionMode).toBe("parallel");
+      expect(mockState.sessions.get(result.session.id)?.goal).toBe("Fix the work-tab handoff UI.");
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const transcriptPath = mockState.sessions.get(result.session.id)?.transcriptPath;
+      expect(transcriptPath).toBeTruthy();
+      const transcript = fs.readFileSync(String(transcriptPath), "utf8");
+      expect(transcript).toContain("Chat handoff from previous session");
+    });
+
+    it("uses AI-generated handoff summaries when a summary model is available", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+      vi.mocked(detectAllAuth).mockResolvedValue([{ type: "api-key", provider: "openai" }] as any);
+      vi.mocked(generateText).mockResolvedValue({
+        text: [
+          "## Current goal",
+          "- Continue the same ADE work item.",
+          "",
+          "## Important decisions and preserved context",
+          "- Reuse the previous lane context.",
+          "",
+          "## Files, commands, and errors to preserve",
+          "- src/renderer/components/chat/AgentChatPane.tsx",
+          "",
+          "## Next action or open issue",
+          "- Finish wiring the handoff flow.",
+        ].join("\n"),
+      } as any);
+
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "openai/gpt-5.4",
+      });
+      sessionService.updateMeta({
+        sessionId: source.id,
+        goal: "Finish the handoff flow.",
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.4-mini",
+      });
+
+      expect(generateText).toHaveBeenCalled();
+      expect(result.usedFallbackSummary).toBe(false);
+    });
+  });
+
+  describe("auto memory orientation", () => {
+    it("skips memory search for casual turns", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const memoryService = {
+        search: vi.fn(async () => []),
+      } as any;
+      const onEvent = vi.fn();
+      const { service } = createService({
+        memoryService,
+        onEvent,
+        computerUseArtifactBrokerService: {
+          getBackendStatus: vi.fn(() => ({
+            backends: [],
+            localFallback: {
+              available: false,
+              detail: "disabled",
+              supportedKinds: [],
+            },
+          })),
+        } as any,
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "thanks",
+      });
+
+      expect(memoryService.search).not.toHaveBeenCalled();
+      expect(onEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "memory",
+          }),
+        }),
+      );
+    });
+
+    it("checks memory and emits a memory notice for coding turns", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 3, outputTokens: 2 } };
+        })(),
+      } as any);
+
+      const memoryService = {
+        search: vi.fn(async ({ scope }: { scope?: string }) => (scope === "project"
+          ? [{
+              id: "memory-project-1",
+              scope: "project",
+              tier: 2,
+              pinned: false,
+              category: "decision",
+              content: "Decision: always run focused tests before full Electron builds.",
+              importance: "high",
+              confidence: 1,
+              compositeScore: 0.91,
+              createdAt: "2026-03-01T10:00:00.000Z",
+            }]
+          : [])),
+      } as any;
+      const onEvent = vi.fn();
+      const { service } = createService({
+        memoryService,
+        onEvent,
+        computerUseArtifactBrokerService: {
+          getBackendStatus: vi.fn(() => ({
+            backends: [],
+            localFallback: {
+              available: false,
+              detail: "disabled",
+              supportedKinds: [],
+            },
+          })),
+        } as any,
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Please fix the failing desktop tests and update the renderer.",
+      });
+
+      expect(memoryService.search).toHaveBeenCalledTimes(2);
+      expect(onEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "memory",
+            message: expect.stringContaining("Checked memory"),
+          }),
+        }),
+      );
     });
   });
 

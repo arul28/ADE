@@ -112,18 +112,7 @@ function normalizeEvents(value: unknown): ContextRefreshEvents {
 
 function normalizeGenerationEvent(value: unknown): ContextDocGenerationEvent | null {
   const normalized = String(value ?? "").trim();
-  if (
-    normalized === "session_end"
-    || normalized === "commit"
-    || normalized === "pr_create"
-    || normalized === "pr_land"
-    || normalized === "mission_start"
-    || normalized === "mission_end"
-    || normalized === "lane_create"
-  ) {
-    return normalized;
-  }
-  return null;
+  return normalized in EVENT_NAME_TO_KEY ? normalized as ContextDocGenerationEvent : null;
 }
 
 function normalizeGenerationSource(value: unknown): ContextDocGenerationSource | null {
@@ -141,6 +130,7 @@ export function createContextDocService(args: {
   laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
+  onStatusChanged?: (status: ContextStatus) => void;
 }) {
   const {
     db,
@@ -151,6 +141,7 @@ export function createContextDocService(args: {
     laneService,
     projectConfigService,
     aiIntegrationService,
+    onStatusChanged,
   } = args;
 
   const projectPackBuilderDeps: ProjectPackBuilderDeps = {
@@ -162,6 +153,22 @@ export function createContextDocService(args: {
     laneService,
     projectConfigService,
     aiIntegrationService,
+  };
+
+  const buildStatusSnapshot = (): ContextStatus => ({
+    ...readContextStatusImpl({ db, projectId, projectRoot, packsDir }),
+    generation: readGenerationStatus(),
+  });
+
+  const emitStatusChanged = (): void => {
+    if (!onStatusChanged) return;
+    try {
+      onStatusChanged(buildStatusSnapshot());
+    } catch (error) {
+      logger.debug("context_docs.status_emit_failed", {
+        error: getErrorMessage(error),
+      });
+    }
   };
 
   const readContextDocRefreshPrefs = (): ContextDocRefreshPrefs | null => {
@@ -242,6 +249,7 @@ export function createContextDocService(args: {
 
   const writeGenerationStatus = (next: ContextStatus["generation"]): void => {
     db.setJson(CONTEXT_DOC_GENERATION_STATUS_KEY, next);
+    emitStatusChanged();
   };
 
   const buildGenerationStatus = (args: {
@@ -496,10 +504,7 @@ export function createContextDocService(args: {
       return readContextDocMetaImpl(projectRoot);
     },
     getStatus(): ContextStatus {
-      return {
-        ...readContextStatusImpl({ db, projectId, projectRoot, packsDir }),
-        generation: readGenerationStatus(),
-      };
+      return buildStatusSnapshot();
     },
     getPrefs(): ContextDocPrefs {
       const stored = readContextDocRefreshPrefs();

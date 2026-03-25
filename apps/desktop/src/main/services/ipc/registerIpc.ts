@@ -44,6 +44,7 @@ import type {
   DraftPrDescriptionArgs,
   CreateLaneArgs,
   CreateChildLaneArgs,
+  CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
   DockLayout,
   GraphPersistedState,
@@ -157,11 +158,14 @@ import type {
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
   AgentChatGetSummaryArgs,
+  AgentChatHandoffArgs,
+  AgentChatHandoffResult,
   AgentChatInterruptArgs,
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
   AgentChatPermissionMode,
+  AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
   AgentChatSession,
@@ -3047,6 +3051,18 @@ export function registerIpc({
     return lane;
   });
 
+  ipcMain.handle(IPC.lanesCreateFromUnstaged, async (_event, arg: CreateLaneFromUnstagedArgs): Promise<LaneSummary> => {
+    const ctx = getCtx();
+    const lane = await ctx.laneService.createFromUnstaged(arg);
+    await ensureLanePortLease(ctx, lane.id);
+    notifyLaneCreated(ctx, lane);
+    triggerAutoContextDocs(ctx, {
+      event: "lane_create",
+      reason: `lanes_create_from_unstaged:${lane.id}`,
+    });
+    return lane;
+  });
+
   ipcMain.handle(IPC.lanesImportBranch, async (_event, arg: ImportBranchLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
     const lane = await ctx.laneService.importBranch(arg);
@@ -3658,6 +3674,11 @@ export function registerIpc({
     return await ctx.agentChatService.createSession(arg);
   });
 
+  ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.handoffSession(arg);
+  });
+
   ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.sendMessage(arg);
@@ -3681,6 +3702,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.approveToolUse(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatRespondToInput, async (_event, arg: AgentChatRespondToInputArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.agentChatService.respondToInput(arg);
   });
 
   ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {

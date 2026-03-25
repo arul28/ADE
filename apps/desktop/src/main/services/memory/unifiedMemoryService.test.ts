@@ -125,4 +125,25 @@ describe("unifiedMemoryService", () => {
     expect(missionBudget[0]?.scope).toBe("mission");
     expect(missionBudget[0]?.scopeOwnerId).toBe("run-1");
   });
+
+  it("rejects memory writes that are obviously derivable from code or raw logs", async () => {
+    const { memoryService } = await createFixture();
+
+    const result = memoryService.writeMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "fact",
+      content: [
+        "Error: Build failed",
+        "    at build (src/build.ts:12:3)",
+        "    at main (src/main.ts:40:2)",
+      ].join("\n"),
+      importance: "medium",
+      status: "candidate",
+      confidence: 0.6,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toContain("raw stack trace");
+  });
 });

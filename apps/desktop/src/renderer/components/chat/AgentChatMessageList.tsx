@@ -44,21 +44,17 @@ import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
-
-function formatStructuredValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function readRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
+import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
+import {
+  collapseChatTranscriptEventsIncremental,
+  formatStructuredValue,
+  groupConsecutiveWorkLogRows,
+  readRecord,
+  summarizeDiffStats,
+  summarizeInlineText,
+  type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
+  type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
+} from "./chatTranscriptRows";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 
@@ -97,12 +93,6 @@ function summarizeStructuredValue(value: unknown, maxChars = 160): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
 }
 
-function summarizeInlineText(value: string, maxChars = 120): string {
-  const text = value.replace(/\s+/g, " ").trim();
-  if (!text.length) return "";
-  return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
-}
-
 function getEventTurnId(event: AgentChatEvent): string | null {
   if (!("turnId" in event) || typeof event.turnId !== "string") return null;
   const turnId = event.turnId.trim();
@@ -121,18 +111,6 @@ function dirnamePathLabel(value: string): string | null {
   if (basename === normalized) return null;
   const suffix = `/${basename}`;
   return normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : null;
-}
-
-function summarizeDiffStats(diff: string): { additions: number; deletions: number } {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of diff.split(/\r?\n/)) {
-    if (!line.length) continue;
-    if (line.startsWith("+++ ") || line.startsWith("--- ") || line.startsWith("@@")) continue;
-    if (line.startsWith("+")) additions += 1;
-    else if (line.startsWith("-")) deletions += 1;
-  }
-  return { additions, deletions };
 }
 
 function formatFileAction(kind: Extract<AgentChatEvent, { type: "file_change" }>["kind"]): string {
@@ -302,493 +280,6 @@ function MessageCopyButton({
       <span>{copied ? "Copied" : "Copy"}</span>
     </button>
   );
-}
-
-function appendCollapsedEvent(out: RenderEnvelope[], envelope: AgentChatEventEnvelope, sequence: number): void {
-  const { event } = envelope;
-
-  if (event.type === "step_boundary") {
-    return;
-  }
-
-  // Activity rows are intentionally hidden from the transcript and surfaced
-  // only in the live streaming indicator.
-  if (event.type === "activity") {
-    return;
-  }
-
-  if (event.type === "status") {
-    const normalizedMessage = summarizeInlineText(event.message ?? "", 120).toLowerCase();
-    const keepStatus =
-      event.turnStatus === "failed"
-      || event.turnStatus === "interrupted"
-      || (normalizedMessage.length > 0
-        && normalizedMessage !== event.turnStatus.toLowerCase()
-        && normalizedMessage !== "started"
-        && normalizedMessage !== "completed");
-    if (!keepStatus) {
-      return;
-    }
-  }
-
-  if (event.type === "system_notice" && event.noticeKind === "info" && event.message.trim().toLowerCase() === "session ready") {
-    return;
-  }
-
-  if (event.type === "delegation_state") {
-    const normalizedMessage = summarizeInlineText(event.message ?? "", 140);
-    const keepDelegation =
-      normalizedMessage.length > 0
-      || event.contract.status === "blocked"
-      || event.contract.status === "launch_failed"
-      || event.contract.status === "failed";
-    if (!keepDelegation) {
-      return;
-    }
-  }
-
-  const prev = out[out.length - 1];
-
-  if (event.type === "reasoning") {
-    const nextTurn = event.turnId ?? null;
-    const nextItemId = event.itemId ?? null;
-    const nextSummaryIndex = event.summaryIndex ?? null;
-    let matchIndex = -1;
-    for (let i = out.length - 1; i >= 0; i -= 1) {
-      const candidate = out[i];
-      if (!candidate || candidate.event.type !== "reasoning") {
-        break;
-      }
-      const sameReasoningBlock = nextItemId !== null
-        ? (candidate.event.itemId ?? null) === nextItemId
-          && (candidate.event.summaryIndex ?? null) === nextSummaryIndex
-        : nextTurn !== null
-          && (candidate.event.turnId ?? null) === nextTurn
-          && (candidate.event.itemId ?? null) === null;
-      if (sameReasoningBlock) {
-        matchIndex = i;
-        break;
-      }
-    }
-    if (matchIndex >= 0) {
-      const existing = out[matchIndex];
-      if (existing?.event.type === "reasoning") {
-        out[matchIndex] = {
-          ...existing,
-          timestamp: envelope.timestamp,
-          event: {
-            ...existing.event,
-            text: `${existing.event.text}${event.text}`,
-            startTimestamp: (existing.event as any).startTimestamp ?? existing.timestamp,
-          } as any
-        };
-        return;
-      }
-    }
-  }
-
-  if (event.type === "text") {
-    const nextTurn = event.turnId ?? null;
-    const nextItem = event.itemId ?? null;
-    // Require at least one identity field to prevent merging anonymous chunks
-    if (nextTurn || nextItem) {
-      // Search backwards for a matching text row, but stop if we hit any
-      // structured work row so later text stays after the work it describes.
-      let matchIndex = -1;
-      for (let i = out.length - 1; i >= 0; i--) {
-        const candidate = out[i];
-        const ct = candidate.event.type;
-        // Stop at any structured work row so later text stays after the work it describes.
-        if (
-          ct === "tool_invocation"
-          || ct === "tool_call"
-          || ct === "tool_result"
-          || ct === "command"
-          || ct === "file_change"
-        ) {
-          break;
-        }
-        if (
-          ct === "text"
-          && (candidate.event.turnId ?? null) === nextTurn
-          && (candidate.event.itemId ?? null) === nextItem
-        ) {
-          matchIndex = i;
-          break;
-        }
-      }
-      if (matchIndex >= 0) {
-        const existing = out[matchIndex];
-        if (existing?.event.type === "text") {
-          out[matchIndex] = {
-            ...existing,
-            timestamp: envelope.timestamp,
-            event: {
-              ...existing.event,
-              text: `${existing.event.text}${event.text}`,
-            },
-          };
-          return;
-        }
-      }
-    }
-  }
-
-  if (prev?.event.type === "command" && event.type === "command") {
-    const prevTurn = prev.event.turnId ?? null;
-    const nextTurn = event.turnId ?? null;
-    if (prev.event.itemId === event.itemId && prevTurn === nextTurn) {
-      const mergedOutput =
-        event.output.length && event.output.startsWith(prev.event.output)
-          ? event.output
-          : `${prev.event.output}${event.output}`;
-      out[out.length - 1] = {
-        ...prev,
-        timestamp: envelope.timestamp,
-        event: {
-          ...prev.event,
-          output: mergedOutput,
-          status: event.status,
-          exitCode: event.exitCode ?? prev.event.exitCode,
-          durationMs: event.durationMs ?? prev.event.durationMs
-        }
-      };
-      return;
-    }
-  }
-
-  if (prev?.event.type === "file_change" && event.type === "file_change") {
-    const prevTurn = prev.event.turnId ?? null;
-    const nextTurn = event.turnId ?? null;
-    if (prev.event.itemId === event.itemId && prevTurn === nextTurn && prev.event.path === event.path) {
-      const mergedDiff =
-        event.diff.length && event.diff.startsWith(prev.event.diff)
-          ? event.diff
-          : `${prev.event.diff}${event.diff}`;
-      out[out.length - 1] = {
-        ...prev,
-        timestamp: envelope.timestamp,
-        event: {
-          ...prev.event,
-          diff: mergedDiff,
-          status: event.status
-        }
-      };
-      return;
-    }
-  }
-
-  // todo_update: replace previous todo_update with same turnId (latest state wins)
-  if (event.type === "todo_update") {
-    const nextTurn = event.turnId ?? null;
-    if (nextTurn !== null) {
-      const matchIndex = [...out]
-        .reverse()
-        .findIndex((candidate) =>
-          candidate.event.type === "todo_update"
-          && (candidate.event.turnId ?? null) === nextTurn,
-        );
-      if (matchIndex >= 0) {
-        const actualIndex = out.length - 1 - matchIndex;
-        out[actualIndex] = {
-          ...out[actualIndex]!,
-          timestamp: envelope.timestamp,
-          event,
-        };
-        return;
-      }
-    }
-    out.push({
-      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
-      timestamp: envelope.timestamp,
-      event,
-    });
-    return;
-  }
-
-  // subagent_started and subagent_result: push normally, no collapsing
-  if (event.type === "subagent_started" || event.type === "subagent_result") {
-    out.push({
-      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
-      timestamp: envelope.timestamp,
-      event,
-    });
-    return;
-  }
-
-  if (event.type === "subagent_progress") {
-    const matchIndex = [...out]
-      .reverse()
-      .findIndex((candidate) =>
-        candidate.event.type === "subagent_progress"
-        && candidate.event.taskId === event.taskId
-        && (candidate.event.turnId ?? null) === (event.turnId ?? null),
-      );
-    if (matchIndex >= 0) {
-      const actualIndex = out.length - 1 - matchIndex;
-      out[actualIndex] = {
-        ...out[actualIndex]!,
-        timestamp: envelope.timestamp,
-        event,
-      };
-      return;
-    }
-    out.push({
-      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
-      timestamp: envelope.timestamp,
-      event,
-    });
-    return;
-  }
-
-  // structured_question, tool_use_summary, context_compact, system_notice, web_search, auto_approval_review: push normally
-  if (
-    event.type === "structured_question"
-    || event.type === "tool_use_summary"
-    || event.type === "context_compact"
-    || event.type === "system_notice"
-    || event.type === "completion_report"
-    || event.type === "web_search"
-    || event.type === "auto_approval_review"
-  ) {
-    out.push({
-      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
-      timestamp: envelope.timestamp,
-      event,
-    });
-    return;
-  }
-
-  // plan_text: merge consecutive deltas by turnId/itemId (like text merging)
-  if (event.type === "plan_text") {
-    const nextTurn = event.turnId ?? null;
-    const nextItem = event.itemId ?? null;
-    const matchIndex = [...out]
-      .reverse()
-      .findIndex((candidate) =>
-        candidate.event.type === "plan_text"
-        && (candidate.event.turnId ?? null) === nextTurn
-        && (candidate.event.itemId ?? null) === nextItem,
-      );
-    if (matchIndex >= 0) {
-      const actualIndex = out.length - 1 - matchIndex;
-      const existing = out[actualIndex];
-      if (existing?.event.type === "plan_text") {
-        out[actualIndex] = {
-          ...existing,
-          timestamp: envelope.timestamp,
-          event: {
-            ...existing.event,
-            text: `${existing.event.text}${event.text}`,
-          },
-        };
-        return;
-      }
-    }
-    out.push({
-      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
-      timestamp: envelope.timestamp,
-      event,
-    });
-    return;
-  }
-
-  if (event.type === "tool_call") {
-    out.push({
-      key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
-      timestamp: envelope.timestamp,
-      event: {
-        type: "tool_invocation",
-        tool: event.tool,
-        args: event.args,
-        itemId: event.itemId,
-        ...(event.parentItemId ? { parentItemId: event.parentItemId } : {}),
-        turnId: event.turnId,
-        status: "running",
-      },
-    });
-    return;
-  }
-
-  if (event.type === "tool_result") {
-    const matchIndex = [...out]
-      .reverse()
-      .findIndex((candidate) =>
-        candidate.event.type === "tool_invocation"
-        && candidate.event.itemId === event.itemId
-        && candidate.event.tool === event.tool
-        && (candidate.event.turnId ?? null) === (event.turnId ?? null),
-      );
-    if (matchIndex >= 0) {
-      const actualIndex = out.length - 1 - matchIndex;
-      const existing = out[actualIndex]!;
-      if (existing.event.type === "tool_invocation") {
-        out[actualIndex] = {
-          ...existing,
-          timestamp: envelope.timestamp,
-          event: {
-            ...existing.event,
-            result: event.result,
-            ...(event.parentItemId ? { parentItemId: event.parentItemId } : {}),
-            status: event.status ?? "completed",
-          },
-        };
-        return;
-      }
-    }
-  }
-
-  out.push({
-    key: `${envelope.sessionId}:${sequence}:${envelope.timestamp}`,
-    timestamp: envelope.timestamp,
-    event
-  });
-}
-
-function collapseEvents(events: AgentChatEventEnvelope[]): RenderEnvelope[] {
-  const out: RenderEnvelope[] = [];
-  for (let i = 0; i < events.length; i += 1) {
-    appendCollapsedEvent(out, events[i]!, i);
-  }
-  return out;
-}
-
-function collapseEventsIncremental(
-  events: AgentChatEventEnvelope[],
-  prevEvents: AgentChatEventEnvelope[],
-  prevRows: RenderEnvelope[],
-): RenderEnvelope[] {
-  if (!prevEvents.length || events.length < prevEvents.length) {
-    return collapseEvents(events);
-  }
-
-  // Fast path: most updates append events at the tail during streaming.
-  if (events[prevEvents.length - 1] !== prevEvents[prevEvents.length - 1]) {
-    return collapseEvents(events);
-  }
-
-  const out = prevRows.slice();
-  for (let i = prevEvents.length; i < events.length; i += 1) {
-    appendCollapsedEvent(out, events[i]!, i);
-  }
-  return out;
-}
-
-/* ── Tool grouping ── */
-
-type ToolGroup = {
-  type: "tool_group";
-  toolKey: string;
-  tools: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "tool_invocation" }> }>;
-};
-
-type CommandGroup = {
-  type: "command_group";
-  commands: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "command" }> }>;
-  turnId: string | null;
-};
-
-type FileChangeGroup = {
-  type: "file_change_group";
-  fileChanges: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "file_change" }> }>;
-  turnId: string | null;
-};
-
-type GroupedRenderEnvelope = {
-  key: string;
-  timestamp: string;
-  event: RenderEnvelope["event"] | ToolGroup | CommandGroup | FileChangeGroup;
-};
-
-function groupConsecutiveTools(rows: RenderEnvelope[]): GroupedRenderEnvelope[] {
-  const result: GroupedRenderEnvelope[] = [];
-  let i = 0;
-  while (i < rows.length) {
-    const row = rows[i]!;
-    if (row.event.type === "tool_invocation") {
-      const meta = getToolMeta(row.event.tool);
-      const display = describeToolIdentifier(row.event.tool);
-      const toolKey = `${meta.label}::${display.secondaryLabel ?? ""}`;
-      const group: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "tool_invocation" }> }> = [];
-      while (i < rows.length && rows[i]!.event.type === "tool_invocation") {
-        const next = rows[i] as RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "tool_invocation" }> };
-        const nextMeta = getToolMeta(next.event.tool);
-        const nextDisplay = describeToolIdentifier(next.event.tool);
-        const nextToolKey = `${nextMeta.label}::${nextDisplay.secondaryLabel ?? ""}`;
-        if (nextToolKey !== toolKey) break;
-        group.push(next);
-        i++;
-      }
-      if (group.length === 1) {
-        result.push(group[0]!);
-      } else {
-        result.push({
-          key: `group:${group[0]!.key}`,
-          timestamp: group[group.length - 1]!.timestamp,
-          event: { type: "tool_group", toolKey, tools: group },
-        });
-      }
-    } else {
-      result.push(row);
-      i++;
-    }
-  }
-  return result;
-}
-
-function groupConsecutiveStructuredRows(rows: GroupedRenderEnvelope[]): GroupedRenderEnvelope[] {
-  const result: GroupedRenderEnvelope[] = [];
-  let i = 0;
-  while (i < rows.length) {
-    const row = rows[i]!;
-    if (row.event.type === "command" || row.event.type === "file_change") {
-      const kind = row.event.type;
-      const turnId = row.event.turnId ?? null;
-      if (turnId === null) {
-        result.push(row);
-        i++;
-        continue;
-      }
-      const group: GroupedRenderEnvelope[] = [];
-      while (i < rows.length) {
-        const next = rows[i]!;
-        if (next.event.type !== kind || (next.event.turnId ?? null) !== turnId) {
-          break;
-        }
-        group.push(next);
-        i++;
-      }
-      if (group.length === 1) {
-        result.push(group[0]!);
-        continue;
-      }
-      if (kind === "command") {
-        result.push({
-          key: `group:${group[0]!.key}`,
-          timestamp: group[group.length - 1]!.timestamp,
-          event: {
-            type: "command_group",
-            turnId,
-            commands: group.map((entry) => entry as RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "command" }> }),
-          },
-        });
-      } else {
-        result.push({
-          key: `group:${group[0]!.key}`,
-          timestamp: group[group.length - 1]!.timestamp,
-          event: {
-            type: "file_change_group",
-            turnId,
-            fileChanges: group.map((entry) => entry as RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "file_change" }> }),
-          },
-        });
-      }
-      continue;
-    }
-    result.push(row);
-    i++;
-  }
-  return result;
 }
 
 /* ── Status indicators ── */
@@ -1336,18 +827,6 @@ function resolveAssistantPresentation({
   return { label, glyph };
 }
 
-function aggregateCommandStatus(commands: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "command" }> }>): "running" | "completed" | "failed" {
-  if (commands.some((entry) => entry.event.status === "failed")) return "failed";
-  if (commands.some((entry) => entry.event.status === "running")) return "running";
-  return "completed";
-}
-
-function aggregateFileChangeStatus(fileChanges: Array<RenderEnvelope & { event: Extract<RenderEnvelope["event"], { type: "file_change" }> }>): "running" | "completed" | "failed" {
-  if (fileChanges.some((entry) => entry.event.status === "failed")) return "failed";
-  if (fileChanges.some((entry) => entry.event.status === "running")) return "running";
-  return "completed";
-}
-
 function commandTimelineVerb(status: Extract<AgentChatEvent, { type: "command" }>["status"]): string {
   if (status === "failed") return "Command failed";
   if (status === "running") return "Running";
@@ -1448,92 +927,6 @@ function FileChangeEventCard({
       ) : (
         <div className="font-mono text-[11px] text-muted-fg/40">No diff payload available.</div>
       )}
-    </InlineDisclosureRow>
-  );
-}
-
-function CommandGroupCard({
-  group,
-}: {
-  group: CommandGroup;
-}) {
-  const status = aggregateCommandStatus(group.commands);
-  const preview = summarizeInlineText(group.commands[group.commands.length - 1]!.event.command, 96);
-  return (
-    <InlineDisclosureRow
-      defaultOpen={status === "failed"}
-      className={WORK_LOG_CARD_CLASS}
-      summary={
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
-          <span className={cn(
-            "inline-flex h-1.5 w-1.5 rounded-full",
-            status === "completed"
-              ? "bg-emerald-400/85"
-              : status === "failed"
-                ? "bg-red-400/85"
-                : "bg-amber-400/85",
-          )} />
-          <Terminal size={11} weight="regular" className="text-fg/34" />
-          <span className="font-medium text-fg/62">Ran</span>
-          <span className="text-fg/76">{group.commands.length} command{group.commands.length === 1 ? "" : "s"}</span>
-          <span className="truncate text-[10px] text-fg/34">{preview}</span>
-        </div>
-      }
-    >
-      <div className="space-y-2">
-        {group.commands.map((entry) => (
-          <CommandEventCard key={entry.key} event={entry.event} />
-        ))}
-      </div>
-    </InlineDisclosureRow>
-  );
-}
-
-function FileChangeGroupCard({
-  group,
-}: {
-  group: FileChangeGroup;
-}) {
-  const status = aggregateFileChangeStatus(group.fileChanges);
-  const preview = summarizeInlineText(
-    basenamePathLabel(group.fileChanges[group.fileChanges.length - 1]!.event.path),
-    96,
-  );
-  const totals = group.fileChanges.reduce((acc, entry) => {
-    const stats = summarizeDiffStats(entry.event.diff);
-    return {
-      additions: acc.additions + stats.additions,
-      deletions: acc.deletions + stats.deletions,
-    };
-  }, { additions: 0, deletions: 0 });
-  return (
-    <InlineDisclosureRow
-      defaultOpen={status === "failed"}
-      className={WORK_LOG_CARD_CLASS}
-      summary={
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
-          <span className={cn(
-            "inline-flex h-1.5 w-1.5 rounded-full",
-            status === "completed"
-              ? "bg-emerald-400/85"
-              : status === "failed"
-                ? "bg-red-400/85"
-                : "bg-amber-400/85",
-          )} />
-          <FileCode size={11} weight="regular" className="text-fg/34" />
-          <span className="font-medium text-fg/62">Changed</span>
-          <span className="text-fg/76">{group.fileChanges.length} file{group.fileChanges.length === 1 ? "" : "s"}</span>
-          {totals.additions > 0 ? <span className="text-emerald-300/70">+{totals.additions}</span> : null}
-          {totals.deletions > 0 ? <span className="text-red-300/70">-{totals.deletions}</span> : null}
-          <span className="truncate text-[10px] text-fg/34">{preview}</span>
-        </div>
-      }
-    >
-      <div className="space-y-2">
-        {group.fileChanges.map((entry) => (
-          <FileChangeEventCard key={entry.key} event={entry.event} />
-        ))}
-      </div>
     </InlineDisclosureRow>
   );
 }
@@ -2013,6 +1406,7 @@ function renderEvent(
       rate_limit: { border: "border-red-500/18", bg: "bg-red-500/[0.06]", text: "text-red-300", icon: Warning },
       hook: { border: "border-violet-500/18", bg: "bg-violet-500/[0.06]", text: "text-violet-300", icon: Note },
       file_persist: { border: "border-emerald-500/18", bg: "bg-emerald-500/[0.06]", text: "text-emerald-300", icon: Note },
+      memory: { border: "border-cyan-500/18", bg: "bg-cyan-500/[0.06]", text: "text-cyan-300", icon: MagnifyingGlass },
       info: { border: "border-border/14", bg: "bg-surface-recessed/70", text: "text-muted-fg/55", icon: Note },
     };
     const style = kindStyles[event.noticeKind] ?? kindStyles.info!;
@@ -2215,17 +1609,52 @@ function renderEvent(
     return <ToolResultCard event={event} />;
   }
 
-  /* ── Tool group (handled separately via ToolGroupCard) ── */
-
   /* ── Approval request ── */
   if (event.type === "approval_request") {
     const handleApproval = options?.onApproval ? (d: AgentChatApprovalDecision) => options.onApproval?.(event.itemId, d) : undefined;
     const detail = readRecord(event.detail);
+    const request = readRecord(detail?.request);
+    const requestKind = typeof request?.kind === "string" ? request.kind.trim() : "";
+    const requestSource = typeof request?.source === "string" ? request.source.trim() : "";
+    const requestDescription = typeof request?.description === "string" ? request.description.trim() : "";
+    const requestQuestions = Array.isArray(request?.questions)
+      ? request.questions.map((question) => readRecord(question)).filter((question): question is Record<string, unknown> => question != null)
+      : [];
+    const primaryQuestion = requestQuestions[0] ?? null;
+    const primaryQuestionText = typeof primaryQuestion?.question === "string" ? primaryQuestion.question.trim() : "";
+    const quickOptions = Array.isArray(primaryQuestion?.options)
+      ? primaryQuestion.options
+          .map((option) => readRecord(option))
+          .filter((option): option is Record<string, unknown> => option != null)
+          .map((option) => {
+            const label = typeof option.label === "string" ? option.label.trim() : "";
+            const value = typeof option.value === "string" ? option.value.trim() : label;
+            if (!label.length || !value.length) return null;
+            return { label, value };
+          })
+          .filter((option): option is { label: string; value: string } => option != null)
+      : [];
     const detailTool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
     const question = typeof detail?.question === "string" ? detail.question.trim() : "";
     const normalizedTool = detailTool.toLowerCase();
-    const isAskUser = (normalizedTool === "askuser" || normalizedTool === "ask_user") && question.length > 0;
-    const detailText = event.detail == null || isAskUser ? "" : formatStructuredValue(event.detail);
+    const isQuestionRequest = requestKind === "question" || requestKind === "structured_question";
+    const isPermissionRequest = requestKind === "permissions";
+    const isAskUser = ((normalizedTool === "askuser" || normalizedTool === "ask_user") && question.length > 0) || isQuestionRequest;
+    const detailText = (() => {
+      if (event.detail == null || isAskUser) return "";
+      if (!request) return formatStructuredValue(event.detail);
+      const detailWithoutRequest = { ...detail };
+      delete detailWithoutRequest.request;
+      return Object.keys(detailWithoutRequest).length ? formatStructuredValue(detailWithoutRequest) : "";
+    })();
+    let bodyText: string;
+    if (isQuestionRequest) {
+      bodyText = requestDescription || primaryQuestionText || question || event.description;
+    } else if (isAskUser) {
+      bodyText = question;
+    } else {
+      bodyText = event.description;
+    }
     return (
       <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
         <div className="mb-2 flex items-center gap-2">
@@ -2238,11 +1667,25 @@ function renderEvent(
             <Warning size={13} weight="bold" className="text-amber-500" />
           )}
           <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">
-            {isAskUser ? "Needs Input" : "Approval Required"}
+            {isAskUser ? "Needs Input" : isPermissionRequest ? "Permission Request" : "Approval Required"}
           </span>
-          <span className="font-mono text-[10px] text-muted-fg/40">{event.kind}</span>
+          <span className="font-mono text-[10px] text-muted-fg/40">{requestSource || event.kind}</span>
         </div>
-        <div className="text-[12px] leading-relaxed text-fg/75">{isAskUser ? question : event.description}</div>
+        <div className="text-[12px] leading-relaxed text-fg/75">{bodyText}</div>
+        {isQuestionRequest && quickOptions.length > 0 && options?.onApproval ? (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            {quickOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className="rounded-[var(--chat-radius-pill)] border border-accent/25 bg-accent/[0.08] px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/[0.16]"
+                onClick={() => options.onApproval?.(event.itemId, "accept", option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {detailText.length ? (
           <div className="mt-3">
             <CollapsibleCard
@@ -2460,56 +1903,6 @@ function renderEvent(
       <div className="h-px flex-1 bg-white/6" />
       <span className="font-sans text-[10px] text-muted-fg/20">event</span>
       <div className="h-px flex-1 bg-white/6" />
-    </div>
-  );
-}
-
-function ToolGroupCard({ group }: { group: ToolGroup }) {
-  const [expanded, setExpanded] = useState(false);
-  const runningCount = group.tools.filter((t) => t.event.status === "running").length;
-  const failedCount = group.tools.filter((t) => t.event.status === "failed").length;
-  const meta = getToolMeta(group.tools[0]!.event.tool);
-  const display = describeToolIdentifier(group.tools[0]!.event.tool);
-  const ToolIcon = meta.icon;
-
-  return (
-    <div className={cn("rounded-lg border border-white/[0.06] bg-[#111317]/70")}>
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left font-mono text-[11px] text-fg/52 transition-colors hover:bg-white/[0.03] hover:text-fg/72"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        {expanded ? <CaretDown size={10} weight="bold" className="text-fg/30" /> : <CaretRight size={10} weight="bold" className="text-fg/30" />}
-        <span className={cn("inline-flex h-1.5 w-1.5 rounded-full", failedCount > 0 ? "bg-red-400/85" : runningCount > 0 ? "bg-amber-400/85" : "bg-white/30")} />
-        <ToolIcon size={11} weight="regular" className="text-fg/34" />
-        <span className="truncate font-medium text-fg/62">{meta.label}{display.secondaryLabel ? ` ${display.secondaryLabel}` : ""}</span>
-        <span className="text-[10px] text-fg/35">{group.tools.length} calls</span>
-        {failedCount > 0 ? <span className="text-[10px] text-red-300/80">{failedCount} failed</span> : null}
-      </button>
-
-      {expanded && (
-        <div className="ml-5 mt-1 space-y-1 border-l border-white/[0.05] pl-3">
-          {group.tools.map((tool) => {
-            const meta = getToolMeta(tool.event.tool);
-            const ToolIcon = meta.icon;
-            const toolDisplay = describeToolIdentifier(tool.event.tool);
-            const targetLine = meta.getTarget ? meta.getTarget(readRecord(tool.event.args) ?? {}) : null;
-            const label = targetLine
-              ? `${meta.label} ${targetLine}`
-              : toolDisplay.secondaryLabel
-                ? `${meta.label} ${toolDisplay.secondaryLabel}`
-                : meta.label;
-
-            return (
-              <div key={tool.key} className="flex items-center gap-2 py-0.5 font-mono text-[11px] text-fg/50">
-                <span className={cn("inline-block h-1.5 w-1.5 rounded-full", tool.event.status === "failed" ? "bg-red-400/70" : tool.event.status === "running" ? "bg-amber-400/70" : "bg-white/22")} />
-                <ToolIcon size={11} weight="regular" className="text-fg/34" />
-                <span className="truncate">{label}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
@@ -2771,13 +2164,10 @@ function formatElapsedTimer(startedAt: string | null, nowMs: number): string | n
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
 }
 
-function getGroupedTurnId(envelope: GroupedRenderEnvelope | undefined): string | null {
+function getGroupedTurnId(envelope: TranscriptGroupedEnvelope | undefined): string | null {
   if (!envelope) return null;
-  if (envelope.event.type === "tool_group") {
-    return envelope.event.tools[0]?.event.turnId ?? null;
-  }
-  if (envelope.event.type === "command_group" || envelope.event.type === "file_change_group") {
-    return envelope.event.turnId;
+  if (envelope.event.type === "work_log_group") {
+    return envelope.event.entries[0]?.turnId ?? null;
   }
   return "turnId" in envelope.event ? envelope.event.turnId ?? null : null;
 }
@@ -2785,7 +2175,7 @@ function getGroupedTurnId(envelope: GroupedRenderEnvelope | undefined): string |
 /* ── Main component ── */
 
 type EventRowProps = {
-  envelope: GroupedRenderEnvelope;
+  envelope: TranscriptGroupedEnvelope;
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
   turnModel: { label: string; modelId?: string; model?: string } | null;
@@ -2795,6 +2185,7 @@ type EventRowProps = {
   assistantLabel?: string;
   turnActive?: boolean;
   onOpenWorkspacePath?: (path: string) => void;
+  onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -2808,6 +2199,7 @@ const EventRow = React.memo(function EventRow({
   assistantLabel,
   turnActive,
   onOpenWorkspacePath,
+  onNavigateSuggestion,
 }: EventRowProps) {
   return (
     <div className="space-y-3">
@@ -2827,13 +2219,14 @@ const EventRow = React.memo(function EventRow({
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
         </div>
       ) : null}
-      {envelope.event.type === "tool_group"
-        ? <ToolGroupCard group={envelope.event} />
-        : envelope.event.type === "command_group"
-          ? <CommandGroupCard group={envelope.event} />
-          : envelope.event.type === "file_change_group"
-            ? <FileChangeGroupCard group={envelope.event} />
-            : renderEvent(envelope as RenderEnvelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive, onOpenWorkspacePath })}
+      {envelope.event.type === "work_log_group"
+        ? (
+          <ChatWorkLogBlock
+            entries={envelope.event.entries}
+            onNavigateSuggestion={onNavigateSuggestion}
+          />
+        )
+        : renderEvent(envelope as RenderEnvelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive, onOpenWorkspacePath })}
     </div>
   );
 });
@@ -2897,7 +2290,7 @@ export function AgentChatMessageList({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: RenderEnvelope[] }>({
+  const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: TranscriptRenderEnvelope[] }>({
     events: [],
     rows: [],
   });
@@ -2923,11 +2316,11 @@ export function AgentChatMessageList({
 
   const rows = useMemo(() => {
     const cached = collapseCacheRef.current;
-    const nextRows = collapseEventsIncremental(events, cached.events, cached.rows);
+    const nextRows = collapseChatTranscriptEventsIncremental(events, cached.events, cached.rows);
     collapseCacheRef.current = { events, rows: nextRows };
     return nextRows;
   }, [events]);
-  const groupedRows = useMemo(() => groupConsecutiveStructuredRows(groupConsecutiveTools(rows)), [rows]);
+  const groupedRows = useMemo(() => groupConsecutiveWorkLogRows(rows), [rows]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
   const activeTurnStartedAt = useMemo(
@@ -2995,6 +2388,10 @@ export function AgentChatMessageList({
     const state = currentLaneId ? { laneId: currentLaneId } : undefined;
     navigate("/files", state ? { state } : undefined);
   }, [currentLaneId, navigate, turnSummary?.files.length]);
+
+  const handleNavigateSuggestion = useCallback((suggestion: OperatorNavigationSuggestion) => {
+    navigate(suggestion.href);
+  }, [navigate]);
 
   const turnModelState = useMemo(() => {
     const map = new Map<string, { label: string; modelId?: string; model?: string }>();
@@ -3144,7 +2541,7 @@ export function AgentChatMessageList({
   }, []);
 
   /** Renders a single row with turn-divider logic. Used by both paths. */
-  const renderRow = useCallback((envelope: GroupedRenderEnvelope, index: number, virtualized: boolean) => {
+  const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
     const currentTurn = getGroupedTurnId(envelope);
     const previousTurn = getGroupedTurnId(groupedRows[index - 1]);
     const showTurnDivider = currentTurn && currentTurn !== previousTurn;
@@ -3171,6 +2568,7 @@ export function AgentChatMessageList({
           assistantLabel={assistantLabel}
           turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
           onOpenWorkspacePath={openWorkspacePath}
+          onNavigateSuggestion={handleNavigateSuggestion}
         />
       );
     }
@@ -3188,9 +2586,10 @@ export function AgentChatMessageList({
         assistantLabel={assistantLabel}
         turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
         onOpenWorkspacePath={openWorkspacePath}
+        onNavigateSuggestion={handleNavigateSuggestion}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

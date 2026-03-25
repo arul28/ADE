@@ -12,6 +12,7 @@ import type {
   AttachLaneArgs,
   CreateChildLaneArgs,
   CreateLaneArgs,
+  CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
   LaneIcon,
   LaneStateSnapshotSummary,
@@ -323,6 +324,63 @@ function collectDepthFirstIds(args: {
   };
   visit(args.rootLaneId);
   return args.includeSelf ? out : out.slice(1);
+}
+
+type WorktreeChangeState = {
+  hasStaged: boolean;
+  hasUnstaged: boolean;
+};
+
+async function inspectWorktreeChanges(worktreePath: string): Promise<WorktreeChangeState> {
+  const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 8_000 });
+  if (statusRes.exitCode !== 0) {
+    throw new Error("Unable to inspect lane worktree state.");
+  }
+
+  let hasStaged = false;
+  let hasUnstaged = false;
+  const lines = statusRes.stdout.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+  for (const line of lines) {
+    if (line.startsWith("??")) {
+      hasUnstaged = true;
+    } else {
+      const stagedCode = line[0] ?? " ";
+      const unstagedCode = line[1] ?? " ";
+      if (stagedCode !== " " && stagedCode !== "?") hasStaged = true;
+      if (unstagedCode !== " " && unstagedCode !== "?") hasUnstaged = true;
+    }
+    if (hasStaged && hasUnstaged) break;
+  }
+
+  return { hasStaged, hasUnstaged };
+}
+
+type GitStashEntry = {
+  ref: string;
+  subject: string;
+};
+
+async function listGitStashes(worktreePath: string): Promise<GitStashEntry[]> {
+  const stashRes = await runGit(["stash", "list", "--format=%gd%x1f%gs"], {
+    cwd: worktreePath,
+    timeoutMs: 15_000,
+  });
+  if (stashRes.exitCode !== 0) {
+    throw new Error("Unable to inspect git stash entries.");
+  }
+
+  return stashRes.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [ref, subject] = line.split("\u001f");
+      return {
+        ref: ref?.trim() ?? "",
+        subject: subject?.trim() ?? "",
+      };
+    })
+    .filter((entry) => entry.ref.length > 0);
 }
 
 export function createLaneService({
@@ -977,6 +1035,142 @@ export function createLaneService({
         parentLaneId: parent.id,
         folder: args.folder
       });
+    },
+
+    async createFromUnstaged(args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> {
+      const sourceLaneId = args.sourceLaneId.trim();
+      const name = args.name.trim();
+      if (!sourceLaneId) throw new Error("sourceLaneId is required");
+      if (!name) throw new Error("name is required");
+
+      const source = getLaneRow(sourceLaneId);
+      if (!source) throw new Error(`Lane not found: ${sourceLaneId}`);
+      if (source.status === "archived") throw new Error("Source lane is archived");
+
+      const sourceHeadSha = await getHeadSha(source.worktree_path);
+      if (!sourceHeadSha) throw new Error(`Unable to resolve HEAD for lane ${source.name}`);
+
+      const changeState = await inspectWorktreeChanges(source.worktree_path);
+      if (changeState.hasStaged) {
+        throw new Error("This lane has staged changes. Unstage all changes before moving unstaged work to a new lane.");
+      }
+      if (!changeState.hasUnstaged) {
+        throw new Error("This lane has no unstaged changes to move.");
+      }
+
+      const stashMarker = `ade-rescue-unstaged:${source.id}:${randomUUID()}`;
+      let stashRef: string | null = null;
+      let createdLaneId: string | null = null;
+
+      const restoreSourceStash = async (): Promise<void> => {
+        if (!stashRef) return;
+        await runGitOrThrow(["stash", "apply", stashRef], {
+          cwd: source.worktree_path,
+          timeoutMs: 30_000,
+        });
+        await runGitOrThrow(["stash", "drop", stashRef], {
+          cwd: source.worktree_path,
+          timeoutMs: 15_000,
+        });
+        stashRef = null;
+      };
+
+      const cleanupCreatedLane = async (laneId: string): Promise<void> => {
+        const row = getLaneRow(laneId);
+        if (!row) return;
+
+        if (row.lane_type === "worktree" && row.worktree_path && fs.existsSync(row.worktree_path)) {
+          await runGitOrThrow(["worktree", "remove", "--force", row.worktree_path], {
+            cwd: projectRoot,
+            timeoutMs: 60_000,
+          });
+        }
+
+        if (row.branch_ref) {
+          const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${row.branch_ref}`], {
+            cwd: projectRoot,
+            timeoutMs: 8_000,
+          });
+          if (refCheck.exitCode === 0) {
+            await runGitOrThrow(["branch", "-D", row.branch_ref], { cwd: projectRoot, timeoutMs: 30_000 });
+          }
+        }
+
+        db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
+        invalidateLaneListCache();
+      };
+
+      try {
+        await runGitOrThrow(["stash", "push", "--keep-index", "-u", "-m", stashMarker], {
+          cwd: source.worktree_path,
+          timeoutMs: 30_000,
+        });
+        const stashEntry = (await listGitStashes(source.worktree_path)).find((entry) => entry.subject.includes(stashMarker));
+        if (!stashEntry) {
+          throw new Error("Created a temporary stash, but could not resolve it.");
+        }
+        stashRef = stashEntry.ref;
+
+        const createdLane = await createWorktreeLane({
+          name,
+          baseRef: source.branch_ref,
+          startPoint: sourceHeadSha,
+          parentLaneId: source.id,
+        });
+        createdLaneId = createdLane.id;
+
+        try {
+          await runGitOrThrow(["stash", "apply", stashRef], {
+            cwd: createdLane.worktreePath,
+            timeoutMs: 30_000,
+          });
+        } catch (error) {
+          const cleanupErrors: string[] = [];
+          try {
+            await cleanupCreatedLane(createdLane.id);
+          } catch (cleanupError) {
+            cleanupErrors.push(`cleanup lane failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+          }
+          try {
+            await restoreSourceStash();
+          } catch (restoreError) {
+            cleanupErrors.push(`restore source changes failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
+          }
+          const cleanupMessage = cleanupErrors.length ? ` ${cleanupErrors.join(" ")}` : "";
+          throw new Error(
+            `Couldn't move unstaged changes to the new lane. ${error instanceof Error ? error.message : String(error)}${cleanupMessage}`.trim()
+          );
+        }
+
+        try {
+          await runGitOrThrow(["stash", "drop", stashRef], {
+            cwd: source.worktree_path,
+            timeoutMs: 15_000,
+          });
+          stashRef = null;
+        } catch (error) {
+          console.warn(
+            "[laneService] Failed to drop temporary rescue stash:",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+
+        const refreshedLane = (await listLanes({ includeArchived: false, includeStatus: true })).find(
+          (lane) => lane.id === createdLane.id,
+        );
+        return refreshedLane ?? createdLane;
+      } catch (error) {
+        if (stashRef && !createdLaneId) {
+          try {
+            await restoreSourceStash();
+          } catch (restoreError) {
+            throw new Error(
+              `${error instanceof Error ? error.message : String(error)} Source changes could not be restored: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+            );
+          }
+        }
+        throw error;
+      }
     },
 
     async importBranch(args: { branchRef: string; name?: string; description?: string; parentLaneId?: string | null }): Promise<LaneSummary> {

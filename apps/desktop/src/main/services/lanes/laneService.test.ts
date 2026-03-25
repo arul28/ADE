@@ -57,6 +57,343 @@ async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot:
   );
 }
 
+describe("laneService createFromUnstaged", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  it("moves unstaged and untracked changes into a new child lane", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-success-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-rescue-success", repoRoot });
+
+    const sourceWorktreePath = path.join(repoRoot, "parent");
+    const primaryWorktreePath = path.join(repoRoot, "main");
+    let stashMessage = "";
+    let stashPushed = false;
+    let createdWorktreePath = "";
+
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd === sourceWorktreePath) return "sha-parent-head";
+      return "sha-generic";
+    });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      if (args[0] === "stash" && args[1] === "push") {
+        stashPushed = true;
+        stashMessage = args[args.length - 1] ?? "";
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        createdWorktreePath = args[4] ?? "";
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "stash" && args[1] === "apply") {
+        expect(options.cwd).toBe(createdWorktreePath);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "stash" && args[1] === "drop") {
+        expect(options.cwd).toBe(sourceWorktreePath);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        if (options.cwd === sourceWorktreePath) {
+          return { exitCode: 0, stdout: stashPushed ? "" : " M src/file.ts\n?? src/new.ts\n", stderr: "" };
+        }
+        if (options.cwd === createdWorktreePath) {
+          return { exitCode: 0, stdout: " M src/file.ts\n?? src/new.ts\n", stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "stash" && args[1] === "list") {
+        return { exitCode: 0, stdout: `stash@{0}\u001fOn feature/parent: ${stashMessage}\n`, stderr: "" };
+      }
+      if (args[0] === "push" && args[1] === "-u") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: not a valid ref" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+        expect(options.cwd).toBe(primaryWorktreePath);
+        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-rescue-success",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.createFromUnstaged({ sourceLaneId: "lane-parent", name: "Rescue lane" });
+
+    expect(result.parentLaneId).toBe("lane-parent");
+    expect(result.baseRef).toBe("feature/parent");
+    expect(result.status.dirty).toBe(true);
+    expect(runGitOrThrow).toHaveBeenCalledWith(
+      ["stash", "push", "--keep-index", "-u", "-m", expect.stringContaining("ade-rescue-unstaged:lane-parent:")],
+      expect.objectContaining({ cwd: sourceWorktreePath }),
+    );
+  });
+
+  it("rejects the rescue flow when staged changes exist", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-staged-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-rescue-staged", repoRoot });
+
+    const sourceWorktreePath = path.join(repoRoot, "parent");
+
+    vi.mocked(getHeadSha).mockResolvedValue("sha-parent-head");
+    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      if (args[0] === "status" && args[1] === "--porcelain=v1" && options.cwd === sourceWorktreePath) {
+        return { exitCode: 0, stdout: "M  src/file.ts\n", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-rescue-staged",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await expect(service.createFromUnstaged({ sourceLaneId: "lane-parent", name: "Rescue lane" })).rejects.toThrow(
+      /unstage all changes/i,
+    );
+    expect(runGitOrThrow).not.toHaveBeenCalled();
+  });
+
+  it("allows rescuing unstaged changes from the primary lane even when it is behind remote", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-primary-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-rescue-primary", repoRoot });
+
+    const sourceWorktreePath = path.join(repoRoot, "main");
+    let stashMessage = "";
+    let stashPushed = false;
+    let createdWorktreePath = "";
+
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd === sourceWorktreePath) return "sha-main-head";
+      return "sha-generic";
+    });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      if (args[0] === "stash" && args[1] === "push") {
+        stashPushed = true;
+        stashMessage = args[args.length - 1] ?? "";
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        createdWorktreePath = args[4] ?? "";
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "stash" && args[1] === "apply") {
+        expect(options.cwd).toBe(createdWorktreePath);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "stash" && args[1] === "drop") {
+        expect(options.cwd).toBe(sourceWorktreePath);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        if (options.cwd === sourceWorktreePath) {
+          return { exitCode: 0, stdout: stashPushed ? "" : " M README.md\n", stderr: "" };
+        }
+        if (options.cwd === createdWorktreePath) {
+          return { exitCode: 0, stdout: " M README.md\n", stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "stash" && args[1] === "list") {
+        return { exitCode: 0, stdout: `stash@{0}\u001fOn main: ${stashMessage}\n`, stderr: "" };
+      }
+      if (args[0] === "push" && args[1] === "-u") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "3\t0\n", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "HEAD..@{upstream}" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "3\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "main@{upstream}") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
+        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-rescue-primary",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.createFromUnstaged({ sourceLaneId: "lane-main", name: "Primary rescue lane" });
+
+    expect(result.parentLaneId).toBe("lane-main");
+    expect(result.baseRef).toBe("main");
+    expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => Array.isArray(args) && args[0] === "fetch")).toBe(false);
+  });
+
+  it("restores the source work and removes the new lane when applying in the target lane fails", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-rollback-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-rescue-rollback", repoRoot });
+
+    const sourceWorktreePath = path.join(repoRoot, "parent");
+    let stashMessage = "";
+    let stashPushed = false;
+    let createdWorktreePath = "";
+    let restoredSource = false;
+
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd === sourceWorktreePath) return "sha-parent-head";
+      return "sha-generic";
+    });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      if (args[0] === "stash" && args[1] === "push") {
+        stashPushed = true;
+        stashMessage = args[args.length - 1] ?? "";
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        createdWorktreePath = args[4] ?? "";
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "stash" && args[1] === "apply") {
+        if (options.cwd === createdWorktreePath) {
+          throw new Error("target apply failed");
+        }
+        if (options.cwd === sourceWorktreePath) {
+          restoredSource = true;
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+      }
+      if (args[0] === "stash" && args[1] === "drop") {
+        expect(options.cwd).toBe(sourceWorktreePath);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "remove") {
+        expect(args).toEqual(["worktree", "remove", "--force", createdWorktreePath]);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "branch" && args[1] === "-D") {
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        if (options.cwd === sourceWorktreePath) {
+          return { exitCode: 0, stdout: stashPushed ? "" : " M src/file.ts\n", stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "stash" && args[1] === "list") {
+        return { exitCode: 0, stdout: `stash@{0}\u001fOn feature/parent: ${stashMessage}\n`, stderr: "" };
+      }
+      if (args[0] === "push" && args[1] === "-u") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-rescue-rollback",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await expect(service.createFromUnstaged({ sourceLaneId: "lane-parent", name: "Broken rescue lane" })).rejects.toThrow(
+      /couldn't move unstaged changes/i,
+    );
+    expect(restoredSource).toBe(true);
+    expect(db.get<{ count: number }>("select count(*) as count from lanes where project_id = ?", ["proj-rescue-rollback"])?.count).toBe(3);
+  });
+
+  it("rejects the rescue flow when there are no unstaged changes", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-empty-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-rescue-empty", repoRoot });
+
+    const sourceWorktreePath = path.join(repoRoot, "parent");
+
+    vi.mocked(getHeadSha).mockResolvedValue("sha-parent-head");
+    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      if (args[0] === "status" && args[1] === "--porcelain=v1" && options.cwd === sourceWorktreePath) {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-rescue-empty",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await expect(service.createFromUnstaged({ sourceLaneId: "lane-parent", name: "Empty rescue lane" })).rejects.toThrow(
+      /no unstaged changes/i,
+    );
+    expect(runGitOrThrow).not.toHaveBeenCalled();
+  });
+});
+
 describe("laneService rebaseStart", () => {
   beforeEach(() => {
     vi.mocked(getHeadSha).mockReset();

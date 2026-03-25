@@ -123,7 +123,7 @@ function deriveConfiguredCliModelIdsFromStatus(status: {
 }): string[] {
   const available = new Set<string>();
   const defaultClaudeModelId = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
-  const defaultCodexModelId = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.3-codex";
+  const defaultCodexModelId = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
 
   if (status.availableProviders.codex) {
     for (const model of status.models.codex ?? []) {

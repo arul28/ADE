@@ -117,6 +117,11 @@ export type CreateChildLaneArgs = {
   folder?: string;
 };
 
+export type CreateLaneFromUnstagedArgs = {
+  sourceLaneId: string;
+  name: string;
+};
+
 export type ImportBranchLaneArgs = {
   branchRef: string;
   name?: string;

@@ -12,9 +12,11 @@ import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
-import { extractFirstJsonObject } from "../ai/utils";
+import { parseStructuredOutput } from "../ai/utils";
 import { readDocPaths } from "../orchestrator/stepPolicyResolver";
 import type {
+  ContextDocHealth,
+  ContextDocOutputSource,
   ContextDocStatus,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
@@ -37,12 +39,84 @@ const BOOTSTRAP_FINGERPRINT_RE = /<!--\s*ADE_DOCS_FINGERPRINT:([a-f0-9]{64})\s*-
 const ADE_DOC_PRD_REL = ".ade/context/PRD.ade.md";
 const ADE_DOC_ARCH_REL = ".ade/context/ARCHITECTURE.ade.md";
 const CONTEXT_DOC_LAST_RUN_KEY = "context:docs:lastRun.v1";
-const CONTEXT_CLIP_TAG = "omitted_due_size";
 const DOC_TEXT_EXT_RE = /\.(md|mdx|txt|rst)$/i;
 const DOC_CONTEXT_EXT_RE = /\.(md|mdx|txt|rst|yaml|yml|json)$/i;
 const DOC_PRD_HINT_RE = /(prd|product|roadmap|feature|requirement|spec|user-story|planning)/i;
 const DOC_ARCH_HINT_RE = /(architecture|system|design|technical|infra|platform|lanes|conflict|pack)/i;
 const DOC_GUIDE_HINT_RE = /(readme|guide|overview|context|contributing|claude|agents)/i;
+const CONTEXT_DOC_MAX_CHARS = 8_000;
+
+type ContextDocId = ContextDocStatus["id"];
+
+const CONTEXT_DOC_SPECS: Record<ContextDocId, {
+  label: string;
+  relPath: string;
+  fallbackFileName: string;
+  title: string;
+  requiredHeadings: string[];
+}> = {
+  prd_ade: {
+    label: "PRD (ADE minimized)",
+    relPath: ADE_DOC_PRD_REL,
+    fallbackFileName: "PRD.ade.md",
+    title: "# PRD.ade",
+    requiredHeadings: [
+      "## What this is",
+      "## Who it's for",
+      "## Feature areas",
+      "## Current state",
+      "## Working norms",
+    ],
+  },
+  architecture_ade: {
+    label: "Architecture (ADE minimized)",
+    relPath: ADE_DOC_ARCH_REL,
+    fallbackFileName: "ARCHITECTURE.ade.md",
+    title: "# ARCHITECTURE.ade",
+    requiredHeadings: [
+      "## System shape",
+      "## Core services",
+      "## Data and state",
+      "## Integration points",
+      "## Key patterns",
+    ],
+  },
+};
+
+type ContextSourceDigest = {
+  relPath: string;
+  title: string;
+  blurb: string;
+  headings: string[];
+};
+
+type HybridSourceBundle = {
+  productDigests: ContextSourceDigest[];
+  technicalDigests: ContextSourceDigest[];
+  codeAnchors: Array<{ relPath: string; excerpt: string }>;
+  gitHistory: string;
+  gitChanges: string;
+};
+
+type PersistedDocResult = ContextGenerateDocsResult["docResults"][number];
+
+type PersistedContextDocRun = {
+  generatedAt?: string;
+  provider?: string;
+  trigger?: string;
+  modelId?: string | null;
+  reasoningEffort?: string | null;
+  prdPath?: string;
+  architecturePath?: string;
+  degraded?: boolean;
+  warnings?: Array<{ code?: string; message?: string; actionLabel?: string; actionPath?: string }>;
+  docResults?: Array<{
+    id?: string;
+    health?: string;
+    source?: string;
+    sizeBytes?: number;
+  }>;
+};
 
 // ── Deps ─────────────────────────────────────────────────────────────────────
 
@@ -83,173 +157,471 @@ const safeReadDoc = (absPath: string, maxBytes: number): { text: string; truncat
   }
 };
 
-// ── Codebase snapshot builder (deterministic, no AI) ─────────────────────────
+const clipText = (value: string, maxChars: number): string => {
+  const normalized = value.trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 16)).trimEnd()}\n...(truncated)`;
+};
 
-const MANIFEST_NAMES = ["package.json", "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt", "Gemfile", "build.gradle", "pom.xml"];
-const ENTRY_POINT_NAMES = [
-  "main.ts", "index.ts", "app.ts", "server.ts",
-  "main.tsx", "index.tsx", "app.tsx",
-  "main.go", "main.rs", "lib.rs",
-  "main.py", "app.py", "manage.py", "__main__.py",
-];
-const ENTRY_SEARCH_DIRS = ["", "src", "cmd", "lib", "app"];
-const DEEP_SCAN_DIRS = ["src", "lib", "apps", "packages"];
-const KEY_DOC_NAMES = ["README.md", "CLAUDE.md", "AGENTS.md"];
-const TECH_INDICATORS: Array<[string, string]> = [
-  ["package.json", "Node.js"],
-  ["tsconfig.json", "TypeScript"],
-  ["Cargo.toml", "Rust"],
-  ["go.mod", "Go"],
-  ["pyproject.toml", "Python"],
-  ["requirements.txt", "Python"],
-  [".python-version", "Python"],
-  ["Gemfile", "Ruby"],
-  ["build.gradle", "Java/Kotlin (Gradle)"],
-  ["pom.xml", "Java (Maven)"],
-  ["docker-compose.yml", "Docker Compose"],
-  ["docker-compose.yaml", "Docker Compose"],
-  ["Dockerfile", "Docker"],
-  [".github/workflows", "GitHub Actions CI"],
-  [".gitlab-ci.yml", "GitLab CI"],
-  ["Makefile", "Make"],
-  ["next.config.js", "Next.js"],
-  ["next.config.ts", "Next.js"],
-  ["vite.config.ts", "Vite"],
-  ["vite.config.js", "Vite"],
-  ["tailwind.config.ts", "Tailwind CSS"],
-  ["tailwind.config.js", "Tailwind CSS"],
-  ["prisma/schema.prisma", "Prisma ORM"],
-  ["electron-builder.yml", "Electron"],
-  ["forge.config.ts", "Electron Forge"],
-];
+function normalizeContextDocSource(value: unknown): ContextDocOutputSource {
+  const normalized = String(value ?? "").trim();
+  if (normalized === "deterministic" || normalized === "previous_good") return normalized;
+  return "ai";
+}
 
-function buildCodebaseSnapshot(projectRoot: string): string {
-  const lines: string[] = [];
-  const MAX_SNAPSHOT_CHARS = 8000;
+const VALID_CONTEXT_DOC_HEALTH = new Set<ContextDocHealth>(["missing", "incomplete", "fallback", "stale", "ready"]);
 
-  // 1. Directory tree — top-level + 2 levels into deep-scan dirs
-  lines.push("## Directory tree");
-  const topEntries: string[] = [];
+function normalizeContextDocHealth(value: unknown): ContextDocHealth | null {
+  const normalized = String(value ?? "").trim();
+  return VALID_CONTEXT_DOC_HEALTH.has(normalized as ContextDocHealth) ? normalized as ContextDocHealth : null;
+}
+
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`]*`/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/^#{1,6}\s+/gm, " ")
+    .replace(/[*_>#-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function computeDocOverlap(left: string, right: string): number {
+  const toTokens = (input: string) =>
+    stripMarkdown(input)
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= 4);
+  const leftSet = new Set(toTokens(left));
+  const rightSet = new Set(toTokens(right));
+  if (leftSet.size === 0 || rightSet.size === 0) return 0;
+  let intersection = 0;
+  for (const token of leftSet) {
+    if (rightSet.has(token)) intersection += 1;
+  }
+  const union = leftSet.size + rightSet.size - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+function extractMarkdownTitle(text: string, fallback: string): string {
+  const lines = text.split(/\r?\n/);
+  const heading = lines.find((line) => /^#\s+/.test(line.trim()));
+  return heading ? heading.trim().replace(/^#\s+/, "") : fallback;
+}
+
+function extractParagraph(text: string, maxChars = 260): string {
+  const lines = text.split(/\r?\n/);
+  const parts: string[] = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      if (parts.length > 0) break;
+      continue;
+    }
+    if (line.startsWith("#")) continue;
+    if (line.startsWith(">")) continue;
+    if (line === "---") continue;
+    parts.push(line);
+    if (parts.join(" ").length >= maxChars) break;
+  }
+  return clipText(parts.join(" "), maxChars);
+}
+
+function extractHeadings(text: string, maxHeadings = 5): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^##\s+/.test(line))
+    .map((line) => line.replace(/^##\s+/, ""))
+    .slice(0, maxHeadings);
+}
+
+function extractSectionBullets(text: string, heading: string, maxBullets = 5): string[] {
+  const lines = text.split(/\r?\n/);
+  const out: string[] = [];
+  let inside = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (/^##\s+/.test(line)) {
+      if (inside) break;
+      inside = line.toLowerCase() === heading.toLowerCase();
+      continue;
+    }
+    if (!inside) continue;
+    if (/^[-*]\s+/.test(line)) {
+      out.push(line.replace(/^[-*]\s+/, "").trim());
+      if (out.length >= maxBullets) break;
+    }
+  }
+  return out;
+}
+
+function collectSourceDigest(projectRoot: string, relPath: string): ContextSourceDigest | null {
+  const absPath = path.join(projectRoot, relPath);
+  const { text } = safeReadDoc(absPath, 24_000);
+  if (!text.trim()) return null;
+  return {
+    relPath,
+    title: extractMarkdownTitle(text, path.basename(relPath)),
+    blurb: extractParagraph(text),
+    headings: extractHeadings(text),
+  };
+}
+
+function formatSourceDigests(label: string, digests: ContextSourceDigest[], maxChars: number): string {
+  const lines: string[] = [`## ${label}`];
+  for (const digest of digests) {
+    const entry = [
+      `- ${digest.relPath}`,
+      `  title: ${digest.title}`,
+      digest.blurb ? `  summary: ${digest.blurb}` : "",
+      digest.headings.length > 0 ? `  sections: ${digest.headings.join(" | ")}` : "",
+    ].filter(Boolean).join("\n");
+    const next = [...lines, entry].join("\n");
+    if (next.length > maxChars) break;
+    lines.push(entry);
+  }
+  return lines.join("\n");
+}
+
+function readSectionExcerpt(
+  projectRoot: string,
+  relPath: string,
+  pattern: RegExp,
+  linesBefore = 2,
+  linesAfter = 26,
+): { relPath: string; excerpt: string } | null {
+  const absPath = path.join(projectRoot, relPath);
+  const { text } = safeReadDoc(absPath, 18_000);
+  if (!text.trim()) return null;
+  const lines = text.split(/\r?\n/);
+  const matchIndex = lines.findIndex((line) => pattern.test(line));
+  const start = Math.max(0, matchIndex >= 0 ? matchIndex - linesBefore : 0);
+  const end = Math.min(lines.length, matchIndex >= 0 ? matchIndex + linesAfter : Math.min(lines.length, 30));
+  const excerpt = lines.slice(start, end).join("\n").trim();
+  if (!excerpt) return null;
+  return { relPath, excerpt: clipText(excerpt, 1_600) };
+}
+
+async function collectGitHistory(projectRoot: string): Promise<string> {
   try {
-    const entries = fs.readdirSync(projectRoot, { withFileTypes: true })
-      .filter((e) => !e.name.startsWith(".") && e.name !== "node_modules" && e.name !== "__pycache__")
-      .slice(0, 60);
-    for (const entry of entries) {
-      const prefix = entry.isDirectory() ? "dir" : "file";
-      topEntries.push(`- ${prefix}: ${entry.name}`);
-    }
-  } catch { /* skip */ }
+    const result = await runGit(["log", "--oneline", "-n", "8"], {
+      cwd: projectRoot,
+      timeoutMs: 8_000,
+    });
+    if (result.exitCode === 0) return result.stdout.trim();
+  } catch {
+    // ignore
+  }
+  return "";
+}
 
-  const deepEntries: string[] = [];
-  for (const dir of DEEP_SCAN_DIRS) {
-    const absDir = path.join(projectRoot, dir);
-    try {
-      if (!fs.statSync(absDir).isDirectory()) continue;
-    } catch { continue; }
-    const walk = (base: string, depth: number) => {
-      if (depth > 2 || deepEntries.length >= 120) return;
-      try {
-        const entries = fs.readdirSync(base, { withFileTypes: true })
-          .filter((e) => !e.name.startsWith(".") && e.name !== "node_modules" && e.name !== "__pycache__");
-        for (const entry of entries) {
-          if (deepEntries.length >= 120) return;
-          const rel = path.relative(projectRoot, path.join(base, entry.name));
-          const prefix = entry.isDirectory() ? "dir" : "file";
-          deepEntries.push(`- ${prefix}: ${rel}`);
-          if (entry.isDirectory()) walk(path.join(base, entry.name), depth + 1);
-        }
-      } catch { /* skip */ }
+async function collectGitChangesSince(projectRoot: string, lastDate: string | null): Promise<string> {
+  if (!lastDate) return "";
+  try {
+    const result = await runGit(["log", "--oneline", "--stat", `--since=${lastDate}`], {
+      cwd: projectRoot,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode === 0) return result.stdout.trim();
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+async function buildHybridSourceBundle(projectRoot: string, lastGeneratedAt: string | null): Promise<HybridSourceBundle> {
+  const productDigests: ContextSourceDigest[] = [];
+  const technicalDigests: ContextSourceDigest[] = [];
+  const pushDigest = (target: ContextSourceDigest[], relPath: string) => {
+    const digest = collectSourceDigest(projectRoot, relPath);
+    if (digest) target.push(digest);
+  };
+
+  for (const relPath of ["README.md", "AGENTS.md", "docs/PRD.md"]) {
+    pushDigest(productDigests, relPath);
+  }
+
+  const featuresDir = path.join(projectRoot, "docs", "features");
+  if (fs.existsSync(featuresDir)) {
+    for (const entry of fs.readdirSync(featuresDir).sort()) {
+      if (!DOC_TEXT_EXT_RE.test(entry)) continue;
+      pushDigest(productDigests, path.join("docs", "features", entry).replace(/\\/g, "/"));
+    }
+  }
+
+  const architectureDir = path.join(projectRoot, "docs", "architecture");
+  if (fs.existsSync(architectureDir)) {
+    for (const entry of fs.readdirSync(architectureDir).sort()) {
+      if (!DOC_TEXT_EXT_RE.test(entry)) continue;
+      pushDigest(technicalDigests, path.join("docs", "architecture", entry).replace(/\\/g, "/"));
+    }
+  }
+
+  const codeAnchors = [
+    readSectionExcerpt(projectRoot, "apps/desktop/src/main/main.ts", /createContextDocService/),
+    readSectionExcerpt(projectRoot, "apps/desktop/src/main/services/ipc/registerIpc.ts", /IPC\.contextGetStatus/),
+    readSectionExcerpt(projectRoot, "apps/desktop/src/preload/preload.ts", /context:\s*\{/),
+    readSectionExcerpt(projectRoot, "apps/desktop/src/shared/types/packs.ts", /export type ContextDocStatus = \{/),
+    readSectionExcerpt(projectRoot, "apps/mcp-server/src/index.ts", /^/),
+  ].filter((value): value is { relPath: string; excerpt: string } => value != null);
+
+  return {
+    productDigests,
+    technicalDigests,
+    codeAnchors,
+    gitHistory: await collectGitHistory(projectRoot),
+    gitChanges: await collectGitChangesSince(projectRoot, lastGeneratedAt),
+  };
+}
+
+function formatCodeAnchors(anchors: HybridSourceBundle["codeAnchors"], maxChars: number): string {
+  const lines: string[] = ["## Code anchors"];
+  for (const anchor of anchors) {
+    const entry = [`- ${anchor.relPath}`, "```ts", anchor.excerpt, "```"].join("\n");
+    const next = [...lines, entry].join("\n");
+    if (next.length > maxChars) break;
+    lines.push(entry);
+  }
+  return lines.join("\n");
+}
+
+function docSpecFor(id: ContextDocId) {
+  return CONTEXT_DOC_SPECS[id];
+}
+
+function inferContextDocSource(content: string, persistedSource: ContextDocOutputSource | null): ContextDocOutputSource {
+  if (persistedSource === "previous_good") return "previous_good";
+  const looksDeterministic = /auto-generated from curated docs and code digests/i.test(content)
+    || /auto-generated from codebase snapshot/i.test(content);
+  return looksDeterministic ? "deterministic" : "ai";
+}
+
+function validateContextDoc(id: ContextDocId, content: string): { valid: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const spec = docSpecFor(id);
+  const normalized = content.trim();
+  if (!normalized) reasons.push("empty");
+  if (normalized.length > CONTEXT_DOC_MAX_CHARS) reasons.push("too_long");
+  if (!normalized.startsWith(spec.title)) reasons.push("missing_title");
+  const lowered = normalized.toLowerCase();
+  const missingHeadings = spec.requiredHeadings.filter((heading) => !lowered.includes(heading.toLowerCase()));
+  if (missingHeadings.length > 0) reasons.push(`missing_headings:${missingHeadings.join("|")}`);
+  if (normalized.split(/\r?\n/).filter((line) => line.trim()).length < 10) reasons.push("too_short");
+  return { valid: reasons.length === 0, reasons };
+}
+
+function computeContextDocHealth(args: {
+  id: ContextDocId;
+  exists: boolean;
+  content: string;
+  staleReason: string | null;
+  source: ContextDocOutputSource;
+}): ContextDocHealth {
+  if (!args.exists) return "missing";
+  if (args.staleReason) return "stale";
+  const validation = validateContextDoc(args.id, args.content);
+  if (!validation.valid) return "incomplete";
+  if (args.source === "deterministic") return "fallback";
+  return "ready";
+}
+
+function readPersistedDocResults(raw: PersistedContextDocRun | null | undefined): Partial<Record<ContextDocId, PersistedDocResult>> {
+  const out: Partial<Record<ContextDocId, PersistedDocResult>> = {};
+  if (!Array.isArray(raw?.docResults)) return out;
+  for (const entry of raw.docResults) {
+    const id = entry?.id === "prd_ade" || entry?.id === "architecture_ade" ? entry.id : null;
+    if (!id) continue;
+    out[id] = {
+      id,
+      health: normalizeContextDocHealth(entry.health) ?? "incomplete",
+      source: normalizeContextDocSource(entry.source),
+      sizeBytes: Number.isFinite(Number(entry.sizeBytes)) ? Math.max(0, Math.floor(Number(entry.sizeBytes))) : 0,
     };
-    walk(absDir, 0);
   }
+  return out;
+}
 
-  const allTreeEntries = [...topEntries, ...deepEntries].slice(0, 150);
-  for (const entry of allTreeEntries) lines.push(entry);
-  lines.push("");
-
-  // 2. Package manifest — first 60 lines
-  for (const manifest of MANIFEST_NAMES) {
-    const abs = path.join(projectRoot, manifest);
-    try {
-      if (!fs.statSync(abs).isFile()) continue;
-    } catch { continue; }
-    const read = safeReadDoc(abs, 8_000);
-    if (!read.text.trim()) continue;
-    const manifestLines = read.text.split("\n").slice(0, 60);
-    lines.push(`## Package manifest (${manifest})`);
-    for (const line of manifestLines) lines.push(line);
-    if (read.truncated || manifestLines.length >= 60) lines.push("...(truncated)");
-    lines.push("");
-    break; // only first manifest found
-  }
-
-  // 3. Tech stack signals
-  const detected: string[] = [];
-  for (const [indicator, label] of TECH_INDICATORS) {
-    try {
-      const abs = path.join(projectRoot, indicator);
-      if (fs.existsSync(abs)) {
-        if (!detected.includes(label)) detected.push(label);
-      }
-    } catch { /* skip */ }
-  }
-  if (detected.length) {
-    lines.push("## Tech stack signals");
-    for (const tech of detected) lines.push(`- ${tech}`);
-    lines.push("");
-  }
-
-  // 4. Entry point headers — first 25 lines of up to 4 files
-  const foundEntryPoints: string[] = [];
-  for (const dir of ENTRY_SEARCH_DIRS) {
-    if (foundEntryPoints.length >= 4) break;
-    for (const name of ENTRY_POINT_NAMES) {
-      if (foundEntryPoints.length >= 4) break;
-      const rel = dir ? path.join(dir, name) : name;
-      const abs = path.join(projectRoot, rel);
-      try {
-        if (!fs.statSync(abs).isFile()) continue;
-      } catch { continue; }
-      if (foundEntryPoints.includes(rel)) continue;
-      foundEntryPoints.push(rel);
-      const read = safeReadDoc(abs, 4_000);
-      if (!read.text.trim()) continue;
-      const headerLines = read.text.split("\n").slice(0, 25);
-      lines.push(`## Entry point: ${rel}`);
-      for (const line of headerLines) lines.push(line);
-      lines.push("...");
-      lines.push("");
+function readContextDocFile(projectRoot: string, relPath: string): {
+  exists: boolean;
+  sizeBytes: number;
+  updatedAt: string | null;
+  fingerprint: string | null;
+  body: string;
+} {
+  const absPath = path.join(projectRoot, relPath);
+  try {
+    const st = fs.statSync(absPath);
+    if (!st.isFile()) {
+      return { exists: false, sizeBytes: 0, updatedAt: null, fingerprint: null, body: "" };
     }
+    const body = fs.readFileSync(absPath, "utf8");
+    return {
+      exists: true,
+      sizeBytes: st.size,
+      updatedAt: st.mtime.toISOString(),
+      fingerprint: sha256(body),
+      body,
+    };
+  } catch {
+    return { exists: false, sizeBytes: 0, updatedAt: null, fingerprint: null, body: "" };
   }
+}
 
-  // 5. Key doc excerpts — first 30 lines of README, CLAUDE.md, AGENTS.md
-  let docCount = 0;
-  for (const docName of KEY_DOC_NAMES) {
-    if (docCount >= 3) break;
-    const abs = path.join(projectRoot, docName);
-    try {
-      if (!fs.statSync(abs).isFile()) continue;
-    } catch { continue; }
-    const read = safeReadDoc(abs, 6_000);
-    if (!read.text.trim()) continue;
-    docCount++;
-    const docLines = read.text.split("\n").slice(0, 30);
-    lines.push(`## Doc excerpt: ${docName}`);
-    for (const line of docLines) lines.push(line);
-    if (read.truncated || docLines.length >= 30) lines.push("...(truncated)");
-    lines.push("");
-  }
+function buildDeterministicPrdDoc(args: {
+  productDigests: ContextSourceDigest[];
+  featureDigests: ContextSourceDigest[];
+  gitHistory: string;
+  workingNorms: string[];
+}): string {
+  const overview = args.productDigests.find((digest) => digest.relPath === "docs/PRD.md")?.blurb
+    || args.productDigests.find((digest) => digest.relPath === "README.md")?.blurb
+    || "ADE is a local-first desktop workspace for orchestrating coding agents, lanes, missions, PR workflows, and proof capture.";
+  const audience = "Developers and small teams coordinating multiple AI coding agents across parallel lanes and review workflows.";
+  const featureBullets = args.featureDigests.slice(0, 10).map((digest) =>
+    `- ${digest.title}: ${digest.blurb || `See ${digest.relPath} for current behavior.`}`
+  );
+  const currentState = args.gitHistory
+    ? `ADE is actively evolving. Recent work is concentrated on ${args.gitHistory.split(/\r?\n/).slice(0, 3).join("; ")}.`
+    : "ADE is actively evolving across desktop orchestration, iOS parity, and AI workflow hardening.";
+  const norms = args.workingNorms.length > 0
+    ? args.workingNorms.slice(0, 5).map((line) => `- ${line}`)
+    : [
+        "- Preserve existing desktop app patterns before introducing new abstractions.",
+        "- Keep IPC contracts, preload types, shared types, and renderer usage in sync.",
+        "- Validate the smallest relevant desktop/MCP checks first, then broaden coverage.",
+      ];
+  return clipText([
+    CONTEXT_DOC_SPECS.prd_ade.title,
+    "",
+    "> Auto-generated from curated docs and code digests.",
+    "",
+    "## What this is",
+    overview,
+    "",
+    "## Who it's for",
+    audience,
+    "",
+    "## Feature areas",
+    ...featureBullets,
+    "",
+    "## Current state",
+    currentState,
+    "",
+    "## Working norms",
+    ...norms,
+    "",
+  ].join("\n"), CONTEXT_DOC_MAX_CHARS);
+}
 
-  // 6. Git log — last 10 commits oneline
-  // (git log is async via runGit, so we skip it here since this fn is sync;
-  //  the caller will append git log separately)
+function buildDeterministicArchitectureDoc(args: {
+  technicalDigests: ContextSourceDigest[];
+  codeAnchors: Array<{ relPath: string; excerpt: string }>;
+  workingNorms: string[];
+}): string {
+  const overview = args.technicalDigests.find((digest) => digest.relPath === "docs/architecture/SYSTEM_OVERVIEW.md")?.blurb
+    || "ADE uses a trusted Electron main process, typed preload bridge, and untrusted renderer, with AI/runtime services operating through the main process.";
+  const serviceBullets = args.technicalDigests.slice(0, 8).map((digest) =>
+    `- ${digest.title}: ${digest.blurb || `See ${digest.relPath}.`}`
+  );
+  const dataBullets = [
+    "- Project state lives under `.ade/`, with runtime metadata in `.ade/ade.db` and machine-local state in `.ade/secrets`, `.ade/cache`, and `.ade/artifacts`.",
+    "- Generated agent context lives in `.ade/context/PRD.ade.md` and `.ade/context/ARCHITECTURE.ade.md`.",
+    "- Shared types in `apps/desktop/src/shared` define IPC and renderer/main-process contracts.",
+  ];
+  const integrationBullets = [
+    "- Desktop UI talks to trusted services over typed IPC via the preload bridge.",
+    "- `apps/mcp-server` exposes ADE tools for headless and desktop-backed MCP flows.",
+    "- AI execution remains provider-flexible across CLI subscriptions, API/OpenRouter, and local endpoints.",
+  ];
+  const patternBullets = (args.workingNorms.length > 0 ? args.workingNorms.slice(0, 4) : [
+    "Renderer surfaces should not implement repo-mutation workarounds that belong in shared services.",
+    "Computer-use flows must enforce policy and artifact ownership in code paths, not prompts alone.",
+  ]).map((line) => `- ${line}`);
+  const anchorBullets = args.codeAnchors.slice(0, 4).map((anchor) => `- ${anchor.relPath}`);
+  return clipText([
+    CONTEXT_DOC_SPECS.architecture_ade.title,
+    "",
+    "> Auto-generated from curated docs and code digests.",
+    "",
+    "## System shape",
+    overview,
+    "",
+    "## Core services",
+    ...serviceBullets,
+    "",
+    "## Data and state",
+    ...dataBullets,
+    "",
+    "## Integration points",
+    ...integrationBullets,
+    ...(anchorBullets.length > 0 ? ["- Key code anchors:", ...anchorBullets] : []),
+    "",
+    "## Key patterns",
+    ...patternBullets,
+    "",
+  ].join("\n"), CONTEXT_DOC_MAX_CHARS);
+}
 
-  // Trim to max snapshot size
-  let snapshot = lines.join("\n");
-  if (snapshot.length > MAX_SNAPSHOT_CHARS) {
-    snapshot = snapshot.slice(0, MAX_SNAPSHOT_CHARS - 20) + "\n...(snapshot truncated)";
-  }
-  return snapshot;
+function buildGenerationPrompt(args: {
+  bundle: HybridSourceBundle;
+  existingPrd: string;
+  existingArch: string;
+  lastGeneratedAt: string | null;
+}): string {
+  const productSources = formatSourceDigests("Product sources", args.bundle.productDigests, 7_000);
+  const technicalSources = formatSourceDigests("Technical sources", args.bundle.technicalDigests, 7_000);
+  const codeAnchors = formatCodeAnchors(args.bundle.codeAnchors, 4_500);
+  const gitHistory = args.bundle.gitHistory ? `## Recent git history\n${args.bundle.gitHistory}` : "## Recent git history\nUnavailable";
+  const gitChanges = args.bundle.gitChanges
+    ? `## Changes since last generation (${args.lastGeneratedAt ?? "unknown"})\n${clipText(args.bundle.gitChanges, 4_500)}`
+    : `## Changes since last generation (${args.lastGeneratedAt ?? "unknown"})\nUnavailable or unchanged`;
+
+  const currentDocsSection = args.existingPrd.trim() && args.existingArch.trim()
+    ? [
+        "## Current generated docs",
+        "<current_prd>",
+        clipText(args.existingPrd, 4_500),
+        "</current_prd>",
+        "<current_architecture>",
+        clipText(args.existingArch, 4_500),
+        "</current_architecture>",
+      ].join("\n")
+    : "## Current generated docs\nNone yet.";
+
+  return [
+    "You are producing two dense bootstrap cards that ADE agents read at session start.",
+    "",
+    "Ownership rules:",
+    "- `PRD.ade.md` owns product semantics: what ADE is, who it is for, feature areas, current shipped state, workflow expectations, and operator-facing norms.",
+    "- `ARCHITECTURE.ade.md` owns implementation shape: trust boundaries, process/service layout, data/state model, IPC boundaries, integration points, and extension patterns.",
+    "- Do not duplicate the same feature list or stack summary in both docs unless it is essential for orientation.",
+    "",
+    "Output rules:",
+    "- Return JSON only: {\"prd\":\"...\",\"architecture\":\"...\"}.",
+    `- Each doc must stay under ${CONTEXT_DOC_MAX_CHARS} characters.`,
+    "- Use these exact headings and no changelog language.",
+    "",
+    "PRD headings:",
+    ...CONTEXT_DOC_SPECS.prd_ade.requiredHeadings.map((heading) => `- ${heading}`),
+    "",
+    "Architecture headings:",
+    ...CONTEXT_DOC_SPECS.architecture_ade.requiredHeadings.map((heading) => `- ${heading}`),
+    "",
+    currentDocsSection,
+    "",
+    productSources,
+    "",
+    technicalSources,
+    "",
+    codeAnchors,
+    "",
+    gitHistory,
+    "",
+    gitChanges,
+  ].join("\n");
 }
 
 const writeDocWithFallback = (args: {
@@ -384,53 +756,6 @@ export function readContextStatus(deps: {
     };
   };
 
-  const readDocStatus = (args: {
-    id: ContextDocStatus["id"];
-    label: string;
-    relPath: string;
-    canonicalUpdatedAt: string | null;
-    fallbackCount: number;
-  }): ContextDocStatus => {
-    const absPath = path.join(deps.projectRoot, args.relPath);
-    let exists = false;
-    let sizeBytes = 0;
-    let updatedAt: string | null = null;
-    let fingerprint: string | null = null;
-    try {
-      const st = fs.statSync(absPath);
-      if (st.isFile()) {
-        exists = true;
-        sizeBytes = st.size;
-        updatedAt = st.mtime.toISOString();
-        const body = fs.readFileSync(absPath, "utf8");
-        fingerprint = sha256(body);
-      }
-    } catch {
-      // ignore
-    }
-    const staleReason = (() => {
-      if (!exists) return "missing";
-      if (!updatedAt || !args.canonicalUpdatedAt) return null;
-      const docTs = Date.parse(updatedAt);
-      const canonicalTs = Date.parse(args.canonicalUpdatedAt);
-      if (Number.isFinite(docTs) && Number.isFinite(canonicalTs) && docTs < canonicalTs) {
-        return "older_than_canonical_docs";
-      }
-      return null;
-    })();
-    return {
-      id: args.id,
-      label: args.label,
-      preferredPath: args.relPath,
-      exists,
-      sizeBytes,
-      updatedAt,
-      fingerprint,
-      staleReason,
-      fallbackCount: args.fallbackCount
-    };
-  };
-
   const countFallbackWrites = (): number => {
     if (!fs.existsSync(FALLBACK_GENERATED_ROOT)) return 0;
     const walk = (dir: string): number => {
@@ -453,9 +778,8 @@ export function readContextStatus(deps: {
 
   const canonical = readCanonicalDocMeta();
   const fallbackCount = countFallbackWrites();
-  const latestRunRaw = deps.db.getJson<{
-    warnings?: Array<{ code?: string; message?: string; actionLabel?: string; actionPath?: string }>;
-  }>(CONTEXT_DOC_LAST_RUN_KEY);
+  const latestRunRaw = deps.db.getJson<PersistedContextDocRun>(CONTEXT_DOC_LAST_RUN_KEY);
+  const persistedDocResults = readPersistedDocResults(latestRunRaw);
   const latestWarnings = Array.isArray(latestRunRaw?.warnings)
     ? latestRunRaw!.warnings!.map((warning) => ({
         code: String(warning?.code ?? "unknown"),
@@ -464,21 +788,45 @@ export function readContextStatus(deps: {
         ...(warning?.actionPath ? { actionPath: String(warning.actionPath) } : {})
       }))
     : [];
+  const readDocStatus = (id: ContextDocId): ContextDocStatus => {
+    const spec = docSpecFor(id);
+    const file = readContextDocFile(deps.projectRoot, spec.relPath);
+    const staleReason = (() => {
+      if (!file.exists) return "missing";
+      if (!file.updatedAt || !canonical.updatedAt) return null;
+      const docTs = Date.parse(file.updatedAt);
+      const canonicalTs = Date.parse(canonical.updatedAt);
+      if (Number.isFinite(docTs) && Number.isFinite(canonicalTs) && docTs < canonicalTs) {
+        return "older_than_canonical_docs";
+      }
+      return null;
+    })();
+    const persisted = persistedDocResults[id];
+    const source = inferContextDocSource(file.body, persisted?.source ?? null);
+    const health = computeContextDocHealth({
+      id,
+      exists: file.exists,
+      content: file.body,
+      staleReason,
+      source,
+    });
+    return {
+      id,
+      label: spec.label,
+      preferredPath: spec.relPath,
+      exists: file.exists,
+      sizeBytes: file.sizeBytes,
+      updatedAt: file.updatedAt,
+      fingerprint: file.fingerprint,
+      staleReason,
+      fallbackCount,
+      health,
+      source,
+    };
+  };
   const docs = [
-    readDocStatus({
-      id: "prd_ade",
-      label: "PRD (ADE minimized)",
-      relPath: ADE_DOC_PRD_REL,
-      canonicalUpdatedAt: canonical.updatedAt,
-      fallbackCount
-    }),
-    readDocStatus({
-      id: "architecture_ade",
-      label: "Architecture (ADE minimized)",
-      relPath: ADE_DOC_ARCH_REL,
-      canonicalUpdatedAt: canonical.updatedAt,
-      fallbackCount
-    })
+    readDocStatus("prd_ade"),
+    readDocStatus("architecture_ade"),
   ];
 
   const projectPackIndex = deps.db.get<{ metadata_json: string | null; deterministic_updated_at: string | null }>(
@@ -560,105 +908,19 @@ export async function runContextDocGeneration(
   const providerHint = provider === "codex" || provider === "claude" ? provider : undefined;
   const generatedAt = nowIso();
   const warnings: ContextGenerateDocsResult["warnings"] = [];
+  const lastRunRaw = deps.db.getJson<PersistedContextDocRun>(CONTEXT_DOC_LAST_RUN_KEY);
+  const lastGeneratedAt = typeof lastRunRaw?.generatedAt === "string" ? lastRunRaw.generatedAt : null;
+  const persistedDocResults = readPersistedDocResults(lastRunRaw);
+  const existingPrdFile = readContextDocFile(deps.projectRoot, ADE_DOC_PRD_REL);
+  const existingArchFile = readContextDocFile(deps.projectRoot, ADE_DOC_ARCH_REL);
+  const bundle = await buildHybridSourceBundle(deps.projectRoot, lastGeneratedAt);
+  const prompt = buildGenerationPrompt({
+    bundle,
+    existingPrd: existingPrdFile.body,
+    existingArch: existingArchFile.body,
+    lastGeneratedAt,
+  });
 
-  // 1. Build deterministic codebase snapshot from actual code
-  let snapshot = buildCodebaseSnapshot(deps.projectRoot);
-
-  // Append git log (async) — last 10 commits
-  try {
-    const gitLogResult = await runGit(
-      ["log", "--oneline", "-n", "10"],
-      { cwd: deps.projectRoot, timeoutMs: 8_000 }
-    );
-    if (gitLogResult.exitCode === 0 && gitLogResult.stdout.trim()) {
-      snapshot += "\n## Recent git history\n" + gitLogResult.stdout.trim() + "\n";
-    }
-  } catch { /* git unavailable — skip silently */ }
-
-  // 2. Detect mode: first-gen vs update
-  const prdAbsPath = path.join(deps.projectRoot, ADE_DOC_PRD_REL);
-  const archAbsPath = path.join(deps.projectRoot, ADE_DOC_ARCH_REL);
-  const existingPrd = readFileIfExists(prdAbsPath).trim();
-  const existingArch = readFileIfExists(archAbsPath).trim();
-  const MIN_DOC_SIZE = 200;
-  const isUpdateMode = existingPrd.length > MIN_DOC_SIZE && existingArch.length > MIN_DOC_SIZE;
-
-  // 3. For update mode, get changes since last generation
-  let gitChanges = "";
-  if (isUpdateMode) {
-    const lastRunRaw = deps.db.getJson<{ generatedAt?: string }>(CONTEXT_DOC_LAST_RUN_KEY);
-    const lastDate = lastRunRaw?.generatedAt ?? null;
-    if (lastDate) {
-      try {
-        const gitLogStatResult = await runGit(
-          ["log", "--oneline", "--stat", `--since=${lastDate}`],
-          { cwd: deps.projectRoot, timeoutMs: 10_000 }
-        );
-        if (gitLogStatResult.exitCode === 0 && gitLogStatResult.stdout.trim()) {
-          gitChanges = gitLogStatResult.stdout.trim();
-        }
-      } catch { /* git unavailable — fallback handled in prompt */ }
-    }
-  }
-
-  // 4. Build prompt
-  let prompt: string;
-  if (isUpdateMode) {
-    const changesSection = gitChanges
-      ? gitChanges
-      : "Git history unavailable. Compare the snapshot below against the current docs.";
-    const lastDate = deps.db.getJson<{ generatedAt?: string }>(CONTEXT_DOC_LAST_RUN_KEY)?.generatedAt ?? "unknown";
-    prompt = [
-      "You are updating existing reference cards that AI agents read at the start of every session.",
-      "",
-      "Current docs:",
-      `<prd>${existingPrd}</prd>`,
-      `<architecture>${existingArch}</architecture>`,
-      "",
-      `Changes since last generation (${lastDate}):`,
-      `<changes>${changesSection}</changes>`,
-      "",
-      "Current codebase snapshot:",
-      `<snapshot>${snapshot}</snapshot>`,
-      "",
-      "You have read-only tools. Use them to inspect changed files if needed. Keep tool calls under 5.",
-      "Update the docs IN-PLACE — no changelogs, no deltas. Return the full updated documents.",
-      "If nothing material changed, return existing content as-is.",
-      "",
-      "CRITICAL: Each document MUST be under 8000 characters.",
-      "",
-      'Return ONLY: {"prd":"<markdown>","architecture":"<markdown>"}'
-    ].join("\n");
-  } else {
-    prompt = [
-      "You are producing two compact reference cards that AI coding agents read at the start of every session for quick orientation. Dense and structured — every sentence earns its place.",
-      "",
-      "Here is a snapshot of the codebase:",
-      `<snapshot>${snapshot}</snapshot>`,
-      "",
-      "You have read-only tools: readFile, glob, grep, listDir, gitLog. Use them to inspect key files — entry points, service definitions, types, config. Keep tool calls under 8.",
-      "",
-      "CRITICAL: Each document MUST be under 8000 characters.",
-      "",
-      'Return ONLY: {"prd":"<markdown>","architecture":"<markdown>"}',
-      "",
-      "PRD.ade.md structure:",
-      "1. **What this is** — product name, what it does, who uses it (2-3 sentences)",
-      "2. **Stack** — languages, frameworks, key deps, repo structure (bullets)",
-      "3. **Feature areas** — each major feature, one line each (bullets)",
-      "4. **Current state** — what's shipped, what's being built (2-3 sentences)",
-      "5. **Working norms** — conventions, testing, deployment (bullets)",
-      "",
-      "ARCHITECTURE.ade.md structure:",
-      "1. **System shape** — layers, boundaries, how the app is structured (3-5 sentences)",
-      "2. **Core services** — name, responsibility, key interface (bullets)",
-      "3. **Data model** — storage, state management (bullets)",
-      "4. **Integration points** — external services, APIs, IPC (bullets)",
-      "5. **Key patterns** — naming, error handling, extension points (bullets)"
-    ].join("\n");
-  }
-
-  // 5. Call AI with prompt (model now gets read-only tools automatically)
   let generatedPrd = "";
   let generatedArch = "";
   let outputPreview = "";
@@ -688,24 +950,13 @@ export async function runContextDocGeneration(
       });
 
       outputPreview = aiResult.text.trim().slice(0, 1_500);
-      const structured = isRecord(aiResult.structuredOutput) ? aiResult.structuredOutput : null;
+      const structuredCandidate = isRecord(aiResult.structuredOutput)
+        ? aiResult.structuredOutput
+        : parseStructuredOutput(aiResult.text);
+      const structured = isRecord(structuredCandidate) ? structuredCandidate : null;
       if (structured) {
         generatedPrd = asString(structured.prd).trim();
         generatedArch = asString(structured.architecture).trim();
-      }
-      if (!generatedPrd || !generatedArch) {
-        const rawJson = extractFirstJsonObject(aiResult.text);
-        if (rawJson) {
-          try {
-            const parsed = JSON.parse(rawJson);
-            if (isRecord(parsed)) {
-              if (!generatedPrd) generatedPrd = asString(parsed.prd).trim();
-              if (!generatedArch) generatedArch = asString(parsed.architecture).trim();
-            }
-          } catch {
-            // fall through to snapshot-based fallback below.
-          }
-        }
       }
     } catch (error) {
       warnings.push({
@@ -715,29 +966,136 @@ export async function runContextDocGeneration(
     }
   }
 
-  // 6. Fallback: write snapshot-based reference doc instead of empty
-  if (!generatedPrd.trim()) {
-    generatedPrd = `# PRD.ade\n\n> Auto-generated from codebase snapshot. Regenerate with AI for richer content.\n\n${snapshot}\n`;
-    warnings.push({ code: "generator_fallback_prd", message: "Used snapshot-based fallback PRD." });
+  const prdValidation = validateContextDoc("prd_ade", generatedPrd);
+  const archValidation = validateContextDoc("architecture_ade", generatedArch);
+  let overlapScore = 0;
+  if (generatedPrd.trim() && generatedArch.trim()) {
+    overlapScore = computeDocOverlap(generatedPrd, generatedArch);
+    if (overlapScore >= 0.72) {
+      warnings.push({
+        code: "generator_overlap_rejected",
+        message: `Rejected generated docs because PRD/architecture overlap was too high (${overlapScore.toFixed(2)}).`,
+      });
+    }
   }
-  if (!generatedArch.trim()) {
-    generatedArch = `# ARCHITECTURE.ade\n\n> Auto-generated from codebase snapshot. Regenerate with AI for richer content.\n\n${snapshot}\n`;
-    warnings.push({ code: "generator_fallback_architecture", message: "Used snapshot-based fallback architecture." });
+  if (!prdValidation.valid) {
+    warnings.push({
+      code: "generator_invalid_prd",
+      message: `Generated PRD failed validation: ${prdValidation.reasons.join(", ") || "unknown"}.`,
+    });
+  }
+  if (!archValidation.valid) {
+    warnings.push({
+      code: "generator_invalid_architecture",
+      message: `Generated architecture doc failed validation: ${archValidation.reasons.join(", ") || "unknown"}.`,
+    });
   }
 
-  // 7. Write files + update lastRun — same as before
-  const prdWrite = writeDocWithFallback({
-    preferredAbsPath: prdAbsPath,
-    fallbackFileName: "PRD.ade.md",
-    content: generatedPrd,
-    fallbackRoot: FALLBACK_GENERATED_ROOT
+  const agentsText = safeReadDoc(path.join(deps.projectRoot, "AGENTS.md"), 16_000).text;
+  const workingNorms = extractSectionBullets(agentsText, "## Working norms", 6);
+  const featureDigests = bundle.productDigests.filter((digest) => digest.relPath.startsWith("docs/features/"));
+  const deterministicPrd = buildDeterministicPrdDoc({
+    productDigests: bundle.productDigests,
+    featureDigests,
+    gitHistory: bundle.gitHistory,
+    workingNorms,
   });
-  const archWrite = writeDocWithFallback({
-    preferredAbsPath: archAbsPath,
-    fallbackFileName: "ARCHITECTURE.ade.md",
-    content: generatedArch,
-    fallbackRoot: FALLBACK_GENERATED_ROOT
+  const deterministicArch = buildDeterministicArchitectureDoc({
+    technicalDigests: bundle.technicalDigests,
+    codeAnchors: bundle.codeAnchors,
+    workingNorms,
   });
+
+  const existingPrdBaseHealth = computeContextDocHealth({
+    id: "prd_ade",
+    exists: existingPrdFile.exists,
+    content: existingPrdFile.body,
+    staleReason: null,
+    source: inferContextDocSource(existingPrdFile.body, persistedDocResults.prd_ade?.source ?? null),
+  });
+  const existingArchBaseHealth = computeContextDocHealth({
+    id: "architecture_ade",
+    exists: existingArchFile.exists,
+    content: existingArchFile.body,
+    staleReason: null,
+    source: inferContextDocSource(existingArchFile.body, persistedDocResults.architecture_ade?.source ?? null),
+  });
+
+  type ResolvedDoc = {
+    content: string;
+    source: ContextDocOutputSource;
+    preserveExisting: boolean;
+    health: ContextDocHealth;
+  };
+
+  const allowAi = prdValidation.valid && archValidation.valid && overlapScore < 0.72;
+
+  function resolveDocStrategy(
+    generated: string,
+    existingFile: { body: string },
+    existingHealth: ContextDocHealth,
+    deterministicContent: string,
+  ): ResolvedDoc {
+    if (allowAi) {
+      return { content: generated, source: "ai", preserveExisting: false, health: "ready" };
+    }
+    if (existingHealth === "ready") {
+      return { content: existingFile.body, source: "previous_good", preserveExisting: true, health: "ready" };
+    }
+    return { content: deterministicContent, source: "deterministic", preserveExisting: false, health: "fallback" };
+  }
+
+  const resolvedDocs: Record<ContextDocId, ResolvedDoc> = {
+    prd_ade: resolveDocStrategy(generatedPrd, existingPrdFile, existingPrdBaseHealth, deterministicPrd),
+    architecture_ade: resolveDocStrategy(generatedArch, existingArchFile, existingArchBaseHealth, deterministicArch),
+  };
+
+  const FALLBACK_WARNINGS: Record<ContextDocOutputSource, Record<ContextDocId, { code: string; message: string } | null>> = {
+    deterministic: {
+      prd_ade: { code: "generator_fallback_prd", message: "Used deterministic fallback PRD." },
+      architecture_ade: { code: "generator_fallback_architecture", message: "Used deterministic fallback architecture." },
+    },
+    previous_good: {
+      prd_ade: { code: "generator_preserved_previous_prd", message: "Preserved the previous valid PRD because new output was degraded." },
+      architecture_ade: { code: "generator_preserved_previous_architecture", message: "Preserved the previous valid architecture doc because new output was degraded." },
+    },
+    ai: { prd_ade: null, architecture_ade: null },
+  };
+
+  if (!allowAi) {
+    for (const [id, doc] of Object.entries(resolvedDocs) as Array<[ContextDocId, ResolvedDoc]>) {
+      const warning = FALLBACK_WARNINGS[doc.source]?.[id];
+      if (warning) warnings.push(warning);
+    }
+  }
+
+  const persistResolvedDoc = (id: ContextDocId) => {
+    const spec = docSpecFor(id);
+    const preferredAbsPath = path.join(deps.projectRoot, spec.relPath);
+    const resolved = resolvedDocs[id];
+    if (resolved.preserveExisting && fs.existsSync(preferredAbsPath)) {
+      const stat = fs.statSync(preferredAbsPath);
+      return {
+        writtenPath: preferredAbsPath,
+        usedFallback: false,
+        warning: null,
+        sizeBytes: stat.size,
+      };
+    }
+    const write = writeDocWithFallback({
+      preferredAbsPath,
+      fallbackFileName: spec.fallbackFileName,
+      content: resolved.content,
+      fallbackRoot: FALLBACK_GENERATED_ROOT,
+    });
+    return {
+      ...write,
+      sizeBytes: Buffer.byteLength(resolved.content, "utf8"),
+    };
+  };
+
+  const prdWrite = persistResolvedDoc("prd_ade");
+  const archWrite = persistResolvedDoc("architecture_ade");
   if (prdWrite.warning) {
     warnings.push({
       code: "write_fallback_prd",
@@ -763,6 +1121,21 @@ export async function runContextDocGeneration(
     reasoningEffort,
     prdPath: prdWrite.writtenPath,
     architecturePath: archWrite.writtenPath,
+    degraded: Object.values(resolvedDocs).some((doc) => doc.source !== "ai"),
+    docResults: [
+      {
+        id: "prd_ade",
+        health: resolvedDocs.prd_ade.health,
+        source: resolvedDocs.prd_ade.source,
+        sizeBytes: prdWrite.sizeBytes,
+      },
+      {
+        id: "architecture_ade",
+        health: resolvedDocs.architecture_ade.health,
+        source: resolvedDocs.architecture_ade.source,
+        sizeBytes: archWrite.sizeBytes,
+      },
+    ],
     warnings
   });
 
@@ -772,6 +1145,21 @@ export async function runContextDocGeneration(
     prdPath: prdWrite.writtenPath,
     architecturePath: archWrite.writtenPath,
     usedFallbackPath: prdWrite.usedFallback || archWrite.usedFallback,
+    degraded: Object.values(resolvedDocs).some((doc) => doc.source !== "ai"),
+    docResults: [
+      {
+        id: "prd_ade",
+        health: resolvedDocs.prd_ade.health,
+        source: resolvedDocs.prd_ade.source,
+        sizeBytes: prdWrite.sizeBytes,
+      },
+      {
+        id: "architecture_ade",
+        health: resolvedDocs.architecture_ade.health,
+        source: resolvedDocs.architecture_ade.source,
+        sizeBytes: archWrite.sizeBytes,
+      },
+    ],
     warnings,
     outputPreview
   };

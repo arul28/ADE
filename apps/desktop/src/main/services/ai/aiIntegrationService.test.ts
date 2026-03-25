@@ -303,7 +303,7 @@ describe("aiIntegrationService", () => {
       taskType: "planning",
       prompt: "Check worker status",
       cwd: "/tmp",
-      model: "openai/gpt-4.1",
+      model: "openai/gpt-5.4",
       permissionMode: "read-only",
     });
 
@@ -312,7 +312,7 @@ describe("aiIntegrationService", () => {
       taskType: "terminal_summary",
       prompt: "Summarize this terminal output",
       cwd: "/tmp",
-      model: "openai/gpt-4.1",
+      model: "openai/gpt-5.4",
       permissionMode: "read-only",
     });
 
@@ -339,7 +339,7 @@ describe("aiIntegrationService", () => {
       taskType: "implementation",
       prompt: "Implement with memory context",
       cwd: "/tmp",
-      model: "openai/gpt-4.1",
+      model: "openai/gpt-5.4",
       projectId: "project-1",
       runId: "run-1",
       stepId: "step-1",

@@ -8,6 +8,13 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { useThreadEventRefresh } from "../../hooks/useThreadEventRefresh";
 import { useMissionPolling } from "./useMissionPolling";
+import { ChatWorkLogBlock } from "../chat/ChatWorkLogBlock";
+import {
+  readRecord,
+  summarizeDiffStats,
+  type ChatWorkLogEntry,
+  type ChatWorkLogFileChange,
+} from "../chat/chatTranscriptRows";
 
 type AgentChannelsProps = {
   missionId: string;
@@ -407,6 +414,99 @@ const WORKER_BADGE_STYLE: React.CSSProperties = {
   borderRadius: 0,
 };
 
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function parseToolNameFromLegacyContent(content: string): string | null {
+  const trimmed = content.trim();
+  const toolCallMatch = trimmed.match(/^Tool (?:call|result):\s*([^\n]+)/i);
+  if (toolCallMatch?.[1]) return toolCallMatch[1].trim();
+  const toolUseMatch = trimmed.match(/^tool_use:\s*([^\s]+)[\s\S]*$/i);
+  if (toolUseMatch?.[1]) return toolUseMatch[1].trim();
+  return null;
+}
+
+function parseDiffChunkPath(chunk: string): { path: string; kind: ChatWorkLogFileChange["kind"] } | null {
+  const newPath = chunk.match(/^\+\+\+ b\/(.+)$/m)?.[1]?.trim();
+  const oldPath = chunk.match(/^--- a\/(.+)$/m)?.[1]?.trim();
+  if (chunk.includes("new file mode")) {
+    return { path: newPath ?? oldPath ?? "(pending file)", kind: "create" };
+  }
+  if (chunk.includes("deleted file mode")) {
+    return { path: oldPath ?? newPath ?? "(pending file)", kind: "delete" };
+  }
+  if (newPath || oldPath) {
+    return { path: newPath ?? oldPath ?? "(pending file)", kind: "modify" };
+  }
+  return null;
+}
+
+function parseLegacyFileChanges(content: string): ChatWorkLogFileChange[] {
+  const normalized = content.replace(/\r\n/g, "\n");
+  const chunks = normalized.includes("diff --git ")
+    ? normalized.split(/(?=^diff --git )/m).filter((chunk) => chunk.trim().length > 0)
+    : [normalized];
+  const changes: ChatWorkLogFileChange[] = [];
+
+  for (const chunk of chunks) {
+    const parsed = parseDiffChunkPath(chunk);
+    if (!parsed) continue;
+    const stats = summarizeDiffStats(chunk);
+    changes.push({
+      path: parsed.path,
+      kind: parsed.kind,
+      additions: stats.additions,
+      deletions: stats.deletions,
+      diff: chunk,
+    });
+  }
+
+  return changes;
+}
+
+function deriveLegacyWorkLogEntry(msg: OrchestratorChatMessage): ChatWorkLogEntry | null {
+  const content = msg.content.trim();
+  if (!content.length) return null;
+  const metadata = readRecord(msg.metadata);
+  const toolName = readString(metadata?.toolName) ?? parseToolNameFromLegacyContent(content);
+  const toolArgs = metadata?.toolArgs;
+  const toolResult = metadata?.toolResult;
+  const toolFailed = readString(readRecord(toolResult)?.error) != null || /\bfailed\b/i.test(content);
+
+  if (toolName) {
+    const isResult = /^Tool result:/i.test(content);
+    return {
+      id: msg.id,
+      createdAt: msg.timestamp,
+      label: toolName,
+      detail: content,
+      tone: toolFailed ? "error" : "tool",
+      status: toolFailed ? "failed" : (isResult ? "completed" : "running"),
+      entryKind: "tool",
+      toolName,
+      ...(toolArgs !== undefined ? { args: toolArgs } : {}),
+      ...(toolResult !== undefined ? { result: toolResult } : {}),
+    };
+  }
+
+  const changedFiles = parseLegacyFileChanges(content);
+  if (changedFiles.length > 0) {
+    return {
+      id: msg.id,
+      createdAt: msg.timestamp,
+      label: changedFiles[0]!.path,
+      detail: content,
+      tone: "info",
+      status: "completed",
+      entryKind: "file_change",
+      changedFiles,
+    };
+  }
+
+  return null;
+}
+
 const ChannelButton = React.memo(function ChannelButton({
   thread,
   label,
@@ -496,18 +596,13 @@ const MessageBubble = React.memo(function MessageBubble({ msg, attemptNameMap }:
   // Determine if this is an inter-agent message
   const isInterAgent = isAgent && msg.target?.kind === "agent";
 
-  // Tool calls: detect by content pattern (simple heuristic)
-  const isToolCall = msg.content.startsWith("Tool call:") || msg.content.startsWith("tool_use:");
-  const isFileEdit = msg.content.includes("--- a/") || msg.content.includes("+++ b/");
-  const [expanded, setExpanded] = useState(false);
+  const legacyWorkLogEntry = useMemo(() => deriveLegacyWorkLogEntry(msg), [msg]);
 
-  const roleName = isUser
-    ? "You"
-    : isAgent
-      ? "Agent"
-      : isWorker
-        ? "Worker"
-        : "Orchestrator";
+  let roleName: string;
+  if (isUser) roleName = "You";
+  else if (isAgent) roleName = "Agent";
+  else if (isWorker) roleName = "Worker";
+  else roleName = "Orchestrator";
 
   const roleIcon = isUser ? null : isWorker ? TerminalWindow : Robot;
 
@@ -561,7 +656,7 @@ const MessageBubble = React.memo(function MessageBubble({ msg, attemptNameMap }:
     );
   }
 
-  if (isToolCall || isFileEdit) {
+  if (legacyWorkLogEntry) {
     return (
       <div className="flex justify-start">
         <div className="max-w-[85%]">
@@ -571,35 +666,10 @@ const MessageBubble = React.memo(function MessageBubble({ msg, attemptNameMap }:
             {msg.stepKey && <span>- {msg.stepKey}</span>}
             <span style={timestampStyle}>{new Date(msg.timestamp).toLocaleTimeString()}</span>
           </div>
-          <button
-            onClick={() => setExpanded(!expanded)}
-            className="w-full px-3 py-2 text-left text-[11px] transition-colors"
-            style={
-              isFileEdit
-                ? { border: "1px solid #22C55E30", background: "#22C55E08", borderRadius: 0 }
-                : { border: "1px solid #F59E0B30", background: "#F59E0B08", borderRadius: 0 }
-            }
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = isFileEdit ? "#22C55E14" : "#F59E0B14";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = isFileEdit ? "#22C55E08" : "#F59E0B08";
-            }}
-          >
-            <div className="flex items-center gap-1 text-[11px] font-medium" style={{ color: "#A1A1AA" }}>
-              <TerminalWindow size={12} weight="regular" />
-              {isFileEdit ? "File Edit" : "Tool Call"}
-              <CaretDown size={12} weight="regular" className={cn("ml-auto transition-transform", expanded && "rotate-180")} />
-            </div>
-            {expanded && (
-              <pre
-                className="mt-2 max-h-[200px] overflow-auto p-2 text-[10px] whitespace-pre-wrap break-all"
-                style={{ background: "#0C0A10", color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", borderRadius: 0 }}
-              >
-                {msg.content}
-              </pre>
-            )}
-          </button>
+          <ChatWorkLogBlock
+            entries={[legacyWorkLogEntry]}
+            className="border-white/[0.08] bg-[#13101A]"
+          />
         </div>
       </div>
     );
@@ -628,11 +698,7 @@ const MessageBubble = React.memo(function MessageBubble({ msg, attemptNameMap }:
       <div
         className={cn(
           "px-3 py-2 text-xs",
-          isWorker
-            ? "max-w-[85%]"
-            : isCoordinator
-              ? "w-full"
-              : "max-w-[85%]"
+          isCoordinator ? "w-full" : "max-w-[85%]",
         )}
         style={
           isWorker

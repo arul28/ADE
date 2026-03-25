@@ -5,6 +5,8 @@ import { AgentChatMessageList } from "../chat/AgentChatMessageList";
 import { AgentQuestionModal } from "../chat/AgentQuestionModal";
 import { ChatSubagentStrip } from "../chat/ChatSubagentStrip";
 import { deriveChatSubagentSnapshots } from "../chat/chatExecutionSummary";
+import { eventHasPayload } from "../chat/chatTranscriptRows";
+import { derivePendingInputRequests, type DerivedPendingInput } from "../chat/pendingInput";
 import { looksLikeLowSignalNoise } from "./missionHelpers";
 import { adaptMissionThreadMessagesToAgentEvents } from "./missionThreadEventAdapter";
 import { useMissionPolling } from "./useMissionPolling";
@@ -20,57 +22,9 @@ type MissionThreadMessageListProps = {
     itemId: string,
     decision: AgentChatApprovalDecision,
     responseText?: string | null,
+    answers?: Record<string, string | string[]>,
   ) => void;
 };
-
-type PendingApproval = {
-  sessionId: string;
-  itemId: string;
-  kind: "command" | "file_change" | "tool_call";
-  detail?: unknown;
-};
-
-function readRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function derivePendingApprovals(events: AgentChatEventEnvelope[]): PendingApproval[] {
-  const pending = new Map<string, PendingApproval>();
-
-  for (const envelope of events) {
-    const event = envelope.event;
-    if (event.type === "done") {
-      pending.clear();
-      continue;
-    }
-    if (event.type === "approval_request") {
-      pending.set(event.itemId, {
-        sessionId: envelope.sessionId,
-        itemId: event.itemId,
-        kind: event.kind,
-        detail: event.detail,
-      });
-      continue;
-    }
-    if (event.type === "tool_result" || event.type === "command" || event.type === "file_change") {
-      pending.delete(event.itemId);
-    }
-  }
-
-  return [...pending.values()];
-}
-
-function extractAskUserQuestion(approval: PendingApproval | null): string | null {
-  if (!approval || approval.kind !== "tool_call") return null;
-  const detail = readRecord(approval.detail);
-  const tool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
-  const question = typeof detail?.question === "string" ? detail.question.trim() : "";
-  const normalizedTool = tool.toLowerCase();
-  if ((normalizedTool !== "askuser" && normalizedTool !== "ask_user") || !question.length) return null;
-  return question;
-}
 
 function normalizeInlineText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -112,15 +66,6 @@ function provenanceRichness(envelope: AgentChatEventEnvelope): number {
     envelope.provenance?.laneId,
     envelope.provenance?.runId,
   ].filter((value) => typeof value === "string" && value.trim().length > 0).length;
-}
-
-function eventHasPayload(value: unknown): boolean {
-  if (value == null) return false;
-  if (typeof value === "string") return value.trim().length > 0;
-  if (typeof value === "number" || typeof value === "boolean") return true;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value as Record<string, unknown>).length > 0;
-  return false;
 }
 
 function choosePreferredEnvelope(
@@ -387,8 +332,7 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
     return filterLowSignalStructuredEvents(mergeMissionThreadEvents(fallbackEvents, sessionEvents));
   }, [fallbackEvents, sessionEvents]);
   const subagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(events), [events]);
-  const pendingApproval = useMemo(() => derivePendingApprovals(events)[0] ?? null, [events]);
-  const pendingQuestion = useMemo(() => extractAskUserQuestion(pendingApproval), [pendingApproval]);
+  const pendingInput = useMemo<DerivedPendingInput | null>(() => derivePendingInputRequests(events)[0] ?? null, [events]);
 
   return (
     <>
@@ -401,11 +345,11 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
           surfaceMode={sessionId ? "mission-thread" : "mission-feed"}
           onApproval={onApproval
             ? (itemId, decision, responseText) => {
-                const approval = pendingApproval?.itemId === itemId
-                  ? pendingApproval
-                  : derivePendingApprovals(events).find((entry) => entry.itemId === itemId) ?? null;
-                if (!approval) return;
-                onApproval(approval.sessionId, itemId, decision, responseText);
+                const request = pendingInput?.itemId === itemId
+                  ? pendingInput
+                  : derivePendingInputRequests(events).find((entry) => entry.itemId === itemId) ?? null;
+                if (!request) return;
+                onApproval(request.sessionId, itemId, decision, responseText);
               }
             : undefined}
         />
@@ -419,12 +363,12 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
           </div>
         ) : null}
       </div>
-      {pendingQuestion && pendingApproval && onApproval ? (
+      {pendingInput && onApproval && (pendingInput.request.kind === "question" || pendingInput.request.kind === "structured_question") ? (
         <AgentQuestionModal
-          question={pendingQuestion}
-          onClose={() => onApproval(pendingApproval.sessionId, pendingApproval.itemId, "cancel")}
-          onSubmit={(answer) => onApproval(pendingApproval.sessionId, pendingApproval.itemId, "accept", answer)}
-          onDecline={() => onApproval(pendingApproval.sessionId, pendingApproval.itemId, "decline")}
+          request={pendingInput.request}
+          onClose={() => onApproval(pendingInput.sessionId, pendingInput.itemId, "cancel")}
+          onSubmit={({ answers, responseText }) => onApproval(pendingInput.sessionId, pendingInput.itemId, "accept", responseText, answers)}
+          onDecline={() => onApproval(pendingInput.sessionId, pendingInput.itemId, "decline")}
         />
       ) : null}
     </>

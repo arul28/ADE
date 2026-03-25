@@ -101,4 +101,45 @@ describe("createUniversalToolSet", () => {
     expect(result.success).toBe(true);
     expect(fs.readFileSync(targetPath, "utf-8")).toBe("allowlisted");
   });
+
+  it("blocks mutating tools on required turns until memory orientation is satisfied", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ade-tools-memory-guard-"));
+    const targetPath = path.join(cwd, "blocked.txt");
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "full-auto",
+      turnMemoryPolicyState: {
+        classification: "required",
+        orientationSatisfied: false,
+        explicitSearchPerformed: false,
+      },
+    });
+
+    const result = await (tools.writeFile as any).execute({
+      file_path: targetPath,
+      content: "blocked",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Search memory before mutating files");
+    expect(fs.existsSync(targetPath)).toBe(false);
+  });
+
+  it("does not block read-only bash commands on required turns", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ade-tools-memory-readonly-"));
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "full-auto",
+      turnMemoryPolicyState: {
+        classification: "required",
+        orientationSatisfied: false,
+        explicitSearchPerformed: false,
+      },
+    });
+
+    const result = await (tools.bash as any).execute({
+      command: "pwd",
+      timeout: 5_000,
+    });
+
+    expect(result.stderr).not.toContain("EXECUTION DENIED");
+  });
 });

@@ -26,6 +26,7 @@ import {
 import type { AdeDb } from "../state/kvDb";
 import type { CompactionFlushService } from "../memory/compactionFlushService";
 import type { DetectedAuth } from "./authDetector";
+import { parseStructuredOutput } from "./utils";
 
 export type UnifiedExecutorOpts = {
   modelId: string;
@@ -422,12 +423,8 @@ export async function* executeUnified(
 
         // Handle structured output if jsonSchema was provided
         if (opts.jsonSchema && finalText.trim()) {
-          try {
-            const parsed = JSON.parse(finalText);
-            yield { type: "structured_output", data: parsed };
-          } catch {
-            /* not valid JSON, skip */
-          }
+          const parsed = parseStructuredOutput(finalText);
+          if (parsed != null) yield { type: "structured_output", data: parsed };
         }
 
         yield {

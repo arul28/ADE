@@ -1,4 +1,5 @@
 import React from "react";
+import { Link } from "react-router-dom";
 import type {
   AiConfig,
   KnowledgeSyncStatus,
@@ -6,6 +7,7 @@ import type {
   MemorySearchMode,
   ProcedureDetail,
   ProcedureListItem,
+  SkillIndexEntry,
 } from "../../../shared/types";
 import { deriveConfiguredModelOptions, includeSelectedModelOption } from "../../lib/modelOptions";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
@@ -93,6 +95,8 @@ type MemoryEntry = {
   status: MemoryStatus;
   confidence: number;
   embedded: boolean;
+  sourceType: string | null;
+  sourceId: string | null;
 };
 
 type ScopeFilter = "all" | MemoryScope;
@@ -128,6 +132,10 @@ function createEmptyHealthStats(): MemoryHealthStats {
 
 function createEmptyKnowledgeSyncStatus(): KnowledgeSyncStatus {
   return { syncing: false, lastSeenHeadSha: null, currentHeadSha: null, diverged: false, lastDigestAt: null, lastDigestMemoryId: null, lastError: null };
+}
+
+function asNullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 function fmtNum(value: number): string { return value.toLocaleString("en-US"); }
@@ -284,6 +292,8 @@ function toEntry(v: unknown): MemoryEntry | null {
     status: normalizeStatus(r.status),
     confidence: Number(r.confidence ?? 0),
     embedded: r.embedded === true || r.embedded === 1 || r.embedded === "1",
+    sourceType: asNullableString(r.sourceType) ?? asNullableString(r.source_type),
+    sourceId: asNullableString(r.sourceId) ?? asNullableString(r.source_id),
   };
 }
 
@@ -295,6 +305,11 @@ function toEntries(raw: unknown): MemoryEntry[] {
     if (e) out.push(e);
   }
   return out;
+}
+
+function excludeIndexedSkillMemories(entries: readonly MemoryEntry[], indexedSkillMemoryIds: ReadonlySet<string>): MemoryEntry[] {
+  if (indexedSkillMemoryIds.size === 0) return [...entries];
+  return entries.filter((entry) => !indexedSkillMemoryIds.has(entry.id));
 }
 
 function matchesFilters(e: MemoryEntry, scope: ScopeFilter, cat: string, status: StatusFilter): boolean {
@@ -547,6 +562,7 @@ export function MemoryHealthTab() {
   const [howItWorksOpen, setHowItWorksOpen] = React.useState(false);
   const [maintenanceOpen, setMaintenanceOpen] = React.useState(false);
   const [procedures, setProcedures] = React.useState<ProcedureListItem[]>([]);
+  const [indexedSkills, setIndexedSkills] = React.useState<SkillIndexEntry[]>([]);
   const [selectedProcedureId, setSelectedProcedureId] = React.useState<string | null>(null);
   const [selectedProcedureDetail, setSelectedProcedureDetail] = React.useState<ProcedureDetail | null>(null);
   const [procedureDetailLoading, setProcedureDetailLoading] = React.useState(false);
@@ -556,10 +572,36 @@ export function MemoryHealthTab() {
 
   /* ── Derived ── */
 
+  const indexedSkillMemoryIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of indexedSkills) {
+      if (typeof entry.memoryId === "string" && entry.memoryId.trim().length > 0) ids.add(entry.memoryId);
+    }
+    return ids;
+  }, [indexedSkills]);
+
+  const activeIndexedSkillEntries = React.useMemo(
+    () => indexedSkills.filter((entry) => entry.memoryId && !entry.archivedAt),
+    [indexedSkills],
+  );
+
+  const visibleBudgetEntries = React.useMemo(
+    () => excludeIndexedSkillMemories(budgetEntries, indexedSkillMemoryIds),
+    [budgetEntries, indexedSkillMemoryIds],
+  );
+  const visibleCandidateEntries = React.useMemo(
+    () => excludeIndexedSkillMemories(candidates, indexedSkillMemoryIds),
+    [candidates, indexedSkillMemoryIds],
+  );
+  const visibleSearchResults = React.useMemo(
+    () => excludeIndexedSkillMemories(searchResults, indexedSkillMemoryIds),
+    [searchResults, indexedSkillMemoryIds],
+  );
+
   const categories = React.useMemo(() => {
-    const all = [...budgetEntries, ...candidates, ...searchResults].map((e) => e.category.trim()).filter(Boolean);
+    const all = [...visibleBudgetEntries, ...visibleCandidateEntries, ...visibleSearchResults].map((e) => e.category.trim()).filter(Boolean);
     return Array.from(new Set(all)).sort((a, b) => a.localeCompare(b));
-  }, [budgetEntries, candidates, searchResults]);
+  }, [visibleBudgetEntries, visibleCandidateEntries, visibleSearchResults]);
 
   const sortedProcedures = React.useMemo(() => {
     const next = [...procedures];
@@ -572,10 +614,10 @@ export function MemoryHealthTab() {
     return next;
   }, [procedureSort, procedures]);
 
-  const allEntries = searchInput.trim().length > 0 ? searchResults : [...budgetEntries, ...candidates];
+  const allEntries = searchInput.trim().length > 0 ? visibleSearchResults : [...visibleBudgetEntries, ...visibleCandidateEntries];
   const filteredEntries = allEntries.filter((e) => matchesFilters(e, scopeFilter, categoryFilter, statusFilter));
   const activeEntries = filteredEntries.filter((e) => e.status !== "candidate");
-  const candidateEntries = searchInput.trim().length > 0 ? [] : candidates.filter((e) => matchesFilters(e, scopeFilter, categoryFilter, "pending"));
+  const candidateEntries = searchInput.trim().length > 0 ? [] : visibleCandidateEntries.filter((e) => matchesFilters(e, scopeFilter, categoryFilter, "pending"));
 
   const embReady = embeddingsReady(stats);
   const embProgress = pct(stats.embeddings.entriesEmbedded, Math.max(stats.embeddings.entriesTotal, 1));
@@ -600,13 +642,14 @@ export function MemoryHealthTab() {
     if (!opts?.quiet) setLoading(true);
 
     try {
-      const [nextStats, budgetRaw, candidatesRaw, aiStatus, snapshot, nextProcedures, nextSync] = await Promise.all([
+      const [nextStats, budgetRaw, candidatesRaw, aiStatus, snapshot, nextProcedures, nextIndexedSkills, nextSync] = await Promise.all([
         memoryApi.getHealthStats(),
         memoryApi.getBudget({ level: "deep" }),
         memoryApi.getCandidates({ limit: 25 }),
         window.ade.ai.getStatus(),
         window.ade.projectConfig.get(),
         memoryApi.listProcedures?.({ status: "all", scope: "project" }) ?? Promise.resolve([]),
+        memoryApi.listIndexedSkills?.() ?? Promise.resolve([]),
         memoryApi.getKnowledgeSyncStatus?.() ?? Promise.resolve(createEmptyKnowledgeSyncStatus()),
       ]);
 
@@ -622,6 +665,7 @@ export function MemoryHealthTab() {
       setBudgetEntries(toEntries(budgetRaw));
       setCandidates(toEntries(candidatesRaw));
       setProcedures(nextProcedures);
+      setIndexedSkills(nextIndexedSkills);
       if (selectedProcedureId && !nextProcedures.some((p) => p.memory.id === selectedProcedureId)) {
         setSelectedProcedureId(null);
         setSelectedProcedureDetail(null);
@@ -1081,8 +1125,9 @@ export function MemoryHealthTab() {
         {/* Search */}
         <section style={cardStyle({ padding: 16, display: "flex", flexDirection: "column", gap: 10 })}>
           <HelpText>
-            These are the things ADE has learned about your project. AI agents write memories when they discover conventions, make decisions,
-            encounter pitfalls, or notice patterns. You can pin important ones, archive noise, or approve pending entries.
+            These are the learned memory entries ADE keeps about your project. AI agents write memories when they discover conventions, make
+            decisions, encounter pitfalls, or notice patterns. Imported skill files and legacy command files stay indexed for retrieval, but
+            they are managed separately from this browser.
           </HelpText>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input
@@ -1154,6 +1199,20 @@ export function MemoryHealthTab() {
           </div>
         </section>
 
+        {activeIndexedSkillEntries.length > 0 ? (
+          <section style={cardStyle({ padding: 16, display: "flex", flexDirection: "column", gap: 8 })}>
+            <div style={SECTION_LABEL}>INDEXED SKILL FILES</div>
+            <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: 1.5 }}>
+              ADE is indexing {fmtNum(activeIndexedSkillEntries.length)} reusable skill
+              {activeIndexedSkillEntries.length === 1 ? " file" : " files"} for retrieval, ranking, and procedure dedupe.
+              They are intentionally hidden from the generic memory browser and managed in{" "}
+              <Link to="/settings?tab=workspace" style={{ color: COLORS.accent, textDecoration: "underline" }}>
+                Workspace &gt; Skill Files
+              </Link>.
+            </div>
+          </section>
+        ) : null}
+
         {/* Memory entries */}
         {!loading && activeEntries.length > 0 ? (
           <section style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 480, overflowY: "auto", paddingRight: 2 }}>
@@ -1164,8 +1223,8 @@ export function MemoryHealthTab() {
           </section>
         ) : !loading ? (
           <EmptyState
-            title={searchInput.trim() ? "No matches" : "No memories yet"}
-            description={searchInput.trim() ? "Try a broader query or adjust filters." : "Memories will appear here as ADE learns about your project."}
+            title={searchInput.trim() ? "No learned memory matches" : "No learned memories yet"}
+            description={searchInput.trim() ? "Try a broader query or adjust filters." : "Learned memories will appear here as ADE discovers durable project knowledge."}
           />
         ) : null}
 

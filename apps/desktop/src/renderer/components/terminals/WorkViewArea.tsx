@@ -15,10 +15,18 @@ const THEME_BORDER = "var(--color-border)";
 const THEME_FG = "var(--color-fg)";
 const THEME_MUTED = "var(--color-muted-fg)";
 
-function SessionSurface({ session, isActive }: { session: TerminalSessionSummary; isActive: boolean }) {
+function SessionSurface({
+  session,
+  isActive,
+  onOpenChatSession,
+}: {
+  session: TerminalSessionSummary;
+  isActive: boolean;
+  onOpenChatSession: (sessionId: string) => void | Promise<void>;
+}) {
   const isChat = isChatToolType(session.toolType);
   if (isChat) {
-    return <AgentChatPane laneId={session.laneId} lockSessionId={session.id} />;
+    return <AgentChatPane laneId={session.laneId} lockSessionId={session.id} onSessionCreated={onOpenChatSession} />;
   }
   if (session.status === "running" && session.ptyId) {
     return (
@@ -242,7 +250,7 @@ export function WorkViewArea({
                       </button>
                     </div>
                     <div className="min-h-0 flex-1">
-                      <SessionSurface session={session} isActive={isActive} />
+                      <SessionSurface session={session} isActive={isActive} onOpenChatSession={onOpenChatSession} />
                     </div>
                   </div>
                 );
@@ -340,7 +348,7 @@ export function WorkViewArea({
 
       <div className="min-h-0 flex-1" style={{ background: THEME_CARD }}>
         {activeSession ? (
-          <SessionSurface session={activeSession} isActive />
+          <SessionSurface session={activeSession} isActive onOpenChatSession={onOpenChatSession} />
         ) : (
           <WorkStartSurface
             draftKind={draftKind}

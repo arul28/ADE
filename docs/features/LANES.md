@@ -185,7 +185,7 @@ The Chat view layout:
 |   +------------------------------------+       |
 |                                                |
 +-----------------------------------------------+
-| [@ attach] [Codex gpt-5.3-codex]      [Send]  |
+| [@ attach] [Codex gpt-5.4-codex]      [Send]  |
 | Type a message...                    [Stop]    |
 +-----------------------------------------------+
 ```
@@ -250,11 +250,13 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 
 1. **Create**: User provides a name. ADE creates a git branch (from the selected base ref) and a worktree directory (at `.ade/worktrees/<name>/`). The lane appears in the list with `active` status.
 
-2. **Work**: The user opens terminals in the lane, makes code changes, stages and commits, and pushes to the remote. All activity is tracked via sessions and operations.
+2. **Create from unstaged**: When a lane has unstaged or untracked changes that belong in a separate branch, the user can create a child lane from those changes. ADE stashes the unstaged work in the source lane, creates a new child lane from the source's HEAD, applies the stash into the new lane, and cleans up. If the stash apply fails, ADE rolls back: the created lane is removed and the stash is restored to the source. The UI exposes this as the "Create New Lane with Current Changes" button in the git actions pane. Preconditions: the source lane must have no staged changes and no in-progress merge or rebase.
 
-3. **Archive**: The lane is hidden from the active list but its worktree and branch are preserved. Useful for lanes that are paused but not finished. Archived lanes can be unarchived at any time.
+3. **Work**: The user opens terminals in the lane, makes code changes, stages and commits, and pushes to the remote. All activity is tracked via sessions and operations.
 
-4. **Delete**: The worktree directory is removed from disk. The user is prompted whether to also delete the git branch. Session records and history are retained for audit purposes.
+4. **Archive**: The lane is hidden from the active list but its worktree and branch are preserved. Useful for lanes that are paused but not finished. Archived lanes can be unarchived at any time.
+
+5. **Delete**: The worktree directory is removed from disk. The user is prompted whether to also delete the git branch. Session records and history are retained for audit purposes.
 
 ---
 
@@ -264,7 +266,7 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 
 | Service | Responsibility |
 |---------|---------------|
-| `laneService` | CRUD operations for lanes. Creates/removes worktrees via git. Computes lane status by aggregating dirty state, ahead/behind, and other signals. Manages lane metadata in the database. Supports primary, worktree, and attached lane types. Provides rebase (recursive rebase with remote tracking branch resolution for primary parents, dirty-worktree guard), reparent, stack chain, and appearance management. |
+| `laneService` | CRUD operations for lanes. Creates/removes worktrees via git. Computes lane status by aggregating dirty state, ahead/behind, and other signals. Manages lane metadata in the database. Supports primary, worktree, and attached lane types. Provides rebase (recursive rebase with remote tracking branch resolution for primary parents, dirty-worktree guard), reparent, stack chain, appearance management, and `createFromUnstaged` (stash-based unstaged change rescue to a new child lane with automatic rollback on failure). |
 | `rebaseSuggestionService` | Monitors stacked lanes for parent-advanced state. Generates rebase suggestions with dismiss/defer lifecycle. Emits real-time suggestion events to the renderer. |
 | `gitService` | All git operations: stage, unstage, discard, commit, stash, fetch, sync (merge/rebase), push, conflict state detection (merge/rebase in-progress, continue, abort). Operates on a specified worktree path. Returns structured results with success/failure and output. |
 | `diffService` | Computes working tree diffs (unstaged changes) and index diffs (staged changes). Per-file diff content for the Monaco viewer. Handles binary file detection and large file truncation. |
@@ -286,6 +288,7 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 | `ade.lanes.delete` | `(args: DeleteLaneArgs) => void` | Delete lane, remove worktree, optionally delete branch |
 | `ade.lanes.openFolder` | `(args: { laneId: string }) => void` | Open worktree directory in Finder/Explorer |
 | `ade.lanes.createChild` | `(args: CreateChildLaneArgs) => LaneSummary` | Create a child lane (for stacking) |
+| `ade.lanes.createFromUnstaged` | `(args: CreateLaneFromUnstagedArgs) => LaneSummary` | Create a child lane from a source lane's unstaged changes, moving them to the new lane |
 | `ade.lanes.importBranch` | `(args: { branchRef: string }) => LaneSummary` | Import an existing branch as a lane |
 | `ade.lanes.attach` | `(args: AttachLaneArgs) => LaneSummary` | Attach an existing worktree directory as a lane |
 | `ade.lanes.reparent` | `(args: ReparentLaneArgs) => ReparentLaneResult` | Change a lane's parent (reparent in stack) |

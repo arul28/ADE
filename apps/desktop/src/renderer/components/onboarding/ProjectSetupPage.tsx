@@ -13,6 +13,7 @@ import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { publishOnboardingStatusUpdated } from "../../lib/onboardingStatusEvents";
+import { listActionableContextDocs } from "../context/contextShared";
 
 type SetupStep = "tools" | "ai" | "github" | "embeddings" | "linear" | "context";
 
@@ -73,7 +74,35 @@ function isContextGenerationActive(status: ContextStatus["generation"] | null | 
 
 function hasReadyContextDocs(status: ContextStatus | null): boolean {
   const docs = status?.docs;
-  return !!docs?.length && docs.every((doc) => doc.exists && doc.sizeBytes >= 200);
+  return !!docs?.length && docs.every((doc) => doc.health === "ready");
+}
+
+function describeContextStatusLine(args: {
+  contextLoading: boolean;
+  isGenerating: boolean;
+  contextStatus: ContextStatus | null;
+  contextModelId: string;
+}): string {
+  if (args.contextLoading) return "Checking status...";
+  if (args.isGenerating) {
+    return args.contextStatus?.generation.state === "pending"
+      ? "Doc generation is queued and will start shortly."
+      : "Generating docs — this can take a minute or two depending on your model and repo size.";
+  }
+  if (args.contextStatus?.generation.state === "failed") {
+    const error = args.contextStatus.generation.error;
+    return `Last generation failed${error ? `: ${error}` : "."}`;
+  }
+  if (hasReadyContextDocs(args.contextStatus)) {
+    return "Both docs are present. You can regenerate if needed.";
+  }
+  if (!args.contextModelId.trim()) {
+    return "Select a model above to generate docs.";
+  }
+  const actionable = listActionableContextDocs(args.contextStatus)
+    .map((d) => `${d.label} (${d.health})`)
+    .join(", ");
+  return `Needs generation: ${actionable || "checking..."}`;
 }
 
 export function ProjectSetupPage() {
@@ -152,18 +181,9 @@ export function ProjectSetupPage() {
     void reloadContextStatus();
   }, [reloadContextStatus, step]);
 
-  // Poll while generating
-  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
-    if (isContextGenerationActive(contextStatus?.generation) && !pollRef.current) {
-      pollRef.current = setInterval(() => { void reloadContextStatus(); }, 2500);
-    }
-    if (!isContextGenerationActive(contextStatus?.generation) && pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-  }, [contextStatus?.generation, reloadContextStatus]);
+    return window.ade.context?.onStatusChanged?.(setContextStatus) ?? (() => {});
+  }, []);
 
   const progressLabel = useMemo(() => `${stepIndex + 1} / ${STEP_ORDER.length}`, [stepIndex]);
 
@@ -275,19 +295,7 @@ export function ProjectSetupPage() {
 
           {/* Status */}
           <div style={{ marginTop: 16, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>
-            {contextLoading
-              ? "Checking status..."
-              : isGenerating
-                ? (contextStatus?.generation.state === "pending"
-                  ? "Doc generation is queued and will start shortly."
-                  : "Generating docs — this can take a minute or two depending on your model and repo size.")
-                : contextStatus?.generation.state === "failed"
-                  ? `Last generation failed${contextStatus.generation.error ? `: ${contextStatus.generation.error}` : "."}`
-                  : hasReadyContextDocs(contextStatus)
-                    ? "Both docs are present. You can regenerate if needed."
-                    : !contextModelId.trim()
-                      ? "Select a model above to generate docs."
-                      : `Missing or incomplete: ${contextStatus?.docs?.filter((d) => !d.exists || d.sizeBytes < 200).map((d) => d.label).join(", ") || "checking..."}`}
+            {describeContextStatusLine({ contextLoading, isGenerating, contextStatus, contextModelId })}
           </div>
 
           {isGenerating ? (

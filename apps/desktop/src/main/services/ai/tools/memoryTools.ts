@@ -1,13 +1,39 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { resolveAgentMemoryWritePolicy } from "../../memory/unifiedMemoryService";
 import type {
   createUnifiedMemoryService,
+  MemoryStatus,
 } from "../../memory/unifiedMemoryService";
+
+export type TurnMemoryPolicyState = {
+  classification: "none" | "soft" | "required";
+  orientationSatisfied: boolean;
+  explicitSearchPerformed: boolean;
+};
+
+export type MemoryWriteEvent = {
+  type: "write";
+  tool: "memoryAdd";
+  saved: boolean;
+  durability: Extract<MemoryStatus, "candidate" | "promoted"> | "rejected";
+  id: string | null;
+  tier: number | null;
+  deduped: boolean;
+  mergedIntoId: string | null;
+  reason: string | null;
+};
 
 export function createMemoryTools(
   memoryService: ReturnType<typeof createUnifiedMemoryService>,
   projectId: string,
-  opts?: { runId?: string; stepId?: string; agentScopeOwnerId?: string }
+  opts?: {
+    runId?: string;
+    stepId?: string;
+    agentScopeOwnerId?: string;
+    turnMemoryPolicyState?: TurnMemoryPolicyState;
+    onMemoryWriteEvent?: (event: MemoryWriteEvent) => void;
+  }
 ) {
   const resolveScopeOwnerId = (scope: "project" | "agent" | "mission", explicit?: string) => {
     if (explicit && explicit.trim().length > 0) return explicit.trim();
@@ -32,6 +58,10 @@ export function createMemoryTools(
         ...(scope ? { scopeOwnerId: resolveScopeOwnerId(scope, scopeOwnerId) ?? null } : {}),
         limit
       });
+      if (opts?.turnMemoryPolicyState) {
+        opts.turnMemoryPolicyState.explicitSearchPerformed = true;
+        opts.turnMemoryPolicyState.orientationSatisfied = true;
+      }
       return {
         memories: memories.map(m => ({
           id: m.id,
@@ -83,35 +113,55 @@ Format: Lead with the concrete rule or fact, then brief context for WHY it matte
     }),
     execute: async ({ content, category, scope, scopeOwnerId, importance, pin, writeMode }) => {
       const resolvedScopeOwnerId = resolveScopeOwnerId(scope, scopeOwnerId);
+      const writePolicy = resolveAgentMemoryWritePolicy({ pin, writeGateMode: writeMode });
       const result = memoryService.writeMemory({
         projectId,
         scope,
         scopeOwnerId: resolvedScopeOwnerId,
-        tier: pin ? 1 : 2,
+        tier: writePolicy.tier,
         category,
         content,
         importance,
         pinned: pin,
-        status: "promoted",
-        confidence: 1,
+        status: writePolicy.status,
+        confidence: writePolicy.confidence,
         writeGateMode: writeMode
       });
 
       if (!result.accepted || !result.memory) {
-        return {
+        const rejected = {
           saved: false,
-          reason: result.reason ?? "write gate rejected memory"
+          durability: "rejected" as const,
+          id: null,
+          tier: null,
+          deduped: false,
+          mergedIntoId: null,
+          reason: result.reason ?? "write gate rejected memory",
         };
+        opts?.onMemoryWriteEvent?.({
+          type: "write",
+          tool: "memoryAdd",
+          ...rejected,
+        });
+        return rejected;
       }
 
       const memory = result.memory;
-      return {
+      const saved = {
         saved: true,
+        durability: memory.status as Extract<MemoryStatus, "candidate" | "promoted">,
         id: memory.id,
         tier: memory.tier,
         deduped: result.deduped === true,
-        mergedIntoId: result.mergedIntoId ?? null
+        mergedIntoId: result.mergedIntoId ?? null,
+        reason: result.reason ?? null,
       };
+      opts?.onMemoryWriteEvent?.({
+        type: "write",
+        tool: "memoryAdd",
+        ...saved,
+      });
+      return saved;
     }
   });
 

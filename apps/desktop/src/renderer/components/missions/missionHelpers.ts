@@ -27,7 +27,7 @@ import type {
   SmartBudgetConfig,
   MissionIntervention,
 } from "../../../shared/types";
-import { getModelById } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { COLORS } from "../lanes/laneDesignTokens";
 
 /* ════════════════════ STATUS CONFIG (VAL-UX-007) ════════════════════ */
@@ -250,7 +250,13 @@ export function toPlannerProvider(value: string): PlannerProvider {
 
 /** Convert a legacy PlannerProvider string to a full ModelConfig. */
 export function plannerProviderToModelConfig(provider: PlannerProvider): ModelConfig {
-  if (provider === "codex") return { provider: "codex", modelId: "openai/o3", thinkingLevel: "medium" };
+  if (provider === "codex") {
+    return {
+      provider: "codex",
+      modelId: getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex",
+      thinkingLevel: "medium",
+    };
+  }
   // "auto" and "claude" both default to claude
   return { ...DEFAULT_ORCHESTRATOR_MODEL };
 }

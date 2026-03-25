@@ -145,6 +145,12 @@ export type WriteMemoryResult = {
   mergedIntoId?: string;
 };
 
+export type AgentMemoryWritePolicy = {
+  status: Extract<MemoryStatus, "candidate" | "promoted">;
+  tier: MemoryTier;
+  confidence: number;
+};
+
 const CATEGORY_ALLOWLIST = new Set<MemoryCategory>([
   "fact",
   "preference",
@@ -215,6 +221,85 @@ function normalizeMemoryForDedup(content: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function countMatches(value: string, pattern: RegExp): number {
+  let count = 0;
+  for (const _ of value.matchAll(pattern)) count += 1;
+  return count;
+}
+
+function looksLikeRawStackTrace(value: string): boolean {
+  if (/Traceback \(most recent call last\):/i.test(value)) return true;
+  const atFrames = countMatches(value, /^\s*at\s+.+:\d+:\d+/gm);
+  if (atFrames >= 2) return true;
+  const exceptionLike = countMatches(value, /(?:^|\n)\s*(?:[A-Z][A-Za-z0-9]+)?(?:Error|Exception|Failure):\s+/gm);
+  return exceptionLike >= 2;
+}
+
+function looksLikeRawDiffOrCodeDump(value: string): boolean {
+  if (/```/m.test(value)) return true;
+  if (/^diff --git /m.test(value)) return true;
+  if (/^(?:index|@@|\+\+\+|---)\s/m.test(value)) return true;
+  return false;
+}
+
+function looksLikeSessionSummary(value: string): boolean {
+  return /^(?:status|progress|summary|session summary|mission summary|task summary|working on|implemented|fixed|updated|changed|next steps?)\b/i.test(value.trim());
+}
+
+function looksLikeRawGitHistory(value: string): boolean {
+  if (/^commit\s+[0-9a-f]{7,40}\b/im.test(value)) return true;
+  if (/^(?:author|date):\s/im.test(value)) return true;
+  return /^\s*[-*]?\s*[0-9a-f]{7,40}\s+[^\n]+/im.test(value);
+}
+
+const PATH_DUMP_LINE_RE = /^(?:\/|\.{1,2}\/|~\/|[A-Za-z]:\\)|^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+$|\.(?:ts|tsx|js|jsx|json|md|yml|yaml|py|go|rs|java|rb|sh)(?::\d+)?$/i;
+
+function looksLikePathDump(value: string): boolean {
+  let count = 0;
+  for (const rawLine of value.split("\n")) {
+    const line = rawLine.trim();
+    if (line.length > 0 && PATH_DUMP_LINE_RE.test(line)) {
+      count += 1;
+      if (count >= 3) return true;
+    }
+  }
+  return false;
+}
+
+function rejectCodeDerivableContent(content: string): string | null {
+  if (looksLikeRawDiffOrCodeDump(content)) {
+    return "memory appears to be a raw diff or code dump";
+  }
+  if (looksLikeRawStackTrace(content)) {
+    return "memory appears to be a raw stack trace without a distilled lesson";
+  }
+  if (looksLikeSessionSummary(content)) {
+    return "memory appears to be a session or progress summary";
+  }
+  if (looksLikeRawGitHistory(content)) {
+    return "memory appears to be raw git history or change log output";
+  }
+  if (looksLikePathDump(content)) {
+    return "memory appears to be a file-path or directory dump";
+  }
+  return null;
+}
+
+export function resolveAgentMemoryWritePolicy(args: {
+  pin?: boolean;
+  writeGateMode?: WriteGateMode;
+}): AgentMemoryWritePolicy {
+  const pinned = args.pin === true;
+  const promoted = pinned || args.writeGateMode === "strict";
+  const tier: MemoryTier = pinned ? 1 : promoted ? 2 : 3;
+
+  return {
+    status: promoted ? "promoted" : "candidate",
+    tier,
+    confidence: promoted ? 1 : 0.6,
+  };
 }
 
 function tokenizeForSimilarity(content: string): string[] {
@@ -457,6 +542,16 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
       return {
         accepted: false,
         reason: `category '${args.category}' is not allowed`,
+        content: trimmed,
+        dedupeKey: normalizeMemoryForDedup(trimmed),
+      };
+    }
+
+    const derivableReason = rejectCodeDerivableContent(trimmed);
+    if (derivableReason) {
+      return {
+        accepted: false,
+        reason: derivableReason,
         content: trimmed,
         dedupeKey: normalizeMemoryForDedup(trimmed),
       };

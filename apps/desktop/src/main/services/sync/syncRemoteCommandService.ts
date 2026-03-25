@@ -10,6 +10,7 @@ import type {
   ClosePrArgs,
   CreateChildLaneArgs,
   CreateLaneArgs,
+  CreateLaneFromUnstagedArgs,
   CreatePrFromLaneArgs,
   DeleteLaneArgs,
   GetDiffChangesArgs,
@@ -153,6 +154,13 @@ function parseCreateChildLaneArgs(value: Record<string, unknown>): CreateChildLa
     parentLaneId: requireString(value.parentLaneId, "lanes.createChild requires parentLaneId."),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.folder) ? { folder: asTrimmedString(value.folder)! } : {}),
+  };
+}
+
+function parseCreateLaneFromUnstagedArgs(value: Record<string, unknown>): CreateLaneFromUnstagedArgs {
+  return {
+    name: requireString(value.name, "lanes.createFromUnstaged requires name."),
+    sourceLaneId: requireString(value.sourceLaneId, "lanes.createFromUnstaged requires sourceLaneId."),
   };
 }
 
@@ -788,6 +796,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     buildLaneDetailPayload(args, requireString(payload.laneId, "lanes.getDetail requires laneId.")));
   register("lanes.create", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.create(parseCreateLaneArgs(payload)));
   register("lanes.createChild", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.createChild(parseCreateChildLaneArgs(payload)));
+  register("lanes.createFromUnstaged", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.createFromUnstaged(parseCreateLaneFromUnstagedArgs(payload)));
   register("lanes.attach", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.attach(parseAttachLaneArgs(payload)));
   register("lanes.adoptAttached", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.adoptAttached({ laneId: requireString(payload.laneId, "lanes.adoptAttached requires laneId.") }));

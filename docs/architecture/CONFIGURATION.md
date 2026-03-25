@@ -223,7 +223,7 @@ ai:
       model: "anthropic/claude-sonnet-4-6-api"   # Registry model ID
     implementation:
       provider: "codex"
-      model: "openai/gpt-5.3-codex"
+      model: "openai/gpt-5.4-codex"
     review:
       provider: "claude"
       model: "anthropic/claude-sonnet-4-6-api"

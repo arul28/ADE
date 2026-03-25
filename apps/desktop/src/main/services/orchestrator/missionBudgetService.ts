@@ -674,7 +674,7 @@ function readCodexJsonlWindow(args: {
           if (!cwd.length || !isPathWithin(cwd, projectRoot)) continue;
         }
 
-        const model = currentModel.length ? currentModel : "openai/gpt-5";
+        const model = currentModel.length ? currentModel : "openai/gpt-5.4-mini";
         const normalizedModel = parseModelString(model).normalized;
         const safeInput = Math.max(0, Math.floor(deltaInput));
         const safeOutput = Math.max(0, Math.floor(deltaOutput));

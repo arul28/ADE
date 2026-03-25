@@ -150,6 +150,8 @@ Read existing skill and command files into project memory so that ADE agents can
 
 ##### Renderer
 
+Current-state note (2026-03-25): the shipped UX still keeps the underlying indexing model described below, but indexed skill files are now managed in **Settings > Workspace > Skill Files** and hidden from the generic **Settings > Memory > Browse All** browser so learned memory and file-backed skills do not appear as duplicate concepts.
+
 - **Settings > Memory > Procedures tab**: Table of extracted procedures showing:
   | Column | Description |
   |--------|-------------|

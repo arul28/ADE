@@ -371,6 +371,7 @@ export type SyncRemoteCommandAction =
   | "lanes.getDetail"
   | "lanes.create"
   | "lanes.createChild"
+  | "lanes.createFromUnstaged"
   | "lanes.attach"
   | "lanes.adoptAttached"
   | "lanes.rename"
