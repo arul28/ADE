@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import VisionKit
 
-private let adeAccent = ADEPalette.accent
+private let adeAccent = ADEColor.accent
 
 private enum RootTab: Hashable {
   case lanes
@@ -45,8 +45,9 @@ struct ContentView: View {
         }
     }
     .tint(adeAccent)
-    .background(ADEPalette.pageBackground.ignoresSafeArea())
-    .preferredColorScheme(.dark)
+    .tabBarMinimizeBehavior(.onScrollDown)
+    .adeScreenBackground()
+    .adeNavigationGlass()
     .sensoryFeedback(.selection, trigger: selectedTab)
     .onChange(of: syncService.settingsPresented) { _, presented in
       guard presented else { return }
@@ -64,32 +65,33 @@ private struct ConnectionOverviewCard: View {
   @EnvironmentObject private var syncService: SyncService
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      HStack(alignment: .top, spacing: 12) {
-        ADEBrandMark(size: 42)
+    VStack(alignment: .leading, spacing: 16) {
+      HStack(alignment: .top, spacing: 14) {
+        ADEBrandMark(size: 44)
 
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
           Text(statusTitle)
             .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
           Text(primarySubtitle)
             .font(.subheadline)
-            .foregroundStyle(ADEPalette.textSecondary)
+            .foregroundStyle(ADEColor.textSecondary)
           if let error = syncService.lastError,
              syncService.connectionState != .connected,
              syncService.connectionState != .syncing {
             Text(error)
               .font(.caption)
-              .foregroundStyle(ADEPalette.danger)
+              .foregroundStyle(ADEColor.danger)
               .fixedSize(horizontal: false, vertical: true)
           }
         }
 
-        Spacer()
+        Spacer(minLength: 0)
 
         StatusBadge(state: syncService.connectionState)
       }
 
-      VStack(spacing: 8) {
+      VStack(spacing: 10) {
         SettingsMetricRow(
           icon: "externaldrive.badge.wifi",
           label: "Host route",
@@ -116,13 +118,12 @@ private struct ConnectionOverviewCard: View {
           Label("Retry all", systemImage: "arrow.clockwise")
             .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(.glassProminent)
         .tint(adeAccent)
         .controlSize(.small)
       }
     }
-    .foregroundStyle(ADEPalette.textPrimary)
-    .adeGlassCard(cornerRadius: 16, padding: 16)
+    .adeGlassCard(cornerRadius: 20, padding: 18)
   }
 
   private var statusTitle: String {
@@ -170,20 +171,38 @@ private struct SettingsMetricRow: View {
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 10) {
       Image(systemName: icon)
-        .foregroundStyle(ADEPalette.textSecondary)
+        .foregroundStyle(ADEColor.textSecondary)
         .frame(width: 18)
       Text(label)
         .font(.caption)
-        .foregroundStyle(ADEPalette.textSecondary)
+        .foregroundStyle(ADEColor.textSecondary)
       Spacer(minLength: 12)
       Text(value)
         .font(.system(.caption, design: .monospaced))
-        .foregroundStyle(ADEPalette.textPrimary)
+        .foregroundStyle(ADEColor.textPrimary)
         .multilineTextAlignment(.trailing)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .adeInsetField(cornerRadius: 12, padding: 12)
+  }
+}
+
+private struct SettingsSectionCard<Content: View>: View {
+  let title: String
+  let content: Content
+
+  init(_ title: String, @ViewBuilder content: () -> Content) {
+    self.title = title
+    self.content = content()
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(title)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      content
+    }
+    .adeGlassCard(cornerRadius: 18)
   }
 }
 
@@ -202,126 +221,147 @@ struct ConnectionSettingsView: View {
 
   var body: some View {
     NavigationStack {
-      List {
-        Section {
+      ScrollView {
+        LazyVStack(spacing: 14) {
           ConnectionOverviewCard()
             .environmentObject(syncService)
-            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-        }
-        .listRowBackground(Color.clear)
 
-        Section("Sync status") {
-          ForEach(SyncDomain.allCases, id: \.self) { domain in
-            SyncDomainStatusRow(domain: domain, status: syncService.status(for: domain))
-              .environmentObject(syncService)
-              .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
-              .listRowBackground(Color.clear)
-          }
-        }
-
-        if let profile = syncService.activeHostProfile {
-          Section("Saved host") {
-            hostSummary(profile: profile)
-          }
-        } else {
-          Section("Connection") {
-            Text("Pair once from this tab, then reconnect here without rescanning. If cached data remains after revoke or forget, it stays readable but is not treated as live.")
-              .font(.subheadline)
-              .foregroundStyle(ADEPalette.textSecondary)
-          }
-        }
-
-        Section("Pairing") {
-          Button {
-            qrScanPresented = true
-          } label: {
-            Label("Scan host QR code", systemImage: "qrcode.viewfinder")
-          }
-          .tint(adeAccent)
-
-          Button {
-            Task {
-              await syncService.reconnectIfPossible()
+          SettingsSectionCard("Sync status") {
+            VStack(spacing: 10) {
+              ForEach(SyncDomain.allCases, id: \.self) { domain in
+                SyncDomainStatusRow(domain: domain, status: syncService.status(for: domain))
+                  .environmentObject(syncService)
+              }
             }
-          } label: {
-            Label("Reconnect saved host", systemImage: "arrow.clockwise")
           }
-          .disabled(syncService.activeHostProfile == nil)
-        }
 
-        if !syncService.discoveredHosts.isEmpty {
-          Section("Discovered on LAN") {
-            ForEach(syncService.discoveredHosts) { discovered in
-              VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                  VStack(alignment: .leading, spacing: 3) {
-                    Text(discovered.hostName)
-                      .font(.headline)
-                    Text(discovered.addresses.joined(separator: ", "))
-                      .font(.caption.monospaced())
-                      .foregroundStyle(.secondary)
-                  }
-                  Spacer()
-                  Button("Use") {
-                    host = discovered.addresses.first ?? host
-                    port = String(discovered.port)
-                    selectedHostIdentity = discovered.hostIdentity
-                    selectedHostName = discovered.hostName
-                    candidateAddresses = discovered.addresses
-                    selectedTailscaleAddress = discovered.tailscaleAddress
-                  }
-                  .buttonStyle(.borderedProminent)
+          if let profile = syncService.activeHostProfile {
+            SettingsSectionCard("Saved host") {
+              hostSummary(profile: profile)
+            }
+          } else {
+            SettingsSectionCard("Connection") {
+              Text("Pair once from this tab, then reconnect here without rescanning. If cached data remains after revoke or forget, it stays readable but is not treated as live.")
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+          }
+
+          SettingsSectionCard("Pairing") {
+            VStack(spacing: 10) {
+              Button {
+                qrScanPresented = true
+              } label: {
+                Label("Scan host QR code", systemImage: "qrcode.viewfinder")
+                  .frame(maxWidth: .infinity)
+              }
+              .buttonStyle(.glassProminent)
+              .tint(adeAccent)
+
+              Button {
+                Task {
+                  await syncService.reconnectIfPossible()
                 }
-                if let tailscaleAddress = discovered.tailscaleAddress {
-                  Label("Tailscale \(tailscaleAddress)", systemImage: "network")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+              } label: {
+                Label("Reconnect saved host", systemImage: "arrow.clockwise")
+                  .frame(maxWidth: .infinity)
+              }
+              .buttonStyle(.glass)
+              .disabled(syncService.activeHostProfile == nil)
+            }
+          }
+
+          if !syncService.discoveredHosts.isEmpty {
+            SettingsSectionCard("Discovered on LAN") {
+              VStack(spacing: 10) {
+                ForEach(syncService.discoveredHosts) { discovered in
+                  VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 10) {
+                      VStack(alignment: .leading, spacing: 4) {
+                        Text(discovered.hostName)
+                          .font(.headline)
+                          .foregroundStyle(ADEColor.textPrimary)
+                        Text(discovered.addresses.joined(separator: ", "))
+                          .font(.caption.monospaced())
+                          .foregroundStyle(ADEColor.textSecondary)
+                      }
+                      Spacer(minLength: 8)
+                      Button("Use") {
+                        host = discovered.addresses.first ?? host
+                        port = String(discovered.port)
+                        selectedHostIdentity = discovered.hostIdentity
+                        selectedHostName = discovered.hostName
+                        candidateAddresses = discovered.addresses
+                        selectedTailscaleAddress = discovered.tailscaleAddress
+                      }
+                      .buttonStyle(.glassProminent)
+                      .controlSize(.small)
+                    }
+                    if let tailscaleAddress = discovered.tailscaleAddress {
+                      Label("Tailscale \(tailscaleAddress)", systemImage: "network")
+                        .font(.caption)
+                        .foregroundStyle(ADEColor.textSecondary)
+                    }
+                  }
+                  .adeInsetField(cornerRadius: 14, padding: 14)
                 }
               }
-              .padding(.vertical, 4)
+            }
+          }
+
+          SettingsSectionCard("Manual code entry") {
+            VStack(spacing: 10) {
+              TextField("Host", text: $host)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .adeInsetField()
+
+              TextField("Port", text: $port)
+                .keyboardType(.numberPad)
+                .adeInsetField()
+
+              TextField("Pairing code", text: $pairingCode)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+                .adeInsetField()
+
+              Button {
+                Task {
+                  await syncService.pairAndConnect(
+                    host: host,
+                    port: Int(port) ?? 8787,
+                    code: pairingCode,
+                    hostIdentity: selectedHostIdentity,
+                    hostName: selectedHostName,
+                    candidateAddresses: candidateAddresses,
+                    tailscaleAddress: selectedTailscaleAddress
+                  )
+                }
+              } label: {
+                Label("Pair and connect", systemImage: "link.badge.plus")
+                  .frame(maxWidth: .infinity)
+              }
+              .buttonStyle(.glassProminent)
+              .tint(adeAccent)
+              .disabled(pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+          }
+
+          if let error = qrError ?? syncService.lastError {
+            SettingsSectionCard("Status") {
+              Text(error)
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.danger)
             }
           }
         }
-
-        Section("Manual code entry") {
-          TextField("Host", text: $host)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-          TextField("Port", text: $port)
-            .keyboardType(.numberPad)
-          TextField("Pairing code", text: $pairingCode)
-            .textInputAutocapitalization(.characters)
-            .autocorrectionDisabled()
-
-          Button {
-            Task {
-              await syncService.pairAndConnect(
-                host: host,
-                port: Int(port) ?? 8787,
-                code: pairingCode,
-                hostIdentity: selectedHostIdentity,
-                hostName: selectedHostName,
-                candidateAddresses: candidateAddresses,
-                tailscaleAddress: selectedTailscaleAddress
-              )
-            }
-          } label: {
-            Label("Pair and connect", systemImage: "link.badge.plus")
-          }
-          .buttonStyle(.borderedProminent)
-          .disabled(pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-
-        if let error = qrError ?? syncService.lastError {
-          Section("Status") {
-            Text(error)
-              .foregroundStyle(ADEPalette.danger)
-          }
-        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
       }
-      .scrollContentBackground(.hidden)
-      .background(ADEPalette.pageBackground.ignoresSafeArea())
+      .adeScreenBackground()
+      .adeNavigationGlass()
       .navigationTitle("Settings")
+      .sensoryFeedback(.success, trigger: syncService.connectionState == .connected)
       .onAppear {
         guard let profile = syncService.activeHostProfile else { return }
         host = profile.lastSuccessfulAddress ?? profile.savedAddressCandidates.first ?? host
@@ -357,45 +397,45 @@ struct ConnectionSettingsView: View {
 
   @ViewBuilder
   private func hostSummary(profile: HostConnectionProfile) -> some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        VStack(alignment: .leading, spacing: 3) {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .top, spacing: 10) {
+        VStack(alignment: .leading, spacing: 4) {
           Text(profile.hostName ?? profile.lastSuccessfulAddress ?? "Saved ADE host")
             .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
           if let address = profile.lastSuccessfulAddress {
             Text("\(address):\(profile.port)")
               .font(.caption.monospaced())
-              .foregroundStyle(.secondary)
+              .foregroundStyle(ADEColor.textSecondary)
           }
         }
-        Spacer()
+        Spacer(minLength: 8)
         StatusBadge(state: syncService.connectionState)
       }
 
       if !profile.discoveredLanAddresses.isEmpty {
         Label(profile.discoveredLanAddresses.joined(separator: ", "), systemImage: "wifi")
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(ADEColor.textSecondary)
       }
       if let tailscaleAddress = profile.tailscaleAddress {
         Label("Tailscale \(tailscaleAddress)", systemImage: "network")
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(ADEColor.textSecondary)
       }
 
-      HStack(spacing: 10) {
+      ADEGlassGroup {
         Button("Disconnect") {
           syncService.disconnect()
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.glass)
 
         Button("Forget host", role: .destructive) {
           syncService.forgetHost()
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.glass)
       }
     }
-    .padding(.vertical, 4)
   }
 }
 
@@ -414,9 +454,10 @@ private struct StatusBadge: View {
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 6)
-    .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .background(color.opacity(0.14), in: Capsule())
     .foregroundStyle(color)
-    .animation(.easeInOut(duration: 0.3), value: state)
+    .glassEffect()
+    .animation(.smooth, value: state)
     .accessibilityLabel("Connection status: \(label)")
   }
 
@@ -438,13 +479,13 @@ private struct StatusBadge: View {
   private var color: Color {
     switch state {
     case .connected:
-      return ADEPalette.success
+      return ADEColor.success
     case .connecting, .syncing:
-      return ADEPalette.warning
+      return ADEColor.warning
     case .error:
-      return ADEPalette.danger
+      return ADEColor.danger
     case .disconnected:
-      return ADEPalette.textSecondary
+      return ADEColor.textSecondary
     }
   }
 }
@@ -459,27 +500,28 @@ private struct SyncDomainStatusRow: View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .top, spacing: 10) {
         Image(systemName: icon)
-          .foregroundStyle(ADEPalette.textSecondary)
+          .foregroundStyle(ADEColor.textSecondary)
           .frame(width: 18)
 
         VStack(alignment: .leading, spacing: 8) {
           Text(title)
             .font(.body.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
 
           if let lastHydratedAt = status.lastHydratedAt {
             Text("Hydrated \(RelativeDateTimeFormatter().localizedString(for: lastHydratedAt, relativeTo: Date()))")
               .font(.caption)
-              .foregroundStyle(ADEPalette.textSecondary)
+              .foregroundStyle(ADEColor.textSecondary)
           } else {
             Text(phaseDescription)
               .font(.caption)
-              .foregroundStyle(ADEPalette.textSecondary)
+              .foregroundStyle(ADEColor.textSecondary)
           }
 
           if let lastError = status.lastError, status.phase == .failed {
             Text(lastError)
               .font(.caption)
-              .foregroundStyle(ADEPalette.danger)
+              .foregroundStyle(ADEColor.danger)
               .fixedSize(horizontal: false, vertical: true)
           }
 
@@ -489,13 +531,13 @@ private struct SyncDomainStatusRow: View {
                 await syncService.retry(domain: domain)
               }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .tint(adeAccent)
             .controlSize(.small)
           }
         }
 
-        Spacer()
+        Spacer(minLength: 8)
 
         if status.phase == .syncingInitialData || status.phase == .hydrating {
           ProgressView()
@@ -504,9 +546,8 @@ private struct SyncDomainStatusRow: View {
         ADEStatusPill(text: phaseLabel, tint: tint)
       }
     }
-    .adeGlassCard(cornerRadius: 14, padding: 14)
-    .padding(.vertical, 2)
-    .animation(.easeInOut(duration: 0.25), value: status.phase)
+    .adeInsetField(cornerRadius: 14, padding: 14)
+    .animation(.smooth, value: status.phase)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(title): \(phaseLabel). \(phaseDescription)")
   }
@@ -570,15 +611,13 @@ private struct SyncDomainStatusRow: View {
   private var tint: Color {
     switch status.phase {
     case .disconnected:
-      return ADEPalette.textSecondary
-    case .syncingInitialData:
-      return ADEPalette.warning
-    case .hydrating:
-      return ADEPalette.warning
+      return ADEColor.textSecondary
+    case .syncingInitialData, .hydrating:
+      return ADEColor.warning
     case .ready:
-      return ADEPalette.success
+      return ADEColor.success
     case .failed:
-      return ADEPalette.danger
+      return ADEColor.danger
     }
   }
 }
@@ -592,7 +631,7 @@ private struct PairingQrScannerSheet: View {
       Group {
         if DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
           PairingQrScannerRepresentable(onScan: onScan)
-          .ignoresSafeArea()
+            .ignoresSafeArea()
         } else {
           ContentUnavailableView(
             "Camera scanning unavailable",
@@ -609,100 +648,8 @@ private struct PairingQrScannerSheet: View {
           }
         }
       }
+      .adeNavigationGlass()
     }
-  }
-}
-
-enum ADEPalette {
-  static let pageBackground = Color(red: 13 / 255, green: 11 / 255, blue: 19 / 255)
-  static let surfaceBackground = Color(red: 24 / 255, green: 20 / 255, blue: 33 / 255)
-  static let recessedBackground = Color(red: 18 / 255, green: 15 / 255, blue: 25 / 255)
-  static let border = Color(red: 62 / 255, green: 57 / 255, blue: 77 / 255)
-  static let textPrimary = Color(red: 250 / 255, green: 250 / 255, blue: 250 / 255)
-  static let textSecondary = Color(red: 161 / 255, green: 161 / 255, blue: 170 / 255)
-  static let textMuted = Color(red: 139 / 255, green: 139 / 255, blue: 154 / 255)
-  static let accent = Color(red: 167 / 255, green: 139 / 255, blue: 250 / 255)
-  static let success = Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255)
-  static let warning = Color(red: 245 / 255, green: 158 / 255, blue: 11 / 255)
-  static let danger = Color(red: 239 / 255, green: 68 / 255, blue: 68 / 255)
-}
-
-struct ADENoticeCard: View {
-  let title: String
-  let message: String
-  let icon: String
-  let tint: Color
-  let actionTitle: String?
-  let action: (() -> Void)?
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 12) {
-        Image(systemName: icon)
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(tint)
-          .frame(width: 28, height: 28)
-          .background(tint.opacity(0.16), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-        VStack(alignment: .leading, spacing: 4) {
-          Text(title)
-            .font(.headline)
-            .foregroundStyle(ADEPalette.textPrimary)
-          Text(message)
-            .font(.subheadline)
-            .foregroundStyle(ADEPalette.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-
-        Spacer()
-      }
-
-      if let actionTitle, let action {
-        Button(actionTitle, action: action)
-          .buttonStyle(.borderedProminent)
-          .tint(ADEPalette.accent)
-          .controlSize(.small)
-      }
-    }
-    .adeGlassCard()
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(title). \(message)")
-  }
-}
-
-struct ADEStatusPill: View {
-  let text: String
-  let tint: Color
-
-  var body: some View {
-    Text(text)
-      .font(.system(.caption2, design: .monospaced).weight(.semibold))
-      .padding(.horizontal, 8)
-      .padding(.vertical, 5)
-      .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      .foregroundStyle(tint)
-      .accessibilityLabel("Status: \(text)")
-  }
-}
-
-private struct ADEGlassCardModifier: ViewModifier {
-  let cornerRadius: CGFloat
-  let padding: CGFloat
-
-  func body(content: Content) -> some View {
-    content
-      .padding(padding)
-      .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
-      )
-  }
-}
-
-extension View {
-  func adeGlassCard(cornerRadius: CGFloat = 14, padding: CGFloat = 16) -> some View {
-    modifier(ADEGlassCardModifier(cornerRadius: cornerRadius, padding: padding))
   }
 }
 
@@ -724,14 +671,15 @@ private struct ADEBrandMark: View {
       } else {
         Image(systemName: "bolt.fill")
           .font(.system(size: size * 0.38, weight: .semibold))
-          .foregroundStyle(ADEPalette.accent)
+          .foregroundStyle(ADEColor.accent)
       }
     }
     .frame(width: width, height: size)
-    .background(ADEPalette.recessedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .background(ADEColor.recessedBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 14))
     .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEPalette.border, lineWidth: 1)
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
     )
   }
 }

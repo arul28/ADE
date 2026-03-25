@@ -19,12 +19,29 @@ struct WorkTabView: View {
     syncService.activeHostProfile == nil && !sessions.isEmpty
   }
 
+  private var isLoadingSkeleton: Bool {
+    workStatus.phase == .hydrating || workStatus.phase == .syncingInitialData
+  }
+
+  private var runningSessions: [TerminalSessionSummary] {
+    sessions.filter { $0.status == "running" }
+  }
+
   var body: some View {
     NavigationStack {
       List {
         if let notice = statusNotice {
           notice
             .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+
+        if isLoadingSkeleton {
+          ForEach(0..<2, id: \.self) { _ in
+            ADECardSkeleton(rows: 3)
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
+          }
         }
 
         if let errorMessage, workStatus.phase == .ready {
@@ -32,32 +49,39 @@ struct WorkTabView: View {
             title: "Work view error",
             message: errorMessage,
             icon: "exclamationmark.triangle.fill",
-            tint: ADEPalette.danger,
+            tint: ADEColor.danger,
             actionTitle: "Retry",
             action: { Task { await reload(refreshRemote: true) } }
           )
           .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
         }
 
-        if sessions.contains(where: { $0.status == "running" }) {
-          Section("Activity") {
-            ForEach(sessions.filter { $0.status == "running" }) { session in
-              HStack(spacing: 12) {
-                Image(systemName: "waveform.path.ecg")
-                  .foregroundStyle(ADEPalette.warning)
-                  .symbolEffect(.variableColor.iterative, isActive: true)
-                VStack(alignment: .leading, spacing: 2) {
-                  Text(session.title)
-                    .font(.subheadline.weight(.medium))
-                  Text("\(session.laneName) \u{00B7} \(session.toolType ?? "session")")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(ADEPalette.textSecondary)
-                }
-                Spacer()
-                ProgressView()
-                  .controlSize(.mini)
+        if workStatus.phase == .ready && sessions.isEmpty {
+          ADEEmptyStateView(
+            symbol: "terminal",
+            title: "No work sessions yet",
+            message: "Quick runs and tracked host sessions will appear here when the host has session history to show."
+          ) {
+            if canRunQuickCommands {
+              Button("Start quick run") {
+                quickRunPresented = true
               }
-              .accessibilityLabel("\(session.title), running on \(session.laneName)")
+              .buttonStyle(.glassProminent)
+              .tint(ADEColor.accent)
+            }
+          }
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+        }
+
+        if !runningSessions.isEmpty {
+          Section("Activity") {
+            ForEach(runningSessions) { session in
+              WorkActivityRow(session: session)
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
           }
         }
@@ -68,33 +92,34 @@ struct WorkTabView: View {
               NavigationLink {
                 TerminalSessionView(session: session)
               } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                  HStack {
-                    Text(session.title)
-                      .font(.headline)
-                    Spacer()
-                    ADEStatusPill(
-                      text: session.status.uppercased(),
-                      tint: session.status == "running" ? ADEPalette.success : ADEPalette.textSecondary
-                    )
-                  }
-                  Text(session.laneName)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(ADEPalette.textSecondary)
-                  if let preview = session.lastOutputPreview {
-                    Text(preview)
-                      .font(.caption.monospaced())
-                      .foregroundStyle(ADEPalette.textMuted)
-                      .lineLimit(1)
+                WorkSessionRow(session: session)
+              }
+              .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button("Copy lane") {
+                  UIPasteboard.general.string = session.laneName
+                }
+                .tint(ADEColor.accent)
+
+                if session.status == "running" {
+                  Button("Close", role: .destructive) {
+                    Task {
+                      try? await syncService.closeWorkSession(sessionId: session.id)
+                      await reload(refreshRemote: true)
+                    }
                   }
                 }
               }
+              .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
             }
           }
         }
       }
+      .listStyle(.plain)
       .scrollContentBackground(.hidden)
-      .background(ADEPalette.pageBackground.ignoresSafeArea())
+      .adeScreenBackground()
+      .adeNavigationGlass()
       .navigationTitle("Work")
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
@@ -106,6 +131,7 @@ struct WorkTabView: View {
           .disabled(!canRunQuickCommands)
         }
       }
+      .sensoryFeedback(.success, trigger: sessions.count)
       .task {
         await reload()
       }
@@ -157,7 +183,7 @@ struct WorkTabView: View {
               ? "Cached session history is still visible, but the previous host trust was cleared. Pair again before trusting active work state."
               : "Cached session history is available. Reconnect to refresh active host work and stream new output."),
         icon: "terminal",
-        tint: ADEPalette.warning,
+        tint: ADEColor.warning,
         actionTitle: syncService.activeHostProfile == nil ? (needsRepairing ? "Pair again" : "Pair with host") : "Reconnect",
         action: {
           if syncService.activeHostProfile == nil {
@@ -175,7 +201,7 @@ struct WorkTabView: View {
         title: "Hydrating host sessions",
         message: "Pulling tracked terminal sessions from the host so Work reflects real session history.",
         icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEPalette.accent,
+        tint: ADEColor.accent,
         actionTitle: nil,
         action: nil
       )
@@ -184,7 +210,7 @@ struct WorkTabView: View {
         title: "Syncing initial data",
         message: "Waiting for the host to finish syncing core project data before Work hydrates session state.",
         icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEPalette.warning,
+        tint: ADEColor.warning,
         actionTitle: nil,
         action: nil
       )
@@ -193,21 +219,67 @@ struct WorkTabView: View {
         title: "Session hydration failed",
         message: workStatus.lastError ?? "The host session list did not hydrate cleanly.",
         icon: "exclamationmark.triangle.fill",
-        tint: ADEPalette.danger,
+        tint: ADEColor.danger,
         actionTitle: "Retry",
         action: { Task { await reload(refreshRemote: true) } }
       )
     case .ready:
-      guard sessions.isEmpty else { return nil }
-      return ADENoticeCard(
-        title: "No work sessions yet",
-        message: "Quick runs and tracked host sessions will appear here when the host has session history to show.",
-        icon: "terminal",
-        tint: ADEPalette.textSecondary,
-        actionTitle: nil,
-        action: nil
-      )
+      return nil
     }
+  }
+}
+
+private struct WorkActivityRow: View {
+  let session: TerminalSessionSummary
+
+  var body: some View {
+    HStack(spacing: 12) {
+      Image(systemName: "waveform.path.ecg")
+        .foregroundStyle(ADEColor.warning)
+        .symbolEffect(.variableColor.iterative, isActive: true)
+      VStack(alignment: .leading, spacing: 3) {
+        Text(session.title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text("\(session.laneName) · \(session.toolType ?? "session")")
+          .font(.system(.caption, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      Spacer()
+      ProgressView()
+        .controlSize(.mini)
+    }
+    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .accessibilityLabel("\(session.title), running on \(session.laneName)")
+  }
+}
+
+private struct WorkSessionRow: View {
+  let session: TerminalSessionSummary
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .top, spacing: 8) {
+        Text(session.title)
+          .font(.headline)
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 8)
+        ADEStatusPill(
+          text: session.status.uppercased(),
+          tint: session.status == "running" ? ADEColor.success : ADEColor.textSecondary
+        )
+      }
+      Text(session.laneName)
+        .font(.system(.caption, design: .monospaced))
+        .foregroundStyle(ADEColor.textSecondary)
+      if let preview = session.lastOutputPreview {
+        Text(preview)
+          .font(.caption.monospaced())
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
+    }
+    .adeGlassCard(cornerRadius: 18, padding: 14)
   }
 }
 
@@ -219,10 +291,13 @@ private struct TerminalSessionView: View {
     ScrollView {
       Text(syncService.terminalBuffers[session.id] ?? session.lastOutputPreview ?? "No output yet.")
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
         .font(.system(.footnote, design: .monospaced))
+        .foregroundStyle(ADEColor.textPrimary)
+        .adeGlassCard(cornerRadius: 18)
+        .padding(16)
     }
-    .background(ADEPalette.pageBackground.ignoresSafeArea())
+    .adeScreenBackground()
+    .adeNavigationGlass()
     .navigationTitle(session.title)
     .task {
       try? await syncService.subscribeTerminal(sessionId: session.id)
@@ -241,19 +316,32 @@ private struct QuickRunView: View {
 
   var body: some View {
     NavigationStack {
-      Form {
-        Picker("Lane", selection: $selectedLaneId) {
-          ForEach(lanes) { lane in
-            Text(lane.name).tag(lane.id)
+      List {
+        VStack(spacing: 10) {
+          Picker("Lane", selection: $selectedLaneId) {
+            ForEach(lanes) { lane in
+              Text(lane.name).tag(lane.id)
+            }
           }
+          .pickerStyle(.menu)
+          .adeInsetField()
+
+          TextField("Title", text: $title)
+            .adeInsetField()
+
+          TextField("Command", text: $command)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .adeInsetField()
         }
-        TextField("Title", text: $title)
-        TextField("Command", text: $command)
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled()
+        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
       }
+      .listStyle(.plain)
       .scrollContentBackground(.hidden)
-      .background(ADEPalette.pageBackground.ignoresSafeArea())
+      .adeScreenBackground()
+      .adeNavigationGlass()
       .navigationTitle("Quick run")
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -263,6 +351,7 @@ private struct QuickRunView: View {
           Button("Run") {
             onRun(selectedLaneId.isEmpty ? (lanes.first?.id ?? "") : selectedLaneId, title, command)
           }
+          .buttonStyle(.glassProminent)
           .disabled(command.isEmpty || (selectedLaneId.isEmpty && lanes.isEmpty))
         }
       }

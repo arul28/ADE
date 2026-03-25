@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */; };
+		0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */; };
 		1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9411193AF56B236BA32EFF5 /* ADEApp.swift */; };
 		1A0D93D06509796A389A4CAA /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		26C8992F8D661707E9360503 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51942BAC0965C7D0CCE6E8B8 /* Database.swift */; };
@@ -26,6 +27,16 @@
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		A17C7B6209E54B4FAE0D11A1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9CBC925352322D208431EFAA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 928432ECB10B6E8870725B02;
+			remoteInfo = ADE;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
@@ -33,6 +44,7 @@
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
 		299EFB5C0DFB103946352014 /* _PreviewGenerated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = _PreviewGenerated.swift; path = "/Users/admin/Projects/ADE/.ade/worktrees/phase-6-w6-14727791/apps/ios/.preview-host-5215/_PreviewGenerated.swift"; sourceTree = "<absolute>"; };
 		31EC445F22FD38F90C16343E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEDesignSystem.swift; path = ADE/Views/Components/ADEDesignSystem.swift; sourceTree = "<group>"; };
 		483C5F1818BAE74B19B84617 /* RemoteModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteModels.swift; path = ADE/Models/RemoteModels.swift; sourceTree = "<group>"; };
 		4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesTabView.swift; path = ADE/Views/FilesTabView.swift; sourceTree = "<group>"; };
 		51942BAC0965C7D0CCE6E8B8 /* Database.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Database.swift; path = ADE/Services/Database.swift; sourceTree = "<group>"; };
@@ -75,9 +87,18 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		02B9E655310A24835B5CFC3B /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */,
+			);
+			name = Components;
+			sourceTree = "<group>";
+		};
 		0379509A19E782882C2D84BB /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				02B9E655310A24835B5CFC3B /* Components */,
 				4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */,
 				9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */,
 				5EE4D463D21266B62B422D11 /* PRsTabView.swift */,
@@ -202,6 +223,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				A17C7B6209E54B4FAE0D11A2 /* PBXTargetDependency */,
 			);
 			name = ADETests;
 			productName = ADETests;
@@ -284,6 +306,15 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		A17C7B6209E54B4FAE0D11A2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ADE;
+			target = 928432ECB10B6E8870725B02 /* ADE */;
+			targetProxy = A17C7B6209E54B4FAE0D11A1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin PBXSourcesBuildPhase section */
 		569BFAD3D473FA50C6E4A50F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -298,6 +329,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */,
 				1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */,
 				4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */,
 				FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */,

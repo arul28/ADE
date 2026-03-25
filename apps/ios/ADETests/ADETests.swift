@@ -962,6 +962,21 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(closed.showsRequestReviewers)
   }
 
+  func testFileIconMapsCommonExtensionsToSfSymbols() {
+    XCTAssertEqual(fileIcon(for: "App.swift"), "chevron.left.forwardslash.chevron.right")
+    XCTAssertEqual(fileIcon(for: "config.json"), "doc.badge.gearshape")
+    XCTAssertEqual(fileIcon(for: "notes.md"), "doc.text")
+    XCTAssertEqual(fileIcon(for: "preview.png"), "photo")
+    XCTAssertEqual(fileIcon(for: "archive.zip"), "doc.zipper")
+    XCTAssertEqual(fileIcon(for: "unknown.bin"), "doc")
+  }
+
+  func testFormattedFileSizeUsesReadableUnits() {
+    XCTAssertEqual(formattedFileSize(999), "999 B")
+    XCTAssertEqual(formattedFileSize(2_048), "2 KB")
+    XCTAssertEqual(formattedFileSize(1_572_864), "1.5 MB")
+  }
+
   func testLegacyCacheDatabaseIsReplacedDuringPhase6Bootstrap() throws {
     let baseURL = makeTemporaryDirectory()
     let appURL = baseURL.appendingPathComponent("ADE", isDirectory: true)

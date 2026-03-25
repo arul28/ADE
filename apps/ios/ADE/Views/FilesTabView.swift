@@ -30,12 +30,25 @@ struct FilesTabView: View {
     syncService.activeHostProfile == nil && !workspaces.isEmpty
   }
 
+  private var isLoadingSkeleton: Bool {
+    filesStatus.phase == .hydrating || filesStatus.phase == .syncingInitialData
+  }
+
   var body: some View {
     NavigationStack(path: $navigationPath) {
       List {
         if let notice = statusNotice {
           notice
             .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+
+        if isLoadingSkeleton {
+          ForEach(0..<2, id: \.self) { _ in
+            ADECardSkeleton(rows: 3)
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
+          }
         }
 
         if let errorMessage, filesStatus.phase == .ready {
@@ -43,62 +56,110 @@ struct FilesTabView: View {
             title: "Files view error",
             message: errorMessage,
             icon: "exclamationmark.triangle.fill",
-            tint: ADEPalette.danger,
+            tint: ADEColor.danger,
             actionTitle: "Retry",
             action: { Task { await reload(refreshRemote: true) } }
           )
           .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+        }
+
+        if filesStatus.phase == .ready && workspaces.isEmpty {
+          ADEEmptyStateView(
+            symbol: "folder.badge.questionmark",
+            title: "No workspaces available",
+            message: "This host does not currently expose any lane-backed workspaces to browse from iPhone."
+          ) {
+            if syncService.activeHostProfile == nil {
+              Button("Open Settings") {
+                syncService.settingsPresented = true
+              }
+              .buttonStyle(.glassProminent)
+              .tint(ADEColor.accent)
+            }
+          }
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
         }
 
         if !workspaces.isEmpty {
           Section("Workspace") {
-            Picker("Workspace", selection: Binding(
-              get: { selectedWorkspaceId ?? workspaces.first?.id ?? "" },
-              set: { selectedWorkspaceId = $0 }
-            )) {
-              ForEach(workspaces) { workspace in
-                Text(workspace.name).tag(workspace.id)
+            VStack(alignment: .leading, spacing: 10) {
+              Picker("Workspace", selection: Binding(
+                get: { selectedWorkspaceId ?? workspaces.first?.id ?? "" },
+                set: { selectedWorkspaceId = $0 }
+              )) {
+                ForEach(workspaces) { workspace in
+                  Text(workspace.name).tag(workspace.id)
+                }
+              }
+              .pickerStyle(.menu)
+
+              if let workspace = selectedWorkspace {
+                Label(workspace.isReadOnlyByDefault ? "Read-only workspace" : "Live workspace", systemImage: workspace.isReadOnlyByDefault ? "lock" : "folder")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
               }
             }
+            .adeGlassCard(cornerRadius: 18)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
           }
         }
 
         Section("Quick open") {
-          TextField("Search files", text: $searchQuery)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .disabled(!canUseLiveFileActions)
-            .onSubmit {
-              Task {
-                await runQuickOpen()
+          VStack(alignment: .leading, spacing: 10) {
+            TextField("Search files", text: $searchQuery)
+              .textInputAutocapitalization(.never)
+              .autocorrectionDisabled()
+              .disabled(!canUseLiveFileActions)
+              .adeInsetField()
+              .onSubmit {
+                Task {
+                  await runQuickOpen()
+                }
               }
-            }
 
-          if !canUseLiveFileActions {
-            Text(needsRepairing
-              ? "Workspace names are cached locally, but the saved host trust was cleared. Pair again before searching or opening files."
-              : "Quick open needs a live, hydrated host connection.")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-          } else if searchQuery.isEmpty {
-            Text("Type a filename or path to search the connected workspaces.")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-          } else if quickOpenResults.isEmpty {
-            Text("No matching files found.")
-              .font(.caption)
-              .foregroundStyle(.secondary)
+            if !canUseLiveFileActions {
+              Text(needsRepairing
+                ? "Workspace names are cached locally, but the saved host trust was cleared. Pair again before searching or opening files."
+                : "Quick open needs a live, hydrated host connection.")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+            } else if searchQuery.isEmpty {
+              Text("Type a filename or path to search the connected workspaces.")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+            } else if quickOpenResults.isEmpty {
+              Text("No matching files found.")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
           }
+          .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
 
           if canUseLiveFileActions {
             ForEach(quickOpenResults) { item in
-              NavigationLink(item.path) {
+              NavigationLink {
                 FileEditorView(
                   workspaceId: selectedWorkspaceId ?? "",
                   relativePath: item.path,
                   isReadOnlyByDefault: selectedWorkspace?.isReadOnlyByDefault ?? true
                 )
+              } label: {
+                FilesResultRow(path: item.path)
               }
+              .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button("Copy path") {
+                  UIPasteboard.general.string = item.path
+                }
+                .tint(ADEColor.accent)
+              }
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
             }
           }
         }
@@ -106,25 +167,52 @@ struct FilesTabView: View {
         if let workspace = selectedWorkspace {
           Section("Tree") {
             if canUseLiveFileActions {
-              NavigationLink("Browse root") {
+              NavigationLink {
                 FileTreeDirectoryView(
                   workspaceId: workspace.id,
                   parentPath: "",
                   isReadOnlyByDefault: workspace.isReadOnlyByDefault
                 )
+              } label: {
+                HStack(spacing: 10) {
+                  Image(systemName: "folder.fill")
+                    .foregroundStyle(ADEColor.accent)
+                  VStack(alignment: .leading, spacing: 4) {
+                    Text("Browse root")
+                      .font(.headline)
+                      .foregroundStyle(ADEColor.textPrimary)
+                    Text(workspace.name)
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textSecondary)
+                  }
+                  Spacer()
+                  Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ADEColor.textMuted)
+                }
+                .adeGlassCard(cornerRadius: 18)
               }
+              .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
             } else {
-              Text(needsRepairing
-                ? "Pair again before browsing the cached workspace on the host."
-                : "Reconnect to browse the live workspace tree.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+              ADEEmptyStateView(
+                symbol: "icloud.slash",
+                title: needsRepairing ? "Pair again to browse files" : "Reconnect to browse files",
+                message: needsRepairing
+                  ? "Pair again before browsing the cached workspace on the host."
+                  : "Reconnect to browse the live workspace tree."
+              )
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
             }
           }
         }
       }
+      .listStyle(.plain)
       .scrollContentBackground(.hidden)
-      .background(ADEPalette.pageBackground.ignoresSafeArea())
+      .adeScreenBackground()
+      .adeNavigationGlass()
       .navigationTitle("Files")
       .navigationDestination(for: FilesRoute.self) { route in
         switch route {
@@ -139,6 +227,8 @@ struct FilesTabView: View {
       .refreshable {
         await reload(refreshRemote: true)
       }
+      .sensoryFeedback(.selection, trigger: selectedWorkspaceId)
+      .sensoryFeedback(.success, trigger: quickOpenResults.count)
       .task {
         await reload()
       }
@@ -224,7 +314,7 @@ struct FilesTabView: View {
               ? "Workspace names are cached locally, but the previous host trust was cleared. Pair again before trusting file state or write access."
               : "Workspace metadata is cached locally. Reconnect before trusting file state from the host."),
         icon: "folder.badge.questionmark",
-        tint: ADEPalette.warning,
+        tint: ADEColor.warning,
         actionTitle: syncService.activeHostProfile == nil ? (needsRepairing ? "Pair again" : "Pair with host") : "Reconnect",
         action: {
           if syncService.activeHostProfile == nil {
@@ -242,7 +332,7 @@ struct FilesTabView: View {
         title: "Hydrating workspaces",
         message: "Files uses the lane graph for workspace roots. Waiting for the latest lane hydration from the host.",
         icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEPalette.accent,
+        tint: ADEColor.accent,
         actionTitle: nil,
         action: nil
       )
@@ -251,7 +341,7 @@ struct FilesTabView: View {
         title: "Syncing initial data",
         message: "Waiting for the host to finish syncing project and lane metadata before Files hydrates.",
         icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEPalette.warning,
+        tint: ADEColor.warning,
         actionTitle: nil,
         action: nil
       )
@@ -260,20 +350,12 @@ struct FilesTabView: View {
         title: "Workspace hydration failed",
         message: filesStatus.lastError ?? "The lane graph did not hydrate, so Files cannot trust its workspace model yet.",
         icon: "exclamationmark.triangle.fill",
-        tint: ADEPalette.danger,
+        tint: ADEColor.danger,
         actionTitle: "Retry",
         action: { Task { await reload(refreshRemote: true) } }
       )
     case .ready:
-      guard workspaces.isEmpty else { return nil }
-      return ADENoticeCard(
-        title: "No workspaces available",
-        message: "This host does not currently expose any lane-backed workspaces to browse from iPhone.",
-        icon: "folder.badge.questionmark",
-        tint: ADEPalette.textSecondary,
-        actionTitle: nil,
-        action: nil
-      )
+      return nil
     }
   }
 }
@@ -286,6 +368,7 @@ private struct FileTreeDirectoryView: View {
 
   @State private var nodes: [FileTreeNode] = []
   @State private var errorMessage: String?
+  @State private var isLoading = true
 
   var body: some View {
     List {
@@ -294,51 +377,91 @@ private struct FileTreeDirectoryView: View {
           title: "Directory load failed",
           message: errorMessage,
           icon: "exclamationmark.triangle.fill",
-          tint: ADEPalette.danger,
+          tint: ADEColor.danger,
           actionTitle: "Retry",
           action: { Task { await reload() } }
         )
         .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
       }
+
+      if isLoading {
+        ForEach(0..<4, id: \.self) { _ in
+          ADECardSkeleton(rows: 2)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+      } else if nodes.isEmpty {
+        ADEEmptyStateView(
+          symbol: "folder",
+          title: "Folder is empty",
+          message: "This directory does not have any files to preview on iPhone yet."
+        )
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+      }
+
       ForEach(nodes) { node in
         if node.type == "directory" {
           NavigationLink {
             FileTreeDirectoryView(workspaceId: workspaceId, parentPath: node.path, isReadOnlyByDefault: isReadOnlyByDefault)
           } label: {
-            Label(node.name, systemImage: "folder.fill")
-              .foregroundStyle(ADEPalette.textPrimary)
+            FileNodeRow(
+              icon: "folder.fill",
+              title: node.name,
+              subtitle: node.path.isEmpty ? "Folder" : node.path,
+              trailingText: nil,
+              tint: ADEColor.accent
+            )
           }
+          .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Copy name") {
+              UIPasteboard.general.string = node.name
+            }
+            .tint(ADEColor.accent)
+          }
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
         } else {
           NavigationLink {
             FileEditorView(workspaceId: workspaceId, relativePath: node.path, isReadOnlyByDefault: isReadOnlyByDefault)
           } label: {
-            HStack {
-              Label(node.name, systemImage: fileIcon(for: node.name))
-                .foregroundStyle(ADEPalette.textPrimary)
-              Spacer()
+            HStack(spacing: 12) {
+              FileNodeRow(
+                icon: fileIcon(for: node.name),
+                title: node.name,
+                subtitle: node.path,
+                trailingText: node.size.map(formattedFileSize),
+                tint: ADEColor.textPrimary
+              )
               if let changeStatus = node.changeStatus {
                 ADEStatusPill(
                   text: changeStatus.prefix(1).uppercased(),
-                  tint: changeStatus == "modified" ? ADEPalette.warning : ADEPalette.textSecondary
+                  tint: changeStatus == "modified" ? ADEColor.warning : ADEColor.textSecondary
                 )
-              }
-              if let size = node.size {
-                Text(formattedFileSize(size))
-                  .font(.system(.caption2, design: .monospaced))
-                  .foregroundStyle(ADEPalette.textMuted)
               }
             }
           }
+          .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Copy name") {
+              UIPasteboard.general.string = node.name
+            }
+            .tint(ADEColor.accent)
+          }
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
         }
       }
     }
+    .listStyle(.plain)
     .scrollContentBackground(.hidden)
-    .background(ADEPalette.pageBackground.ignoresSafeArea())
+    .adeScreenBackground()
+    .adeNavigationGlass()
     .navigationTitle(parentPath.isEmpty ? "Root" : parentPath)
-    .task {
+    .refreshable {
       await reload()
     }
-    .refreshable {
+    .task {
       await reload()
     }
   }
@@ -346,11 +469,13 @@ private struct FileTreeDirectoryView: View {
   @MainActor
   private func reload() async {
     do {
+      isLoading = true
       nodes = try await syncService.listTree(workspaceId: workspaceId, parentPath: parentPath)
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
     }
+    isLoading = false
   }
 }
 
@@ -365,6 +490,7 @@ private struct FileEditorView: View {
   @State private var searchResults: [FilesSearchTextMatch] = []
   @State private var searchQuery = ""
   @State private var errorMessage: String?
+  @State private var saveTrigger = 0
 
   private var isFilesLive: Bool {
     let status = syncService.status(for: .files)
@@ -378,18 +504,34 @@ private struct FileEditorView: View {
           title: "File load failed",
           message: errorMessage,
           icon: "exclamationmark.triangle.fill",
-          tint: ADEPalette.danger,
+          tint: ADEColor.danger,
           actionTitle: "Retry",
           action: { Task { await load() } }
         )
         .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+      }
+
+      if blob == nil && errorMessage == nil {
+        ADECardSkeleton(rows: 4)
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
       }
 
       if let blob {
         Section("Metadata") {
-          Text(blob.path).font(.footnote.monospaced())
-          Text("Size: \(blob.size) bytes")
-            .foregroundStyle(.secondary)
+          VStack(alignment: .leading, spacing: 8) {
+            Text(blob.path)
+              .font(.footnote.monospaced())
+              .foregroundStyle(ADEColor.textPrimary)
+            Text("Size: \(blob.size) bytes")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .adeGlassCard(cornerRadius: 18)
+          .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
         }
 
         if blob.isBinary, let data = Data(base64Encoded: blob.content), let image = UIImage(data: data) {
@@ -397,62 +539,91 @@ private struct FileEditorView: View {
             Image(uiImage: image)
               .resizable()
               .scaledToFit()
+              .adeGlassCard(cornerRadius: 18)
+              .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
           }
         } else {
           Section("Editor") {
-            if isReadOnlyByDefault {
-              Text("This workspace is edit-protected on the host. The phone keeps it read-only so Files does not imply unsupported parity.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            } else if !isFilesLive {
-              Text("Reconnect to a live host before editing or saving file contents.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            TextEditor(text: $draftText)
-              .font(.system(.body, design: .monospaced))
-              .frame(minHeight: 260)
-              .disabled(isReadOnlyByDefault || !isFilesLive)
-            if !isReadOnlyByDefault {
-              Button("Save changes") {
-                Task {
-                  await save()
-                }
+            VStack(alignment: .leading, spacing: 10) {
+              if isReadOnlyByDefault {
+                Text("This workspace is edit-protected on the host. The phone keeps it read-only so Files does not imply unsupported parity.")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+              } else if !isFilesLive {
+                Text("Reconnect to a live host before editing or saving file contents.")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
               }
-              .buttonStyle(.borderedProminent)
-              .disabled(!isFilesLive)
+
+              TextEditor(text: $draftText)
+                .font(.system(.body, design: .monospaced))
+                .frame(minHeight: 260)
+                .disabled(isReadOnlyByDefault || !isFilesLive)
+                .adeInsetField(cornerRadius: 16, padding: 12)
+
+              if !isReadOnlyByDefault {
+                Button("Save changes") {
+                  Task {
+                    await save()
+                  }
+                }
+                .buttonStyle(.glassProminent)
+                .tint(ADEColor.accent)
+                .disabled(!isFilesLive)
+              }
             }
+            .adeGlassCard(cornerRadius: 18)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
           }
         }
       }
 
       Section("Search in workspace") {
-        TextField("Search text", text: $searchQuery)
-          .disabled(!isFilesLive)
-          .onSubmit {
-            Task {
-              await searchWorkspace()
+        VStack(alignment: .leading, spacing: 10) {
+          TextField("Search text", text: $searchQuery)
+            .disabled(!isFilesLive)
+            .adeInsetField()
+            .onSubmit {
+              Task {
+                await searchWorkspace()
+              }
             }
+          if !isFilesLive {
+            Text("Reconnect before running a live text search against the host workspace.")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
           }
-        if !isFilesLive {
-          Text("Reconnect before running a live text search against the host workspace.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
+        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+
         ForEach(searchResults) { result in
           VStack(alignment: .leading, spacing: 4) {
             Text(result.path)
               .font(.caption.monospaced())
+              .foregroundStyle(ADEColor.textPrimary)
             Text(result.preview)
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .foregroundStyle(ADEColor.textSecondary)
           }
+          .adeGlassCard(cornerRadius: 16, padding: 14)
+          .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
         }
       }
     }
+    .listStyle(.plain)
     .scrollContentBackground(.hidden)
-    .background(ADEPalette.pageBackground.ignoresSafeArea())
+    .adeScreenBackground()
+    .adeNavigationGlass()
     .navigationTitle(relativePath)
+    .sensoryFeedback(.success, trigger: saveTrigger)
     .task {
       await load()
     }
@@ -477,6 +648,7 @@ private struct FileEditorView: View {
     guard !isReadOnlyByDefault, isFilesLive else { return }
     do {
       try await syncService.writeText(workspaceId: workspaceId, path: relativePath, text: draftText)
+      saveTrigger += 1
       await load()
     } catch {
       errorMessage = error.localizedDescription
@@ -502,9 +674,65 @@ private struct FileEditorView: View {
   }
 }
 
+private struct FilesResultRow: View {
+  let path: String
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: fileIcon(for: path))
+        .foregroundStyle(ADEColor.accent)
+      VStack(alignment: .leading, spacing: 3) {
+        Text((path as NSString).lastPathComponent)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(path)
+          .font(.caption.monospaced())
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+      }
+      Spacer()
+      Image(systemName: "chevron.right")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .adeGlassCard(cornerRadius: 16, padding: 14)
+  }
+}
+
+private struct FileNodeRow: View {
+  let icon: String
+  let title: String
+  let subtitle: String
+  let trailingText: String?
+  let tint: Color
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: icon)
+        .foregroundStyle(tint)
+      VStack(alignment: .leading, spacing: 3) {
+        Text(title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(subtitle)
+          .font(.caption.monospaced())
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+      }
+      Spacer()
+      if let trailingText {
+        Text(trailingText)
+          .font(.caption2.monospaced())
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .adeGlassCard(cornerRadius: 16, padding: 14)
+  }
+}
+
 // MARK: - File Helpers
 
-private func fileIcon(for name: String) -> String {
+func fileIcon(for name: String) -> String {
   let ext = (name as NSString).pathExtension.lowercased()
   switch ext {
   case "swift", "ts", "tsx", "js", "jsx", "py", "rb", "go", "rs", "c", "cpp", "h", "m", "java", "kt":
@@ -524,7 +752,7 @@ private func fileIcon(for name: String) -> String {
   }
 }
 
-private func formattedFileSize(_ bytes: Int) -> String {
+func formattedFileSize(_ bytes: Int) -> String {
   if bytes < 1024 { return "\(bytes) B" }
   if bytes < 1024 * 1024 { return "\(bytes / 1024) KB" }
   return String(format: "%.1f MB", Double(bytes) / 1048576.0)

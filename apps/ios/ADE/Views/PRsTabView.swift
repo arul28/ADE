@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct PrActionAvailability: Equatable {
   let showsMerge: Bool
@@ -52,12 +53,25 @@ struct PRsTabView: View {
     syncService.activeHostProfile == nil && !prs.isEmpty
   }
 
+  private var isLoadingSkeleton: Bool {
+    prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData
+  }
+
   var body: some View {
     NavigationStack {
       List {
         if let notice = statusNotice {
           notice
             .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+
+        if isLoadingSkeleton {
+          ForEach(0..<2, id: \.self) { _ in
+            ADECardSkeleton(rows: 3)
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
+          }
         }
 
         if let errorMessage, prsStatus.phase == .ready {
@@ -65,47 +79,64 @@ struct PRsTabView: View {
             title: "PR view error",
             message: errorMessage,
             icon: "exclamationmark.triangle.fill",
-            tint: ADEPalette.danger,
+            tint: ADEColor.danger,
             actionTitle: "Retry",
             action: { Task { await reload(refreshRemote: true) } }
           )
           .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+        }
+
+        if prsStatus.phase == .ready && prs.isEmpty {
+          ADEEmptyStateView(
+            symbol: "arrow.triangle.pull",
+            title: "No pull requests on this host",
+            message: "Open PRs will appear here once the host has GitHub-linked lane state to show."
+          )
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
         }
 
         ForEach(prs) { pr in
           NavigationLink {
             PrDetailView(pr: pr)
           } label: {
-            VStack(alignment: .leading, spacing: 6) {
-              HStack(alignment: .top) {
-                Text(pr.title)
-                  .font(.headline)
-                  .lineLimit(2)
-                Spacer(minLength: 8)
-                Text("#\(pr.githubPrNumber)")
-                  .font(.system(.caption, design: .monospaced))
-                  .foregroundStyle(.secondary)
-              }
-              Text("\(pr.headBranch) \u{2192} \(pr.baseBranch)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-              HStack(spacing: 8) {
-                ADEStatusPill(text: pr.checksStatus.uppercased(), tint: checksTint(for: pr.checksStatus))
-                ADEStatusPill(text: pr.reviewStatus.uppercased(), tint: reviewsTint(for: pr.reviewStatus))
-                Spacer()
-                Text("+\(pr.additions) -\(pr.deletions)")
-                  .font(.system(.caption2, design: .monospaced))
-                  .foregroundStyle(ADEPalette.textMuted)
+            PrRowCard(pr: pr)
+          }
+          .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Open") {
+              if let url = URL(string: pr.githubUrl) {
+                UIApplication.shared.open(url)
               }
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("PR \(pr.githubPrNumber): \(pr.title), checks \(pr.checksStatus), review \(pr.reviewStatus)")
+            .tint(ADEColor.accent)
+
+            if pr.state == "open" {
+              Button("Close", role: .destructive) {
+                Task {
+                  try? await syncService.closePullRequest(prId: pr.id)
+                  await reload(refreshRemote: true)
+                }
+              }
+            } else if pr.state == "closed" {
+              Button("Reopen") {
+                Task {
+                  try? await syncService.reopenPullRequest(prId: pr.id)
+                  await reload(refreshRemote: true)
+                }
+              }
+              .tint(ADEColor.success)
+            }
           }
+          .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
         }
       }
+      .listStyle(.plain)
       .scrollContentBackground(.hidden)
-      .background(ADEPalette.pageBackground.ignoresSafeArea())
+      .adeScreenBackground()
+      .adeNavigationGlass()
       .navigationTitle("PRs")
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
@@ -116,6 +147,7 @@ struct PRsTabView: View {
           }
         }
       }
+      .sensoryFeedback(.success, trigger: prs.count)
       .task {
         await reload(refreshRemote: true)
       }
@@ -155,32 +187,6 @@ struct PRsTabView: View {
     }
   }
 
-  private func checksTint(for status: String) -> Color {
-    switch status {
-    case "passing":
-      return ADEPalette.success
-    case "failing":
-      return ADEPalette.danger
-    case "pending":
-      return ADEPalette.warning
-    default:
-      return ADEPalette.textSecondary
-    }
-  }
-
-  private func reviewsTint(for status: String) -> Color {
-    switch status {
-    case "approved":
-      return ADEPalette.success
-    case "changes_requested":
-      return ADEPalette.danger
-    case "requested":
-      return ADEPalette.warning
-    default:
-      return ADEPalette.textSecondary
-    }
-  }
-
   private var statusNotice: ADENoticeCard? {
     switch prsStatus.phase {
     case .disconnected:
@@ -194,7 +200,7 @@ struct PRsTabView: View {
               ? "Cached PR state is still visible, but the previous host trust was cleared. Pair again before trusting review or checks state."
               : "Cached PR state is available. Reconnect before trusting review and check status from the host."),
         icon: "arrow.triangle.pull",
-        tint: ADEPalette.warning,
+        tint: ADEColor.warning,
         actionTitle: syncService.activeHostProfile == nil ? (needsRepairing ? "Pair again" : "Pair with host") : "Reconnect",
         action: {
           if syncService.activeHostProfile == nil {
@@ -212,7 +218,7 @@ struct PRsTabView: View {
         title: "Hydrating pull requests",
         message: "Refreshing PR summaries and cached snapshot detail so the phone does not show partial replicated state.",
         icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEPalette.accent,
+        tint: ADEColor.accent,
         actionTitle: nil,
         action: nil
       )
@@ -221,7 +227,7 @@ struct PRsTabView: View {
         title: "Syncing initial data",
         message: "Waiting for the host to finish syncing project data before PR hydration starts.",
         icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEPalette.warning,
+        tint: ADEColor.warning,
         actionTitle: nil,
         action: nil
       )
@@ -230,21 +236,93 @@ struct PRsTabView: View {
         title: "PR hydration failed",
         message: prsStatus.lastError ?? "The host PR state did not hydrate cleanly.",
         icon: "exclamationmark.triangle.fill",
-        tint: ADEPalette.danger,
+        tint: ADEColor.danger,
         actionTitle: "Retry",
         action: { Task { await reload(refreshRemote: true) } }
       )
     case .ready:
-      guard prs.isEmpty else { return nil }
-      return ADENoticeCard(
-        title: "No pull requests on this host",
-        message: "Open PRs will appear here once the host has GitHub-linked lane state to show.",
-        icon: "arrow.triangle.pull",
-        tint: ADEPalette.textSecondary,
-        actionTitle: nil,
-        action: nil
-      )
+      return nil
     }
+  }
+}
+
+private struct PrRowCard: View {
+  let pr: PrSummary
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .top, spacing: 8) {
+        Text(pr.title)
+          .font(.headline)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+        Spacer(minLength: 8)
+        Text("#\(pr.githubPrNumber)")
+          .font(.system(.caption, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      Text("\(pr.headBranch) → \(pr.baseBranch)")
+        .font(.system(.caption, design: .monospaced))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+      HStack(spacing: 8) {
+        ADEStatusPill(text: pr.checksStatus.uppercased(), tint: checksTint(for: pr.checksStatus))
+        ADEStatusPill(text: pr.reviewStatus.uppercased(), tint: reviewsTint(for: pr.reviewStatus))
+        Spacer()
+        Text("+\(pr.additions) -\(pr.deletions)")
+          .font(.system(.caption2, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("PR \(pr.githubPrNumber): \(pr.title), checks \(pr.checksStatus), review \(pr.reviewStatus)")
+  }
+
+  private func checksTint(for status: String) -> Color {
+    switch status {
+    case "passing":
+      return ADEColor.success
+    case "failing":
+      return ADEColor.danger
+    case "pending":
+      return ADEColor.warning
+    default:
+      return ADEColor.textSecondary
+    }
+  }
+
+  private func reviewsTint(for status: String) -> Color {
+    switch status {
+    case "approved":
+      return ADEColor.success
+    case "changes_requested":
+      return ADEColor.danger
+    case "requested":
+      return ADEColor.warning
+    default:
+      return ADEColor.textSecondary
+    }
+  }
+}
+
+private struct PrDetailSectionCard<Content: View>: View {
+  let title: String
+  let content: Content
+
+  init(_ title: String, @ViewBuilder content: () -> Content) {
+    self.title = title
+    self.content = content()
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(title)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      content
+    }
+    .adeGlassCard(cornerRadius: 18)
   }
 }
 
@@ -261,142 +339,182 @@ private struct PrDetailView: View {
   }
 
   var body: some View {
-    List {
-      if let errorMessage {
-        ADENoticeCard(
-          title: "PR detail failed",
-          message: errorMessage,
-          icon: "exclamationmark.triangle.fill",
-          tint: ADEPalette.danger,
-          actionTitle: "Retry",
-          action: { Task { await reload(refreshRemote: true) } }
-        )
-        .listRowBackground(Color.clear)
-      }
-
-      Section("Summary") {
-        Text(snapshot?.detail?.body ?? pr.title)
-        if let status = snapshot?.status {
-          Label(status.isMergeable ? "Mergeable" : "Not mergeable", systemImage: status.isMergeable ? "checkmark.circle" : "xmark.circle")
-          Text("Checks: \(status.checksStatus) · Reviews: \(status.reviewStatus)")
-            .foregroundStyle(.secondary)
-        }
-        if let detail = snapshot?.detail {
-          Text("Author: \(detail.author.login)")
-            .foregroundStyle(.secondary)
-          if !detail.requestedReviewers.isEmpty {
-            Text("Requested reviewers: \(detail.requestedReviewers.map(\.login).joined(separator: ", "))")
-              .foregroundStyle(.secondary)
-          }
-          if let milestone = detail.milestone, !milestone.isEmpty {
-            Text("Milestone: \(milestone)")
-              .foregroundStyle(.secondary)
-          }
-        }
-      }
-
-      Section("Actions") {
-        if actionAvailability.showsMerge {
-          Button("Merge (squash)") {
-            Task {
-              try? await syncService.mergePullRequest(prId: pr.id, method: "squash")
-              await reload(refreshRemote: true)
-            }
-          }
-          .disabled(!actionAvailability.mergeEnabled)
+    ScrollView {
+      LazyVStack(spacing: 14) {
+        if let errorMessage {
+          ADENoticeCard(
+            title: "PR detail failed",
+            message: errorMessage,
+            icon: "exclamationmark.triangle.fill",
+            tint: ADEColor.danger,
+            actionTitle: "Retry",
+            action: { Task { await reload(refreshRemote: true) } }
+          )
         }
 
-        if actionAvailability.showsClose {
-          Button("Close PR", role: .destructive) {
-            Task {
-              try? await syncService.closePullRequest(prId: pr.id)
-              await reload(refreshRemote: true)
-            }
-          }
-        }
-
-        if actionAvailability.showsReopen {
-          Button("Reopen PR") {
-            Task {
-              try? await syncService.reopenPullRequest(prId: pr.id)
-              await reload(refreshRemote: true)
-            }
-          }
-        }
-
-        if actionAvailability.showsRequestReviewers {
-          TextField("Request reviewers (comma-separated)", text: $reviewerInput)
-          Button("Request review") {
-            let reviewers = reviewerInput
-              .split(separator: ",")
-              .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-              .filter { !$0.isEmpty }
-            Task {
-              try? await syncService.requestReviewers(prId: pr.id, reviewers: reviewers)
-              await reload(refreshRemote: true)
-            }
-          }
-          .disabled(reviewerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-
-        if !actionAvailability.showsMerge && !actionAvailability.showsClose && !actionAvailability.showsReopen && !actionAvailability.showsRequestReviewers {
-          Text("No baseline PR actions are available for this state on iPhone.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-      }
-
-      Section("Checks") {
-        ForEach(snapshot?.checks ?? []) { check in
-          VStack(alignment: .leading) {
-            Text(check.name)
-            Text("\(check.status) · \(check.conclusion ?? "pending")")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-          }
-        }
-      }
-
-      Section("Reviews") {
-        ForEach(snapshot?.reviews ?? []) { review in
-          VStack(alignment: .leading) {
-            Text(review.reviewer)
-            Text(review.state)
-              .font(.caption)
-              .foregroundStyle(.secondary)
-            if let body = review.body, !body.isEmpty {
-              Text(body)
+        PrDetailSectionCard("Summary") {
+          VStack(alignment: .leading, spacing: 8) {
+            Text(snapshot?.detail?.body ?? pr.title)
+              .foregroundStyle(ADEColor.textPrimary)
+            if let status = snapshot?.status {
+              Label(status.isMergeable ? "Mergeable" : "Not mergeable", systemImage: status.isMergeable ? "checkmark.circle" : "xmark.circle")
+                .foregroundStyle(status.isMergeable ? ADEColor.success : ADEColor.danger)
+              Text("Checks: \(status.checksStatus) · Reviews: \(status.reviewStatus)")
                 .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            if let detail = snapshot?.detail {
+              Text("Author: \(detail.author.login)")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+              if !detail.requestedReviewers.isEmpty {
+                Text("Requested reviewers: \(detail.requestedReviewers.map(\.login).joined(separator: ", "))")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+              }
+              if let milestone = detail.milestone, !milestone.isEmpty {
+                Text("Milestone: \(milestone)")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+              }
+            }
+          }
+        }
+
+        PrDetailSectionCard("Actions") {
+          VStack(alignment: .leading, spacing: 10) {
+            if actionAvailability.showsMerge {
+              Button("Merge (squash)") {
+                Task {
+                  try? await syncService.mergePullRequest(prId: pr.id, method: "squash")
+                  await reload(refreshRemote: true)
+                }
+              }
+              .buttonStyle(.glassProminent)
+              .tint(ADEColor.accent)
+              .disabled(!actionAvailability.mergeEnabled)
+            }
+
+            if actionAvailability.showsClose {
+              Button("Close PR", role: .destructive) {
+                Task {
+                  try? await syncService.closePullRequest(prId: pr.id)
+                  await reload(refreshRemote: true)
+                }
+              }
+              .buttonStyle(.glass)
+            }
+
+            if actionAvailability.showsReopen {
+              Button("Reopen PR") {
+                Task {
+                  try? await syncService.reopenPullRequest(prId: pr.id)
+                  await reload(refreshRemote: true)
+                }
+              }
+              .buttonStyle(.glass)
+            }
+
+            if actionAvailability.showsRequestReviewers {
+              TextField("Request reviewers (comma-separated)", text: $reviewerInput)
+                .adeInsetField()
+              Button("Request review") {
+                let reviewers = reviewerInput
+                  .split(separator: ",")
+                  .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                  .filter { !$0.isEmpty }
+                Task {
+                  try? await syncService.requestReviewers(prId: pr.id, reviewers: reviewers)
+                  await reload(refreshRemote: true)
+                }
+              }
+              .buttonStyle(.glass)
+              .disabled(reviewerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if !actionAvailability.showsMerge && !actionAvailability.showsClose && !actionAvailability.showsReopen && !actionAvailability.showsRequestReviewers {
+              Text("No baseline PR actions are available for this state on iPhone.")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+          }
+        }
+
+        if let checks = snapshot?.checks, !checks.isEmpty {
+          PrDetailSectionCard("Checks") {
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(checks) { check in
+                VStack(alignment: .leading, spacing: 4) {
+                  Text(check.name)
+                    .foregroundStyle(ADEColor.textPrimary)
+                  Text("\(check.status) · \(check.conclusion ?? "pending")")
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+              }
+            }
+          }
+        }
+
+        if let reviews = snapshot?.reviews, !reviews.isEmpty {
+          PrDetailSectionCard("Reviews") {
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(reviews) { review in
+                VStack(alignment: .leading, spacing: 4) {
+                  Text(review.reviewer)
+                    .foregroundStyle(ADEColor.textPrimary)
+                  Text(review.state)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                  if let body = review.body, !body.isEmpty {
+                    Text(body)
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textSecondary)
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if let comments = snapshot?.comments, !comments.isEmpty {
+          PrDetailSectionCard("Comments") {
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(comments) { comment in
+                VStack(alignment: .leading, spacing: 4) {
+                  Text(comment.author)
+                    .font(.headline)
+                    .foregroundStyle(ADEColor.textPrimary)
+                  Text(comment.body ?? "")
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+              }
+            }
+          }
+        }
+
+        if let files = snapshot?.files, !files.isEmpty {
+          PrDetailSectionCard("Files") {
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(files) { file in
+                VStack(alignment: .leading, spacing: 6) {
+                  Text(file.filename)
+                    .font(.headline)
+                    .foregroundStyle(ADEColor.textPrimary)
+                  Text(file.patch ?? "No patch available")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+              }
             }
           }
         }
       }
-
-      Section("Comments") {
-        ForEach(snapshot?.comments ?? []) { comment in
-          VStack(alignment: .leading, spacing: 4) {
-            Text(comment.author)
-              .font(.headline)
-            Text(comment.body ?? "")
-              .font(.caption)
-          }
-        }
-      }
-
-      Section("Files") {
-        ForEach(snapshot?.files ?? []) { file in
-          VStack(alignment: .leading, spacing: 6) {
-            Text(file.filename)
-              .font(.headline)
-            Text(file.patch ?? "No patch available")
-              .font(.caption.monospaced())
-              .foregroundStyle(.secondary)
-          }
-        }
-      }
+      .padding(16)
     }
-    .scrollContentBackground(.hidden)
-    .background(ADEPalette.pageBackground.ignoresSafeArea())
+    .adeScreenBackground()
+    .adeNavigationGlass()
     .navigationTitle(pr.title)
     .task {
       await reload(refreshRemote: true)
@@ -432,18 +550,33 @@ private struct CreatePrView: View {
 
   var body: some View {
     NavigationStack {
-      Form {
-        Picker("Lane", selection: $selectedLaneId) {
-          ForEach(lanes) { lane in
-            Text(lane.name).tag(lane.id)
+      List {
+        VStack(spacing: 10) {
+          Picker("Lane", selection: $selectedLaneId) {
+            ForEach(lanes) { lane in
+              Text(lane.name).tag(lane.id)
+            }
           }
+          .pickerStyle(.menu)
+          .adeInsetField()
+
+          TextField("Title", text: $title)
+            .adeInsetField()
+
+          TextField("Body", text: $bodyText, axis: .vertical)
+            .adeInsetField(cornerRadius: 14, padding: 12)
+
+          TextField("Reviewers (comma-separated)", text: $reviewers)
+            .adeInsetField()
         }
-        TextField("Title", text: $title)
-        TextField("Body", text: $bodyText, axis: .vertical)
-        TextField("Reviewers (comma-separated)", text: $reviewers)
+        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
       }
+      .listStyle(.plain)
       .scrollContentBackground(.hidden)
-      .background(ADEPalette.pageBackground.ignoresSafeArea())
+      .adeScreenBackground()
+      .adeNavigationGlass()
       .navigationTitle("Create PR")
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -458,6 +591,7 @@ private struct CreatePrView: View {
               reviewers.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             )
           }
+          .buttonStyle(.glassProminent)
           .disabled(title.isEmpty || (selectedLaneId.isEmpty && lanes.isEmpty))
         }
       }
