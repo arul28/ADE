@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-08
+> Last updated: 2026-03-24
 
 ---
 
@@ -132,7 +132,7 @@ The left pane is a scrollable list of all active lanes for the current project.
 
 **Stack graph** (bottom of left pane): A lightweight visual representation of parent-child lane relationships (including clear connections back to the Primary lane). A one-click “Open canvas” action jumps to the full Workspace Graph for deeper exploration.
 
-**Create Lane button**: Opens a dialog to create a new lane. The user provides a name and optionally selects a parent lane (for stacking) and a base ref.
+**Create Lane button**: Opens a dropdown menu offering "Create new lane" or "Add existing worktree as lane". Both options open a dialog built on the shared `LaneDialogShell` component. The create dialog lets the user choose a name, optional template, and starting point (from primary with a base branch selector, or as a child of an existing lane). The attach dialog accepts a lane name and an absolute worktree path.
 
 ### Center Pane — Lane Detail Area
 
@@ -264,7 +264,7 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 
 | Service | Responsibility |
 |---------|---------------|
-| `laneService` | CRUD operations for lanes. Creates/removes worktrees via git. Computes lane status by aggregating dirty state, ahead/behind, and other signals. Manages lane metadata in the database. Supports primary, worktree, and attached lane types. Provides rebase (recursive rebase), reparent, stack chain, and appearance management. |
+| `laneService` | CRUD operations for lanes. Creates/removes worktrees via git. Computes lane status by aggregating dirty state, ahead/behind, and other signals. Manages lane metadata in the database. Supports primary, worktree, and attached lane types. Provides rebase (recursive rebase with remote tracking branch resolution for primary parents, dirty-worktree guard), reparent, stack chain, and appearance management. |
 | `rebaseSuggestionService` | Monitors stacked lanes for parent-advanced state. Generates rebase suggestions with dismiss/defer lifecycle. Emits real-time suggestion events to the renderer. |
 | `gitService` | All git operations: stage, unstage, discard, commit, stash, fetch, sync (merge/rebase), push, conflict state detection (merge/rebase in-progress, continue, abort). Operates on a specified worktree path. Returns structured results with success/failure and output. |
 | `diffService` | Computes working tree diffs (unstaged changes) and index diffs (staged changes). Per-file diff content for the Monaco viewer. Handles binary file detection and large file truncation. |
@@ -297,7 +297,7 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 
 | Channel | Signature | Description |
 |---------|-----------|-------------|
-| `ade.lanes.rebaseStart` | `(args: RebaseStartArgs) => RebaseStartResult` | Rebase a lane (rebase onto parent), optionally recursive |
+| `ade.lanes.rebaseStart` | `(args: RebaseStartArgs) => RebaseStartResult` | Rebase a lane onto its parent. For primary parents, resolves the remote tracking branch (upstream or `origin/<branch>`) as the rebase target before falling back to the local HEAD. Refuses to rebase dirty worktrees. Optionally recursive. |
 | `ade.lanes.listRebaseSuggestions` | `() => RebaseSuggestion[]` | List lanes whose parent has advanced (rebase recommended) |
 | `ade.lanes.dismissRebaseSuggestion` | `(args: { laneId: string }) => void` | Dismiss a rebase suggestion for the current parent HEAD |
 | `ade.lanes.deferRebaseSuggestion` | `(args: { laneId: string; minutes: number }) => void` | Defer a rebase suggestion for N minutes |

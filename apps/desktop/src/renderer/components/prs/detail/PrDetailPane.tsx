@@ -287,7 +287,17 @@ function fileStatusLabel(status: string): string {
   return FILE_STATUS_LABELS[status] ?? "?";
 }
 
-function summarizeChecks(checks: PrCheck[]) {
+type ChecksSummary = {
+  passing: number;
+  failing: number;
+  pending: number;
+  total: number;
+  allChecksPassed: boolean;
+  someChecksFailing: boolean;
+  checksRunning: boolean;
+};
+
+function summarizeChecks(checks: PrCheck[]): ChecksSummary {
   const passing = checks.filter((check) => check.conclusion === "success").length;
   const failing = checks.filter((check) => check.conclusion === "failure").length;
   const pending = checks.filter((check) => check.status !== "completed").length;
@@ -300,6 +310,52 @@ function summarizeChecks(checks: PrCheck[]) {
     someChecksFailing: failing > 0,
     checksRunning: pending > 0,
   };
+}
+
+function getChecksRowVisuals(summary: ChecksSummary): { color: string; title: string; description: string } {
+  const { passing, pending, total, allChecksPassed, someChecksFailing, checksRunning } = summary;
+
+  if (allChecksPassed) {
+    return {
+      color: COLORS.success,
+      title: "All checks have passed",
+      description: `${passing} successful check${passing !== 1 ? "s" : ""}`,
+    };
+  }
+  if (someChecksFailing) {
+    return {
+      color: COLORS.danger,
+      title: "Some checks failing",
+      description: checksRunning
+        ? `${passing}/${total} checks passing, ${pending} still running`
+        : `${passing}/${total} checks passing`,
+    };
+  }
+  if (total === 0) {
+    return {
+      color: COLORS.textMuted,
+      title: "No checks",
+      description: "No status checks are required",
+    };
+  }
+  return {
+    color: COLORS.warning,
+    title: "Checks in progress",
+    description: `${pending} check${pending !== 1 ? "s" : ""} pending`,
+  };
+}
+
+function getChecksRowIcon(summary: ChecksSummary): React.ReactNode {
+  if (summary.allChecksPassed) {
+    return <CheckCircle size={18} weight="fill" style={{ color: COLORS.success, filter: "drop-shadow(0 0 4px rgba(34,197,94,0.4))" }} />;
+  }
+  if (summary.someChecksFailing) {
+    return <XCircle size={18} weight="fill" style={{ color: COLORS.danger, filter: "drop-shadow(0 0 4px rgba(239,68,68,0.4))" }} />;
+  }
+  if (summary.total === 0) {
+    return <CheckCircle size={18} weight="fill" style={{ color: COLORS.textMuted }} />;
+  }
+  return <CircleNotch size={18} className="animate-spin" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />;
 }
 
 // ---- Props ----
@@ -1108,7 +1164,9 @@ function OverviewTab(props: OverviewTabProps) {
   );
 
   // Checks summary
-  const { passing, pending, total: totalChecks, allChecksPassed, someChecksFailing, checksRunning } = summarizeChecks(checks);
+  const checksSummary = summarizeChecks(checks);
+  const { allChecksPassed, someChecksFailing, checksRunning } = checksSummary;
+  const checksRowVisuals = getChecksRowVisuals(checksSummary);
 
   // Review status from pr
   const reviewStatus = pr.reviewStatus;
@@ -1116,25 +1174,20 @@ function OverviewTab(props: OverviewTabProps) {
   // Merge readiness
   const canMerge = Boolean(status?.isMergeable) && !status?.mergeConflicts && pr.state === "open";
   const canAttemptBlockedMerge = Boolean(status) && !status?.isMergeable && !status?.mergeConflicts && pr.state === "open";
-  const mergeActionEnabled = canMerge || (allowBlockedMerge && canAttemptBlockedMerge);
+  const isBypassMerge = allowBlockedMerge && canAttemptBlockedMerge;
+  const mergeActionEnabled = canMerge || isBypassMerge;
   const mergeActionLabel = actionBusy
-    ? (allowBlockedMerge && canAttemptBlockedMerge ? "Attempting merge..." : "Merging...")
-    : (allowBlockedMerge && canAttemptBlockedMerge ? "Attempt merge anyway" : "Merge pull request");
-  const mergeActionBackground = canMerge
-    ? `linear-gradient(135deg, ${COLORS.success} 0%, #16a34a 100%)`
-    : allowBlockedMerge && canAttemptBlockedMerge
-      ? `linear-gradient(135deg, ${COLORS.warning} 0%, #d97706 100%)`
-      : COLORS.recessedBg;
-  const mergeActionBorderColor = canMerge
-    ? COLORS.success
-    : allowBlockedMerge && canAttemptBlockedMerge
-      ? COLORS.warning
-      : COLORS.border;
-  const mergeActionShadow = canMerge
-    ? `0 2px 16px ${COLORS.success}40, 0 0 0 1px ${COLORS.success}30`
-    : allowBlockedMerge && canAttemptBlockedMerge
-      ? `0 2px 16px ${COLORS.warning}35, 0 0 0 1px ${COLORS.warning}25`
-      : "none";
+    ? (isBypassMerge ? "Attempting merge..." : "Merging...")
+    : (isBypassMerge ? "Attempt merge anyway" : "Merge pull request");
+  // Derive merge button styling from the merge/bypass state in one place:
+  const mergeAccentColor = canMerge ? COLORS.success : isBypassMerge ? COLORS.warning : null;
+  const mergeActionBackground = mergeAccentColor
+    ? `linear-gradient(135deg, ${mergeAccentColor} 0%, ${canMerge ? "#16a34a" : "#d97706"} 100%)`
+    : COLORS.recessedBg;
+  const mergeActionBorderColor = mergeAccentColor ?? COLORS.border;
+  const mergeActionShadow = mergeAccentColor
+    ? `0 2px 16px ${mergeAccentColor}${canMerge ? "40" : "35"}, 0 0 0 1px ${mergeAccentColor}${canMerge ? "30" : "25"}`
+    : "none";
 
   React.useEffect(() => {
     if (!canAttemptBlockedMerge) {
@@ -1418,31 +1471,11 @@ function OverviewTab(props: OverviewTabProps) {
 
           {/* Checks status */}
           <MergeStatusRow
-            color={allChecksPassed ? COLORS.success : someChecksFailing ? COLORS.danger : checksRunning ? COLORS.warning : checks.length === 0 ? COLORS.textMuted : COLORS.warning}
-            icon={
-              allChecksPassed
-                ? <CheckCircle size={18} weight="fill" style={{ color: COLORS.success, filter: "drop-shadow(0 0 4px rgba(34,197,94,0.4))" }} />
-                : someChecksFailing
-                  ? <XCircle size={18} weight="fill" style={{ color: COLORS.danger, filter: "drop-shadow(0 0 4px rgba(239,68,68,0.4))" }} />
-                  : checksRunning
-                    ? <CircleNotch size={18} className="animate-spin" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />
-                    : checks.length === 0
-                      ? <CheckCircle size={18} weight="fill" style={{ color: COLORS.textMuted }} />
-                      : <CircleNotch size={18} className="animate-spin" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />
-            }
-            title={
-              allChecksPassed ? "All checks have passed"
-                : someChecksFailing ? "Some checks failing"
-                  : checksRunning ? "Checks in progress"
-                    : checks.length === 0 ? "No checks" : "Checks in progress"
-            }
+            color={checksRowVisuals.color}
+            icon={getChecksRowIcon(checksSummary)}
+            title={checksRowVisuals.title}
             titleAccessory={checksRunning ? <PrCiRunningIndicator showLabel label="running" /> : undefined}
-            description={
-              allChecksPassed ? `${passing} successful check${passing !== 1 ? "s" : ""}`
-                : someChecksFailing && checksRunning ? `${passing}/${totalChecks} checks passing, ${pending} still running`
-                  : someChecksFailing ? `${passing}/${totalChecks} checks passing`
-                  : checks.length === 0 ? "No status checks are required" : `${pending} check${pending !== 1 ? "s" : ""} pending`
-            }
+            description={checksRowVisuals.description}
             expandable={checks.length > 0}
             expanded={checksExpanded}
             onToggle={() => setChecksExpanded(!checksExpanded)}
@@ -1504,7 +1537,7 @@ function OverviewTab(props: OverviewTabProps) {
               style={{
                 padding: "16px",
                 borderTop: `1px solid ${COLORS.border}`,
-                background: canMerge ? `${COLORS.success}06` : allowBlockedMerge && canAttemptBlockedMerge ? `${COLORS.warning}06` : "transparent",
+                background: canMerge ? `${COLORS.success}06` : isBypassMerge ? `${COLORS.warning}06` : "transparent",
               }}
             >
               {/* Merge method selector */}

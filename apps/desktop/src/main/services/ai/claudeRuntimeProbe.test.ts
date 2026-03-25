@@ -14,11 +14,18 @@ const mockState = vi.hoisted(() => ({
       env: { ADE_PROJECT_ROOT: "/tmp/project" },
     },
   })),
-  resolveAdeMcpServerLaunch: vi.fn(() => ({
+  resolveDesktopAdeMcpLaunch: vi.fn(() => ({
+    mode: "headless_source",
     command: "node",
     cmdArgs: ["probe.js"],
     env: { ADE_PROJECT_ROOT: "/tmp/project" },
+    entryPath: "probe.js",
+    runtimeRoot: "/tmp/runtime",
+    socketPath: "/tmp/project/.ade/mcp.sock",
+    packaged: false,
+    resourcesPath: null,
   })),
+  resolveRepoRuntimeRoot: vi.fn(() => "/tmp/runtime"),
 }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
@@ -39,8 +46,9 @@ vi.mock("./providerResolver", () => ({
   normalizeCliMcpServers: mockState.normalizeCliMcpServers,
 }));
 
-vi.mock("../orchestrator/unifiedOrchestratorAdapter", () => ({
-  resolveAdeMcpServerLaunch: mockState.resolveAdeMcpServerLaunch,
+vi.mock("../runtime/adeMcpLaunch", () => ({
+  resolveDesktopAdeMcpLaunch: mockState.resolveDesktopAdeMcpLaunch,
+  resolveRepoRuntimeRoot: mockState.resolveRepoRuntimeRoot,
 }));
 
 let probeClaudeRuntimeHealth: typeof import("./claudeRuntimeProbe").probeClaudeRuntimeHealth;
@@ -68,7 +76,8 @@ beforeEach(async () => {
   mockState.reportProviderRuntimeFailure.mockReset();
   mockState.resolveClaudeCodeExecutable.mockClear();
   mockState.normalizeCliMcpServers.mockClear();
-  mockState.resolveAdeMcpServerLaunch.mockClear();
+  mockState.resolveDesktopAdeMcpLaunch.mockClear();
+  mockState.resolveRepoRuntimeRoot.mockClear();
   const mod = await import("./claudeRuntimeProbe");
   probeClaudeRuntimeHealth = mod.probeClaudeRuntimeHealth;
   resetClaudeRuntimeProbeCache = mod.resetClaudeRuntimeProbeCache;
@@ -152,5 +161,53 @@ describe("claudeRuntimeProbe", () => {
     expect(query.close).toHaveBeenCalledTimes(1);
     expect(mockState.reportProviderRuntimeAuthFailure).toHaveBeenCalledTimes(1);
     expect(mockState.reportProviderRuntimeFailure).not.toHaveBeenCalled();
+  });
+
+  it("calls resolveDesktopAdeMcpLaunch with defaultRole external and projectRoot", async () => {
+    const query = makeStream([
+      {
+        type: "result",
+        subtype: "success",
+        duration_ms: 50,
+        duration_api_ms: 50,
+        is_error: false,
+        num_turns: 1,
+        result: "ok",
+        session_id: "session-ok",
+        total_cost_usd: 0.001,
+        usage: {
+          input_tokens: 10,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          output_tokens: 5,
+          server_tool_use: { web_search_requests: 0 },
+          service_tier: "standard",
+        },
+      },
+    ]);
+    mockState.query.mockReturnValue(query.stream);
+
+    await probeClaudeRuntimeHealth({ projectRoot: "/my/custom/project", force: true });
+
+    expect(mockState.resolveDesktopAdeMcpLaunch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectRoot: "/my/custom/project",
+        workspaceRoot: "/my/custom/project",
+        defaultRole: "external",
+      }),
+    );
+    expect(mockState.resolveRepoRuntimeRoot).toHaveBeenCalled();
+    expect(mockState.reportProviderRuntimeReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports runtime-failed when the probe stream throws an error", async () => {
+    mockState.query.mockImplementation(() => {
+      throw new Error("spawn ENOENT");
+    });
+
+    await probeClaudeRuntimeHealth({ projectRoot: "/tmp/project", force: true });
+
+    expect(mockState.reportProviderRuntimeFailure).toHaveBeenCalledTimes(1);
+    expect(mockState.reportProviderRuntimeAuthFailure).not.toHaveBeenCalled();
   });
 });

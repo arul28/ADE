@@ -236,31 +236,30 @@ async function resolveParentRebaseTarget(args: {
     await fetchRemoteTrackingBranch({
       projectRoot,
       targetBranch: parent.branch_ref,
-    }).catch(() => false);
+    }).catch(() => {});
 
     const candidateRefs: string[] = [];
     const upstreamRes = await runGit(
       ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
       { cwd: parent.worktree_path, timeoutMs: 5_000 },
     );
-    if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
-      candidateRefs.push(upstreamRes.stdout.trim());
+    const upstreamRef = upstreamRes.exitCode === 0 ? upstreamRes.stdout.trim() : "";
+    if (upstreamRef) {
+      candidateRefs.push(upstreamRef);
     }
     const originRef = `origin/${parent.branch_ref}`;
     if (!candidateRefs.includes(originRef)) {
       candidateRefs.push(originRef);
     }
 
-    for (const candidateRef of candidateRefs) {
-      const candidateRes = await runGit(
-        ["rev-parse", "--verify", candidateRef],
+    for (const ref of candidateRefs) {
+      const res = await runGit(
+        ["rev-parse", "--verify", ref],
         { cwd: parent.worktree_path, timeoutMs: 5_000 },
       );
-      if (candidateRes.exitCode === 0 && candidateRes.stdout.trim()) {
-        return {
-          headSha: candidateRes.stdout.trim(),
-          label: candidateRef,
-        };
+      const sha = res.exitCode === 0 ? res.stdout.trim() : "";
+      if (sha) {
+        return { headSha: sha, label: ref };
       }
     }
   }

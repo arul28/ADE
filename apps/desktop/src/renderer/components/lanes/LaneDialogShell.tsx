@@ -21,14 +21,12 @@ export function LaneDialogShell({
   busy?: boolean;
   children: ReactNode;
 }) {
-  const widthClass = widthClassName ?? "w-[min(680px,calc(100vw-24px))]";
-
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
         <Dialog.Content
-          className={`fixed left-1/2 top-[14%] z-50 -translate-x-1/2 rounded-xl border border-white/[0.06] bg-bg/80 p-4 shadow-float backdrop-blur-xl focus:outline-none ${widthClass}`}
+          className={`fixed left-1/2 top-[14%] z-50 -translate-x-1/2 rounded-xl border border-white/[0.06] bg-bg/80 p-4 shadow-float backdrop-blur-xl focus:outline-none ${widthClassName ?? "w-[min(680px,calc(100vw-24px))]"}`}
         >
           <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
           <div className="mb-4 flex items-start justify-between gap-3">

@@ -141,6 +141,279 @@ describe("prPollingService", () => {
     expect(refresh).toHaveBeenLastCalledWith({ prIds: ["pr-1"] });
   });
 
+  it("emits review_requested notification with generic messaging", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let summary = createSummary({
+      title: "Add feature",
+      headBranch: "feature/add",
+      checksStatus: "passing",
+      reviewStatus: "none",
+    });
+    let refreshCount = 0;
+    const events: any[] = [];
+
+    const prService = {
+      listAll: () => [summary],
+      refresh: vi.fn(async () => {
+        refreshCount += 1;
+        if (refreshCount >= 2) {
+          summary = {
+            ...summary,
+            reviewStatus: "requested" as const,
+            updatedAt: new Date(Date.now()).toISOString(),
+          };
+        }
+        return [summary];
+      }),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "pr-notification",
+      kind: "review_requested",
+      title: "Review requested",
+      message: "This pull request is waiting on an approving review.",
+      prTitle: "Add feature",
+      repoOwner: "acme",
+      repoName: "ade",
+      baseBranch: "main",
+      headBranch: "feature/add",
+    }));
+  });
+
+  it("emits changes_requested notification with generic messaging", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let summary = createSummary({
+      title: "Refactor module",
+      headBranch: "refactor/module",
+      checksStatus: "passing",
+      reviewStatus: "requested",
+    });
+    let refreshCount = 0;
+    const events: any[] = [];
+
+    const prService = {
+      listAll: () => [summary],
+      refresh: vi.fn(async () => {
+        refreshCount += 1;
+        if (refreshCount >= 2) {
+          summary = {
+            ...summary,
+            reviewStatus: "changes_requested" as const,
+            updatedAt: new Date(Date.now()).toISOString(),
+          };
+        }
+        return [summary];
+      }),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "pr-notification",
+      kind: "changes_requested",
+      title: "Changes requested",
+      message: "A reviewer requested changes before this pull request can merge.",
+      prTitle: "Refactor module",
+      repoOwner: "acme",
+      repoName: "ade",
+    }));
+  });
+
+  it("emits merge_ready notification when checks pass and review is approved", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let summary = createSummary({
+      title: "Ready PR",
+      headBranch: "feature/ready",
+      checksStatus: "pending",
+      reviewStatus: "approved",
+    });
+    let refreshCount = 0;
+    const events: any[] = [];
+
+    const prService = {
+      listAll: () => [summary],
+      refresh: vi.fn(async () => {
+        refreshCount += 1;
+        if (refreshCount >= 2) {
+          summary = {
+            ...summary,
+            checksStatus: "passing" as const,
+            updatedAt: new Date(Date.now()).toISOString(),
+          };
+        }
+        return [summary];
+      }),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "pr-notification",
+      kind: "merge_ready",
+      title: "Checks passing & approved",
+      message: expect.stringContaining("Required checks are passing"),
+      prTitle: "Ready PR",
+      repoOwner: "acme",
+      repoName: "ade",
+      baseBranch: "main",
+      headBranch: "feature/ready",
+    }));
+  });
+
+  it("notification title no longer includes the PR number", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let summary = createSummary({
+      githubPrNumber: 999,
+      checksStatus: "passing",
+      reviewStatus: "none",
+    });
+    let refreshCount = 0;
+    const events: any[] = [];
+
+    const prService = {
+      listAll: () => [summary],
+      refresh: vi.fn(async () => {
+        refreshCount += 1;
+        if (refreshCount >= 2) {
+          summary = {
+            ...summary,
+            checksStatus: "failing" as const,
+            updatedAt: new Date(Date.now()).toISOString(),
+          };
+        }
+        return [summary];
+      }),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const notification = events.find((e) => e.type === "pr-notification" && e.kind === "checks_failing");
+    expect(notification, "Expected a checks_failing notification to be emitted").toBeTruthy();
+    // Title should NOT contain #999 any more
+    expect(notification.title).not.toContain("#999");
+    expect(notification.title).toBe("Checks failing");
+  });
+
+  it("includes onPullRequestsChanged hook with changed PRs details", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let summary = createSummary({
+      checksStatus: "passing",
+      reviewStatus: "approved",
+    });
+    let refreshCount = 0;
+    const changedCalls: any[] = [];
+
+    const prService = {
+      listAll: () => [summary],
+      refresh: vi.fn(async () => {
+        refreshCount += 1;
+        if (refreshCount >= 2) {
+          summary = {
+            ...summary,
+            checksStatus: "failing" as const,
+            updatedAt: new Date(Date.now()).toISOString(),
+          };
+        }
+        return [summary];
+      }),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: () => {},
+      onPullRequestsChanged: (args) => { changedCalls.push(args); },
+    });
+
+    service.start();
+    // First tick initializes
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(changedCalls).toHaveLength(0);
+
+    // Second tick has changed data
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(changedCalls).toHaveLength(1);
+    expect(changedCalls[0].changedPrs).toHaveLength(1);
+    expect(changedCalls[0].changes[0]).toEqual(expect.objectContaining({
+      previousChecksStatus: "passing",
+    }));
+    expect(changedCalls[0].changes[0].pr.checksStatus).toBe("failing");
+  });
+
   it("emits informative PR notifications with PR metadata", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));

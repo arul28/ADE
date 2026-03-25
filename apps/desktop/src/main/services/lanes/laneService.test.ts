@@ -127,9 +127,6 @@ describe("laneService rebaseStart", () => {
           resolveRebase = resolve;
         });
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
-        return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
-      }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
 
@@ -211,5 +208,360 @@ describe("laneService rebaseStart", () => {
     expect(result.run.error).toBeNull();
     expect(result.run.lanes[0]?.status).toBe("succeeded");
     expect(vi.mocked(runGitOrThrow)).toHaveBeenCalled();
+  });
+
+  it("falls back to origin/<branch_ref> when upstream is not configured for primary parent", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-origin-fallback-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-origin-fallback", repoRoot });
+    const logs: string[] = [];
+
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/parent")) return "sha-parent";
+      return "sha-main";
+    });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      // upstream detection fails (no upstream configured)
+      if (
+        args[0] === "rev-parse"
+        && args[1] === "--abbrev-ref"
+        && args[2] === "--symbolic-full-name"
+        && args[3] === "@{upstream}"
+      ) {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
+      }
+      // origin/main exists and resolves
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        expect(args[2]).toBe("sha-origin-main");
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rebase") {
+        expect(args[1]).toBe("sha-origin-main");
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-origin-fallback",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+      onRebaseEvent: (event) => {
+        if (event.type === "rebase-run-log") logs.push(event.message);
+      },
+    });
+
+    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+
+    expect(result.run.state).toBe("completed");
+    expect(result.run.lanes[0]?.status).toBe("succeeded");
+    // The log should show the parentTargetLabel format "Main (origin/main)"
+    const rebaseLog = logs.find((line) => line.includes("Rebasing"));
+    expect(rebaseLog, "expected a 'Rebasing' log entry").toBeTruthy();
+    expect(rebaseLog).toContain("Main (origin/main)");
+  });
+
+  it("falls back to parent HEAD when both upstream and origin ref are unavailable for primary parent", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-all-remote-fail-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-all-remote-fail", repoRoot });
+    const logs: string[] = [];
+
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/parent")) return "sha-parent-local";
+      if (cwd.endsWith("/main")) return "sha-main-local";
+      return "sha-main";
+    });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      // upstream detection fails
+      if (
+        args[0] === "rev-parse"
+        && args[1] === "--abbrev-ref"
+        && args[2] === "--symbolic-full-name"
+        && args[3] === "@{upstream}"
+      ) {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      // origin/main also fails to resolve
+      if (args[0] === "rev-parse" && args[1] === "--verify") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: not a valid ref" };
+      }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        // parent local HEAD is used instead
+        expect(args[2]).toBe("sha-main-local");
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rebase") {
+        expect(args[1]).toBe("sha-main-local");
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-all-remote-fail",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+      onRebaseEvent: (event) => {
+        if (event.type === "rebase-run-log") logs.push(event.message);
+      },
+    });
+
+    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+
+    expect(result.run.state).toBe("completed");
+    expect(result.run.lanes[0]?.status).toBe("succeeded");
+    // When label === parent.name, describeParentRebaseTarget returns just the name
+    const rebaseLog = logs.find((line) => line.includes("Rebasing"));
+    expect(rebaseLog, "expected a 'Rebasing' log entry").toBeTruthy();
+    expect(rebaseLog).toContain("onto Main (sha-main");
+  });
+
+  it("uses parent HEAD directly for non-primary (worktree) parent without remote resolution", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-worktree-parent-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-worktree-parent", repoRoot });
+    const logs: string[] = [];
+
+    // lane-child has parent lane-parent (which is lane_type=worktree, not primary)
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/parent")) return "sha-parent-head";
+      if (cwd.endsWith("/child")) return "sha-child-head";
+      return "sha-main";
+    });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      // For a worktree parent, resolveParentRebaseTarget should NOT call
+      // rev-parse for upstream or origin refs. It goes straight to getHeadSha.
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
+        throw new Error("Should not resolve upstream for non-primary parent");
+      }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        expect(args[2]).toBe("sha-parent-head");
+        expect(args[3]).toBe("sha-child-head");
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rebase") {
+        expect(args[1]).toBe("sha-parent-head");
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-worktree-parent",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+      onRebaseEvent: (event) => {
+        if (event.type === "rebase-run-log") logs.push(event.message);
+      },
+    });
+
+    const result = await service.rebaseStart({ laneId: "lane-child", scope: "lane_only", actor: "user" });
+
+    expect(result.run.state).toBe("completed");
+    expect(result.run.lanes[0]?.status).toBe("succeeded");
+    // For worktree parent, the label is the parent name itself, so no parenthesized ref
+    const rebaseLog = logs.find((line) => line.includes("Rebasing"));
+    expect(rebaseLog, "expected a 'Rebasing' log entry").toBeTruthy();
+    // parentHead.slice(0, 8) truncates the sha, so check substring
+    expect(rebaseLog).toContain("onto Parent (sha-pare");
+    expect(rebaseLog).not.toContain("origin/");
+  });
+
+  it("fails the rebase run when resolveParentRebaseTarget throws (parent HEAD unresolvable)", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-unresolvable-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-unresolvable", repoRoot });
+
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    // getHeadSha returns null for the primary parent, simulating an unresolvable HEAD
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/parent")) return "sha-parent";
+      if (cwd.endsWith("/main")) return null;
+      return null;
+    });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      // All remote resolution attempts fail
+      if (args[0] === "rev-parse") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: not found" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-unresolvable",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+
+    expect(result.run.state).toBe("failed");
+    expect(result.run.error).toContain("Unable to resolve parent HEAD for Main");
+    expect(result.run.lanes[0]?.status).toBe("blocked");
+  });
+
+  it("includes parentTargetLabel in skip log when already up to date with a remote ref", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-skip-label-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-skip-label", repoRoot });
+    const logs: string[] = [];
+
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/parent")) return "sha-parent";
+      return "sha-main";
+    });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (
+        args[0] === "rev-parse"
+        && args[1] === "--abbrev-ref"
+        && args[2] === "--symbolic-full-name"
+        && args[3] === "@{upstream}"
+      ) {
+        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        // Already an ancestor => skip
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-skip-label",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+      onRebaseEvent: (event) => {
+        if (event.type === "rebase-run-log") logs.push(event.message);
+      },
+    });
+
+    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+
+    expect(result.run.state).toBe("completed");
+    expect(result.run.lanes[0]?.status).toBe("skipped");
+    const skipLog = logs.find((line) => line.includes("already up to date"));
+    expect(skipLog, "expected an 'already up to date' log entry").toBeTruthy();
+    expect(skipLog).toContain("Main (origin/main)");
+  });
+
+  it("fails the rebase run when the worktree has uncommitted changes", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-dirty-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-dirty", repoRoot });
+    const logs: string[] = [];
+
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/parent")) return "sha-parent";
+      if (cwd.endsWith("/child")) return "sha-child";
+      return "sha-main";
+    });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        // Worktree is dirty
+        return { exitCode: 0, stdout: " M src/file.ts\n", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-dirty",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+      onRebaseEvent: (event) => {
+        if (event.type === "rebase-run-log") logs.push(event.message);
+      },
+    });
+
+    const result = await service.rebaseStart({ laneId: "lane-child", scope: "lane_only", actor: "user" });
+
+    expect(result.run.state).toBe("failed");
+    expect(result.run.error).toContain("uncommitted changes");
+    expect(result.run.lanes[0]?.status).toBe("blocked");
+    const dirtyLog = logs.find((line) => line.includes("dirty"));
+    expect(dirtyLog, "expected a dirty worktree log entry").toBeTruthy();
+  });
+
+  it("uses deduplicated candidate refs when upstream equals origin/<branch_ref>", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-dedup-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-dedup", repoRoot });
+
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/parent")) return "sha-parent";
+      return "sha-main";
+    });
+
+    const revParseVerifyCalls: string[] = [];
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (
+        args[0] === "rev-parse"
+        && args[1] === "--abbrev-ref"
+        && args[2] === "--symbolic-full-name"
+        && args[3] === "@{upstream}"
+      ) {
+        // upstream IS origin/main, matching the fallback origin/<branch_ref>
+        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify") {
+        revParseVerifyCalls.push(args[2] ?? "");
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-dedup",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+
+    expect(result.run.state).toBe("completed");
+    // When upstream is already origin/main, it should NOT add origin/main twice
+    // to candidateRefs. So only one rev-parse --verify call should happen.
+    expect(revParseVerifyCalls).toHaveLength(1);
+    expect(revParseVerifyCalls[0]).toBe("origin/main");
   });
 });

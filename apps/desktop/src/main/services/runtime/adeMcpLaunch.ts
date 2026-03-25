@@ -91,15 +91,8 @@ export function resolveRepoRuntimeRoot(): string {
 function buildLaunchEnv(args: {
   projectRoot: string;
   workspaceRoot: string;
-  missionId?: string;
-  runId?: string;
-  stepId?: string;
-  attemptId?: string;
-  defaultRole?: string;
-  ownerId?: string;
   socketPath: string;
-  computerUsePolicy?: ComputerUsePolicy | null;
-}): Record<string, string> {
+} & Pick<AdeMcpLaunchArgs, "missionId" | "runId" | "stepId" | "attemptId" | "defaultRole" | "ownerId" | "computerUsePolicy">): Record<string, string> {
   return {
     ADE_PROJECT_ROOT: args.projectRoot,
     ADE_WORKSPACE_ROOT: args.workspaceRoot,

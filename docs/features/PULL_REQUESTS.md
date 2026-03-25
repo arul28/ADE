@@ -98,6 +98,26 @@ That is the main reason the normal PR and GitHub views feel less heavy than befo
 
 ---
 
+## Merge bypass for blocked PRs
+
+When GitHub reports a PR as not mergeable (e.g. due to branch protection rules), ADE now offers an explicit opt-in to attempt the merge anyway. This covers cases where the user's account has permission to bypass branch protection requirements even though the GitHub API reports `isMergeable: false`.
+
+The UI surfaces a checkbox in the merge action area when the PR is open, has no merge conflicts, but is flagged as not mergeable. Checking it enables the merge button in a warning state. The merge request still goes through the normal GitHub merge API — GitHub itself decides whether the bypass is allowed.
+
+---
+
+## CI running indicator
+
+PR list rows (Normal tab, GitHub tab) and the PR detail merge readiness panel now show a spinning indicator when CI checks are still running. The `PrCiRunningIndicator` component lives in `prVisuals.tsx` and supports both icon-only and labeled variants. The detail pane's check status row also uses it as a title accessory.
+
+---
+
+## PR notifications
+
+Notification messages emitted by the polling service are now generic (not PR-specific) to work better as system notifications. The title no longer includes the PR number. The event payload now includes `prTitle`, `repoOwner`, `repoName`, `baseBranch`, and `headBranch` fields so consumers can format context-aware messages themselves.
+
+---
+
 ## Current product contract
 
 The current PR experience follows these rules:
@@ -107,6 +127,7 @@ The current PR experience follows these rules:
 - load workflow state only when the user is actually in a workflow view
 - never auto-run expensive integration simulation just from tab selection
 - make GitHub revisits warm through layered caching
+- include rebase needs and auto-rebase statuses in the main refresh batch
 
 That preserves the full PR feature set while keeping the common browse-and-review path much cheaper.
 
@@ -145,6 +166,8 @@ The PR service exposes review thread data through a dedicated GraphQL-backed `ge
 ### Queue-aware rebase
 
 Rebase suggestions for queued PRs are now queue-aware. The conflict service calls `fetchQueueTargetTrackingBranches()` before scanning rebase needs, then uses `resolveQueueRebaseOverride()` per lane to determine the correct comparison ref. When a lane belongs to an active merge queue, the rebase targets the queue's tracking branch rather than the lane's static base branch. Queue group context is propagated into the rebase need for display in the rebase UI. AI-assisted rebase (`rebaseLane`) also respects the queue override, and the rebase request now accepts `modelId`, `reasoningEffort`, and `permissionMode` parameters for finer control over the AI rebase agent.
+
+For non-queued stacked lanes, the conflict service now uses `resolveLaneRebaseTarget()` to determine the comparison ref. When the parent lane is a primary lane, the comparison ref resolves to `origin/<branch>` (the remote tracking branch) rather than the local HEAD. This keeps conflict prediction and rebase suggestions consistent with the lane service's own rebase behavior, which targets the remote tracking branch for primary parents.
 
 ---
 

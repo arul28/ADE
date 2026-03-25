@@ -4,13 +4,7 @@ import type { LaneSummary, LaneEnvInitProgress, LaneTemplate } from "../../../sh
 import type { LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
-
-const SECTION_CLASS_NAME = "rounded-xl border border-white/[0.06] bg-white/[0.03] p-4 shadow-card";
-const LABEL_CLASS_NAME = "text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70";
-const INPUT_CLASS_NAME =
-  "mt-2 h-11 w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 text-sm text-fg outline-none transition-colors placeholder:text-muted-fg/45 focus:border-accent/40";
-const SELECT_CLASS_NAME =
-  "mt-2 h-11 w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 text-sm text-fg outline-none transition-colors focus:border-accent/40";
+import { SECTION_CLASS_NAME, LABEL_CLASS_NAME, INPUT_CLASS_NAME, SELECT_CLASS_NAME } from "./laneDialogTokens";
 
 function buttonLabel(busy: boolean | undefined, createAsChild: boolean, parentLaneId: string, baseBranch: string): string {
   if (busy) return "Setting up lane...";
@@ -247,7 +241,7 @@ export function CreateLaneDialog({
           </Button>
           <Button
             variant="primary"
-            disabled={busy || !createLaneName.trim().length || (createAsChild && !createParentLaneId)}
+            disabled={busy || !createLaneName.trim() || (createAsChild && !createParentLaneId)}
             onClick={onSubmit}
           >
             {buttonLabel(busy, createAsChild, createParentLaneId, createBaseBranch)}

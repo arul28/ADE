@@ -337,20 +337,15 @@ export function useLaneWorkSessions(laneId: string | null) {
       title?: string;
       startupCommand?: string;
     }) => {
-      const toolTypeMap = {
-        claude: "claude" as const,
-        codex: "codex" as const,
-        shell: "shell" as const,
-      };
-      const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
-      const commandMap = { claude: "claude", codex: "codex", shell: "" };
+      const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" } as const;
+      const commandMap = { claude: "claude", codex: "codex", shell: "" } as const;
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,
         rows: 30,
         title: args.title ?? titleMap[args.profile],
         tracked: args.tracked ?? true,
-        toolType: toolTypeMap[args.profile],
+        toolType: args.profile,
         startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
       });
       selectLane(args.laneId);

@@ -135,6 +135,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
   const [prToasts, setPrToasts] = useState<PrToast[]>([]);
   const toastTimersRef = useRef<Map<string, number>>(new Map());
+  const dismissPrToast = (id: string) => {
+    setPrToasts((prev) => prev.filter((t) => t.id !== id));
+    const timer = toastTimersRef.current.get(id);
+    if (timer != null) window.clearTimeout(timer);
+    toastTimersRef.current.delete(id);
+  };
   const [linearWorkflowToasts, setLinearWorkflowToasts] = useState<LinearWorkflowToast[]>([]);
   const linearToastTimersRef = useRef<Map<string, number>>(new Map());
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
@@ -703,12 +709,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           <button
                             type="button"
                             className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-                            onClick={() => {
-                              setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
-                              const timer = toastTimersRef.current.get(toast.id);
-                              if (timer != null) window.clearTimeout(timer);
-                              toastTimersRef.current.delete(toast.id);
-                            }}
+                            onClick={() => dismissPrToast(toast.id)}
                             title="Dismiss"
                           >
                             ×
@@ -736,10 +737,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                               selectLane(toast.event.laneId);
                               setLaneInspectorTab(toast.event.laneId, "merge");
                               window.location.hash = `#/lanes?laneId=${encodeURIComponent(toast.event.laneId)}&focus=single&inspectorTab=merge`;
-                              setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
-                              const timer = toastTimersRef.current.get(toast.id);
-                              if (timer != null) window.clearTimeout(timer);
-                              toastTimersRef.current.delete(toast.id);
+                              dismissPrToast(toast.id);
                             }}
                           >
                             <GitPullRequest size={12} />
@@ -753,10 +751,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             )}
                             onClick={() => {
                               void window.ade.prs.openInGitHub(toast.event.prId).catch(() => { });
-                              setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
-                              const timer = toastTimersRef.current.get(toast.id);
-                              if (timer != null) window.clearTimeout(timer);
-                              toastTimersRef.current.delete(toast.id);
+                              dismissPrToast(toast.id);
                             }}
                           >
                             <ArrowSquareOut size={12} />

@@ -17,29 +17,29 @@ function jitterMs(value: number): number {
   return Math.max(1000, Math.round(value + rand));
 }
 
-function summarizeNotification(args: { kind: PrNotificationKind; pr: PrSummary }): { title: string; message: string } {
-  if (args.kind === "checks_failing") {
-    return {
-      title: "Checks failing",
-      message: "One or more required CI checks failed on this pull request.",
-    };
+function summarizeNotification(kind: PrNotificationKind): { title: string; message: string } {
+  switch (kind) {
+    case "checks_failing":
+      return {
+        title: "Checks failing",
+        message: "One or more required CI checks failed on this pull request.",
+      };
+    case "review_requested":
+      return {
+        title: "Review requested",
+        message: "This pull request is waiting on an approving review.",
+      };
+    case "changes_requested":
+      return {
+        title: "Changes requested",
+        message: "A reviewer requested changes before this pull request can merge.",
+      };
+    case "merge_ready":
+      return {
+        title: "Checks passing & approved",
+        message: "Required checks are passing and the pull request has approval. Other merge requirements (e.g. base branch currency) may still apply.",
+      };
   }
-  if (args.kind === "review_requested") {
-    return {
-      title: "Review requested",
-      message: "This pull request is waiting on an approving review.",
-    };
-  }
-  if (args.kind === "changes_requested") {
-    return {
-      title: "Changes requested",
-      message: "A reviewer requested changes before this pull request can merge.",
-    };
-  }
-  return {
-    title: "Checks passing & approved",
-    message: "Required checks are passing and the pull request has approval. Other merge requirements (e.g. base branch currency) may still apply.",
-  };
 }
 
 /**
@@ -228,7 +228,7 @@ export function createPrPollingService({
         const kinds: PrNotificationKind[] = ["checks_failing", "review_requested", "changes_requested", "merge_ready"];
         for (const kind of kinds) {
           if (!shouldNotify(kind)) continue;
-          const summary = summarizeNotification({ kind, pr });
+          const summary = summarizeNotification(kind);
           onEvent({
             type: "pr-notification",
             polledAt,

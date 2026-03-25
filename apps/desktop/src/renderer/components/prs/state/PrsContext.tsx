@@ -374,13 +374,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         void refreshQueueStates([...affectedQueueGroupIds]);
       }
 
-      // Refresh rebase needs and auto-rebase statuses alongside the main data
-      window.ade.rebase.scanNeeds().then((needs) => {
-        setRebaseNeeds((prev) => (jsonEqual(prev, needs) ? prev : needs));
-      }).catch(() => {});
-      window.ade.lanes.listAutoRebaseStatuses().then((statuses) => {
-        setAutoRebaseStatuses((prev) => (jsonEqual(prev, statuses) ? prev : statuses));
-      }).catch(() => {});
+      // NOTE: Rebase needs and auto-rebase statuses are already fetched in the
+      // Promise.all batch above (refreshedRebaseNeeds / refreshedAutoRebaseStatuses)
+      // and applied via setRebaseNeeds / setAutoRebaseStatuses, so no additional
+      // fire-and-forget fetch is needed here.
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

@@ -16,8 +16,6 @@ const ENTRY_OPTIONS: Array<{
   { kind: "shell", label: "New Shell", icon: Terminal, color: "#22C55E" },
 ];
 
-const EMPTY_CLOSING_PTY_IDS = new Set<string>();
-
 export function LaneWorkPane({
   laneId,
 }: {

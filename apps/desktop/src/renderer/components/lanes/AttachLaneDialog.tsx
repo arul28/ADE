@@ -1,11 +1,7 @@
 import { Link, WarningCircle } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import { LaneDialogShell } from "./LaneDialogShell";
-
-const SECTION_CLASS_NAME = "rounded-xl border border-white/[0.06] bg-white/[0.03] p-4 shadow-card";
-const LABEL_CLASS_NAME = "text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70";
-const INPUT_CLASS_NAME =
-  "mt-2 h-11 w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 text-sm text-fg outline-none transition-colors placeholder:text-muted-fg/45 focus:border-accent/40";
+import { SECTION_CLASS_NAME, LABEL_CLASS_NAME, INPUT_CLASS_NAME } from "./laneDialogTokens";
 
 export function AttachLaneDialog({
   open,
@@ -96,7 +92,7 @@ export function AttachLaneDialog({
           </Button>
           <Button
             variant="primary"
-            disabled={!attachPath.trim().length || !attachName.trim().length || busy}
+            disabled={!attachPath.trim() || !attachName.trim() || busy}
             onClick={onSubmit}
           >
             {busy ? "Attaching..." : "Attach lane"}
