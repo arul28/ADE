@@ -1,6 +1,7 @@
-import * as Dialog from "@radix-ui/react-dialog";
 import { Link, WarningCircle } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
+import { LaneDialogShell } from "./LaneDialogShell";
+import { SECTION_CLASS_NAME, LABEL_CLASS_NAME, INPUT_CLASS_NAME } from "./laneDialogTokens";
 
 export function AttachLaneDialog({
   open,
@@ -24,70 +25,80 @@ export function AttachLaneDialog({
   onSubmit: () => void;
 }) {
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/5 backdrop-blur-md" />
-        <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(700px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border/40 bg-card p-4 shadow-float focus:outline-none">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <Dialog.Title className="flex items-center gap-2 text-base font-semibold">
-              <Link size={16} />
-              Attach Existing Worktree
-            </Dialog.Title>
-            <Dialog.Close asChild><Button variant="ghost" size="sm" disabled={busy}>Esc</Button></Dialog.Close>
+    <LaneDialogShell
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Add existing worktree as lane"
+      description="Link an existing git worktree into ADE without moving files. The path must point at a worktree root from this repository."
+      icon={Link}
+      widthClassName="w-[min(760px,calc(100vw-24px))]"
+      busy={busy}
+    >
+      <div className="space-y-4">
+        <section className={SECTION_CLASS_NAME}>
+          <div className="text-sm text-muted-fg">
+            ADE will keep the existing files where they are and start tracking the worktree as a lane in this project.
           </div>
-          <p className="text-xs text-muted-fg">
-            Link an existing git worktree into ADE without moving files. The path must be the root of a worktree from this repository.
-          </p>
-          <div className="mt-4 space-y-3">
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-muted-fg">Lane Name</label>
-              <input
-                value={attachName}
-                onChange={(e) => setAttachName(e.target.value)}
-                placeholder="e.g. bugfix/from-other-worktree"
-                className="h-10 w-full rounded border border-border/20 bg-surface-recessed shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
-                autoFocus
-                disabled={busy}
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-muted-fg">Worktree Path</label>
-              <input
-                value={attachPath}
-                onChange={(e) => setAttachPath(e.target.value)}
-                placeholder="/absolute/path/to/existing/worktree"
-                className="h-10 w-full rounded border border-border/20 bg-surface-recessed px-3 font-mono text-xs outline-none placeholder:text-muted-fg"
-                disabled={busy}
-              />
-              <p className="mt-1 text-[11px] text-muted-fg">
-                Example: <span className="font-mono">/Users/you/repo-worktrees/feature-auth</span>
-              </p>
-            </div>
-          </div>
-          {error ? (
-            <div className="mt-3 flex items-start gap-2 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-              <WarningCircle size={14} className="mt-0.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          ) : null}
-          <div className="mt-4 flex items-center justify-end gap-2">
-            <Button
-              variant="outline"
-              onClick={() => { onOpenChange(false); setAttachName(""); setAttachPath(""); }}
+        </section>
+
+        <section className={SECTION_CLASS_NAME}>
+          <label className="block">
+            <span className={LABEL_CLASS_NAME}>Lane name</span>
+            <input
+              value={attachName}
+              onChange={(event) => setAttachName(event.target.value)}
+              placeholder="e.g. bugfix/from-other-worktree"
+              className={INPUT_CLASS_NAME}
+              autoFocus
               disabled={busy}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              disabled={!attachPath.trim().length || !attachName.trim().length || busy}
-              onClick={onSubmit}
-            >
-              {busy ? "Attaching..." : "Attach Lane"}
-            </Button>
+            />
+          </label>
+        </section>
+
+        <section className={SECTION_CLASS_NAME}>
+          <label className="block">
+            <span className={LABEL_CLASS_NAME}>Worktree path</span>
+            <input
+              value={attachPath}
+              onChange={(event) => setAttachPath(event.target.value)}
+              placeholder="/absolute/path/to/existing/worktree"
+              className={`${INPUT_CLASS_NAME} font-mono text-xs`}
+              disabled={busy}
+            />
+          </label>
+          <div className="mt-2 text-xs text-muted-fg/80">
+            Example: <span className="font-mono text-fg/80">/Users/you/repo-worktrees/feature-auth</span>
           </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        </section>
+
+        {error ? (
+          <div className="flex items-start gap-2 rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+            <WarningCircle size={16} className="mt-0.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        ) : null}
+
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="outline"
+            onClick={() => {
+              onOpenChange(false);
+              setAttachName("");
+              setAttachPath("");
+            }}
+            disabled={busy}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!attachPath.trim() || !attachName.trim() || busy}
+            onClick={onSubmit}
+          >
+            {busy ? "Attaching..." : "Attach lane"}
+          </Button>
+        </div>
+      </div>
+    </LaneDialogShell>
   );
 }

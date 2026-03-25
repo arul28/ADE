@@ -1083,8 +1083,7 @@ function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">)
 
 let _mcpRuntimeRootCache: string | null = null;
 function resolveMcpRuntimeRoot(): string {
-  if (_mcpRuntimeRootCache !== null) return _mcpRuntimeRootCache;
-  _mcpRuntimeRootCache = resolveUnifiedRuntimeRoot();
+  _mcpRuntimeRootCache ??= resolveUnifiedRuntimeRoot();
   return _mcpRuntimeRootCache;
 }
 
@@ -1342,22 +1341,25 @@ export function createAgentChatService(args: {
     ownerId?: string | null;
     computerUsePolicy?: ComputerUsePolicy | null;
   }) => {
-    const launch = resolveAdeMcpServerLaunch({
+    const { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath } = resolveAdeMcpServerLaunch({
       workspaceRoot: projectRoot,
       runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole: args.defaultRole,
       ownerId: args.ownerId ?? undefined,
       computerUsePolicy: normalizeComputerUsePolicy(args.computerUsePolicy, createDefaultComputerUsePolicy()),
     });
-    return {
-      mode: launch.mode,
-      command: launch.command,
-      entryPath: launch.entryPath,
-      runtimeRoot: launch.runtimeRoot,
-      socketPath: launch.socketPath,
-      packaged: launch.packaged,
-      resourcesPath: launch.resourcesPath,
-    };
+    return { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath };
+  };
+
+  /** Best-effort diagnostic: resolve the MCP launch config for a session, returning undefined on failure. */
+  const tryDiagnosticMcpLaunch = (managed: ManagedChatSession): ReturnType<typeof summarizeAdeMcpLaunch> | undefined => {
+    try {
+      return summarizeAdeMcpLaunch({
+        defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
+        ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
+        computerUsePolicy: managed.session.computerUse,
+      });
+    } catch { return undefined; }
   };
 
   const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
@@ -4692,14 +4694,7 @@ export function createAgentChatService(args: {
   };
 
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
-    let adeMcpLaunch: ReturnType<typeof summarizeAdeMcpLaunch> | undefined;
-    try {
-      adeMcpLaunch = summarizeAdeMcpLaunch({
-        defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
-        ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
-        computerUsePolicy: managed.session.computerUse,
-      });
-    } catch { /* best-effort diagnostic — must not block Codex startup */ }
+    const adeMcpLaunch = tryDiagnosticMcpLaunch(managed);
 
     logger.info("agent_chat.codex_runtime_start", {
       sessionId: managed.session.id,
@@ -5191,17 +5186,10 @@ export function createAgentChatService(args: {
           );
         }
         let diagClaudePath: string | undefined;
-        let diagMcpLaunch: ReturnType<typeof summarizeAdeMcpLaunch> | undefined;
         try {
           diagClaudePath = runtime.v2Session ? undefined : buildClaudeV2SessionOpts(managed, runtime).pathToClaudeCodeExecutable;
         } catch { /* best-effort diagnostic */ }
-        try {
-          diagMcpLaunch = summarizeAdeMcpLaunch({
-            defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
-            ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
-            computerUsePolicy: managed.session.computerUse,
-          });
-        } catch { /* best-effort diagnostic */ }
+        const diagMcpLaunch = tryDiagnosticMcpLaunch(managed);
         logger.warn("agent_chat.claude_v2_prewarm_failed", {
           sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),

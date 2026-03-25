@@ -196,6 +196,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Rebase state
   const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>([]);
   const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>([]);
+  const rebaseNeedsRef = React.useRef<RebaseNeed[]>([]);
+  const autoRebaseStatusesRef = React.useRef<AutoRebaseLaneStatus[]>([]);
+  React.useEffect(() => { rebaseNeedsRef.current = rebaseNeeds; }, [rebaseNeeds]);
+  React.useEffect(() => { autoRebaseStatusesRef.current = autoRebaseStatuses; }, [autoRebaseStatuses]);
 
   // Queue state
   const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>({});
@@ -248,13 +252,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Concurrency guard for refresh
   const refreshInFlight = React.useRef(false);
   const prsRef = React.useRef<PrWithConflicts[]>([]);
-  prsRef.current = prs;
   const mergeContextByPrIdRef = React.useRef<Record<string, PrMergeContext>>({});
-  mergeContextByPrIdRef.current = mergeContextByPrId;
+  React.useEffect(() => { prsRef.current = prs; }, [prs]);
+  React.useEffect(() => { mergeContextByPrIdRef.current = mergeContextByPrId; }, [mergeContextByPrId]);
 
   // Refs for detail polling
   const selectedPrIdRef = React.useRef<string | null>(null);
-  selectedPrIdRef.current = selectedPrId;
+  React.useEffect(() => { selectedPrIdRef.current = selectedPrId; }, [selectedPrId]);
   const detailFetchInProgress = React.useRef(false);
 
   const refreshMergeContexts = useCallback(async (prIds: string[]) => {
@@ -315,12 +319,20 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     try {
       await window.ade.prs.refresh().catch(() => {});
       const shouldLoadWorkflowState = activeTab !== "normal";
-      const [prList, laneList, queueStateList] = await Promise.all([
+      const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
         window.ade.prs.listWithConflicts(),
         window.ade.lanes.list({ includeStatus: true }),
         shouldLoadWorkflowState
           ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
           : Promise.resolve([] as QueueLandingState[]),
+        window.ade.rebase.scanNeeds().catch((err) => {
+          console.warn("[PrsContext] Failed to refresh rebase needs:", err);
+          return rebaseNeedsRef.current;
+        }),
+        window.ade.lanes.listAutoRebaseStatuses().catch((err) => {
+          console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err);
+          return autoRebaseStatusesRef.current;
+        }),
       ]);
       const changedPrIds = diffPrIds(prsRef.current, prList);
 
@@ -328,6 +340,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       // to avoid unnecessary re-render cascades in child components.
       setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
       setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
+      setRebaseNeeds((prev) => (jsonEqual(prev, refreshedRebaseNeeds) ? prev : refreshedRebaseNeeds));
+      setAutoRebaseStatuses((prev) => (jsonEqual(prev, refreshedAutoRebaseStatuses) ? prev : refreshedAutoRebaseStatuses));
       setQueueStates((prev) => {
         const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
         return jsonEqual(prev, next) ? prev : next;
@@ -360,13 +374,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         void refreshQueueStates([...affectedQueueGroupIds]);
       }
 
-      // Refresh rebase needs and auto-rebase statuses alongside the main data
-      window.ade.rebase.scanNeeds().then((needs) => {
-        setRebaseNeeds((prev) => (jsonEqual(prev, needs) ? prev : needs));
-      }).catch(() => {});
-      window.ade.lanes.listAutoRebaseStatuses().then((statuses) => {
-        setAutoRebaseStatuses((prev) => (jsonEqual(prev, statuses) ? prev : statuses));
-      }).catch(() => {});
+      // NOTE: Rebase needs and auto-rebase statuses are already fetched in the
+      // Promise.all batch above (refreshedRebaseNeeds / refreshedAutoRebaseStatuses)
+      // and applied via setRebaseNeeds / setAutoRebaseStatuses, so no additional
+      // fire-and-forget fetch is needed here.
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

@@ -7,6 +7,7 @@ import {
   buildCodexMcpConfigFlags,
   createUnifiedOrchestratorAdapter,
   resolveAdeMcpServerLaunch,
+  resolveUnifiedRuntimeRoot,
 } from "./unifiedOrchestratorAdapter";
 
 describe("buildCodexMcpConfigFlags", () => {
@@ -87,6 +88,72 @@ describe("resolveAdeMcpServerLaunch", () => {
       ADE_ATTEMPT_ID: "attempt-000",
       ADE_DEFAULT_ROLE: "external",
     });
+  });
+
+  it("returns expanded result fields including mode, entryPath, socketPath, and runtimeRoot", () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-expanded-"));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-expanded-proj-"));
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    const builtEntry = path.join(runtimeRoot, "apps", "mcp-server", "dist", "index.cjs");
+
+    fs.mkdirSync(path.dirname(builtEntry), { recursive: true });
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    fs.writeFileSync(builtEntry, "module.exports = {};\n", "utf8");
+
+    const launch = resolveAdeMcpServerLaunch({
+      projectRoot,
+      workspaceRoot,
+      runtimeRoot,
+      preferBundledProxy: false,
+    });
+
+    expect(launch.mode).toBe("headless_built");
+    expect(launch.entryPath).toBe(builtEntry);
+    expect(launch.runtimeRoot).toBe(path.resolve(runtimeRoot));
+    expect(launch.socketPath).toBe(path.join(path.resolve(projectRoot), ".ade", "mcp.sock"));
+    expect(typeof launch.packaged).toBe("boolean");
+    // resourcesPath is null in test env (no Electron app.asar)
+    expect(launch.resourcesPath === null || typeof launch.resourcesPath === "string").toBe(true);
+  });
+
+  it("falls back to headless source mode when no built entry exists", () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-source-fallback-"));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-source-proj-"));
+    const workspaceRoot = path.join(projectRoot, "workspace");
+
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    // Only create the mcp-server directory, NOT the dist/index.cjs file
+    fs.mkdirSync(path.join(runtimeRoot, "apps", "mcp-server", "src"), { recursive: true });
+
+    const launch = resolveAdeMcpServerLaunch({
+      projectRoot,
+      workspaceRoot,
+      runtimeRoot,
+      preferBundledProxy: false,
+    });
+
+    expect(launch.mode).toBe("headless_source");
+    expect(launch.command).toBe("npx");
+    expect(launch.entryPath).toBe(
+      path.join(runtimeRoot, "apps", "mcp-server", "src", "index.ts"),
+    );
+    expect(launch.cmdArgs[0]).toBe("tsx");
+    expect(launch.cmdArgs[1]).toBe(launch.entryPath);
+  });
+});
+
+describe("resolveUnifiedRuntimeRoot", () => {
+  it("returns an absolute path", () => {
+    const root = resolveUnifiedRuntimeRoot();
+    expect(typeof root).toBe("string");
+    expect(path.isAbsolute(root)).toBe(true);
+  });
+
+  it("returns the same result as the underlying resolveRepoRuntimeRoot", async () => {
+    // Since resolveUnifiedRuntimeRoot delegates to resolveRepoRuntimeRoot,
+    // both should return the same value in the same environment
+    const { resolveRepoRuntimeRoot: directResolver } = await import("../runtime/adeMcpLaunch");
+    expect(resolveUnifiedRuntimeRoot()).toBe(directResolver());
   });
 });
 

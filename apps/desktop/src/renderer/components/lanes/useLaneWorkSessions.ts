@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkViewMode } from "../../state/appStore";
-import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { listSessionsCached } from "../../lib/sessionListCache";
-import { isRunOwnedSession } from "../../lib/sessions";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
+import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
+import { isRunOwnedSession } from "../../lib/sessions";
 
 const DEFAULT_LANE_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],

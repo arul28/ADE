@@ -85,7 +85,7 @@ describe("queueWorkflowModel", () => {
         } satisfies PrStatus,
         memberSummary: null,
       }),
-    ).toEqual(["GitHub has not marked the current PR as mergeable yet."]);
+    ).toEqual(["GitHub has not marked the current PR as mergeable yet. Manual land can still succeed if GitHub allows a bypass merge."]);
   });
 
   it("advises the operator to rebase the next lane after a successful land", () => {

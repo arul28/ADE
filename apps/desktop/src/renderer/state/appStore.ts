@@ -276,7 +276,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           continue;
         }
         const laneId = scopeKey.slice(projectKey.length + 2);
-        if (allowed.has(laneId)) nextLaneWorkViews[scopeKey] = viewState;
+        if (allowed.has(laneId)) {
+          nextLaneWorkViews[scopeKey] = viewState;
+        }
       }
       return {
         lanes,

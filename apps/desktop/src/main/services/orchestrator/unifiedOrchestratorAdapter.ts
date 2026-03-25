@@ -26,7 +26,7 @@ import {
   normalizeMissionPermissions,
   providerPermissionsToLegacyConfig,
 } from "./permissionMapping";
-import { resolveDesktopAdeMcpLaunch, resolveRepoRuntimeRoot } from "../runtime/adeMcpLaunch";
+import { type AdeMcpLaunch, resolveDesktopAdeMcpLaunch, resolveRepoRuntimeRoot } from "../runtime/adeMcpLaunch";
 
 /**
  * Build environment variable assignments for worker identity.
@@ -69,31 +69,8 @@ export function resolveAdeMcpServerLaunch(args: {
   computerUsePolicy?: ComputerUsePolicy | null;
   bundledProxyPath?: string;
   preferBundledProxy?: boolean;
-}): {
-  mode: "bundled_proxy" | "headless_built" | "headless_source";
-  command: string;
-  cmdArgs: string[];
-  env: Record<string, string>;
-  entryPath: string;
-  runtimeRoot: string | null;
-  socketPath: string;
-  packaged: boolean;
-  resourcesPath: string | null;
-} {
-  return resolveDesktopAdeMcpLaunch({
-    projectRoot: args.projectRoot,
-    workspaceRoot: args.workspaceRoot,
-    runtimeRoot: args.runtimeRoot,
-    missionId: args.missionId,
-    runId: args.runId,
-    stepId: args.stepId,
-    attemptId: args.attemptId,
-    defaultRole: args.defaultRole,
-    ownerId: args.ownerId,
-    computerUsePolicy: args.computerUsePolicy,
-    bundledProxyPath: args.bundledProxyPath,
-    preferBundledProxy: args.preferBundledProxy,
-  });
+}): AdeMcpLaunch {
+  return resolveDesktopAdeMcpLaunch(args);
 }
 
 export function getUnifiedUnsupportedModelReason(modelRef: string): string | null {

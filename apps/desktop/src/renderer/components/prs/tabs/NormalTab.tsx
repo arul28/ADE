@@ -12,7 +12,7 @@ import { PrDetailPane } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
 import { IntegrationPrContextPanel } from "../shared/IntegrationPrContextPanel";
 import { COLORS, MONO_FONT, LABEL_STYLE, outlineButton } from "../../lanes/laneDesignTokens";
-import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
+import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge, PrCiRunningIndicator } from "../shared/prVisuals";
 import { formatTimeAgoCompact } from "../shared/prFormatters";
 
 function statusDotColor(state: string): string {
@@ -259,7 +259,10 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
                       <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
-                      <InlinePrBadge {...cc} />
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <InlinePrBadge {...cc} />
+                        {pr.checksStatus === "pending" ? <PrCiRunningIndicator /> : null}
+                      </span>
                       <InlinePrBadge {...rc} />
                       <InlinePrBadge {...sc} />
                       {/* Diff stats mini */}

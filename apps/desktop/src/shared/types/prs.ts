@@ -151,16 +151,16 @@ export type PrEventPayload =
       prId: string;
       prNumber: number;
       title: string;
+      prTitle: string;
+      repoOwner: string;
+      repoName: string;
+      baseBranch: string;
+      headBranch: string;
       githubUrl: string;
       message: string;
       state: PrState;
       checksStatus: PrChecksStatus;
       reviewStatus: PrReviewStatus;
-      prTitle: string | null;
-      repoOwner: string | null;
-      repoName: string | null;
-      headBranch: string | null;
-      baseBranch: string | null;
     }
   | {
       type: "queue-step";

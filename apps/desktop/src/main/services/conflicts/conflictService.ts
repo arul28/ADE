@@ -75,6 +75,7 @@ import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
 import { safeSegment } from "../shared/packLegacyUtils";
 import { fetchQueueTargetTrackingBranches, resolveQueueRebaseOverride } from "../shared/queueRebase";
+import type { QueueRebaseOverride } from "../shared/queueRebase";
 import { asString, isRecord, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
@@ -267,6 +268,43 @@ async function readTouchedFiles(cwd: string, mergeBase: string, headSha: string)
   const res = await runGit(["diff", "--name-only", `${mergeBase}..${headSha}`], { cwd, timeoutMs: 15_000 });
   if (res.exitCode !== 0) return new Set<string>();
   return new Set(parseDiffNameOnly(res.stdout));
+}
+
+function resolveLaneRebaseTarget(args: {
+  lane: LaneSummary;
+  lanesById: Map<string, LaneSummary>;
+  queueOverride: QueueRebaseOverride | null;
+}): {
+  comparisonRef: string;
+  fallbackRef?: string;
+  displayBaseBranch: string;
+} {
+  if (args.queueOverride) {
+    return {
+      comparisonRef: args.queueOverride.comparisonRef,
+      displayBaseBranch: args.queueOverride.displayBaseBranch,
+    };
+  }
+
+  const parent = args.lane.parentLaneId ? args.lanesById.get(args.lane.parentLaneId) ?? null : null;
+  const parentBranchRef = parent?.branchRef?.trim() ?? "";
+  if (parentBranchRef) {
+    // For primary lanes, prefer the remote tracking ref (origin/<branch>) to stay
+    // consistent with laneService.resolveParentRebaseTarget which rebases against
+    // the remote tracking ref rather than the local HEAD. Fall back to the local
+    // branch ref when the remote ref is unavailable (e.g. before first fetch).
+    const comparisonRef = parent?.laneType === "primary" ? `origin/${parentBranchRef}` : parentBranchRef;
+    return {
+      comparisonRef,
+      fallbackRef: parentBranchRef,
+      displayBaseBranch: parentBranchRef,
+    };
+  }
+
+  return {
+    comparisonRef: args.lane.baseRef,
+    displayBaseBranch: args.lane.baseRef,
+  };
 }
 
 async function readDiffNumstat(cwd: string, mergeBase: string, headSha: string): Promise<{
@@ -4173,6 +4211,7 @@ export function createConflictService({
     }
 
     const lanes = await listActiveLanes();
+    const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const needs: RebaseNeed[] = [];
 
     // Skip primary lane — it IS the base, rebasing it is nonsensical
@@ -4185,9 +4224,15 @@ export function createConflictService({
           projectRoot,
           laneId: lane.id,
         });
-        const comparisonRef = queueOverride?.comparisonRef ?? lane.baseRef;
-        const displayBaseBranch = queueOverride?.displayBaseBranch ?? lane.baseRef;
-        const baseHead = await readHeadSha(projectRoot, comparisonRef);
+        const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
+          lane,
+          lanesById,
+          queueOverride,
+        });
+        const baseHead = await readHeadSha(projectRoot, comparisonRef)
+          .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
+          .catch(() => "");
+        if (!baseHead) continue;
         const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
 
         // Count how many commits the lane is behind base
@@ -4244,6 +4289,7 @@ export function createConflictService({
     });
 
     const lanes = await listActiveLanes();
+    const lanesById = new Map(lanes.map((entry) => [entry.id, entry] as const));
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane || lane.laneType === "primary") return null;
 
@@ -4254,9 +4300,15 @@ export function createConflictService({
         projectRoot,
         laneId: lane.id,
       });
-      const comparisonRef = queueOverride?.comparisonRef ?? lane.baseRef;
-      const displayBaseBranch = queueOverride?.displayBaseBranch ?? lane.baseRef;
-      const baseHead = await readHeadSha(projectRoot, comparisonRef);
+      const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
+        lane,
+        lanesById,
+        queueOverride,
+      });
+      const baseHead = await readHeadSha(projectRoot, comparisonRef)
+        .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
+        .catch(() => "");
+      if (!baseHead) return null;
       const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
 
       const behindRes = await runGit(
@@ -4340,6 +4392,7 @@ export function createConflictService({
 
     try {
       const lanes = await listActiveLanes();
+      const lanesById = new Map(lanes.map((entry) => [entry.id, entry] as const));
       const lane = lanes.find((l) => l.id === args.laneId);
       if (!lane) {
         return {
@@ -4384,7 +4437,11 @@ export function createConflictService({
         projectRoot,
         laneId: lane.id,
       });
-      const rebaseTarget = queueOverride?.comparisonRef ?? lane.baseRef;
+      const { comparisonRef: rebaseTarget } = resolveLaneRebaseTarget({
+        lane,
+        lanesById,
+        queueOverride,
+      });
       const rebaseRes = await runGit(
         ["rebase", rebaseTarget],
         { cwd: lane.worktreePath, timeoutMs: 120_000 }

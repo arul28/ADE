@@ -952,4 +952,319 @@ describe("conflictService conflict context integrity", () => {
     expect(rebased.success).toBe(true);
     expect(git(repoRoot, ["rev-list", "--count", "HEAD..main"])).toBe("0");
   });
+
+  it("prefers the current parent lane branch when baseRef is stale", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-parent-branch-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = randomUUID();
+    const now = "2026-03-24T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now]
+      );
+
+      fs.writeFileSync(path.join(repoRoot, "file.txt"), "base\n", "utf8");
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "ade@test.local"]);
+      git(repoRoot, ["config", "user.name", "ADE Test"]);
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+
+      git(repoRoot, ["checkout", "-b", "feature/parent-current"]);
+      git(repoRoot, ["checkout", "-b", "feature/child"]);
+      fs.writeFileSync(path.join(repoRoot, "file.txt"), "child\n", "utf8");
+      git(repoRoot, ["add", "file.txt"]);
+      git(repoRoot, ["commit", "-m", "child work"]);
+
+      git(repoRoot, ["checkout", "main"]);
+      fs.writeFileSync(path.join(repoRoot, "main.txt"), "main advance\n", "utf8");
+      git(repoRoot, ["add", "main.txt"]);
+      git(repoRoot, ["commit", "-m", "main advance"]);
+      git(repoRoot, ["checkout", "feature/child"]);
+
+      const parentLane = {
+        ...createLaneSummary(repoRoot, {
+          id: "lane-parent",
+          name: "Primary",
+          branchRef: "feature/parent-current",
+          baseRef: "main",
+          parentLaneId: null
+        }),
+        laneType: "primary" as const,
+      };
+      const childLane = createLaneSummary(repoRoot, {
+        id: "lane-child",
+        name: "Child",
+        branchRef: "feature/child",
+        baseRef: "main",
+        parentLaneId: "lane-parent"
+      });
+
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          list: async () => [parentLane, childLane],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/child" })
+        } as any,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" }, local: {} })
+        } as any,
+      });
+
+      expect(await service.scanRebaseNeeds()).toEqual([]);
+      expect(await service.getRebaseNeed("lane-child")).toBeNull();
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses non-primary parent branchRef directly (no origin/ prefix) as rebase target", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-worktree-parent-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = randomUUID();
+    const now = "2026-03-24T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now]
+      );
+
+      fs.writeFileSync(path.join(repoRoot, "file.txt"), "base\n", "utf8");
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "ade@test.local"]);
+      git(repoRoot, ["config", "user.name", "ADE Test"]);
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+
+      // Create a worktree-type parent lane
+      git(repoRoot, ["checkout", "-b", "feature/worktree-parent"]);
+      fs.writeFileSync(path.join(repoRoot, "parent.txt"), "parent work\n", "utf8");
+      git(repoRoot, ["add", "parent.txt"]);
+      git(repoRoot, ["commit", "-m", "parent work"]);
+
+      // Create a child branch off the parent
+      git(repoRoot, ["checkout", "-b", "feature/grandchild"]);
+      fs.writeFileSync(path.join(repoRoot, "child.txt"), "grandchild\n", "utf8");
+      git(repoRoot, ["add", "child.txt"]);
+      git(repoRoot, ["commit", "-m", "grandchild work"]);
+
+      // Advance the parent so the child is behind
+      git(repoRoot, ["checkout", "feature/worktree-parent"]);
+      fs.writeFileSync(path.join(repoRoot, "parent2.txt"), "parent advance\n", "utf8");
+      git(repoRoot, ["add", "parent2.txt"]);
+      git(repoRoot, ["commit", "-m", "parent advance"]);
+      git(repoRoot, ["checkout", "feature/grandchild"]);
+
+      // Parent is NOT primary — it's a regular worktree lane
+      const parentLane = createLaneSummary(repoRoot, {
+        id: "lane-wt-parent",
+        name: "Worktree Parent",
+        branchRef: "feature/worktree-parent",
+        baseRef: "main",
+        parentLaneId: null
+      });
+      const childLane = createLaneSummary(repoRoot, {
+        id: "lane-grandchild",
+        name: "Grandchild",
+        branchRef: "feature/grandchild",
+        baseRef: "main",
+        parentLaneId: "lane-wt-parent"
+      });
+
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          list: async () => [parentLane, childLane],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/grandchild" })
+        } as any,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" }, local: {} })
+        } as any,
+      });
+
+      // The child should see the parent's new commits via the local branchRef
+      // (not origin/feature/worktree-parent, since the parent is not primary)
+      const needs = await service.scanRebaseNeeds();
+      expect(needs).toHaveLength(1);
+      expect(needs[0]).toMatchObject({
+        laneId: "lane-grandchild",
+        baseBranch: "feature/worktree-parent",
+      });
+      expect(needs[0]!.behindBy).toBeGreaterThan(0);
+
+      // Also verify getRebaseNeed returns the same result
+      const single = await service.getRebaseNeed("lane-grandchild");
+      expect(single).toBeTruthy();
+      expect(single!.baseBranch).toBe("feature/worktree-parent");
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to local branchRef when origin/ remote ref is unavailable for primary parent", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-primary-fallback-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = randomUUID();
+    const now = "2026-03-24T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now]
+      );
+
+      fs.writeFileSync(path.join(repoRoot, "file.txt"), "base\n", "utf8");
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "ade@test.local"]);
+      git(repoRoot, ["config", "user.name", "ADE Test"]);
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+
+      // Primary parent with local branch but no origin remote
+      git(repoRoot, ["checkout", "-b", "feature/primary-local"]);
+      fs.writeFileSync(path.join(repoRoot, "parent.txt"), "parent\n", "utf8");
+      git(repoRoot, ["add", "parent.txt"]);
+      git(repoRoot, ["commit", "-m", "parent advance"]);
+
+      git(repoRoot, ["checkout", "-b", "feature/child-of-primary"]);
+      git(repoRoot, ["checkout", "feature/primary-local"]);
+      fs.writeFileSync(path.join(repoRoot, "parent2.txt"), "more parent\n", "utf8");
+      git(repoRoot, ["add", "parent2.txt"]);
+      git(repoRoot, ["commit", "-m", "parent advance again"]);
+      git(repoRoot, ["checkout", "feature/child-of-primary"]);
+
+      const parentLane = {
+        ...createLaneSummary(repoRoot, {
+          id: "lane-primary",
+          name: "Primary",
+          branchRef: "feature/primary-local",
+          baseRef: "main",
+          parentLaneId: null,
+        }),
+        laneType: "primary" as const,
+      };
+      const childLane = createLaneSummary(repoRoot, {
+        id: "lane-child-primary",
+        name: "Child",
+        branchRef: "feature/child-of-primary",
+        baseRef: "main",
+        parentLaneId: "lane-primary",
+      });
+
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          list: async () => [parentLane, childLane],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/child-of-primary" }),
+        } as any,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" }, local: {} }),
+        } as any,
+      });
+
+      // origin/feature/primary-local doesn't exist, but the fallback to local
+      // feature/primary-local should still detect the child is behind.
+      const needs = await service.scanRebaseNeeds();
+      expect(needs).toHaveLength(1);
+      expect(needs[0]).toMatchObject({
+        laneId: "lane-child-primary",
+        baseBranch: "feature/primary-local",
+      });
+      expect(needs[0]!.behindBy).toBeGreaterThan(0);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to lane.baseRef when parent lane has no branchRef", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-no-parent-branch-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = randomUUID();
+    const now = "2026-03-24T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now]
+      );
+
+      fs.writeFileSync(path.join(repoRoot, "file.txt"), "base\n", "utf8");
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "ade@test.local"]);
+      git(repoRoot, ["config", "user.name", "ADE Test"]);
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+
+      git(repoRoot, ["checkout", "-b", "feature/orphan-child"]);
+      fs.writeFileSync(path.join(repoRoot, "orphan.txt"), "orphan\n", "utf8");
+      git(repoRoot, ["add", "orphan.txt"]);
+      git(repoRoot, ["commit", "-m", "orphan work"]);
+
+      git(repoRoot, ["checkout", "main"]);
+      fs.writeFileSync(path.join(repoRoot, "main2.txt"), "main advance\n", "utf8");
+      git(repoRoot, ["add", "main2.txt"]);
+      git(repoRoot, ["commit", "-m", "main advance"]);
+      git(repoRoot, ["checkout", "feature/orphan-child"]);
+
+      // Parent lane exists but has an empty branchRef — make it primary so it's
+      // skipped by scanRebaseNeeds and only the child is evaluated.
+      const parentLane = {
+        ...createLaneSummary(repoRoot, {
+          id: "lane-empty-parent",
+          name: "Empty Parent",
+          branchRef: "",
+          baseRef: "main",
+          parentLaneId: null
+        }),
+        laneType: "primary" as const,
+      };
+      const childLane = createLaneSummary(repoRoot, {
+        id: "lane-orphan",
+        name: "Orphan",
+        branchRef: "feature/orphan-child",
+        baseRef: "main",
+        parentLaneId: "lane-empty-parent"
+      });
+
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          list: async () => [parentLane, childLane],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/orphan-child" })
+        } as any,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" }, local: {} })
+        } as any,
+      });
+
+      // Should fall back to baseRef ("main") since parent branchRef is empty
+      const needs = await service.scanRebaseNeeds();
+      expect(needs).toHaveLength(1);
+      expect(needs[0]).toMatchObject({
+        laneId: "lane-orphan",
+        baseBranch: "main",
+      });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
 });

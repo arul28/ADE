@@ -1,6 +1,7 @@
 import React from "react";
+import { CircleNotch } from "@phosphor-icons/react";
 import type { PrChecksStatus, PrReviewStatus, PrState } from "../../../../shared/types";
-import { COLORS, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
 
 export type PrActivityState = "active" | "idle" | "stale";
 
@@ -92,3 +93,54 @@ export function InlinePrBadge(props: { label: string; color: string; bg: string;
   return <span style={inlineBadge(color, { background: bg, border: `1px solid ${border}` })}>{label}</span>;
 }
 
+export function PrCiRunningIndicator(props: {
+  showLabel?: boolean;
+  label?: string;
+  color?: string;
+  size?: number;
+  title?: string;
+}) {
+  const {
+    showLabel = false,
+    label = "running",
+    color = COLORS.warning,
+    size = 10,
+    title = "CI checks are still running",
+  } = props;
+
+  if (!showLabel) {
+    return (
+      <span
+        aria-label="CI running"
+        title={title}
+        style={{ display: "inline-flex", alignItems: "center", color }}
+      >
+        <CircleNotch size={size} className="animate-spin" />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      aria-label="CI running"
+      title={title}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "2px 6px",
+        borderRadius: 999,
+        border: `1px solid ${color}26`,
+        background: `${color}12`,
+        color,
+        fontFamily: SANS_FONT,
+        fontSize: 10,
+        fontWeight: 600,
+        lineHeight: 1,
+      }}
+    >
+      <CircleNotch size={size} className="animate-spin" />
+      <span>{label}</span>
+    </span>
+  );
+}

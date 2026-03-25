@@ -10,31 +10,37 @@ const execFileAsync = promisify(execFile);
 const PTY_PROBE_TIMEOUT_MS = 4_000;
 const CLAUDE_PROBE_TIMEOUT_MS = 20_000;
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const AUTH_FAILURE_PATTERNS = [
+  "not authenticated",
+  "not logged in",
+  "authentication required",
+  "authentication error",
+  "authentication_error",
+  "login required",
+  "sign in",
+  "claude auth login",
+  "/login",
+  "authentication_failed",
+  "invalid authentication credentials",
+  "invalid api key",
+  "api error: 401",
+  "status code: 401",
+  "status 401",
+];
+
 function isClaudeAuthFailureMessage(input: unknown): boolean {
   const text = input instanceof Error ? input.message : String(input ?? "");
   const lower = text.toLowerCase();
-  return (
-    lower.includes("not authenticated")
-    || lower.includes("not logged in")
-    || lower.includes("authentication required")
-    || lower.includes("authentication error")
-    || lower.includes("authentication_error")
-    || lower.includes("login required")
-    || lower.includes("sign in")
-    || lower.includes("claude auth login")
-    || lower.includes("/login")
-    || lower.includes("authentication_failed")
-    || lower.includes("invalid authentication credentials")
-    || lower.includes("invalid api key")
-    || lower.includes("api error: 401")
-    || lower.includes("status code: 401")
-    || lower.includes("status 401")
-  );
+  return AUTH_FAILURE_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 
 async function probePty(): Promise<{ ok: true; output: string }> {
   const pty = await import("node-pty");
-  return await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     let output = "";
     const term = pty.spawn("/bin/sh", ["-lc", 'printf "ADE_PTY_OK\\n"'], {
       name: "xterm-256color",
@@ -124,12 +130,12 @@ async function probeClaudeStartup(
     if (isClaudeAuthFailureMessage(error)) {
       return {
         state: "auth-failed",
-        message: error instanceof Error ? error.message : String(error),
+        message: errorMessage(error),
       };
     }
     return {
       state: "runtime-failed",
-      message: error instanceof Error ? error.message : String(error),
+      message: errorMessage(error),
     };
   } finally {
     clearTimeout(timeout);
@@ -193,6 +199,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error) => {
-  process.stderr.write(error instanceof Error ? error.stack ?? error.message : String(error));
+  process.stderr.write(error instanceof Error ? (error.stack ?? error.message) : String(error));
   process.exit(1);
 });
