@@ -1063,7 +1063,6 @@ private struct LaneDetailScreen: View {
     .adeNavigationGlass()
     .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
     .navigationBarTitleDisplayMode(.inline)
-    .animation(.spring(.bouncy(duration: 0.35)), value: section)
     .task {
       await loadDetail(refreshRemote: true)
     }

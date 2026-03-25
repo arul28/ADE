@@ -1356,6 +1356,8 @@ private struct WorkSessionDestinationView: View {
 }
 
 private struct WorkChatSessionView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   let session: TerminalSessionSummary
   let chatSummary: AgentChatSessionSummary?
   let transcript: [WorkChatEnvelope]
@@ -1368,6 +1370,7 @@ private struct WorkChatSessionView: View {
   @Binding var composer: String
   @Binding var sending: Bool
   @Binding var errorMessage: String?
+  @State private var visibleTimelineCount = workTimelinePageSize
   let isLive: Bool
   let disconnectedNotice: Bool
   let transitionNamespace: Namespace.ID?
@@ -1391,10 +1394,18 @@ private struct WorkChatSessionView: View {
     )
   }
 
+  private var visibleTimeline: [WorkTimelineEntry] {
+    visibleWorkTimelineEntries(from: timeline, visibleCount: visibleTimelineCount)
+  }
+
+  private var hiddenTimelineCount: Int {
+    max(timeline.count - visibleTimeline.count, 0)
+  }
+
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
+        LazyVStack(alignment: .leading, spacing: 14) {
           WorkSessionHeader(session: session, chatSummary: chatSummary, transitionNamespace: transitionNamespace)
 
           if disconnectedNotice {
@@ -1426,7 +1437,24 @@ private struct WorkChatSessionView: View {
               message: isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the host."
             )
           } else {
-            ForEach(timeline) { entry in
+            if hiddenTimelineCount > 0 {
+              Button {
+                loadEarlierTimelineEntries()
+              } label: {
+                Label(
+                  "Load \(min(hiddenTimelineCount, workTimelinePageSize)) earlier message\(min(hiddenTimelineCount, workTimelinePageSize) == 1 ? "" : "s")",
+                  systemImage: "chevron.up.circle"
+                )
+                .font(.footnote.weight(.semibold))
+                .frame(maxWidth: .infinity)
+              }
+              .buttonStyle(.glass)
+              .tint(ADEColor.accent)
+              .controlSize(.small)
+              .accessibilityLabel("Load earlier messages")
+            }
+
+            ForEach(visibleTimeline) { entry in
               switch entry.payload {
               case .message(let message):
                 WorkChatMessageBubble(message: message)
@@ -1530,6 +1558,12 @@ private struct WorkChatSessionView: View {
       expandedToolCardIds.remove(id)
     } else {
       expandedToolCardIds.insert(id)
+    }
+  }
+
+  private func loadEarlierTimelineEntries() {
+    withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+      visibleTimelineCount += workTimelinePageSize
     }
   }
 }
@@ -2845,6 +2879,14 @@ private func buildWorkTimeline(
     }
     return lhs.timestamp < rhs.timestamp
   }
+}
+
+let workTimelinePageSize = 80
+
+func visibleWorkTimelineEntries(from entries: [WorkTimelineEntry], visibleCount: Int) -> [WorkTimelineEntry] {
+  let clampedCount = max(visibleCount, 0)
+  guard clampedCount < entries.count else { return entries }
+  return Array(entries.suffix(clampedCount))
 }
 
 private func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMessage] {

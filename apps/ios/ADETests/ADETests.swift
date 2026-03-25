@@ -1470,6 +1470,53 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(activeAgents.first?.toolName, "functions.Read")
   }
 
+  func testVisibleWorkTimelineEntriesKeepsNewestPage() {
+    let entries = (1...6).map { index in
+      WorkTimelineEntry(
+        id: "entry-\(index)",
+        timestamp: String(format: "2026-03-25T00:00:%02d.000Z", index),
+        rank: index,
+        payload: .message(
+          WorkChatMessage(
+            id: "message-\(index)",
+            role: index.isMultiple(of: 2) ? "assistant" : "user",
+            markdown: "Message \(index)",
+            timestamp: String(format: "2026-03-25T00:00:%02d.000Z", index),
+            turnId: nil,
+            itemId: nil
+          )
+        )
+      )
+    }
+
+    XCTAssertEqual(
+      visibleWorkTimelineEntries(from: entries, visibleCount: 3).map(\.id),
+      ["entry-4", "entry-5", "entry-6"]
+    )
+  }
+
+  func testVisibleWorkTimelineEntriesReturnsAllRowsWhenRequestedCountExceedsTranscript() {
+    let entries = (1...3).map { index in
+      WorkTimelineEntry(
+        id: "entry-\(index)",
+        timestamp: String(format: "2026-03-25T00:00:%02d.000Z", index),
+        rank: index,
+        payload: .message(
+          WorkChatMessage(
+            id: "message-\(index)",
+            role: "assistant",
+            markdown: "Message \(index)",
+            timestamp: String(format: "2026-03-25T00:00:%02d.000Z", index),
+            turnId: nil,
+            itemId: nil
+          )
+        )
+      )
+    }
+
+    XCTAssertEqual(visibleWorkTimelineEntries(from: entries, visibleCount: 10).map(\.id), entries.map(\.id))
+  }
+
   func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {
     let targets = extractWorkNavigationTargets(
       from: #"Updated apps/ios/ADE/Views/WorkTabView.swift and docs/plan.md before opening PR #145. See src/main.ts too."#
