@@ -231,42 +231,58 @@ final class SyncService: ObservableObject {
     }
     do {
       allowAutoReconnect = true
-      let addressCandidates = deduplicatedAddresses([host] + candidateAddresses)
-      let preferredAddress = addressCandidates.first ?? host
-      try await openSocket(host: preferredAddress, port: port)
-      let requestId = makeRequestId()
-      let raw = try await awaitResponse(requestId: requestId) {
-        self.sendEnvelope(type: "pairing_request", requestId: requestId, payload: [
-          "code": code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
-          "peer": self.currentPeerMetadata(),
-        ])
-      }
-      guard let payload = raw as? [String: Any], (payload["ok"] as? Bool) == true else {
-        throw NSError(domain: "ADE", code: 2, userInfo: [
-          NSLocalizedDescriptionKey: friendlyPairingFailureMessage(raw)
-        ])
-      }
-      guard let secret = payload["secret"] as? String else {
-        throw NSError(domain: "ADE", code: 3, userInfo: [NSLocalizedDescriptionKey: "Pairing secret missing from response."])
-      }
-      let pairedDeviceId = payload["deviceId"] as? String ?? deviceId
-      keychain.saveToken(secret)
-      let profile = HostConnectionProfile(
-        hostIdentity: hostIdentity,
-        hostName: hostName,
-        port: port,
-        authKind: "paired",
-        pairedDeviceId: pairedDeviceId,
-        lastRemoteDbVersion: 0,
-        lastHostDeviceId: nil,
-        lastSuccessfulAddress: preferredAddress,
-        savedAddressCandidates: addressCandidates,
-        discoveredLanAddresses: addressCandidates.filter { !$0.contains("100.") && !$0.contains(":") },
+      let addressCandidates = prioritizedPairingAddresses(
+        host: host,
+        candidateAddresses: candidateAddresses,
+        expectedHostIdentity: hostIdentity,
         tailscaleAddress: tailscaleAddress
       )
-      saveProfile(profile)
-      currentAddress = preferredAddress
-      try await hello(host: preferredAddress, port: port, token: secret, authKind: "paired", pairedDeviceId: pairedDeviceId, expectedHostIdentity: hostIdentity)
+      var lastFailure: Error?
+      for address in addressCandidates {
+        do {
+          try await openSocket(host: address, port: port)
+          let requestId = makeRequestId()
+          let raw = try await awaitResponse(requestId: requestId) {
+            self.sendEnvelope(type: "pairing_request", requestId: requestId, payload: [
+              "code": code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+              "peer": self.currentPeerMetadata(),
+            ])
+          }
+          guard let payload = raw as? [String: Any], (payload["ok"] as? Bool) == true else {
+            throw makePairingFailure(raw)
+          }
+          guard let secret = payload["secret"] as? String else {
+            throw NSError(domain: "ADE", code: 3, userInfo: [NSLocalizedDescriptionKey: "Pairing secret missing from response."])
+          }
+          let pairedDeviceId = payload["deviceId"] as? String ?? deviceId
+          keychain.saveToken(secret)
+          let profile = HostConnectionProfile(
+            hostIdentity: hostIdentity,
+            hostName: hostName,
+            port: port,
+            authKind: "paired",
+            pairedDeviceId: pairedDeviceId,
+            lastRemoteDbVersion: 0,
+            lastHostDeviceId: nil,
+            lastSuccessfulAddress: address,
+            savedAddressCandidates: addressCandidates,
+            discoveredLanAddresses: addressCandidates.filter { !$0.contains("100.") && !$0.contains(":") },
+            tailscaleAddress: tailscaleAddress
+          )
+          saveProfile(profile)
+          currentAddress = address
+          try await hello(host: address, port: port, token: secret, authKind: "paired", pairedDeviceId: pairedDeviceId, expectedHostIdentity: hostIdentity)
+          return
+        } catch {
+          lastFailure = error
+          socket?.cancel(with: .goingAway, reason: nil)
+          socket = nil
+          if shouldStopPairingRetries(for: error) {
+            throw error
+          }
+        }
+      }
+      throw lastFailure ?? NSError(domain: "ADE", code: 21, userInfo: [NSLocalizedDescriptionKey: "Unable to reach the ADE host with that pairing code."])
     } catch {
       lastError = error.localizedDescription
       connectionState = .error
@@ -320,6 +336,22 @@ final class SyncService: ObservableObject {
     default:
       return message ?? "Pairing failed."
     }
+  }
+
+  private func makePairingFailure(_ raw: Any) -> NSError {
+    let error = (raw as? [String: Any])?["error"] as? [String: Any]
+    let errorCode = error?["code"] as? String
+    var userInfo: [String: Any] = [
+      NSLocalizedDescriptionKey: friendlyPairingFailureMessage(raw),
+    ]
+    if let errorCode {
+      userInfo["ADEErrorCode"] = errorCode
+    }
+    return NSError(
+      domain: "ADE",
+      code: 2,
+      userInfo: userInfo
+    )
   }
 
   func disconnect(clearCredentials: Bool = false) {
@@ -895,6 +927,21 @@ final class SyncService: ObservableObject {
       .filter { seen.insert($0).inserted }
   }
 
+  func prioritizedPairingAddresses(
+    host: String,
+    candidateAddresses: [String],
+    expectedHostIdentity: String?,
+    tailscaleAddress: String?
+  ) -> [String] {
+    let matchingDiscovery = discoveredHosts.filter { discovered in
+      guard let expectedHostIdentity else { return false }
+      return discovered.hostIdentity == expectedHostIdentity
+    }
+    let liveLan = matchingDiscovery.flatMap(\.addresses)
+    let liveTailscale = matchingDiscovery.compactMap(\.tailscaleAddress)
+    return deduplicatedAddresses(liveLan + [host] + candidateAddresses + liveTailscale + (tailscaleAddress.map { [$0] } ?? []))
+  }
+
   private func prioritizedAddresses(for profile: HostConnectionProfile) -> [String] {
     let matchingDiscovery = discoveredHosts.filter { host in
       guard let hostIdentity = profile.hostIdentity else { return true }
@@ -983,6 +1030,16 @@ final class SyncService: ObservableObject {
   private func shouldInvalidateSavedPairing(for error: Error) -> Bool {
     let nsError = error as NSError
     return nsError.userInfo["ADEErrorCode"] as? String == "auth_failed"
+  }
+
+  private func shouldStopPairingRetries(for error: Error) -> Bool {
+    let nsError = error as NSError
+    switch nsError.userInfo["ADEErrorCode"] as? String {
+    case "expired_code", "invalid_code", "pairing_unavailable":
+      return true
+    default:
+      return false
+    }
   }
 
   private func applyDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) {
@@ -1107,7 +1164,10 @@ final class SyncService: ObservableObject {
       throw NSError(
         domain: "ADE",
         code: 20,
-        userInfo: [NSLocalizedDescriptionKey: "The saved pairing belongs to a different ADE host. Pair again with the current host."]
+        userInfo: [
+          NSLocalizedDescriptionKey: "The saved pairing belongs to a different ADE host. Pair again with the current host.",
+          "ADEErrorCode": "unexpected_host",
+        ]
       )
     }
 

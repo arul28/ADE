@@ -78,6 +78,20 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(decoded.addressCandidates.map(\.host), ["192.168.1.8", "100.101.102.103"])
   }
 
+  @MainActor
+  func testPrioritizedPairingAddressesPreservesHostAndDeduplicatesCandidates() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    let addresses = service.prioritizedPairingAddresses(
+      host: "192.168.1.8",
+      candidateAddresses: ["192.168.1.8", "192.168.1.9", "100.101.102.103"],
+      expectedHostIdentity: "host-1",
+      tailscaleAddress: "100.101.102.103"
+    )
+
+    XCTAssertEqual(addresses, ["192.168.1.8", "192.168.1.9", "100.101.102.103"])
+  }
+
   func testDatabasePersistsStableSiteIdAcrossReopen() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeDatabase(baseURL: baseURL)

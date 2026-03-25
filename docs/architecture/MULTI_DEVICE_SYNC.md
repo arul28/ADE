@@ -186,6 +186,7 @@ Desktop nuance:
 - W3 uses manual host/port/bootstrap-token entry in Settings > Sync.
 - Numeric-code pairing and per-device secrets are implemented.
 - mDNS discovery, QR pairing presentation/scanning, Tailscale address selection, and final network hardening remain follow-on W5 work.
+- Pairing uses multi-address fallback: `prioritizedPairingAddresses()` merges live mDNS-discovered addresses (filtered by host identity), the provided host address, QR/manual candidates, and any Tailscale address into a deduplicated priority list. The pairing flow tries each address in order, stopping early on terminal errors (expired code, pairing unavailable) and saving the successful address in the connection profile.
 
 ---
 

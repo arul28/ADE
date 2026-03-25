@@ -134,11 +134,21 @@ Current Phase 6 stance:
 ### Connection Lifecycle
 
 1. App launch: read pairing token from Keychain.
-2. Resolve host address from the saved draft or manual entry.
+2. Resolve host address from the saved profile or manual entry.
 3. Open WebSocket connection.
 4. Send local `db_version`, receive catchup changesets.
 5. Enter continuous bidirectional sync.
 6. On disconnect: automatic reconnection with exponential backoff.
+
+### Pairing Address Resolution
+
+Initial pairing uses multi-address fallback to handle networks where the first candidate may be unreachable:
+
+1. `prioritizedPairingAddresses()` builds a deduplicated address list from live mDNS discovery results (filtered by expected host identity), the provided host address, any QR/manual candidate addresses, and the Tailscale address.
+2. The pairing flow iterates through each address in order, opening a socket and sending the pairing request.
+3. On success, the working address is saved as `lastSuccessfulAddress` in the connection profile for future reconnects.
+4. On failure, the socket is torn down and the next address is tried -- unless the error is terminal (expired code, pairing unavailable), in which case the flow stops immediately.
+5. If all addresses are exhausted, the last connection error is surfaced to the user.
 
 ### Message Types
 
