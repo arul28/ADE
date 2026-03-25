@@ -414,6 +414,22 @@ final class SyncService: ObservableObject {
     }
   }
 
+  func handleForegroundTransition() async {
+    if canSendLiveRequests() {
+      do {
+        try await refreshLaneSnapshots()
+        try await refreshWorkSessions()
+        try await refreshPullRequestSnapshots()
+        lastError = nil
+      } catch {
+        lastError = SyncUserFacingError.message(for: error)
+      }
+      return
+    }
+
+    await reconnectIfPossible()
+  }
+
   func pairAndConnect(
     host: String,
     port: Int,

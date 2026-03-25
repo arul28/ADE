@@ -1,4 +1,6 @@
+import CryptoKit
 import SwiftUI
+import UIKit
 
 enum ADEColor {
   static let pageBackground = Color(.systemGroupedBackground)
@@ -12,6 +14,96 @@ enum ADEColor {
   static let success = Color.green
   static let warning = Color.orange
   static let danger = Color.red
+}
+
+enum ADEListRowMetrics {
+  static let cornerRadius: CGFloat = 18
+  static let padding: CGFloat = 14
+}
+
+enum ADEMotion {
+  static func standard(reduceMotion: Bool) -> Animation {
+    reduceMotion ? .easeInOut(duration: 0.18) : .smooth
+  }
+
+  static func quick(reduceMotion: Bool) -> Animation {
+    reduceMotion ? .easeInOut(duration: 0.18) : .snappy
+  }
+
+  static func emphasis(reduceMotion: Bool) -> Animation {
+    reduceMotion ? .easeInOut(duration: 0.18) : .spring(.bouncy(duration: 0.35))
+  }
+
+  static func pulse(reduceMotion: Bool) -> Animation? {
+    reduceMotion ? nil : .smooth(duration: 1.0).repeatForever(autoreverses: true)
+  }
+
+  static func allowsMatchedGeometry(reduceMotion: Bool) -> Bool {
+    !reduceMotion
+  }
+}
+
+final class ADEImageCache {
+  static let shared = ADEImageCache()
+
+  private let memoryCache = NSCache<NSString, NSData>()
+  private let cacheDirectory: URL
+  private let fileManager: FileManager
+
+  init(cacheDirectory: URL? = nil, fileManager: FileManager = .default) {
+    self.fileManager = fileManager
+    let resolvedDirectory = cacheDirectory
+      ?? fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        .appendingPathComponent("ADEImageCache", isDirectory: true)
+    self.cacheDirectory = resolvedDirectory
+    try? fileManager.createDirectory(at: resolvedDirectory, withIntermediateDirectories: true, attributes: nil)
+  }
+
+  func cachedData(for key: String) -> Data? {
+    if let cached = memoryCache.object(forKey: key as NSString) {
+      return Data(referencing: cached)
+    }
+
+    let url = cacheDirectory.appendingPathComponent(diskFilename(for: key))
+    guard let data = try? Data(contentsOf: url) else { return nil }
+    memoryCache.setObject(data as NSData, forKey: key as NSString)
+    return data
+  }
+
+  func cachedImage(for key: String) -> UIImage? {
+    guard let data = cachedData(for: key) else { return nil }
+    return UIImage(data: data)
+  }
+
+  func store(_ data: Data, for key: String) {
+    memoryCache.setObject(data as NSData, forKey: key as NSString)
+    let url = cacheDirectory.appendingPathComponent(diskFilename(for: key))
+    try? data.write(to: url, options: .atomic)
+  }
+
+  func loadRemoteImage(from url: URL, cacheKey: String? = nil) async throws -> UIImage {
+    let key = cacheKey ?? url.absoluteString
+    if let image = cachedImage(for: key) {
+      return image
+    }
+
+    let (data, _) = try await URLSession.shared.data(from: url)
+    store(data, for: key)
+
+    guard let image = UIImage(data: data) else {
+      throw NSError(
+        domain: "ADE",
+        code: 301,
+        userInfo: [NSLocalizedDescriptionKey: "The host returned an unreadable image preview."]
+      )
+    }
+
+    return image
+  }
+
+  func diskFilename(for key: String) -> String {
+    SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+  }
 }
 
 struct ADENoticeCard: View {
@@ -121,6 +213,8 @@ struct ADEEmptyStateView<Actions: View>: View {
 }
 
 struct ADESkeletonView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   var width: CGFloat? = nil
   var height: CGFloat = 14
   var cornerRadius: CGFloat = 10
@@ -151,6 +245,7 @@ struct ADESkeletonView: View {
         )
       }
       .onAppear {
+        guard !reduceMotion else { return }
         withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) {
           shimmerOffset = 1.2
         }
@@ -233,6 +328,48 @@ private struct ADENavigationGlassModifier: ViewModifier {
   }
 }
 
+private struct ADEMatchedGeometryModifier: ViewModifier {
+  let id: String?
+  let namespace: Namespace.ID?
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let id, let namespace {
+      content.matchedGeometryEffect(id: id, in: namespace)
+    } else {
+      content
+    }
+  }
+}
+
+private struct ADEMatchedTransitionSourceModifier: ViewModifier {
+  let id: String?
+  let namespace: Namespace.ID?
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let id, let namespace {
+      content.matchedTransitionSource(id: id, in: namespace)
+    } else {
+      content
+    }
+  }
+}
+
+private struct ADENavigationZoomTransitionModifier: ViewModifier {
+  let id: String?
+  let namespace: Namespace.ID?
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let id, let namespace {
+      content.navigationTransition(.zoom(sourceID: id, in: namespace))
+    } else {
+      content
+    }
+  }
+}
+
 extension View {
   func adeGlassCard(cornerRadius: CGFloat = 16, padding: CGFloat = 16) -> some View {
     modifier(ADEGlassCardModifier(cornerRadius: cornerRadius, padding: padding))
@@ -248,5 +385,24 @@ extension View {
 
   func adeInsetField(cornerRadius: CGFloat = 12, padding: CGFloat = 12) -> some View {
     modifier(ADEInsetFieldModifier(cornerRadius: cornerRadius, padding: padding))
+  }
+
+  func adeListCard(
+    cornerRadius: CGFloat = ADEListRowMetrics.cornerRadius,
+    padding: CGFloat = ADEListRowMetrics.padding
+  ) -> some View {
+    adeGlassCard(cornerRadius: cornerRadius, padding: padding)
+  }
+
+  func adeMatchedGeometry(id: String?, in namespace: Namespace.ID?) -> some View {
+    modifier(ADEMatchedGeometryModifier(id: id, namespace: namespace))
+  }
+
+  func adeMatchedTransitionSource(id: String?, in namespace: Namespace.ID?) -> some View {
+    modifier(ADEMatchedTransitionSourceModifier(id: id, namespace: namespace))
+  }
+
+  func adeNavigationZoomTransition(id: String?, in namespace: Namespace.ID?) -> some View {
+    modifier(ADENavigationZoomTransitionModifier(id: id, namespace: namespace))
   }
 }

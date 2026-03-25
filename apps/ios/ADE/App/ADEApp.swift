@@ -15,7 +15,7 @@ struct ADEApp: App {
         .onChange(of: scenePhase) { _, newPhase in
           guard newPhase == .active else { return }
           Task {
-            await syncService.reconnectIfPossible()
+            await syncService.handleForegroundTransition()
           }
         }
     }

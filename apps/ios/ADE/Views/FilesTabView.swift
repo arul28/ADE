@@ -172,8 +172,10 @@ private struct FilesFileMetadata {
 }
 
 struct FilesTabView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @EnvironmentObject private var syncService: SyncService
   @AppStorage("ade.files.showHidden") private var showHidden = false
+  @Namespace private var fileTransitionNamespace
 
   @State private var workspaces: [FilesWorkspace] = []
   @State private var selectedWorkspaceId: String?
@@ -183,6 +185,8 @@ struct FilesTabView: View {
   @State private var textSearchResults: [FilesSearchTextMatch] = []
   @State private var errorMessage: String?
   @State private var navigationPath: [FilesRoute] = []
+  @State private var refreshFeedbackToken = 0
+  @State private var selectedFileTransitionPath: String?
 
   private var filesStatus: SyncDomainStatus {
     syncService.status(for: .files)
@@ -276,7 +280,11 @@ struct FilesTabView: View {
                 Button {
                   openFile(item.path, in: workspace, focusLine: nil)
                 } label: {
-                  FilesResultRow(path: item.path)
+                  FilesResultRow(
+                    path: item.path,
+                    transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? fileTransitionNamespace : nil,
+                    isSelectedTransitionSource: selectedFileTransitionPath == item.path
+                  )
                 }
                 .buttonStyle(.plain)
                 .filesListRow()
@@ -299,7 +307,11 @@ struct FilesTabView: View {
                 Button {
                   openFile(result.path, in: workspace, focusLine: result.line)
                 } label: {
-                  FilesSearchResultRow(result: result)
+                  FilesSearchResultRow(
+                    result: result,
+                    transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? fileTransitionNamespace : nil,
+                    isSelectedTransitionSource: selectedFileTransitionPath == result.path
+                  )
                 }
                 .buttonStyle(.plain)
                 .filesListRow()
@@ -320,7 +332,9 @@ struct FilesTabView: View {
               },
               openFile: { path, line in
                 openFile(path, in: workspace, focusLine: line)
-              }
+              },
+              transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? fileTransitionNamespace : nil,
+              selectedFilePath: selectedFileTransitionPath
             )
             .environmentObject(syncService)
           }
@@ -346,7 +360,9 @@ struct FilesTabView: View {
               },
               openFile: { path, line in
                 openFile(path, in: workspace, focusLine: line)
-              }
+              },
+              transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? fileTransitionNamespace : nil,
+              selectedFilePath: selectedFileTransitionPath
             )
             .environmentObject(syncService)
           } else {
@@ -366,6 +382,7 @@ struct FilesTabView: View {
               focusLine: focusLine,
               isFilesLive: canUseLiveFileActions,
               needsRepairing: needsRepairing,
+              transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? fileTransitionNamespace : nil,
               navigateToDirectory: { path in
                 openDirectory(path, in: workspace)
               }
@@ -389,14 +406,16 @@ struct FilesTabView: View {
           } label: {
             Image(systemName: "arrow.clockwise")
           }
+          .accessibilityLabel("Refresh files")
           .disabled(syncService.activeHostProfile == nil && workspaces.isEmpty)
         }
       }
       .refreshable {
-        await reload(refreshRemote: true)
+        await refreshFromPullGesture()
       }
       .sensoryFeedback(.selection, trigger: selectedWorkspaceId)
       .sensoryFeedback(.success, trigger: quickOpenResults.count + textSearchResults.count)
+      .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task {
         await reload()
       }
@@ -416,6 +435,16 @@ struct FilesTabView: View {
         navigationPath = []
         quickOpenResults = []
         textSearchResults = []
+      }
+    }
+  }
+
+  @MainActor
+  private func refreshFromPullGesture() async {
+    await reload(refreshRemote: true)
+    if errorMessage == nil {
+      withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
+        refreshFeedbackToken += 1
       }
     }
   }
@@ -508,8 +537,10 @@ struct FilesTabView: View {
     }
     selectedWorkspaceId = workspace.id
     if let relativePath = request.relativePath, !relativePath.isEmpty {
+      selectedFileTransitionPath = relativePath
       openFile(relativePath, in: workspace, focusLine: nil)
     } else {
+      selectedFileTransitionPath = nil
       navigationPath = []
     }
     syncService.requestedFilesNavigation = nil
@@ -517,11 +548,13 @@ struct FilesTabView: View {
 
   private func openDirectory(_ parentPath: String, in workspace: FilesWorkspace) {
     selectedWorkspaceId = workspace.id
+    selectedFileTransitionPath = nil
     navigationPath = routesForDirectory(parentPath, workspace: workspace)
   }
 
   private func openFile(_ relativePath: String, in workspace: FilesWorkspace, focusLine: Int?) {
     selectedWorkspaceId = workspace.id
+    selectedFileTransitionPath = relativePath
     navigationPath = routesForFile(relativePath, workspace: workspace, focusLine: focusLine)
   }
 
@@ -632,6 +665,8 @@ private struct FilesDirectoryScreen: View {
   let needsRepairing: Bool
   let openDirectory: (String) -> Void
   let openFile: (String, Int?) -> Void
+  let transitionNamespace: Namespace.ID?
+  let selectedFilePath: String?
 
   var body: some View {
     List {
@@ -652,7 +687,9 @@ private struct FilesDirectoryScreen: View {
         needsRepairing: needsRepairing,
         showDisconnectedNotice: true,
         openDirectory: openDirectory,
-        openFile: openFile
+        openFile: openFile,
+        transitionNamespace: transitionNamespace,
+        selectedFilePath: selectedFilePath
       )
       .environmentObject(syncService)
     }
@@ -668,6 +705,7 @@ private struct FilesDirectoryScreen: View {
         } label: {
           Image(systemName: showHidden ? "eye.slash" : "eye")
         }
+        .accessibilityLabel(showHidden ? "Hide hidden files" : "Show hidden files")
 
         Button {
           Task {
@@ -676,6 +714,7 @@ private struct FilesDirectoryScreen: View {
         } label: {
           Image(systemName: "arrow.clockwise")
         }
+        .accessibilityLabel("Refresh files for this lane")
       }
     }
   }
@@ -692,6 +731,8 @@ private struct FilesDirectoryContentsView: View {
   let showDisconnectedNotice: Bool
   let openDirectory: (String) -> Void
   let openFile: (String, Int?) -> Void
+  let transitionNamespace: Namespace.ID?
+  let selectedFilePath: String?
 
   @State private var nodes: [FileTreeNode] = []
   @State private var gitState = FilesGitState.empty
@@ -766,7 +807,11 @@ private struct FilesDirectoryContentsView: View {
         Button {
           open(node)
         } label: {
-          FilesTreeNodeRow(node: node)
+          FilesTreeNodeRow(
+            node: node,
+            transitionNamespace: transitionNamespace,
+            isSelectedTransitionSource: selectedFilePath == node.path
+          )
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -1066,6 +1111,7 @@ private struct FileEditorView: View {
   let focusLine: Int?
   let isFilesLive: Bool
   let needsRepairing: Bool
+  let transitionNamespace: Namespace.ID?
   let navigateToDirectory: (String) -> Void
 
   @State private var blob: SyncFileBlob?
@@ -1102,6 +1148,10 @@ private struct FileEditorView: View {
       return Data(base64Encoded: blob.content)
     }
     return Data(blob.content.utf8)
+  }
+
+  private var imageCacheKey: String {
+    "files-preview::\(workspace.id)::\(relativePath)"
   }
 
   private var canEdit: Bool {
@@ -1192,6 +1242,7 @@ private struct FileEditorView: View {
         } label: {
           Image(systemName: "chevron.left")
         }
+        .accessibilityLabel("Back")
       }
 
       ToolbarItemGroup(placement: .topBarTrailing) {
@@ -1208,6 +1259,7 @@ private struct FileEditorView: View {
       }
     }
     .sensoryFeedback(.success, trigger: saveTrigger)
+    .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "files-container-\(relativePath)", in: transitionNamespace)
     .task {
       await load()
     }
@@ -1261,11 +1313,13 @@ private struct FileEditorView: View {
           .frame(width: 42, height: 42)
           .background(ADEColor.surfaceBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
           .glassEffect(in: .rect(cornerRadius: 12))
+          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "files-icon-\(relativePath)", in: transitionNamespace)
 
         VStack(alignment: .leading, spacing: 6) {
           Text(lastPathComponent(relativePath))
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
+            .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "files-title-\(relativePath)", in: transitionNamespace)
           Text(parentDirectory(of: relativePath).isEmpty ? "Workspace root" : parentDirectory(of: relativePath))
             .font(.caption.monospaced())
             .foregroundStyle(ADEColor.textSecondary)
@@ -1409,9 +1463,32 @@ private struct FileEditorView: View {
   @MainActor
   private func load(refreshDiff: Bool = false) async {
     do {
+      if isImagePreviewable, let cachedData = ADEImageCache.shared.cachedData(for: imageCacheKey) {
+        let cachedBlob = SyncFileBlob(
+          path: relativePath,
+          size: cachedData.count,
+          mimeType: nil,
+          encoding: "base64",
+          isBinary: true,
+          content: cachedData.base64EncodedString(),
+          languageId: nil
+        )
+        blob = cachedBlob
+        await loadGitState()
+        await loadMetadata(from: cachedBlob)
+        if refreshDiff {
+          await loadDiff()
+        }
+        errorMessage = nil
+        return
+      }
+
       let wasDirty = isDirty
       let loaded = try await syncService.readFile(workspaceId: workspace.id, path: relativePath)
       blob = loaded
+      if loaded.isBinary, isImagePreviewable, let data = imageData {
+        ADEImageCache.shared.store(data, for: imageCacheKey)
+      }
       if !loaded.isBinary && (!wasDirty || draftText.isEmpty) {
         draftText = loaded.content
       }
@@ -1597,6 +1674,7 @@ private struct FilesWorkspaceHeader: View {
                 .font(.caption.weight(.semibold))
             }
             .buttonStyle(.glass)
+            .accessibilityLabel(showHidden ? "Hide hidden files" : "Show hidden files")
           }
         }
       }
@@ -1670,6 +1748,8 @@ private struct FilesDirectoryActionRow: View {
 
 private struct FilesTreeNodeRow: View {
   let node: FileTreeNode
+  let transitionNamespace: Namespace.ID?
+  let isSelectedTransitionSource: Bool
 
   var body: some View {
     HStack(spacing: 12) {
@@ -1677,12 +1757,14 @@ private struct FilesTreeNodeRow: View {
         .font(.headline)
         .foregroundStyle(node.type == "directory" ? ADEColor.accent : fileTint(for: node.name))
         .frame(width: 22)
+        .adeMatchedGeometry(id: canTransition ? "files-icon-\(node.path)" : nil, in: transitionNamespace)
 
       VStack(alignment: .leading, spacing: 4) {
         Text(node.name)
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
+          .adeMatchedGeometry(id: canTransition ? "files-title-\(node.path)" : nil, in: transitionNamespace)
         Text(node.path.isEmpty ? (node.type == "directory" ? "Folder" : "File") : node.path)
           .font(.caption.monospaced())
           .foregroundStyle(ADEColor.textSecondary)
@@ -1705,9 +1787,14 @@ private struct FilesTreeNodeRow: View {
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
     }
-    .adeGlassCard(cornerRadius: 16, padding: 14)
+    .adeListCard(cornerRadius: 16)
+    .adeMatchedTransitionSource(id: canTransition ? "files-container-\(node.path)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityLabel)
+  }
+
+  private var canTransition: Bool {
+    node.type == "file" && isSelectedTransitionSource
   }
 
   private var accessibilityLabel: String {
@@ -1720,15 +1807,19 @@ private struct FilesTreeNodeRow: View {
 
 private struct FilesResultRow: View {
   let path: String
+  let transitionNamespace: Namespace.ID?
+  let isSelectedTransitionSource: Bool
 
   var body: some View {
     HStack(spacing: 10) {
       Image(systemName: fileIcon(for: path))
         .foregroundStyle(fileTint(for: path))
+        .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-icon-\(path)" : nil, in: transitionNamespace)
       VStack(alignment: .leading, spacing: 3) {
         Text(lastPathComponent(path))
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
+          .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-title-\(path)" : nil, in: transitionNamespace)
         Text(path)
           .font(.caption.monospaced())
           .foregroundStyle(ADEColor.textSecondary)
@@ -1739,21 +1830,28 @@ private struct FilesResultRow: View {
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
     }
-    .adeGlassCard(cornerRadius: 16, padding: 14)
+    .adeListCard(cornerRadius: 16)
+    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "files-container-\(path)" : nil, in: transitionNamespace)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(lastPathComponent(path)), file")
   }
 }
 
 private struct FilesSearchResultRow: View {
   let result: FilesSearchTextMatch
+  let transitionNamespace: Namespace.ID?
+  let isSelectedTransitionSource: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {
         Image(systemName: fileIcon(for: result.path))
           .foregroundStyle(fileTint(for: result.path))
+          .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-icon-\(result.path)" : nil, in: transitionNamespace)
         Text(lastPathComponent(result.path))
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
+          .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-title-\(result.path)" : nil, in: transitionNamespace)
         Spacer()
         ADEStatusPill(text: "L\(result.line)", tint: ADEColor.accent)
       }
@@ -1765,7 +1863,10 @@ private struct FilesSearchResultRow: View {
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(2)
     }
-    .adeGlassCard(cornerRadius: 16, padding: 14)
+    .adeListCard(cornerRadius: 16)
+    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "files-container-\(result.path)" : nil, in: transitionNamespace)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(lastPathComponent(result.path)), line \(result.line)")
   }
 }
 

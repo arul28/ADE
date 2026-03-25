@@ -1470,6 +1470,39 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(activeAgents.first?.toolName, "functions.Read")
   }
 
+  func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {
+    let targets = extractWorkNavigationTargets(
+      from: #"Updated apps/ios/ADE/Views/WorkTabView.swift and docs/plan.md before opening PR #145. See src/main.ts too."#
+    )
+
+    XCTAssertEqual(targets.filePaths, [
+      "apps/ios/ADE/Views/WorkTabView.swift",
+      "docs/plan.md",
+      "src/main.ts",
+    ])
+    XCTAssertEqual(targets.pullRequestNumbers, [145])
+  }
+
+  func testExtractWorkNavigationTargetsIgnoresMarkdownHeadingsAndShellFlags() {
+    let targets = extractWorkNavigationTargets(
+      from: #"# Summary\nRun git diff --stat before checking README.md. Avoid --watch and -v flags."#
+    )
+
+    XCTAssertEqual(targets.filePaths, ["README.md"])
+    XCTAssertTrue(targets.pullRequestNumbers.isEmpty)
+  }
+
+  func testADEImageCacheStoresAndRestoresDiskBackedEntries() {
+    let directory = makeTemporaryDirectory().appendingPathComponent("image-cache", isDirectory: true)
+    let cache = ADEImageCache(cacheDirectory: directory)
+    let data = Data([0x89, 0x50, 0x4E, 0x47])
+
+    cache.store(data, for: "artifact-1")
+
+    XCTAssertEqual(cache.cachedData(for: "artifact-1"), data)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent(cache.diskFilename(for: "artifact-1")).path))
+  }
+
   func testParseANSISegmentsTracksForegroundColors() {
     let segments = parseANSISegments("\u{001B}[31mError\u{001B}[0m plain \u{001B}[32mOK\u{001B}[0m")
 

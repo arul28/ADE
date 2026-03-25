@@ -329,7 +329,9 @@ private enum PrCleanupChoice {
 }
 
 struct PRsTabView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @EnvironmentObject private var syncService: SyncService
+  @Namespace private var prTransitionNamespace
 
   @State private var path = NavigationPath()
   @State private var prs: [PullRequestListItem] = []
@@ -340,6 +342,8 @@ struct PRsTabView: View {
   @State private var errorMessage: String?
   @State private var createPresented = false
   @State private var stackPresentation: PrStackPresentation?
+  @State private var refreshFeedbackToken = 0
+  @State private var selectedPrTransitionId: String?
   @SceneStorage("ade.prs.stateFilter") private var stateFilterRawValue = PrListStateFilter.all.rawValue
   @State private var searchText = ""
 
@@ -452,10 +456,17 @@ struct PRsTabView: View {
             Section("Pull requests") {
               ForEach(filteredPrs) { pr in
                 NavigationLink(value: pr.id) {
-                  PrRowCard(pr: pr) { groupId, groupName in
+                  PrRowCard(
+                    pr: pr,
+                    transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
+                    isSelectedTransitionSource: selectedPrTransitionId == pr.id
+                  ) { groupId, groupName in
                     stackPresentation = PrStackPresentation(id: groupId, groupName: groupName)
                   }
                 }
+                .simultaneousGesture(TapGesture().onEnded {
+                  selectedPrTransitionId = pr.id
+                })
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                   Button("Open") {
                     openGitHub(urlString: pr.githubUrl)
@@ -563,6 +574,7 @@ struct PRsTabView: View {
           } label: {
             Image(systemName: "arrow.clockwise")
           }
+          .accessibilityLabel("Refresh pull requests")
           .disabled(prsStatus.phase == .hydrating)
 
           Button {
@@ -570,10 +582,12 @@ struct PRsTabView: View {
           } label: {
             Image(systemName: "plus")
           }
+          .accessibilityLabel("Create pull request")
           .disabled(!isLive || lanes.isEmpty)
         }
       }
       .sensoryFeedback(.success, trigger: prs.count + integrationProposals.count + queueStates.count)
+      .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task {
         await reload(refreshRemote: true)
       }
@@ -581,17 +595,21 @@ struct PRsTabView: View {
         await reload()
       }
       .refreshable {
-        await reload(refreshRemote: true)
+        await refreshFromPullGesture()
       }
       .onChange(of: syncService.requestedPrNavigation?.id) { _, requestId in
         guard requestId != nil, let prId = syncService.requestedPrNavigation?.prId else { return }
         stateFilterRawValue = PrListStateFilter.all.rawValue
+        selectedPrTransitionId = prId
         path = NavigationPath()
         path.append(prId)
         syncService.requestedPrNavigation = nil
       }
       .navigationDestination(for: String.self) { prId in
-        PrDetailView(prId: prId)
+        PrDetailView(
+          prId: prId,
+          transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil
+        )
           .environmentObject(syncService)
       }
       .sheet(isPresented: $createPresented) {
@@ -616,6 +634,16 @@ struct PRsTabView: View {
       .sheet(item: $stackPresentation) { presentation in
         PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
           .environmentObject(syncService)
+      }
+    }
+  }
+
+  @MainActor
+  private func refreshFromPullGesture() async {
+    await reload(refreshRemote: true)
+    if errorMessage == nil {
+      withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
+        refreshFeedbackToken += 1
       }
     }
   }
@@ -762,6 +790,8 @@ private struct PrFiltersCard: View {
 
 private struct PrRowCard: View {
   let pr: PullRequestListItem
+  let transitionNamespace: Namespace.ID?
+  let isSelectedTransitionSource: Bool
   let onShowStack: (String, String?) -> Void
 
   var body: some View {
@@ -772,6 +802,7 @@ private struct PrRowCard: View {
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
+            .adeMatchedGeometry(id: isSelectedTransitionSource ? "pr-title-\(pr.id)" : nil, in: transitionNamespace)
 
           HStack(spacing: 8) {
             Text("#\(pr.githubPrNumber)")
@@ -790,6 +821,7 @@ private struct PrRowCard: View {
 
         VStack(alignment: .trailing, spacing: 6) {
           ADEStatusPill(text: pr.state.uppercased(), tint: prStateTint(pr.state))
+            .adeMatchedGeometry(id: isSelectedTransitionSource ? "pr-status-\(pr.id)" : nil, in: transitionNamespace)
           if let adeKindLabel = prAdeKindLabel(pr.adeKind) {
             ADEStatusPill(text: adeKindLabel, tint: ADEColor.accent)
           }
@@ -823,7 +855,8 @@ private struct PrRowCard: View {
           .foregroundStyle(ADEColor.textMuted)
       }
     }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .adeListCard()
+    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "pr-container-\(pr.id)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("PR #\(pr.githubPrNumber): \(pr.title), state \(pr.state), checks \(pr.checksStatus), review \(pr.reviewStatus)")
   }
@@ -848,6 +881,7 @@ private struct PrSignalChip: View {
 private struct PrDetailView: View {
   @EnvironmentObject private var syncService: SyncService
   let prId: String
+  let transitionNamespace: Namespace.ID?
 
   @State private var pr: PullRequestListItem?
   @State private var snapshot: PullRequestSnapshot?
@@ -926,7 +960,7 @@ private struct PrDetailView: View {
         .prListRow()
       }
 
-      PrHeaderCard(pr: currentPr)
+      PrHeaderCard(pr: currentPr, transitionNamespace: transitionNamespace)
         .prListRow()
 
       Picker("Detail tab", selection: $selectedTab) {
@@ -990,6 +1024,7 @@ private struct PrDetailView: View {
     .adeNavigationGlass()
     .navigationTitle(currentPr.title)
     .navigationBarTitleDisplayMode(.inline)
+    .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
     .task {
       await reload(refreshRemote: true)
     }
@@ -1101,6 +1136,7 @@ private struct PrDetailView: View {
 
 private struct PrHeaderCard: View {
   let pr: PullRequestListItem
+  let transitionNamespace: Namespace.ID?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -1109,12 +1145,14 @@ private struct PrHeaderCard: View {
           Text(pr.title)
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
+            .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-title-\(pr.id)", in: transitionNamespace)
           Text("#\(pr.githubPrNumber) · \(pr.headBranch) → \(pr.baseBranch)")
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(ADEColor.textSecondary)
         }
         Spacer(minLength: 8)
         ADEStatusPill(text: pr.state.uppercased(), tint: prStateTint(pr.state))
+          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-status-\(pr.id)", in: transitionNamespace)
       }
 
       HStack(spacing: 8) {
@@ -1130,7 +1168,9 @@ private struct PrHeaderCard: View {
           .foregroundStyle(ADEColor.textSecondary)
       }
     }
-    .adeGlassCard(cornerRadius: 18)
+    .adeListCard()
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("PR #\(pr.githubPrNumber), \(pr.title), state \(pr.state)")
   }
 }
 
@@ -1515,11 +1555,13 @@ private struct PrUnifiedDiffView: View {
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(line.kind == .hunk ? ADEColor.accent : ADEColor.textSecondary)
             } else {
-              (Text(verbatim: line.prefix)
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
-                .foregroundColor(diffPrefixTint(line.kind))
-              + Text(SyntaxHighlighter.highlightedAttributedString(line.text.isEmpty ? " " : line.text, as: language)))
-                .font(.system(.caption, design: .monospaced))
+              HStack(spacing: 0) {
+                Text(verbatim: line.prefix)
+                  .font(.system(.caption, design: .monospaced).weight(.semibold))
+                  .foregroundStyle(diffPrefixTint(line.kind))
+                Text(SyntaxHighlighter.highlightedAttributedString(line.text.isEmpty ? " " : line.text, as: language))
+                  .font(.system(.caption, design: .monospaced))
+              }
             }
             Spacer(minLength: 0)
           }

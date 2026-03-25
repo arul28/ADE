@@ -87,6 +87,7 @@ private enum LaneDeleteMode: String, CaseIterable, Identifiable {
 // MARK: - Lanes tab
 
 struct LanesTabView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @EnvironmentObject private var syncService: SyncService
 
   @State private var laneSnapshots: [LaneListSnapshot] = []
@@ -104,6 +105,7 @@ struct LanesTabView: View {
   @State private var batchManageLaneIds: [String] = []
   @State private var batchManagePresented = false
   @State private var showFilters = false
+  @State private var refreshFeedbackToken = 0
 
   private var laneStatus: SyncDomainStatus {
     syncService.status(for: .lanes)
@@ -299,6 +301,7 @@ struct LanesTabView: View {
             Image(systemName: "line.3.horizontal.decrease.circle")
               .symbolVariant(scope != .active || runtimeFilter != .all ? .fill : .none)
           }
+          .accessibilityLabel("Lane filters")
 
           Menu {
             Button {
@@ -315,12 +318,14 @@ struct LanesTabView: View {
             Image(systemName: "plus.circle.fill")
               .symbolRenderingMode(.hierarchical)
           }
+          .accessibilityLabel("Create or attach lane")
         }
       }
       .refreshable {
-        await reload(refreshRemote: true)
+        await refreshFromPullGesture()
       }
       .sensoryFeedback(.success, trigger: laneSnapshots.count)
+      .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task {
         await reload(refreshRemote: true)
       }
@@ -380,7 +385,7 @@ struct LanesTabView: View {
             isActive: scope == option,
             tint: scope == option ? ADEColor.accent : ADEColor.textSecondary
           ) {
-            withAnimation(.spring(.bouncy(duration: 0.3))) { scope = option }
+            withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) { scope = option }
           }
         }
 
@@ -403,7 +408,7 @@ struct LanesTabView: View {
                 isActive: runtimeFilter == filter,
                 tint: runtimeFilter == filter ? runtimeTint(bucket: filter.rawValue) : ADEColor.textSecondary
               ) {
-                withAnimation(.spring(.bouncy(duration: 0.3))) { runtimeFilter = filter }
+                withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) { runtimeFilter = filter }
               }
             }
           }
@@ -423,7 +428,7 @@ struct LanesTabView: View {
           .foregroundStyle(ADEColor.textSecondary)
         Spacer()
         Button {
-          withAnimation(.spring(.bouncy(duration: 0.3))) {
+          withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
             openLaneIds = Array(pinnedLaneIds)
           }
         } label: {
@@ -729,7 +734,7 @@ struct LanesTabView: View {
   }
 
   private func toggleOpenLane(_ laneId: String) {
-    withAnimation(.spring(.bouncy(duration: 0.3))) {
+    withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
       if openLaneIds.contains(laneId) {
         closeLaneChip(laneId)
       } else {
@@ -750,6 +755,16 @@ struct LanesTabView: View {
       pinnedLaneIds.insert(laneId)
       if !openLaneIds.contains(laneId) {
         openLaneIds.insert(laneId, at: 0)
+      }
+    }
+  }
+
+  @MainActor
+  private func refreshFromPullGesture() async {
+    await reload(refreshRemote: true)
+    if errorMessage == nil {
+      withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
+        refreshFeedbackToken += 1
       }
     }
   }
@@ -930,6 +945,7 @@ private struct LaneListRow: View {
 // MARK: - Lane detail screen
 
 private struct LaneDetailScreen: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @EnvironmentObject private var syncService: SyncService
 
   let laneId: String
@@ -957,6 +973,7 @@ private struct LaneDetailScreen: View {
   @State private var trackedLaunch = true
   @State private var showStackGraph = false
   @State private var chatLaunchTarget: LaneChatLaunchTarget?
+  @State private var lanePullRequests: [PullRequestListItem] = []
 
   init(
     laneId: String,
@@ -1042,7 +1059,7 @@ private struct LaneDetailScreen: View {
       .padding(.horizontal, 16)
       .padding(.vertical, 8)
     }
-    .adeScreenBackground()
+    .animation(ADEMotion.emphasis(reduceMotion: reduceMotion), value: section)
     .adeNavigationGlass()
     .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
     .navigationBarTitleDisplayMode(.inline)
@@ -1134,6 +1151,11 @@ private struct LaneDetailScreen: View {
         LaneQuickAction(title: "Files", symbol: "folder", tint: ADEColor.accent) {
           Task { await openFiles() }
         }
+        if !lanePullRequests.isEmpty {
+          LaneQuickAction(title: lanePullRequests.count == 1 ? "PR" : "PRs", symbol: "arrow.triangle.pull", tint: ADEColor.warning) {
+            openPullRequest(lanePullRequests[0].id)
+          }
+        }
         LaneQuickAction(title: "Copy path", symbol: "doc.on.doc", tint: ADEColor.textSecondary) {
           UIPasteboard.general.string = detail?.lane.worktreePath ?? currentSnapshot.lane.worktreePath
         }
@@ -1209,6 +1231,33 @@ private struct LaneDetailScreen: View {
             if let parentLaneId = detail.lane.parentLaneId,
                let parent = allLaneSnapshots.first(where: { $0.lane.id == parentLaneId })?.lane {
               LaneInfoRow(label: "Parent", value: "\(parent.name) (\(parent.branchRef))")
+            }
+          }
+        }
+
+        if !lanePullRequests.isEmpty {
+          GlassSection(title: lanePullRequests.count == 1 ? "Linked PR" : "Linked PRs") {
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(lanePullRequests.prefix(3)) { pr in
+                Button {
+                  openPullRequest(pr.id)
+                } label: {
+                  HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                      Text(pr.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ADEColor.textPrimary)
+                      Text("#\(pr.githubPrNumber) · \(pr.state.uppercased())")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(ADEColor.textSecondary)
+                    }
+                    Spacer(minLength: 8)
+                    ADEStatusPill(text: pr.state.uppercased(), tint: lanePullRequestTint(pr.state))
+                  }
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Open pull request number \(pr.githubPrNumber), \(pr.title)")
+              }
             }
           }
         }
@@ -1884,6 +1933,7 @@ private struct LaneDetailScreen: View {
         seedForms(from: refreshed)
         await onRefreshRoot()
       }
+      lanePullRequests = (try? await syncService.fetchPullRequestListItems().filter { $0.laneId == laneId }) ?? []
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
@@ -1935,6 +1985,10 @@ private struct LaneDetailScreen: View {
     } catch {
       errorMessage = error.localizedDescription
     }
+  }
+
+  private func openPullRequest(_ prId: String) {
+    syncService.requestedPrNavigation = PrNavigationRequest(prId: prId)
   }
 
   private func seedForms(from detail: LaneDetailPayload) {
@@ -3084,6 +3138,8 @@ private struct GlassSection<Content: View>: View {
 }
 
 private struct LaneStatusIndicator: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   let bucket: String
   var size: CGFloat = 10
 
@@ -3094,22 +3150,17 @@ private struct LaneStatusIndicator: View {
       .fill(runtimeTint(bucket: bucket))
       .frame(width: size, height: size)
       .shadow(color: runtimeTint(bucket: bucket).opacity(isAnimating ? 0.5 : 0), radius: isAnimating ? 6 : 0)
-      .scaleEffect(isPulsing && isAnimating ? 1.3 : 1.0)
-      .animation(
-        isAnimating
-          ? .smooth(duration: 1.2).repeatForever(autoreverses: true)
-          : .default,
-        value: isPulsing
-      )
+      .scaleEffect(isPulsing && isAnimating && !reduceMotion ? 1.3 : 1.0)
+      .animation(ADEMotion.pulse(reduceMotion: reduceMotion), value: isPulsing)
       .onAppear {
-        if isAnimating {
+        if isAnimating && !reduceMotion {
           isPulsing = true
         }
       }
   }
 
   private var isAnimating: Bool {
-    bucket == "running" || bucket == "awaiting-input"
+    (bucket == "running" || bucket == "awaiting-input") && !reduceMotion
   }
 }
 
@@ -3545,6 +3596,21 @@ private func runtimeTint(bucket: String) -> Color {
     return ADEColor.warning
   case "ended":
     return ADEColor.textMuted
+  default:
+    return ADEColor.textSecondary
+  }
+}
+
+private func lanePullRequestTint(_ state: String) -> Color {
+  switch state {
+  case "open":
+    return ADEColor.success
+  case "draft":
+    return ADEColor.warning
+  case "closed":
+    return ADEColor.danger
+  case "merged":
+    return ADEColor.accent
   default:
     return ADEColor.textSecondary
   }

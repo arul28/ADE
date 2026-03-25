@@ -32,7 +32,9 @@ private struct WorkDraftChatSession {
 }
 
 struct WorkTabView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @EnvironmentObject private var syncService: SyncService
+  @Namespace private var sessionTransitionNamespace
 
   @State private var sessions: [TerminalSessionSummary] = []
   @State private var chatSummaries: [String: AgentChatSessionSummary] = [:]
@@ -48,6 +50,8 @@ struct WorkTabView: View {
   @State private var renameText = ""
   @State private var endTarget: TerminalSessionSummary?
   @State private var optimisticSessions: [String: TerminalSessionSummary] = [:]
+  @State private var refreshFeedbackToken = 0
+  @State private var selectedSessionTransitionId: String?
   @AppStorage("ade.work.archivedSessionIds") private var archivedSessionIdsStorage = ""
 
   private var workStatus: SyncDomainStatus {
@@ -234,6 +238,8 @@ struct WorkTabView: View {
                 sessions: pinnedSessions,
                 chatSummaries: chatSummaries,
                 archivedSessionIds: archivedSessionIds,
+                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
+                selectedSessionId: $selectedSessionTransitionId,
                 path: $path,
                 onArchive: toggleArchive,
                 onPin: togglePin,
@@ -251,6 +257,8 @@ struct WorkTabView: View {
                 sessions: unpinnedSessions,
                 chatSummaries: chatSummaries,
                 archivedSessionIds: archivedSessionIds,
+                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
+                selectedSessionId: $selectedSessionTransitionId,
                 path: $path,
                 onArchive: toggleArchive,
                 onPin: togglePin,
@@ -268,6 +276,8 @@ struct WorkTabView: View {
                 sessions: archivedSessions,
                 chatSummaries: chatSummaries,
                 archivedSessionIds: archivedSessionIds,
+                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
+                selectedSessionId: $selectedSessionTransitionId,
                 path: $path,
                 onArchive: toggleArchive,
                 onPin: togglePin,
@@ -293,12 +303,14 @@ struct WorkTabView: View {
           } label: {
             Image(systemName: "plus.bubble.fill")
           }
+          .accessibilityLabel("Create new chat")
           .disabled(!isLive || lanes.isEmpty)
         }
       }
       .refreshable {
-        await reload(refreshRemote: true)
+        await refreshFromPullGesture()
       }
+      .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task {
         await reload(refreshRemote: isLive)
       }
@@ -314,6 +326,7 @@ struct WorkTabView: View {
           initialSession: mergedSessions.first(where: { $0.id == route.sessionId }),
           initialChatSummary: chatSummaries[route.sessionId],
           initialTranscript: transcriptCache[route.sessionId],
+          transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
           isLive: isLive,
           disconnectedNotice: !isLive
         )
@@ -328,6 +341,7 @@ struct WorkTabView: View {
           if let initialMessage = draft.initialMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !initialMessage.isEmpty {
             try? await syncService.sendChatMessage(sessionId: draft.summary.sessionId, text: initialMessage)
           }
+          selectedSessionTransitionId = draft.summary.sessionId
           path.append(WorkSessionRoute(sessionId: draft.summary.sessionId))
         }
         .environmentObject(syncService)
@@ -384,6 +398,16 @@ struct WorkTabView: View {
   private var pollingKey: String {
     let ids = runningChatSessions.map(\.id).joined(separator: ",")
     return "\(isLive)-\(ids)-\(syncService.localStateRevision)"
+  }
+
+  @MainActor
+  private func refreshFromPullGesture() async {
+    await reload(refreshRemote: true)
+    if errorMessage == nil {
+      withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
+        refreshFeedbackToken += 1
+      }
+    }
   }
 
   @MainActor
@@ -503,6 +527,7 @@ struct WorkTabView: View {
     if archivedSessionIds.contains(session.id) {
       toggleArchive(session)
     }
+    selectedSessionTransitionId = session.id
     path.append(WorkSessionRoute(sessionId: session.id))
   }
 
@@ -664,14 +689,23 @@ private struct WorkFiltersSection: View {
 }
 
 private struct WorkRunningBanner: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   let count: Int
+
+  @State private var isPulsing = false
 
   var body: some View {
     HStack(spacing: 10) {
       Circle()
         .fill(ADEColor.success)
         .frame(width: 10, height: 10)
-        .symbolEffect(.pulse, isActive: true)
+        .scaleEffect(isPulsing && !reduceMotion ? 1.2 : 1.0)
+        .animation(ADEMotion.pulse(reduceMotion: reduceMotion), value: isPulsing)
+        .onAppear {
+          guard !reduceMotion else { return }
+          isPulsing = true
+        }
       VStack(alignment: .leading, spacing: 2) {
         Text(count == 1 ? "1 agent is running" : "\(count) agents are running")
           .font(.subheadline.weight(.semibold))
@@ -691,6 +725,8 @@ private struct WorkSessionSection: View {
   let sessions: [TerminalSessionSummary]
   let chatSummaries: [String: AgentChatSessionSummary]
   let archivedSessionIds: Set<String>
+  let transitionNamespace: Namespace.ID?
+  @Binding var selectedSessionId: String?
   @Binding var path: NavigationPath
   let onArchive: (TerminalSessionSummary) -> Void
   let onPin: (TerminalSessionSummary) -> Void
@@ -704,8 +740,17 @@ private struct WorkSessionSection: View {
     Section(title) {
       ForEach(sessions) { session in
         NavigationLink(value: WorkSessionRoute(sessionId: session.id)) {
-          WorkSessionRow(session: session, chatSummary: chatSummaries[session.id], isArchived: archivedSessionIds.contains(session.id))
+          WorkSessionRow(
+            session: session,
+            chatSummary: chatSummaries[session.id],
+            isArchived: archivedSessionIds.contains(session.id),
+            transitionNamespace: transitionNamespace,
+            isSelectedTransitionSource: selectedSessionId == session.id
+          )
         }
+        .simultaneousGesture(TapGesture().onEnded {
+          selectedSessionId = session.id
+        })
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
           Button(archivedSessionIds.contains(session.id) ? "Restore" : "Archive") {
             onArchive(session)
@@ -755,6 +800,8 @@ private struct WorkSessionRow: View {
   let session: TerminalSessionSummary
   let chatSummary: AgentChatSessionSummary?
   let isArchived: Bool
+  let transitionNamespace: Namespace.ID?
+  let isSelectedTransitionSource: Bool
 
   var body: some View {
     HStack(alignment: .top, spacing: 12) {
@@ -763,6 +810,7 @@ private struct WorkSessionRow: View {
         .foregroundStyle(rowTint)
         .frame(width: 28, height: 28)
         .background(rowTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
 
       VStack(alignment: .leading, spacing: 8) {
         HStack(alignment: .top, spacing: 8) {
@@ -772,6 +820,7 @@ private struct WorkSessionRow: View {
                 .font(.headline)
                 .foregroundStyle(ADEColor.textPrimary)
                 .lineLimit(1)
+                .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-title-\(session.id)" : nil, in: transitionNamespace)
               if session.pinned {
                 Image(systemName: "pin.fill")
                   .font(.caption2)
@@ -797,6 +846,7 @@ private struct WorkSessionRow: View {
               text: isArchived ? "ARCHIVED" : sessionStatusLabel(session),
               tint: isArchived ? ADEColor.warning : rowTint
             )
+            .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-status-\(session.id)" : nil, in: transitionNamespace)
             Text(formattedSessionDuration(startedAt: session.startedAt, endedAt: session.endedAt))
               .font(.caption2.monospacedDigit())
               .foregroundStyle(ADEColor.textMuted)
@@ -812,16 +862,32 @@ private struct WorkSessionRow: View {
         }
       }
     }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .adeListCard()
+    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "work-container-\(session.id)" : nil, in: transitionNamespace)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accessibilityLabel)
   }
 
   private var rowTint: Color {
     if isArchived { return ADEColor.warning }
     return session.status == "running" ? ADEColor.success : ADEColor.textSecondary
   }
+
+  private var accessibilityLabel: String {
+    var parts = [chatSummary?.title ?? session.title, session.laneName, sessionStatusLabel(session)]
+    if session.pinned {
+      parts.append("pinned")
+    }
+    if isArchived {
+      parts.append("archived")
+    }
+    return parts.joined(separator: ", ")
+  }
 }
 
 private struct WorkActivityRow: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   let activity: WorkAgentActivity
   @State private var pulse = false
 
@@ -830,9 +896,12 @@ private struct WorkActivityRow: View {
       Circle()
         .fill(ADEColor.success)
         .frame(width: 10, height: 10)
-        .scaleEffect(pulse ? 1.25 : 0.95)
-        .animation(.smooth(duration: 1.0).repeatForever(autoreverses: true), value: pulse)
-        .onAppear { pulse = true }
+        .scaleEffect(pulse && !reduceMotion ? 1.25 : 1.0)
+        .animation(ADEMotion.pulse(reduceMotion: reduceMotion), value: pulse)
+        .onAppear {
+          guard !reduceMotion else { return }
+          pulse = true
+        }
       VStack(alignment: .leading, spacing: 4) {
         Text(activity.agentName)
           .font(.subheadline.weight(.semibold))
@@ -852,7 +921,9 @@ private struct WorkActivityRow: View {
         .font(.caption2.monospacedDigit())
         .foregroundStyle(ADEColor.textMuted)
     }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .adeListCard()
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(activity.agentName), \(activity.laneName), \(activity.toolName ?? "Waiting")")
   }
 }
 
@@ -1034,6 +1105,7 @@ private struct WorkSessionDestinationView: View {
   let initialSession: TerminalSessionSummary?
   let initialChatSummary: AgentChatSessionSummary?
   let initialTranscript: [WorkChatEnvelope]?
+  let transitionNamespace: Namespace.ID?
   let isLive: Bool
   let disconnectedNotice: Bool
 
@@ -1069,11 +1141,19 @@ private struct WorkSessionDestinationView: View {
             errorMessage: $errorMessage,
             isLive: isLive,
             disconnectedNotice: disconnectedNotice,
+            transitionNamespace: transitionNamespace,
             onSend: sendMessage,
+            onRetryLoad: load,
+            onOpenFile: openFileReference,
+            onOpenPr: openPullRequestReference,
             onLoadArtifact: loadArtifactContent
           )
         } else {
-          WorkTerminalSessionView(session: session, disconnectedNotice: disconnectedNotice)
+          WorkTerminalSessionView(
+            session: session,
+            disconnectedNotice: disconnectedNotice,
+            transitionNamespace: transitionNamespace
+          )
             .environmentObject(syncService)
         }
       } else {
@@ -1087,6 +1167,7 @@ private struct WorkSessionDestinationView: View {
     }
     .navigationTitle(chatSummary?.title ?? session?.title ?? "Session")
     .navigationBarTitleDisplayMode(.inline)
+    .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "work-container-\(sessionId)", in: transitionNamespace)
     .sheet(item: $fullscreenImage) { image in
       WorkFullscreenImageView(image: image)
     }
@@ -1185,8 +1266,21 @@ private struct WorkSessionDestinationView: View {
   private func loadArtifactContent(_ artifact: ComputerUseArtifactSummary) async {
     guard artifactContent[artifact.id] == nil else { return }
 
+    let cacheKey = "work-artifact::\(artifact.id)::\(artifact.uri)"
+
+    if artifact.artifactKind != "video_recording", let cachedImage = ADEImageCache.shared.cachedImage(for: cacheKey) {
+      artifactContent[artifact.id] = .image(cachedImage)
+      return
+    }
+
     if let directURL = URL(string: artifact.uri), directURL.scheme?.hasPrefix("http") == true {
-      artifactContent[artifact.id] = .remoteURL(directURL)
+      if artifact.artifactKind == "video_recording" || (artifact.mimeType?.contains("video") == true) {
+        artifactContent[artifact.id] = .remoteURL(directURL)
+      } else if let image = try? await ADEImageCache.shared.loadRemoteImage(from: directURL, cacheKey: cacheKey) {
+        artifactContent[artifact.id] = .image(image)
+      } else {
+        artifactContent[artifact.id] = .error("The host returned an unreadable image preview.")
+      }
       return
     }
 
@@ -1206,12 +1300,57 @@ private struct WorkSessionDestinationView: View {
         try data.write(to: url, options: .atomic)
         artifactContent[artifact.id] = .video(url)
       } else if let image = UIImage(data: data) {
+        ADEImageCache.shared.store(data, for: cacheKey)
         artifactContent[artifact.id] = .image(image)
       } else {
         artifactContent[artifact.id] = .text(blob.content)
       }
     } catch {
       artifactContent[artifact.id] = .error(error.localizedDescription)
+    }
+  }
+
+  @MainActor
+  private func openFileReference(_ path: String) async {
+    guard let session else { return }
+
+    do {
+      let workspaces = try await syncService.listWorkspaces()
+      guard let workspace = workspaces.first(where: { $0.laneId == session.laneId }) ?? workspaces.first else {
+        errorMessage = "No Files workspace is available for this lane yet."
+        return
+      }
+
+      let relativePath = normalizeWorkFileReference(path, workspaceRoot: workspace.rootPath)
+      guard !relativePath.isEmpty else {
+        errorMessage = "ADE could not resolve that file path into the current workspace."
+        return
+      }
+
+      syncService.requestedFilesNavigation = FilesNavigationRequest(
+        workspaceId: workspace.id,
+        relativePath: relativePath
+      )
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func openPullRequestReference(_ number: Int) async {
+    do {
+      let pullRequests = try await syncService.fetchPullRequestListItems()
+      let laneScoped = pullRequests.first { $0.githubPrNumber == number && $0.laneId == session?.laneId }
+      let target = laneScoped ?? pullRequests.first { $0.githubPrNumber == number }
+
+      guard let target else {
+        errorMessage = "PR #\(number) is not cached on this phone yet. Refresh PRs and try again."
+        return
+      }
+
+      syncService.requestedPrNavigation = PrNavigationRequest(prId: target.id)
+    } catch {
+      errorMessage = error.localizedDescription
     }
   }
 }
@@ -1231,7 +1370,11 @@ private struct WorkChatSessionView: View {
   @Binding var errorMessage: String?
   let isLive: Bool
   let disconnectedNotice: Bool
+  let transitionNamespace: Namespace.ID?
   let onSend: @MainActor () async -> Void
+  let onRetryLoad: @MainActor () async -> Void
+  let onOpenFile: @MainActor (String) async -> Void
+  let onOpenPr: @MainActor (Int) async -> Void
   let onLoadArtifact: @MainActor (ComputerUseArtifactSummary) async -> Void
 
   private var toolCards: [WorkToolCardModel] {
@@ -1252,7 +1395,7 @@ private struct WorkChatSessionView: View {
     ScrollViewReader { proxy in
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
-          WorkSessionHeader(session: session, chatSummary: chatSummary)
+          WorkSessionHeader(session: session, chatSummary: chatSummary, transitionNamespace: transitionNamespace)
 
           if disconnectedNotice {
             ADENoticeCard(
@@ -1271,8 +1414,8 @@ private struct WorkChatSessionView: View {
               message: errorMessage,
               icon: "exclamationmark.triangle.fill",
               tint: ADEColor.danger,
-              actionTitle: nil,
-              action: nil
+              actionTitle: "Retry",
+              action: { Task { await onRetryLoad() } }
             )
           }
 
@@ -1290,8 +1433,15 @@ private struct WorkChatSessionView: View {
               case .toolCard(let toolCard):
                 WorkToolCardView(
                   toolCard: toolCard,
+                  references: extractWorkNavigationTargets(from: [toolCard.argsText, toolCard.resultText].compactMap { $0 }.joined(separator: "\n")),
                   isExpanded: expandedToolCardIds.contains(toolCard.id),
-                  onToggle: { toggleToolCard(toolCard.id) }
+                  onToggle: { toggleToolCard(toolCard.id) },
+                  onOpenFile: { path in
+                    Task { await onOpenFile(path) }
+                  },
+                  onOpenPr: { prNumber in
+                    Task { await onOpenPr(prNumber) }
+                  }
                 )
               case .artifact(let artifact):
                 WorkArtifactView(
@@ -1340,7 +1490,7 @@ private struct WorkChatSessionView: View {
             Button {
               Task {
                 await onSend()
-                withAnimation(.snappy) {
+                withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
                   proxy.scrollTo("chat-end", anchor: .bottom)
                 }
               }
@@ -1351,6 +1501,7 @@ private struct WorkChatSessionView: View {
                 .frame(width: 44, height: 44)
                 .background(ADEColor.accent.opacity(0.12), in: Circle())
             }
+            .accessibilityLabel(sending ? "Sending message" : "Send message")
             .disabled(!isLive || sending || composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
           }
 
@@ -1367,7 +1518,7 @@ private struct WorkChatSessionView: View {
         .glassEffect()
       }
       .onChange(of: timeline.count) { _, _ in
-        withAnimation(.snappy) {
+        withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
           proxy.scrollTo("chat-end", anchor: .bottom)
         }
       }
@@ -1386,6 +1537,7 @@ private struct WorkChatSessionView: View {
 private struct WorkSessionHeader: View {
   let session: TerminalSessionSummary
   let chatSummary: AgentChatSessionSummary?
+  let transitionNamespace: Namespace.ID?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -1395,12 +1547,15 @@ private struct WorkSessionHeader: View {
           .foregroundStyle(providerTint(chatSummary?.provider))
           .frame(width: 34, height: 34)
           .background(providerTint(chatSummary?.provider).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "work-icon-\(session.id)", in: transitionNamespace)
         VStack(alignment: .leading, spacing: 6) {
           Text(chatSummary?.title ?? session.title)
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
+            .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "work-title-\(session.id)", in: transitionNamespace)
           HStack(spacing: 8) {
             WorkTag(text: sessionStatusLabel(session), icon: session.status == "running" ? "waveform.path.ecg" : "clock", tint: session.status == "running" ? ADEColor.success : ADEColor.textSecondary)
+              .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "work-status-\(session.id)", in: transitionNamespace)
             if let chatSummary {
               WorkTag(text: providerLabel(chatSummary.provider), icon: providerIcon(chatSummary.provider), tint: providerTint(chatSummary.provider))
               WorkTag(text: chatSummary.model, icon: "cpu", tint: ADEColor.textSecondary)
@@ -1419,7 +1574,9 @@ private struct WorkSessionHeader: View {
         }
       }
     }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .adeListCard()
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(chatSummary?.title ?? session.title), \(sessionStatusLabel(session)), lane \(session.laneName)")
   }
 
   private func metric(title: String, value: String) -> some View {
@@ -1484,8 +1641,11 @@ private struct WorkChatMessageBubble: View {
 
 private struct WorkToolCardView: View {
   let toolCard: WorkToolCardModel
+  let references: WorkNavigationTargets
   let isExpanded: Bool
   let onToggle: () -> Void
+  let onOpenFile: (String) -> Void
+  let onOpenPr: (Int) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -1514,6 +1674,40 @@ private struct WorkToolCardView: View {
 
       if isExpanded {
         VStack(alignment: .leading, spacing: 10) {
+          if !references.filePaths.isEmpty || !references.pullRequestNumbers.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+              Text("Linked references")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(ADEColor.textMuted)
+              ScrollView(.horizontal, showsIndicators: false) {
+                ADEGlassGroup(spacing: 8) {
+                  ForEach(references.filePaths.prefix(3), id: \.self) { path in
+                    Button {
+                      onOpenFile(path)
+                    } label: {
+                      Label(workReferenceLabel(for: path), systemImage: "doc.text")
+                        .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.glass)
+                    .accessibilityLabel("Open file \(path) in Files")
+                  }
+
+                  ForEach(references.pullRequestNumbers.prefix(3), id: \.self) { number in
+                    Button {
+                      onOpenPr(number)
+                    } label: {
+                      Label("PR #\(number)", systemImage: "arrow.triangle.pull")
+                        .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.glass)
+                    .tint(ADEColor.accent)
+                    .accessibilityLabel("Open PR number \(number)")
+                  }
+                }
+              }
+            }
+          }
+
           if let argsText = toolCard.argsText, !argsText.isEmpty {
             WorkStructuredOutputBlock(title: "Arguments", text: argsText)
           }
@@ -1525,6 +1719,8 @@ private struct WorkToolCardView: View {
     }
     .padding(14)
     .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(toolDisplayName(toolCard.toolName)), \(toolCard.status.rawValue)")
   }
 
   private var statusTint: Color {
@@ -1607,6 +1803,7 @@ private struct WorkArtifactView: View {
               .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
           }
           .buttonStyle(.plain)
+          .accessibilityLabel("Open artifact image \(artifact.title)")
         case .video(let url):
           VideoPlayer(player: AVPlayer(url: url))
             .frame(height: 220)
@@ -1660,11 +1857,12 @@ private struct WorkTerminalSessionView: View {
   @EnvironmentObject private var syncService: SyncService
   let session: TerminalSessionSummary
   let disconnectedNotice: Bool
+  let transitionNamespace: Namespace.ID?
 
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
-        WorkSessionHeader(session: session, chatSummary: nil)
+        WorkSessionHeader(session: session, chatSummary: nil, transitionNamespace: transitionNamespace)
 
         if disconnectedNotice {
           ADENoticeCard(
@@ -1906,6 +2104,11 @@ struct WorkToolCardModel: Identifiable, Equatable {
   let completedAt: String?
   let argsText: String?
   let resultText: String?
+}
+
+struct WorkNavigationTargets: Equatable {
+  let filePaths: [String]
+  let pullRequestNumbers: [Int]
 }
 
 struct WorkChatMessage: Identifiable, Equatable {
@@ -2200,6 +2403,73 @@ private func sanitizeLooseJSONControlCharacters(in raw: String) -> String {
   }
 
   return sanitized
+}
+
+func extractWorkNavigationTargets(from text: String) -> WorkNavigationTargets {
+  let filePattern = #"(?<![A-Za-z0-9_])(?:\.{1,2}/)?(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(?:swift|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|kts|json|yaml|yml|toml|md|mdx|txt|html|css|scss|sql|sh|bash|zsh|plist|png|jpg|jpeg|gif|webp|svg)(?::\d+)?"#
+  let prPattern = #"(?<![A-Za-z0-9])#(\d+)\b"#
+
+  var filePaths: [String] = []
+  var seenFiles = Set<String>()
+  for match in workRegexMatches(pattern: filePattern, in: text) {
+    guard let normalized = normalizedWorkReferenceFilePath(match), seenFiles.insert(normalized).inserted else { continue }
+    filePaths.append(normalized)
+  }
+
+  var pullRequestNumbers: [Int] = []
+  var seenPullRequests = Set<Int>()
+  for match in workRegexMatches(pattern: prPattern, in: text) {
+    guard let number = Int(match.dropFirst()), seenPullRequests.insert(number).inserted else { continue }
+    pullRequestNumbers.append(number)
+  }
+
+  return WorkNavigationTargets(filePaths: filePaths, pullRequestNumbers: pullRequestNumbers)
+}
+
+private func workRegexMatches(pattern: String, in text: String) -> [String] {
+  guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+  let range = NSRange(location: 0, length: (text as NSString).length)
+  return regex.matches(in: text, range: range).compactMap { match in
+    Range(match.range, in: text).map { String(text[$0]) }
+  }
+}
+
+private func normalizedWorkReferenceFilePath(_ rawPath: String) -> String? {
+  var candidate = rawPath.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`()[]{}<>,"))
+  guard !candidate.isEmpty else { return nil }
+  guard !candidate.contains("://") else { return nil }
+
+  if let lineNumberRange = candidate.range(of: #":\d+$"#, options: .regularExpression) {
+    candidate.removeSubrange(lineNumberRange)
+  }
+
+  if candidate.hasPrefix("./") {
+    candidate.removeFirst(2)
+  }
+
+  guard !candidate.hasPrefix("../") else { return nil }
+  return candidate
+}
+
+private func normalizeWorkFileReference(_ rawPath: String, workspaceRoot: String) -> String {
+  guard let normalized = normalizedWorkReferenceFilePath(rawPath) else { return "" }
+  let root = workspaceRoot.hasSuffix("/") ? String(workspaceRoot.dropLast()) : workspaceRoot
+
+  if normalized.hasPrefix(root + "/") {
+    return String(normalized.dropFirst(root.count + 1))
+  }
+
+  if normalized.hasPrefix("/") {
+    return ""
+  }
+
+  return normalized
+}
+
+private func workReferenceLabel(for path: String) -> String {
+  let normalized = normalizedWorkReferenceFilePath(path) ?? path
+  let lastComponent = (normalized as NSString).lastPathComponent
+  return lastComponent.isEmpty ? normalized : lastComponent
 }
 
 func buildWorkToolCards(from transcript: [WorkChatEnvelope]) -> [WorkToolCardModel] {
