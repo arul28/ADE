@@ -52,6 +52,16 @@ function normalizeFileSet(filePaths, label) {
 function collectDesktopRuntimeExecutableCandidates(rootPath) {
   const candidates = [];
 
+  for (const buildDir of [
+    path.join(rootPath, "node_modules", "node-pty", "build", "Release"),
+    path.join(rootPath, "node_modules", "node-pty", "build", "Debug"),
+  ]) {
+    candidates.push({
+      filePath: path.join(buildDir, "spawn-helper"),
+      label: "node-pty spawn helper",
+    });
+  }
+
   for (const prebuildDir of listDirectories(path.join(rootPath, "node_modules", "node-pty", "prebuilds"))) {
     candidates.push({
       filePath: path.join(prebuildDir, "spawn-helper"),

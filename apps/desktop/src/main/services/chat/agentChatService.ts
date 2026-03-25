@@ -4692,16 +4692,21 @@ export function createAgentChatService(args: {
   };
 
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
+    let adeMcpLaunch: ReturnType<typeof summarizeAdeMcpLaunch> | undefined;
+    try {
+      adeMcpLaunch = summarizeAdeMcpLaunch({
+        defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
+        ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
+        computerUsePolicy: managed.session.computerUse,
+      });
+    } catch { /* best-effort diagnostic — must not block Codex startup */ }
+
     logger.info("agent_chat.codex_runtime_start", {
       sessionId: managed.session.id,
       cwd: managed.laneWorktreePath,
       shellPath: process.env.SHELL ?? "",
       path: process.env.PATH ?? "",
-      adeMcpLaunch: summarizeAdeMcpLaunch({
-        defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
-        ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
-        computerUsePolicy: managed.session.computerUse,
-      }),
+      ...(adeMcpLaunch ? { adeMcpLaunch } : {}),
     });
     const proc = spawn("codex", ["app-server"], {
       cwd: managed.laneWorktreePath,
@@ -4841,7 +4846,7 @@ export function createAgentChatService(args: {
       void finishSession(managed, "failed", {
         exitCode: null,
         summary: message,
-      });
+      }).catch(() => {});
     });
 
     proc.on("exit", (code, signal) => {
@@ -5185,15 +5190,23 @@ export function createAgentChatService(args: {
             error instanceof Error ? error.message : String(error),
           );
         }
-        logger.warn("agent_chat.claude_v2_prewarm_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-          claudeExecutablePath: runtime.v2Session ? undefined : buildClaudeV2SessionOpts(managed, runtime).pathToClaudeCodeExecutable,
-          adeMcpLaunch: summarizeAdeMcpLaunch({
+        let diagClaudePath: string | undefined;
+        let diagMcpLaunch: ReturnType<typeof summarizeAdeMcpLaunch> | undefined;
+        try {
+          diagClaudePath = runtime.v2Session ? undefined : buildClaudeV2SessionOpts(managed, runtime).pathToClaudeCodeExecutable;
+        } catch { /* best-effort diagnostic */ }
+        try {
+          diagMcpLaunch = summarizeAdeMcpLaunch({
             defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
             ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
             computerUsePolicy: managed.session.computerUse,
-          }),
+          });
+        } catch { /* best-effort diagnostic */ }
+        logger.warn("agent_chat.claude_v2_prewarm_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+          claudeExecutablePath: diagClaudePath,
+          ...(diagMcpLaunch ? { adeMcpLaunch: diagMcpLaunch } : {}),
         });
         try { runtime.v2Session?.close(); } catch { /* ignore */ }
         runtime.v2Session = null;

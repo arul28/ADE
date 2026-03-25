@@ -61,7 +61,6 @@ function relayProxyInputWithIdentity(socket: net.Socket): void {
     process.stdin.pipe(socket);
     process.stdin.on("end", () => {
       socket.end();
-      process.exit(0);
     });
     return;
   }
@@ -92,7 +91,6 @@ function relayProxyInputWithIdentity(socket: net.Socket): void {
       pending = Buffer.alloc(0);
     }
     socket.end();
-    process.exit(0);
   });
 }
 
