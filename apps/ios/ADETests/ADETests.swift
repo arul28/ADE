@@ -1017,6 +1017,55 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(closed.showsRequestReviewers)
   }
 
+  func testFilesLanguageDetectionCoversDesktopParityLanguages() {
+    XCTAssertEqual(FilesLanguage.detect(languageId: "swift", filePath: "App.swift"), .swift)
+    XCTAssertEqual(FilesLanguage.detect(languageId: "typescript", filePath: "Button.tsx"), .typescript)
+    XCTAssertEqual(FilesLanguage.detect(languageId: "javascript", filePath: "index.js"), .javascript)
+    XCTAssertEqual(FilesLanguage.detect(languageId: "python", filePath: "script.py"), .python)
+    XCTAssertEqual(FilesLanguage.detect(languageId: nil, filePath: "Cargo.toml"), .plaintext)
+    XCTAssertEqual(FilesLanguage.detect(languageId: nil, filePath: "config.yaml"), .yaml)
+    XCTAssertEqual(FilesLanguage.detect(languageId: nil, filePath: "README.md"), .markdown)
+  }
+
+  func testSyntaxHighlighterTokenizesSwiftKeywordsStringsAndComments() {
+    let tokens = SyntaxHighlighter.tokenize(
+      "import Foundation\nstruct Demo {\n  let title = \"Hello\"\n  // Greets the workspace\n}",
+      as: .swift
+    )
+
+    XCTAssertTrue(tokens.contains(where: { $0.role == .keyword && $0.text == "import" }))
+    XCTAssertTrue(tokens.contains(where: { $0.role == .keyword && $0.text == "struct" }))
+    XCTAssertTrue(tokens.contains(where: { $0.role == .type && $0.text == "Demo" }))
+    XCTAssertTrue(tokens.contains(where: { $0.role == .string && $0.text == "\"Hello\"" }))
+    XCTAssertTrue(tokens.contains(where: { $0.role == .comment && $0.text.contains("Greets the workspace") }))
+  }
+
+  func testSyntaxHighlighterTokenizesTypeScriptKeywordsAndTypes() {
+    let tokens = SyntaxHighlighter.tokenize(
+      "export async function loadUser(id: string): Promise<User> {\n  return await api.get(\"/users\")\n}",
+      as: .typescript
+    )
+
+    XCTAssertTrue(tokens.contains(where: { $0.role == .keyword && $0.text == "export" }))
+    XCTAssertTrue(tokens.contains(where: { $0.role == .keyword && $0.text == "async" }))
+    XCTAssertTrue(tokens.contains(where: { $0.role == .keyword && $0.text == "function" }))
+    XCTAssertTrue(tokens.contains(where: { $0.role == .type && $0.text == "Promise" }))
+    XCTAssertTrue(tokens.contains(where: { $0.role == .type && $0.text == "User" }))
+    XCTAssertTrue(tokens.contains(where: { $0.role == .string && $0.text == "\"/users\"" }))
+  }
+
+  func testInlineDiffBuilderMarksAddedAndRemovedLines() {
+    let lines = buildInlineDiffLines(
+      original: "let value = 1\nprint(value)",
+      modified: "let value = 2\nprint(value)\nprint(\"done\")"
+    )
+
+    XCTAssertTrue(lines.contains(where: { $0.kind == .removed && $0.text == "let value = 1" }))
+    XCTAssertTrue(lines.contains(where: { $0.kind == .added && $0.text == "let value = 2" }))
+    XCTAssertTrue(lines.contains(where: { $0.kind == .unchanged && $0.text == "print(value)" }))
+    XCTAssertTrue(lines.contains(where: { $0.kind == .added && $0.text == "print(\"done\")" }))
+  }
+
   func testFileIconMapsCommonExtensionsToSfSymbols() {
     XCTAssertEqual(fileIcon(for: "App.swift"), "chevron.left.forwardslash.chevron.right")
     XCTAssertEqual(fileIcon(for: "config.json"), "doc.badge.gearshape")

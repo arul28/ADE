@@ -695,6 +695,36 @@ final class SyncService: ObservableObject {
     ])
   }
 
+  func createFile(workspaceId: String, path: String, content: String = "") async throws {
+    _ = try await sendFileRequest(action: "createFile", args: [
+      "workspaceId": workspaceId,
+      "path": path,
+      "content": content,
+    ])
+  }
+
+  func createDirectory(workspaceId: String, path: String) async throws {
+    _ = try await sendFileRequest(action: "createDirectory", args: [
+      "workspaceId": workspaceId,
+      "path": path,
+    ])
+  }
+
+  func renamePath(workspaceId: String, oldPath: String, newPath: String) async throws {
+    _ = try await sendFileRequest(action: "rename", args: [
+      "workspaceId": workspaceId,
+      "oldPath": oldPath,
+      "newPath": newPath,
+    ])
+  }
+
+  func deletePath(workspaceId: String, path: String) async throws {
+    _ = try await sendFileRequest(action: "deletePath", args: [
+      "workspaceId": workspaceId,
+      "path": path,
+    ])
+  }
+
   func quickOpen(workspaceId: String, query: String) async throws -> [FilesQuickOpenItem] {
     try decode(
       try await sendFileRequest(action: "quickOpen", args: ["workspaceId": workspaceId, "query": query]),
@@ -709,12 +739,13 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func listTree(workspaceId: String, parentPath: String = "") async throws -> [FileTreeNode] {
+  func listTree(workspaceId: String, parentPath: String = "", includeIgnored: Bool = false) async throws -> [FileTreeNode] {
     try decode(
       try await performFileRequest(action: "listTree", args: [
         "workspaceId": workspaceId,
         "parentPath": parentPath,
         "depth": 1,
+        "includeIgnored": includeIgnored,
       ]),
       as: [FileTreeNode].self
     )
