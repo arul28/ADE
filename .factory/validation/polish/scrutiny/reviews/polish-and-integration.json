@@ -1,0 +1,45 @@
+{
+  "featureId": "polish-and-integration",
+  "reviewedAt": "2026-03-25T10:32:26Z",
+  "commitId": "0478940761473474740b6f80324a2434fd95c273",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature adds real polish work — shared matched transitions, pull-to-refresh haptics, work-to-files/PR navigation, lane-to-PR shortcuts, and shared media caching — but it does not fully satisfy the milestone. Reduce Motion is still bypassed in Lane detail, Work chat history still loads and renders eagerly instead of lazily/batched, and the new file image cache can serve stale previews indefinitely.",
+    "issues": [
+      {
+        "file": "apps/ios/ADE/Views/LanesTabView.swift",
+        "line": 1066,
+        "severity": "blocking",
+        "description": "Reduce Motion is not actually respected for lane-detail section changes. The new `.animation(ADEMotion.emphasis(reduceMotion: reduceMotion), value: section)` is immediately followed by `.animation(.spring(.bouncy(duration: 0.35)), value: section)`, so users with Reduce Motion enabled still get a bouncy spring transition, which violates the feature's accessibility requirement and VAL-POLISH-005."
+      },
+      {
+        "file": "apps/ios/ADE/Views/WorkTabView.swift",
+        "line": 1207,
+        "severity": "blocking",
+        "description": "The promised lazy/batched chat-history performance work was not implemented. `loadTranscript(forceRemote:)` still loads the full transcript into memory, and `WorkChatSessionView` renders the entire timeline in a plain `VStack` inside `ScrollView` (see lines 1396-1438) instead of a lazy or paged container. Large chats will still render eagerly, so VAL-POLISH-006 is not actually covered."
+      },
+      {
+        "file": "apps/ios/ADE/Views/FilesTabView.swift",
+        "line": 1466,
+        "severity": "non_blocking",
+        "description": "The new file-image cache is keyed only by workspace/path and returns cached bytes before any live `readFile` call. Because there is no invalidation or refresh bypass, a changed image file can stay stuck on stale preview data even after reopening or reloading the editor."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "conventions",
+      "observation": "Mission guidance conflicts on simulator-based verification. The mission plan still tells workers to launch the simulator and capture screenshots, but the mission AGENTS file explicitly forbids launching the simulator or taking screenshots because the environment cannot connect to the host usefully.",
+      "evidence": "/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/mission.md:145-146 requires simulator screenshots, while /Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/AGENTS.md:84 says 'DO NOT launch the simulator or take screenshots.'"
+    },
+    {
+      "area": "knowledge",
+      "observation": "The iOS design-system library does not document the iOS 26 matched-transition APIs the worker needed for this feature. It only mentions the older `glassEffectID` morphing pattern, so the worker had to web-search Apple docs during implementation.",
+      "evidence": "The transcript skeleton for worker session 63dcae8f-44ad-4048-b84a-07098a885b42 includes WebSearch calls for developer.apple.com matched-transition syntax, while /Users/admin/Projects/ADE/.factory/library/ios-design-system.md:47-49 only documents `glassEffectID` and does not mention `matchedTransitionSource` or `navigationTransition(.zoom)`"
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail. The feature improves polish meaningfully, but it still misses two required behaviors: Reduce Motion remains broken for lane-detail transitions, and Work chat history is still eagerly loaded/rendered instead of lazy or paged. I also noted a stale file-preview cache risk plus two shared-state documentation gaps."
+}

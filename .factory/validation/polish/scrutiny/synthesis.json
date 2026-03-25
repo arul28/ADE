@@ -1,0 +1,59 @@
+{
+  "milestone": "polish",
+  "round": 1,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build test",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build build",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build analyze",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "failedFeatures": [
+      "polish-and-integration"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "polish-and-integration",
+      "severity": "blocking",
+      "description": "`apps/ios/ADE/Views/LanesTabView.swift:1066` still forces a bouncy spring animation after `ADEMotion.emphasis(reduceMotion:)`, so Reduce Motion users do not get the required simpler transition fallback for lane-detail section changes."
+    },
+    {
+      "featureId": "polish-and-integration",
+      "severity": "blocking",
+      "description": "`apps/ios/ADE/Views/WorkTabView.swift:1207` still loads the full transcript into memory and renders chat history inside a plain `VStack` in `ScrollView`, so the promised lazy or paged performance pass for large chats is not implemented."
+    }
+  ],
+  "appliedUpdates": [
+    {
+      "target": "library",
+      "description": "Added iOS 26 `matchedTransitionSource` and `.navigationTransition(.zoom(sourceID:in:))` guidance, plus a Reduce Motion fallback note, to `.factory/library/ios-design-system.md`.",
+      "sourceFeature": "polish-and-integration"
+    }
+  ],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "AGENTS.md",
+      "suggestion": "Align future iOS mission guidance so simulator screenshot validation is not required in `mission.md` when the mission AGENTS file forbids launching the simulator or taking screenshots in this environment.",
+      "evidence": "The `polish-and-integration` review found `/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/mission.md:145-146` still requires simulator screenshots while `/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/AGENTS.md:84` says 'DO NOT launch the simulator or take screenshots.'",
+      "isSystemic": false
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": null
+}
