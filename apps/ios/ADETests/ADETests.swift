@@ -1081,6 +1081,78 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(formattedFileSize(1_572_864), "1.5 MB")
   }
 
+  func testAgentChatTranscriptResponseDecodesEntries() throws {
+    let payload: [String: Any] = [
+      "sessionId": "chat-1",
+      "entries": [
+        [
+          "role": "user",
+          "text": "Ship Work tab parity.",
+          "timestamp": "2026-03-25T00:00:00.000Z",
+        ],
+        [
+          "role": "assistant",
+          "text": "On it.",
+          "timestamp": "2026-03-25T00:00:01.000Z",
+          "turnId": "turn-1",
+        ],
+      ],
+      "truncated": false,
+      "totalEntries": 2,
+    ]
+
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let decoded = try JSONDecoder().decode(AgentChatTranscriptResponse.self, from: data)
+
+    XCTAssertEqual(decoded.sessionId, "chat-1")
+    XCTAssertEqual(decoded.entries.count, 2)
+    XCTAssertEqual(decoded.entries.last?.turnId, "turn-1")
+    XCTAssertFalse(decoded.truncated)
+    XCTAssertEqual(decoded.totalEntries, 2)
+  }
+
+  func testWorkChatTranscriptHelpersBuildToolCardsAndRunningAgents() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:00.000Z","sequence":1,"event":{"type":"user_message","text":"Inspect README","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":2,"event":{"type":"subagent_started","taskId":"task-1","description":"Docs helper","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":3,"event":{"type":"subagent_progress","taskId":"task-1","summary":"Reading README.md","lastToolName":"functions.Read","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":4,"event":{"type":"tool_call","tool":"functions.Read","args":{"file_path":"README.md"},"itemId":"tool-1","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":5,"event":{"type":"tool_result","tool":"functions.Read","result":{"content":"ADE"},"itemId":"tool-1","turnId":"turn-1","status":"completed"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:05.000Z","sequence":6,"event":{"type":"text","text":"# Done\n- Read the project overview.","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    let toolCards = buildWorkToolCards(from: transcript)
+    let activeAgents = deriveWorkAgentActivities(
+      from: transcript,
+      session: WorkAgentActivityContext(
+        sessionId: "chat-1",
+        title: "Claude chat",
+        laneName: "feature/work",
+        status: "running",
+        startedAt: "2026-03-25T00:00:00.000Z"
+      )
+    )
+
+    XCTAssertEqual(transcript.count, 6)
+    XCTAssertEqual(toolCards.count, 1)
+    XCTAssertEqual(toolCards.first?.toolName, "functions.Read")
+    XCTAssertEqual(toolCards.first?.status, .completed)
+    XCTAssertTrue(toolCards.first?.resultText?.contains("ADE") == true)
+    XCTAssertEqual(activeAgents.count, 1)
+    XCTAssertEqual(activeAgents.first?.agentName, "Docs helper")
+    XCTAssertEqual(activeAgents.first?.toolName, "functions.Read")
+  }
+
+  func testParseANSISegmentsTracksForegroundColors() {
+    let segments = parseANSISegments("\u{001B}[31mError\u{001B}[0m plain \u{001B}[32mOK\u{001B}[0m")
+
+    XCTAssertEqual(segments.map(\.text), ["Error", " plain ", "OK"])
+    XCTAssertEqual(segments[safe: 0]?.foreground, .red)
+    XCTAssertNil(segments[safe: 1]?.foreground)
+    XCTAssertEqual(segments[safe: 2]?.foreground, .green)
+  }
+
   func testLegacyCacheDatabaseIsReplacedDuringPhase6Bootstrap() throws {
     let baseURL = makeTemporaryDirectory()
     let appURL = baseURL.appendingPathComponent("ADE", isDirectory: true)
@@ -1369,6 +1441,12 @@ final class ADETests: XCTestCase {
 
   private struct DummyHydrationPayload: Decodable {
     let refreshedCount: Int
+  }
+}
+
+private extension Collection {
+  subscript(safe index: Index) -> Element? {
+    indices.contains(index) ? self[index] : nil
   }
 }
 

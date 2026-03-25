@@ -33,6 +33,7 @@ struct ContentView: View {
         .tabItem {
           Label("Work", systemImage: "terminal")
         }
+        .badge(syncService.runningChatSessionCount)
       PRsTabView()
         .tag(RootTab.prs)
         .tabItem {
@@ -57,6 +58,10 @@ struct ContentView: View {
     .onChange(of: syncService.requestedFilesNavigation?.id) { _, requestId in
       guard requestId != nil else { return }
       selectedTab = .files
+    }
+    .onChange(of: syncService.requestedLaneNavigation?.id) { _, requestId in
+      guard requestId != nil else { return }
+      selectedTab = .lanes
     }
   }
 }

@@ -409,6 +409,13 @@ struct AgentChatTranscriptEntry: Codable, Identifiable, Equatable {
   var turnId: String?
 }
 
+struct AgentChatTranscriptResponse: Codable, Equatable {
+  var sessionId: String
+  var entries: [AgentChatTranscriptEntry]
+  var truncated: Bool
+  var totalEntries: Int
+}
+
 struct AgentChatModelReasoningEffort: Codable, Equatable, Identifiable {
   var id: String { effort }
   var effort: String
@@ -530,6 +537,25 @@ struct SyncFileBlob: Codable, Equatable {
   var isBinary: Bool
   var content: String
   var languageId: String?
+}
+
+struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {
+  var id: String
+  var artifactKind: String
+  var backendStyle: String
+  var backendName: String
+  var sourceToolName: String?
+  var originalType: String?
+  var title: String
+  var description: String?
+  var uri: String
+  var storageKind: String
+  var mimeType: String?
+  var metadataJson: String?
+  var createdAt: String
+  var ownerKind: String
+  var ownerId: String
+  var relation: String
 }
 
 struct FilesQuickOpenItem: Codable, Identifiable, Equatable {

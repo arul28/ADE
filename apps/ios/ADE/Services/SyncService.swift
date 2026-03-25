@@ -232,6 +232,16 @@ struct FilesNavigationRequest: Equatable, Identifiable {
   }
 }
 
+struct LaneNavigationRequest: Equatable, Identifiable {
+  let id: String
+  let laneId: String
+
+  init(laneId: String) {
+    self.id = UUID().uuidString
+    self.laneId = laneId
+  }
+}
+
 @MainActor
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
@@ -249,6 +259,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var localStateRevision = 0
   @Published var settingsPresented = false
   @Published var requestedFilesNavigation: FilesNavigationRequest?
+  @Published var requestedLaneNavigation: LaneNavigationRequest?
 
   private let legacyDraftKey = "ade.sync.connectionDraft"
   private let profileKey = "ade.sync.hostProfile"
@@ -628,6 +639,24 @@ final class SyncService: ObservableObject {
 
   func fetchSessions() async throws -> [TerminalSessionSummary] {
     database.fetchSessions()
+  }
+
+  var runningChatSessionCount: Int {
+    database.fetchSessions().filter { session in
+      session.status == "running" && (session.toolType?.contains("chat") == true)
+    }.count
+  }
+
+  func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) async throws -> [ComputerUseArtifactSummary] {
+    database.fetchComputerUseArtifacts(ownerKind: ownerKind, ownerId: ownerId)
+  }
+
+  func renameSession(sessionId: String, title: String) async throws {
+    try database.updateSessionTitle(sessionId: sessionId, title: title)
+  }
+
+  func setSessionPinned(sessionId: String, pinned: Bool) async throws {
+    try database.setSessionPinned(sessionId: sessionId, pinned: pinned)
   }
 
   func fetchPullRequests() async throws -> [PrSummary] {
@@ -1045,16 +1074,35 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "chat.getSummary", args: ["sessionId": sessionId], as: AgentChatSessionSummary.self)
   }
 
-  func fetchChatTranscript(sessionId: String, limit: Int = 200, maxChars: Int = 32_000) async throws -> [AgentChatTranscriptEntry] {
+  func fetchChatTranscriptResponse(sessionId: String, limit: Int = 200, maxChars: Int = 32_000) async throws -> AgentChatTranscriptResponse {
     try await sendDecodableCommand(
       action: "chat.getTranscript",
       args: ["sessionId": sessionId, "limit": limit, "maxChars": maxChars],
-      as: [AgentChatTranscriptEntry].self
+      as: AgentChatTranscriptResponse.self
     )
+  }
+
+  func fetchChatTranscript(sessionId: String, limit: Int = 200, maxChars: Int = 32_000) async throws -> [AgentChatTranscriptEntry] {
+    let response = try await fetchChatTranscriptResponse(sessionId: sessionId, limit: limit, maxChars: maxChars)
+    return response.entries
   }
 
   func sendChatMessage(sessionId: String, text: String) async throws {
     _ = try await sendCommand(action: "chat.send", args: ["sessionId": sessionId, "text": text])
+  }
+
+  func readArtifact(artifactId: String? = nil, uri: String? = nil, path: String? = nil) async throws -> SyncFileBlob {
+    var args: [String: Any] = [:]
+    if let artifactId, !artifactId.isEmpty {
+      args["artifactId"] = artifactId
+    }
+    if let uri, !uri.isEmpty {
+      args["uri"] = uri
+    }
+    if let path, !path.isEmpty {
+      args["path"] = path
+    }
+    return try decode(try await performFileRequest(action: "readArtifact", args: args), as: SyncFileBlob.self)
   }
 
   func createPullRequest(laneId: String, title: String, body: String, reviewers: [String]) async throws {

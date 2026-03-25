@@ -74,6 +74,25 @@ final class DatabaseService {
     let resumeCommand: String?
   }
 
+  private struct ComputerUseArtifactRow {
+    let id: String
+    let artifactKind: String
+    let backendStyle: String
+    let backendName: String
+    let sourceToolName: String?
+    let originalType: String?
+    let title: String
+    let description: String?
+    let uri: String
+    let storageKind: String
+    let mimeType: String?
+    let metadataJson: String?
+    let createdAt: String
+    let ownerKind: String
+    let ownerId: String
+    let relation: String
+  }
+
   private struct LaneListSnapshotRow {
     let laneId: String
     let snapshotJson: String
@@ -800,6 +819,88 @@ final class DatabaseService {
         summary: row.summary,
         runtimeState: runtimeState(for: row.status),
         resumeCommand: row.resumeCommand
+      )
+    }
+  }
+
+  func updateSessionTitle(sessionId: String, title: String) throws {
+    guard db != nil else { return }
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    _ = try execute("update terminal_sessions set title = ? where id = ?") { statement in
+      try bindText(trimmed, to: statement, index: 1)
+      try bindText(sessionId, to: statement, index: 2)
+    }
+    notifyDidChange()
+  }
+
+  func setSessionPinned(sessionId: String, pinned: Bool) throws {
+    guard db != nil else { return }
+    _ = try execute("update terminal_sessions set pinned = ? where id = ?") { statement in
+      sqlite3_bind_int(statement, 1, pinned ? 1 : 0)
+      try bindText(sessionId, to: statement, index: 2)
+    }
+    notifyDidChange()
+  }
+
+  func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
+    guard let projectId = currentProjectId() else { return [] }
+
+    let sql = """
+      select a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name, a.original_type,
+             a.title, a.description, a.uri, a.storage_kind, a.mime_type, a.metadata_json, a.created_at,
+             l.owner_kind, l.owner_id, l.relation
+        from computer_use_artifacts a
+        inner join computer_use_artifact_links l on l.artifact_id = a.id
+       where a.project_id = ?
+         and l.project_id = ?
+         and l.owner_kind = ?
+         and l.owner_id = ?
+       order by a.created_at asc
+    """
+
+    return query(sql, bind: { [self] statement in
+      try self.bindText(projectId, to: statement, index: 1)
+      try self.bindText(projectId, to: statement, index: 2)
+      try self.bindText(ownerKind, to: statement, index: 3)
+      try self.bindText(ownerId, to: statement, index: 4)
+    }, map: { statement in
+      ComputerUseArtifactRow(
+        id: stringValue(statement, index: 0) ?? "",
+        artifactKind: stringValue(statement, index: 1) ?? "",
+        backendStyle: stringValue(statement, index: 2) ?? "",
+        backendName: stringValue(statement, index: 3) ?? "",
+        sourceToolName: stringValue(statement, index: 4),
+        originalType: stringValue(statement, index: 5),
+        title: stringValue(statement, index: 6) ?? "",
+        description: stringValue(statement, index: 7),
+        uri: stringValue(statement, index: 8) ?? "",
+        storageKind: stringValue(statement, index: 9) ?? "",
+        mimeType: stringValue(statement, index: 10),
+        metadataJson: stringValue(statement, index: 11),
+        createdAt: stringValue(statement, index: 12) ?? "",
+        ownerKind: stringValue(statement, index: 13) ?? "",
+        ownerId: stringValue(statement, index: 14) ?? "",
+        relation: stringValue(statement, index: 15) ?? "attached_to"
+      )
+    }).map { row in
+      ComputerUseArtifactSummary(
+        id: row.id,
+        artifactKind: row.artifactKind,
+        backendStyle: row.backendStyle,
+        backendName: row.backendName,
+        sourceToolName: row.sourceToolName,
+        originalType: row.originalType,
+        title: row.title,
+        description: row.description,
+        uri: row.uri,
+        storageKind: row.storageKind,
+        mimeType: row.mimeType,
+        metadataJson: row.metadataJson,
+        createdAt: row.createdAt,
+        ownerKind: row.ownerKind,
+        ownerId: row.ownerId,
+        relation: row.relation
       )
     }
   }
