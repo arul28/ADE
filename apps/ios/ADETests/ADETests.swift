@@ -80,6 +80,63 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testSyncRequestTimeoutUsesThirtySecondFriendlyReconnectMessage() {
+    XCTAssertEqual(SyncRequestTimeout.defaultTimeoutNanoseconds, 30_000_000_000)
+    XCTAssertEqual(SyncRequestTimeout.error().localizedDescription, "The host took too long to respond. Reconnecting now.")
+  }
+
+  func testSyncReconnectStateUsesBackoffAndResetsAfterSuccess() {
+    var state = SyncReconnectState()
+
+    XCTAssertEqual(state.nextDelayNanoseconds(), 1_000_000_000)
+    XCTAssertEqual(state.nextDelayNanoseconds(), 2_000_000_000)
+    XCTAssertEqual(state.nextDelayNanoseconds(), 4_000_000_000)
+    XCTAssertEqual(state.attempts, 3)
+
+    state.reset()
+
+    XCTAssertEqual(state.attempts, 0)
+    XCTAssertEqual(state.nextDelayNanoseconds(), 1_000_000_000)
+  }
+
+  func testSyncReconnectStateReconnectsImmediatelyAfterHeartbeatTimeout() {
+    var state = SyncReconnectState()
+
+    XCTAssertEqual(state.nextDelayNanoseconds(forCloseCodeRawValue: 4001), 0)
+    XCTAssertEqual(state.attempts, 0)
+    XCTAssertEqual(state.nextDelayNanoseconds(), 1_000_000_000)
+  }
+
+  func testSyncBonjourTimingMatchesReliabilityRequirements() {
+    XCTAssertEqual(SyncBonjourTiming.searchRetryNanoseconds, 2_000_000_000)
+    XCTAssertEqual(SyncBonjourTiming.resolveRetryNanoseconds, 2_000_000_000)
+    XCTAssertEqual(SyncBonjourTiming.periodicRestartNanoseconds, 30_000_000_000)
+    XCTAssertEqual(SyncBonjourTiming.resolveTimeout, 10)
+  }
+
+  func testSyncUserFacingErrorTranslatesTechnicalSyncMessages() {
+    let hydrationError = NSError(
+      domain: "ADE",
+      code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "Unable to hydrate lanes because no project row is available yet"]
+    )
+    XCTAssertEqual(SyncUserFacingError.message(for: hydrationError), SyncHydrationMessaging.waitingForProjectData)
+
+    let offlineError = NSError(
+      domain: "ADE",
+      code: 2,
+      userInfo: [NSLocalizedDescriptionKey: "The host is offline."]
+    )
+    XCTAssertEqual(SyncUserFacingError.message(for: offlineError), "The host is offline. Reconnect, then try again.")
+
+    let authError = NSError(
+      domain: "ADE",
+      code: 3,
+      userInfo: [NSLocalizedDescriptionKey: "Authentication failed.", "ADEErrorCode": "auth_failed"]
+    )
+    XCTAssertEqual(SyncUserFacingError.message(for: authError), "This phone is no longer paired with the host. Pair again from Settings.")
+  }
+
   func testDatabaseReplaceLaneSnapshotsWithoutProjectRowUsesFriendlyError() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeLaneHydrationDatabase(baseURL: baseURL)

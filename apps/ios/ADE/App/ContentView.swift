@@ -106,6 +106,20 @@ private struct ConnectionOverviewCard: View {
           value: lastSyncText
         )
       }
+
+      if syncService.hasFailedDomainStatuses {
+        Button {
+          Task {
+            await syncService.retryFailedDomains()
+          }
+        } label: {
+          Label("Retry all", systemImage: "arrow.clockwise")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(adeAccent)
+        .controlSize(.small)
+      }
     }
     .foregroundStyle(ADEPalette.textPrimary)
     .adeGlassCard(cornerRadius: 16, padding: 16)
@@ -199,6 +213,9 @@ struct ConnectionSettingsView: View {
         Section("Sync status") {
           ForEach(SyncDomain.allCases, id: \.self) { domain in
             SyncDomainStatusRow(domain: domain, status: syncService.status(for: domain))
+              .environmentObject(syncService)
+              .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+              .listRowBackground(Color.clear)
           }
         }
 
@@ -433,45 +450,61 @@ private struct StatusBadge: View {
 }
 
 private struct SyncDomainStatusRow: View {
+  @EnvironmentObject private var syncService: SyncService
+
   let domain: SyncDomain
   let status: SyncDomainStatus
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 10) {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .top, spacing: 10) {
         Image(systemName: icon)
           .foregroundStyle(ADEPalette.textSecondary)
           .frame(width: 18)
-        Text(title)
-          .font(.body.weight(.medium))
+
+        VStack(alignment: .leading, spacing: 8) {
+          Text(title)
+            .font(.body.weight(.medium))
+
+          if let lastHydratedAt = status.lastHydratedAt {
+            Text("Hydrated \(RelativeDateTimeFormatter().localizedString(for: lastHydratedAt, relativeTo: Date()))")
+              .font(.caption)
+              .foregroundStyle(ADEPalette.textSecondary)
+          } else {
+            Text(phaseDescription)
+              .font(.caption)
+              .foregroundStyle(ADEPalette.textSecondary)
+          }
+
+          if let lastError = status.lastError, status.phase == .failed {
+            Text(lastError)
+              .font(.caption)
+              .foregroundStyle(ADEPalette.danger)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+
+          if status.phase == .failed {
+            Button("Retry") {
+              Task {
+                await syncService.retry(domain: domain)
+              }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(adeAccent)
+            .controlSize(.small)
+          }
+        }
+
         Spacer()
+
         if status.phase == .syncingInitialData || status.phase == .hydrating {
           ProgressView()
             .controlSize(.mini)
         }
         ADEStatusPill(text: phaseLabel, tint: tint)
       }
-
-      HStack {
-        if let lastHydratedAt = status.lastHydratedAt {
-          Text("Hydrated \(RelativeDateTimeFormatter().localizedString(for: lastHydratedAt, relativeTo: Date()))")
-            .font(.caption)
-            .foregroundStyle(ADEPalette.textSecondary)
-        } else {
-          Text(phaseDescription)
-            .font(.caption)
-            .foregroundStyle(ADEPalette.textSecondary)
-        }
-        Spacer()
-      }
-
-      if let lastError = status.lastError, status.phase == .failed {
-        Text(lastError)
-          .font(.caption)
-          .foregroundStyle(ADEPalette.danger)
-          .fixedSize(horizontal: false, vertical: true)
-      }
     }
+    .adeGlassCard(cornerRadius: 14, padding: 14)
     .padding(.vertical, 2)
     .animation(.easeInOut(duration: 0.25), value: status.phase)
     .accessibilityElement(children: .combine)

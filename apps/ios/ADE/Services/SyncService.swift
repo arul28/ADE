@@ -79,6 +79,119 @@ enum InitialHydrationGate {
   }
 }
 
+enum SyncRequestTimeout {
+  static let defaultTimeoutNanoseconds: UInt64 = 30_000_000_000
+  static let message = "The host took too long to respond. Reconnecting now."
+
+  static func error(underlyingError: Error? = nil) -> NSError {
+    var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
+    if let underlyingError {
+      userInfo[NSUnderlyingErrorKey] = underlyingError
+    }
+    return NSError(domain: "ADE", code: 23, userInfo: userInfo)
+  }
+}
+
+enum SyncBonjourTiming {
+  static let searchRetryNanoseconds: UInt64 = 2_000_000_000
+  static let resolveRetryNanoseconds: UInt64 = 2_000_000_000
+  static let periodicRestartNanoseconds: UInt64 = 30_000_000_000
+  static let resolveTimeout: TimeInterval = 10
+}
+
+struct SyncReconnectState {
+  private(set) var attempts = 0
+
+  mutating func nextDelayNanoseconds() -> UInt64 {
+    let exponent = min(attempts, 4)
+    let seconds = UInt64(1 << exponent)
+    attempts += 1
+    return seconds * 1_000_000_000
+  }
+
+  mutating func nextDelayNanoseconds(forCloseCodeRawValue closeCodeRawValue: Int?) -> UInt64 {
+    if closeCodeRawValue == 4001 {
+      return 0
+    }
+    return nextDelayNanoseconds()
+  }
+
+  mutating func reset() {
+    attempts = 0
+  }
+}
+
+enum SyncUserFacingError {
+  static func message(for error: Error) -> String {
+    let nsError = error as NSError
+    if let code = nsError.userInfo["ADEErrorCode"] as? String, code == "auth_failed" {
+      return "This phone is no longer paired with the host. Pair again from Settings."
+    }
+
+    let rawMessage = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !rawMessage.isEmpty else {
+      return "Something interrupted sync. Reconnect to the host and try again."
+    }
+
+    let lowered = rawMessage.lowercased()
+    if lowered.contains("timed out waiting for host to sync project data") {
+      return SyncHydrationMessaging.projectDataTimeout
+    }
+    if lowered.contains("no project row") || lowered.contains("project data") {
+      return SyncHydrationMessaging.waitingForProjectData
+    }
+    if lowered.contains("host took too long to respond") {
+      return SyncRequestTimeout.message
+    }
+    if lowered.contains("heartbeat") && lowered.contains("reconnect") {
+      return "The host stopped responding. Reconnecting now."
+    }
+    if lowered == "connection closed." ||
+        lowered.contains("socket is not connected") ||
+        lowered.contains("network connection was lost") ||
+        lowered.contains("cancelled") {
+      return "The connection to the host was interrupted. Reconnecting now."
+    }
+    if lowered.contains("unable to reach the saved ade host") ||
+        lowered.contains("could not connect to the server") ||
+        lowered.contains("network is unreachable") ||
+        lowered.contains("cannot connect to host") {
+      return "Can't reach the saved host right now. Make sure ADE is running on the host, then retry."
+    }
+    if lowered.contains("the host is offline") || lowered.contains("requires a live connection to the host") {
+      return "The host is offline. Reconnect, then try again."
+    }
+    if lowered.contains("the host returned incomplete") {
+      return "The host sent incomplete sync data. Retry the affected area or reconnect the host."
+    }
+    if lowered.contains("authentication failed") {
+      return "This phone is no longer paired with the host. Pair again from Settings."
+    }
+    if lowered.contains("invalid host address") {
+      return "The host address looks invalid. Check it and try again."
+    }
+    if lowered.contains("remote command rejected") {
+      return "The host couldn't accept that request right now. Try again in a moment."
+    }
+    if lowered.contains("file request failed") {
+      return "The host couldn't finish that file request. Try again."
+    }
+
+    return rawMessage
+  }
+
+  static func error(from error: Error) -> NSError {
+    let nsError = error as NSError
+    let friendlyMessage = message(for: error)
+    guard nsError.localizedDescription != friendlyMessage else { return nsError }
+
+    var userInfo = nsError.userInfo
+    userInfo[NSLocalizedDescriptionKey] = friendlyMessage
+    userInfo[NSUnderlyingErrorKey] = userInfo[NSUnderlyingErrorKey] ?? error
+    return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
+  }
+}
+
 struct FilesNavigationRequest: Equatable, Identifiable {
   let id: String
   let workspaceId: String
@@ -116,7 +229,12 @@ final class SyncService: ObservableObject {
   private let keychain = KeychainService()
   private let database: DatabaseService
   private var socket: URLSessionWebSocketTask?
-  private var pending: [String: (Result<Any, Error>) -> Void] = [:]
+  private struct PendingRequest {
+    let completion: (Result<Any, Error>) -> Void
+    let timeoutTask: Task<Void, Never>
+  }
+
+  private var pending: [String: PendingRequest] = [:]
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
   private let compressionThresholdBytes = 4 * 1024
@@ -126,7 +244,7 @@ final class SyncService: ObservableObject {
   private var latestRemoteDbVersion = 0
   private var outboundLocalDbVersion = 0
   private let discoveryBrowser = SyncBonjourBrowser()
-  private var reconnectAttempts = 0
+  private var reconnectState = SyncReconnectState()
   private var allowAutoReconnect = true
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
@@ -229,7 +347,7 @@ final class SyncService: ObservableObject {
     do {
       try ensureDatabaseReady()
     } catch {
-      lastError = error.localizedDescription
+      lastError = SyncUserFacingError.message(for: error)
       connectionState = .error
       return
     }
@@ -255,11 +373,14 @@ final class SyncService: ObservableObject {
     do {
       try ensureDatabaseReady()
     } catch {
-      lastError = error.localizedDescription
+      lastError = SyncUserFacingError.message(for: error)
       connectionState = .error
       return
     }
     do {
+      if socket != nil || !pending.isEmpty || connectionState == .connected || connectionState == .connecting || connectionState == .syncing {
+        disconnect(clearCredentials: false)
+      }
       allowAutoReconnect = true
       let addressCandidates = deduplicatedAddresses([host] + candidateAddresses)
       let preferredAddress = addressCandidates.first ?? host
@@ -298,9 +419,10 @@ final class SyncService: ObservableObject {
       currentAddress = preferredAddress
       try await hello(host: preferredAddress, port: port, token: secret, authKind: "paired", pairedDeviceId: pairedDeviceId, expectedHostIdentity: hostIdentity)
     } catch {
-      lastError = error.localizedDescription
+      let friendlyMessage = SyncUserFacingError.message(for: error)
+      lastError = friendlyMessage
       connectionState = .error
-      setDomainStatus(SyncDomain.allCases, phase: .failed, error: error.localizedDescription)
+      setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
     }
   }
 
@@ -355,13 +477,9 @@ final class SyncService: ObservableObject {
   func disconnect(clearCredentials: Bool = false) {
     allowAutoReconnect = false
     reconnectTask?.cancel()
-    relayTask?.cancel()
-    relayTask = nil
-    socket?.cancel(with: .normalClosure, reason: nil)
-    socket = nil
+    teardownSocket(closeCode: .normalClosure)
     connectionState = .disconnected
     hostName = activeHostProfile?.hostName
-    currentAddress = nil
     latestRemoteDbVersion = 0
     outboundLocalDbVersion = database.currentDbVersion()
     setDomainStatus(SyncDomain.allCases, phase: .disconnected)
@@ -393,10 +511,11 @@ final class SyncService: ObservableObject {
       try database.replaceLaneSnapshots(payload.lanes, snapshots: payload.snapshots)
       setDomainStatus([.lanes, .files], phase: .ready)
     } catch {
+      let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
         setDomainStatus([.lanes, .files], phase: .disconnected)
       } else {
-        setDomainStatus([.lanes, .files], phase: .failed, error: error.localizedDescription)
+        setDomainStatus([.lanes, .files], phase: .failed, error: friendlyMessage)
       }
       throw error
     }
@@ -410,10 +529,11 @@ final class SyncService: ObservableObject {
       try database.replaceTerminalSessions(sessions)
       setDomainStatus([.work], phase: .ready)
     } catch {
+      let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
         setDomainStatus([.work], phase: .disconnected)
       } else {
-        setDomainStatus([.work], phase: .failed, error: error.localizedDescription)
+        setDomainStatus([.work], phase: .failed, error: friendlyMessage)
       }
       throw error
     }
@@ -431,10 +551,11 @@ final class SyncService: ObservableObject {
       try database.replacePullRequestHydration(payload)
       setDomainStatus([.prs], phase: .ready)
     } catch {
+      let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
         setDomainStatus([.prs], phase: .disconnected)
       } else {
-        setDomainStatus([.prs], phase: .failed, error: error.localizedDescription)
+        setDomainStatus([.prs], phase: .failed, error: friendlyMessage)
       }
       throw error
     }
@@ -456,10 +577,11 @@ final class SyncService: ObservableObject {
       setDomainStatus([.lanes], phase: .ready)
       return detail
     } catch {
+      let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
         setDomainStatus([.lanes], phase: .disconnected)
       } else {
-        setDomainStatus([.lanes], phase: .failed, error: error.localizedDescription)
+        setDomainStatus([.lanes], phase: .failed, error: friendlyMessage)
       }
       throw error
     }
@@ -487,6 +609,41 @@ final class SyncService: ObservableObject {
 
   func status(for domain: SyncDomain) -> SyncDomainStatus {
     domainStatuses[domain] ?? .disconnected
+  }
+
+  var hasFailedDomainStatuses: Bool {
+    SyncDomain.allCases.contains { status(for: $0).phase == .failed }
+  }
+
+  func retry(domain: SyncDomain) async {
+    lastError = nil
+    do {
+      switch domain {
+      case .lanes, .files:
+        try await refreshLaneSnapshots()
+      case .work:
+        try await refreshWorkSessions()
+      case .prs:
+        try await refreshPullRequestSnapshots()
+      }
+    } catch {
+      lastError = SyncUserFacingError.message(for: error)
+    }
+  }
+
+  func retryFailedDomains() async {
+    let failedDomains = SyncDomain.allCases.filter { status(for: $0).phase == .failed }
+    guard !failedDomains.isEmpty else { return }
+
+    if failedDomains.contains(.lanes) || failedDomains.contains(.files) {
+      await retry(domain: .lanes)
+    }
+    if failedDomains.contains(.work) {
+      await retry(domain: .work)
+    }
+    if failedDomains.contains(.prs) {
+      await retry(domain: .prs)
+    }
   }
 
   func readFile(workspaceId: String, path: String) async throws -> SyncFileBlob {
@@ -968,8 +1125,7 @@ final class SyncService: ObservableObject {
           forgetHost()
           throw error
         }
-        socket?.cancel(with: .goingAway, reason: nil)
-        socket = nil
+        teardownSocket()
       }
     }
 
@@ -981,17 +1137,15 @@ final class SyncService: ObservableObject {
       forgetHost()
       return
     }
-    lastError = error.localizedDescription
+    let friendlyMessage = SyncUserFacingError.message(for: error)
+    lastError = friendlyMessage
     connectionState = .error
-    setDomainStatus(SyncDomain.allCases, phase: .failed, error: error.localizedDescription)
+    setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
     scheduleReconnectIfNeeded(after: reconnectDelay())
   }
 
   private func reconnectDelay() -> UInt64 {
-    let exponent = min(reconnectAttempts, 4)
-    let seconds = UInt64(1 << exponent)
-    reconnectAttempts += 1
-    return seconds * 1_000_000_000
+    reconnectState.nextDelayNanoseconds()
   }
 
   private func scheduleReconnectIfNeeded(after delayNanoseconds: UInt64) {
@@ -1005,7 +1159,7 @@ final class SyncService: ObservableObject {
   }
 
   private func cancelReconnectLoop() {
-    reconnectAttempts = 0
+    reconnectState.reset()
     reconnectTask?.cancel()
     reconnectTask = nil
   }
@@ -1141,6 +1295,7 @@ final class SyncService: ObservableObject {
       )
     }
 
+    reconnectState.reset()
     latestRemoteDbVersion = remoteDbVersion
     outboundLocalDbVersion = database.currentDbVersion()
     hostName = remoteHostName ?? activeHostProfile?.hostName
@@ -1185,10 +1340,12 @@ final class SyncService: ObservableObject {
   }
 
   private func failPendingRequests(with error: Error) {
+    let friendlyError = SyncUserFacingError.error(from: error)
     let completions = pending
     pending.removeAll()
-    for completion in completions.values {
-      completion(.failure(error))
+    for request in completions.values {
+      request.timeoutTask.cancel()
+      request.completion(.failure(friendlyError))
     }
   }
 
@@ -1213,12 +1370,24 @@ final class SyncService: ObservableObject {
           try self.handleIncoming(text)
         } catch {
           if self.socket === task {
-            self.connectionState = .disconnected
-            self.lastError = error.localizedDescription
-            self.currentAddress = nil
-            self.setDomainStatus(SyncDomain.allCases, phase: .disconnected)
-            self.failPendingRequests(with: error)
-            self.scheduleReconnectIfNeeded(after: self.reconnectDelay())
+            let closeCodeRawValue = Int(task.closeCode.rawValue)
+            let reconnectDelay = self.reconnectState.nextDelayNanoseconds(forCloseCodeRawValue: closeCodeRawValue)
+            let failure: Error
+            if closeCodeRawValue == 4001 {
+              failure = NSError(
+                domain: "ADE",
+                code: 24,
+                userInfo: [NSLocalizedDescriptionKey: "The host stopped responding. Reconnecting now."]
+              )
+            } else {
+              failure = error
+            }
+            self.handleTransportFailure(
+              failure,
+              phase: .disconnected,
+              connectionState: .disconnected,
+              reconnectDelayNanoseconds: reconnectDelay
+            )
           }
           break
         }
@@ -1235,6 +1404,7 @@ final class SyncService: ObservableObject {
 
     switch type {
     case "hello_ok":
+      reconnectState.reset()
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":
       let code = ((payload as? [String: Any])?["code"] as? String) ?? "auth_failed"
@@ -1337,15 +1507,29 @@ final class SyncService: ObservableObject {
   }
 
   private func resolve(requestId: String?, result: Result<Any, Error>) {
-    guard let requestId, let completion = pending.removeValue(forKey: requestId) else { return }
-    completion(result)
+    guard let requestId, let request = pending.removeValue(forKey: requestId) else { return }
+    request.timeoutTask.cancel()
+    switch result {
+    case .success(let payload):
+      request.completion(.success(payload))
+    case .failure(let error):
+      request.completion(.failure(SyncUserFacingError.error(from: error)))
+    }
   }
 
   private func awaitResponse(requestId: String, send: () -> Void) async throws -> Any {
     try await withCheckedThrowingContinuation { continuation in
-      pending[requestId] = { result in
-        continuation.resume(with: result)
+      let timeoutTask = Task { @MainActor [weak self] in
+        try? await Task.sleep(nanoseconds: SyncRequestTimeout.defaultTimeoutNanoseconds)
+        guard !Task.isCancelled else { return }
+        self?.handlePendingRequestTimeout(requestId: requestId)
       }
+      pending[requestId] = PendingRequest(
+        completion: { result in
+          continuation.resume(with: result)
+        },
+        timeoutTask: timeoutTask
+      )
       send()
     }
   }
@@ -1383,14 +1567,42 @@ final class SyncService: ObservableObject {
     socket.send(.string(text)) { error in
       if let error {
         Task { @MainActor in
-          self.lastError = error.localizedDescription
-          self.connectionState = .error
-          self.setDomainStatus(SyncDomain.allCases, phase: .failed, error: error.localizedDescription)
-          self.failPendingRequests(with: error)
-          self.scheduleReconnectIfNeeded(after: self.reconnectDelay())
+          self.handleTransportFailure(error)
         }
       }
     }
+  }
+
+  private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
+    relayTask?.cancel()
+    relayTask = nil
+    socket?.cancel(with: closeCode, reason: reason?.data(using: .utf8))
+    socket = nil
+    currentAddress = nil
+  }
+
+  private func handleTransportFailure(
+    _ error: Error,
+    phase: SyncDomainPhase = .failed,
+    connectionState: RemoteConnectionState = .error,
+    reconnectDelayNanoseconds: UInt64? = nil
+  ) {
+    let friendlyError = SyncUserFacingError.error(from: error)
+    teardownSocket(reason: friendlyError.localizedDescription)
+    lastError = friendlyError.localizedDescription
+    self.connectionState = connectionState
+    if phase == .failed {
+      setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
+    } else {
+      setDomainStatus(SyncDomain.allCases, phase: .disconnected)
+    }
+    failPendingRequests(with: friendlyError)
+    scheduleReconnectIfNeeded(after: reconnectDelayNanoseconds ?? reconnectDelay())
+  }
+
+  private func handlePendingRequestTimeout(requestId: String) {
+    guard pending[requestId] != nil else { return }
+    handleTransportFailure(SyncRequestTimeout.error())
   }
 
   private func decodeEnvelopePayload(_ envelope: [String: Any]) throws -> Any {
@@ -1487,7 +1699,7 @@ final class SyncService: ObservableObject {
         queued.removeFirst()
         savePendingOperations(queued)
       } catch {
-        lastError = error.localizedDescription
+        lastError = SyncUserFacingError.message(for: error)
         connectionState = .error
         break
       }
@@ -1531,11 +1743,12 @@ final class SyncService: ObservableObject {
     do {
       try await InitialHydrationGate.waitForProjectRow(currentProjectId: { self.database.currentProjectId() })
     } catch {
-      lastError = error.localizedDescription
+      let friendlyMessage = SyncUserFacingError.message(for: error)
+      lastError = friendlyMessage
       if connectionState == .disconnected || connectionState == .error {
         setDomainStatus(SyncDomain.allCases, phase: .disconnected)
       } else {
-        setDomainStatus(SyncDomain.allCases, phase: .failed, error: error.localizedDescription)
+        setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
       }
       return
     }
@@ -1543,17 +1756,17 @@ final class SyncService: ObservableObject {
     do {
       try await refreshLaneSnapshots()
     } catch {
-      lastError = error.localizedDescription
+      lastError = SyncUserFacingError.message(for: error)
     }
     do {
       try await refreshWorkSessions()
     } catch {
-      lastError = error.localizedDescription
+      lastError = SyncUserFacingError.message(for: error)
     }
     do {
       try await refreshPullRequestSnapshots()
     } catch {
-      lastError = error.localizedDescription
+      lastError = SyncUserFacingError.message(for: error)
     }
   }
 
@@ -1610,6 +1823,12 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
   private var services: [String: NetService] = [:]
   private var hosts: [String: DiscoveredSyncHost] = [:]
   private var isSearching = false
+  private var shouldMaintainBrowsing = false
+  private var intentionalStop = false
+  private var browseRetryWorkItem: DispatchWorkItem?
+  private var periodicRestartWorkItem: DispatchWorkItem?
+  private var resolveRetryWorkItems: [String: DispatchWorkItem] = [:]
+  private let restartAfterIntentionalStopNanoseconds: UInt64 = 250_000_000
 
   override init() {
     super.init()
@@ -1618,12 +1837,15 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
   }
 
   func start() {
-    guard !isSearching else { return }
-    isSearching = true
-    browser.searchForServices(ofType: "_ade-sync._tcp.", inDomain: "local.")
+    shouldMaintainBrowsing = true
+    scheduleBrowseStart(after: 0)
   }
 
   func stop() {
+    shouldMaintainBrowsing = false
+    cancelBrowseScheduling()
+    cancelResolveRetries()
+    intentionalStop = true
     browser.stop()
     services.values.forEach { $0.stop() }
     services.removeAll()
@@ -1634,10 +1856,13 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
 
   func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
     let key = serviceKey(for: service)
+    cancelResolveRetry(forKey: key)
+    services[key]?.stop()
     services[key] = service
     service.delegate = self
-    service.resolve(withTimeout: 5)
+    service.resolve(withTimeout: SyncBonjourTiming.resolveTimeout)
     service.startMonitoring()
+    schedulePeriodicRestart()
     if !moreComing {
       publish()
     }
@@ -1645,6 +1870,7 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
 
   func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
     let key = serviceKey(for: service)
+    cancelResolveRetry(forKey: key)
     services.removeValue(forKey: key)
     hosts.removeValue(forKey: key)
     if !moreComing {
@@ -1654,23 +1880,124 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
 
   func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String : NSNumber]) {
     isSearching = false
+    cancelPeriodicRestart()
+    if intentionalStop {
+      intentionalStop = false
+      return
+    }
+    scheduleBrowseStart(after: SyncBonjourTiming.searchRetryNanoseconds)
   }
 
   func netServiceBrowserDidStopSearch(_ browser: NetServiceBrowser) {
     isSearching = false
+    cancelPeriodicRestart()
+    if intentionalStop {
+      intentionalStop = false
+      guard shouldMaintainBrowsing else { return }
+      scheduleBrowseStart(after: restartAfterIntentionalStopNanoseconds)
+      return
+    }
+    scheduleBrowseStart(after: SyncBonjourTiming.searchRetryNanoseconds)
   }
 
   func netServiceDidResolveAddress(_ sender: NetService) {
+    cancelResolveRetry(forKey: serviceKey(for: sender))
     updateHost(from: sender)
   }
 
   func netService(_ sender: NetService, didUpdateTXTRecord data: Data) {
+    cancelResolveRetry(forKey: serviceKey(for: sender))
     updateHost(from: sender)
   }
 
   func netService(_ sender: NetService, didNotResolve errorDict: [String : NSNumber]) {
     hosts.removeValue(forKey: serviceKey(for: sender))
     publish()
+    scheduleResolveRetry(for: sender)
+  }
+
+  private func scheduleBrowseStart(after delayNanoseconds: UInt64) {
+    cancelBrowseRetry()
+    guard shouldMaintainBrowsing else { return }
+
+    let workItem = DispatchWorkItem { [weak self] in
+      self?.beginBrowsing()
+    }
+    browseRetryWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNanoseconds)), execute: workItem)
+  }
+
+  private func beginBrowsing() {
+    guard shouldMaintainBrowsing, !isSearching else { return }
+    intentionalStop = false
+    isSearching = true
+    browser.searchForServices(ofType: "_ade-sync._tcp.", inDomain: "local.")
+    schedulePeriodicRestart()
+  }
+
+  private func restartBrowsing() {
+    guard shouldMaintainBrowsing else { return }
+    cancelResolveRetries()
+    services.values.forEach { $0.stop() }
+    services.removeAll()
+
+    guard isSearching else {
+      scheduleBrowseStart(after: 0)
+      return
+    }
+
+    intentionalStop = true
+    browser.stop()
+  }
+
+  private func schedulePeriodicRestart() {
+    cancelPeriodicRestart()
+    guard shouldMaintainBrowsing else { return }
+
+    let workItem = DispatchWorkItem { [weak self] in
+      self?.restartBrowsing()
+    }
+    periodicRestartWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(SyncBonjourTiming.periodicRestartNanoseconds)), execute: workItem)
+  }
+
+  private func cancelBrowseRetry() {
+    browseRetryWorkItem?.cancel()
+    browseRetryWorkItem = nil
+  }
+
+  private func cancelPeriodicRestart() {
+    periodicRestartWorkItem?.cancel()
+    periodicRestartWorkItem = nil
+  }
+
+  private func cancelBrowseScheduling() {
+    cancelBrowseRetry()
+    cancelPeriodicRestart()
+  }
+
+  private func scheduleResolveRetry(for service: NetService) {
+    let key = serviceKey(for: service)
+    cancelResolveRetry(forKey: key)
+    guard shouldMaintainBrowsing, services[key] != nil else { return }
+
+    let workItem = DispatchWorkItem { [weak self, weak service] in
+      guard let self, let service, self.shouldMaintainBrowsing, self.services[key] === service else { return }
+      service.delegate = self
+      service.resolve(withTimeout: SyncBonjourTiming.resolveTimeout)
+    }
+    resolveRetryWorkItems[key] = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(SyncBonjourTiming.resolveRetryNanoseconds)), execute: workItem)
+  }
+
+  private func cancelResolveRetry(forKey key: String) {
+    resolveRetryWorkItems[key]?.cancel()
+    resolveRetryWorkItems.removeValue(forKey: key)
+  }
+
+  private func cancelResolveRetries() {
+    resolveRetryWorkItems.values.forEach { $0.cancel() }
+    resolveRetryWorkItems.removeAll()
   }
 
   private func updateHost(from service: NetService) {
