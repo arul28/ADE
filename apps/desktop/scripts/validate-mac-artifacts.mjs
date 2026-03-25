@@ -207,6 +207,11 @@ async function validatePackagedRuntime(appPath, description) {
   if (!payload?.claudeStartup || typeof payload.claudeStartup !== "object") {
     throw new Error("[release:mac] Packaged smoke did not report a Claude startup result");
   }
+  if (payload.claudeStartup.state === "binary-missing") {
+    console.warn(
+      `[release:mac] Claude CLI is not installed on this machine; skipping live Claude startup check for ${description}.`
+    );
+  }
   if (payload.claudeStartup.state === "runtime-failed") {
     throw new Error(
       `[release:mac] Packaged smoke could not start Claude from the packaged app: ${String(payload.claudeStartup.message || "unknown error")}`

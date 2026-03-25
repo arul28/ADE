@@ -4,39 +4,15 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
 import { resolveDesktopAdeMcpLaunch } from "./services/runtime/adeMcpLaunch";
-import { resolveClaudeCodeExecutable } from "./services/ai/claudeCodeExecutable";
+import { resolveClaudeCodeExecutable, type ClaudeCodeExecutableResolution } from "./services/ai/claudeCodeExecutable";
+import {
+  classifyClaudeStartupFailure,
+  type ClaudeStartupProbeResult,
+} from "./packagedRuntimeSmokeShared";
 
 const execFileAsync = promisify(execFile);
 const PTY_PROBE_TIMEOUT_MS = 4_000;
 const CLAUDE_PROBE_TIMEOUT_MS = 20_000;
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-const AUTH_FAILURE_PATTERNS = [
-  "not authenticated",
-  "not logged in",
-  "authentication required",
-  "authentication error",
-  "authentication_error",
-  "login required",
-  "sign in",
-  "claude auth login",
-  "/login",
-  "authentication_failed",
-  "invalid authentication credentials",
-  "invalid api key",
-  "api error: 401",
-  "status code: 401",
-  "status 401",
-];
-
-function isClaudeAuthFailureMessage(input: unknown): boolean {
-  const text = input instanceof Error ? input.message : String(input ?? "");
-  const lower = text.toLowerCase();
-  return AUTH_FAILURE_PATTERNS.some((pattern) => lower.includes(pattern));
-}
 
 async function probePty(): Promise<{ ok: true; output: string }> {
   const pty = await import("node-pty");
@@ -74,12 +50,8 @@ async function probePty(): Promise<{ ok: true; output: string }> {
 }
 
 async function probeClaudeStartup(
-  claudeExecutablePath: string,
-): Promise<
-  | { state: "ready"; message: null }
-  | { state: "auth-failed"; message: string }
-  | { state: "runtime-failed"; message: string }
-> {
+  claudeExecutable: ClaudeCodeExecutableResolution,
+): Promise<ClaudeStartupProbeResult> {
   const claude = await import("@anthropic-ai/claude-agent-sdk");
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), CLAUDE_PROBE_TIMEOUT_MS);
@@ -89,7 +61,7 @@ async function probeClaudeStartup(
       cwd: process.cwd(),
       permissionMode: "plan",
       tools: [],
-      pathToClaudeCodeExecutable: claudeExecutablePath,
+      pathToClaudeCodeExecutable: claudeExecutable.path,
       abortController,
     },
   });
@@ -110,16 +82,7 @@ async function probeClaudeStartup(
         "errors" in message && Array.isArray(message.errors)
           ? message.errors.filter(Boolean).join(" ")
           : "";
-      if (isClaudeAuthFailureMessage(errors)) {
-        return {
-          state: "auth-failed",
-          message: errors.trim() || "authentication_failed",
-        };
-      }
-      return {
-        state: "runtime-failed",
-        message: errors.trim() || "Claude startup probe returned an error result.",
-      };
+      return classifyClaudeStartupFailure(errors || "Claude startup probe returned an error result.", claudeExecutable.source);
     }
 
     return {
@@ -127,16 +90,7 @@ async function probeClaudeStartup(
       message: "Claude startup probe completed without a terminal result.",
     };
   } catch (error) {
-    if (isClaudeAuthFailureMessage(error)) {
-      return {
-        state: "auth-failed",
-        message: errorMessage(error),
-      };
-    }
-    return {
-      state: "runtime-failed",
-      message: errorMessage(error),
-    };
+    return classifyClaudeStartupFailure(error, claudeExecutable.source);
   } finally {
     clearTimeout(timeout);
     try {
@@ -163,7 +117,7 @@ async function main(): Promise<void> {
     workspaceRoot: cwd,
   });
   const ptyProbe = await probePty();
-  const claudeStartup = await probeClaudeStartup(claudeExecutable.path);
+  const claudeStartup = await probeClaudeStartup(claudeExecutable);
 
   const proxyProbe = await execFileAsync(launch.command, [...launch.cmdArgs, "--probe"], {
     cwd,
