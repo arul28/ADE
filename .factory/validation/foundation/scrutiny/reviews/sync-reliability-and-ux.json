@@ -1,0 +1,42 @@
+{
+  "featureId": "sync-reliability-and-ux",
+  "milestone": "foundation",
+  "status": "fail",
+  "summary": "The feature adds the requested retry UI, Bonjour restart logic, and reconnect hardening, but it still misses two promised reliability guarantees: stale send callbacks can tear down a newly connected socket during reconnect/host switching, and some sync errors still fall through to technical copy instead of user-friendly messaging.",
+  "issues": [
+    {
+      "severity": "blocking",
+      "title": "Send callback errors are not scoped to the active WebSocket task",
+      "description": "`sendEnvelope` tears down the connection for any send callback error, even if that error comes from a socket that was intentionally cancelled during reconnect or host switching. Because `pairAndConnect` explicitly disconnects the old host before opening the new one, a late cancellation error from the old socket can still call `handleTransportFailure` and tear down the newly active connection.",
+      "evidence": "`apps/ios/ADE/Services/SyncService.swift:381-382` intentionally disconnects before switching hosts, but `apps/ios/ADE/Services/SyncService.swift:1567-1570` calls `handleTransportFailure(error)` for any send failure without checking socket identity. In contrast, the receive loop guards stale callbacks with `self.socket === task` at `apps/ios/ADE/Services/SyncService.swift:1358-1373`.",
+      "suggestedFix": "Capture the socket task used for `sendEnvelope` and ignore send errors unless that task is still the current `self.socket` (or move send failure handling into a helper that performs the same active-task guard as `receiveLoop`)."
+    },
+    {
+      "severity": "blocking",
+      "title": "User-friendly sync error translation is still incomplete",
+      "description": "The feature claims that all sync-status errors use friendly language, but `SyncUserFacingError.message` still falls back to the raw technical string for anything it does not recognize. Several sync paths still throw technical errors, so malformed or unexpected host responses can surface implementation-focused copy directly in Settings.",
+      "evidence": "`apps/ios/ADE/Services/SyncService.swift:180` returns `rawMessage` unchanged when no translation rule matches. One such sync-path error is `Invalid hello response.` at `apps/ios/ADE/Services/SyncService.swift:1253-1254`, and another is `Unknown queued operation type.` at `apps/ios/ADE/Services/SyncService.swift:1696-1703`, both of which flow back through `SyncUserFacingError.message(for:)` before being shown. The added tests in `apps/ios/ADETests/ADETests.swift:117-137` only cover three translated strings, so this gap is not exercised.",
+      "suggestedFix": "Replace remaining sync-facing `NSError` messages with user-facing copy, and/or extend `SyncUserFacingError` so unexpected handshake/queue/transport failures map to actionable, non-technical messages instead of falling back to raw host or implementation text."
+    }
+  ],
+  "sharedStateObservations": [
+    {
+      "target": "skill",
+      "observation": "The `ios-worker` skill still tells workers to validate with `xcodebuild ... | tail -30/-5`, and this worker explicitly recorded a procedure deviation because the tailed form can hide failing exit codes.",
+      "suggestedChange": "Update `.factory/skills/ios-worker/SKILL.md` to use raw `xcodebuild` commands (or an explicit `set -o pipefail` wrapper) in its test/build procedure and example handoff.",
+      "reason": "This is a reusable workflow instruction, not a one-off code issue. The current skill text at `.factory/skills/ios-worker/SKILL.md:39,57,66,85` conflicts with trustworthy validation practice and already caused drift in this run.",
+      "isSystemic": true
+    },
+    {
+      "target": "AGENTS.md",
+      "observation": "The mission AGENTS template repeats tailed `xcodebuild` validation commands for build and test, which contradicts the worker's need to preserve real exit codes during validation.",
+      "suggestedChange": "Update the generated iOS mission AGENTS instructions to use direct `xcodebuild` commands, or require `pipefail` when output is truncated for display.",
+      "reason": "The same mismatch appears in this mission's `/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/AGENTS.md:76,81`, so future iOS missions will keep prompting the same unsafe validation pattern unless the orchestrator template changes.",
+      "isSystemic": true
+    }
+  ],
+  "reviewedArtifacts": {
+    "commitId": "3ec89ea9776eb54758d8da4aecc58d19e1da859b",
+    "handoff": "/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/handoffs/2026-03-25T05-47-26-195Z__sync-reliability-and-ux__7b9ff5c4-0b14-4ded-82cf-925b09e1ead2.json"
+  }
+}

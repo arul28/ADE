@@ -1,0 +1,38 @@
+{
+  "featureId": "design-system-overhaul",
+  "milestone": "foundation",
+  "reviewedAt": "2026-03-25T06:28:26.747751Z",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "summary": "The semantic color and shared glass-component refactor is substantial, but the feature still does not satisfy VAL-DS-007 because Files and Work swipe actions do not expose the required actions; automated coverage also only exercises two helper functions.",
+  "issues": [
+    {
+      "severity": "blocking",
+      "title": "Required Files and Work swipe actions were not implemented",
+      "description": "The feature claims VAL-DS-007, which requires trailing swipe actions for Files (delete/rename), Work (archive/pin), and PRs (open in GitHub/close). PR rows have open/close actions, but Files rows only copy path/name and Work rows only copy the lane name or close a running session, so the fulfilled assertion is still unmet.",
+      "evidence": "validation-contract.md:90-92; apps/ios/ADE/Views/FilesTabView.swift:155-159, 417-425, 445-453; apps/ios/ADE/Views/WorkTabView.swift:97-108; apps/ios/ADE/Views/PRsTabView.swift:106-120",
+      "suggestedFix": "Implement the required swipe affordances (Files delete/rename, Work archive/pin) by wiring them to host-backed actions, or remove VAL-DS-007 from this feature's fulfilled assertions until those actions exist."
+    },
+    {
+      "severity": "suggestion",
+      "title": "Automated coverage does not exercise the new design-system behaviors",
+      "description": "The added tests only cover file-icon mapping and file-size formatting. They do not verify any of the new shared glass components, empty/skeleton states, tab minimization, or swipe-action behavior, so regressions in the design-system overhaul will rely on manual inspection.",
+      "evidence": "apps/ios/ADETests/ADETests.swift:965-976; handoff verification records build/test plus grep checks for ADEPalette, preferredColorScheme(.dark), sensoryFeedback, empty-state/skeleton usage, and tabBarMinimizeBehavior.",
+      "suggestedFix": "Add focused tests around the shared design-system helpers and at least one view-level regression check for the required swipe-action and empty-state wiring."
+    }
+  ],
+  "sharedStateObservations": [
+    {
+      "target": "skill",
+      "observation": "`.factory/skills/ios-worker/SKILL.md` is internally inconsistent: line 73 says not to launch the simulator or take screenshots, but lines 95-98 still show simulator-based `interactiveChecks` in the example handoff.",
+      "suggestedChange": "Update the ios-worker skill so the example handoff matches the procedure: either remove the simulator-based `interactiveChecks` example or change the verification guidance if simulator interaction is actually expected.",
+      "reason": "This is systemic worker guidance. The contradiction can push workers toward the wrong verification pattern even when they otherwise follow the skill.",
+      "isSystemic": true
+    }
+  ],
+  "reviewedArtifacts": {
+    "commitId": "dad2d14b6f668fab34504e6495b8cc328772563f",
+    "handoff": "/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/handoffs/2026-03-25T06-18-31-602Z__design-system-overhaul__dbccea58-1ba2-475b-a1d2-521f1b97fdad.json"
+  }
+}

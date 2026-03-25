@@ -1,0 +1,35 @@
+{
+  "featureId": "sync-hydration-race-fix",
+  "milestone": "foundation",
+  "status": "fail",
+  "summary": "The commit fixes the immediate missing-project-row copy and adds the requested waiting phase, but the new 15-second initial-hydration wait is launched as an untracked task that survives disconnects and reconnects, so a stale timeout from an old connection can overwrite a newer healthy session's domain statuses.",
+  "issues": [
+    {
+      "severity": "blocking",
+      "title": "Initial hydration wait is not scoped to a single connection attempt",
+      "description": "`hello_ok` starts `performInitialHydration()` in an anonymous `Task`, but `disconnect()` only cancels the reconnect and relay tasks. The new wait loop can now run for up to 15 seconds, so if the user disconnects, switches hosts, or auto-reconnects before that first wait finishes, the stale task can time out later and mark all domains failed even after a newer connection has already reached `ready`.",
+      "evidence": "`apps/ios/ADE/Services/SyncService.swift:1181-1184` launches `performInitialHydration()` in an untracked `Task`. `apps/ios/ADE/Services/SyncService.swift:355-367` disconnects the socket and cancels `reconnectTask`/`relayTask`, but there is no stored hydration task to cancel. The new gate at `apps/ios/ADE/Services/SyncService.swift:1526-1540` can sit in `waitForProjectRow` for 15 seconds before writing `.failed`/`.disconnected` back into all domain statuses, so an older connection attempt can still mutate state after a later reconnect has succeeded.",
+      "suggestedFix": "Store initial hydration in a connection-scoped task (or generation token), cancel/invalidate it from `disconnect()` and host-switch paths, and guard status writes so only the active connection attempt can update domain state. Add a regression test that disconnects during the wait, reconnects, and verifies the stale task cannot clobber the new connection's ready state."
+    }
+  ],
+  "sharedStateObservations": [
+    {
+      "target": "library",
+      "observation": "The iOS architecture notes do not document a rule for connection-scoped async work in `SyncService`, and this feature introduced another long-lived anonymous task whose result can outlive the connection that spawned it.",
+      "suggestedChange": "Add a short note to `.factory/library/architecture.md` that long-lived sync tasks in `SyncService` must be stored and cancelled (or keyed to a connection generation) on disconnect/host switch before they mutate shared UI state.",
+      "reason": "This is broader than a one-off bug: `SyncService` now has multiple async code paths whose callbacks must be scoped to the active connection, and documenting that pattern would help future sync work avoid the same class of stale-state race.",
+      "isSystemic": true
+    },
+    {
+      "target": "reject",
+      "observation": "The worker transcript includes simulator install/launch/screenshot commands even though both the mission AGENTS file and `ios-worker` skill explicitly say not to launch the simulator or take screenshots for iOS verification, while the handoff still reports `skillFeedback.followedProcedure: true`.",
+      "suggestedChange": "Reject this as a shared-state update; the existing instructions are already explicit. The orchestrator should treat the handoff's procedure-compliance claim as inaccurate rather than changing AGENTS or the skill.",
+      "reason": "`/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/AGENTS.md` already says 'DO NOT launch the simulator or take screenshots,' and `.factory/skills/ios-worker/SKILL.md` repeats that guidance. This is an execution/handoff-quality issue, not a missing shared-state instruction.",
+      "isSystemic": false
+    }
+  ],
+  "reviewedArtifacts": {
+    "commitId": "ce818e5",
+    "handoff": "/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/handoffs/2026-03-25T05-31-31-732Z__sync-hydration-race-fix__8edc2d34-0293-415f-beca-c2e73049395e.json"
+  }
+}
