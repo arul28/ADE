@@ -1,9 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import { query as claudeQuery, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
-import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -11,6 +8,7 @@ import {
 } from "./providerRuntimeHealth";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { normalizeCliMcpServers } from "./providerResolver";
+import { resolveDesktopAdeMcpLaunch, resolveRepoRuntimeRoot } from "../runtime/adeMcpLaunch";
 
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CACHE_TTL_MS = 30_000;
@@ -27,7 +25,6 @@ type ClaudeRuntimeProbeResult =
 /** Cache and in-flight probe keyed by projectRoot to avoid cross-project contamination. */
 const probeCache = new Map<string, { checkedAtMs: number; result: ClaudeRuntimeProbeResult }>();
 const inFlightProbes = new Map<string, Promise<ClaudeRuntimeProbeResult>>();
-let runtimeRootCache: string | null = null;
 
 function normalizeErrorMessage(error: unknown): string {
   const text = getErrorMessage(error).trim();
@@ -90,30 +87,12 @@ function cacheResult(projectRoot: string, result: ClaudeRuntimeProbeResult): Cla
   return result;
 }
 
-function resolveProbeRuntimeRoot(): string {
-  if (runtimeRootCache !== null) return runtimeRootCache;
-  const startPoints = [process.cwd(), __dirname];
-  for (const start of startPoints) {
-    let dir = path.resolve(start);
-    for (let i = 0; i < 12; i += 1) {
-      if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
-        runtimeRootCache = dir;
-        return dir;
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-  }
-  runtimeRootCache = process.cwd();
-  return runtimeRootCache;
-}
-
 function resolveProbeMcpServers(projectRoot: string): Record<string, Record<string, unknown>> | undefined {
-  const launch = resolveAdeMcpServerLaunch({
+  const launch = resolveDesktopAdeMcpLaunch({
+    projectRoot,
     workspaceRoot: projectRoot,
-    runtimeRoot: resolveProbeRuntimeRoot(),
-    defaultRole: "agent",
+    runtimeRoot: resolveRepoRuntimeRoot(),
+    defaultRole: "external",
   });
   return normalizeCliMcpServers("claude", {
     ade: {

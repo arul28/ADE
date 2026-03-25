@@ -39,6 +39,86 @@ async function assertPathExists(targetPath, description) {
   }
 }
 
+async function assertExecutable(targetPath, description) {
+  const stat = await fs.stat(targetPath);
+  if ((stat.mode & 0o111) !== 0o111) {
+    throw new Error(`[release:mac] Expected ${description} to be executable: ${targetPath}`);
+  }
+}
+
+async function findFirstNodeAddon(rootPath) {
+  const entries = await fs.readdir(rootPath, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const entryPath = path.join(rootPath, entry.name);
+
+    if (entry.isDirectory()) {
+      const nestedMatch = await findFirstNodeAddon(entryPath);
+      if (nestedMatch) {
+        return nestedMatch;
+      }
+      continue;
+    }
+
+    if (entry.isFile() && entry.name.endsWith(".node")) {
+      return entryPath;
+    }
+  }
+
+  return null;
+}
+
+async function findNodePtyAddon(moduleRootPath) {
+  const candidateRoots = [
+    path.join(moduleRootPath, "build", "Release"),
+    path.join(moduleRootPath, "build", "Debug"),
+    path.join(moduleRootPath, "prebuilds", "darwin-arm64"),
+    path.join(moduleRootPath, "prebuilds", "darwin-x64"),
+  ];
+
+  for (const candidateRoot of candidateRoots) {
+    try {
+      await fs.access(candidateRoot);
+    } catch {
+      continue;
+    }
+
+    const addonPath = await findFirstNodeAddon(candidateRoot);
+    if (addonPath) {
+      return addonPath;
+    }
+  }
+
+  return null;
+}
+
+async function findNodePtySpawnHelper(moduleRootPath) {
+  const candidateRoots = [
+    path.join(moduleRootPath, "build", "Release"),
+    path.join(moduleRootPath, "build", "Debug"),
+    path.join(moduleRootPath, "prebuilds", "darwin-arm64"),
+    path.join(moduleRootPath, "prebuilds", "darwin-x64"),
+  ];
+
+  for (const candidateRoot of candidateRoots) {
+    try {
+      await fs.access(candidateRoot);
+    } catch {
+      continue;
+    }
+
+    const helperPath = path.join(candidateRoot, "spawn-helper");
+    try {
+      await fs.access(helperPath);
+      return helperPath;
+    } catch {
+      // keep looking
+    }
+  }
+
+  return null;
+}
+
 async function findArtifact(regex, description) {
   const entries = await fs.readdir(releaseDir, { withFileTypes: true });
   const matches = entries
@@ -66,6 +146,83 @@ async function validateSignedApp(appPath, description) {
   await execFileAsync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath]);
   await execFileAsync("xcrun", ["stapler", "validate", appPath]);
   await execFileAsync("spctl", ["-a", "-vvv", "--type", "execute", appPath]);
+}
+
+async function validatePackagedRuntime(appPath, description) {
+  const appName = path.basename(appPath, ".app");
+  const executablePath = path.join(appPath, "Contents", "MacOS", appName);
+  const resourcesPath = path.join(appPath, "Contents", "Resources");
+  const appAsarPath = path.join(resourcesPath, "app.asar");
+  const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
+  const nodeModulesPath = path.join(unpackedPath, "node_modules");
+  const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
+  const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
+  const adeMcpProxyPath = path.join(unpackedPath, "dist", "main", "adeMcpProxy.cjs");
+
+  console.log(`[release:mac] Smoke testing packaged runtime payload for ${description}`);
+  await assertPathExists(executablePath, "packaged app executable");
+  await assertPathExists(appAsarPath, "app.asar payload");
+  await assertPathExists(unpackedPath, "app.asar.unpacked runtime payload");
+  await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
+  await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
+  await assertPathExists(adeMcpProxyPath, "unpacked ADE MCP proxy script");
+
+  const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);
+  if (!nodePtyAddon) {
+    throw new Error(`[release:mac] Missing node-pty native addon under ${nodePtyModulePath}`);
+  }
+  const nodePtySpawnHelper = await findNodePtySpawnHelper(nodePtyModulePath);
+  if (!nodePtySpawnHelper) {
+    throw new Error(`[release:mac] Missing node-pty spawn-helper under ${nodePtyModulePath}`);
+  }
+  await assertExecutable(nodePtySpawnHelper, "node-pty spawn-helper");
+
+  const { stdout } = await execFileAsync(executablePath, [smokeScriptPath], {
+    cwd: unpackedPath,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      NODE_PATH: nodeModulesPath,
+    },
+  });
+
+  const payload = JSON.parse(stdout.trim());
+  if (payload?.nodePty !== "function") {
+    throw new Error(`[release:mac] Packaged smoke expected node-pty.spawn to be a function, got ${String(payload?.nodePty)}`);
+  }
+  if (!payload?.ptyProbe?.ok) {
+    throw new Error("[release:mac] Packaged smoke failed to execute a PTY probe");
+  }
+  if (payload?.claudeQuery !== "function") {
+    throw new Error(`[release:mac] Packaged smoke expected Claude SDK query() to be available, got ${String(payload?.claudeQuery)}`);
+  }
+  if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
+    throw new Error("[release:mac] Packaged smoke did not report a Claude executable path");
+  }
+  if (payload.claudeExecutablePath.includes("app.asar")) {
+    throw new Error(
+      `[release:mac] Packaged smoke resolved Claude to an asar-backed path instead of the system CLI: ${payload.claudeExecutablePath}`
+    );
+  }
+  if (!payload?.claudeStartup || typeof payload.claudeStartup !== "object") {
+    throw new Error("[release:mac] Packaged smoke did not report a Claude startup result");
+  }
+  if (payload.claudeStartup.state === "runtime-failed") {
+    throw new Error(
+      `[release:mac] Packaged smoke could not start Claude from the packaged app: ${String(payload.claudeStartup.message || "unknown error")}`
+    );
+  }
+  if (payload?.codexFactory !== "function") {
+    throw new Error(`[release:mac] Packaged smoke expected Codex provider factory to be available, got ${String(payload?.codexFactory)}`);
+  }
+  if (payload?.launchMode !== "bundled_proxy") {
+    throw new Error(`[release:mac] Packaged smoke expected bundled_proxy launch mode, got ${String(payload?.launchMode)}`);
+  }
+  if (!payload?.proxyProbe?.ok) {
+    throw new Error("[release:mac] Packaged smoke failed to launch the bundled ADE MCP proxy in probe mode");
+  }
+
+  console.log(`[release:mac] Packaged runtime smoke passed for ${description}: ${path.relative(appPath, nodePtyAddon)}`);
 }
 
 async function validateLatestMacYaml(latestMacPath, zipPath) {
@@ -110,6 +267,7 @@ async function validateZip(zipPath) {
 
     const appPath = path.join(tempDir, appEntry.name);
     await validateSignedApp(appPath, "zip artifact");
+    await validatePackagedRuntime(appPath, "zip artifact");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -139,6 +297,7 @@ async function validateDmg(dmgPath) {
     const appPath = path.join(mountPoint, "ADE.app");
     await assertPathExists(appPath, "mounted ADE.app");
     await validateSignedApp(appPath, "mounted dmg artifact");
+    await validatePackagedRuntime(appPath, "mounted dmg artifact");
   } finally {
     await execFileAsync("hdiutil", ["detach", mountPoint, "-quiet"]).catch(() => {});
     await fs.rm(mountPoint, { recursive: true, force: true });
@@ -169,6 +328,6 @@ if (dmgPath) {
 }
 
 console.log(
-  `[release:mac] macOS release artifacts passed signature, notarization, Gatekeeper, and updater checks` +
+  `[release:mac] macOS release artifacts passed signature, notarization, Gatekeeper, updater, and packaged runtime checks` +
     (skipDmg ? " (DMG validation skipped)" : "")
 );

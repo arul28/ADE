@@ -125,21 +125,22 @@ describe("buildProviderConnections", () => {
     expect(result.codex.blocker).toContain("codex login");
   });
 
-  it("treats runtime probe failures as launch blockers", async () => {
+  it("downgrades Claude runtime availability when runtime health reports auth-failed", async () => {
     mockState.readClaudeCredentials.mockResolvedValue({
       accessToken: "token",
       source: "claude-credentials-file",
     });
-    mockState.getProviderRuntimeHealth.mockImplementation((provider: string) => (
-      provider === "claude"
-        ? {
-            provider: "claude",
-            state: "runtime-failed",
-            message: "ADE could not launch Claude from this app session.",
-            checkedAt: new Date().toISOString(),
-          }
-        : null
-    ));
+    mockState.getProviderRuntimeHealth.mockImplementation((provider: string) => {
+      if (provider === "claude") {
+        return {
+          provider: "claude",
+          state: "auth-failed",
+          message: "Claude runtime reported that login is still required.",
+          checkedAt: "2026-03-17T19:00:00.000Z",
+        };
+      }
+      return null;
+    });
 
     const result = await buildProviderConnections([
       {
@@ -161,6 +162,46 @@ describe("buildProviderConnections", () => {
     expect(result.claude.authAvailable).toBe(true);
     expect(result.claude.runtimeDetected).toBe(true);
     expect(result.claude.runtimeAvailable).toBe(false);
-    expect(result.claude.blocker).toBe("ADE could not launch Claude from this app session.");
+    expect(result.claude.blocker).toBe("Claude runtime reported that login is still required.");
+  });
+
+  it("treats runtime probe failures as launch blockers", async () => {
+    mockState.readClaudeCredentials.mockResolvedValue({
+      accessToken: "token",
+      source: "claude-credentials-file",
+    });
+    mockState.getProviderRuntimeHealth.mockImplementation((provider: string) => {
+      if (provider === "claude") {
+        return {
+          provider: "claude",
+          state: "runtime-failed",
+          message: "ADE could not launch the Claude runtime from this packaged app session.",
+          checkedAt: "2026-03-17T19:00:00.000Z",
+        };
+      }
+      return null;
+    });
+
+    const result = await buildProviderConnections([
+      {
+        cli: "claude",
+        installed: true,
+        path: "/Users/arul/.local/bin/claude",
+        authenticated: true,
+        verified: true,
+      },
+      {
+        cli: "codex",
+        installed: false,
+        path: null,
+        authenticated: false,
+        verified: false,
+      },
+    ]);
+
+    expect(result.claude.authAvailable).toBe(true);
+    expect(result.claude.runtimeDetected).toBe(true);
+    expect(result.claude.runtimeAvailable).toBe(false);
+    expect(result.claude.blocker).toBe("ADE could not launch the Claude runtime from this packaged app session.");
   });
 });

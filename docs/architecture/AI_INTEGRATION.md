@@ -181,7 +181,7 @@ All AI task dispatching flows through the unified executor (`unifiedExecutor.ts`
 > **Note**: The legacy `ClaudeExecutor` and `CodexExecutor` classes have been deleted. All AI worker execution now routes through a single `unified` executor kind. See `docs/ORCHESTRATOR_OVERHAUL.md` for the current runtime contract.
 
 The unified runtime supports three model classes:
-- **CLI-wrapped** (Claude CLI, Codex CLI): Spawned as subprocesses. Authentication inherits from user's existing CLI login (`claude login`, Codex subscription). MCP server injected via `--mcp-config` flag, with worker-local MCP config mirrored into each worker CWD to support native teammate inheritance paths.
+- **CLI-wrapped** (Claude CLI, Codex CLI): Spawned as subprocesses. Authentication inherits from user's existing CLI login (`claude login`, Codex subscription). MCP server injected via `--mcp-config` flag, with worker-local MCP config mirrored into each worker CWD to support native teammate inheritance paths. In packaged builds, the MCP connection uses a bundled proxy binary (`adeMcpProxy.cjs`) that relays stdio over the desktop's Unix socket, avoiding the need for a separate headless MCP server process.
 - **API/key models** (Anthropic API, OpenAI, Google, Mistral, DeepSeek, xAI, OpenRouter): In-process execution via Vercel AI SDK `streamText()`. Authentication via configured API keys.
 - **Local models** (Ollama, LM Studio, vLLM): In-process execution via OpenAI-compatible endpoints.
 
@@ -259,7 +259,7 @@ On startup and project switch, the AI integration service probes for available p
 - **`providerCredentialSources.ts`**: Reads local credential files (Claude OAuth credentials, Codex auth tokens, macOS Keychain) and checks token freshness.
 - **`providerConnectionStatus.ts`**: Builds a structured `AiProviderConnections` object with per-provider `authAvailable`, `runtimeDetected`, `runtimeAvailable`, `usageAvailable`, `blocker`, and `sources` fields. Both `auth-failed` and `runtime-failed` health states now mark a provider as not runtime-available, with distinct blocker messages for each failure mode.
 - **`providerRuntimeHealth.ts`**: Tracks runtime health state (`ready`, `auth-failed`, `runtime-failed`) per provider. Health version increments on state changes, invalidating the status cache.
-- **`claudeRuntimeProbe.ts`**: On forced refresh, performs a lightweight Claude Agent SDK query to confirm the Claude runtime can authenticate and start from the current app session. The probe resolves the Claude Code executable path via `claudeCodeExecutable.ts` and injects a minimal ADE MCP server configuration so the probe runs under conditions closer to real session startup.
+- **`claudeRuntimeProbe.ts`**: On forced refresh, performs a lightweight Claude Agent SDK query to confirm the Claude runtime can authenticate and start from the current app session. The probe resolves the Claude Code executable path via `claudeCodeExecutable.ts` and uses the centralized `resolveDesktopAdeMcpLaunch()` from `adeMcpLaunch.ts` to inject a minimal ADE MCP server configuration so the probe runs under conditions closer to real session startup.
 - **`claudeCodeExecutable.ts`**: Resolves the Claude Code CLI binary path, consulting detected auth sources for known installation locations. Used by both the runtime probe and the provider resolver to ensure consistent executable discovery.
 
 If no usable provider is detected, ADE operates in guest mode: all deterministic features (packs, diffs, conflict detection) work normally, but AI-generated content (narratives, proposals, PR descriptions) is unavailable. The UI clearly indicates which features require a CLI subscription.
@@ -381,6 +381,18 @@ The MCP server is a standalone package (`apps/mcp-server`) that exposes ADE's in
 - **Lifecycle**: Headless mode runs standalone with its own AI backend; embedded mode shares the desktop app's service instances
 - **Smart entry point**: Auto-detects `.ade/mcp.sock` to choose proxy (embedded) vs headless mode
 - **Session identity**: The MCP server propagates a `chatSessionId` field through `SessionIdentity`, resolved from the `ADE_CHAT_SESSION_ID` environment variable or the `initialize` handshake params. This links MCP tool calls back to their originating chat session for artifact ownership, computer use proof association, and audit logging. For standalone chat sessions (no mission/run/step context), the server infers the chat session from the caller ID when not explicitly provided.
+
+#### MCP Launch Resolution
+
+Worker and chat processes connect to ADE's MCP server through one of three launch modes, resolved by `resolveDesktopAdeMcpLaunch()` in `adeMcpLaunch.ts`:
+
+| Mode | Binary | When used |
+|------|--------|-----------|
+| `bundled_proxy` | `adeMcpProxy.cjs` run via Electron's Node | Packaged desktop builds where the proxy binary exists alongside the app bundle. The proxy connects to the desktop's `.ade/mcp.sock` Unix socket and relays stdio, injecting worker identity (mission/run/step/attempt) into the MCP `initialize` handshake. |
+| `headless_built` | `apps/mcp-server/dist/index.cjs` via `node` | Development or CI environments where the MCP server has been pre-built but no bundled proxy is available. |
+| `headless_source` | `apps/mcp-server/src/index.ts` via `npx tsx` | Development environments where only TypeScript source is available. |
+
+The launch resolver checks candidates in order: bundled proxy path (from `process.resourcesPath`, `__dirname`, or CWD), then the built MCP entry, then the source entry. Both `unifiedOrchestratorAdapter.ts` (worker spawning) and `claudeRuntimeProbe.ts` (provider health probing) delegate to this centralized resolver to ensure consistent MCP launch behavior across all call sites. The probe also supports a `--probe` flag that returns a JSON diagnostic without establishing a full connection.
 
 #### Available Tools
 
@@ -613,7 +625,7 @@ For each step that enters the `claimed` state, the orchestrator spawns a worker 
    - An **ADE tool profile** — coordinator/MCP/reporting tools are restricted to those appropriate for the worker role and phase.
    - A **permission mode** — for CLI-backed models this governs native behavior (`plan`/read-only vs edit/full execution); for API-key/local models it selects ADE's planning/coding tool profiles.
 
-3. **ADE Tool Connection**: Workers receive ADE-owned tools through the current runtime surface. CLI-backed workers commonly connect through the ADE MCP server, while API/local models use ADE's in-process planning/coding tools. In both cases, ADE enforces claimed scope (lane + file patterns) for ADE-owned actions.
+3. **ADE Tool Connection**: Workers receive ADE-owned tools through the current runtime surface. CLI-backed workers commonly connect through the ADE MCP server (via the bundled proxy in packaged builds or the headless MCP server in development), while API/local models use ADE's in-process planning/coding tools. In both cases, ADE enforces claimed scope (lane + file patterns) for ADE-owned actions.
 
 4. **Session Tracking**: Worker execution attempts are registered as tracked sessions/attempts for transcript capture, delta computation, and pack integration — the same lifecycle guarantees as interactive chat sessions.
 
@@ -1793,7 +1805,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Chat UI components | Complete | AgentChatPane, AgentChatMessageList, AgentChatComposer |
 | Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
-| MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection |
+| MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection. Centralized launch resolution (`adeMcpLaunch.ts`) with bundled proxy mode for packaged builds. |
 | AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-9 complete (reflection protocol, adaptive runtime, UI overhaul). V1 closeout: coordinator finalization awareness. M4/M5 additions: approval gates, mandatory planning enforcement, multi-round deliberation, adaptive runtime, model downgrade, budget-gated spawns, benign error classification. |
 | Phase 4 orchestrator delegation/team runtime | Complete | `delegate_parallel`, push sub-agent progress/completion rollups, native teammate auto-registration + allocation cap guardrails, single team-member data path |
 | Adaptive Runtime (M5) | Complete | `adaptiveRuntime.ts` — `classifyTaskComplexity`, `scaleParallelismCap`, `evaluateModelDowngrade`; budget hard cap enforcement in coordinator tools |
@@ -1836,7 +1848,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
 | Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, 2, 3, 4, and 5 are complete. All Phase 4 workstreams (W1-W10, W-UX, W6-half, W7a-c) are shipped at baseline or better. The remaining unshipped work is concentrated in computer-use runtime follow-through (the MCP tool loop for `screenshot_environment`/`interact_gui`/`record_environment` and automatic PR proof embedding) and future-phase items (multi-device sync, remote host deployment, iOS companion). MCP dual-mode architecture is shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`.
+**Overall status**: Phases 1, 1.5, 2, 3, 4, and 5 are complete. All Phase 4 workstreams (W1-W10, W-UX, W6-half, W7a-c) are shipped at baseline or better. The remaining unshipped work is concentrated in computer-use runtime follow-through (the MCP tool loop for `screenshot_environment`/`interact_gui`/`record_environment` and automatic PR proof embedding) and future-phase items (multi-device sync, remote host deployment, iOS companion). MCP dual-mode architecture is shipped, enabling headless operation with full AI via `aiIntegrationService` and embedded proxy mode through the desktop socket at `.ade/mcp.sock`. Packaged macOS builds use a bundled MCP proxy (`adeMcpProxy.cjs`) that connects to the desktop socket, with a runtime smoke test (`packagedRuntimeSmoke.ts`) that validates PTY, Claude SDK, and MCP proxy availability at build time.
 
 ---
 

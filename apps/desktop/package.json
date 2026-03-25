@@ -7,7 +7,8 @@
   "author": "Arul Sharma",
   "license": "AGPL-3.0",
   "scripts": {
-    "predev": "node ./scripts/clear-vite-cache.cjs",
+    "predev": "node ./scripts/clear-vite-cache.cjs && node ./scripts/normalize-runtime-binaries.cjs",
+    "prebuild": "node ./scripts/normalize-runtime-binaries.cjs",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
     "build": "tsup && vite build",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
@@ -130,13 +131,16 @@
       "electron.cjs",
       "package.json",
       "vendor/**/*",
-      "!node_modules/onnxruntime-node/**",
-      "!node_modules/node-pty/build/**"
+      "!node_modules/onnxruntime-node/**"
     ],
     "asarUnpack": [
+      "dist/main/adeMcpProxy.cjs",
+      "dist/main/packagedRuntimeSmoke.cjs",
+      "node_modules/node-pty/**/*",
       "node_modules/@huggingface/transformers/node_modules/onnxruntime-node/**",
       "vendor/crsqlite/**"
     ],
+    "afterPack": "./scripts/after-pack-runtime-fixes.cjs",
     "publish": {
       "provider": "github",
       "owner": "arul28",

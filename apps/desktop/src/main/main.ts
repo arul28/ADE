@@ -114,8 +114,10 @@ function fixElectronShellPath(): void {
   if (process.platform !== "darwin" && process.platform !== "linux") return;
 
   const currentPath = process.env.PATH ?? "";
+  const hasUserLocalBin = currentPath.includes(".local/bin");
+  const hasCommonCliBin = currentPath.includes("/usr/local/bin") || currentPath.includes("/opt/homebrew/bin");
   // Already rich — likely launched from terminal or already fixed.
-  if (currentPath.includes("/usr/local/bin") && currentPath.includes(".local/bin")) return;
+  if (hasUserLocalBin && hasCommonCliBin) return;
 
   try {
     const loginShell = process.env.SHELL || "/bin/zsh";

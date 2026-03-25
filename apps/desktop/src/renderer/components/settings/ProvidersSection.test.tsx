@@ -98,7 +98,7 @@ describe("ProvidersSection", () => {
       expect(ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
     });
 
-    expect(await screen.findByText("/Users/arul/.local/bin/claude")).toBeTruthy();
+    expect((await screen.findAllByText("/Users/arul/.local/bin/claude")).length).toBeGreaterThan(0);
 
     act(() => {
       emitChatEvent?.({
@@ -117,6 +117,18 @@ describe("ProvidersSection", () => {
     }, { timeout: 2_000 });
 
     expect(await screen.findByText("Sign-In Required")).toBeTruthy();
-    expect(screen.getByText("/Users/arul/.local/bin/claude")).toBeTruthy();
+    expect(screen.getAllByText("/Users/arul/.local/bin/claude").length).toBeGreaterThan(0);
+  });
+
+  it("shows Connected while the provider runtime is launchable", async () => {
+    render(<ProvidersSection />);
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
+    });
+
+    expect((await screen.findAllByText("Connected")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("/Users/arul/.local/bin/claude").length).toBeGreaterThan(0);
   });
 });

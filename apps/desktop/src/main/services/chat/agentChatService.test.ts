@@ -113,6 +113,10 @@ vi.mock("../ai/claudeRuntimeProbe", () => ({
   isClaudeRuntimeAuthError: vi.fn(() => false),
 }));
 
+vi.mock("../ai/claudeCodeExecutable", () => ({
+  resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/usr/local/bin/claude", source: "path" })),
+}));
+
 vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => []),
 }));
@@ -127,6 +131,7 @@ vi.mock("../orchestrator/unifiedOrchestratorAdapter", () => ({
     cmdArgs: [],
     env: {},
   })),
+  resolveUnifiedRuntimeRoot: vi.fn(() => process.cwd()),
 }));
 
 vi.mock("../orchestrator/permissionMapping", () => ({

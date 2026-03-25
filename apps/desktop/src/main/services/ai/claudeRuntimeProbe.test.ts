@@ -93,6 +93,14 @@ describe("claudeRuntimeProbe", () => {
     await probeClaudeRuntimeHealth({ projectRoot: "/tmp/project", force: true });
 
     expect(query.close).toHaveBeenCalledTimes(1);
+    expect(mockState.query).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        pathToClaudeCodeExecutable: "/usr/local/bin/claude",
+        mcpServers: expect.objectContaining({
+          ade: expect.any(Object),
+        }),
+      }),
+    }));
     expect(mockState.reportProviderRuntimeAuthFailure).toHaveBeenCalledTimes(1);
     expect(mockState.reportProviderRuntimeFailure).not.toHaveBeenCalled();
     expect(mockState.query).toHaveBeenCalledWith(expect.objectContaining({

@@ -69,7 +69,7 @@ ADE remains provider-flexible:
 - API-key/OpenRouter providers
 - local OpenAI-compatible endpoints
 
-The orchestrator, agent chat, and CTO all use those provider paths through ADE's runtime contracts rather than a hosted ADE backend.
+The orchestrator, agent chat, and CTO all use those provider paths through ADE's runtime contracts rather than a hosted ADE backend. MCP server connectivity is resolved through a centralized launch module (`adeMcpLaunch.ts`) that selects between a bundled proxy (packaged builds), a pre-built headless server, or TypeScript source execution depending on the runtime environment.
 
 ### 4. Memory architecture
 

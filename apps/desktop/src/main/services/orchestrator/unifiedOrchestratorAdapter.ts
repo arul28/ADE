@@ -26,6 +26,7 @@ import {
   normalizeMissionPermissions,
   providerPermissionsToLegacyConfig,
 } from "./permissionMapping";
+import { resolveDesktopAdeMcpLaunch, resolveRepoRuntimeRoot } from "../runtime/adeMcpLaunch";
 
 /**
  * Build environment variable assignments for worker identity.
@@ -66,55 +67,33 @@ export function resolveAdeMcpServerLaunch(args: {
   defaultRole?: string;
   ownerId?: string;
   computerUsePolicy?: ComputerUsePolicy | null;
+  bundledProxyPath?: string;
+  preferBundledProxy?: boolean;
 }): {
+  mode: "bundled_proxy" | "headless_built" | "headless_source";
   command: string;
   cmdArgs: string[];
   env: Record<string, string>;
+  entryPath: string;
+  runtimeRoot: string | null;
+  socketPath: string;
+  packaged: boolean;
+  resourcesPath: string | null;
 } {
-  const canonicalProjectRoot = typeof args.projectRoot === "string" && args.projectRoot.trim().length > 0
-    ? path.resolve(args.projectRoot)
-    : path.resolve(args.workspaceRoot);
-  const workspaceRoot = path.resolve(args.workspaceRoot);
-  const mcpServerDir = path.resolve(args.runtimeRoot, "apps", "mcp-server");
-  const builtEntry = path.join(mcpServerDir, "dist", "index.cjs");
-  const srcEntry = path.join(mcpServerDir, "src", "index.ts");
-
-  let command: string;
-  let cmdArgs: string[];
-
-  if (fs.existsSync(builtEntry)) {
-    command = "node";
-    cmdArgs = [builtEntry, "--project-root", canonicalProjectRoot, "--workspace-root", workspaceRoot];
-  } else {
-    command = "npx";
-    cmdArgs = ["tsx", srcEntry, "--project-root", canonicalProjectRoot, "--workspace-root", workspaceRoot];
-  }
-
-  return {
-    command,
-    cmdArgs,
-    env: {
-      ADE_PROJECT_ROOT: canonicalProjectRoot,
-      ADE_WORKSPACE_ROOT: workspaceRoot,
-      ADE_MISSION_ID: args.missionId ?? "",
-      ADE_RUN_ID: args.runId ?? "",
-      ADE_STEP_ID: args.stepId ?? "",
-      ADE_ATTEMPT_ID: args.attemptId ?? "",
-      ADE_CHAT_SESSION_ID: args.chatSessionId ?? "",
-      ADE_DEFAULT_ROLE: args.defaultRole ?? "agent",
-      ADE_OWNER_ID: args.ownerId ?? "",
-      ADE_COMPUTER_USE_MODE: args.computerUsePolicy?.mode ?? "",
-      ADE_COMPUTER_USE_ALLOW_LOCAL_FALLBACK:
-        typeof args.computerUsePolicy?.allowLocalFallback === "boolean"
-          ? (args.computerUsePolicy.allowLocalFallback ? "1" : "0")
-          : "",
-      ADE_COMPUTER_USE_RETAIN_ARTIFACTS:
-        typeof args.computerUsePolicy?.retainArtifacts === "boolean"
-          ? (args.computerUsePolicy.retainArtifacts ? "1" : "0")
-          : "",
-      ADE_COMPUTER_USE_PREFERRED_BACKEND: args.computerUsePolicy?.preferredBackend ?? "",
-    }
-  };
+  return resolveDesktopAdeMcpLaunch({
+    projectRoot: args.projectRoot,
+    workspaceRoot: args.workspaceRoot,
+    runtimeRoot: args.runtimeRoot,
+    missionId: args.missionId,
+    runId: args.runId,
+    stepId: args.stepId,
+    attemptId: args.attemptId,
+    defaultRole: args.defaultRole,
+    ownerId: args.ownerId,
+    computerUsePolicy: args.computerUsePolicy,
+    bundledProxyPath: args.bundledProxyPath,
+    preferBundledProxy: args.preferBundledProxy,
+  });
 }
 
 export function getUnifiedUnsupportedModelReason(modelRef: string): string | null {
@@ -240,31 +219,9 @@ function writeWorkerPromptFile(args: {
   return promptPath;
 }
 
-/**
- * Resolve the project root from the current working directory.
- * Walks up from cwd looking for package.json with the monorepo marker.
- */
+/** Resolve the monorepo runtime root (delegates to the shared adeMcpLaunch resolver). */
 export function resolveUnifiedRuntimeRoot(): string {
-  const startPoints = [
-    process.cwd(),
-    __dirname,
-    path.resolve(process.cwd(), ".."),
-    path.resolve(process.cwd(), "..", ".."),
-  ];
-
-  for (const start of startPoints) {
-    let dir = path.resolve(start);
-    for (let i = 0; i < 12; i++) {
-      if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
-        return dir;
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-  }
-
-  return process.cwd();
+  return resolveRepoRuntimeRoot();
 }
 
 /**
@@ -282,6 +239,8 @@ export function buildCodexMcpConfigFlags(args: {
   attemptId?: string;
   ownerId?: string | null;
   defaultRole?: string;
+  bundledProxyPath?: string;
+  preferBundledProxy?: boolean;
 }): string[] {
   const launch = resolveAdeMcpServerLaunch({
     projectRoot: args.projectRoot,
@@ -293,6 +252,8 @@ export function buildCodexMcpConfigFlags(args: {
     attemptId: args.attemptId,
     defaultRole: args.defaultRole ?? "agent",
     ownerId: args.ownerId ?? undefined,
+    bundledProxyPath: args.bundledProxyPath,
+    preferBundledProxy: args.preferBundledProxy,
   });
 
   // Codex -c flag parses values as TOML
