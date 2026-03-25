@@ -1017,6 +1017,332 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(closed.showsRequestReviewers)
   }
 
+  func testFilterPullRequestListItemsMatchesStateAndSearch() {
+    let items = [
+      PullRequestListItem(
+        id: "pr-1",
+        laneId: "lane-1",
+        laneName: "Inbox",
+        projectId: "project-1",
+        repoOwner: "arul",
+        repoName: "ade",
+        githubPrNumber: 11,
+        githubUrl: "https://github.com/arul/ade/pull/11",
+        title: "Improve review timeline",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "feature/reviews",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        additions: 12,
+        deletions: 2,
+        lastSyncedAt: nil,
+        createdAt: "2026-03-20T00:00:00.000Z",
+        updatedAt: "2026-03-20T00:00:00.000Z",
+        adeKind: "single",
+        linkedGroupId: nil,
+        linkedGroupType: nil,
+        linkedGroupName: nil,
+        linkedGroupPosition: nil,
+        linkedGroupCount: 0,
+        workflowDisplayState: nil,
+        cleanupState: nil
+      ),
+      PullRequestListItem(
+        id: "pr-2",
+        laneId: "lane-2",
+        laneName: "Queue lane",
+        projectId: "project-1",
+        repoOwner: "arul",
+        repoName: "ade",
+        githubPrNumber: 12,
+        githubUrl: "https://github.com/arul/ade/pull/12",
+        title: "Draft queue workflow",
+        state: "draft",
+        baseBranch: "main",
+        headBranch: "feature/queue",
+        checksStatus: "pending",
+        reviewStatus: "requested",
+        additions: 30,
+        deletions: 4,
+        lastSyncedAt: nil,
+        createdAt: "2026-03-20T00:00:00.000Z",
+        updatedAt: "2026-03-20T00:00:00.000Z",
+        adeKind: "queue",
+        linkedGroupId: "group-1",
+        linkedGroupType: "queue",
+        linkedGroupName: "Queue",
+        linkedGroupPosition: 1,
+        linkedGroupCount: 2,
+        workflowDisplayState: nil,
+        cleanupState: nil
+      ),
+      PullRequestListItem(
+        id: "pr-3",
+        laneId: "lane-3",
+        laneName: "Cleanup",
+        projectId: "project-1",
+        repoOwner: "arul",
+        repoName: "ade",
+        githubPrNumber: 13,
+        githubUrl: "https://github.com/arul/ade/pull/13",
+        title: "Merged cleanup banner",
+        state: "merged",
+        baseBranch: "main",
+        headBranch: "feature/cleanup",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        additions: 4,
+        deletions: 1,
+        lastSyncedAt: nil,
+        createdAt: "2026-03-20T00:00:00.000Z",
+        updatedAt: "2026-03-20T00:00:00.000Z",
+        adeKind: "integration",
+        linkedGroupId: "group-2",
+        linkedGroupType: "integration",
+        linkedGroupName: "Integration",
+        linkedGroupPosition: 0,
+        linkedGroupCount: 1,
+        workflowDisplayState: "active",
+        cleanupState: "required"
+      ),
+    ]
+
+    XCTAssertEqual(filterPullRequestListItems(items, query: "review", state: .all).map(\.id), ["pr-1"])
+    XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .draft).map(\.id), ["pr-2"])
+    XCTAssertEqual(filterPullRequestListItems(items, query: "cleanup", state: .merged).map(\.id), ["pr-3"])
+    XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .open).map(\.id), ["pr-1"])
+  }
+
+  func testBuildPullRequestTimelineOrdersStateReviewsAndComments() {
+    let pr = PullRequestListItem(
+      id: "pr-9",
+      laneId: "lane-9",
+      laneName: "Feature",
+      projectId: "project-1",
+      repoOwner: "arul",
+      repoName: "ade",
+      githubPrNumber: 99,
+      githubUrl: "https://github.com/arul/ade/pull/99",
+      title: "Merge timeline",
+      state: "merged",
+      baseBranch: "main",
+      headBranch: "feature/timeline",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      additions: 10,
+      deletions: 3,
+      lastSyncedAt: nil,
+      createdAt: "2026-03-20T09:00:00.000Z",
+      updatedAt: "2026-03-20T12:00:00.000Z",
+      adeKind: "single",
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil
+    )
+
+    let timeline = buildPullRequestTimeline(
+      pr: pr,
+      snapshot: PullRequestSnapshot(
+        detail: PrDetail(
+          prId: "pr-9",
+          body: nil,
+          assignees: [],
+          author: PrUser(login: "arul", avatarUrl: nil),
+          isDraft: false,
+          labels: [],
+          requestedReviewers: [],
+          milestone: nil,
+          linkedIssues: []
+        ),
+        status: PrStatus(
+          prId: "pr-9",
+          state: "merged",
+          checksStatus: "passing",
+          reviewStatus: "approved",
+          isMergeable: true,
+          mergeConflicts: false,
+          behindBaseBy: 0
+        ),
+        checks: [],
+        reviews: [
+          PrReview(
+            reviewer: "reviewer",
+            state: "approved",
+            body: "Looks good to me",
+            submittedAt: "2026-03-20T11:00:00.000Z"
+          ),
+        ],
+        comments: [
+          PrComment(
+            id: "comment-1",
+            author: "bot",
+            body: "Queued for merge",
+            source: "issue",
+            url: nil,
+            path: nil,
+            line: nil,
+            createdAt: "2026-03-20T10:00:00.000Z",
+            updatedAt: nil
+          ),
+        ],
+        files: []
+      )
+    )
+
+    XCTAssertEqual(timeline.map(\.kind), [.stateChange, .review, .comment, .stateChange])
+    XCTAssertEqual(timeline.first?.title, "Merged")
+    XCTAssertEqual(timeline.last?.title, "Opened")
+  }
+
+  func testParsePullRequestPatchBuildsLineNumbers() {
+    let lines = parsePullRequestPatch("""
+    @@ -1,2 +1,3 @@
+     let value = 1
+    -let title = \"Old\"
+    +let title = \"New\"
+    +let subtitle = \"More\"
+    """)
+
+    XCTAssertEqual(lines.count, 5)
+    XCTAssertEqual(lines[0].kind, .hunk)
+    XCTAssertEqual(lines[1].oldLineNumber, 1)
+    XCTAssertEqual(lines[1].newLineNumber, 1)
+    XCTAssertEqual(lines[2].kind, .removed)
+    XCTAssertEqual(lines[2].oldLineNumber, 2)
+    XCTAssertNil(lines[2].newLineNumber)
+    XCTAssertEqual(lines[3].kind, .added)
+    XCTAssertNil(lines[3].oldLineNumber)
+    XCTAssertEqual(lines[3].newLineNumber, 2)
+    XCTAssertEqual(lines[4].newLineNumber, 3)
+  }
+
+  func testDatabaseFetchPullRequestListItemsIncludesWorkflowContext() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+    try database.replacePullRequestHydration(
+      PullRequestRefreshPayload(
+        refreshedCount: 2,
+        prs: [
+          PrSummary(
+            id: "pr-1",
+            laneId: "lane-primary",
+            projectId: "project-1",
+            repoOwner: "arul",
+            repoName: "ade",
+            githubPrNumber: 42,
+            githubUrl: "https://github.com/arul/ade/pull/42",
+            githubNodeId: nil,
+            title: "Queue entry",
+            state: "open",
+            baseBranch: "main",
+            headBranch: "feature/queue-1",
+            checksStatus: "pending",
+            reviewStatus: "requested",
+            additions: 12,
+            deletions: 4,
+            lastSyncedAt: nil,
+            createdAt: "2026-03-17T00:10:00.000Z",
+            updatedAt: "2026-03-17T00:10:00.000Z"
+          ),
+          PrSummary(
+            id: "pr-2",
+            laneId: "lane-child",
+            projectId: "project-1",
+            repoOwner: "arul",
+            repoName: "ade",
+            githubPrNumber: 43,
+            githubUrl: "https://github.com/arul/ade/pull/43",
+            githubNodeId: nil,
+            title: "Queue entry two",
+            state: "open",
+            baseBranch: "main",
+            headBranch: "feature/queue-2",
+            checksStatus: "passing",
+            reviewStatus: "approved",
+            additions: 5,
+            deletions: 1,
+            lastSyncedAt: nil,
+            createdAt: "2026-03-17T00:12:00.000Z",
+            updatedAt: "2026-03-17T00:12:00.000Z"
+          ),
+        ],
+        snapshots: []
+      )
+    )
+
+    try database.executeSqlForTesting("""
+      create table if not exists pr_groups (
+        id text primary key,
+        project_id text not null,
+        group_type text not null,
+        name text,
+        target_branch text,
+        created_at text not null
+      );
+      create table if not exists pr_group_members (
+        id text primary key,
+        group_id text not null,
+        pr_id text not null,
+        lane_id text not null,
+        position integer not null,
+        role text not null
+      );
+      create table if not exists integration_proposals (
+        id text primary key,
+        project_id text not null,
+        source_lane_ids_json text not null,
+        base_branch text not null,
+        steps_json text not null,
+        pairwise_results_json text not null,
+        lane_summaries_json text not null,
+        overall_outcome text not null,
+        created_at text not null,
+        status text not null,
+        linked_group_id text,
+        linked_pr_id text,
+        workflow_display_state text,
+        cleanup_state text
+      );
+    """)
+
+    try database.executeSqlForTesting("""
+      insert into pr_groups(id, project_id, group_type, name, target_branch, created_at)
+      values ('group-1', 'project-1', 'queue', 'Queue rollout', 'main', '2026-03-17T00:15:00.000Z');
+    """)
+    try database.executeSqlForTesting("""
+      insert into pr_group_members(id, group_id, pr_id, lane_id, position, role)
+      values
+        ('member-1', 'group-1', 'pr-1', 'lane-primary', 0, 'source'),
+        ('member-2', 'group-1', 'pr-2', 'lane-child', 1, 'source');
+    """)
+    try database.executeSqlForTesting("""
+      insert into integration_proposals(
+        id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json,
+        lane_summaries_json, overall_outcome, created_at, status, linked_group_id, linked_pr_id,
+        workflow_display_state, cleanup_state
+      ) values (
+        'proposal-1', 'project-1', '["lane-primary"]', 'main', '[]', '[]', '[]', 'clean',
+        '2026-03-17T00:20:00.000Z', 'committed', 'group-1', 'pr-1', 'active', 'required'
+      );
+    """)
+
+    let items = database.fetchPullRequestListItems()
+    let first = try XCTUnwrap(items.first(where: { $0.id == "pr-1" }))
+    XCTAssertEqual(first.adeKind, "integration")
+    XCTAssertEqual(first.linkedGroupId, "group-1")
+    XCTAssertEqual(first.linkedGroupCount, 2)
+    XCTAssertEqual(first.cleanupState, "required")
+    database.close()
+  }
+
   func testFilesLanguageDetectionCoversDesktopParityLanguages() {
     XCTAssertEqual(FilesLanguage.detect(languageId: "swift", filePath: "App.swift"), .swift)
     XCTAssertEqual(FilesLanguage.detect(languageId: "typescript", filePath: "Button.tsx"), .typescript)

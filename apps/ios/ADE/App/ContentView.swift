@@ -63,6 +63,10 @@ struct ContentView: View {
       guard requestId != nil else { return }
       selectedTab = .lanes
     }
+    .onChange(of: syncService.requestedPrNavigation?.id) { _, requestId in
+      guard requestId != nil else { return }
+      selectedTab = .prs
+    }
   }
 }
 

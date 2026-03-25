@@ -114,6 +114,98 @@ final class DatabaseService {
     let filesJson: String?
   }
 
+  private struct PullRequestListItemRow {
+    let id: String
+    let laneId: String
+    let laneName: String?
+    let projectId: String
+    let repoOwner: String
+    let repoName: String
+    let githubPrNumber: Int
+    let githubUrl: String
+    let title: String
+    let state: String
+    let baseBranch: String
+    let headBranch: String
+    let checksStatus: String
+    let reviewStatus: String
+    let additions: Int
+    let deletions: Int
+    let lastSyncedAt: String?
+    let createdAt: String
+    let updatedAt: String
+    let groupId: String?
+    let groupType: String?
+    let groupName: String?
+    let groupPosition: Int?
+    let groupCount: Int
+    let workflowDisplayState: String?
+    let cleanupState: String?
+    let linkedWorkflowGroupId: String?
+  }
+
+  private struct PrGroupMemberRow {
+    let groupId: String
+    let groupType: String
+    let groupName: String?
+    let targetBranch: String?
+    let prId: String
+    let laneId: String
+    let laneName: String
+    let title: String
+    let state: String
+    let githubPrNumber: Int
+    let githubUrl: String
+    let baseBranch: String
+    let headBranch: String
+    let position: Int
+  }
+
+  private struct IntegrationProposalRow {
+    let proposalId: String
+    let sourceLaneIdsJson: String
+    let baseBranch: String
+    let pairwiseResultsJson: String
+    let laneSummariesJson: String
+    let stepsJson: String
+    let overallOutcome: String
+    let createdAt: String
+    let title: String?
+    let body: String?
+    let draft: Bool
+    let integrationLaneName: String?
+    let status: String
+    let integrationLaneId: String?
+    let linkedGroupId: String?
+    let linkedPrId: String?
+    let workflowDisplayState: String?
+    let cleanupState: String?
+    let closedAt: String?
+    let mergedAt: String?
+    let completedAt: String?
+    let cleanupDeclinedAt: String?
+    let cleanupCompletedAt: String?
+    let resolutionStateJson: String?
+  }
+
+  private struct QueueStateRow {
+    let queueId: String
+    let groupId: String
+    let groupName: String?
+    let targetBranch: String?
+    let state: String
+    let entriesJson: String
+    let configJson: String
+    let currentPosition: Int
+    let activePrId: String?
+    let activeResolverRunId: String?
+    let lastError: String?
+    let waitReason: String?
+    let startedAt: String
+    let completedAt: String?
+    let updatedAt: String?
+  }
+
   private var db: OpaquePointer?
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
@@ -934,6 +1026,330 @@ final class DatabaseService {
         lastSyncedAt: stringValue(statement, index: 16),
         createdAt: stringValue(statement, index: 17) ?? "",
         updatedAt: stringValue(statement, index: 18) ?? ""
+      )
+    }
+  }
+
+  func fetchPullRequestListItems() -> [PullRequestListItem] {
+    let sql = """
+      select pr.id,
+             pr.lane_id,
+             l.name,
+             pr.project_id,
+             pr.repo_owner,
+             pr.repo_name,
+             pr.github_pr_number,
+             pr.github_url,
+             pr.title,
+             pr.state,
+             pr.base_branch,
+             pr.head_branch,
+             pr.checks_status,
+             pr.review_status,
+             pr.additions,
+             pr.deletions,
+             pr.last_synced_at,
+             pr.created_at,
+             pr.updated_at,
+             gm.group_id,
+             g.group_type,
+             g.name,
+             gm.position,
+             coalesce(group_counts.member_count, 0),
+             ip.workflow_display_state,
+             ip.cleanup_state,
+             ip.linked_group_id
+        from pull_requests pr
+        left join lanes l on l.id = pr.lane_id
+        left join pr_group_members gm on gm.pr_id = pr.id
+        left join pr_groups g on g.id = gm.group_id
+        left join (
+          select group_id, count(*) as member_count
+            from pr_group_members
+           group by group_id
+        ) group_counts on group_counts.group_id = gm.group_id
+        left join integration_proposals ip on ip.linked_pr_id = pr.id
+       order by pr.updated_at desc
+    """
+
+    return query(sql) { statement in
+      let row = PullRequestListItemRow(
+        id: stringValue(statement, index: 0) ?? "",
+        laneId: stringValue(statement, index: 1) ?? "",
+        laneName: stringValue(statement, index: 2),
+        projectId: stringValue(statement, index: 3) ?? "",
+        repoOwner: stringValue(statement, index: 4) ?? "",
+        repoName: stringValue(statement, index: 5) ?? "",
+        githubPrNumber: Int(sqlite3_column_int64(statement, 6)),
+        githubUrl: stringValue(statement, index: 7) ?? "",
+        title: stringValue(statement, index: 8) ?? "",
+        state: stringValue(statement, index: 9) ?? "open",
+        baseBranch: stringValue(statement, index: 10) ?? "",
+        headBranch: stringValue(statement, index: 11) ?? "",
+        checksStatus: stringValue(statement, index: 12) ?? "none",
+        reviewStatus: stringValue(statement, index: 13) ?? "none",
+        additions: Int(sqlite3_column_int64(statement, 14)),
+        deletions: Int(sqlite3_column_int64(statement, 15)),
+        lastSyncedAt: stringValue(statement, index: 16),
+        createdAt: stringValue(statement, index: 17) ?? "",
+        updatedAt: stringValue(statement, index: 18) ?? "",
+        groupId: stringValue(statement, index: 19),
+        groupType: stringValue(statement, index: 20),
+        groupName: stringValue(statement, index: 21),
+        groupPosition: columnIsNull(statement, index: 22) ? nil : Int(sqlite3_column_int64(statement, 22)),
+        groupCount: Int(sqlite3_column_int64(statement, 23)),
+        workflowDisplayState: stringValue(statement, index: 24),
+        cleanupState: stringValue(statement, index: 25),
+        linkedWorkflowGroupId: stringValue(statement, index: 26)
+      )
+
+      let adeKind: String?
+      if row.workflowDisplayState != nil || row.cleanupState != nil {
+        adeKind = "integration"
+      } else if row.groupType == "queue" {
+        adeKind = "queue"
+      } else if row.groupType == "integration" {
+        adeKind = "integration"
+      } else {
+        adeKind = "single"
+      }
+
+      return PullRequestListItem(
+        id: row.id,
+        laneId: row.laneId,
+        laneName: row.laneName,
+        projectId: row.projectId,
+        repoOwner: row.repoOwner,
+        repoName: row.repoName,
+        githubPrNumber: row.githubPrNumber,
+        githubUrl: row.githubUrl,
+        title: row.title,
+        state: row.state,
+        baseBranch: row.baseBranch,
+        headBranch: row.headBranch,
+        checksStatus: row.checksStatus,
+        reviewStatus: row.reviewStatus,
+        additions: row.additions,
+        deletions: row.deletions,
+        lastSyncedAt: row.lastSyncedAt,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        adeKind: adeKind,
+        linkedGroupId: row.linkedWorkflowGroupId ?? row.groupId,
+        linkedGroupType: row.groupType,
+        linkedGroupName: row.groupName,
+        linkedGroupPosition: row.groupPosition,
+        linkedGroupCount: row.groupCount,
+        workflowDisplayState: row.workflowDisplayState,
+        cleanupState: row.cleanupState
+      )
+    }
+  }
+
+  func fetchPullRequestGroupMembers(groupId: String) -> [PrGroupMemberSummary] {
+    let sql = """
+      select gm.group_id,
+             g.group_type,
+             g.name,
+             g.target_branch,
+             pr.id,
+             pr.lane_id,
+             coalesce(l.name, pr.lane_id),
+             pr.title,
+             pr.state,
+             pr.github_pr_number,
+             pr.github_url,
+             pr.base_branch,
+             pr.head_branch,
+             gm.position
+        from pr_group_members gm
+        join pr_groups g on g.id = gm.group_id
+        join pull_requests pr on pr.id = gm.pr_id
+        left join lanes l on l.id = pr.lane_id
+       where gm.group_id = ?
+       order by gm.position asc, pr.updated_at desc
+    """
+
+    return query(sql, bind: { [self] statement in
+      try self.bindText(groupId, to: statement, index: 1)
+    }, map: { statement in
+      PrGroupMemberSummary(
+        groupId: stringValue(statement, index: 0) ?? "",
+        groupType: stringValue(statement, index: 1) ?? "single",
+        groupName: stringValue(statement, index: 2),
+        targetBranch: stringValue(statement, index: 3),
+        prId: stringValue(statement, index: 4) ?? "",
+        laneId: stringValue(statement, index: 5) ?? "",
+        laneName: stringValue(statement, index: 6) ?? "",
+        title: stringValue(statement, index: 7) ?? "",
+        state: stringValue(statement, index: 8) ?? "open",
+        githubPrNumber: Int(sqlite3_column_int64(statement, 9)),
+        githubUrl: stringValue(statement, index: 10) ?? "",
+        baseBranch: stringValue(statement, index: 11) ?? "",
+        headBranch: stringValue(statement, index: 12) ?? "",
+        position: Int(sqlite3_column_int64(statement, 13))
+      )
+    })
+  }
+
+  func fetchIntegrationProposals() -> [IntegrationProposal] {
+    let sql = """
+      select id,
+             source_lane_ids_json,
+             base_branch,
+             pairwise_results_json,
+             lane_summaries_json,
+             steps_json,
+             overall_outcome,
+             created_at,
+             title,
+             body,
+             draft,
+             integration_lane_name,
+             status,
+             integration_lane_id,
+             linked_group_id,
+             linked_pr_id,
+             workflow_display_state,
+             cleanup_state,
+             closed_at,
+             merged_at,
+             completed_at,
+             cleanup_declined_at,
+             cleanup_completed_at,
+             resolution_state_json
+        from integration_proposals
+       order by created_at desc
+    """
+
+    return query(sql) { statement in
+      IntegrationProposalRow(
+        proposalId: stringValue(statement, index: 0) ?? "",
+        sourceLaneIdsJson: stringValue(statement, index: 1) ?? "[]",
+        baseBranch: stringValue(statement, index: 2) ?? "",
+        pairwiseResultsJson: stringValue(statement, index: 3) ?? "[]",
+        laneSummariesJson: stringValue(statement, index: 4) ?? "[]",
+        stepsJson: stringValue(statement, index: 5) ?? "[]",
+        overallOutcome: stringValue(statement, index: 6) ?? "pending",
+        createdAt: stringValue(statement, index: 7) ?? "",
+        title: stringValue(statement, index: 8),
+        body: stringValue(statement, index: 9),
+        draft: sqlite3_column_int(statement, 10) == 1,
+        integrationLaneName: stringValue(statement, index: 11),
+        status: stringValue(statement, index: 12) ?? "proposed",
+        integrationLaneId: stringValue(statement, index: 13),
+        linkedGroupId: stringValue(statement, index: 14),
+        linkedPrId: stringValue(statement, index: 15),
+        workflowDisplayState: stringValue(statement, index: 16),
+        cleanupState: stringValue(statement, index: 17),
+        closedAt: stringValue(statement, index: 18),
+        mergedAt: stringValue(statement, index: 19),
+        completedAt: stringValue(statement, index: 20),
+        cleanupDeclinedAt: stringValue(statement, index: 21),
+        cleanupCompletedAt: stringValue(statement, index: 22),
+        resolutionStateJson: stringValue(statement, index: 23)
+      )
+    }.map { row in
+      IntegrationProposal(
+        proposalId: row.proposalId,
+        sourceLaneIds: decodeJson(row.sourceLaneIdsJson, as: [String].self) ?? [],
+        baseBranch: row.baseBranch,
+        pairwiseResults: decodeJson(row.pairwiseResultsJson, as: [IntegrationPairwiseResult].self) ?? [],
+        laneSummaries: decodeJson(row.laneSummariesJson, as: [IntegrationLaneSummary].self) ?? [],
+        steps: decodeJson(row.stepsJson, as: [IntegrationProposalStep].self) ?? [],
+        overallOutcome: row.overallOutcome,
+        createdAt: row.createdAt,
+        title: row.title,
+        body: row.body,
+        draft: row.draft,
+        integrationLaneName: row.integrationLaneName,
+        status: row.status,
+        integrationLaneId: row.integrationLaneId,
+        linkedGroupId: row.linkedGroupId,
+        linkedPrId: row.linkedPrId,
+        workflowDisplayState: row.workflowDisplayState,
+        cleanupState: row.cleanupState,
+        closedAt: row.closedAt,
+        mergedAt: row.mergedAt,
+        completedAt: row.completedAt,
+        cleanupDeclinedAt: row.cleanupDeclinedAt,
+        cleanupCompletedAt: row.cleanupCompletedAt,
+        resolutionState: decodeJson(row.resolutionStateJson, as: IntegrationResolutionState.self)
+      )
+    }
+  }
+
+  func fetchQueueStates() -> [QueueLandingState] {
+    let sql = """
+      select q.id,
+             q.group_id,
+             g.name,
+             g.target_branch,
+             q.state,
+             q.entries_json,
+             q.config_json,
+             q.current_position,
+             q.active_pr_id,
+             q.active_resolver_run_id,
+             q.last_error,
+             q.wait_reason,
+             q.started_at,
+             q.completed_at,
+             q.updated_at
+        from queue_landing_state q
+        left join pr_groups g on g.id = q.group_id
+       order by coalesce(q.updated_at, q.started_at) desc
+    """
+
+    return query(sql) { statement in
+      QueueStateRow(
+        queueId: stringValue(statement, index: 0) ?? "",
+        groupId: stringValue(statement, index: 1) ?? "",
+        groupName: stringValue(statement, index: 2),
+        targetBranch: stringValue(statement, index: 3),
+        state: stringValue(statement, index: 4) ?? "idle",
+        entriesJson: stringValue(statement, index: 5) ?? "[]",
+        configJson: stringValue(statement, index: 6) ?? "{}",
+        currentPosition: Int(sqlite3_column_int64(statement, 7)),
+        activePrId: stringValue(statement, index: 8),
+        activeResolverRunId: stringValue(statement, index: 9),
+        lastError: stringValue(statement, index: 10),
+        waitReason: stringValue(statement, index: 11),
+        startedAt: stringValue(statement, index: 12) ?? "",
+        completedAt: stringValue(statement, index: 13),
+        updatedAt: stringValue(statement, index: 14)
+      )
+    }.map { row in
+      QueueLandingState(
+        queueId: row.queueId,
+        groupId: row.groupId,
+        groupName: row.groupName,
+        targetBranch: row.targetBranch,
+        state: row.state,
+        entries: decodeJson(row.entriesJson, as: [QueueLandingEntry].self) ?? [],
+        currentPosition: row.currentPosition,
+        activePrId: row.activePrId,
+        activeResolverRunId: row.activeResolverRunId,
+        lastError: row.lastError,
+        waitReason: row.waitReason,
+        config: decodeJson(row.configJson, as: QueueAutomationConfig.self) ?? QueueAutomationConfig(
+          method: "squash",
+          archiveLane: false,
+          autoResolve: false,
+          ciGating: false,
+          resolverProvider: nil,
+          resolverModel: nil,
+          reasoningEffort: nil,
+          permissionMode: nil,
+          confidenceThreshold: nil,
+          originSurface: nil,
+          originMissionId: nil,
+          originRunId: nil,
+          originLabel: nil
+        ),
+        startedAt: row.startedAt,
+        completedAt: row.completedAt,
+        updatedAt: row.updatedAt ?? row.startedAt
       )
     }
   }

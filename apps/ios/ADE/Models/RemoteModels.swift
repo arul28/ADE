@@ -617,6 +617,59 @@ struct PrSummary: Codable, Identifiable, Equatable {
   var updatedAt: String
 }
 
+struct PullRequestListItem: Codable, Identifiable, Equatable {
+  var id: String
+  var laneId: String
+  var laneName: String?
+  var projectId: String
+  var repoOwner: String
+  var repoName: String
+  var githubPrNumber: Int
+  var githubUrl: String
+  var title: String
+  var state: String
+  var baseBranch: String
+  var headBranch: String
+  var checksStatus: String
+  var reviewStatus: String
+  var additions: Int
+  var deletions: Int
+  var lastSyncedAt: String?
+  var createdAt: String
+  var updatedAt: String
+  var adeKind: String?
+  var linkedGroupId: String?
+  var linkedGroupType: String?
+  var linkedGroupName: String?
+  var linkedGroupPosition: Int?
+  var linkedGroupCount: Int
+  var workflowDisplayState: String?
+  var cleanupState: String?
+}
+
+struct PrGroupMemberSummary: Codable, Identifiable, Equatable {
+  var id: String { prId }
+  var groupId: String
+  var groupType: String
+  var groupName: String?
+  var targetBranch: String?
+  var prId: String
+  var laneId: String
+  var laneName: String
+  var title: String
+  var state: String
+  var githubPrNumber: Int
+  var githubUrl: String
+  var baseBranch: String
+  var headBranch: String
+  var position: Int
+}
+
+struct PullRequestDraftSuggestion: Codable, Equatable {
+  var title: String
+  var body: String
+}
+
 struct PrStatus: Codable, Equatable {
   var prId: String
   var state: String
@@ -724,6 +777,149 @@ struct PullRequestRefreshPayload: Codable, Equatable {
   var refreshedCount: Int
   var prs: [PrSummary]
   var snapshots: [PullRequestSnapshotHydration]
+}
+
+struct IntegrationConflictFile: Codable, Identifiable, Equatable {
+  var id: String { "\(path):\(conflictType ?? "none")" }
+  var path: String
+  var conflictType: String?
+  var conflictMarkers: String
+  var oursExcerpt: String?
+  var theirsExcerpt: String?
+  var diffHunk: String?
+}
+
+struct IntegrationDiffStat: Codable, Equatable {
+  var insertions: Int
+  var deletions: Int
+  var filesChanged: Int
+}
+
+struct IntegrationProposalStep: Codable, Identifiable, Equatable {
+  var id: String { laneId }
+  var laneId: String
+  var laneName: String
+  var position: Int
+  var outcome: String
+  var conflictingFiles: [IntegrationConflictFile]
+  var diffStat: IntegrationDiffStat
+}
+
+struct IntegrationPairwiseResult: Codable, Identifiable, Equatable {
+  var id: String { "\(laneAId):\(laneBId)" }
+  var laneAId: String
+  var laneAName: String
+  var laneBId: String
+  var laneBName: String
+  var outcome: String
+  var conflictingFiles: [IntegrationConflictFile]
+}
+
+struct IntegrationLaneSummary: Codable, Identifiable, Equatable {
+  var id: String { laneId }
+  var laneId: String
+  var laneName: String
+  var outcome: String
+  var commitHash: String
+  var commitCount: Int
+  var conflictsWith: [String]
+  var diffStat: IntegrationDiffStat
+}
+
+struct IntegrationLaneSnapshot: Codable, Equatable {
+  var headSha: String?
+  var dirty: Bool
+}
+
+struct IntegrationResolutionState: Codable, Equatable {
+  var integrationLaneId: String
+  var stepResolutions: [String: String]
+  var activeWorkerStepId: String?
+  var activeLaneId: String?
+  var createdSnapshot: IntegrationLaneSnapshot?
+  var currentSnapshot: IntegrationLaneSnapshot?
+  var laneChangeStatus: String?
+  var updatedAt: String
+}
+
+struct IntegrationProposal: Codable, Identifiable, Equatable {
+  var id: String { proposalId }
+  var proposalId: String
+  var sourceLaneIds: [String]
+  var baseBranch: String
+  var pairwiseResults: [IntegrationPairwiseResult]
+  var laneSummaries: [IntegrationLaneSummary]
+  var steps: [IntegrationProposalStep]
+  var overallOutcome: String
+  var createdAt: String
+  var title: String?
+  var body: String?
+  var draft: Bool?
+  var integrationLaneName: String?
+  var status: String
+  var integrationLaneId: String?
+  var linkedGroupId: String?
+  var linkedPrId: String?
+  var workflowDisplayState: String?
+  var cleanupState: String?
+  var closedAt: String?
+  var mergedAt: String?
+  var completedAt: String?
+  var cleanupDeclinedAt: String?
+  var cleanupCompletedAt: String?
+  var resolutionState: IntegrationResolutionState?
+}
+
+struct QueueAutomationConfig: Codable, Equatable {
+  var method: String
+  var archiveLane: Bool
+  var autoResolve: Bool
+  var ciGating: Bool
+  var resolverProvider: String?
+  var resolverModel: String?
+  var reasoningEffort: String?
+  var permissionMode: String?
+  var confidenceThreshold: Double?
+  var originSurface: String?
+  var originMissionId: String?
+  var originRunId: String?
+  var originLabel: String?
+}
+
+struct QueueLandingEntry: Codable, Identifiable, Equatable {
+  var id: String { prId }
+  var prId: String
+  var laneId: String
+  var laneName: String
+  var position: Int
+  var state: String
+  var prNumber: Int?
+  var githubUrl: String?
+  var resolvedByAi: Bool?
+  var resolverRunId: String?
+  var mergeCommitSha: String?
+  var waitingOn: String?
+  var updatedAt: String?
+  var error: String?
+}
+
+struct QueueLandingState: Codable, Identifiable, Equatable {
+  var id: String { queueId }
+  var queueId: String
+  var groupId: String
+  var groupName: String?
+  var targetBranch: String?
+  var state: String
+  var entries: [QueueLandingEntry]
+  var currentPosition: Int
+  var activePrId: String?
+  var activeResolverRunId: String?
+  var lastError: String?
+  var waitReason: String?
+  var config: QueueAutomationConfig
+  var startedAt: String
+  var completedAt: String?
+  var updatedAt: String
 }
 
 struct TerminalSnapshot: Codable, Equatable {

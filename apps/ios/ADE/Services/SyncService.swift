@@ -242,6 +242,16 @@ struct LaneNavigationRequest: Equatable, Identifiable {
   }
 }
 
+struct PrNavigationRequest: Equatable, Identifiable {
+  let id: String
+  let prId: String
+
+  init(prId: String) {
+    self.id = UUID().uuidString
+    self.prId = prId
+  }
+}
+
 @MainActor
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
@@ -260,6 +270,7 @@ final class SyncService: ObservableObject {
   @Published var settingsPresented = false
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
+  @Published var requestedPrNavigation: PrNavigationRequest?
 
   private let legacyDraftKey = "ade.sync.connectionDraft"
   private let profileKey = "ade.sync.hostProfile"
@@ -661,6 +672,22 @@ final class SyncService: ObservableObject {
 
   func fetchPullRequests() async throws -> [PrSummary] {
     database.fetchPullRequests()
+  }
+
+  func fetchPullRequestListItems() async throws -> [PullRequestListItem] {
+    database.fetchPullRequestListItems()
+  }
+
+  func fetchPullRequestGroupMembers(groupId: String) async throws -> [PrGroupMemberSummary] {
+    database.fetchPullRequestGroupMembers(groupId: groupId)
+  }
+
+  func fetchIntegrationProposals() async throws -> [IntegrationProposal] {
+    database.fetchIntegrationProposals()
+  }
+
+  func fetchQueueStates() async throws -> [QueueLandingState] {
+    database.fetchQueueStates()
   }
 
   func fetchPullRequestSnapshot(prId: String) async throws -> PullRequestSnapshot? {
@@ -1105,14 +1132,29 @@ final class SyncService: ObservableObject {
     return try decode(try await performFileRequest(action: "readArtifact", args: args), as: SyncFileBlob.self)
   }
 
-  func createPullRequest(laneId: String, title: String, body: String, reviewers: [String]) async throws {
-    _ = try await sendCommand(action: "prs.createFromLane", args: [
+  func createPullRequest(
+    laneId: String,
+    title: String,
+    body: String,
+    draft: Bool = false,
+    baseBranch: String? = nil,
+    labels: [String] = [],
+    reviewers: [String]
+  ) async throws {
+    var args: [String: Any] = [
       "laneId": laneId,
       "title": title,
       "body": body,
-      "draft": false,
+      "draft": draft,
       "reviewers": reviewers,
-    ])
+    ]
+    if let baseBranch, !baseBranch.isEmpty {
+      args["baseBranch"] = baseBranch
+    }
+    if !labels.isEmpty {
+      args["labels"] = labels
+    }
+    _ = try await sendCommand(action: "prs.createFromLane", args: args)
   }
 
   func mergePullRequest(prId: String, method: String) async throws {
@@ -1135,6 +1177,29 @@ final class SyncService: ObservableObject {
       "prId": prId,
       "reviewers": reviewers,
     ])
+  }
+
+  func draftPullRequestDescription(laneId: String) async throws -> PullRequestDraftSuggestion {
+    try await sendDecodableCommand(action: "prs.draftDescription", args: ["laneId": laneId], as: PullRequestDraftSuggestion.self)
+  }
+
+  func rerunPullRequestChecks(prId: String, checkRunIds: [Int]? = nil) async throws {
+    var args: [String: Any] = ["prId": prId]
+    if let checkRunIds, !checkRunIds.isEmpty {
+      args["checkRunIds"] = checkRunIds
+    }
+    _ = try await sendCommand(action: "prs.rerunChecks", args: args)
+  }
+
+  func addPullRequestComment(prId: String, body: String, inReplyToCommentId: String? = nil) async throws {
+    var args: [String: Any] = [
+      "prId": prId,
+      "body": body,
+    ]
+    if let inReplyToCommentId, !inReplyToCommentId.isEmpty {
+      args["inReplyToCommentId"] = inReplyToCommentId
+    }
+    _ = try await sendCommand(action: "prs.addComment", args: args)
   }
 
   private func saveProfile(_ profile: HostConnectionProfile?) {
