@@ -1,0 +1,26 @@
+{
+  "featureId": "polish-scrutiny-fixes",
+  "reviewedAt": "2026-03-25T10:52:27Z",
+  "commitId": "c28ac1bbbc49dbbf1d9be284a5130fc2b7961cde",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "Reviewed the original failed polish feature (commit 0478940761473474740b6f80324a2434fd95c273), the fix feature (commit c28ac1bbbc49dbbf1d9be284a5130fc2b7961cde), the fix transcript skeleton, and the touched Swift/tests files. The fix fully removes the lane-detail section animation override that bypassed Reduce Motion, and Work chat history now renders through a LazyVStack over an 80-entry visible window with an explicit load-earlier pager, which resolves the original eager-rendering blocker without introducing new blocking issues in scope.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "conventions",
+      "observation": "The mission guidance still conflicts on simulator-based verification. The mission plan tells workers to launch the simulator and capture screenshots, while the mission AGENTS file explicitly forbids simulator launches and screenshots because the simulator cannot connect usefully to the desktop host.",
+      "evidence": "/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/mission.md:145-152 instructs simulator screenshots/launch/integration testing, while /Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/AGENTS.md:84 says \"DO NOT launch the simulator or take screenshots.\""
+    },
+    {
+      "area": "skills",
+      "observation": "The ios-worker skill still contains contradictory simulator guidance: its procedure correctly says to stop after build/tests, but the example handoff includes simulator-based interactive checks. Even though this fix worker followed procedure, the example can still steer future workers toward disallowed verification steps.",
+      "evidence": "/Users/admin/Projects/ADE/.factory/skills/ios-worker/SKILL.md:73 says not to launch the simulator or take screenshots, but SKILL.md:95-97 includes \"interactiveChecks\" with \"Installed app on simulator...\". The fix handoff shows the worker followed procedure with no deviations: /Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/handoffs/2026-03-25T10-46-05-053Z__polish-scrutiny-fixes__16bfdc21-0122-4b95-8178-364da8740ec2.json:74-76."
+    }
+  ],
+  "addressesFailureFrom": "/Users/admin/Projects/ADE/.factory/validation/polish/scrutiny/reviews/polish-and-integration.json",
+  "summary": "Pass. The two prior blocking findings are resolved: lane-detail section changes now honor the Reduce Motion-aware ADEMotion path, and Work chat history now uses lazy, windowed rendering with a load-earlier pager instead of eagerly rendering the full timeline. I found no new blocking issues in the reviewed scope; the remaining observations are shared-state guidance conflicts around simulator/screenshot verification."
+}

@@ -1,7 +1,7 @@
 {
   "milestone": "polish",
-  "round": 1,
-  "status": "fail",
+  "round": 2,
+  "status": "pass",
   "validatorsRun": {
     "test": {
       "passed": true,
@@ -21,39 +21,25 @@
   },
   "reviewsSummary": {
     "total": 1,
-    "passed": 0,
-    "failed": 1,
-    "failedFeatures": [
-      "polish-and-integration"
-    ]
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
   },
-  "blockingIssues": [
-    {
-      "featureId": "polish-and-integration",
-      "severity": "blocking",
-      "description": "`apps/ios/ADE/Views/LanesTabView.swift:1066` still forces a bouncy spring animation after `ADEMotion.emphasis(reduceMotion:)`, so Reduce Motion users do not get the required simpler transition fallback for lane-detail section changes."
-    },
-    {
-      "featureId": "polish-and-integration",
-      "severity": "blocking",
-      "description": "`apps/ios/ADE/Views/WorkTabView.swift:1207` still loads the full transcript into memory and renders chat history inside a plain `VStack` in `ScrollView`, so the promised lazy or paged performance pass for large chats is not implemented."
-    }
-  ],
-  "appliedUpdates": [
-    {
-      "target": "library",
-      "description": "Added iOS 26 `matchedTransitionSource` and `.navigationTransition(.zoom(sourceID:in:))` guidance, plus a Reduce Motion fallback note, to `.factory/library/ios-design-system.md`.",
-      "sourceFeature": "polish-and-integration"
-    }
-  ],
+  "blockingIssues": [],
+  "appliedUpdates": [],
   "suggestedGuidanceUpdates": [
     {
-      "target": "AGENTS.md",
-      "suggestion": "Align future iOS mission guidance so simulator screenshot validation is not required in `mission.md` when the mission AGENTS file forbids launching the simulator or taking screenshots in this environment.",
-      "evidence": "The `polish-and-integration` review found `/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/mission.md:145-146` still requires simulator screenshots while `/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/AGENTS.md:84` says 'DO NOT launch the simulator or take screenshots.'",
-      "isSystemic": false
+      "target": "ios-worker skill",
+      "suggestion": "Update `.factory/skills/ios-worker/SKILL.md` so every simulator-verification example matches the procedure and mission guidance that iOS workers should stop after build/test validation instead of launching the simulator or taking screenshots in this environment.",
+      "evidence": "/Users/admin/Projects/ADE/.factory/skills/ios-worker/SKILL.md:73 says not to launch the simulator or take screenshots, but SKILL.md:95-97 includes \"interactiveChecks\" with \"Installed app on simulator...\". The fix handoff shows the worker followed procedure with no deviations: /Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/handoffs/2026-03-25T10-46-05-053Z__polish-scrutiny-fixes__16bfdc21-0122-4b95-8178-364da8740ec2.json:74-76.",
+      "isSystemic": true
     }
   ],
-  "rejectedObservations": [],
-  "previousRound": null
+  "rejectedObservations": [
+    {
+      "observation": "The mission guidance still conflicts on simulator-based verification. The mission plan tells workers to launch the simulator and capture screenshots, while the mission AGENTS file explicitly forbids simulator launches and screenshots because the simulator cannot connect usefully to the desktop host.",
+      "reason": "duplicate with the AGENTS.md guidance recommendation already captured in .factory/validation/polish/scrutiny/synthesis.round1.json"
+    }
+  ],
+  "previousRound": ".factory/validation/polish/scrutiny/synthesis.round1.json"
 }
