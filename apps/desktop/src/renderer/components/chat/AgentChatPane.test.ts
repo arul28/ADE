@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import {
-  resolveChatSessionProfile,
   resolveNextSelectedSessionId,
   shouldPromoteSessionForComputerUse,
 } from "./AgentChatPane";
@@ -23,7 +22,6 @@ function buildSession(sessionId: string): AgentChatSessionSummary {
     goal: null,
     completion: null,
     reasoningEffort: null,
-    permissionMode: "plan",
     computerUse: undefined,
     executionMode: "focused",
   };
@@ -56,13 +54,6 @@ describe("resolveNextSelectedSessionId", () => {
       forceDraft: false,
       preferDraftStart: false,
     })).toBe("claude-existing");
-  });
-});
-
-describe("resolveChatSessionProfile", () => {
-  it("always returns workflow now that off mode is removed", () => {
-    expect(resolveChatSessionProfile(createDefaultComputerUsePolicy())).toBe("workflow");
-    expect(resolveChatSessionProfile({ ...createDefaultComputerUsePolicy(), mode: "enabled" })).toBe("workflow");
   });
 });
 

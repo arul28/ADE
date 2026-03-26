@@ -255,7 +255,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           <div className="h-4 w-px bg-border" />
           <div className="truncate text-xs font-semibold">{laneName ?? laneId}</div>
           <Chip className="text-[11px]">{runningSessions.length} running</Chip>
-          {!launchTracked ? <Chip className="text-[11px]">no context</Chip> : null}
+          {!launchTracked ? <Chip className="text-[11px]">Standalone</Chip> : null}
         </div>
         <div className="flex items-center gap-2">
           <div className="flex flex-wrap items-center gap-1">
@@ -296,14 +296,14 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
               persistLaunchTracked(next);
             }}
           >
-            {launchTracked ? "tracked" : "no ctx"}
+            {launchTracked ? "With context" : "Standalone"}
           </Button>
         </div>
       </div>
 
       {sessions.length === 0 ? (
         <div className="flex min-h-0 flex-1 items-center justify-center p-3">
-          <EmptyState title="No sessions yet" description="Start a workspace session for this lane." />
+          <EmptyState title="No sessions yet" description="No terminal sessions for this lane. Launch one above to get started." />
         </div>
       ) : viewMode === "tabs" ? (
         <Tabs.Root
@@ -329,7 +329,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                 />
                 <ToolLogo toolType={s.toolType} size={12} />
                 <span className="max-w-[260px] truncate">{sessionTabLabel(s)}</span>
-                {!s.tracked ? <span className="rounded border border-border px-1 text-[11px] text-muted-fg">no ctx</span> : null}
+                {!s.tracked ? <span className="rounded border border-border px-1 text-[11px] text-muted-fg">Standalone</span> : null}
                 {s.status === "running" && s.ptyId ? (
                   <span
                     role="button"
@@ -367,7 +367,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                 <div className="min-w-0 flex items-center gap-2">
                   <ToolLogo toolType={current.toolType} size={13} />
                   <div className="truncate text-xs font-semibold text-fg">{primarySessionLabel(current)}</div>
-                  {!current.tracked ? <Chip className="text-[11px]">no context</Chip> : null}
+                  {!current.tracked ? <Chip className="text-[11px]">Standalone</Chip> : null}
                 </div>
                 <div className="shrink-0 text-xs text-muted-fg">{new Date(current.startedAt).toLocaleString()}</div>
               </div>

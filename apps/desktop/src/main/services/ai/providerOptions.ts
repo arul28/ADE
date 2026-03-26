@@ -49,8 +49,6 @@ export function buildProviderOptions(
         },
       };
 
-    case "groq":
-    case "together":
     case "xai":
       return {
         [descriptor.family]: { reasoningEffort: tier },
@@ -67,7 +65,6 @@ export function buildProviderOptions(
 
     case "ollama":
     case "mistral":
-    case "meta":
       // No reasoning config needed.
       return {};
 

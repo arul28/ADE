@@ -48,6 +48,19 @@ export function chatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | nu
     ["--chat-accent-soft" as string]: colorToRgba(accent, 0.14),
     ["--chat-accent-faint" as string]: colorToRgba(accent, 0.08),
     ["--chat-accent-glow" as string]: colorToRgba(accent, 0.28),
+    ["--chat-surface-bg" as string]: "color-mix(in srgb, var(--color-card) 84%, var(--color-bg) 16%)",
+    ["--chat-surface-raised" as string]: "color-mix(in srgb, var(--color-card) 92%, var(--color-bg) 8%)",
+    ["--chat-panel-bg" as string]: "color-mix(in srgb, var(--color-surface-raised) 78%, var(--color-card) 22%)",
+    ["--chat-panel-bg-strong" as string]: "color-mix(in srgb, var(--color-surface-raised) 88%, var(--color-card) 12%)",
+    ["--chat-card-bg" as string]: "color-mix(in srgb, var(--color-surface-raised) 70%, var(--color-card) 30%)",
+    ["--chat-card-bg-strong" as string]: "color-mix(in srgb, var(--color-surface-raised) 84%, var(--color-card) 16%)",
+    ["--chat-panel-border" as string]: "color-mix(in srgb, var(--color-border) 72%, transparent)",
+    ["--chat-card-border" as string]: "color-mix(in srgb, var(--color-border) 82%, transparent)",
+    ["--chat-code-bg" as string]: "color-mix(in srgb, var(--color-surface-recessed) 88%, var(--color-bg) 12%)",
+    ["--chat-code-border" as string]: "color-mix(in srgb, var(--color-border) 72%, transparent)",
+    ["--chat-code-fg" as string]: "color-mix(in srgb, var(--color-fg) 86%, var(--color-muted-fg) 14%)",
+    ["--chat-notice-bg" as string]: "color-mix(in srgb, var(--color-surface-recessed) 84%, var(--color-card) 16%)",
+    ["--chat-notice-border" as string]: "color-mix(in srgb, var(--color-border) 78%, transparent)",
   };
 }
 

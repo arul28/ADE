@@ -84,10 +84,17 @@ export function CommitTimeline({
     const el = scrollRef.current;
     if (!el) return;
     if (!didInitialScrollRef.current && commits.length > 0) {
-      el.scrollTop = el.scrollHeight;
+      // Scroll to the selected commit if present, otherwise show most recent
+      const selectedIdx = selectedSha ? commits.findIndex((c) => c.sha === selectedSha) : -1;
+      if (selectedIdx >= 0) {
+        const rows = el.querySelectorAll("button");
+        rows[selectedIdx]?.scrollIntoView({ block: "center" });
+      } else {
+        el.scrollTop = 0;
+      }
       didInitialScrollRef.current = true;
     }
-  }, [commits]);
+  }, [commits, selectedSha]);
 
   const ensureMeta = React.useCallback(
     async (sha: string) => {
@@ -167,7 +174,6 @@ export function CommitTimeline({
             const isNewest = idx === commits.length - 1;
             const isSelected = selectedSha === commit.sha;
             const isMerge = commit.parents.length > 1;
-            const isLast = idx === commits.length - 1;
 
             const dotColor = isNewest ? COLORS.success : isMerge ? COLORS.info : COLORS.outlineBorder;
             const dotBg = isNewest ? COLORS.success : isMerge ? "transparent" : COLORS.pageBg;
@@ -246,7 +252,7 @@ export function CommitTimeline({
                   </div>
                 </button>
                 {/* Arrow connector */}
-                {!isLast ? (
+                {!isNewest ? (
                   <div className="relative" style={{ height: 12, paddingLeft: 3 }}>
                     <div className="absolute" style={{ left: 10, top: 0, bottom: 0, width: 1, background: COLORS.border }} />
                     <svg className="absolute" style={{ left: 6, top: 1 }} width="10" height="10" viewBox="0 0 10 10">

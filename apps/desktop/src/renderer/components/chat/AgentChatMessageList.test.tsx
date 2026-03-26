@@ -138,7 +138,24 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
-  it("renders memory system notices in the transcript", () => {
+  it("renders queued follow-ups as pending next-turn notices", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "what are you doing?",
+          deliveryState: "queued",
+        },
+      },
+    ]);
+
+    expect(screen.getByText(/Queued.*will be delivered/)).toBeTruthy();
+    expect(screen.getByText("what are you doing?")).toBeTruthy();
+  });
+
+  it("renders memory system notices as compact pills in the transcript", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -146,14 +163,49 @@ describe("AgentChatMessageList transcript rendering", () => {
         event: {
           type: "system_notice",
           noticeKind: "memory",
-          message: "Checked memory: 5 hits, injected 3 relevant entries",
-          detail: "Policy: required\nProject hits: 4\nAgent hits: 1",
+          message: "Memory: 3 relevant entries injected",
+          detail: {
+            summary: "Memory: 3 relevant entries injected",
+          },
         },
       },
     ]);
 
-    expect(screen.getByText("memory")).toBeTruthy();
-    expect(screen.getByText("Checked memory: 5 hits, injected 3 relevant entries")).toBeTruthy();
+    // Memory notices now render as a compact pill, not a collapsible card
+    expect(screen.getByText("Memory: 3 relevant entries injected")).toBeTruthy();
+    // No collapsible detail sections
+    expect(screen.queryByText("Memory lookup")).toBeNull();
+    expect(screen.queryByText("Policy")).toBeNull();
+  });
+
+  it("renders provider health and thread error notices distinctly", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "provider_health",
+          message: "Claude is taking longer than usual",
+          detail: "Streaming is still connected, but the provider is slow to respond.",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "thread_error",
+          message: "Codex session is missing thread id",
+          detail: "The session returned a turn result without a thread identifier.",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("provider health")).toBeTruthy();
+    expect(screen.getByText("thread error")).toBeTruthy();
+    expect(screen.getByText("Claude is taking longer than usual")).toBeTruthy();
+    expect(screen.getByText("Codex session is missing thread id")).toBeTruthy();
   });
 
   it("groups consecutive commands into one compact work log block", () => {

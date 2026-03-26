@@ -108,7 +108,6 @@ export const IPC = {
   agentChatModels: "ade.agentChat.models",
   agentChatDispose: "ade.agentChat.dispose",
   agentChatEvent: "ade.agentChat.event",
-  agentChatChangePermissionMode: "ade.agentChat.changePermissionMode",
   agentChatUpdateSession: "ade.agentChat.updateSession",
   agentChatWarmupModel: "ade.agentChat.warmupModel",
   agentChatSlashCommands: "ade.agentChat.slashCommands",

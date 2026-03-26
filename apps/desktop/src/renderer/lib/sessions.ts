@@ -69,7 +69,7 @@ export function isLowSignalSessionLabel(raw: string | null | undefined): boolean
     .toLowerCase();
 
   if (!collapsed.length) return true;
-  if (collapsed.includes("ai apicallerror")) return true;
+  if (/\b(error|exception|apicall|traceback|stack\s*trace)\b/i.test(collapsed)) return true;
   if (/^(session closed|chat completed)\b/u.test(collapsed)) return true;
 
   if (/^(completed?|done|finished|resolved|success)\b/u.test(collapsed)) {

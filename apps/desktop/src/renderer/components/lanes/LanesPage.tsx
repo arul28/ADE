@@ -3,7 +3,7 @@ import { useClickOutside } from "../../hooks/useClickOutside";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info } from "@phosphor-icons/react";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
@@ -90,6 +90,8 @@ export function LanesPage() {
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
+  const clearLaneInspectorTab = useAppStore((s) => s.clearLaneInspectorTab);
   const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
 
@@ -419,14 +421,18 @@ export function LanesPage() {
   useEffect(() => {
     const laneId = params.get("laneId");
     const sessionId = params.get("sessionId");
+    const inspectorTabParam = params.get("inspectorTab");
     if (laneId) {
       selectLane(laneId);
       if (params.get("focus") === "single") {
         setActiveLaneIds([laneId]);
       }
+      if (inspectorTabParam) {
+        setLaneInspectorTab(laneId, inspectorTabParam as LaneInspectorTab);
+      }
     }
     if (sessionId) focusSession(sessionId);
-  }, [params, selectLane, focusSession]);
+  }, [params, selectLane, focusSession, setLaneInspectorTab]);
 
   useEffect(() => { void loadConflictStatuses(); }, [loadConflictStatuses, lanes.length]);
 
@@ -817,6 +823,10 @@ export function LanesPage() {
       const deletedIds = new Set(actionable.map((l) => l.id));
       if (deletedIds.has(selectedLaneId ?? "")) selectLane(null);
       setActiveLaneIds((prev) => prev.filter((id) => !deletedIds.has(id)));
+      // Clean up per-lane inspector tab preferences
+      for (const id of deletedIds) {
+        clearLaneInspectorTab(id);
+      }
     });
   };
 
@@ -936,7 +946,12 @@ export function LanesPage() {
         }
       }
 
-      await Promise.all([refreshLanes(), refreshRebaseSuggestions(), refreshAutoRebaseStatuses()]);
+      const results = await Promise.allSettled([refreshLanes(), refreshRebaseSuggestions(), refreshAutoRebaseStatuses()]);
+      for (const r of results) {
+        if (r.status === "rejected") {
+          console.error("Lane refresh partially failed:", r.reason);
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setRebaseSuggestionError(message);

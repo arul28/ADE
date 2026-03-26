@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { At, CaretDown, Image, Paperclip, Square, X, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
+import { At, CaretDown, Image, Paperclip, Square, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -46,7 +46,10 @@ const LOCAL_SLASH_COMMANDS: SlashCommandEntry[] = [
 ];
 
 /** Well-known defaults shown before the SDK session is initialized. */
-const CLAUDE_DEFAULT_COMMANDS: SlashCommandEntry[] = [];
+const CLAUDE_DEFAULT_COMMANDS: SlashCommandEntry[] = [
+  { command: "/compact", label: "Compact", description: "Compact conversation history", source: "sdk" },
+  { command: "/memory", label: "Memory", description: "View or edit CLAUDE.md", source: "sdk" },
+];
 
 const CODEX_DEFAULT_COMMANDS: SlashCommandEntry[] = [
   { command: "/review", label: "Review", description: "Review uncommitted changes", source: "sdk" },
@@ -129,6 +132,40 @@ const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode;
   { value: "full-auto", label: "Full auto" },
 ];
 
+type CodexComposerMode = "plan" | "guarded-edit" | "full-auto" | "custom";
+
+const CODEX_MODE_PRESETS: Record<Exclude<CodexComposerMode, "custom">, {
+  approval: AgentChatCodexApprovalPolicy;
+  sandbox: AgentChatCodexSandbox;
+}> = {
+  plan: { approval: "untrusted", sandbox: "read-only" },
+  "guarded-edit": { approval: "on-failure", sandbox: "workspace-write" },
+  "full-auto": { approval: "never", sandbox: "danger-full-access" },
+};
+
+const CODEX_MODE_OPTIONS: Array<{
+  value: CodexComposerMode;
+  label: string;
+  detail: string;
+}> = [
+  { value: "plan", label: "Plan", detail: "Read only" },
+  { value: "guarded-edit", label: "Guarded edit", detail: "Safer edits" },
+  { value: "full-auto", label: "Full auto", detail: "No prompts" },
+  { value: "custom", label: "Custom", detail: "Use config.toml" },
+];
+
+function resolveCodexComposerMode(
+  configSource: AgentChatCodexConfigSource | undefined,
+  approval: AgentChatCodexApprovalPolicy | undefined,
+  sandbox: AgentChatCodexSandbox | undefined,
+): CodexComposerMode {
+  if (configSource === "config-toml") return "custom";
+  if (approval === CODEX_MODE_PRESETS.plan.approval && sandbox === CODEX_MODE_PRESETS.plan.sandbox) return "plan";
+  if (approval === CODEX_MODE_PRESETS["guarded-edit"].approval && sandbox === CODEX_MODE_PRESETS["guarded-edit"].sandbox) return "guarded-edit";
+  if (approval === CODEX_MODE_PRESETS["full-auto"].approval && sandbox === CODEX_MODE_PRESETS["full-auto"].sandbox) return "full-auto";
+  return "custom";
+}
+
 type AdvancedSettingsPopoverProps = {
   executionModeOptions: ExecutionModeOption[];
   executionMode: AgentChatExecutionMode | null;
@@ -157,15 +194,14 @@ function AdvancedSettingsPopover({
   onIncludeProjectDocsChange,
 }: AdvancedSettingsPopoverProps) {
   const [hoveredExecutionMode, setHoveredExecutionMode] = useState<AgentChatExecutionMode | null>(null);
-  const activeBackend = computerUseSnapshot?.activeBackend?.name ?? (computerUsePolicy.allowLocalFallback ? "Fallback allowed" : "No fallback");
   const activeExecutionMode = executionModeOptions.find((option) => option.value === executionMode) ?? executionModeOptions[0] ?? null;
   const helpMode = hoveredExecutionMode
     ? executionModeOptions.find((option) => option.value === hoveredExecutionMode) ?? activeExecutionMode
     : activeExecutionMode;
 
   return (
-    <div className="absolute bottom-full right-0 z-30 mb-3 w-[min(44rem,calc(100vw-2rem))] overflow-hidden rounded-[22px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(18,20,28,0.98),rgba(10,12,18,0.98))] shadow-[0_24px_90px_-40px_rgba(0,0,0,0.88)] backdrop-blur-xl">
-      <div className="border-b border-white/[0.05] px-4 py-3">
+    <div className="absolute bottom-full right-0 z-30 mb-3 w-[min(44rem,calc(100vw-2rem))] overflow-hidden rounded-[22px] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)] shadow-[0_24px_90px_-40px_rgba(0,0,0,0.88)] backdrop-blur-xl">
+      <div className="border-b border-[color:var(--chat-panel-border)] px-4 py-3">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <div className="font-sans text-[12px] font-semibold tracking-tight text-fg/86">Advanced settings</div>
@@ -294,7 +330,7 @@ function AdvancedSettingsPopover({
         </div>
 
         {helpMode ? (
-          <div className="rounded-[18px] border border-white/[0.06] bg-black/20 px-3 py-2">
+          <div className="rounded-[18px] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)]/78 px-3 py-2">
             <div className="flex items-center justify-between gap-2">
               <span className="font-sans text-[10px] font-semibold uppercase tracking-[0.16em] text-fg/48">Mode help</span>
               <span className="font-sans text-[10px] text-fg/38">{helpMode.label}</span>
@@ -309,10 +345,10 @@ function AdvancedSettingsPopover({
 
 function ComputerUseSettingsModal({
   open,
-  policy,
+  policy: _policy,
   snapshot,
   onClose,
-  onChange,
+  onChange: _onChange,
   onOpenProof,
 }: {
   open: boolean;
@@ -334,8 +370,8 @@ function ComputerUseSettingsModal({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-sm overflow-hidden rounded-[28px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(15,21,34,0.96),rgba(10,13,22,0.94))] shadow-[0_28px_110px_-36px_rgba(0,0,0,0.82)]">
-        <div className="border-b border-white/[0.05] bg-[linear-gradient(90deg,rgba(56,189,248,0.12),transparent)] px-5 py-4">
+      <div className="w-full max-w-sm overflow-hidden rounded-[28px] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)] shadow-[0_28px_110px_-36px_rgba(0,0,0,0.82)]">
+        <div className="border-b border-[color:var(--chat-panel-border)] bg-[linear-gradient(90deg,rgba(56,189,248,0.12),transparent)] px-5 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <div className="font-sans text-[15px] font-semibold tracking-tight text-fg/88">Computer use</div>
@@ -502,6 +538,8 @@ export function AgentChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const advancedMenuRef = useRef<HTMLDivElement | null>(null);
   const advancedButtonRef = useRef<HTMLButtonElement | null>(null);
+  const searchRequestIdRef = useRef(0);
+  const fileAddInProgressRef = useRef(false);
   const canAttach = !turnActive;
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
@@ -580,19 +618,19 @@ export function AgentChatComposer({
       setAttachmentCursor(0);
       return;
     }
-    let cancelled = false;
+    const requestId = ++searchRequestIdRef.current;
     const timeout = window.setTimeout(() => {
       setAttachmentBusy(true);
       onSearchAttachments(query)
         .then((results) => {
-          if (cancelled) return;
+          if (searchRequestIdRef.current !== requestId) return;
           setAttachmentResults(results.filter((r) => !attachedPaths.has(r.path)));
           setAttachmentCursor(0);
         })
-        .catch(() => { if (!cancelled) setAttachmentResults([]); })
-        .finally(() => { if (!cancelled) setAttachmentBusy(false); });
+        .catch(() => { if (searchRequestIdRef.current === requestId) setAttachmentResults([]); })
+        .finally(() => { if (searchRequestIdRef.current === requestId) setAttachmentBusy(false); });
     }, 120);
-    return () => { cancelled = true; window.clearTimeout(timeout); };
+    return () => { searchRequestIdRef.current++; window.clearTimeout(timeout); };
   }, [attachmentPickerOpen, attachmentQuery, attachedPaths, onSearchAttachments]);
 
   const selectAttachment = (attachment: AgentChatFileRef) => {
@@ -602,32 +640,38 @@ export function AgentChatComposer({
 
   const addFileAttachments = async (files: FileList | null | undefined) => {
     if (!canAttach || !files?.length) return;
-    for (const file of Array.from(files)) {
-      const fileWithPath = file as File & { path?: string };
-      const hasRealPath = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length > 0;
+    if (fileAddInProgressRef.current) return;
+    fileAddInProgressRef.current = true;
+    try {
+      for (const file of Array.from(files)) {
+        const fileWithPath = file as File & { path?: string };
+        const hasRealPath = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length > 0;
 
-      if (hasRealPath) {
-        // File from filesystem (drag-drop from Finder, native picker)
-        const filePath = fileWithPath.path!;
-        onAddAttachment({ path: filePath, type: inferAttachmentType(filePath, file.type) });
-      } else {
-        // Clipboard paste or browser drag — no filesystem path.
-        // Read the blob, save to a temp file via IPC, then attach.
-        try {
-          const buf = await file.arrayBuffer();
-          const bytes = new Uint8Array(buf);
-          let binary = "";
-          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-          const base64 = btoa(binary);
-          const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
-            data: base64,
-            filename: file.name || "clipboard.png",
-          });
-          onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
-        } catch {
-          // Silently skip files that can't be saved
+        if (hasRealPath) {
+          // File from filesystem (drag-drop from Finder, native picker)
+          const filePath = fileWithPath.path!;
+          onAddAttachment({ path: filePath, type: inferAttachmentType(filePath, file.type) });
+        } else {
+          // Clipboard paste or browser drag — no filesystem path.
+          // Read the blob, save to a temp file via IPC, then attach.
+          try {
+            const buf = await file.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let binary = "";
+            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+            const base64 = btoa(binary);
+            const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
+              data: base64,
+              filename: file.name || "clipboard.png",
+            });
+            onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
+          } catch {
+            // Silently skip files that can't be saved
+          }
         }
       }
+    } finally {
+      fileAddInProgressRef.current = false;
     }
   };
 
@@ -642,7 +686,11 @@ export function AgentChatComposer({
   };
 
   const nativeControlsDisabled = permissionModeLocked;
-  const showCodexFlagControls = codexConfigSource !== "config-toml";
+  const codexMode = useMemo(
+    () => resolveCodexComposerMode(codexConfigSource, codexApprovalPolicy, codexSandbox),
+    [codexApprovalPolicy, codexConfigSource, codexSandbox],
+  );
+  const showCodexFlagControls = sessionProvider === "codex" && codexMode === "custom";
   const nativeControlPanel = useMemo(() => {
     const renderSelect = <T extends string,>(
       label: string,
@@ -651,8 +699,8 @@ export function AgentChatComposer({
       onChange: ((value: T) => void) | undefined,
       disabled = false,
     ) => (
-      <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
-        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{label}</span>
+      <label className="flex items-center gap-1.5 rounded-md border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg-strong)] px-2 py-1">
+        <span className="font-sans text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{label}</span>
         <select
           value={value}
           disabled={disabled || !onChange}
@@ -672,12 +720,55 @@ export function AgentChatComposer({
       return renderSelect("Claude", claudePermissionMode, CLAUDE_PERMISSION_OPTIONS, onClaudePermissionModeChange, nativeControlsDisabled);
     }
 
+    const setCodexMode = (mode: CodexComposerMode) => {
+      if (nativeControlsDisabled) return;
+      if (!onCodexConfigSourceChange || !onCodexApprovalPolicyChange || !onCodexSandboxChange) return;
+
+      if (mode === "custom") {
+        onCodexConfigSourceChange("config-toml");
+        return;
+      }
+
+      const preset = CODEX_MODE_PRESETS[mode];
+      onCodexConfigSourceChange("flags");
+      onCodexApprovalPolicyChange(preset.approval);
+      onCodexSandboxChange(preset.sandbox);
+    };
+
     if (sessionProvider === "codex") {
       return (
-        <div className="flex flex-wrap items-center gap-2">
-          {renderSelect("Config", codexConfigSource, CODEX_CONFIG_SOURCE_OPTIONS, onCodexConfigSourceChange, nativeControlsDisabled)}
-          {renderSelect("Approval", codexApprovalPolicy, CODEX_APPROVAL_OPTIONS, onCodexApprovalPolicyChange, nativeControlsDisabled || !showCodexFlagControls)}
-          {renderSelect("Sandbox", codexSandbox, CODEX_SANDBOX_OPTIONS, onCodexSandboxChange, nativeControlsDisabled || !showCodexFlagControls)}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="inline-flex overflow-hidden rounded-md border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg-strong)]">
+            {CODEX_MODE_OPTIONS.map((option) => {
+              const isActive = codexMode === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  disabled={nativeControlsDisabled}
+                  aria-pressed={isActive}
+                  title={option.detail}
+                  onClick={() => setCodexMode(option.value)}
+                  className={cn(
+                    "border-r border-white/[0.05] px-2.5 py-1.5 font-sans text-[10px] font-medium transition-colors last:border-r-0",
+                    isActive
+                      ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] text-[var(--chat-accent)]"
+                      : "text-muted-fg/48 hover:bg-white/[0.04] hover:text-fg/74",
+                    nativeControlsDisabled && "cursor-not-allowed opacity-60",
+                  )}
+                >
+                  <div className="whitespace-nowrap">{option.label}</div>
+                </button>
+              );
+            })}
+          </div>
+          {showCodexFlagControls ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {renderSelect("Config", codexConfigSource, CODEX_CONFIG_SOURCE_OPTIONS, onCodexConfigSourceChange, nativeControlsDisabled)}
+              {renderSelect("Approval", codexApprovalPolicy, CODEX_APPROVAL_OPTIONS, onCodexApprovalPolicyChange, nativeControlsDisabled)}
+              {renderSelect("Sandbox", codexSandbox, CODEX_SANDBOX_OPTIONS, onCodexSandboxChange, nativeControlsDisabled)}
+            </div>
+          ) : null}
         </div>
       );
     }
@@ -685,6 +776,7 @@ export function AgentChatComposer({
     return renderSelect("ADE", unifiedPermissionMode, UNIFIED_PERMISSION_OPTIONS, onUnifiedPermissionModeChange, nativeControlsDisabled);
   }, [
     claudePermissionMode,
+    codexMode,
     codexApprovalPolicy,
     codexConfigSource,
     codexSandbox,
@@ -750,7 +842,7 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
-    if (busy || !modelId) return;
+    if (busy || !modelId || !draft.trim().length) return;
     onSubmit();
   };
 
@@ -794,21 +886,21 @@ export function AgentChatComposer({
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
               <Lightning size={11} weight="bold" className="text-amber-300" />
             </span>
-            <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200">
+            <span className="font-sans text-[9px] font-semibold uppercase tracking-widest text-amber-200">
               {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? "Approval" : "Input needed"} · {pendingInput.source}
             </span>
           </div>
-          <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/68">
+          <div className="mb-2 font-sans text-[11px] leading-relaxed text-fg/68">
             {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
           </div>
           {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
             <div className="flex items-center gap-1.5">
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20" onClick={() => onApproval("accept")}>Accept</button>
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10" onClick={() => onApproval("accept_for_session")}>Accept all</button>
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Decline</button>
+              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-sans text-[9px] font-semibold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20" onClick={() => onApproval("accept")}>Accept</button>
+              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-sans text-[9px] font-semibold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10" onClick={() => onApproval("accept_for_session")}>Accept all</button>
+              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-sans text-[9px] font-semibold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Decline</button>
             </div>
           ) : (
-            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
+            <div className="font-sans text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
               Open the question modal to answer and continue.
             </div>
           )}
@@ -846,8 +938,8 @@ export function AgentChatComposer({
             }}
           />
           {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
-              <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)]/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+              <div className="border-b border-[color:var(--chat-panel-border)] px-3 py-2 font-sans text-[9px] font-semibold uppercase tracking-widest text-muted-fg/35">
                 Commands
               </div>
               <div className="max-h-52 overflow-auto py-1">
@@ -856,7 +948,7 @@ export function AgentChatComposer({
                     key={cmd.command}
                     type="button"
                     className={cn(
-                      "flex w-full items-center gap-3 px-3 py-2 text-left font-mono text-[10px]",
+                      "flex w-full items-center gap-3 px-3 py-2 text-left font-sans text-[10px]",
                       index === slashCursor ? "bg-accent/10 text-fg" : "text-fg/55 hover:bg-border/6",
                     )}
                     onMouseEnter={() => setSlashCursor(index)}
@@ -874,15 +966,15 @@ export function AgentChatComposer({
           ) : null}
 
           {attachmentPickerOpen ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
-              <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)]/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+              <div className="flex items-center gap-2 border-b border-[color:var(--chat-panel-border)] px-3 py-2">
                 <At size={11} weight="bold" className="text-muted-fg/30" />
                 <input
                   ref={attachmentInputRef}
                   value={attachmentQuery}
                   onChange={(e) => setAttachmentQuery(e.target.value)}
                   placeholder="Search files..."
-                  className="h-5 flex-1 bg-transparent font-mono text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
+                  className="h-5 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
                   onKeyDown={(event) => {
                     if (event.key === "Escape") { event.preventDefault(); setAttachmentPickerOpen(false); return; }
                     if (event.key === "ArrowDown") { event.preventDefault(); setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0))); return; }
@@ -896,16 +988,16 @@ export function AgentChatComposer({
               </div>
               <div className="max-h-40 overflow-auto py-1">
                 {!attachmentQuery.trim().length ? (
-                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Type to search files...</div>
+                  <div className="px-3 py-2 font-sans text-[10px] text-muted-fg/25">Type to search files...</div>
                 ) : attachmentBusy ? (
-                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Searching...</div>
+                  <div className="px-3 py-2 font-sans text-[10px] text-muted-fg/25">Searching...</div>
                 ) : attachmentResults.length ? (
                   attachmentResults.map((result, index) => (
                     <button
                       key={result.path}
                       type="button"
                       className={cn(
-                        "flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[10px] text-fg/60",
+                        "flex w-full items-center gap-2 px-3 py-2 text-left font-sans text-[10px] text-fg/60",
                         index === attachmentCursor ? "bg-accent/10 text-fg/85" : "hover:bg-border/6",
                       )}
                       onMouseEnter={() => setAttachmentCursor(index)}
@@ -916,7 +1008,7 @@ export function AgentChatComposer({
                     </button>
                   ))
                 ) : (
-                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">No matching files.</div>
+                  <div className="px-3 py-2 font-sans text-[10px] text-muted-fg/25">No matching files.</div>
                 )}
               </div>
             </div>
@@ -924,56 +1016,53 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="space-y-2 px-3 py-2">
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="px-3 py-2">
+          <div className="flex flex-wrap items-start gap-2">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-              {nativeControlPanel}
+              <div className="min-w-0 shrink">{nativeControlPanel}</div>
+              <div className="min-w-0 shrink">
+                <UnifiedModelSelector
+                  value={modelId}
+                  onChange={onModelChange}
+                  availableModelIds={availableModelIds}
+                  disabled={modelSelectionLocked}
+                  showReasoning
+                  reasoningEffort={reasoningEffort}
+                  onReasoningEffortChange={onReasoningEffortChange}
+                />
+              </div>
             </div>
 
-            <div className="min-w-0 shrink">
-              <UnifiedModelSelector
-                value={modelId}
-                onChange={onModelChange}
-                availableModelIds={availableModelIds}
-                disabled={modelSelectionLocked}
-                showReasoning
-                reasoningEffort={reasoningEffort}
-                onReasoningEffortChange={onReasoningEffortChange}
-              />
-            </div>
-          </div>
+            <div className="ml-auto flex shrink-0 flex-wrap items-center gap-1.5">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                  disabled={!canAttach}
+                  onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
+                  title="Attach files or images (@)"
+                >
+                  @
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md px-1.5 py-1 text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                  disabled={!canAttach}
+                  onClick={openUploadPicker}
+                  title="Upload file from disk"
+                >
+                  <Paperclip size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                  onClick={() => { onDraftChange("/"); setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); textareaRef.current?.focus(); }}
+                  title="Commands (/)"
+                >
+                  /
+                </button>
+              </div>
 
-          <div className="flex items-center gap-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-1">
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                disabled={!canAttach}
-                onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-                title="Attach files or images (@)"
-              >
-                @
-              </button>
-              <button
-                type="button"
-                className="rounded-md px-1.5 py-1 text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                disabled={!canAttach}
-                onClick={openUploadPicker}
-                title="Upload file from disk"
-              >
-                <Paperclip size={12} />
-              </button>
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                onClick={() => { onDraftChange("/"); setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); textareaRef.current?.focus(); }}
-                title="Commands (/)"
-              >
-                /
-              </button>
-            </div>
-
-            <div className="ml-auto flex shrink-0 items-center gap-1.5">
               <div className="relative">
                 <button
                   ref={advancedButtonRef}
@@ -1075,7 +1164,7 @@ export function AgentChatComposer({
         {dragActive ? (
           <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,rgba(5,5,8,0.58))] backdrop-blur-sm">
             <div className="rounded-[var(--chat-radius-card)] border border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)] bg-card/92 px-5 py-4 text-center shadow-[var(--chat-composer-shadow)]">
-              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Drop files to attach</div>
+              <div className="font-sans text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Drop files to attach</div>
               <div className="mt-1 text-[12px] text-fg/74">Images and files will be added to this turn.</div>
             </div>
           </div>
@@ -1090,7 +1179,7 @@ export function AgentChatComposer({
             >
               <span className="text-[13px] leading-[1.6] text-fg/18 italic">
                 {promptSuggestion}
-                <span className="ml-2 inline-flex items-center rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-mono text-[9px] not-italic text-fg/20">
+                <span className="ml-2 inline-flex items-center rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-sans text-[9px] not-italic text-fg/20">
                   Tab
                 </span>
               </span>
@@ -1106,12 +1195,15 @@ export function AgentChatComposer({
               if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
             }}
             className={cn(
-              "min-h-[40px] max-h-[160px] w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+              "min-h-[40px] max-h-[160px] w-full resize-none bg-transparent px-4 py-3 font-sans text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
               dragActive ? "opacity-30" : "",
             )}
             placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Message the assistant..."))}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
+            spellCheck
+            autoCorrect="on"
+            autoCapitalize="sentences"
           />
         </div>
       </div>

@@ -1136,6 +1136,7 @@ export type ProcessRuntime = {
   updatedAt: string;
 };
 
+/** Not directly imported by consumers, but used structurally via the ProcessEvent union (ev.type === "log"). */
 export type ProcessLogEvent = {
   type: "log";
   laneId: string;
@@ -1145,6 +1146,7 @@ export type ProcessLogEvent = {
   ts: string;
 };
 
+/** Not directly imported by consumers, but used structurally via the ProcessEvent union (ev.type === "runtime"). */
 export type ProcessRuntimeEvent = {
   type: "runtime";
   runtime: ProcessRuntime;

@@ -22,18 +22,18 @@ export function ChatComposerShell({
   return (
     <div
       className={cn(
-        "relative border border-white/[0.06] bg-[#0d0d10] shadow-[0_18px_48px_-30px_rgba(0,0,0,0.78)] transition-colors",
+        "relative overflow-hidden rounded-[var(--chat-radius-shell)] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)] shadow-[var(--chat-composer-shadow)] transition-colors",
         className,
       )}
       data-chat-composer-mode={mode}
     >
-      {pendingBanner ? <div className="relative border-b border-white/[0.04]">{pendingBanner}</div> : null}
-      {trays ? <div className="relative border-b border-white/[0.04]">{trays}</div> : null}
+      {pendingBanner ? <div className="relative border-b border-[color:var(--chat-panel-border)]">{pendingBanner}</div> : null}
+      {trays ? <div className="relative border-b border-[color:var(--chat-panel-border)]">{trays}</div> : null}
       <div className="relative">
         {pickerLayer}
         {children}
       </div>
-      {footer ? <div className="relative border-t border-white/[0.04]">{footer}</div> : null}
+      {footer ? <div className="relative border-t border-[color:var(--chat-panel-border)]">{footer}</div> : null}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { URL } from "node:url";
 import type http from "node:http";
 import type {
@@ -62,7 +62,6 @@ export function createOAuthRedirectService({
   const cfg: OAuthRedirectConfig = { ...DEFAULT_CONFIG, ...userConfig };
   const sessions = new Map<string, OAuthSession>();
   const stateSecret = randomBytes(32);
-  let sessionCounter = 0;
 
   // ---------------------------------------------------------------------------
   // State-parameter encoding
@@ -102,7 +101,10 @@ export function createOAuthRedirectService({
       const signature = rest.slice(0, signatureEnd);
       const laneId = Buffer.from(rest.slice(signatureEnd + STATE_SEP.length, laneEnd), "base64url").toString("utf-8");
       const originalState = rest.slice(laneEnd + STATE_SEP.length);
-      if (!laneId.trim() || !signature) return null;
+      if (!laneId.trim() || !signature) {
+        logger.debug("oauth_redirect.decode_error", { reason: "empty laneId or signature" });
+        return null;
+      }
 
       const expectedSignature = signState(laneId, originalState);
       const actualBytes = Buffer.from(signature);
@@ -111,11 +113,13 @@ export function createOAuthRedirectService({
         actualBytes.length !== expectedBytes.length ||
         !timingSafeEqual(actualBytes, expectedBytes)
       ) {
+        logger.warn("oauth_redirect.signature_mismatch", { laneId });
         return null;
       }
 
       return { laneId, originalState };
-    } catch {
+    } catch (err) {
+      logger.debug("oauth_redirect.decode_error", { error: String(err) });
       return null;
     }
   }
@@ -197,7 +201,7 @@ export function createOAuthRedirectService({
     laneId: string,
     callbackPath: string,
   ): OAuthSession {
-    const id = `oauth-${++sessionCounter}-${Date.now()}`;
+    const id = `oauth-${randomUUID()}`;
     const session: OAuthSession = {
       id,
       laneId,
@@ -478,7 +482,6 @@ code{background:#0B0A0F;padding:2px 6px;font-size:12px;color:#A78BFA}
     /** Clean up. */
     dispose(): void {
       sessions.clear();
-      sessionCounter = 0;
     },
   };
 }

@@ -25,7 +25,6 @@ function buildSession(sessionId: string): AgentChatSessionSummary {
     goal: null,
     completion: null,
     reasoningEffort: "xhigh",
-    permissionMode: "plan",
     computerUse: createDefaultComputerUsePolicy(),
     executionMode: "focused",
   };

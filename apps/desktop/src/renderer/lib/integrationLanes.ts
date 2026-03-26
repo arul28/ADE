@@ -34,7 +34,10 @@ export function buildIntegrationSourcesByLaneId(
       const normalizedLaneId = laneId.trim();
       if (!normalizedLaneId || seen.has(normalizedLaneId)) continue;
       const lane = laneById.get(normalizedLaneId);
-      if (!lane) continue;
+      if (!lane) {
+        console.warn(`Integration source lane not found: ${normalizedLaneId}`);
+        continue;
+      }
       seen.add(normalizedLaneId);
       next.push({
         laneId: normalizedLaneId,

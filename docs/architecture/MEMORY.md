@@ -50,10 +50,11 @@ Memory enters the system through these services:
 1. **Agent tool (`memoryAdd`)** -- Defined in `memoryTools.ts`. Any agent can call this during a conversation. Writes go through `unifiedMemoryService.writeMemory()` with an `AgentMemoryWritePolicy` that determines initial status, tier, and confidence. The tool emits `MemoryWriteEvent` callbacks that the chat service uses for turn-level memory telemetry.
 2. **Episodic summary service** -- `episodicSummaryService.ts`. Runs after agent sessions. Uses AI to extract a structured `EpisodicMemory` (task, approach, outcome, gotchas, patterns, decisions, tools used, duration) and writes it as an `episode` category entry.
 3. **Knowledge capture service** -- `knowledgeCaptureService.ts`. Processes interventions, error clusters, and PR feedback. Extracts `convention`, `preference`, `pattern`, and `gotcha` entries. Uses a ledger (`knowledge_capture_ledger`) to avoid reprocessing the same source event.
-4. **Human work digest service** -- `humanWorkDigestService.ts`. Detects new git commits, builds a `ChangeDigest` (commit summaries, diffstat, file clusters), writes a `digest` category memory.
-5. **Procedural learning service** -- `proceduralLearningService.ts`. Identifies repeatable workflows from episode memories. Creates `procedure` category entries with trigger descriptions, step-by-step markdown, and confidence tracking in `memory_procedure_details` / `memory_procedure_history`.
-6. **Batch consolidation service** -- `batchConsolidationService.ts`. Clusters similar memories by scope, category, and lexical similarity (default threshold 0.7). Uses AI to merge clusters into single improved entries. Originals are archived.
-7. **Compaction flush service** -- `compactionFlushService.ts`. When a conversation approaches its token limit, this service injects a hidden system message prompting the agent to flush important observations to memory before compaction occurs. The flush is wired into `agentChatService` via callbacks (`appendHiddenMessage` and `flushTurn`) that inject messages into the active chat session.
+4. **Human work digest service** -- `humanWorkDigestService.ts`. Detects new git commits, builds a `ChangeDigest` (commit summaries, diffstat, file clusters), and updates git-sync status for briefing injection and UI visibility. It no longer writes digest rows into the memory store.
+5. **Project auto-memory file service** -- `memoryFilesService.ts`. Mirrors promoted project memory into `.ade/memory/MEMORY.md` plus topic files, then supplies a bounded bootstrap layer for chats and worker briefings.
+6. **Procedural learning service** -- `proceduralLearningService.ts`. Identifies repeatable workflows from episode memories. Creates `procedure` category entries with trigger descriptions, step-by-step markdown, and confidence tracking in `memory_procedure_details` / `memory_procedure_history`.
+7. **Batch consolidation service** -- `batchConsolidationService.ts`. Clusters similar memories by scope, category, and lexical similarity (default threshold 0.7). Uses AI to merge clusters into single improved entries. Originals are archived.
+8. **Compaction flush service** -- `compactionFlushService.ts`. When a conversation approaches its token limit, this service injects a hidden system message prompting the agent to flush important observations to memory before compaction occurs. The flush is wired into `agentChatService` via callbacks (`appendHiddenMessage` and `flushTurn`) that inject messages into the active chat session.
 
 ### Write Quality Controls
 
@@ -186,6 +187,7 @@ The briefing service now supplements memory database entries with direct-source 
 
 - **Git log**: Recent commit summaries are read directly from `git log` (via `humanWorkDigestService.getRecentCommitSummaries()` or a fallback `git log --oneline`), injected as synthetic `digest` memories. This replaces reliance on stale digest entries in the database.
 - **Instruction files**: `CLAUDE.md`, `agents.md`, and `AGENTS.md` are read from the project root and injected as synthetic `procedure` memories. This ensures agent briefings always include current instruction files regardless of memory database state.
+- **Auto-memory bootstrap**: `.ade/memory/MEMORY.md` is generated from promoted project memory and injected as a bounded synthetic `procedure` memory, giving workers the same compact bootstrap layer that chats receive.
 
 These synthetic memories are constructed with full `Memory` shape (tier 1, promoted, confidence 1.0) so they integrate seamlessly with the existing briefing budget and deduplication logic.
 
@@ -215,6 +217,8 @@ Classification tiers:
 The `memorySearch` tool call sets `orientationSatisfied` and `explicitSearchPerformed` on the policy state, lifting the guard for the remainder of the turn.
 
 The chat service also auto-injects relevant memory context into the system prompt for `"required"` and `"soft"` turns, and emits `system_notice` events with `noticeKind: "memory"` when the guard fires or when memory write events are noteworthy.
+
+In addition, non-trivial `"none"` turns still receive the generated `.ade/memory/MEMORY.md` bootstrap so the agent is not operating cold just because the request did not trip the deeper search heuristics.
 
 ## Key Service Files
 

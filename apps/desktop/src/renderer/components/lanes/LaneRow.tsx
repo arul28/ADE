@@ -7,14 +7,7 @@ import { cn } from "../ui/cn";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { MergeSimulationPanel } from "./mergeSimulation/MergeSimulationPanel";
-
-function conflictDotClass(status: ConflictStatus["status"] | null | undefined): string {
-  if (status === "conflict-active") return "bg-red-600";
-  if (status === "conflict-predicted") return "bg-orange-500";
-  if (status === "behind-base") return "bg-amber-500";
-  if (status === "merge-ready") return "bg-emerald-500";
-  return "bg-muted-fg";
-}
+import { conflictDotClass } from "./laneUtils";
 
 function conflictSeverity(status: ConflictStatus["status"] | null | undefined): number {
   if (status === "conflict-active") return 5;

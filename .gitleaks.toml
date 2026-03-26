@@ -1,0 +1,12 @@
+[extend]
+# Use the default gitleaks ruleset
+useDefault = true
+
+[allowlist]
+paths = [
+  '''\.env\.example$''',
+  '''node_modules/''',
+  '''dist/''',
+  '''release/''',
+  '''\.git/''',
+]

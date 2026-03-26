@@ -1,5 +1,5 @@
 import type { ModelId } from "./core";
-import type { AgentChatPermissionMode, AgentChatProvider } from "./chat";
+import type { AgentChatProvider } from "./chat";
 import type { ExternalMcpAccessPolicy } from "./externalMcp";
 
 export type AgentRole =
@@ -343,7 +343,6 @@ export type CtoEnsureAgentSessionArgs = {
   laneId?: string | null;
   modelId?: ModelId | null;
   reasoningEffort?: string | null;
-  permissionMode?: AgentChatPermissionMode;
   taskKey?: string | null;
 };
 

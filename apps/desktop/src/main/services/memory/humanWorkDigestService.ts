@@ -2,30 +2,8 @@ import type { ChangeDigest, KnowledgeSyncStatus } from "../../../shared/types";
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 
-function formatDigestContent(digest: ChangeDigest): string {
-  const lines: string[] = [
-    `Human work digest ${digest.fromSha.slice(0, 8)} -> ${digest.toSha.slice(0, 8)}`,
-    `${digest.commitCount} commit(s) changed.`,
-    digest.diffstat,
-  ];
-  if (digest.commitSummaries.length > 0) {
-    lines.push("Commits:");
-    lines.push(...digest.commitSummaries.map((entry) => `- ${entry}`));
-  }
-  if (digest.fileClusters.length > 0) {
-    lines.push("Clusters:");
-    for (const cluster of digest.fileClusters) {
-      lines.push(`- ${cluster.label}: ${cluster.summary}`);
-    }
-  }
-  if (digest.changedFiles.length > 0) {
-    lines.push("Changed files:");
-    lines.push(...digest.changedFiles.slice(0, 40).map((entry) => `- ${entry}`));
-  }
-  return lines.join("\n");
-}
-
-function clusterFiles(files: string[]): ChangeDigest["fileClusters"] {
+/** Exported for testing. */
+export function clusterFiles(files: string[]): ChangeDigest["fileClusters"] {
   const buckets = new Map<string, string[]>();
   for (const file of files) {
     const trimmed = file.trim();
@@ -48,7 +26,6 @@ export function createHumanWorkDigestService(args: {
   projectId: string;
   projectRoot: string;
   logger?: Pick<Logger, "warn"> | null;
-  memoryService?: unknown;
 }) {
   // In-memory cursor -- no longer persisted to the memory store.
   let inMemoryCursorSha: string | null = null;

@@ -74,6 +74,22 @@ export function createRuntimeDiagnosticsService({
     const lease = getPortLease(laneId);
     const route = getProxyRoute(laneId);
     const proxyStatus = getProxyStatus();
+    if (!proxyStatus) {
+      logger.warn("runtime_diagnostics.proxy_status_missing", { laneId });
+      const health: LaneHealthCheck = {
+        laneId,
+        status: "unhealthy",
+        processAlive: false,
+        portResponding: false,
+        proxyRouteActive: false,
+        fallbackMode: fallbackLanes.has(laneId),
+        lastCheckedAt: new Date().toISOString(),
+        issues: [{ type: "proxy-route-missing", message: "Proxy status unavailable." }],
+      };
+      healthCache.set(laneId, health);
+      broadcastEvent({ type: "health-updated", laneId, health });
+      return health;
+    }
     const isFallback = fallbackLanes.has(laneId);
 
     // 1. Port responding check
@@ -287,9 +303,9 @@ export function createRuntimeDiagnosticsService({
     const conflicts = getPortConflicts().filter((c) => !c.resolved);
     return {
       lanes,
-      proxyRunning: proxyStatus.running,
-      proxyPort: proxyStatus.proxyPort,
-      totalRoutes: proxyStatus.routes.length,
+      proxyRunning: proxyStatus?.running ?? false,
+      proxyPort: proxyStatus?.proxyPort ?? 0,
+      totalRoutes: proxyStatus?.routes.length ?? 0,
       activeConflicts: conflicts.length,
       fallbackLanes: Array.from(fallbackLanes),
     };

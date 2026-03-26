@@ -1,8 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import readline from "node:readline";
 import { generateText, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 
 // ---------------------------------------------------------------------------
 // vi.hoisted mock state
@@ -31,7 +34,7 @@ vi.mock("node:crypto", async (importOriginal) => {
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => {
     const proc: any = {
-      stdin: { write: vi.fn(), end: vi.fn() },
+      stdin: { write: vi.fn(), end: vi.fn(), writable: true },
       stdout: { on: vi.fn() },
       stderr: { on: vi.fn() },
       on: vi.fn(),
@@ -166,7 +169,7 @@ import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
-import type { ComputerUseBackendStatus, AgentChatProvider } from "../../../shared/types";
+import type { ComputerUseBackendStatus } from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -245,11 +248,68 @@ function createMockSessionService() {
         if (args.resumeCommand !== undefined) row.resumeCommand = args.resumeCommand;
       }
     }),
+    setResumeCommand: vi.fn((sessionId: string, resumeCommand: string | null) => {
+      const row = sessions.get(sessionId);
+      if (row) {
+        row.resumeCommand = resumeCommand;
+      }
+    }),
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
     setSummary: vi.fn(),
   } as any;
+}
+
+async function flushPromises(iterations = 4) {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+function getLatestSpawnProc() {
+  const proc = vi.mocked(spawn).mock.results.at(-1)?.value as any;
+  expect(proc).toBeTruthy();
+  return proc;
+}
+
+function getLatestReader() {
+  const reader = vi.mocked(readline.createInterface).mock.results.at(-1)?.value as any;
+  expect(reader).toBeTruthy();
+  return reader;
+}
+
+function getReaderLineHandler(reader: any): (line: string) => void {
+  const lineCall = reader.on.mock.calls.find(([event]: [string]) => event === "line");
+  expect(lineCall).toBeTruthy();
+  return lineCall[1];
+}
+
+function writtenPayloads(proc: any): Array<Record<string, any>> {
+  return proc.stdin.write.mock.calls.map(([payload]: [string]) => JSON.parse(String(payload).trim()));
+}
+
+async function waitForWrittenMethod(proc: any, method: string) {
+  return waitForWrittenMethodCount(proc, method, 1);
+}
+
+async function waitForWrittenMethodCount(proc: any, method: string, count: number) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const payloads = writtenPayloads(proc).filter((entry) => entry.method === method);
+    if (payloads.length >= count) return payloads[count - 1];
+    await flushPromises();
+  }
+  throw new Error(`Timed out waiting for request '${method}'. Saw methods: ${writtenPayloads(proc).map((entry) => entry.method).join(", ")}`);
+}
+
+async function completeCodexInitialize(proc: any, lineHandler: (line: string) => void) {
+  const initialize = await waitForWrittenMethod(proc, "initialize");
+  lineHandler(JSON.stringify({
+    jsonrpc: "2.0",
+    id: initialize.id,
+    result: {},
+  }));
+  await flushPromises();
 }
 
 function createMockProjectConfigService() {
@@ -307,6 +367,8 @@ beforeEach(() => {
   mockState.uuidCounter = 0;
   vi.mocked(streamText).mockReset();
   vi.mocked(generateText).mockReset();
+  vi.mocked(unstable_v2_createSession).mockReset();
+  vi.mocked(unstable_v2_resumeSession).mockReset();
   vi.mocked(detectAllAuth).mockResolvedValue([]);
   vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
@@ -436,7 +498,6 @@ describe("createAgentChatService", () => {
     expect(service.disposeAll).toBeTypeOf("function");
     expect(service.updateSession).toBeTypeOf("function");
     expect(service.warmupModel).toBeTypeOf("function");
-    expect(service.changePermissionMode).toBeTypeOf("function");
     expect(service.listSubagents).toBeTypeOf("function");
     expect(service.getSessionCapabilities).toBeTypeOf("function");
     expect(service.cleanupStaleAttachments).toBeTypeOf("function");
@@ -477,6 +538,18 @@ describe("createAgentChatService", () => {
       expect(session).toBeDefined();
       expect(session.provider).toBe("claude");
       expect(session.status).toBe("idle");
+    });
+
+    it("stores the real runtime model name for Codex GPT-5.4 sessions", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+
+      expect(session.modelId).toBe("openai/gpt-5.4-codex");
+      expect(session.model).toBe("gpt-5.4");
     });
 
     it("sets sessionProfile to workflow by default", async () => {
@@ -788,6 +861,54 @@ describe("createAgentChatService", () => {
       );
     });
 
+    it("skips memory search for trivial test pings", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const memoryService = {
+        search: vi.fn(async () => []),
+      } as any;
+      const onEvent = vi.fn();
+      const { service } = createService({
+        memoryService,
+        onEvent,
+        computerUseArtifactBrokerService: {
+          getBackendStatus: vi.fn(() => ({
+            backends: [],
+            localFallback: {
+              available: false,
+              detail: "disabled",
+              supportedKinds: [],
+            },
+          })),
+        } as any,
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "this is a test",
+      });
+
+      expect(memoryService.search).not.toHaveBeenCalled();
+      expect(onEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "memory",
+          }),
+        }),
+      );
+    });
+
     it("checks memory and emits a memory notice for coding turns", async () => {
       vi.mocked(streamText).mockReturnValue({
         fullStream: (async function* () {
@@ -844,7 +965,221 @@ describe("createAgentChatService", () => {
           event: expect.objectContaining({
             type: "system_notice",
             noticeKind: "memory",
-            message: expect.stringContaining("Checked memory"),
+            message: expect.stringContaining("Memory:"),
+          }),
+        }),
+      );
+    });
+
+    it("loads bootstrap memory for non-trivial arbitrary turns even without targeted search", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 2, outputTokens: 2 } };
+        })(),
+      } as any);
+
+      const memoryService = {
+        search: vi.fn(async () => []),
+      } as any;
+      const memoryFilesService = {
+        buildPromptContext: vi.fn(() => ({
+          text: "ADE auto memory bootstrap (generated from promoted project memory):\n- Decision: keep SQLite as the canonical store.",
+          bootstrapLoaded: true,
+          topicFilesLoaded: [],
+        })),
+      } as any;
+      const onEvent = vi.fn();
+      const { service } = createService({
+        memoryService,
+        memoryFilesService,
+        onEvent,
+        computerUseArtifactBrokerService: {
+          getBackendStatus: vi.fn(() => ({
+            backends: [],
+            localFallback: {
+              available: false,
+              detail: "disabled",
+              supportedKinds: [],
+            },
+          })),
+        } as any,
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Take a look at the release flow and tell me what stands out.",
+      });
+
+      expect(memoryFilesService.buildPromptContext).toHaveBeenCalled();
+      expect(memoryService.search).not.toHaveBeenCalled();
+      expect(onEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "memory",
+            message: expect.stringContaining("loaded bootstrap"),
+          }),
+        }),
+      );
+    });
+
+    it("injects generated auto memory bootstrap into coding turns", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 2, outputTokens: 2 } };
+        })(),
+      } as any);
+
+      const memoryService = {
+        search: vi.fn(async () => []),
+      } as any;
+      const memoryFilesService = {
+        buildPromptContext: vi.fn(() => ({
+          text: "ADE auto memory bootstrap (generated from promoted project memory):\n- Convention: keep SQLite as the memory source of truth.",
+          bootstrapLoaded: true,
+          topicFilesLoaded: ["conventions.md"],
+        })),
+      } as any;
+      const onEvent = vi.fn();
+      const { service } = createService({
+        memoryService,
+        memoryFilesService,
+        onEvent,
+        computerUseArtifactBrokerService: {
+          getBackendStatus: vi.fn(() => ({
+            backends: [],
+            localFallback: {
+              available: false,
+              detail: "disabled",
+              supportedKinds: [],
+            },
+          })),
+        } as any,
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Fix the failing memory tests in the desktop app.",
+      });
+
+      expect(memoryFilesService.buildPromptContext).toHaveBeenCalled();
+      expect(onEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "memory",
+            detail: expect.objectContaining({
+              sections: expect.arrayContaining([
+                expect.objectContaining({
+                  title: "Auto memory files",
+                  items: expect.arrayContaining([
+                    expect.stringContaining(".ade/memory/MEMORY.md"),
+                    expect.stringContaining("conventions.md"),
+                  ]),
+                }),
+              ]),
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("captures explicit user instructions into memory", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 2, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const savedMemory = {
+        id: "memory-saved-1",
+        projectId: "test-project",
+        scope: "project",
+        scopeOwnerId: null,
+        tier: 2,
+        category: "convention",
+        content: "Convention: we always use pnpm, not npm, in this repo.",
+        importance: "high",
+        sourceSessionId: "test-uuid-1",
+        sourcePackKey: null,
+        createdAt: "2026-03-25T10:00:00.000Z",
+        updatedAt: "2026-03-25T10:00:00.000Z",
+        lastAccessedAt: "2026-03-25T10:00:00.000Z",
+        accessCount: 0,
+        observationCount: 0,
+        status: "promoted",
+        agentId: "test-uuid-1",
+        confidence: 1,
+        promotedAt: "2026-03-25T10:00:00.000Z",
+        sourceRunId: null,
+        sourceType: "user",
+        sourceId: "chat:auto-capture",
+        fileScopePattern: null,
+        pinned: false,
+        accessScore: 0,
+        compositeScore: 0.9,
+        writeGateReason: null,
+      };
+      const memoryService = {
+        search: vi.fn(async () => []),
+        writeMemory: vi.fn(() => ({
+          accepted: true,
+          memory: savedMemory,
+          deduped: false,
+        })),
+      } as any;
+      const onEvent = vi.fn();
+      const { service } = createService({
+        memoryService,
+        onEvent,
+        computerUseArtifactBrokerService: {
+          getBackendStatus: vi.fn(() => ({
+            backends: [],
+            localFallback: {
+              available: false,
+              detail: "disabled",
+              supportedKinds: [],
+            },
+          })),
+        } as any,
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Please remember we always use pnpm, not npm, in this repo.",
+      });
+
+      expect(memoryService.writeMemory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: "project",
+          category: "convention",
+          sourceType: "user",
+        }),
+      );
+      expect(onEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "memory",
+            message: expect.stringContaining("Captured explicit user instruction"),
           }),
         }),
       );
@@ -1205,10 +1540,27 @@ describe("createAgentChatService", () => {
 
       const updated = await service.updateSession({
         sessionId: session.id,
-        permissionMode: "full-auto",
+        unifiedPermissionMode: "full-auto",
       });
 
-      expect(updated.permissionMode).toBe("full-auto");
+      expect(updated.unifiedPermissionMode).toBe("full-auto");
+    });
+
+    it("keeps the Codex wrapper id while updating the runtime model name", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+
+      const updated = await service.updateSession({
+        sessionId: session.id,
+        modelId: "openai/gpt-5.4-codex",
+      });
+
+      expect(updated.modelId).toBe("openai/gpt-5.4-codex");
+      expect(updated.model).toBe("gpt-5.4");
     });
 
     it("updates computer use policy", async () => {
@@ -1232,41 +1584,220 @@ describe("createAgentChatService", () => {
 
       expect(updated.computerUse!.mode).toBe("enabled");
     });
-  });
 
-  // --------------------------------------------------------------------------
-  // changePermissionMode
-  // --------------------------------------------------------------------------
+    it("resets an idle Claude SDK session when permission mode changes", async () => {
+      const close = vi.fn();
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(async () => {}),
+        stream: vi.fn(() => (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-session-1" } as any;
+          yield { type: "result" } as any;
+        })()),
+        close,
+        sessionId: "sdk-session-1",
+      } as any);
 
-  describe("changePermissionMode", () => {
-    it("changes the permission mode on a session", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
-        provider: "unified",
-        model: "",
-        modelId: "anthropic/claude-sonnet-4-6-api",
+        provider: "claude",
+        model: "sonnet",
       });
 
-      service.changePermissionMode({
+      await flushPromises(8);
+
+      await service.updateSession({
         sessionId: session.id,
-        permissionMode: "full-auto",
+        claudePermissionMode: "bypassPermissions",
       });
 
-      // Verify by getting summary
-      const summary = await service.getSessionSummary(session.id);
-      expect(summary).not.toBeNull();
-      expect(summary!.provider).toBe("unified");
+      expect(close).toHaveBeenCalled();
     });
 
-    it("throws for unknown session id", () => {
+    it("rebinds the current Codex thread on the next turn after settings change", async () => {
       const { service } = createService();
-      expect(() =>
-        service.changePermissionMode({
-          sessionId: "nonexistent-session",
-          permissionMode: "plan",
-        }),
-      ).toThrow(/not found/i);
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+
+      const persistedPath = path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${session.id}.json`);
+      const persisted = JSON.parse(fs.readFileSync(persistedPath, "utf8"));
+      persisted.threadId = "thread-codex-1";
+      fs.writeFileSync(persistedPath, JSON.stringify(persisted, null, 2), "utf8");
+
+      const resumePromise = service.resumeSession({ sessionId: session.id });
+      const proc = getLatestSpawnProc();
+      const reader = getLatestReader();
+      const lineHandler = getReaderLineHandler(reader);
+      await completeCodexInitialize(proc, lineHandler);
+      const initialThreadResume = await waitForWrittenMethodCount(proc, "thread/resume", 1);
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        id: initialThreadResume.id,
+        result: {},
+      }));
+      await resumePromise;
+
+      await service.updateSession({
+        sessionId: session.id,
+        codexSandbox: "danger-full-access",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "second turn",
+      });
+
+      await flushPromises();
+      const threadResume = await waitForWrittenMethodCount(proc, "thread/resume", 2);
+      expect(threadResume.params.threadId).toBe("thread-codex-1");
+      expect(threadResume.params.sandbox).toBe("danger-full-access");
+
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        id: threadResume.id,
+        result: {},
+      }));
+      await flushPromises();
+
+      const secondTurnStart = await waitForWrittenMethodCount(proc, "turn/start", 1);
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        id: secondTurnStart.id,
+        result: { turn: { id: "turn-2" } },
+      }));
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-2", status: "completed" } },
+      }));
+      await flushPromises(8);
+    });
+  });
+
+  describe("codex runtime continuity", () => {
+    it("captures thread identity from thread/started notifications", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+
+      const turnPromise = service.runSessionTurn({
+        sessionId: session.id,
+        text: "hello codex",
+        timeoutMs: 15_000,
+      });
+
+      await flushPromises();
+      const proc = getLatestSpawnProc();
+      const reader = getLatestReader();
+      const lineHandler = getReaderLineHandler(reader);
+      await completeCodexInitialize(proc, lineHandler);
+
+      const threadStart = await waitForWrittenMethod(proc, "thread/start");
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        id: threadStart.id,
+        result: {},
+      }));
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "thread/started",
+        params: { thread: { id: "thread-from-notification" } },
+      }));
+
+      await flushPromises();
+      const turnStart = await waitForWrittenMethodCount(proc, "turn/start", 1);
+
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        id: turnStart.id,
+        result: { turn: { id: "turn-notify-1" } },
+      }));
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-notify-1", status: "completed" } },
+      }));
+
+      const result = await turnPromise;
+      expect(result.threadId).toBe("thread-from-notification");
+      expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+        session.id,
+        "chat:codex:thread-from-notification",
+      );
+
+      const persisted = JSON.parse(
+        fs.readFileSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${session.id}.json`), "utf8"),
+      );
+      expect(persisted.threadId).toBe("thread-from-notification");
+    });
+
+    it("captures thread identity from nested raw Codex agent-message payloads", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+
+      const firstTurnPromise = service.runSessionTurn({
+        sessionId: session.id,
+        text: "hello codex",
+        timeoutMs: 15_000,
+      });
+
+      await flushPromises();
+      const proc = getLatestSpawnProc();
+      const reader = getLatestReader();
+      const lineHandler = getReaderLineHandler(reader);
+      await completeCodexInitialize(proc, lineHandler);
+
+      const threadStart = await waitForWrittenMethod(proc, "thread/start");
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        id: threadStart.id,
+        result: {},
+      }));
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "codex/event/agent_message_content_delta",
+        params: {
+          msg: {
+            id: "agent-message-1",
+            conversationId: "thread-from-raw-msg",
+            content: "hello from nested raw event",
+          },
+        },
+      }));
+
+      await flushPromises();
+      const firstTurnStart = await waitForWrittenMethodCount(proc, "turn/start", 1);
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        id: firstTurnStart.id,
+        result: { turn: { id: "turn-raw-1" } },
+      }));
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-raw-1", status: "completed" } },
+      }));
+
+      const firstResult = await firstTurnPromise;
+      expect(firstResult.threadId).toBe("thread-from-raw-msg");
+      expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+        session.id,
+        "chat:codex:thread-from-raw-msg",
+      );
+      const persisted = JSON.parse(
+        fs.readFileSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${session.id}.json`), "utf8"),
+      );
+      expect(persisted.threadId).toBe("thread-from-raw-msg");
     });
   });
 
@@ -1441,7 +1972,28 @@ describe("createAgentChatService", () => {
 
     it("returns an array for codex provider", async () => {
       const { service } = createService();
-      const models = await service.getAvailableModels({ provider: "codex" });
+      const modelsPromise = service.getAvailableModels({ provider: "codex" });
+      await flushPromises();
+
+      const proc = getLatestSpawnProc();
+      const reader = getLatestReader();
+      const lineHandler = getReaderLineHandler(reader);
+      await completeCodexInitialize(proc, lineHandler);
+      const modelList = await waitForWrittenMethod(proc, "model/list");
+
+      lineHandler(JSON.stringify({
+        jsonrpc: "2.0",
+        id: modelList.id,
+        result: {
+          data: [{
+            id: "openai/gpt-5.4-codex",
+            displayName: "GPT-5.4 Codex",
+            isDefault: true,
+          }],
+        },
+      }));
+
+      const models = await modelsPromise;
       expect(Array.isArray(models)).toBe(true);
     });
 

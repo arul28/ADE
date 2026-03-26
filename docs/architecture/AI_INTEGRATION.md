@@ -274,7 +274,7 @@ At startup, the AI integration service also initializes the models.dev integrati
 4. **Enrich**: Calls `updateModelPricing()` to merge live pricing into the `MODEL_PRICING` Proxy object, and `enrichModelRegistry()` to update context windows and capabilities in the registry.
 5. **Refresh**: Repeats every 6 hours (non-blocking).
 
-The model registry (`modelRegistry.ts`) contains 40+ models across 8 provider families (Anthropic, OpenAI, Google, DeepSeek, Mistral, xAI, OpenRouter, local providers such as Ollama/LM Studio/vLLM), classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). Each `ModelDescriptor` now includes pricing fields directly, with a `getModelPricing()` accessor for cost lookups. Provider-to-CLI resolution uses a flat `FAMILY_TO_CLI` lookup map instead of nested ternaries. `resolveProviderGroupForModel()` maps any descriptor to its provider group (`"claude"` | `"codex"` | `"unified"`), simplifying call sites that need to know the runtime family without inspecting CLI-wrapping details. Model profiles (`modelProfiles.ts`) are derived from `MODEL_REGISTRY` rather than maintained as parallel lists, ensuring profiles stay in sync with the registry automatically. The `UnifiedModelSelector` groups models by auth type and only shows models that are currently configured/detected -- a "Configure more..." link navigates to Settings.
+The model registry (`modelRegistry.ts`) contains 50+ models across 10 provider families (Anthropic, OpenAI, Google, DeepSeek, Mistral, xAI, OpenRouter, and local providers: Ollama, LM Studio, vLLM), classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). Each `ModelDescriptor` includes pricing fields directly, with a `getModelPricing()` accessor for cost lookups. Provider-to-CLI resolution uses a flat `FAMILY_TO_CLI` lookup map instead of nested ternaries. `resolveProviderGroupForModel()` maps any descriptor to its provider group (`"claude"` | `"codex"` | `"unified"`), and `isModelProviderGroup()` provides a type guard for the group union. `resolveModelDescriptorForProvider()` resolves a model reference (ID, shortId, alias, or sdkModelId) with an optional provider-group hint, preferring non-deprecated descriptors that match the hint. `getRuntimeModelRefForDescriptor()` returns the correct model reference string for a given provider group (shortId for Claude, sdkModelId for Codex, full ID for unified). Model profiles (`modelProfiles.ts`) are derived from `MODEL_REGISTRY` rather than maintained as parallel lists, ensuring profiles stay in sync with the registry automatically. The `UnifiedModelSelector` groups models by auth type and shows unavailable models as disabled with an explanatory label (e.g., "API only - not configured").
 
 #### Provider Options (Reasoning Tier Passthrough)
 
@@ -284,7 +284,8 @@ Provider-specific reasoning configuration is handled by `buildProviderOptions()`
 - **OpenAI/Codex**: `{ reasoningEffort: tier }`
 - **Google** (3.x): `{ thinkingConfig: { thinkingLevel: tier, includeThoughts: true } }`
 - **DeepSeek**: `{}` (always-on, handled by `extractReasoningMiddleware`)
-- **Others**: `{ reasoningEffort: tier }` or `{}` as appropriate
+- **xAI**: `{ reasoningEffort: tier }`
+- **Others (Ollama, Mistral)**: `{}` (no reasoning config needed)
 
 Each model declares its own `reasoningTiers` array in the registry, and the UI only shows tiers that the selected model supports.
 
@@ -338,7 +339,7 @@ ai:
   # Permission and sandbox configuration
   permissions:
     claude:
-      permissionMode: "plan"         # "default" | "acceptEdits" | "bypassPermissions" | "plan"
+      claudePermissionMode: "plan"   # "default" | "acceptEdits" | "bypassPermissions" | "plan"
       settingsSources: []            # [] = ADE-controlled; ["project"] = honor .claude/settings.json
       maxBudgetUsd: 5.0              # Per-session budget cap
       sandbox: true                  # Enable sandbox mode
@@ -707,7 +708,7 @@ For each step in the plan, the orchestrator:
 2. Acquires claims on the required scopes (lane, file patterns, environment keys) via the deterministic runtime's claim system.
 3. Creates a context snapshot with the appropriate export level for the step.
 4. If `requiresPlanApproval` is true:
-   a. Dispatches the worker in read-only mode (`permissionMode: "plan"`).
+   a. Dispatches the worker in read-only mode (provider-native plan permission).
    b. Worker researches the codebase and submits a plan via structured output.
    c. Orchestrator evaluates the plan (checks for scope creep, file ownership violations, test coverage).
    d. If approved, re-dispatches the worker with edit permissions.
@@ -1238,7 +1239,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 
 **Model and provider infrastructure**:
 - Model registry unified: pricing fields in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `modelProfiles.ts` derived from registry
-- Model registry expansion (40+ models across 8 provider families, auth-type classification, runtime enrichment via `enrichModelRegistry()`)
+- Model registry expansion (50+ models across 10 provider families, auth-type classification, runtime enrichment via `enrichModelRegistry()`)
 - Dynamic pricing via models.dev integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded)
 - Provider detection pipeline: `authDetector.ts` + `providerCredentialSources.ts` + `providerConnectionStatus.ts` + `providerRuntimeHealth.ts` + `claudeRuntimeProbe.ts` (structured per-provider connection status with auth, runtime, and usage availability)
 - Provider options simplification (`providerOptions.ts`: pure tier-string passthrough, no invented token budgets)
@@ -1477,7 +1478,7 @@ CLI terminals are powerful but opaque. The chat interface provides:
 
 ```typescript
 interface AgentChatService {
-  createSession(laneId: string, provider: "codex" | "claude" | "unified", model: string, modelId?: string, permissionMode?: "plan" | "edit" | "full-auto"): Promise<ChatSession>;
+  createSession(laneId: string, provider: "codex" | "claude" | "unified", model: string, modelId: string, opts?: CreateSessionOpts): Promise<ChatSession>;
   sendMessage(sessionId: string, text: string, attachments?: FileRef[]): AsyncIterable<ChatEvent>;
   steer(sessionId: string, text: string): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
@@ -1492,9 +1493,14 @@ interface ChatSession {
   id: string;
   laneId: string;
   provider: "codex" | "claude" | "unified";
-  model: string;
-  modelId?: string;
-  permissionMode?: "plan" | "edit" | "full-auto";
+  model: string;              // Human-readable display name
+  modelId: string;            // Registry model ID (required)
+  // Provider-native permission controls (no unified permissionMode)
+  claudePermissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
+  codexApprovalPolicy?: "untrusted" | "on-request" | "on-failure" | "never";
+  codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  codexConfigSource?: "flags" | "config-toml";
+  unifiedPermissionMode?: "plan" | "edit" | "full-auto";
   status: "active" | "idle" | "ended";
   threadId?: string;           // Codex: app-server thread ID
   createdAt: string;
@@ -1510,6 +1516,7 @@ type ChatEvent =
   | { type: "plan"; steps: Array<{ text: string; status: "pending" | "in_progress" | "completed" | "failed" }> }
   | { type: "reasoning"; summary: string; isCollapsed: boolean }
   | { type: "approval_request"; itemId: string; kind: "command" | "file_change"; description: string; detail: unknown }
+  | { type: "system_notice"; noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error"; message: string; detail?: string | AgentChatNoticeDetail }
   | { type: "status"; turnStatus: "started" | "completed" | "interrupted" | "failed"; error?: string }
   | { type: "error"; message: string; errorInfo?: string }
   | { type: "done"; turnId: string };
@@ -1620,7 +1627,7 @@ async function* sendMessage(text: string): AsyncIterable<ChatEvent> {
 
   const stream = streamText({
     model: claudeCode("sonnet", {
-      permissionMode: "acceptEdits",
+      claudePermissionMode: "acceptEdits",
       maxBudgetUsd: 5.0,
       systemPrompt: "You are working in an ADE lane...",
       canUseTool: async (invocation) => {
@@ -1817,7 +1824,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Mission UI overhaul (Task 4) | Complete | Plan/Work tabs, mission home dashboard, phase-aware details, launch/settings profile workflows |
 | Pre-flight + intervention/HITL (Task 5) | Complete | Launch-gate checklist, granular worker-level interventions, coordinator `ask_user`/`request_user_input` escalation wiring |
 | Budget + usage tracking (Task 6) | Complete | Mission budget service, subscription/API-key accounting, coordinator `get_budget_status`, details-tab budget telemetry |
-| Model registry (40+ models, runtime enrichment) | Complete | `modelRegistry.ts` -- 8 provider families, auth-type classification, pricing in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `enrichModelRegistry()` for models.dev data. `modelProfiles.ts` derived from registry. |
+| Model registry (50+ models, runtime enrichment) | Complete | `modelRegistry.ts` -- 10 provider families, auth-type classification, pricing in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `enrichModelRegistry()` for models.dev data, `resolveModelDescriptorForProvider()`, `getRuntimeModelRefForDescriptor()`. `modelProfiles.ts` derived from registry. |
 | Dynamic pricing (models.dev) | Complete | `modelsDevService.ts` -- fetch/cache/fallback, 6h refresh, Proxy-based `MODEL_PRICING` |
 | Provider options (tier passthrough) | Complete | `providerOptions.ts` -- pure tier-string passthrough per provider family, no arbitrary token budgets |
 | Middleware layer | Complete | `middleware.ts` -- logging, retry, cost guard, reasoning extraction |

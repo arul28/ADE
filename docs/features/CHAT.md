@@ -27,9 +27,9 @@ Every chat creates an `AgentChatSession`:
 - **id** -- UUID, unique per session.
 - **laneId** -- The lane the session belongs to. Lane context (branch,
   working directory) is injected into the agent's system prompt.
-- **provider / model / modelId** -- What is powering the session.
+- **provider / model / modelId** -- What is powering the session. `model` is the human-readable display name; `modelId` is the registry ID (required).
 - **status** -- `active | idle | ended`.
-- **Permission controls** -- Provider-native fields control what the agent may do autonomously: `claudePermissionMode` (Claude), `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource` (Codex), `unifiedPermissionMode` (unified/API). The legacy `permissionMode` field is maintained for backward compatibility.
+- **Permission controls** -- Provider-native fields control what the agent may do autonomously: `claudePermissionMode` (Claude), `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource` (Codex), `unifiedPermissionMode` (unified/API).
 - **identityKey** -- Optional. `"cto"` for the CTO agent, `"agent:<id>"`
   for named employees.
 - **executionMode** -- `focused | parallel | subagents | teams`.
@@ -165,9 +165,9 @@ Codex sessions have two independent controls:
 | `edit` | Agent may read and write files. Bash commands are gated. |
 | `full-auto` | Agent proceeds without asking. |
 
-### Legacy compatibility
+### Orchestrator Permission Mapping
 
-The deprecated `AgentChatPermissionMode` (`default | plan | edit | full-auto | config-toml`) is still persisted for backward compatibility. The service bidirectionally maps between legacy and provider-native controls via `hydrateNativePermissionControls` and `syncLegacyPermissionMode`. New code should use the provider-native fields.
+The unified orchestrator adapter translates abstract permission modes (`plan`, `edit`, `full-auto`) into the correct provider-native fields via `mapPermissionModeToNativeFields()`. For Claude this maps to `claudePermissionMode`, for Codex to `codexApprovalPolicy`/`codexSandbox`, and for unified to `unifiedPermissionMode`. The legacy `permissionMode` field has been removed from session types and create args.
 
 All controls can be changed mid-session via `updateSession`.
 
@@ -221,10 +221,15 @@ When a user switches model families mid-session (e.g., from Claude to Codex), th
 
 The composer (`AgentChatComposer`) supports file/image attachments,
 model switching, reasoning-effort control, context-pack injection, and
-slash commands sourced from the active SDK session. Permission controls
-are rendered inline as provider-native dropdowns (Claude permission mode,
-Codex approval policy/sandbox, unified permission mode) rather than a
-single unified permission selector.
+slash commands sourced from the active SDK session. The `@` key opens
+an inline file attachment picker with debounced search and stale-result
+discarding. Permission controls are rendered inline as provider-native
+controls: Claude permission mode, Codex preset modes (Plan / Guarded
+Edit / Full Auto / Custom with raw approval-policy and sandbox
+dropdowns), and unified permission mode. Native text assistance
+(spellcheck, autocorrect, autocapitalize) is enabled on the prompt
+textarea. Claude sessions expose `/compact` and `/memory` as default
+slash commands before the SDK session is initialized.
 
 ## Image Attachments
 
@@ -251,6 +256,31 @@ originating chat session. The MCP server resolves the chat session
 owner through a cascade: explicit tool argument, session identity
 field, and finally an implicit fallback for standalone chat sessions
 (no mission/run/step context) using the caller ID.
+
+## Session Recovery
+
+The chat service includes automatic session recovery for transient
+failures (process crashes, network resets, stream closures). The
+`sessionRecovery` module tracks per-session recovery state: attempt
+count, backoff timing, and error classification. Up to 3 recovery
+attempts are allowed with exponential backoff (base 2s). Terminal errors
+(authentication, billing, quota, permission denied) skip recovery
+entirely. Recovery status is surfaced to the user via `provider_health`
+system notice events showing attempt progress, success, or failure.
+
+For Codex sessions, recovery includes thread identity rebind: when a
+thread ID is lost, the service first checks persisted state, then
+attempts a fresh thread start. Thread ID waiters are notified when
+identity is re-established.
+
+## Virtual Scrolling
+
+The message list (`AgentChatMessageList`) uses `@tanstack/react-virtual`
+for virtualized rendering of long transcripts. This keeps render cost
+proportional to the visible viewport rather than the total message count.
+Turn dividers (`ChatTurnDivider`) separate consecutive turns with
+contextual labels. Code blocks in assistant messages use a dedicated
+`HighlightedCode` component.
 
 ## Diagnostic Logging
 

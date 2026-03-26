@@ -1748,7 +1748,6 @@ async function runCtoOperatorBridgeTool(
         modelId,
         reasoningEffort,
         reuseExisting,
-        permissionMode: "full-auto",
       }),
   });
   const toolEntry = (tools as Record<string, Tool>)[name];

@@ -54,6 +54,24 @@ export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-fu
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatUnifiedPermissionMode = "plan" | "edit" | "full-auto";
 
+export type AgentChatNoticeDetailMetric = {
+  label: string;
+  value: string;
+  tone?: ChatSurfaceChipTone;
+};
+
+export type AgentChatNoticeDetailSection = {
+  title: string;
+  items: Array<string | AgentChatNoticeDetailMetric>;
+};
+
+export type AgentChatNoticeDetail = {
+  title?: string;
+  summary?: string;
+  metrics?: AgentChatNoticeDetailMetric[];
+  sections?: AgentChatNoticeDetailSection[];
+};
+
 export type AgentChatFileRef = {
   path: string;
   type: "file" | "image";
@@ -286,9 +304,9 @@ export type AgentChatEvent =
     }
   | {
       type: "system_notice";
-      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory";
+      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error";
       message: string;
-      detail?: string;
+      detail?: string | AgentChatNoticeDetail;
       turnId?: string;
     }
   | {
@@ -387,8 +405,9 @@ export type AgentChatSession = {
   id: string;
   laneId: string;
   provider: AgentChatProvider;
+  /** Human-readable display name for the model (e.g. "Claude Sonnet 4.6"). Kept as a plain string for serialization/persistence compatibility. */
   model: string;
-  modelId?: ModelId;
+  modelId: ModelId;
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
@@ -397,8 +416,6 @@ export type AgentChatSession = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
-  /** @deprecated Use provider-native control fields instead. */
-  permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -428,8 +445,6 @@ export type AgentChatSessionSummary = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
-  /** @deprecated Use provider-native control fields instead. */
-  permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -510,8 +525,6 @@ export type AgentChatCreateArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
-  /** @deprecated Use provider-native control fields instead. */
-  permissionMode?: AgentChatPermissionMode;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -583,11 +596,6 @@ export type AgentChatDisposeArgs = {
   sessionId: string;
 };
 
-export type AgentChatChangePermissionModeArgs = {
-  sessionId: string;
-  permissionMode: AgentChatPermissionMode;
-};
-
 export type AgentChatUpdateSessionArgs = {
   sessionId: string;
   title?: string | null;
@@ -598,8 +606,6 @@ export type AgentChatUpdateSessionArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
-  /** @deprecated Use provider-native control fields instead. */
-  permissionMode?: AgentChatPermissionMode;
   computerUse?: ComputerUsePolicy | null;
 };
 

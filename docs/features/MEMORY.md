@@ -30,7 +30,7 @@ Memory enters the system through multiple paths:
 - **Compaction flush** -- When a chat session approaches its context window limit, the compaction flush service injects a hidden prompt asking the agent to persist important observations via `memoryAdd` before context is compacted. This is fully wired into `agentChatService` so no durable discoveries are lost to compaction.
 - **Episodic summaries** -- After agent work sessions complete, the episodic summary service extracts a structured record of what was attempted, what worked, and what failed.
 - **Knowledge capture** -- The knowledge capture service monitors interventions, error clusters, and PR feedback, then extracts conventions, patterns, and gotchas into memory entries. It also fires on mission failures and agent session errors to capture failure-related gotchas.
-- **Human work digest** -- When you make commits outside of ADE, the digest service detects the new HEAD via the git head watcher, generates a change summary, and stores it as a digest memory so agents stay aware of manual changes. The digest service is connected to the head watcher's `handleHeadChanged` callback.
+- **Human work digest** -- When you make commits outside of ADE, the digest service detects the new HEAD via the git head watcher, generates a change summary, and updates knowledge-sync status so agents and the UI stay aware of manual changes. Recent commit summaries are injected directly into briefings instead of being stored as digest rows.
 - **Procedural learning** -- The procedural learning service identifies repeatable workflows from episodic memories and distills them into step-by-step procedures with confidence tracking. High-confidence procedures are exported as `.ade/skills/` files for reuse.
 - **Consolidation** -- The batch consolidation service merges clusters of similar entries into single, higher-quality memories using AI.
 
@@ -50,8 +50,9 @@ ADE classifies each user turn by intent and enforces a memory orientation policy
 - **Required turns** (fix, debug, implement, refactor, etc.) -- ADE auto-injects relevant memory context into the agent's system prompt and blocks mutating tools (bash, file writes, edits) until the agent has called `memorySearch` at least once. This prevents agents from making changes without consulting project memory.
 - **Soft turns** (explain, review, design, etc.) -- Memory context is auto-injected but mutations are not blocked.
 - **Meta turns** (greetings, thanks, etc.) -- No memory injection or gating.
+- **Non-trivial arbitrary turns** -- Even if a turn does not require targeted search, ADE still loads the generated `.ade/memory/MEMORY.md` bootstrap so the agent gets baseline project memory before answering.
 
-This policy is transparent to the user. When the guard fires, the chat surface shows a system notice indicating that memory search is required before mutations can proceed.
+This policy is transparent to the user. When the guard fires, or when ADE loads bootstrap/topic memory files, the chat surface shows a memory system notice indicating what was loaded and why.
 
 ## Smart Search
 
@@ -74,9 +75,11 @@ The embedding service emits structured health logs covering:
 
 These are visible in the Settings > Memory health tab, which shows embedding progress and status at 10-second polling intervals.
 
-## Change Tracking
+## Change Tracking And Bootstrap Memory
 
-The human work digest service monitors the project's git HEAD. When it detects new commits made outside of ADE, it generates a structured digest containing commit summaries, diffstats, changed file lists, and file clusters. This digest is saved as a memory entry with the `digest` category, keeping agents informed of manual code changes.
+The human work digest service monitors the project's git HEAD. When it detects new commits made outside of ADE, it generates a structured digest containing commit summaries, diffstats, changed file lists, and file clusters. ADE uses that digest for sync status and briefing context rather than persisting it as a standalone digest memory row.
+
+ADE also generates a Claude-style project memory bootstrap at `.ade/memory/MEMORY.md` plus topic files such as `conventions.md`, `gotchas.md`, and `procedures.md`. These files are derived from promoted project memory and auto-loaded into chats and worker briefings in bounded form.
 
 The memory briefing service also reads recent git log entries and project instruction files (`CLAUDE.md`, `agents.md`, `AGENTS.md`) directly from disk and injects them as synthetic memory entries into agent briefings. This ensures agents always have current commit context and instruction files regardless of memory database state.
 

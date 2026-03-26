@@ -1147,8 +1147,6 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.agentChatEvent, listener);
       return () => ipcRenderer.removeListener(IPC.agentChatEvent, listener);
     },
-    changePermissionMode: async (args: import("../shared/types").AgentChatChangePermissionModeArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatChangePermissionMode, args),
     slashCommands: async (args: import("../shared/types").AgentChatSlashCommandsArgs): Promise<import("../shared/types").AgentChatSlashCommand[]> =>
       ipcRenderer.invoke(IPC.agentChatSlashCommands, args),
     fileSearch: async (args: import("../shared/types").AgentChatFileSearchArgs): Promise<import("../shared/types").AgentChatFileSearchResult[]> =>

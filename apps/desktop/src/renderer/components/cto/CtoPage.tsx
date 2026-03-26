@@ -304,8 +304,8 @@ export function CtoPage() {
     let cancelled = false;
     setLoading(true); setError(null);
     const promise = selectedAgentId
-      ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId, laneId, permissionMode: "full-auto" })
-      : window.ade.cto.ensureSession({ laneId, permissionMode: "full-auto" });
+      ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId, laneId })
+      : window.ade.cto.ensureSession({ laneId });
     void promise
       .then((next) => { if (!cancelled) setSession(next); })
       .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : String(err)); setSession(null); } })
@@ -342,7 +342,7 @@ export function CtoPage() {
     if (!window.ade?.cto || !laneId || showOnboarding || needsOnboarding) {
       return null;
     }
-    const next = await window.ade.cto.ensureSession({ laneId, permissionMode: "full-auto" });
+    const next = await window.ade.cto.ensureSession({ laneId });
     if (!selectedAgentId) {
       setSession(next);
     }
@@ -541,7 +541,6 @@ export function CtoPage() {
       goal: null,
       reasoningEffort: session.reasoningEffort ?? null,
       executionMode: session.executionMode ?? null,
-      permissionMode: session.permissionMode,
       identityKey: session.identityKey,
       capabilityMode: session.capabilityMode,
       computerUse: session.computerUse,

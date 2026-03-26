@@ -442,12 +442,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       laneId: z.string().optional(),
       modelId: z.string().optional(),
       reasoningEffort: z.string().nullable().optional(),
-      permissionMode: z.enum(["default", "plan", "edit", "full-auto", "config-toml"]).optional().default("full-auto"),
       title: z.string().optional(),
       initialPrompt: z.string().optional(),
       openInUi: z.boolean().optional().default(true),
     }),
-    execute: async ({ laneId, modelId, reasoningEffort, permissionMode, title, initialPrompt, openInUi }) => {
+    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, openInUi }) => {
       try {
         const selectedModelId = modelId?.trim() || deps.defaultModelId || null;
         const resolved = deriveChatProvider({ modelId: selectedModelId });
@@ -457,7 +456,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           model: resolved.model,
           ...(selectedModelId ? { modelId: selectedModelId } : {}),
           reasoningEffort: reasoningEffort ?? deps.defaultReasoningEffort ?? null,
-          permissionMode,
           surface: "work",
           sessionProfile: "workflow",
         });

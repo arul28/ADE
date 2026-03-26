@@ -6,19 +6,21 @@ import { TerminalView } from "../terminals/TerminalView";
 import type { ProcessRuntime, TerminalSessionSummary } from "../../../shared/types";
 import { isRunOwnedSession } from "../../lib/sessions";
 
-export type ProcessMonitorProps = {
+type ProcessMonitorProps = {
   laneId: string | null;
   runtimes: ProcessRuntime[];
   processNames: Record<string, string>; // processId -> display name
   onKill: (processId: string) => void;
 };
 
-const GRID_COLUMNS = "1fr 80px 70px 80px 80px 50px";
+const GRID_COLUMNS = "1fr 80px 80px 80px 50px";
 
 export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: ProcessMonitorProps) {
   const [expanded, setExpanded] = React.useState(false);
   const [sessions, setSessions] = React.useState<TerminalSessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
+  const sessionsRef = React.useRef(sessions);
+  sessionsRef.current = sessions;
   const activeRuntimes = runtimes.filter((r) => r.status !== "stopped");
   const activeCount = activeRuntimes.length;
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null;
@@ -40,7 +42,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
 
   React.useEffect(() => {
     void refreshSessions();
-  }, [refreshSessions, activeCount, runtimes.length]);
+  }, [refreshSessions, runtimes.length]);
 
   React.useEffect(() => {
     if (sessions.length === 0) {
@@ -52,12 +54,8 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
   }, [activeSessionId, sessions]);
 
   React.useEffect(() => {
-    if (sessions.length > 0) setExpanded(true);
-  }, [sessions.length]);
-
-  React.useEffect(() => {
     const unsubData = window.ade.pty.onData((event) => {
-      if (!sessions.some((session) => session.id === event.sessionId)) {
+      if (!sessionsRef.current.some((session) => session.id === event.sessionId)) {
         void refreshSessions();
         return;
       }
@@ -70,7 +68,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
       );
     });
     const unsubExit = window.ade.pty.onExit((event) => {
-      if (!sessions.some((session) => session.id === event.sessionId)) return;
+      if (!sessionsRef.current.some((session) => session.id === event.sessionId)) return;
       void refreshSessions();
     });
     return () => {
@@ -81,7 +79,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
         // ignore
       }
     };
-  }, [refreshSessions, sessions]);
+  }, [refreshSessions]);
 
   const closeSession = React.useCallback(async (session: TerminalSessionSummary) => {
     if (!session.ptyId) return;
@@ -207,7 +205,6 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
           >
             <span>Name</span>
             <span>Status</span>
-            <span>PID</span>
             <span>Uptime</span>
             <span>Ports</span>
             <span />
@@ -254,15 +251,6 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                 </span>
                 <span style={inlineBadge(processStatusColor(rt.status), { fontSize: 9, padding: "1px 6px" })}>
                   {rt.status}
-                </span>
-                <span
-                  style={{
-                    fontFamily: MONO_FONT,
-                    fontSize: 10,
-                    color: COLORS.textMuted,
-                  }}
-                >
-                  {rt.pid ?? "—"}
                 </span>
                 <span
                   style={{
@@ -328,17 +316,8 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Terminal size={14} weight="regular" style={{ color: COLORS.textMuted }} />
-                <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Inspector terminals</span>
+                <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Output</span>
               </div>
-              <span
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 10,
-                  color: COLORS.textDim,
-                }}
-              >
-                Run-only shells stay here instead of showing in Work or lane terminal panes.
-              </span>
             </div>
 
             {sessions.length === 0 ? (

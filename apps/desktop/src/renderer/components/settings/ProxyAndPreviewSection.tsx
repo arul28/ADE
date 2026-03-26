@@ -193,6 +193,15 @@ function Toggle({
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -203,7 +212,13 @@ function CopyButton({ text }: { text: string }) {
       }
       setCopyError(null);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      if (copyTimerRef.current !== null) {
+        clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = setTimeout(() => {
+        copyTimerRef.current = null;
+        setCopied(false);
+      }, 1500);
     } catch (error) {
       setCopyError(error instanceof Error ? error.message : "Failed to copy");
       setCopied(false);
@@ -284,6 +299,10 @@ export function ProxyAndPreviewSection() {
   const advancedPanelId = useId();
   const callbackPathsId = useId();
   const latestUriRequestRef = useRef(0);
+  const advancedOpenRef = useRef(advancedOpen);
+  advancedOpenRef.current = advancedOpen;
+  const advancedDirtyRef = useRef(advancedDirty);
+  advancedDirtyRef.current = advancedDirty;
 
   const syncAdvancedDrafts = useCallback((status: OAuthRedirectStatus) => {
     setRoutingMode(status.routingMode);
@@ -330,7 +349,37 @@ export function ProxyAndPreviewSection() {
   useEffect(() => {
     let cancelled = false;
 
-    void Promise.all([fetchProxyStatus(), fetchOAuthStatus(), fetchOAuthSessions()]);
+    // Fetch initial data with cancellation awareness.
+    // We inline the fetch logic here rather than calling fetchProxyStatus() etc.
+    // because those functions always call setState and don't check cancellation.
+    void Promise.all([
+      window.ade.lanes.proxyGetStatus().then((status) => {
+        if (cancelled) return;
+        setProxyStatus(status);
+        setProxyError(status.error ?? null);
+      }).catch((err) => {
+        if (cancelled) return;
+        setProxyError(err instanceof Error ? err.message : String(err));
+      }),
+      window.ade.lanes.oauthGetStatus().then((status) => {
+        if (cancelled) return;
+        setOAuthStatus(status);
+        syncAdvancedDrafts(status);
+        setOAuthError(null);
+      }).catch((err) => {
+        if (cancelled) return;
+        setOAuthError(err instanceof Error ? err.message : String(err));
+      }),
+      window.ade.lanes.oauthListSessions().then((nextSessions) => {
+        if (cancelled) return;
+        setSessions(
+          [...nextSessions].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+        );
+      }).catch((err) => {
+        if (cancelled) return;
+        setOAuthError(err instanceof Error ? err.message : String(err));
+      }),
+    ]);
 
     // Subscribe to live events
     const unsubProxy = window.ade.lanes.onProxyEvent((ev: LaneProxyEvent) => {
@@ -343,7 +392,7 @@ export function ProxyAndPreviewSection() {
       if (cancelled) return;
       if (ev.status) {
         setOAuthStatus(ev.status);
-        if (ev.type === "oauth-config-changed" || !advancedOpen || !advancedDirty) {
+        if (ev.type === "oauth-config-changed" || !advancedOpenRef.current || !advancedDirtyRef.current) {
           syncAdvancedDrafts(ev.status);
         }
       }
@@ -361,14 +410,7 @@ export function ProxyAndPreviewSection() {
       unsubProxy();
       unsubOAuth();
     };
-  }, [
-    advancedDirty,
-    advancedOpen,
-    fetchProxyStatus,
-    fetchOAuthStatus,
-    fetchOAuthSessions,
-    syncAdvancedDrafts,
-  ]);
+  }, [syncAdvancedDrafts]);
 
   // -----------------------------------------------------------------------
   // Proxy actions

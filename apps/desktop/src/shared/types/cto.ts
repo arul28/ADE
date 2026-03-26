@@ -1,5 +1,5 @@
 import type { ModelId } from "./core";
-import type { AgentChatPermissionMode } from "./chat";
+
 import type { ExternalMcpAccessPolicy } from "./externalMcp";
 import type {
   OpenclawBridgeConfig,
@@ -97,7 +97,6 @@ export type CtoEnsureSessionArgs = {
   laneId?: string | null;
   modelId?: ModelId | null;
   reasoningEffort?: string | null;
-  permissionMode?: AgentChatPermissionMode;
 };
 
 export type CtoUpdateIdentityArgs = {

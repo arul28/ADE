@@ -6,7 +6,7 @@ import type { ProcessDefinition, ProcessRuntime, ProcessRuntimeStatus } from "..
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { commandArrayToLine } from "../../lib/shell";
 
-export type CommandCardProps = {
+type CommandCardProps = {
   definition: ProcessDefinition;
   runtime: ProcessRuntime | null;
   onRun: (processId: string) => void;
@@ -14,6 +14,7 @@ export type CommandCardProps = {
   onEdit: (processId: string) => void;
   onDelete: (processId: string) => void;
   onMoveToStack: (processId: string) => void;
+  stacks?: { id: string }[];
 };
 
 function isActive(status: ProcessRuntimeStatus | undefined): boolean {
@@ -28,6 +29,7 @@ export function CommandCard({
   onEdit,
   onDelete,
   onMoveToStack,
+  stacks,
 }: CommandCardProps) {
   const status = runtime?.status;
   const running = isActive(status);
@@ -127,7 +129,9 @@ export function CommandCard({
             >
               {([
                 { label: "Edit", action: () => onEdit(definition.id) },
-                { label: "Move to stack", action: () => onMoveToStack(definition.id) },
+                ...((stacks?.length ?? 0) > 0
+                  ? [{ label: "Move to stack", action: () => onMoveToStack(definition.id) }]
+                  : []),
                 { label: "Delete", action: () => onDelete(definition.id), danger: true },
               ] as Array<{ label: string; action: () => void; danger?: boolean }>).map((item) => (
                 <button
@@ -196,9 +200,9 @@ export function CommandCard({
                 fontSize: 10,
                 color: COLORS.accent,
                 cursor: "pointer",
-                borderBottom: `1px dashed ${COLORS.accent}40`,
                 background: "transparent",
                 border: "none",
+                borderBottom: `1px dashed ${COLORS.accent}40`,
                 padding: 0,
               }}
             >

@@ -54,7 +54,8 @@ export function createPortAllocationService({
   // --- helpers ---------------------------------------------------------------
 
   function maxSlots(): number {
-    return Math.floor((cfg.maxPort - cfg.basePort + 1) / cfg.portsPerLane);
+    const slots = Math.floor((cfg.maxPort - cfg.basePort + 1) / cfg.portsPerLane);
+    return Math.max(0, slots);
   }
 
   function getActiveLeases(): PortLease[] {
@@ -102,6 +103,38 @@ export function createPortAllocationService({
       detectedAt: new Date().toISOString(),
       resolved: false,
     };
+  }
+
+  /** Scan all active leases for overlapping port ranges and record new conflicts. */
+  function runConflictDetection(): PortConflict[] {
+    const active = getActiveLeases();
+    const newConflicts: PortConflict[] = [];
+
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const conflict = detectConflictsBetween(active[i], active[j]);
+        if (conflict) {
+          const alreadyExists = conflicts.some(
+            (c) =>
+              !c.resolved &&
+              ((c.laneIdA === conflict.laneIdA && c.laneIdB === conflict.laneIdB) ||
+                (c.laneIdA === conflict.laneIdB && c.laneIdB === conflict.laneIdA))
+          );
+          if (!alreadyExists) {
+            conflicts.push(conflict);
+            newConflicts.push(conflict);
+            broadcastEvent({ type: "port-conflict-detected", conflict });
+            logger.warn("port_allocation.conflict_detected", {
+              laneA: conflict.laneIdA,
+              laneB: conflict.laneIdB,
+              port: conflict.port,
+            });
+          }
+        }
+      }
+    }
+
+    return newConflicts;
   }
 
   // --- public API ------------------------------------------------------------
@@ -213,35 +246,7 @@ export function createPortAllocationService({
      * Returns newly detected conflicts.
      */
     detectConflicts(): PortConflict[] {
-      const active = getActiveLeases();
-      const newConflicts: PortConflict[] = [];
-
-      for (let i = 0; i < active.length; i++) {
-        for (let j = i + 1; j < active.length; j++) {
-          const conflict = detectConflictsBetween(active[i], active[j]);
-          if (conflict) {
-            // Check if this conflict pair already exists (unresolved)
-            const alreadyExists = conflicts.some(
-              (c) =>
-                !c.resolved &&
-                ((c.laneIdA === conflict.laneIdA && c.laneIdB === conflict.laneIdB) ||
-                  (c.laneIdA === conflict.laneIdB && c.laneIdB === conflict.laneIdA))
-            );
-            if (!alreadyExists) {
-              conflicts.push(conflict);
-              newConflicts.push(conflict);
-              broadcastEvent({ type: "port-conflict-detected", conflict });
-              logger.warn("port_allocation.conflict_detected", {
-                laneA: conflict.laneIdA,
-                laneB: conflict.laneIdB,
-                port: conflict.port,
-              });
-            }
-          }
-        }
-      }
-
-      return newConflicts;
+      return runConflictDetection();
     },
 
     /**
@@ -277,6 +282,7 @@ export function createPortAllocationService({
       if (orphaned.length > 0) {
         persist();
         logger.info("port_allocation.orphans_recovered", { count: orphaned.length });
+        runConflictDetection();
       }
 
       return orphaned;

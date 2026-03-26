@@ -113,4 +113,147 @@ describe("lanePrWarnings", () => {
       },
     ]);
   });
+
+  it("returns empty array when lane list is empty", () => {
+    expect(buildLanePrWarnings({
+      lanes: [],
+      selectedLaneIds: [],
+      syncStatusByLaneId: {},
+    })).toEqual([]);
+  });
+
+  it("returns empty issues for a lane with no problems", () => {
+    const lane = makeLane();
+    const issues = describeLanePrIssues(lane, makeSyncStatus());
+    expect(issues).toEqual([]);
+  });
+
+  it("returns empty issues when syncStatus is null", () => {
+    const lane = makeLane();
+    const issues = describeLanePrIssues(lane, null);
+    expect(issues).toEqual([]);
+  });
+
+  it("returns empty issues when syncStatus is undefined", () => {
+    const lane = makeLane();
+    const issues = describeLanePrIssues(lane, undefined);
+    expect(issues).toEqual([]);
+  });
+
+  it("reports multiple conflicting issues on the same lane", () => {
+    const lane = makeLane({
+      status: {
+        dirty: true,
+        ahead: 0,
+        behind: 5,
+        remoteBehind: 0,
+        rebaseInProgress: true,
+      },
+    });
+    const issues = describeLanePrIssues(lane, makeSyncStatus({ hasUpstream: false, upstreamRef: null }));
+
+    expect(issues).toEqual([
+      "has a rebase in progress",
+      "has uncommitted changes",
+      "is 5 commits behind its base branch — rebase recommended before creating or merging a PR",
+      "has not been published to remote",
+    ]);
+  });
+
+  it("reports rebase in progress alongside diverged remote", () => {
+    const lane = makeLane({
+      status: {
+        dirty: false,
+        ahead: 0,
+        behind: 0,
+        remoteBehind: 0,
+        rebaseInProgress: true,
+      },
+    });
+    const issues = describeLanePrIssues(lane, makeSyncStatus({ ahead: 2, behind: 1, diverged: true }));
+
+    expect(issues).toEqual([
+      "has a rebase in progress",
+      "has diverged from remote (2 ahead, 1 behind)",
+    ]);
+  });
+
+  it("uses singular 'commit' for count of 1", () => {
+    const behindLane = makeLane({
+      status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+    });
+    const issues = describeLanePrIssues(behindLane, makeSyncStatus({ ahead: 1 }));
+
+    expect(issues).toContain("is 1 commit behind its base branch — rebase recommended before creating or merging a PR");
+    expect(issues).toContain("has 1 unpushed commit");
+  });
+
+  it("reports being behind remote separately from being behind base", () => {
+    const lane = makeLane();
+    const issues = describeLanePrIssues(lane, makeSyncStatus({ behind: 4 }));
+
+    expect(issues).toEqual(["is 4 commits behind remote"]);
+  });
+
+  it("buildLanePrWarnings skips selectedLaneIds not found in lane list", () => {
+    const lane = makeLane({ id: "lane-1", name: "Lane 1" });
+    const warnings = buildLanePrWarnings({
+      lanes: [lane],
+      selectedLaneIds: ["lane-1", "lane-nonexistent"],
+      syncStatusByLaneId: {
+        "lane-1": makeSyncStatus(),
+        "lane-nonexistent": makeSyncStatus({ hasUpstream: false, upstreamRef: null }),
+      },
+    });
+
+    // lane-nonexistent is not in lanes, so it should be filtered out
+    expect(warnings).toEqual([]);
+  });
+
+  it("buildLanePrWarnings produces warnings for multiple lanes with distinct issues", () => {
+    const dirtyLane = makeLane({
+      id: "lane-dirty",
+      name: "Dirty",
+      status: { dirty: true, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+    });
+    const behindLane = makeLane({
+      id: "lane-behind",
+      name: "Behind",
+      status: { dirty: false, ahead: 0, behind: 3, remoteBehind: 0, rebaseInProgress: false },
+    });
+
+    const warnings = buildLanePrWarnings({
+      lanes: [dirtyLane, behindLane],
+      selectedLaneIds: ["lane-dirty", "lane-behind"],
+      syncStatusByLaneId: {
+        "lane-dirty": makeSyncStatus(),
+        "lane-behind": makeSyncStatus(),
+      },
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0].laneId).toBe("lane-dirty");
+    expect(warnings[0].issues).toEqual(["has uncommitted changes"]);
+    expect(warnings[1].laneId).toBe("lane-behind");
+    expect(warnings[1].issues[0]).toContain("behind its base branch");
+  });
+
+  it("buildLaneRebaseRecommendedLaneIds returns empty for all-clean lanes", () => {
+    const cleanLane = makeLane({ id: "lane-clean", status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false } });
+    expect(
+      buildLaneRebaseRecommendedLaneIds({
+        lanes: [cleanLane],
+        selectedLaneIds: ["lane-clean"],
+      }),
+    ).toEqual([]);
+  });
+
+  it("buildLaneRebaseRecommendedLaneIds ignores selectedLaneIds not in lanes", () => {
+    expect(
+      buildLaneRebaseRecommendedLaneIds({
+        lanes: [],
+        selectedLaneIds: ["nonexistent"],
+      }),
+    ).toEqual([]);
+  });
 });

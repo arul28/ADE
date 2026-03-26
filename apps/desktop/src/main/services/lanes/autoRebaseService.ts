@@ -128,7 +128,11 @@ export function createAutoRebaseService(args: {
 
       if (status.state === "autoRebased") {
         const updatedAtMs = Date.parse(status.updatedAt);
-        if (!Number.isFinite(updatedAtMs) || nowMs - updatedAtMs > AUTO_REBASED_TTL_MS) {
+        if (!Number.isFinite(updatedAtMs)) {
+          clearStatus(lane.id);
+          continue;
+        }
+        if (nowMs - updatedAtMs > AUTO_REBASED_TTL_MS) {
           clearStatus(lane.id);
           continue;
         }
@@ -204,7 +208,14 @@ export function createAutoRebaseService(args: {
       lanes = await laneService.list({ includeArchived: false });
       const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
       const lane = laneById.get(laneId);
-      if (!lane || !lane.parentLaneId) continue;
+      if (!lane) {
+        logger.info("autoRebase.lane_not_found", { laneId });
+        continue;
+      }
+      if (!lane.parentLaneId) {
+        logger.debug("autoRebase.no_parent", { laneId });
+        continue;
+      }
 
       if (blocked) {
         setStatus({

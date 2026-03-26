@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Memory, UnifiedMemoryService } from "./unifiedMemoryService";
 import type { HumanWorkDigestService } from "./humanWorkDigestService";
+import type { ProjectMemoryFilesService } from "./memoryFilesService";
 
 export type MemoryBriefingLevel = "lite" | "standard" | "deep";
 
@@ -45,11 +46,13 @@ const BUDGET_LIMITS: Record<MemoryBriefingLevel, number> = {
   deep: 20,
 };
 
-function cleanParts(values: Array<string | null | undefined>): string[] {
+/** Exported for testing. */
+export function cleanParts(values: Array<string | null | undefined>): string[] {
   return values.map((value) => String(value ?? "").trim()).filter((value) => value.length > 0);
 }
 
-function buildQuery(args: BuildMemoryBriefingArgs): string {
+/** Exported for testing. */
+export function buildQuery(args: BuildMemoryBriefingArgs): string {
   return cleanParts([
     args.taskDescription,
     args.phaseContext,
@@ -159,6 +162,7 @@ function readInstructionFiles(projectRoot: string): Memory[] {
 
 export function createMemoryBriefingService(args: {
   memoryService: Pick<UnifiedMemoryService, "getMemoryBudget" | "search" | "searchAcrossScopeOwners" | "listMemories">;
+  memoryFilesService?: Pick<ProjectMemoryFilesService, "readBootstrapIndex"> | null;
   projectRoot?: string | null;
   humanWorkDigestService?: Pick<HumanWorkDigestService, "getRecentCommitSummaries"> | null;
 }) {
@@ -215,6 +219,24 @@ export function createMemoryBriefingService(args: {
 
       // Instruction files (replaces root-doc procedure memories).
       directSourceEntries.push(...readInstructionFiles(args.projectRoot));
+    }
+
+    const autoMemoryBootstrap = (() => {
+      if (!args.memoryFilesService) return "";
+      try {
+        return args.memoryFilesService.readBootstrapIndex({ maxLines: 80, maxChars: 3_000 });
+      } catch {
+        return "";
+      }
+    })();
+    if (autoMemoryBootstrap.trim().length > 0) {
+      directSourceEntries.push(
+        syntheticMemory(
+          "procedure",
+          `ADE auto memory bootstrap (.ade/memory/MEMORY.md):\n${autoMemoryBootstrap}`,
+          "ade-auto-memory-bootstrap",
+        ),
+      );
     }
 
     const l1 = [...directSourceEntries, ...l1FromMemory].slice(0, BUDGET_LIMITS[levels.l1] + directSourceEntries.length);

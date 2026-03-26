@@ -75,4 +75,113 @@ describe("integrationLanes", () => {
     expect(isIntegrationLaneFromMetadata(regularLane, map)).toBe(true);
     expect(isHeuristicIntegrationLane(heuristicLane)).toBe(true);
   });
+
+  it("returns empty map when given no proposals", () => {
+    const lanes = [makeLane("lane-a", "auth")];
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+
+    const map = buildIntegrationSourcesByLaneId([], laneById);
+    expect(map.size).toBe(0);
+  });
+
+  it("returns empty map when lane list is empty", () => {
+    const laneById = new Map<string, LaneSummary>();
+    const map = buildIntegrationSourcesByLaneId([makeProposal()], laneById);
+    expect(map.size).toBe(0);
+  });
+
+  it("skips proposals with missing integrationLaneId", () => {
+    const lanes = [makeLane("lane-a", "auth")];
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+
+    const map = buildIntegrationSourcesByLaneId(
+      [makeProposal({ integrationLaneId: "" })],
+      laneById,
+    );
+    expect(map.size).toBe(0);
+  });
+
+  it("skips proposals with whitespace-only integrationLaneId", () => {
+    const lanes = [makeLane("lane-a", "auth")];
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+
+    const map = buildIntegrationSourcesByLaneId(
+      [makeProposal({ integrationLaneId: "   " })],
+      laneById,
+    );
+    expect(map.size).toBe(0);
+  });
+
+  it("deduplicates source lane entries across multiple proposals for the same integration lane", () => {
+    const lanes = [
+      makeLane("lane-a", "auth"),
+      makeLane("lane-b", "billing"),
+      makeLane("lane-c", "payments"),
+      makeLane("lane-integration", "integration/pr-123"),
+    ];
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+
+    const proposals = [
+      makeProposal({ proposalId: "p1", sourceLaneIds: ["lane-a", "lane-b"] }),
+      makeProposal({ proposalId: "p2", sourceLaneIds: ["lane-b", "lane-c"] }),
+    ];
+    const map = buildIntegrationSourcesByLaneId(proposals, laneById);
+
+    const sources = map.get("lane-integration")!;
+    expect(sources).toHaveLength(3);
+    // lane-b should only appear once
+    const laneIds = sources.map((s) => s.laneId);
+    expect(laneIds).toEqual(["lane-a", "lane-b", "lane-c"]);
+  });
+
+  it("warns and skips source lanes that do not exist in laneById", () => {
+    const lanes = [
+      makeLane("lane-a", "auth"),
+      makeLane("lane-integration", "integration/pr-123"),
+    ];
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+
+    // lane-b does not exist in laneById
+    const map = buildIntegrationSourcesByLaneId(
+      [makeProposal({ sourceLaneIds: ["lane-a", "lane-nonexistent"] })],
+      laneById,
+    );
+
+    const sources = map.get("lane-integration")!;
+    expect(sources).toHaveLength(1);
+    expect(sources[0].laneId).toBe("lane-a");
+  });
+
+  it("skips non-string entries in sourceLaneIds", () => {
+    const lanes = [
+      makeLane("lane-a", "auth"),
+      makeLane("lane-integration", "integration/pr-123"),
+    ];
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+
+    const map = buildIntegrationSourcesByLaneId(
+      [makeProposal({ sourceLaneIds: ["lane-a", null as any, undefined as any, 123 as any] })],
+      laneById,
+    );
+
+    const sources = map.get("lane-integration")!;
+    expect(sources).toHaveLength(1);
+    expect(sources[0].laneId).toBe("lane-a");
+  });
+
+  it("isHeuristicIntegrationLane detects description-based integration lanes", () => {
+    const lane = makeLane("lane-x", "some-regular-name", { description: "Integration lane for PR #99" });
+    expect(isHeuristicIntegrationLane(lane)).toBe(true);
+  });
+
+  it("isHeuristicIntegrationLane returns false for non-integration lanes", () => {
+    const lane = makeLane("lane-x", "feature/auth", { description: "Normal feature work" });
+    expect(isHeuristicIntegrationLane(lane)).toBe(false);
+  });
+
+  it("isIntegrationLaneFromMetadata returns false when lane is absent from both metadata and heuristic", () => {
+    const lane = makeLane("lane-x", "feature/auth");
+    const emptyMap = new Map<string, { laneId: string; laneName: string }[]>();
+    expect(isIntegrationLaneFromMetadata(lane, emptyMap)).toBe(false);
+  });
 });
