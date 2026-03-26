@@ -1158,7 +1158,6 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       dispose: resolvedArg(undefined),
       updateSession: resolvedArg({ id: "mock" }),
       onEvent: noop,
-      changePermissionMode: resolvedArg(undefined),
       slashCommands: resolvedArg([]),
       fileSearch: resolvedArg([]),
     },

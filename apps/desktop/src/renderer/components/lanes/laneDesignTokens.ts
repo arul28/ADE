@@ -5,13 +5,13 @@ export const COLORS = {
   pageBg: "#09080C",
   cardBg: "rgba(255,255,255,0.03)",
   cardBgSolid: "#181423",
-  recessedBg: "rgba(255,255,255,0.02)",
+  recessedBg: "rgba(255,255,255,0.03)",
   hoverBg: "rgba(255,255,255,0.06)",
   border: "rgba(255,255,255,0.06)",
   outlineBorder: "rgba(255,255,255,0.08)",
   borderMuted: "rgba(255,255,255,0.04)",
   accent: "#A78BFA",
-  accentSubtle: "rgba(167, 139, 250, 0.08)",
+  accentSubtle: "rgba(167, 139, 250, 0.12)",
   accentBorder: "rgba(167, 139, 250, 0.20)",
   textPrimary: "#FAFAFA",
   textSecondary: "#A1A1AA",
@@ -21,6 +21,34 @@ export const COLORS = {
   danger: "#EF4444",
   warning: "#F59E0B",
   info: "#3B82F6",
+  entryChat: "#8B5CF6",
+  entryCli: "#F97316",
+  entryShell: "#22C55E",
+} as const;
+
+export const SPACING = {
+  xs: 4,
+  sm: 8,
+  md: 12,
+  lg: 16,
+  xl: 24,
+  xxl: 32,
+} as const;
+
+export const FONT_SIZES = {
+  xs: 9,
+  sm: 10,
+  md: 11,
+  base: 12,
+  lg: 13,
+  xl: 14,
+} as const;
+
+export const RADII = {
+  sm: 6,
+  md: 8,
+  lg: 12,
+  xl: 16,
 } as const;
 
 export const MONO_FONT = "JetBrains Mono, monospace";
@@ -183,22 +211,6 @@ export function conflictDotColor(status: string | undefined): string {
       return COLORS.warning;
     case "merge-ready":
       return COLORS.success;
-    default:
-      return COLORS.textMuted;
-  }
-}
-
-export function stateColor(state: string): string {
-  switch (state) {
-    case "active":
-    case "running":
-      return COLORS.success;
-    case "error":
-    case "failed":
-      return COLORS.danger;
-    case "pending":
-    case "queued":
-      return COLORS.warning;
     default:
       return COLORS.textMuted;
   }

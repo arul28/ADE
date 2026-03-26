@@ -30,6 +30,7 @@ const menuHeaderStyle: React.CSSProperties = {
 function HoverButton({ style, children, onClick }: { style: React.CSSProperties; children: React.ReactNode; onClick: () => void }) {
   return (
     <button
+      role="menuitem"
       style={style}
       onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
@@ -74,12 +75,34 @@ export function LaneContextMenu({
     return lane && lane.laneType !== "primary";
   });
 
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  React.useEffect(() => {
+    menuRef.current?.focus();
+  }, []);
+
   return (
     <div
+      ref={menuRef}
+      role="menu"
+      tabIndex={-1}
       style={{
         position: "fixed",
         zIndex: 40,
         minWidth: 200,
+        maxHeight: "calc(100vh - 20px)",
+        overflowY: "auto",
         background: COLORS.cardBgSolid,
         backdropFilter: "blur(20px)",
         WebkitBackdropFilter: "blur(20px)",
@@ -88,7 +111,7 @@ export function LaneContextMenu({
         padding: "4px 0",
         boxShadow: "0 8px 32px -8px rgba(0,0,0,0.5)",
         left: laneContextMenu.x,
-        top: laneContextMenu.y,
+        top: Math.min(laneContextMenu.y, window.innerHeight - 20),
       }}
       onPointerDown={(e) => e.stopPropagation()}
     >

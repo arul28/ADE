@@ -154,7 +154,7 @@ import type {
   ExportHistoryArgs,
   ExportHistoryResult,
   AgentChatApproveArgs,
-  AgentChatChangePermissionModeArgs,
+  AgentChatClaudePermissionMode,
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
   AgentChatGetSummaryArgs,
@@ -175,6 +175,7 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSteerArgs,
+  AgentChatUnifiedPermissionMode,
   AgentChatUpdateSessionArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
@@ -549,7 +550,7 @@ import type { createSyncHostService } from "../sync/syncHostService";
 import type { createSyncService } from "../sync/syncService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
-import { getErrorMessage, isRecord, nowIso, toMemoryEntryDto, toOptionalString } from "../shared/utils";
+import { getErrorMessage, isRecord, isWithinDir, nowIso, toMemoryEntryDto, toOptionalString } from "../shared/utils";
 
 export type AppContext = {
   db: AdeDb;
@@ -1265,10 +1266,56 @@ function mapPrAiPermissionMode(mode: AiPermissionMode): AgentChatPermissionMode 
   return "plan";
 }
 
-function mapAgentChatPermissionModeToPrAi(mode: AgentChatPermissionMode | null | undefined): AiPermissionMode | null {
-  if (mode === "full-auto") return "full_edit";
-  if (mode === "edit") return "guarded_edit";
-  if (mode === "plan" || mode === "default") return "read_only";
+/**
+ * Map an AiPermissionMode to provider-native permission fields for AgentChatCreateArgs.
+ */
+function mapPrAiPermissionModeToNativeFields(
+  mode: AiPermissionMode,
+  provider: string,
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "unifiedPermissionMode">> {
+  const legacy = mapPrAiPermissionMode(mode);
+  if (provider === "claude") {
+    const map: Record<string, AgentChatClaudePermissionMode> = {
+      "full-auto": "bypassPermissions",
+      "edit": "acceptEdits",
+      "plan": "plan",
+      "default": "default",
+    };
+    return { claudePermissionMode: map[legacy] ?? "default" };
+  }
+  if (provider === "codex") {
+    if (legacy === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" };
+    if (legacy === "edit") return { codexApprovalPolicy: "on-failure", codexSandbox: "workspace-write" };
+    return { codexApprovalPolicy: "untrusted", codexSandbox: "read-only" };
+  }
+  const umap: Record<string, AgentChatUnifiedPermissionMode> = {
+    "full-auto": "full-auto",
+    "edit": "edit",
+    "plan": "plan",
+  };
+  return { unifiedPermissionMode: umap[legacy] ?? "edit" };
+}
+
+function deriveAiPermissionModeFromSummary(
+  summary: Pick<AgentChatSessionSummary, "provider" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "unifiedPermissionMode"> | null | undefined,
+): AiPermissionMode | null {
+  if (!summary) return null;
+  if (summary.provider === "claude") {
+    if (summary.claudePermissionMode === "bypassPermissions") return "full_edit";
+    if (summary.claudePermissionMode === "acceptEdits") return "guarded_edit";
+    if (summary.claudePermissionMode === "plan") return "read_only";
+    if (summary.claudePermissionMode === "default") return "read_only";
+    return null;
+  }
+  if (summary.provider === "codex") {
+    if (summary.codexApprovalPolicy === "never" && summary.codexSandbox === "danger-full-access") return "full_edit";
+    if (summary.codexApprovalPolicy === "on-failure") return "guarded_edit";
+    if (summary.codexApprovalPolicy === "untrusted") return "read_only";
+    return null;
+  }
+  if (summary.unifiedPermissionMode === "full-auto") return "full_edit";
+  if (summary.unifiedPermissionMode === "edit") return "guarded_edit";
+  if (summary.unifiedPermissionMode === "plan") return "read_only";
   return null;
 }
 
@@ -1627,8 +1674,9 @@ export function registerIpc({
     } catch {
       throw new Error("Invalid URL");
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("Only http(s) URLs are allowed.");
+    const ALLOWED_URL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+    if (!ALLOWED_URL_SCHEMES.has(parsed.protocol)) {
+      throw new Error("Only http(s) and mailto: URLs are allowed.");
     }
     await shell.openExternal(parsed.toString());
   });
@@ -1636,9 +1684,19 @@ export function registerIpc({
   ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
-    // Basic path boundary validation — reject obvious traversal patterns
     const normalized = path.resolve(raw);
-    if (normalized !== raw && raw.includes("..")) return;
+    // Validate the path is within known safe directories only.
+    // Reject requests to reveal arbitrary paths (e.g. ~/.ssh, /etc, /System).
+    const projectRoot = getCtx().project.rootPath;
+    const allowedDirs = [
+      projectRoot,
+      app.getPath("downloads"),
+      app.getPath("documents"),
+      app.getPath("temp"),
+    ];
+    if (!allowedDirs.some((dir) => isWithinDir(dir, normalized))) {
+      throw new Error("Path is outside allowed directories.");
+    }
     shell.showItemInFolder(normalized);
   });
 
@@ -3729,11 +3787,6 @@ export function registerIpc({
     return ctx.agentChatService.warmupModel(arg);
   });
 
-  ipcMain.handle(IPC.agentChatChangePermissionMode, async (_event, arg: AgentChatChangePermissionModeArgs): Promise<void> => {
-    const ctx = getCtx();
-    ctx.agentChatService.changePermissionMode(arg);
-  });
-
   ipcMain.handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
     const ctx = getCtx();
     return ctx.agentChatService.getSlashCommands(arg);
@@ -4555,7 +4608,7 @@ export function registerIpc({
           model: summary?.model ?? runtime.modelId,
           modelId: summary?.modelId ?? runtime.modelId,
           reasoning: summary?.reasoningEffort ?? runtime.reasoning,
-          permissionMode: mapAgentChatPermissionModeToPrAi(summary?.permissionMode) ?? runtime.permissionMode,
+          permissionMode: deriveAiPermissionModeFromSummary(summary) ?? runtime.permissionMode,
           status: "running",
         });
       }
@@ -4578,7 +4631,7 @@ export function registerIpc({
       model: summary?.model ?? persistedRun.model ?? null,
       modelId: summary?.modelId ?? persistedRun.model ?? null,
       reasoning: summary?.reasoningEffort ?? persistedRun.reasoningEffort ?? null,
-      permissionMode: mapAgentChatPermissionModeToPrAi(summary?.permissionMode) ?? persistedRun.permissionMode ?? null,
+      permissionMode: deriveAiPermissionModeFromSummary(summary) ?? persistedRun.permissionMode ?? null,
       status: mapExternalResolverStatusToPrAi(persistedRun.status),
     });
   });
@@ -4680,7 +4733,7 @@ export function registerIpc({
         model: modelDescriptor?.shortId ?? model,
         ...(modelDescriptor?.id ? { modelId: modelDescriptor.id } : {}),
         ...(reasoning ? { reasoningEffort: reasoning } : {}),
-        permissionMode: mapPrAiPermissionMode(permissionMode)
+        ...mapPrAiPermissionModeToNativeFields(permissionMode, provider),
       });
       const promptText = fs.readFileSync(prep.promptFilePath, "utf8");
       const runtimeContext: PrAiResolutionContext = {
@@ -5395,7 +5448,6 @@ export function registerIpc({
       laneId,
       modelId: arg.modelId ?? null,
       reasoningEffort: arg.reasoningEffort ?? null,
-      permissionMode: arg.permissionMode,
     });
   });
 
@@ -5465,7 +5517,6 @@ export function registerIpc({
       laneId,
       modelId: arg.modelId ?? null,
       reasoningEffort: arg.reasoningEffort ?? null,
-      permissionMode: arg.permissionMode,
     });
   });
 

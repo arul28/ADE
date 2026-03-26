@@ -182,7 +182,16 @@ export function createRebaseSuggestionService(args: {
             dismissedAt: null
           };
 
-      if (!existing || JSON.stringify(existing) !== JSON.stringify(nextState)) {
+      if (
+        !existing ||
+        existing.laneId !== nextState.laneId ||
+        existing.parentLaneId !== nextState.parentLaneId ||
+        existing.parentHeadSha !== nextState.parentHeadSha ||
+        existing.behindCount !== nextState.behindCount ||
+        existing.lastSuggestedAt !== nextState.lastSuggestedAt ||
+        existing.deferredUntil !== nextState.deferredUntil ||
+        existing.dismissedAt !== nextState.dismissedAt
+      ) {
         saveState(nextState);
       }
 

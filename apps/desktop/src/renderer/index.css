@@ -96,6 +96,9 @@
   --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.8);
   --chat-glass-bg: rgba(24, 20, 35, 0.7);
   --chat-glass-border: rgba(255, 255, 255, 0.08);
+  --chat-panel-bg: rgba(24, 20, 35, 0.82);
+  --chat-panel-border: rgba(255, 255, 255, 0.10);
+  --chat-panel-bg-strong: rgba(24, 20, 35, 0.92);
   --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
   --color-success: #22c55e;
   --color-warning: #f59e0b;
@@ -207,6 +210,9 @@
   --chat-composer-shadow: 0 -12px 22px -24px rgba(15, 23, 42, 0.12);
   --chat-glass-bg: rgba(255, 255, 255, 0.76);
   --chat-glass-border: rgba(26, 26, 30, 0.08);
+  --chat-panel-bg: rgba(255, 255, 255, 0.82);
+  --chat-panel-border: rgba(26, 26, 30, 0.10);
+  --chat-panel-bg-strong: rgba(255, 255, 255, 0.92);
   --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(26,26,30,0.08), transparent);
   --color-success: #16a34a;
   --color-warning: #d97706;
@@ -337,9 +343,17 @@ h6 {
 }
 
 /* Theme-aware prose for agent chat markdown */
-.ade-prose-themed,
+.ade-prose-themed {
+  font-family: var(--font-sans);
+  color: var(--color-fg);
+}
+
 .ade-prose-themed :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
   color: var(--color-fg);
+}
+
+.ade-prose-themed :is(code, pre, kbd, samp) {
+  font-family: var(--font-mono);
 }
 
 /* ═══════════════════════════════════════════════════════════

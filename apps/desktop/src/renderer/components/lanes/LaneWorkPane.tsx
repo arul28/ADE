@@ -1,7 +1,7 @@
 import { ChatCircleText, Command, Terminal } from "@phosphor-icons/react";
 import type { WorkDraftKind } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
-import { SANS_FONT } from "./laneDesignTokens";
+import { COLORS, SANS_FONT, SPACING } from "./laneDesignTokens";
 import { WorkViewArea } from "../terminals/WorkViewArea";
 import { useLaneWorkSessions } from "./useLaneWorkSessions";
 
@@ -11,9 +11,9 @@ const ENTRY_OPTIONS: Array<{
   icon: typeof ChatCircleText;
   color: string;
 }> = [
-  { kind: "chat", label: "New Chat", icon: ChatCircleText, color: "#8B5CF6" },
-  { kind: "cli", label: "CLI Tool", icon: Command, color: "#F97316" },
-  { kind: "shell", label: "New Shell", icon: Terminal, color: "#22C55E" },
+  { kind: "chat", label: "New Chat", icon: ChatCircleText, color: COLORS.entryChat },
+  { kind: "cli", label: "CLI Tool", icon: Command, color: COLORS.entryCli },
+  { kind: "shell", label: "New Shell", icon: Terminal, color: COLORS.entryShell },
 ];
 
 export function LaneWorkPane({
@@ -48,7 +48,7 @@ export function LaneWorkPane({
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 5,
+                    gap: SPACING.xs,
                     padding: "5px 10px",
                     border: active ? `1px solid ${entry.color}20` : "1px solid transparent",
                     borderRadius: 8,

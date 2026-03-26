@@ -49,9 +49,23 @@ export function ManageLaneDialog({
   const hasAnyDirty = lanes.some((l) => l.status.dirty);
 
   const isAttached = !isBatch && lanes[0]?.laneType === "attached";
-  const worktreeDeleteLabel = hasAttached ? "Detach only" : "Worktree only";
-  const localDeleteLabel = hasAttached ? "Detach + local branch" : "+ local branch";
-  const remoteDeleteLabel = hasAttached ? "Detach + local + remote" : "+ local + remote";
+  const hasNonAttached = lanes.some((l) => l.laneType !== "attached" && l.laneType !== "primary");
+  const isMixed = hasAttached && hasNonAttached;
+  const worktreeDeleteLabel = isMixed
+    ? "Unlink attached lanes & remove worktree files"
+    : hasAttached
+      ? "Unlink lane (keep branch)"
+      : "Remove worktree files only";
+  const localDeleteLabel = isMixed
+    ? "Unlink attached & delete local branches"
+    : hasAttached
+      ? "Unlink + delete local branch"
+      : "+ local branch";
+  const remoteDeleteLabel = isMixed
+    ? "Unlink attached & delete local + remote branches"
+    : hasAttached
+      ? "Unlink + delete local and remote branch"
+      : "Delete local and remote branch";
   const confirmMatch = deleteConfirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
 
   return (
@@ -195,10 +209,13 @@ export function ManageLaneDialog({
                 )}
 
                 {/* Force delete */}
-                <label className="mb-3 flex items-center gap-2 text-xs text-muted-fg cursor-pointer select-none">
+                <label className="mb-1 flex items-center gap-2 text-xs text-muted-fg cursor-pointer select-none">
                   <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} className="rounded" />
                   Force delete (skip safety checks)
                 </label>
+                <p className="text-xs text-yellow-400/70 mt-1 mb-3">
+                  Force delete will remove the lane even if it has uncommitted changes.
+                </p>
 
                 {/* Confirmation */}
                 <div className="mb-3">

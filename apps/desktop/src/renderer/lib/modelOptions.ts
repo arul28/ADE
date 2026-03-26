@@ -5,11 +5,30 @@ function normalizeAuthProvider(provider: string | undefined): string {
   return String(provider ?? "").trim().toLowerCase();
 }
 
+export function describeModelSource(descriptor: ModelDescriptor): string {
+  if (descriptor.authTypes.includes("local")) {
+    return "local";
+  }
+  if (descriptor.isCliWrapped) {
+    return "CLI subscription";
+  }
+  if (descriptor.authTypes.includes("api-key")) {
+    return "API only";
+  }
+  if (descriptor.authTypes.includes("oauth")) {
+    return "OAuth";
+  }
+  if (descriptor.authTypes.includes("openrouter")) {
+    return "OpenRouter";
+  }
+  return "model source";
+}
+
 function descriptorToModelOption(descriptor: ModelDescriptor): AiModelDescriptor {
   return {
     id: descriptor.id,
     label: descriptor.displayName,
-    description: descriptor.isCliWrapped ? `${descriptor.family} (CLI)` : `${descriptor.family} (API/local)`,
+    description: `${descriptor.family} (${describeModelSource(descriptor)})`,
   };
 }
 
@@ -62,13 +81,10 @@ export function deriveConfiguredModelIds(status: AiSettingsStatus | null | undef
 }
 
 export function deriveConfiguredModelOptions(status: AiSettingsStatus | null | undefined): AiModelDescriptor[] {
-  return deriveConfiguredModelIds(status)
-    .map((modelId): AiModelDescriptor | null => {
-      const descriptor = getModelById(modelId);
-      if (!descriptor) return null;
-      return descriptorToModelOption(descriptor);
-    })
-    .filter((entry): entry is AiModelDescriptor => entry != null);
+  return deriveConfiguredModelIds(status).flatMap((modelId) => {
+    const descriptor = getModelById(modelId);
+    return descriptor ? [descriptorToModelOption(descriptor)] : [];
+  });
 }
 
 export function includeSelectedModelOption(

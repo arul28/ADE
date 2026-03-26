@@ -50,10 +50,12 @@ export function LaneInspectorPane({
           return (
             <button
               key={def.id}
+              id={`inspector-tab-${def.id}`}
               type="button"
               role="tab"
               aria-selected={isActive}
-              className="relative flex items-center transition-colors duration-150"
+              aria-controls={`inspector-tabpanel-${def.id}`}
+              className="relative flex items-center transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
               style={{
                 fontFamily: MONO_FONT,
                 fontSize: 11,
@@ -95,13 +97,14 @@ export function LaneInspectorPane({
                 type="button"
                 title={`Open in ${editor.label}`}
                 data-testid={`lane-open-${editor.target}`}
-                className="transition-colors duration-150"
+                className="transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
                 style={{
                   fontFamily: MONO_FONT,
-                  fontSize: 9,
+                  fontSize: 10,
                   textTransform: "uppercase",
                   letterSpacing: "0.5px",
                   padding: "4px 8px",
+                  minHeight: 28,
                   background: "transparent",
                   border: `1px solid ${COLORS.border}`,
                   color: COLORS.textMuted,
@@ -125,12 +128,12 @@ export function LaneInspectorPane({
       </div>
       <div className="flex-1 min-h-0" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
         {tab === "pr" && (
-          <div className="h-full overflow-auto">
+          <div id="inspector-tabpanel-pr" role="tabpanel" aria-labelledby="inspector-tab-pr" className="h-full overflow-auto">
             <LanePrPanel laneId={laneId} />
           </div>
         )}
         {tab === "conflicts" && (
-          <div className="h-full">
+          <div id="inspector-tabpanel-conflicts" role="tabpanel" aria-labelledby="inspector-tab-conflicts" className="h-full overflow-auto">
             <LaneConflictsPanel laneId={laneId} />
           </div>
         )}

@@ -689,7 +689,8 @@ export function createLaneService({
               laneId,
             });
             queueOverrideCache.set(laneId, override);
-          } catch {
+          } catch (err) {
+            console.warn("[laneService] lane_list.queue_override_failed", { laneId, err: String(err) });
             queueOverrideCache.set(laneId, null);
           }
         }),

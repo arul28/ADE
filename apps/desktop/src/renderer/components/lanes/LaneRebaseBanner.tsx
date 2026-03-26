@@ -52,7 +52,7 @@ export function LaneRebaseBanner({
               className="flex flex-wrap items-center justify-between gap-2"
             >
               <span style={{ fontSize: 12, color: COLORS.info }}>
-                Auto-rebase is off. Enable it in Settings {" > "} Lane Templates to auto-rebase child lanes after parent updates.
+                Auto-rebase is off. Enable in Settings &gt; Lane Templates.
               </span>
               <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })} onClick={onOpenAutoRebaseSettings}>
                 SETTINGS
@@ -77,26 +77,10 @@ export function LaneRebaseBanner({
                       <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>{s.behindCount} BEHIND</span>
                     </div>
                     <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>
-                      Rebase this lane onto {s.baseLabel?.trim() || "its parent"} to pick up new commits.
+                      Rebase this lane onto {s.baseLabel?.trim() || "parent branch"} to pick up new commits.
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      disabled={Boolean(rebaseBusyLaneId)}
-                      onClick={() => onDeferRebase(s.laneId, 60)}
-                    >
-                      Defer 1 hour
-                    </button>
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      disabled={Boolean(rebaseBusyLaneId)}
-                      onClick={() => onDismissRebase(s.laneId)}
-                    >
-                      Dismiss
-                    </button>
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
                     <button
                       type="button"
                       style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
@@ -104,7 +88,7 @@ export function LaneRebaseBanner({
                       onClick={() => onRebaseNowLocal(s.laneId)}
                     >
                       <Stack size={12} />
-                      {busy ? "Rebasing..." : "Rebase now (local only)"}
+                      {busy ? "Rebasing..." : "Rebase"}
                     </button>
                     <button
                       type="button"
@@ -112,7 +96,7 @@ export function LaneRebaseBanner({
                       disabled={Boolean(rebaseBusyLaneId)}
                       onClick={() => onRebaseAndPush(s.laneId)}
                     >
-                      Rebase and push (local + remote)
+                      Rebase + Push
                     </button>
                     <button
                       type="button"
@@ -120,7 +104,25 @@ export function LaneRebaseBanner({
                       disabled={Boolean(rebaseBusyLaneId)}
                       onClick={onViewRebaseDetails}
                     >
-                      View rebase details
+                      Details
+                    </button>
+                    <button
+                      type="button"
+                      style={outlineButton({ height: 24, padding: "0 6px", fontSize: 10 })}
+                      disabled={Boolean(rebaseBusyLaneId)}
+                      onClick={() => onDeferRebase(s.laneId, 60)}
+                      title="Defer this suggestion for 1 hour"
+                    >
+                      Defer
+                    </button>
+                    <button
+                      type="button"
+                      style={outlineButton({ height: 24, padding: "0 6px", fontSize: 10 })}
+                      disabled={Boolean(rebaseBusyLaneId)}
+                      onClick={() => onDismissRebase(s.laneId)}
+                      title="Dismiss this rebase suggestion"
+                    >
+                      Dismiss
                     </button>
                   </div>
                 </div>

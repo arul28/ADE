@@ -3,7 +3,7 @@ import { Plus, Trash, PencilSimple } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import type { StackButtonDefinition } from "../../../shared/types";
 
-export type RunSidebarProps = {
+type RunSidebarProps = {
   stacks: StackButtonDefinition[];
   selectedStackId: string | null; // null means "ALL"
   onSelectStack: (stackId: string | null) => void;
@@ -27,6 +27,7 @@ export function RunSidebar({
   const [contextMenu, setContextMenu] = React.useState<{ stackId: string; x: number; y: number } | null>(null);
   const createInputRef = React.useRef<HTMLInputElement>(null);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
+  const contextMenuRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (creating && createInputRef.current) createInputRef.current.focus();
@@ -39,7 +40,10 @@ export function RunSidebar({
   // Close context menu on outside click
   React.useEffect(() => {
     if (!contextMenu) return;
-    const handler = () => setContextMenu(null);
+    const handler = (e: MouseEvent) => {
+      if (contextMenuRef.current && contextMenuRef.current.contains(e.target as Node)) return;
+      setContextMenu(null);
+    };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [contextMenu]);
@@ -72,12 +76,9 @@ export function RunSidebar({
     fontWeight: 600,
     color: active ? COLORS.accent : COLORS.textSecondary,
     background: active ? COLORS.accentSubtle : "transparent",
-    borderLeft: active ? `2px solid ${COLORS.accent}` : "2px solid transparent",
     cursor: "pointer",
     border: "none",
-    borderBottom: "none",
-    borderTop: "none",
-    borderRight: "none",
+    borderLeft: active ? `2px solid ${COLORS.accent}` : "2px solid transparent",
     width: "100%",
     textAlign: "left",
     transition: "background 0.1s, color 0.1s",
@@ -234,10 +235,11 @@ export function RunSidebar({
       {/* Context menu */}
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           style={{
             position: "fixed",
-            top: contextMenu.y,
-            left: contextMenu.x,
+            top: Math.min(contextMenu.y, window.innerHeight - 100),
+            left: Math.min(contextMenu.x, window.innerWidth - 160),
             zIndex: 100,
             background: COLORS.cardBg,
             border: `1px solid ${COLORS.border}`,

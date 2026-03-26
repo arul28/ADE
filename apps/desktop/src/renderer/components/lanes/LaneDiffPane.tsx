@@ -12,6 +12,21 @@ function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 }
 
+function DiffFailedRetry({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-4">
+      <span className="text-sm text-red-400">Failed to load diff</span>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="text-xs text-white/60 hover:text-white/80 underline focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
 export function LaneDiffPane({
   laneId,
   selectedPath,
@@ -29,17 +44,21 @@ export function LaneDiffPane({
   const diffRef = useRef<MonacoDiffHandle | null>(null);
 
   const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [diffFailed, setDiffFailed] = useState(false);
   const [commitFiles, setCommitFiles] = useState<string[]>([]);
   const [selectedCommitFilePath, setSelectedCommitFilePath] = useState<string | null>(null);
   const [commitDiff, setCommitDiff] = useState<FileDiff | null>(null);
+  const [commitDiffFailed, setCommitDiffFailed] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
   const refreshWorkingDiff = React.useCallback(() => {
     if (!laneId || !selectedPath || !selectedFileMode) {
       setDiff(null);
+      setDiffFailed(false);
       return Promise.resolve();
     }
 
+    setDiffFailed(false);
     return window.ade.diff
       .getFile({ laneId, path: selectedPath, mode: selectedFileMode })
       .then((value) => {
@@ -47,11 +66,13 @@ export function LaneDiffPane({
       })
       .catch(() => {
         setDiff(null);
+        setDiffFailed(true);
       });
   }, [laneId, selectedPath, selectedFileMode]);
 
   useEffect(() => {
     setDiff(null);
+    setDiffFailed(false);
     if (!laneId || !selectedPath || !selectedFileMode) return;
     void refreshWorkingDiff();
   }, [laneId, selectedPath, selectedFileMode, refreshWorkingDiff]);
@@ -140,10 +161,10 @@ export function LaneDiffPane({
     };
   }, [laneId, selectedCommit]);
 
-  useEffect(() => {
+  const refreshCommitDiff = React.useCallback(() => {
     setCommitDiff(null);
+    setCommitDiffFailed(false);
     if (!laneId || !selectedCommit || !selectedCommitFilePath) return;
-    let cancelled = false;
     window.ade.diff
       .getFile({
         laneId,
@@ -153,15 +174,17 @@ export function LaneDiffPane({
         compareTo: "parent"
       })
       .then((value) => {
-        if (!cancelled) setCommitDiff(value);
+        setCommitDiff(value);
       })
       .catch(() => {
-        if (!cancelled) setCommitDiff(null);
+        setCommitDiff(null);
+        setCommitDiffFailed(true);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [laneId, selectedCommit, selectedCommitFilePath]);
+
+  useEffect(() => {
+    refreshCommitDiff();
+  }, [refreshCommitDiff]);
 
   // Commit diff view
   if (selectedCommit && laneId) {
@@ -243,6 +266,8 @@ export function LaneDiffPane({
                 <div className="flex h-full items-center justify-center p-3">
                   <EmptyState title="No files found" description="This commit may be empty." />
                 </div>
+              ) : commitDiffFailed ? (
+                <DiffFailedRetry onRetry={refreshCommitDiff} />
               ) : !commitDiff ? (
                 <div className="flex h-full items-center justify-center" style={{ fontSize: 12, color: COLORS.textMuted }}>Loading diff...</div>
               ) : (
@@ -292,6 +317,7 @@ export function LaneDiffPane({
             {selectedFileMode === "unstaged" ? (
               <button
                 type="button"
+                className="focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
                 style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
                 onClick={() => navigate("/files", { state: { openFilePath: selectedPath, laneId } })}
                 title="Open in Files tab"
@@ -303,6 +329,7 @@ export function LaneDiffPane({
             {selectedFileMode === "unstaged" && !diff.isBinary ? (
               <button
                 type="button"
+                className="focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
                 style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
                 disabled={busyAction != null}
                 onClick={() => {
@@ -327,6 +354,11 @@ export function LaneDiffPane({
         <MonacoDiffView ref={diffRef} diff={diff} editable={selectedFileMode === "unstaged"} className="flex-1" />
       </div>
     );
+  }
+
+  // Failure state with retry
+  if (selectedPath && diffFailed) {
+    return <DiffFailedRetry onRetry={() => void refreshWorkingDiff()} />;
   }
 
   // Loading state

@@ -8,7 +8,7 @@ import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "./lane
 const TREE_ROW_H = 28;
 const TREE_INDENT = 22;
 const TREE_LEFT_PAD = 16;
-const TREE_DOT_R = 4;
+const TREE_DOT_R = 5;
 
 type TreeNodeLayout = {
   lane: LaneSummary;
@@ -168,7 +168,7 @@ function StackGraph({
         y1={parent.dotY + TREE_DOT_R + 2}
         x2={parent.dotX}
         y2={lastChild.dotY}
-        stroke="rgba(167,139,250,0.18)"
+        stroke="rgba(167,139,250,0.35)"
         strokeWidth={1.5}
       />
     );
@@ -181,7 +181,7 @@ function StackGraph({
           y1={child.dotY}
           x2={child.dotX - TREE_DOT_R - 3}
           y2={child.dotY}
-          stroke="rgba(167,139,250,0.18)"
+          stroke="rgba(167,139,250,0.35)"
           strokeWidth={1.5}
         />
       );

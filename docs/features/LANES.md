@@ -505,10 +505,11 @@ lanes (
 
 When a lane is created, ADE can automatically initialize its working environment via the `laneEnvironmentService`. The service executes initialization steps in a deterministic order:
 
-1. **Environment Files** (`env-files`): Copy/template `.env` files with lane-specific values (ports, hostnames, API keys)
+1. **Environment Files** (`env-files`): Copy/template `.env` files with lane-specific values (ports, hostnames, API keys). Destination paths are validated against the worktree root via `isWithinDir()` to prevent path traversal.
 2. **Docker Services** (`docker`): Start lane-specific Docker Compose services (databases, caches, queues)
-3. **Dependency Installation** (`dependencies`): Run install commands (`npm install`, `pip install`, etc.)
-4. **Mount Points** (`mount-points`): Configure runtime mount points for agent profiles/context
+3. **Dependency Installation** (`dependencies`): Run install commands from an allowlist of known package managers (`npm`, `yarn`, `pnpm`, `pip`, `pip3`, `bundle`, `cargo`, `go`, `composer`, `poetry`, `pipenv`, `bun`). Commands outside this allowlist are rejected.
+4. **Mount Points** (`mount-points`): Configure runtime mount points for agent profiles/context. Both source and destination paths are validated to prevent escaping the allowed directories.
+5. **Copy Paths**: File copy destinations are validated against the worktree to prevent path escape.
 
 ### LaneEnvInitProgress Component
 
@@ -613,7 +614,8 @@ The `portAllocationService` provides lease-based port range allocation for lanes
 - **Base port** (default: 3000) and **ports per lane** (default: 100) are configurable via `PortAllocationConfig`.
 - When a lane acquires a lease, the service finds the next available range and assigns it.
 - Port leases have a lifecycle: `active` → `released` (on lane archive/delete) or `orphaned` (on abnormal termination).
-- Port conflict detection identifies when two lanes have overlapping ranges and surfaces them in the UI.
+- Port conflict detection identifies when two lanes have overlapping ranges and surfaces them in the UI. Conflict detection also runs automatically after orphan recovery to catch any newly introduced overlaps.
+- The `maxSlots()` calculation clamps to zero for degenerate port range configurations.
 
 ### PortAllocationPanel
 
@@ -767,7 +769,7 @@ The `oauthRedirectService` solves the problem of OAuth callbacks reaching the co
 - `decodeState(encodedState)` — decodes lane ID from OAuth state parameter
 - `listSessions()` — lists active OAuth sessions
 
-**Session tracking**: Each OAuth flow is tracked as an `OAuthSession` with lifecycle: `pending` → `active` → `completed` | `failed`. Sessions include provider detection, callback path matching, and automatic cleanup.
+**Session tracking**: Each OAuth flow is tracked as an `OAuthSession` with lifecycle: `pending` → `active` → `completed` | `failed`. Sessions use `randomUUID()` for session identifiers. Sessions include provider detection, callback path matching, and automatic cleanup.
 
 **Setup assistant**: The `ProxyAndPreviewSection` in Settings provides a "Copy Redirect URIs" helper that generates the exact URIs to register with your OAuth provider based on your proxy configuration.
 
@@ -809,7 +811,7 @@ The `runtimeDiagnosticsService` provides continuous health monitoring for lane r
 **Health check components**:
 - **Process alive**: Is the lane's dev server process running?
 - **Port responding**: Is the allocated port accepting connections?
-- **Proxy route active**: Is the proxy routing traffic to this lane?
+- **Proxy route active**: Is the proxy routing traffic to this lane? When the proxy status itself is unavailable, the lane is immediately marked `unhealthy` with a `proxy-route-missing` issue.
 - **Fallback mode**: Is the lane operating in degraded fallback mode?
 
 **Service**: `runtimeDiagnosticsService.ts` (`src/main/services/lanes/runtimeDiagnosticsService.ts`)

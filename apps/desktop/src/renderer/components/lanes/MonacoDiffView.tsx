@@ -52,6 +52,16 @@ function disposeDiffModels(editor: import("monaco-editor").editor.IStandaloneDif
   }
 }
 
+const DIFF_EDITOR_BASE_OPTIONS = {
+  automaticLayout: true,
+  minimap: { enabled: false },
+  scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  fontSize: 13,
+  lineHeight: 18,
+  scrollBeyondLastLine: false,
+} as const;
+
 export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; editable?: boolean; className?: string; theme?: "dark" | "light" }>(
   function MonacoDiffView({ diff, editable = false, className, theme = "dark" }, ref) {
     const containerRef = useRef<HTMLDivElement | null>(null);
@@ -62,34 +72,33 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     const modelIdentityRef = useRef<string | null>(null);
     const [ready, setReady] = useState(false);
     const [failed, setFailed] = useState(false);
+    const [sideBySide, setSideBySide] = useState(true);
+
+    const monacoTheme = theme === "light" ? "vs" : "vs-dark";
 
     useImperativeHandle(ref, () => ({
       getModifiedValue: () => diffEditorRef.current?.getModel()?.modified.getValue() ?? null
     }));
+
+    const initEditor = (monaco: typeof import("monaco-editor")) => {
+      if (!containerRef.current) return;
+      const editor = monaco.editor.createDiffEditor(containerRef.current, {
+        ...DIFF_EDITOR_BASE_OPTIONS,
+        readOnly: !editable,
+        renderSideBySide: sideBySide,
+        theme: monacoTheme,
+      });
+      diffEditorRef.current = editor;
+      setFailed(false);
+      setReady(true);
+    };
 
     useEffect(() => {
       let cancelled = false;
       loadMonaco()
         .then((monaco) => {
           if (cancelled) return;
-          if (!containerRef.current) return;
-
-          const editor = monaco.editor.createDiffEditor(containerRef.current, {
-            readOnly: !editable,
-            automaticLayout: true,
-            renderSideBySide: true,
-            minimap: { enabled: false },
-            scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-            fontSize: 13,
-            lineHeight: 18,
-            scrollBeyondLastLine: false,
-            theme: theme === "light" ? "vs" : "vs-dark"
-          });
-
-          diffEditorRef.current = editor;
-          setFailed(false);
-          setReady(true);
+          initEditor(monaco);
         })
         .catch(() => {
           if (!cancelled) setFailed(true);
@@ -149,7 +158,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       loadMonaco()
         .then((monaco) => {
           if (cancelled) return;
-          monaco.editor.setTheme(theme === "light" ? "vs" : "vs-dark");
+          monaco.editor.setTheme(monacoTheme);
         })
         .catch(() => {
           if (!cancelled) setFailed(true);
@@ -157,10 +166,39 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       return () => {
         cancelled = true;
       };
-    }, [theme]);
+    }, [monacoTheme]);
+
+    useEffect(() => {
+      const editor = diffEditorRef.current;
+      if (editor) {
+        editor.updateOptions({ renderSideBySide: sideBySide });
+      }
+    }, [sideBySide]);
+
+    const retryLoadMonaco = () => {
+      monacoInit = null;
+      setFailed(false);
+      setReady(false);
+      loadMonaco()
+        .then((monaco) => initEditor(monaco))
+        .catch(() => setFailed(true));
+    };
 
     return (
       <div className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}>
+        {ready && !failed ? (
+          <div className="absolute top-1 right-2 z-10">
+            <button
+              type="button"
+              onClick={() => setSideBySide((prev) => !prev)}
+              className="text-xs text-white/50 hover:text-white/70 px-2 py-1 rounded focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
+              title="Toggle side-by-side / inline diff"
+              aria-label={sideBySide ? "Switch to inline diff" : "Switch to side-by-side diff"}
+            >
+              {sideBySide ? "Inline" : "Side by side"}
+            </button>
+          </div>
+        ) : null}
         <div ref={containerRef} className={cn("h-full w-full", failed && "hidden")} />
         {!ready && !failed ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 text-sm text-muted-fg">
@@ -169,8 +207,16 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
         ) : null}
         {failed ? (
           <div className="h-full w-full overflow-auto p-3 text-xs">
-            <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900">
-              Monaco failed to load in dev mode. Showing plain-text diff fallback.
+            <div className="mb-2 flex items-center justify-between rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900">
+              <span>Monaco failed to load in dev mode. Showing plain-text diff fallback.</span>
+              <button
+                type="button"
+                onClick={retryLoadMonaco}
+                className="ml-2 text-xs text-amber-700 hover:text-amber-900 underline focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
+                aria-label="Retry loading diff editor"
+              >
+                Retry
+              </button>
             </div>
             <div className="grid h-[calc(100%-36px)] grid-cols-1 gap-2 md:grid-cols-2">
               <div className="min-h-0 overflow-auto rounded border border-border bg-bg p-2">

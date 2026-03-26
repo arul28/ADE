@@ -106,6 +106,7 @@ type AppState = {
   setLanes: (lanes: LaneSummary[]) => void;
   selectLane: (laneId: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
+  clearLaneInspectorTab: (laneId: string) => void;
   selectRunLane: (laneId: string | null) => void;
   focusSession: (sessionId: string | null) => void;
   setTheme: (theme: ThemeId) => void;
@@ -186,6 +187,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         [laneId]: tab
       }
     })),
+  clearLaneInspectorTab: (laneId) =>
+    set((prev) => {
+      const { [laneId]: _, ...rest } = prev.laneInspectorTabs;
+      return { laneInspectorTabs: rest };
+    }),
   selectRunLane: (laneId) => set({ runLaneId: laneId }),
   focusSession: (sessionId) => set({ focusedSessionId: sessionId }),
   setTheme: (theme) => {

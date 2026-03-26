@@ -63,6 +63,7 @@ import { createEmbeddingService } from "./services/memory/embeddingService";
 import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
 import { createHybridSearchService } from "./services/memory/hybridSearchService";
 import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
+import { createProjectMemoryFilesService } from "./services/memory/memoryFilesService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createMemoryBriefingService } from "./services/memory/memoryBriefingService";
 import { createMissionMemoryLifecycleService } from "./services/memory/missionMemoryLifecycleService";
@@ -410,7 +411,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     await win.loadURL(`data:text/html;charset=UTF-8,${fallbackHtml}`);
   }
 
-  if (process.env.VITE_DEV_SERVER_URL) {
+  if (process.env.VITE_DEV_SERVER_URL && !process.env.NO_DEVTOOLS) {
     win.webContents.openDevTools({ mode: "detach" });
   }
 
@@ -965,10 +966,22 @@ app.whenReady().then(async () => {
       logger,
     });
     let ctoStateServiceRef: ReturnType<typeof createCtoStateService> | null = null;
+    let memoryFilesServiceRef: ReturnType<typeof createProjectMemoryFilesService> | null = null;
     let syncMemoryDocsTimer: ReturnType<typeof setTimeout> | null = null;
     const debouncedSyncMemoryDocs = () => {
       if (syncMemoryDocsTimer) clearTimeout(syncMemoryDocsTimer);
-      syncMemoryDocsTimer = setTimeout(() => { ctoStateServiceRef?.syncDerivedMemoryDocs(); }, 2_000);
+      syncMemoryDocsTimer = setTimeout(() => {
+        try {
+          ctoStateServiceRef?.syncDerivedMemoryDocs();
+        } catch {
+          // Ignore best-effort generated doc sync errors.
+        }
+        try {
+          memoryFilesServiceRef?.sync();
+        } catch {
+          // Ignore best-effort generated memory file sync errors.
+        }
+      }, 2_000);
     };
     const memoryService = createUnifiedMemoryService(db, {
       hybridSearchService,
@@ -982,6 +995,12 @@ app.whenReady().then(async () => {
         }
       },
     });
+    const memoryFilesService = createProjectMemoryFilesService({
+      projectRoot,
+      projectId,
+      memoryService,
+    });
+    memoryFilesServiceRef = memoryFilesService;
     const compactionFlushService = createCompactionFlushService(undefined, { logger });
     aiIntegrationService.setCompactionFlushService(compactionFlushService);
     const batchConsolidationService = createBatchConsolidationService({
@@ -1015,6 +1034,7 @@ app.whenReady().then(async () => {
     embeddingWorkerServiceRef = embeddingWorkerService;
     const memoryBriefingService = createMemoryBriefingService({
       memoryService,
+      memoryFilesService,
       projectRoot,
       humanWorkDigestService: {
         getRecentCommitSummaries: async (count?: number) => {
@@ -1058,7 +1078,6 @@ app.whenReady().then(async () => {
       projectId,
       projectRoot,
       logger,
-      memoryService,
     });
     const skillRegistryService = createSkillRegistryService({
       db,
@@ -1088,6 +1107,14 @@ app.whenReady().then(async () => {
       memoryService,
     });
     ctoStateServiceRef = ctoStateService;
+    try {
+      memoryFilesService.sync();
+    } catch (err) {
+      logger.warn("memory_files.sync_failed", {
+        projectRoot,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     const workerAgentService = createWorkerAgentService({
       db,
@@ -1213,6 +1240,7 @@ app.whenReady().then(async () => {
       transcriptsDir: adePaths.transcriptsDir,
       projectId,
       memoryService,
+      memoryFilesService,
       fileService,
       workerAgentService,
       workerHeartbeatService,

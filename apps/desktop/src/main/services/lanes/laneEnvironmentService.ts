@@ -17,6 +17,7 @@ import type {
 } from "../../../shared/types";
 
 import type { Logger } from "../logging/logger";
+import { isWithinDir } from "../shared/utils";
 
 function cloneDockerConfig(config: LaneDockerConfig): LaneDockerConfig {
   return config.services
@@ -175,6 +176,11 @@ export function createLaneEnvironmentService({
       const sourcePath = path.resolve(projectRoot, file.source);
       const destPath = path.resolve(worktreePath, file.dest);
 
+      if (!isWithinDir(worktreePath, destPath)) {
+        logger.warn("lane_env_init.env_file_path_escape", { dest: file.dest, worktreePath });
+        throw new Error("Path escapes allowed directory");
+      }
+
       // Ensure destination directory exists
       const destDir = path.dirname(destPath);
       if (!fs.existsSync(destDir)) {
@@ -230,12 +236,21 @@ export function createLaneEnvironmentService({
     return execCommand(["docker", ...args], worktreePath, 300_000);
   }
 
+  const ALLOWED_INSTALL_COMMANDS = new Set([
+    "npm", "yarn", "pnpm", "pip", "pip3", "bundle", "cargo", "go", "composer", "poetry", "pipenv", "bun"
+  ]);
+
   async function installDependencies(
     worktreePath: string,
     deps: LaneDependencyInstallConfig[]
   ): Promise<{ failures: string[] }> {
     const failures: string[] = [];
     for (const dep of deps) {
+      const baseCommand = dep.command[0];
+      if (!ALLOWED_INSTALL_COMMANDS.has(baseCommand)) {
+        logger.warn("lane_env_init.dependency_command_not_allowed", { command: baseCommand });
+        continue;
+      }
       const cwd = dep.cwd ? path.resolve(worktreePath, dep.cwd) : worktreePath;
       const result = await execCommand(dep.command, cwd);
       if (result.exitCode !== 0) {
@@ -257,6 +272,15 @@ export function createLaneEnvironmentService({
     for (const mp of mountPoints) {
       const sourcePath = path.resolve(adeDir, mp.source);
       const destPath = path.resolve(worktreePath, mp.dest);
+
+      if (!isWithinDir(adeDir, sourcePath)) {
+        logger.warn("lane_env_init.mount_source_path_escape", { source: mp.source, adeDir });
+        throw new Error("Path escapes allowed directory");
+      }
+      if (!isWithinDir(worktreePath, destPath)) {
+        logger.warn("lane_env_init.mount_dest_path_escape", { dest: mp.dest, worktreePath });
+        throw new Error("Path escapes allowed directory");
+      }
 
       const destDir = path.dirname(destPath);
       if (!fs.existsSync(destDir)) {
@@ -282,6 +306,11 @@ export function createLaneEnvironmentService({
       const sourcePath = path.resolve(projectRoot, cp.source);
       const dest = cp.dest ?? cp.source;
       const destPath = path.resolve(worktreePath, dest);
+
+      if (!isWithinDir(worktreePath, destPath)) {
+        logger.warn("lane_env_init.copy_dest_path_escape", { dest, worktreePath });
+        throw new Error("Path escapes allowed directory");
+      }
 
       if (!fs.existsSync(sourcePath)) {
         logger.warn("lane_env_init.copy_path_missing", { source: cp.source });

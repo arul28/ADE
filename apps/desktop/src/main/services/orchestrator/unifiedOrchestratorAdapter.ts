@@ -316,6 +316,38 @@ function resolveManagedPermissionMode(args: {
     : undefined;
 }
 
+function mapPermissionModeToNativeFields(
+  provider: "claude" | "codex" | "unified",
+  mode: AgentChatPermissionMode | undefined,
+): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "unifiedPermissionMode">> {
+  if (!mode) return {};
+  // "config-toml" means the worker should inherit permissions from the
+  // provider/repo config (e.g. a .toml settings file). Don't rewrite it
+  // into explicit native permission fields — pass through with no overrides
+  // so the managed session respects the config it was supposed to inherit.
+  if (mode === "config-toml") return {};
+  if (provider === "claude") {
+    const map: Record<string, import("../../../shared/types").AgentChatClaudePermissionMode> = {
+      "full-auto": "bypassPermissions",
+      "edit": "acceptEdits",
+      "plan": "plan",
+      "default": "default",
+    };
+    return { claudePermissionMode: map[mode] ?? "default" };
+  }
+  if (provider === "codex") {
+    if (mode === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" };
+    if (mode === "edit") return { codexApprovalPolicy: "on-failure", codexSandbox: "workspace-write" };
+    return { codexApprovalPolicy: "untrusted", codexSandbox: "read-only" };
+  }
+  const umap: Record<string, import("../../../shared/types").AgentChatUnifiedPermissionMode> = {
+    "full-auto": "full-auto",
+    "edit": "edit",
+    "plan": "plan",
+  };
+  return { unifiedPermissionMode: umap[mode] ?? "edit" };
+}
+
 function resolveManagedExecutionMode(args: {
   provider: "claude" | "codex" | "unified";
   teamRuntime?: TeamRuntimeConfig;
@@ -635,7 +667,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
           model,
           modelId: descriptor.id,
           reasoningEffort: reasoningEffort ?? null,
-          permissionMode,
+          ...mapPermissionModeToNativeFields(provider, permissionMode),
           ...(workerOwnerId ? { identityKey: `agent:${workerOwnerId}` as const } : {}),
         });
         return {

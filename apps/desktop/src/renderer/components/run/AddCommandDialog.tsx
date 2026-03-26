@@ -1,5 +1,5 @@
 import React from "react";
-import { X } from "@phosphor-icons/react";
+import { X, CaretRight, CaretDown } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, LABEL_STYLE, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import type { StackButtonDefinition } from "../../../shared/types";
 import { parseCommandLine } from "../../lib/shell";
@@ -12,7 +12,7 @@ export type AddCommandInitialValues = {
   env: string;
 };
 
-export type AddCommandDialogProps = {
+type AddCommandDialogProps = {
   stacks: StackButtonDefinition[];
   open: boolean;
   onClose: () => void;
@@ -49,6 +49,7 @@ export function AddCommandDialog({
   const [newStackName, setNewStackName] = React.useState("");
   const [cwd, setCwd] = React.useState(".");
   const [envText, setEnvText] = React.useState("");
+  const [showAdvanced, setShowAdvanced] = React.useState(false);
   const nameRef = React.useRef<HTMLInputElement>(null);
 
   const dialogTitle = title ?? "Add Command";
@@ -73,12 +74,18 @@ export function AddCommandDialog({
         setStackId(initialValues.stackId ?? "__none__");
         setCwd(initialValues.cwd || ".");
         setEnvText(initialValues.env || "");
+        // Auto-expand advanced section when editing a command with non-default values
+        const hasStack = initialValues.stackId != null;
+        const hasCwd = Boolean(initialValues.cwd) && initialValues.cwd !== ".";
+        const hasEnv = Boolean(initialValues.env?.trim());
+        setShowAdvanced(hasStack || hasCwd || hasEnv);
       } else {
         setName("");
         setCommand("");
         setStackId("__none__");
         setCwd(".");
         setEnvText("");
+        setShowAdvanced(false);
       }
       setNewStackName("");
       setTimeout(() => nameRef.current?.focus(), 50);
@@ -104,10 +111,10 @@ export function AddCommandDialog({
     onSubmit({
       name: name.trim(),
       command: command.trim(),
-      stackId: stackId === "__none__" ? null : stackId === "__new__" ? null : stackId,
-      newStackName: stackId === "__new__" ? newStackName.trim() || null : null,
-      cwd: cwd.trim() || ".",
-      env: envText.trim(),
+      stackId: showAdvanced ? (stackId === "__none__" ? null : stackId === "__new__" ? null : stackId) : null,
+      newStackName: showAdvanced && stackId === "__new__" ? newStackName.trim() || null : null,
+      cwd: showAdvanced ? (cwd.trim() || ".") : ".",
+      env: showAdvanced ? envText.trim() : "",
     });
     onClose();
   };
@@ -227,102 +234,105 @@ export function AddCommandDialog({
             </div>
           </div>
 
-          <div>
-            <label style={labelStyle}>Stack</label>
-            <select
-              value={stackId}
-              onChange={(e) => setStackId(e.target.value)}
-              style={{
-                ...inputStyle,
-                appearance: "none",
-                cursor: "pointer",
-              }}
-            >
-              <option value="__none__">No stack</option>
-              {stacks.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-              <option value="__new__">+ New stack...</option>
-            </select>
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: COLORS.textMuted,
+              cursor: "pointer",
+              padding: 0,
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+            }}
+          >
+            {showAdvanced ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
+            More options
+          </button>
 
-          {stackId === "__new__" && (
-            <div>
-              <label style={labelStyle}>New Stack Name</label>
-              <input
-                value={newStackName}
-                onChange={(e) => setNewStackName(e.target.value)}
-                placeholder="e.g. Backend"
-                style={inputStyle}
-              />
-            </div>
+          {showAdvanced && (
+            <>
+              <div>
+                <label style={labelStyle}>Stack</label>
+                <select
+                  value={stackId}
+                  onChange={(e) => setStackId(e.target.value)}
+                  style={{
+                    ...inputStyle,
+                    appearance: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="__none__">No stack</option>
+                  {stacks.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                  <option value="__new__">+ New stack...</option>
+                </select>
+              </div>
+
+              {stackId === "__new__" && (
+                <div>
+                  <label style={labelStyle}>New Stack Name</label>
+                  <input
+                    value={newStackName}
+                    onChange={(e) => setNewStackName(e.target.value)}
+                    placeholder="e.g. Backend"
+                    style={inputStyle}
+                  />
+                </div>
+              )}
+
+              <div>
+                <label style={labelStyle}>Working Directory</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    value={cwd}
+                    onChange={(e) => setCwd(e.target.value)}
+                    placeholder={normalizedLaneRoot ?? "."}
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <button type="button" onClick={handleBrowseCwd} style={outlineButton({ height: 32, padding: "0 10px" })}>
+                    Browse
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label style={labelStyle}>Environment Variables</label>
+                <textarea
+                  value={envText}
+                  onChange={(e) => setEnvText(e.target.value)}
+                  placeholder={"KEY=value\nANOTHER=value"}
+                  rows={3}
+                  style={{
+                    ...inputStyle,
+                    height: "auto",
+                    padding: "8px 10px",
+                    resize: "vertical",
+                    lineHeight: 1.5,
+                  }}
+                />
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontFamily: MONO_FONT,
+                    fontSize: 10,
+                    color: COLORS.textDim,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  One KEY=value per line. FORCE_COLOR=1 is set by default for all processes.
+                </div>
+              </div>
+            </>
           )}
-
-          <div>
-            <label style={labelStyle}>Working Directory</label>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                value={cwd}
-                onChange={(e) => setCwd(e.target.value)}
-                placeholder="."
-                style={{ ...inputStyle, flex: 1 }}
-              />
-              <button type="button" onClick={handleBrowseCwd} style={outlineButton({ height: 32, padding: "0 10px" })}>
-                Browse
-              </button>
-            </div>
-            <div
-              style={{
-                marginTop: 6,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                flexWrap: "wrap",
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                color: COLORS.textDim,
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => setCwd(".")}
-                style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })}
-              >
-                Lane root
-              </button>
-              {normalizedLaneRoot ? <span>{normalizedLaneRoot}</span> : null}
-            </div>
-          </div>
-
-          <div>
-            <label style={labelStyle}>Environment Variables</label>
-            <textarea
-              value={envText}
-              onChange={(e) => setEnvText(e.target.value)}
-              placeholder={"KEY=value\nANOTHER=value"}
-              rows={3}
-              style={{
-                ...inputStyle,
-                height: "auto",
-                padding: "8px 10px",
-                resize: "vertical",
-                lineHeight: 1.5,
-              }}
-            />
-            <div
-              style={{
-                marginTop: 6,
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                color: COLORS.textDim,
-                lineHeight: 1.5,
-              }}
-            >
-              One KEY=value per line. FORCE_COLOR=1 is set by default for all processes.
-            </div>
-          </div>
 
           {/* Actions */}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 4 }}>

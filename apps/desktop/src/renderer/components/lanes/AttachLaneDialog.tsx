@@ -66,7 +66,10 @@ export function AttachLaneDialog({
               disabled={busy}
             />
           </label>
-          <div className="mt-2 text-xs text-muted-fg/80">
+          <p className="text-xs text-white/40 mt-1">
+            Enter the absolute path to an existing Git worktree directory.
+          </p>
+          <div className="mt-1.5 text-xs text-muted-fg/80">
             Example: <span className="font-mono text-fg/80">/Users/you/repo-worktrees/feature-auth</span>
           </div>
         </section>

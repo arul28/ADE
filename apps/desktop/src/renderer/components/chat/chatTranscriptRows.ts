@@ -612,3 +612,62 @@ export function groupConsecutiveWorkLogRows(
 
   return grouped;
 }
+
+export type TurnDividerDataEntry = {
+  turnId: string;
+  startTimestamp: string;
+  endTimestamp?: string;
+  model?: string;
+  modelId?: string;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  costUsd?: number;
+  status?: "completed" | "interrupted" | "failed";
+};
+
+export function deriveTurnDividerData(events: AgentChatEventEnvelope[]): Map<string, TurnDividerDataEntry> {
+  const turns = new Map<string, TurnDividerDataEntry>();
+
+  for (const envelope of events) {
+    const event = envelope.event;
+    const turnId = ("turnId" in event && typeof event.turnId === "string") ? event.turnId.trim() : "";
+    if (!turnId) continue;
+
+    if (!turns.has(turnId)) {
+      turns.set(turnId, {
+        turnId,
+        startTimestamp: envelope.timestamp,
+        filesChanged: 0,
+        insertions: 0,
+        deletions: 0,
+      });
+    }
+    const entry = turns.get(turnId)!;
+
+    if (event.type === "file_change" && event.status !== "running") {
+      entry.filesChanged++;
+      const stats = summarizeDiffStats(event.diff);
+      entry.insertions += stats.additions;
+      entry.deletions += stats.deletions;
+    }
+
+    if (event.type === "done") {
+      entry.endTimestamp = envelope.timestamp;
+      entry.status = event.status;
+      entry.model = event.model;
+      entry.modelId = event.modelId;
+      if (event.usage) {
+        entry.inputTokens = event.usage.inputTokens ?? undefined;
+        entry.outputTokens = event.usage.outputTokens ?? undefined;
+        entry.cacheReadTokens = event.usage.cacheReadTokens ?? undefined;
+      }
+      if (event.costUsd != null) entry.costUsd = event.costUsd;
+    }
+  }
+
+  return turns;
+}

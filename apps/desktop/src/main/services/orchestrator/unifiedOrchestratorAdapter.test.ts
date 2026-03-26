@@ -5,7 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildClaudeReadOnlyWorkerAllowedTools,
   buildCodexMcpConfigFlags,
+  cleanupMcpConfigFile,
   createUnifiedOrchestratorAdapter,
+  forceReadOnlyPermissionConfig,
+  getUnifiedUnsupportedModelReason,
   resolveAdeMcpServerLaunch,
   resolveUnifiedRuntimeRoot,
 } from "./unifiedOrchestratorAdapter";
@@ -516,5 +519,109 @@ describe("createUnifiedOrchestratorAdapter", () => {
       ADE_STEP_ID: "step-1",
       ADE_ATTEMPT_ID: "attempt-1",
     });
+  });
+});
+
+describe("getUnifiedUnsupportedModelReason", () => {
+  it("returns null for supported CLI-wrapped models", () => {
+    expect(getUnifiedUnsupportedModelReason("anthropic/claude-sonnet-4-6")).toBeNull();
+  });
+
+  it("returns a not-registered message for unknown model refs", () => {
+    const reason = getUnifiedUnsupportedModelReason("nonexistent/fantasy-model-99");
+    expect(reason).toBe("Model 'nonexistent/fantasy-model-99' is not registered.");
+  });
+
+  it("returns a not-registered message for empty string", () => {
+    const reason = getUnifiedUnsupportedModelReason("");
+    expect(reason).toBe("Model '' is not registered.");
+  });
+
+  it("returns null for Codex CLI models", () => {
+    expect(getUnifiedUnsupportedModelReason("openai/gpt-5.3-codex")).toBeNull();
+  });
+});
+
+describe("forceReadOnlyPermissionConfig", () => {
+  it("returns the original config unchanged when readOnlyExecution is false", () => {
+    const config = {
+      _providers: { claude: "full-auto" as const },
+    };
+    expect(forceReadOnlyPermissionConfig(config, false)).toBe(config);
+  });
+
+  it("downgrades permissions when readOnlyExecution is true", () => {
+    const config = {
+      _providers: {
+        claude: "full-auto" as const,
+        codex: "full-auto" as const,
+      },
+    };
+    const result = forceReadOnlyPermissionConfig(config, true);
+    expect(result).not.toBe(config);
+    expect(result?._providers?.claude).toBe("default");
+    expect(result?._providers?.codex).toBe("plan");
+    expect(result?._providers?.codexSandbox).toBe("read-only");
+    expect(result?._providers?.writablePaths).toEqual([]);
+  });
+
+  it("returns a downgraded config even when original config is undefined", () => {
+    const result = forceReadOnlyPermissionConfig(undefined, true);
+    expect(result?._providers?.claude).toBe("default");
+    expect(result?._providers?.codex).toBe("plan");
+  });
+
+  it("returns undefined when config is undefined and not read-only", () => {
+    expect(forceReadOnlyPermissionConfig(undefined, false)).toBeUndefined();
+  });
+});
+
+describe("cleanupMcpConfigFile", () => {
+  it("silently handles non-existent config files without throwing", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cleanup-nonexistent-"));
+    expect(() => cleanupMcpConfigFile(projectRoot, "attempt-missing")).not.toThrow();
+  });
+
+  it("removes an existing MCP config file", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cleanup-existing-"));
+    const configDir = path.join(projectRoot, ".ade", "cache", "orchestrator", "mcp-configs");
+    fs.mkdirSync(configDir, { recursive: true });
+    const configPath = path.join(configDir, "worker-attempt-cleanup.json");
+    fs.writeFileSync(configPath, "{}", "utf8");
+    expect(fs.existsSync(configPath)).toBe(true);
+
+    cleanupMcpConfigFile(projectRoot, "attempt-cleanup");
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
+
+  it("removes a lane-local config file when laneWorktreePath is provided", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cleanup-lane-"));
+    const lanePath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cleanup-lane-wt-"));
+    const localConfigName = `.ade-worker-mcp-attempt-lane.json`;
+    const localConfigPath = path.join(lanePath, localConfigName);
+    fs.writeFileSync(localConfigPath, "{}", "utf8");
+    expect(fs.existsSync(localConfigPath)).toBe(true);
+
+    cleanupMcpConfigFile(projectRoot, "attempt-lane", lanePath);
+    expect(fs.existsSync(localConfigPath)).toBe(false);
+  });
+
+  it("removes a worker prompt file alongside the config", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cleanup-prompt-"));
+    const promptDir = path.join(projectRoot, ".ade", "cache", "orchestrator", "worker-prompts");
+    fs.mkdirSync(promptDir, { recursive: true });
+    const promptPath = path.join(promptDir, "worker-attempt-prompt.txt");
+    fs.writeFileSync(promptPath, "some prompt text", "utf8");
+    expect(fs.existsSync(promptPath)).toBe(true);
+
+    cleanupMcpConfigFile(projectRoot, "attempt-prompt");
+    expect(fs.existsSync(promptPath)).toBe(false);
+  });
+
+  it("skips lane-local cleanup when laneWorktreePath is empty", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cleanup-empty-lane-"));
+    expect(() => cleanupMcpConfigFile(projectRoot, "attempt-empty", "")).not.toThrow();
+    expect(() => cleanupMcpConfigFile(projectRoot, "attempt-empty", "   ")).not.toThrow();
+    expect(() => cleanupMcpConfigFile(projectRoot, "attempt-empty", null)).not.toThrow();
   });
 });

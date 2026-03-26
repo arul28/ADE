@@ -33,31 +33,22 @@ type ProviderSection = {
 type BucketGroup = {
   key: SelectorBucket;
   label: string;
-  badgeText: string;
   badgeColor: string;
   sections: ProviderSection[];
 };
 
-type PopupLayout =
-  | {
-      mode: "anchored";
-      top: number;
-      left: number;
-      width: number;
-      maxHeight: number;
-    }
-  | {
-      mode: "modal";
-      top: number;
-      left: number;
-      width: number;
-      maxHeight: number;
-    };
+type PopupLayout = {
+  mode: "anchored" | "modal";
+  top: number;
+  left: number;
+  width: number;
+  maxHeight: number;
+};
 
-const BUCKET_LABELS: Record<SelectorBucket, { label: string; badgeText: string; badgeColor: string }> = {
-  subscription: { label: "Subscription", badgeText: "Sub", badgeColor: "#A78BFA" },
-  api: { label: "API", badgeText: "API", badgeColor: "#22C55E" },
-  local: { label: "Local", badgeText: "Local", badgeColor: "#F59E0B" },
+const BUCKET_META: Record<SelectorBucket, { label: string; badgeColor: string }> = {
+  subscription: { label: "Subscription", badgeColor: "#A78BFA" },
+  api: { label: "API", badgeColor: "#22C55E" },
+  local: { label: "Local", badgeColor: "#F59E0B" },
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -84,35 +75,13 @@ const PROVIDER_ORDER: string[] = [
   "mistral",
   "xai",
   "openrouter",
-  "groq",
-  "together",
   "ollama",
   "lmstudio",
   "vllm",
-  "meta",
 ];
 
-const MODEL_CALLOUTS: Record<string, { label: string; tone: string }> = {
-  "openai/gpt-5.4-codex": {
-    label: "Latest",
-    tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
-  },
-  "openai/gpt-5.4": {
-    label: "Latest",
-    tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
-  },
-  "openai/gpt-5.4-mini": {
-    label: "Fast",
-    tone: "border-sky-400/25 bg-sky-400/10 text-sky-200",
-  },
-  "openai/gpt-5.3-codex": {
-    label: "Coding",
-    tone: "border-amber-400/25 bg-amber-400/10 text-amber-200",
-  },
-};
-
 const selectCls = cn(
-  "h-8 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 font-mono text-[11px] text-fg/70",
+  "h-8 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 font-sans text-[11px] text-fg/70",
   "outline-none focus:border-white/[0.14]",
 );
 
@@ -127,10 +96,20 @@ function providerLabel(family: string): string {
 }
 
 function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): string {
-  if (!isAvailable) return "Not configured";
-  if (model.isCliWrapped) return "Subscription ready";
-  if (model.authTypes.includes("local")) return "Local runtime ready";
-  return "API ready";
+  if (isAvailable) {
+    if (model.isCliWrapped) return "Subscription ready";
+    if (model.authTypes.includes("local")) return "Local runtime ready";
+    if (model.authTypes.includes("api-key")) return "API ready";
+    if (model.authTypes.includes("oauth")) return "OAuth ready";
+    if (model.authTypes.includes("openrouter")) return "OpenRouter ready";
+    return "Ready";
+  }
+  if (model.isCliWrapped) return "Subscription only · not configured";
+  if (model.authTypes.includes("local")) return "Local runtime only · not configured";
+  if (model.authTypes.includes("api-key")) return "API only · not configured";
+  if (model.authTypes.includes("oauth")) return "OAuth only · not configured";
+  if (model.authTypes.includes("openrouter")) return "OpenRouter only · not configured";
+  return "Not configured";
 }
 
 function tierLabel(tier: string): string {
@@ -168,25 +147,61 @@ function matchesQuery(model: ModelDescriptor, query: string): boolean {
     .includes(normalized);
 }
 
-function mergeSelectorModels(availableModelIds?: string[], filter?: (model: ModelDescriptor) => boolean): ModelDescriptor[] {
+function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
+  console.warn(`[UnifiedModelSelector] Unknown model ID "${modelId}" — not found in registry. Creating placeholder.`);
+  return {
+    id: modelId,
+    shortId: modelId,
+    displayName: modelId,
+    family: "openrouter",
+    authTypes: ["api-key"],
+    contextWindow: 0,
+    maxOutputTokens: 0,
+    capabilities: { tools: false, vision: false, reasoning: false, streaming: false },
+    color: "#6B7280",
+    sdkProvider: "unknown",
+    sdkModelId: modelId,
+    isCliWrapped: false,
+  };
+}
+
+function mergeSelectorModels(
+  availableModelIds?: string[],
+  selectedModelId?: string,
+  filter?: (model: ModelDescriptor) => boolean,
+): ModelDescriptor[] {
   const merged = new Map<string, ModelDescriptor>();
-  const availableSet = availableModelIds
-    ? new Set(availableModelIds.map((entry) => String(entry ?? "").trim()).filter(Boolean))
-    : null;
+  const selectedId = String(selectedModelId ?? "").trim();
 
   for (const model of MODEL_REGISTRY) {
     if (model.deprecated) continue;
     if (filter && !filter(model)) continue;
-    if (availableSet && !availableSet.has(model.id)) continue;
     merged.set(model.id, model);
   }
   for (const rawId of availableModelIds ?? []) {
     const modelId = String(rawId ?? "").trim();
     if (!modelId.length) continue;
     const descriptor = resolveModelDescriptor(modelId);
-    if (!descriptor || descriptor.deprecated) continue;
-    if (filter && !filter(descriptor)) continue;
-    merged.set(descriptor.id, descriptor);
+    if (descriptor) {
+      if (descriptor.deprecated) continue;
+      if (filter && !filter(descriptor)) continue;
+      merged.set(descriptor.id, descriptor);
+    } else {
+      const placeholder = createUnknownModelPlaceholder(modelId);
+      if (filter && !filter(placeholder)) continue;
+      merged.set(placeholder.id, placeholder);
+    }
+  }
+  if (selectedId && !merged.has(selectedId)) {
+    const selectedDescriptor = resolveModelDescriptor(selectedId);
+    if (selectedDescriptor && !selectedDescriptor.deprecated && (!filter || filter(selectedDescriptor))) {
+      merged.set(selectedDescriptor.id, selectedDescriptor);
+    } else if (!selectedDescriptor) {
+      const placeholder = createUnknownModelPlaceholder(selectedId);
+      if (!filter || filter(placeholder)) {
+        merged.set(placeholder.id, placeholder);
+      }
+    }
   }
   return [...merged.values()];
 }
@@ -207,6 +222,7 @@ export function UnifiedModelSelector({
   const [activeBucket, setActiveBucket] = useState<SelectorBucket>("subscription");
   const [query, setQuery] = useState("");
   const [layout, setLayout] = useState<PopupLayout | null>(null);
+  const [focusedIndex, setFocusedIndex] = useState<number>(-1);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -220,10 +236,11 @@ export function UnifiedModelSelector({
     [],
   );
   const selectorModels = useMemo(
-    () => mergeSelectorModels(availableModelIds, filter),
-    [availableModelIds, filter],
+    () => mergeSelectorModels(availableModelIds, value, filter),
+    [availableModelIds, filter, value],
   );
 
+  // Group models: bucket → provider → models
   const grouped = useMemo(() => {
     const byBucket = new Map<SelectorBucket, Map<string, ModelDescriptor[]>>();
     for (const model of selectorModels) {
@@ -246,14 +263,9 @@ export function UnifiedModelSelector({
           .map(([key, modelsForProvider]) => ({
             key,
             label: providerLabel(key),
-            models: [...modelsForProvider].sort((a, b) => {
-              if (availableSet) {
-                const availabilityCompare =
-                  Number(!availableSet.has(a.id)) - Number(!availableSet.has(b.id));
-                if (availabilityCompare !== 0) return availabilityCompare;
-              }
-              return (modelOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (modelOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER);
-            }),
+            models: [...modelsForProvider].sort((a, b) =>
+              (modelOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (modelOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+            ),
           }))
           .sort((a, b) => {
             const leftOrder = PROVIDER_ORDER.indexOf(a.key);
@@ -266,15 +278,15 @@ export function UnifiedModelSelector({
           });
         return {
           key: bucket,
-          ...BUCKET_LABELS[bucket],
+          ...BUCKET_META[bucket],
           sections: sortedSections,
         } satisfies BucketGroup;
       })
       .filter((group): group is BucketGroup => group != null);
-  }, [availableSet, modelOrder, query, selectorModels]);
+  }, [modelOrder, query, selectorModels]);
 
   const selectedModel = useMemo(
-    () => resolveModelDescriptor(value),
+    () => resolveModelDescriptor(value) ?? (value ? createUnknownModelPlaceholder(value) : undefined),
     [value],
   );
   const reasoningTiers = selectedModel?.reasoningTiers ?? [];
@@ -283,6 +295,72 @@ export function UnifiedModelSelector({
     [grouped, selectedModel?.id],
   );
   const activeGroup = grouped.find((bucket) => bucket.key === activeBucket) ?? grouped[0] ?? null;
+
+  /** Flat list of models visible in the active group, used for keyboard navigation. */
+  const flatModels = useMemo(
+    () => activeGroup?.sections.flatMap((section) => section.models) ?? [],
+    [activeGroup],
+  );
+
+  // Reset focused index when the active group, query, or open state changes.
+  useEffect(() => {
+    setFocusedIndex(-1);
+  }, [activeBucket, query, open]);
+
+  const handleSelect = useCallback(
+    (modelId: string, isAvailable: boolean) => {
+      if (disabled || !isAvailable) return;
+      onChange(modelId);
+      setOpen(false);
+    },
+    [disabled, onChange],
+  );
+
+  const handleListKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (!flatModels.length) return;
+      let nextIndex = focusedIndex;
+
+      switch (event.key) {
+        case "ArrowDown":
+          event.preventDefault();
+          nextIndex = focusedIndex < flatModels.length - 1 ? focusedIndex + 1 : 0;
+          break;
+        case "ArrowUp":
+          event.preventDefault();
+          nextIndex = focusedIndex > 0 ? focusedIndex - 1 : flatModels.length - 1;
+          break;
+        case "Home":
+          event.preventDefault();
+          nextIndex = 0;
+          break;
+        case "End":
+          event.preventDefault();
+          nextIndex = flatModels.length - 1;
+          break;
+        case "Enter": {
+          event.preventDefault();
+          if (focusedIndex >= 0 && focusedIndex < flatModels.length) {
+            const model = flatModels[focusedIndex];
+            const isAvailable = !availableSet || availableSet.has(model.id);
+            handleSelect(model.id, isAvailable);
+          }
+          return;
+        }
+        default:
+          return;
+      }
+      setFocusedIndex(nextIndex);
+
+      // Scroll the focused option into view.
+      const panel = panelRef.current;
+      if (panel) {
+        const options = panel.querySelectorAll("[role='option']");
+        options[nextIndex]?.scrollIntoView({ block: "nearest" });
+      }
+    },
+    [flatModels, focusedIndex, availableSet, handleSelect],
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -387,12 +465,6 @@ export function UnifiedModelSelector({
     };
   }, [open, recomputeLayout]);
 
-  const handleSelect = (modelId: string, isAvailable: boolean) => {
-    if (disabled || !isAvailable) return;
-    onChange(modelId);
-    setOpen(false);
-  };
-
   const panel = open && layout ? createPortal(
     <>
       {layout.mode === "modal" ? (
@@ -400,9 +472,9 @@ export function UnifiedModelSelector({
       ) : null}
       <div
         ref={panelRef}
-        role="listbox"
+        role="presentation"
         className={cn(
-          "fixed z-[80] overflow-hidden rounded-xl border border-white/[0.08] bg-[#1a1a1e] shadow-[var(--shadow-float)] backdrop-blur-xl",
+          "fixed z-[80] overflow-hidden rounded-xl border border-white/[0.08] bg-[#1a1a1e] shadow-[var(--shadow-float)] backdrop-blur-xl outline-none",
           layout.mode === "modal" ? "w-full" : "",
         )}
         style={{
@@ -412,10 +484,44 @@ export function UnifiedModelSelector({
           maxHeight: layout.maxHeight,
         }}
       >
+        {/* Header: tabs + search */}
         <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-muted-fg/38">
-              Model source
+            <div className="grid grid-cols-3 gap-1.5 flex-1">
+              {(["subscription", "api", "local"] as SelectorBucket[]).map((bucketKey) => {
+                const bucket = grouped.find((entry) => entry.key === bucketKey);
+                const isActive = activeGroup?.key === bucketKey;
+                const meta = BUCKET_META[bucketKey];
+                const modelCount = bucket
+                  ? bucket.sections.reduce((count, section) => count + section.models.length, 0)
+                  : 0;
+                return (
+                  <button
+                    key={bucketKey}
+                    type="button"
+                    disabled={!bucket}
+                    className={cn(
+                      "rounded-[12px] border px-2.5 py-2 text-left transition-colors",
+                      bucket
+                        ? isActive
+                          ? "border-accent/35 bg-white/[0.06]"
+                          : "border-border/10 bg-white/[0.02] hover:border-border/20 hover:bg-white/[0.04]"
+                        : "cursor-not-allowed border-border/6 bg-white/[0.01] opacity-35",
+                    )}
+                    onClick={() => bucket && setActiveBucket(bucketKey)}
+                  >
+                    <div
+                      className="font-sans text-[9px] font-semibold uppercase tracking-[0.16em]"
+                      style={{ color: meta.badgeColor }}
+                    >
+                      {meta.label}
+                    </div>
+                    <div className="mt-1 font-sans text-[9px] text-muted-fg/42">
+                      {bucket ? `${modelCount} model${modelCount === 1 ? "" : "s"}` : "Unavailable"}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
             {layout.mode === "modal" ? (
               <button
@@ -428,115 +534,76 @@ export function UnifiedModelSelector({
               </button>
             ) : null}
           </div>
-          <div className="grid grid-cols-3 gap-1.5">
-            {(["subscription", "api", "local"] as SelectorBucket[]).map((bucketKey) => {
-              const bucket = grouped.find((entry) => entry.key === bucketKey);
-              const isActive = activeGroup?.key === bucketKey;
-              return (
-                <button
-                  key={bucketKey}
-                  type="button"
-                  disabled={!bucket}
-                  className={cn(
-                    "rounded-[12px] border px-2.5 py-2 text-left transition-colors",
-                    bucket
-                      ? isActive
-                        ? "border-accent/35 bg-white/[0.06]"
-                        : "border-border/10 bg-white/[0.02] hover:border-border/20 hover:bg-white/[0.04]"
-                      : "cursor-not-allowed border-border/6 bg-white/[0.01] opacity-35",
-                  )}
-                  onClick={() => bucket && setActiveBucket(bucketKey)}
-                >
-                  <div
-                    className="font-mono text-[9px] font-bold uppercase tracking-[0.16em]"
-                    style={{ color: bucket?.badgeColor ?? "var(--color-muted-fg)" }}
-                  >
-                    {BUCKET_LABELS[bucketKey].label}
-                  </div>
-                  <div className="mt-1 font-mono text-[9px] text-muted-fg/42">
-                    {bucket ? `${bucket.sections.reduce((count, section) => count + section.models.length, 0)} models` : "Unavailable"}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-          <div className="mt-2.5 flex items-center gap-2 rounded-[14px] border border-border/10 bg-black/10 px-2.5 py-2">
+          <div className="flex items-center gap-2 rounded-[14px] border border-border/10 bg-black/10 px-2.5 py-2">
             <MagnifyingGlass size={12} className="text-muted-fg/45" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={handleListKeyDown}
               placeholder="Search models, ids, aliases..."
-              className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/28"
+              className="min-w-0 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/28"
               autoFocus
+              role="combobox"
+              aria-controls="model-selector-listbox"
+              aria-expanded={true}
+              aria-activedescendant={focusedIndex >= 0 && flatModels[focusedIndex] ? `model-option-${flatModels[focusedIndex].id}` : undefined}
             />
           </div>
         </div>
 
+        {/* Model list: provider sections within the active tab */}
         {activeGroup ? (
           <div
+            id="model-selector-listbox"
+            role="listbox"
             className="overflow-y-auto"
             style={{ maxHeight: layout.maxHeight - 120 }}
           >
-            <div className="flex items-center gap-2 border-b border-border/8 px-3 py-2">
-              <span
-                className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]"
-                style={{ color: `${activeGroup.badgeColor}CC` }}
-              >
-                {activeGroup.label}
-              </span>
-              <span
-                className="inline-flex items-center rounded-full border px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.14em]"
-                style={{
-                  color: activeGroup.badgeColor,
-                  background: `${activeGroup.badgeColor}18`,
-                  borderColor: `${activeGroup.badgeColor}30`,
-                }}
-              >
-                {activeGroup.badgeText}
-              </span>
-            </div>
-
             {activeGroup.sections.length > 0 ? activeGroup.sections.map((section) => (
               <div key={`${activeGroup.key}:${section.key}`} className="border-b border-border/8 last:border-b-0">
-                <div className="px-3 pt-2.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-muted-fg/35">
+                <div className="px-3 pt-2.5 font-sans text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-fg/35">
                   {section.label}
                 </div>
                 <div className="py-1.5">
                   {section.models.map((model) => {
                     const isSelected = model.id === selectedModel?.id;
                     const isAvailable = !availableSet || availableSet.has(model.id);
-                    const callout = MODEL_CALLOUTS[model.id];
+                    const isFocused = focusedIndex >= 0 && flatModels[focusedIndex]?.id === model.id;
+                    const isUnknown = model.sdkProvider === "unknown";
                     return (
                       <button
                         key={model.id}
+                        id={`model-option-${model.id}`}
                         type="button"
                         role="option"
                         aria-selected={isSelected}
                         aria-disabled={!isAvailable}
                         className={cn(
-                          "mx-1.5 flex w-[calc(100%-12px)] items-center gap-2 rounded-[12px] px-3 py-2 text-left font-mono text-[11px] transition-colors",
+                          "mx-1.5 flex w-[calc(100%-12px)] items-center gap-2 rounded-[12px] px-3 py-2 text-left font-sans text-[11px] transition-colors",
                           isSelected
                             ? "bg-accent/10 text-fg"
                             : isAvailable
                               ? "text-fg/72 hover:bg-border/8 hover:text-fg/92"
                               : "cursor-not-allowed text-muted-fg/28",
+                          isFocused && "ring-1 ring-accent/40 bg-border/8",
                         )}
                         onClick={() => handleSelect(model.id, isAvailable)}
+                        onMouseEnter={() => {
+                          const idx = flatModels.findIndex((m) => m.id === model.id);
+                          if (idx >= 0) setFocusedIndex(idx);
+                        }}
                       >
                         <span className={cn("inline-flex flex-shrink-0 items-center justify-center", !isAvailable && "opacity-45")}>
                           <ModelGlyph model={model} size={13} />
                         </span>
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1.5">
                             <div className="truncate">{model.displayName}</div>
-                            {callout ? (
+                            {isUnknown ? (
                               <span
-                                className={cn(
-                                  "inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.14em]",
-                                  callout.tone,
-                                )}
+                                className="inline-flex shrink-0 items-center rounded-full border border-zinc-400/25 bg-zinc-400/10 px-1.5 py-0.5 font-sans text-[8px] font-semibold uppercase tracking-[0.14em] text-zinc-300"
                               >
-                                {callout.label}
+                                Unknown
                               </span>
                             ) : null}
                           </div>
@@ -555,13 +622,13 @@ export function UnifiedModelSelector({
                 </div>
               </div>
             )) : (
-              <div className="px-4 py-5 font-mono text-[11px] text-muted-fg/45">
+              <div className="px-4 py-5 font-sans text-[11px] text-muted-fg/45">
                 No models match this search.
               </div>
             )}
           </div>
         ) : (
-          <div className="px-4 py-5 font-mono text-[11px] text-muted-fg/45">
+          <div className="px-4 py-5 font-sans text-[11px] text-muted-fg/45">
             No models available in this category.
           </div>
         )}
@@ -570,7 +637,7 @@ export function UnifiedModelSelector({
           <div className="border-t border-border/12 px-3 py-2">
             <button
               type="button"
-              className="font-mono text-[10px] text-accent/60 hover:text-accent"
+              className="font-sans text-[10px] text-accent/60 hover:text-accent"
               onClick={() => {
                 setOpen(false);
                 onConfigureMore();
@@ -586,7 +653,7 @@ export function UnifiedModelSelector({
   ) : null;
 
   return (
-    <div className={cn("flex max-w-full items-center gap-1.5", className)}>
+    <div className={cn("flex max-w-full flex-wrap items-center gap-1.5", className)}>
       <div ref={containerRef} className="relative min-w-0">
         <button
           ref={triggerRef}
@@ -597,7 +664,7 @@ export function UnifiedModelSelector({
             setOpen((current) => !current);
           }}
           className={cn(
-            "inline-flex h-8 w-full min-w-[220px] max-w-full items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 font-mono text-[11px] text-fg/70",
+            "inline-flex h-8 w-auto min-w-[170px] max-w-[15rem] flex-none items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 font-sans text-[11px] text-fg/70",
             "transition-colors hover:border-white/[0.12] hover:bg-white/[0.06]",
             open && "border-white/[0.14] bg-white/[0.06]",
             disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.08] hover:bg-white/[0.04]",
@@ -625,7 +692,7 @@ export function UnifiedModelSelector({
           value={reasoningEffort ?? ""}
           disabled={disabled}
           onChange={(event) => onReasoningEffortChange(event.target.value || null)}
-          className={cn(selectCls, "min-w-[120px]", disabled && "cursor-not-allowed opacity-70")}
+          className={cn(selectCls, "min-w-[92px]", disabled && "cursor-not-allowed opacity-70")}
           aria-label="Reasoning effort"
         >
           {reasoningTiers.map((tier) => (

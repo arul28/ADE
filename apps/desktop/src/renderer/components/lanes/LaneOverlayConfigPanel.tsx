@@ -20,7 +20,12 @@ export function LaneOverlayConfigPanel({ laneId }: { laneId: string }) {
     return () => { cancelled = true; };
   }, [laneId]);
 
-  if (loading) return <div className="text-xs text-muted-fg p-2">Loading overlay...</div>;
+  if (loading) return (
+    <div className="flex items-center gap-2 text-sm text-white/40 p-2">
+      <span className="animate-pulse">●</span>
+      Loading overlay configuration...
+    </div>
+  );
 
   if (!overlay) {
     return (
@@ -84,7 +89,7 @@ export function LaneOverlayConfigPanel({ laneId }: { laneId: string }) {
       {envKeys.length > 0 && (
         <div className="text-xs">
           <div className="text-muted-fg mb-1">Environment ({envKeys.length}):</div>
-          <div className="space-y-0.5 max-h-[120px] overflow-y-auto">
+          <div className="space-y-0.5 max-h-[120px] overflow-y-auto scrollbar-thin">
             {Object.entries(overlay.env!).map(([key, value]) => (
               <div key={key} className="font-mono text-[11px] flex gap-1">
                 <span className="text-muted-fg">{key}=</span>

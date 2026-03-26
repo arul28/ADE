@@ -23,21 +23,21 @@ export function ChatSurfaceShell({
   return (
     <section
       className={cn(
-        "relative flex h-full min-h-0 flex-col border border-white/[0.05] bg-[#09090b]",
+        "relative flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--chat-radius-shell)] border border-[color:var(--chat-panel-border)] bg-[var(--chat-surface-bg)] shadow-[var(--chat-shell-shadow)]",
         className,
       )}
       style={chatSurfaceVars(mode, accentColor)}
     >
       {header ? (
-        <div className="relative border-b border-white/[0.05] bg-[#0d0d10]">
+        <div className="relative border-b border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)]/92 backdrop-blur-xl">
           {header}
         </div>
       ) : null}
-      <div className={cn("relative min-h-0 flex-1 overflow-hidden bg-[#09090b]", bodyClassName)}>
+      <div className={cn("relative min-h-0 flex-1 overflow-hidden bg-[var(--chat-surface-bg)]", bodyClassName)}>
         {children}
       </div>
       {footer ? (
-        <div className="relative border-t border-white/[0.05] bg-[#0d0d10]">
+        <div className="relative border-t border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)]/92 backdrop-blur-xl">
           {footer}
         </div>
       ) : null}

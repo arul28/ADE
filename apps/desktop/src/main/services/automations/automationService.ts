@@ -1621,7 +1621,7 @@ export function createAutomationService({
         modelId,
         sessionProfile: "workflow",
         reasoningEffort,
-        permissionMode: "full-auto",
+        unifiedPermissionMode: "full-auto",
         surface: "automation",
         automationId: args.rule.id,
         automationRunId: run.id,

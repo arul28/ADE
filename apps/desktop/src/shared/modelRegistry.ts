@@ -11,13 +11,10 @@ export type ProviderFamily =
   | "mistral"
   | "deepseek"
   | "xai"
-  | "meta"
   | "openrouter"
   | "ollama"
   | "lmstudio"
-  | "vllm"
-  | "groq"
-  | "together";
+  | "vllm";
 
 export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio" | "vllm">;
 
@@ -55,6 +52,10 @@ export type ModelDescriptor = {
 
 export type WorkerExecutionPath = "cli" | "api" | "local";
 export type ModelProviderGroup = "claude" | "codex" | "unified";
+
+export function isModelProviderGroup(value: string | null | undefined): value is ModelProviderGroup {
+  return value === "claude" || value === "codex" || value === "unified";
+}
 
 // ---------------------------------------------------------------------------
 // Registry data
@@ -187,7 +188,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: NO_REASONING,
     color: "#06B6D4",
     sdkProvider: "@ai-sdk/anthropic",
-    sdkModelId: "claude-haiku-4-5-20251001",
+    sdkModelId: "claude-haiku-4-5",
     isCliWrapped: false,
     inputPricePer1M: 0.8,
     outputPricePer1M: 4,
@@ -199,7 +200,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // low | medium | high | xhigh, except GPT-5.1-Codex-Mini which only exposes medium | high.
   {
     id: "openai/gpt-5.4-codex",
-    shortId: "gpt-5.4",
+    shortId: "gpt-5.4-codex",
     aliases: ["gpt-5.4-codex"],
     displayName: "GPT-5.4",
     family: "openai",
@@ -214,6 +215,26 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     cliCommand: "codex",
     isCliWrapped: true,
     costTier: "high",
+  },
+  {
+    id: "openai/gpt-5.4-mini-codex",
+    shortId: "gpt-5.4-mini-codex",
+    aliases: ["gpt-5.4-mini-codex"],
+    displayName: "GPT-5.4-Mini",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#34D399",
+    sdkProvider: "ai-sdk-provider-codex-cli",
+    sdkModelId: "gpt-5.4-mini",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 0.25,
+    outputPricePer1M: 2,
+    costTier: "low",
   },
   {
     id: "openai/gpt-5.3-codex",
@@ -312,6 +333,24 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   },
   // ---- OpenAI (API key direct) ----
   {
+    id: "openai/gpt-5.4-pro",
+    shortId: "gpt-5.4-pro",
+    displayName: "GPT-5.4 Pro",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
+    color: "#059669",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "gpt-5.4-pro",
+    isCliWrapped: false,
+    inputPricePer1M: 5,
+    outputPricePer1M: 30,
+    costTier: "very_high",
+  },
+  {
     id: "openai/gpt-5.4",
     shortId: "gpt-5.4",
     aliases: ["gpt-5.4-2026-03-05"],
@@ -369,6 +408,25 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "high",
   },
 
+  {
+    id: "openai/o4-mini",
+    shortId: "o4-mini",
+    displayName: "o4-mini",
+    family: "openai",
+    authTypes: ["api-key"],
+    contextWindow: 200_000,
+    maxOutputTokens: 100_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#6EE7B7",
+    sdkProvider: "@ai-sdk/openai",
+    sdkModelId: "o4-mini",
+    isCliWrapped: false,
+    inputPricePer1M: 1.1,
+    outputPricePer1M: 4.4,
+    costTier: "medium",
+  },
+
   // ---- Google (Gemini 3.x — current) ----
   {
     id: "google/gemini-3.1-pro",
@@ -403,6 +461,43 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     isCliWrapped: false,
     inputPricePer1M: 0.15,
     outputPricePer1M: 0.6,
+  },
+
+  {
+    id: "google/gemini-2.5-pro",
+    shortId: "gemini-2.5-pro",
+    displayName: "Gemini 2.5 Pro",
+    family: "google",
+    authTypes: ["api-key"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#D97706",
+    sdkProvider: "@ai-sdk/google",
+    sdkModelId: "gemini-2.5-pro",
+    isCliWrapped: false,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
+    id: "google/gemini-2.5-flash",
+    shortId: "gemini-2.5-flash",
+    displayName: "Gemini 2.5 Flash",
+    family: "google",
+    authTypes: ["api-key"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "high"],
+    color: "#FCD34D",
+    sdkProvider: "@ai-sdk/google",
+    sdkModelId: "gemini-2.5-flash",
+    isCliWrapped: false,
+    inputPricePer1M: 0.15,
+    outputPricePer1M: 0.6,
+    costTier: "low",
   },
 
   // ---- DeepSeek ----
@@ -441,6 +536,23 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
 
   // ---- Mistral ----
   {
+    id: "mistral/mistral-large",
+    shortId: "mistral-large",
+    displayName: "Mistral Large",
+    family: "mistral",
+    authTypes: ["api-key"],
+    contextWindow: 128_000,
+    maxOutputTokens: 8_192,
+    capabilities: ALL_CAPS,
+    color: "#F97316",
+    sdkProvider: "@ai-sdk/mistral",
+    sdkModelId: "mistral-large-latest",
+    isCliWrapped: false,
+    inputPricePer1M: 2,
+    outputPricePer1M: 6,
+    costTier: "medium",
+  },
+  {
     id: "mistral/codestral-latest",
     shortId: "codestral",
     displayName: "Codestral",
@@ -449,7 +561,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 256_000,
     maxOutputTokens: 8_192,
     capabilities: BASIC_CAPS,
-    color: "#F97316",
+    color: "#FB923C",
     sdkProvider: "@ai-sdk/mistral",
     sdkModelId: "codestral-latest",
     isCliWrapped: false,
@@ -458,6 +570,24 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   },
 
   // ---- xAI ----
+  {
+    id: "xai/grok-4-1",
+    shortId: "grok-4-1",
+    displayName: "Grok 4.1",
+    family: "xai",
+    authTypes: ["api-key"],
+    contextWindow: 131_072,
+    maxOutputTokens: 16_384,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high"],
+    color: "#DC2626",
+    sdkProvider: "@ai-sdk/xai",
+    sdkModelId: "grok-4-1",
+    isCliWrapped: false,
+    inputPricePer1M: 3,
+    outputPricePer1M: 15,
+    costTier: "high",
+  },
   {
     id: "xai/grok-3",
     shortId: "grok-3",
@@ -648,10 +778,10 @@ export function getLocalProviderDefaultEndpoint(provider: LocalProviderFamily): 
 // ---------------------------------------------------------------------------
 
 export function getModelById(id: string): ModelDescriptor | undefined {
-  return byId.get(id) ?? (() => {
-    const dynamic = parseDynamicLocalModelRef(id);
-    return dynamic ? createDynamicLocalModelDescriptor(dynamic.provider, dynamic.modelId) : undefined;
-  })();
+  const cached = byId.get(id);
+  if (cached) return cached;
+  const dynamic = parseDynamicLocalModelRef(id);
+  return dynamic ? createDynamicLocalModelDescriptor(dynamic.provider, dynamic.modelId) : undefined;
 }
 
 export function getAvailableModels(
@@ -712,6 +842,54 @@ export function resolveModelDescriptor(modelRef: string): ModelDescriptor | unde
   return getModelById(normalized) ?? resolveModelAlias(normalized);
 }
 
+function matchesProviderGroup(
+  descriptor: ModelDescriptor,
+  providerHint?: ModelProviderGroup,
+): boolean {
+  if (!providerHint) return true;
+  return resolveProviderGroupForModel(descriptor) === providerHint;
+}
+
+export function resolveModelDescriptorForProvider(
+  modelRef: string | null | undefined,
+  providerHint?: ModelProviderGroup,
+): ModelDescriptor | undefined {
+  const normalized = String(modelRef ?? "").trim().toLowerCase();
+  if (!normalized.length) return undefined;
+
+  const exactId = getModelById(normalized);
+  if (exactId && !exactId.deprecated && matchesProviderGroup(exactId, providerHint)) {
+    return exactId;
+  }
+
+  const candidates = MODEL_REGISTRY.filter((descriptor) => {
+    if (descriptor.deprecated) return false;
+    if (!matchesProviderGroup(descriptor, providerHint)) return false;
+    return descriptor.id.toLowerCase() === normalized
+      || descriptor.shortId.toLowerCase() === normalized
+      || descriptor.sdkModelId.toLowerCase() === normalized
+      || (descriptor.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized);
+  });
+  if (!candidates.length) return undefined;
+
+  const exactShortId = candidates.find((descriptor) => descriptor.shortId.toLowerCase() === normalized);
+  if (exactShortId) return exactShortId;
+
+  const exactSdkMatch = candidates
+    .filter((descriptor) => descriptor.sdkModelId.toLowerCase() === normalized)
+    .sort((left, right) => Number(left.isCliWrapped) - Number(right.isCliWrapped))[0];
+  if (exactSdkMatch) return exactSdkMatch;
+
+  return candidates[0];
+}
+
+export function resolveModelIdForProvider(
+  modelRef: string | null | undefined,
+  providerHint?: ModelProviderGroup,
+): string | undefined {
+  return resolveModelDescriptorForProvider(modelRef, providerHint)?.id;
+}
+
 export function resolveCliProviderForModel(
   descriptor: ModelDescriptor,
 ): "claude" | "codex" | null {
@@ -729,6 +907,20 @@ export function resolveProviderGroupForModel(
   descriptor: ModelDescriptor,
 ): ModelProviderGroup {
   return resolveCliProviderForModel(descriptor) ?? "unified";
+}
+
+export function getRuntimeModelRefForDescriptor(
+  descriptor: ModelDescriptor,
+  providerHint?: ModelProviderGroup,
+): string {
+  const provider = providerHint ?? resolveProviderGroupForModel(descriptor);
+  if (provider === "codex") {
+    return descriptor.sdkModelId;
+  }
+  if (provider === "claude") {
+    return descriptor.shortId;
+  }
+  return descriptor.id;
 }
 
 export function classifyWorkerExecutionPath(
