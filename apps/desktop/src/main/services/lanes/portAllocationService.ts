@@ -280,6 +280,21 @@ export function createPortAllocationService({
       }
 
       if (orphaned.length > 0) {
+        // Resolve any existing conflicts involving the orphaned lanes
+        // (similar to release() — orphaned lanes no longer participate in conflicts).
+        for (const orphan of orphaned) {
+          for (const conflict of conflicts) {
+            if (
+              !conflict.resolved &&
+              (conflict.laneIdA === orphan.laneId || conflict.laneIdB === orphan.laneId)
+            ) {
+              conflict.resolved = true;
+              conflict.resolvedAt = new Date().toISOString();
+              broadcastEvent({ type: "port-conflict-resolved", conflict });
+            }
+          }
+        }
+
         persist();
         logger.info("port_allocation.orphans_recovered", { count: orphaned.length });
         runConflictDetection();

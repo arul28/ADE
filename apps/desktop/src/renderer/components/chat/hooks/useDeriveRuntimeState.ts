@@ -22,6 +22,12 @@ export function useDeriveRuntimeState() {
   const stateRef = useRef<{ turnActive: boolean }>({ turnActive: false });
 
   function deriveRuntimeState(events: AgentChatEventEnvelope[]): DerivedRuntimeState {
+    // If the event list was replaced or truncated, force a full rescan
+    if (events.length < lastIndexRef.current) {
+      lastIndexRef.current = 0;
+      stateRef.current = { turnActive: false };
+    }
+
     // Walk only the new events for turnActive
     const start = lastIndexRef.current;
     let { turnActive } = stateRef.current;

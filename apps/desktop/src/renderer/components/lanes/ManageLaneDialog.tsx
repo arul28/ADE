@@ -49,9 +49,23 @@ export function ManageLaneDialog({
   const hasAnyDirty = lanes.some((l) => l.status.dirty);
 
   const isAttached = !isBatch && lanes[0]?.laneType === "attached";
-  const worktreeDeleteLabel = hasAttached ? "Unlink lane (keep branch)" : "Remove worktree files only";
-  const localDeleteLabel = hasAttached ? "Unlink + delete local branch" : "+ local branch";
-  const remoteDeleteLabel = hasAttached ? "Unlink + delete local and remote branch" : "Delete local and remote branch";
+  const hasNonAttached = lanes.some((l) => l.laneType !== "attached" && l.laneType !== "primary");
+  const isMixed = hasAttached && hasNonAttached;
+  const worktreeDeleteLabel = isMixed
+    ? "Unlink attached lanes & remove worktree files"
+    : hasAttached
+      ? "Unlink lane (keep branch)"
+      : "Remove worktree files only";
+  const localDeleteLabel = isMixed
+    ? "Unlink attached & delete local branches"
+    : hasAttached
+      ? "Unlink + delete local branch"
+      : "+ local branch";
+  const remoteDeleteLabel = isMixed
+    ? "Unlink attached & delete local + remote branches"
+    : hasAttached
+      ? "Unlink + delete local and remote branch"
+      : "Delete local and remote branch";
   const confirmMatch = deleteConfirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
 
   return (

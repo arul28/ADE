@@ -364,7 +364,9 @@ export function RunPage() {
       }
       // Create inspector terminals for each process being started so the user
       // gets a shell tab per process (matching the behavior of handleRun).
-      const targetDefs = selectedStackId
+      // Filter out processes that are already running to avoid spawning duplicate
+      // inspector tabs when "Start All" is used on a partially running selection.
+      const allTargetDefs = selectedStackId
         ? (() => {
             const stack = stacks.find((s) => s.id === selectedStackId);
             if (!stack) return definitions;
@@ -372,6 +374,11 @@ export function RunPage() {
             return definitions.filter((d) => ids.has(d.id));
           })()
         : definitions;
+      const runningStatuses = new Set(["running", "starting"]);
+      const targetDefs = allTargetDefs.filter((d) => {
+        const rt = runtimeMap[d.id];
+        return !rt || !runningStatuses.has(rt.status);
+      });
       for (const def of targetDefs) {
         try {
           await window.ade.pty.create({
@@ -389,7 +396,7 @@ export function RunPage() {
     } catch (err) {
       console.error("[RunPage] handleStartAll failed:", err);
     }
-  }, [effectiveLaneId, selectedStackId, definitions, stacks]);
+  }, [effectiveLaneId, selectedStackId, definitions, stacks, runtimeMap]);
 
   const handleStopAll = useCallback(async () => {
     try {

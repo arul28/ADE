@@ -1685,11 +1685,16 @@ export function registerIpc({
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
     const normalized = path.resolve(raw);
-    // Validate the path is within the project workspace or user home directory.
-    // Reject requests to reveal arbitrary system paths (e.g. /etc, /System).
+    // Validate the path is within known safe directories only.
+    // Reject requests to reveal arbitrary paths (e.g. ~/.ssh, /etc, /System).
     const projectRoot = getCtx().project.rootPath;
-    const homeDir = app.getPath("home");
-    if (!isWithinDir(projectRoot, normalized) && !isWithinDir(homeDir, normalized)) {
+    const allowedDirs = [
+      projectRoot,
+      app.getPath("downloads"),
+      app.getPath("documents"),
+      app.getPath("temp"),
+    ];
+    if (!allowedDirs.some((dir) => isWithinDir(dir, normalized))) {
       throw new Error("Path is outside allowed directories.");
     }
     shell.showItemInFolder(normalized);

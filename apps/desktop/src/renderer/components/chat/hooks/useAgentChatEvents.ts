@@ -20,9 +20,12 @@ export interface UseAgentChatEventsReturn {
   pendingInputsBySession: Record<string, DerivedPendingInput[]>;
   flushQueuedEvents: () => void;
   scheduleQueuedEventFlush: () => void;
-  setEventsBySession: React.Dispatch<React.SetStateAction<Record<string, AgentChatEventEnvelope[]>>>;
-  setTurnActiveBySession: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
-  setPendingInputsBySession: React.Dispatch<React.SetStateAction<Record<string, DerivedPendingInput[]>>>;
+  /** Atomically update events for a session, synchronizing the ref and derived state. */
+  updateSessionEvents: (sessionId: string, events: AgentChatEventEnvelope[]) => void;
+  /** Clear all events and derived state for a session atomically. */
+  clearSessionEvents: (sessionId: string) => void;
+  /** Remove a single pending input by itemId without touching events. */
+  removePendingInput: (sessionId: string, itemId: string) => void;
   eventsBySessionRef: React.MutableRefObject<Record<string, AgentChatEventEnvelope[]>>;
   pendingEventQueueRef: React.MutableRefObject<AgentChatEventEnvelope[]>;
   eventFlushTimerRef: React.MutableRefObject<number | null>;
@@ -45,6 +48,33 @@ export function useAgentChatEvents({
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
+
+  // ── Synchronized writers ────────────────────────────────────────────
+
+  /** Atomically update events for a session, synchronizing the ref and all derived state. */
+  const updateSessionEvents = useCallback((sessionId: string, events: AgentChatEventEnvelope[]) => {
+    const derived = deriveRuntimeState(events);
+    eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: events };
+    setEventsBySession((prev) => ({ ...prev, [sessionId]: events }));
+    setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: derived.turnActive }));
+    setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
+  }, []);
+
+  /** Clear all events and derived state for a session atomically. */
+  const clearSessionEvents = useCallback((sessionId: string) => {
+    eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
+    setEventsBySession((prev) => ({ ...prev, [sessionId]: [] }));
+    setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
+    setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: [] }));
+  }, []);
+
+  /** Remove a single pending input by itemId without touching events or turnActive. */
+  const removePendingInput = useCallback((sessionId: string, itemId: string) => {
+    setPendingInputsBySession((prev) => ({
+      ...prev,
+      [sessionId]: (prev[sessionId] ?? []).filter((e) => e.itemId !== itemId),
+    }));
+  }, []);
 
   // ── Flush queued events ───────────────────────────────────────────
 
@@ -116,9 +146,9 @@ export function useAgentChatEvents({
     pendingInputsBySession,
     flushQueuedEvents,
     scheduleQueuedEventFlush,
-    setEventsBySession,
-    setTurnActiveBySession,
-    setPendingInputsBySession,
+    updateSessionEvents,
+    clearSessionEvents,
+    removePendingInput,
     eventsBySessionRef,
     pendingEventQueueRef,
     eventFlushTimerRef,

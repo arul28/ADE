@@ -529,6 +529,7 @@ export function AgentChatComposer({
   const [slashQuery, setSlashQuery] = useState("");
   const [slashCursor, setSlashCursor] = useState(0);
 
+  const [attachError, setAttachError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [advancedMenuOpen, setAdvancedMenuOpen] = useState(false);
   const [computerUseModalOpen, setComputerUseModalOpen] = useState(false);
@@ -654,6 +655,11 @@ export function AgentChatComposer({
         } else {
           // Clipboard paste or browser drag — no filesystem path.
           // Read the blob, save to a temp file via IPC, then attach.
+          const MAX_BLOB_SIZE = 10 * 1024 * 1024; // 10 MB
+          if (file.size > MAX_BLOB_SIZE) {
+            setAttachError(`File "${file.name || "clipboard"}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 10 MB.`);
+            continue;
+          }
           try {
             const buf = await file.arrayBuffer();
             const bytes = new Uint8Array(buf);
@@ -915,6 +921,9 @@ export function AgentChatComposer({
                 placement="composer"
                 onInterruptTurn={turnActive ? onInterrupt : undefined}
               />
+            ) : null}
+            {attachError ? (
+              <div className="px-3 py-1 text-[11px] text-red-400/90">{attachError}<button type="button" className="ml-2 text-red-400/60 hover:text-red-400" onClick={() => setAttachError(null)}>dismiss</button></div>
             ) : null}
             <ChatAttachmentTray
               attachments={attachments}

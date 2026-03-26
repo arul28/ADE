@@ -61,14 +61,24 @@ describe("canAttemptRecovery", () => {
     expect(canAttemptRecovery({ attempts: 2, lastAttemptAt: Date.now(), recovering: false, lastError: "err" })).toBe(true);
   });
 
-  it("disallows recovery when attempts exceed max", () => {
+  it("disallows recovery when attempts exceed max and cooldown has not elapsed", () => {
     const state: RecoveryState = {
       attempts: 5,
-      lastAttemptAt: 0,
+      lastAttemptAt: Date.now(),
       recovering: false,
       lastError: "old error",
     };
     expect(canAttemptRecovery(state)).toBe(false);
+  });
+
+  it("allows recovery after max attempts once cooldown has elapsed", () => {
+    const state: RecoveryState = {
+      attempts: 3,
+      lastAttemptAt: Date.now() - 31_000, // past the 30s cooldown
+      recovering: false,
+      lastError: "some error",
+    };
+    expect(canAttemptRecovery(state)).toBe(true);
   });
 });
 

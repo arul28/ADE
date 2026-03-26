@@ -472,10 +472,7 @@ export function UnifiedModelSelector({
       ) : null}
       <div
         ref={panelRef}
-        role="listbox"
-        tabIndex={0}
-        onKeyDown={handleListKeyDown}
-        aria-activedescendant={focusedIndex >= 0 && flatModels[focusedIndex] ? `model-option-${flatModels[focusedIndex].id}` : undefined}
+        role="presentation"
         className={cn(
           "fixed z-[80] overflow-hidden rounded-xl border border-white/[0.08] bg-[#1a1a1e] shadow-[var(--shadow-float)] backdrop-blur-xl outline-none",
           layout.mode === "modal" ? "w-full" : "",
@@ -542,9 +539,14 @@ export function UnifiedModelSelector({
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={handleListKeyDown}
               placeholder="Search models, ids, aliases..."
               className="min-w-0 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/28"
               autoFocus
+              role="combobox"
+              aria-controls="model-selector-listbox"
+              aria-expanded={true}
+              aria-activedescendant={focusedIndex >= 0 && flatModels[focusedIndex] ? `model-option-${flatModels[focusedIndex].id}` : undefined}
             />
           </div>
         </div>
@@ -552,6 +554,8 @@ export function UnifiedModelSelector({
         {/* Model list: provider sections within the active tab */}
         {activeGroup ? (
           <div
+            id="model-selector-listbox"
+            role="listbox"
             className="overflow-y-auto"
             style={{ maxHeight: layout.maxHeight - 120 }}
           >

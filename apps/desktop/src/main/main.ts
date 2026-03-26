@@ -1107,7 +1107,14 @@ app.whenReady().then(async () => {
       memoryService,
     });
     ctoStateServiceRef = ctoStateService;
-    memoryFilesService.sync();
+    try {
+      memoryFilesService.sync();
+    } catch (err) {
+      logger.warn("memory_files.sync_failed", {
+        projectRoot,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     const workerAgentService = createWorkerAgentService({
       db,

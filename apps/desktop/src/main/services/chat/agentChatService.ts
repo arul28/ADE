@@ -1614,11 +1614,36 @@ export function createAgentChatService(args: {
     return `${prefix}: ${body}`;
   };
 
+  /** Reject content that looks like it contains secrets or PII. */
+  const AUTO_MEMORY_SECRET_PII_RE = new RegExp(
+    [
+      // API keys / tokens (generic key-like hex/base64 strings after common prefixes)
+      /(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|bearer)\s*[:=]\s*\S{8,}/i.source,
+      // Passwords / secrets in assignment form
+      /(?:password|passwd|pwd|secret)\s*[:=]\s*\S{4,}/i.source,
+      // AWS-style keys
+      /\bAKIA[0-9A-Z]{16}\b/.source,
+      // GitHub / GitLab personal access tokens
+      /\b(?:ghp|gho|ghu|ghs|ghr|glpat)[_-][A-Za-z0-9]{16,}\b/.source,
+      // Slack tokens
+      /\bxox[bpras]-[A-Za-z0-9\-]{10,}\b/.source,
+      // Email addresses (PII)
+      /\b[A-Za-z0-9._%+\-]{2,}@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/.source,
+      // US Social Security Numbers
+      /\b\d{3}[- ]?\d{2}[- ]?\d{4}\b/.source,
+      // Credit card numbers (13-19 digits, optionally separated)
+      /\b(?:\d[ -]?){13,19}\b/.source,
+      // Private keys / certificates
+      /-----BEGIN\s+(?:RSA\s+)?(?:PRIVATE\s+KEY|CERTIFICATE)/.source,
+    ].join("|"),
+  );
+
   const extractAutoCapturedMemoryCandidate = (promptText: string): AutoCapturedMemoryCandidate | null => {
     const trimmed = promptText.trim();
     if (trimmed.length < 16 || trimmed.length > 500) return null;
     if (trimmed.startsWith("/")) return null;
     if (AUTO_MEMORY_META_RE.test(trimmed) || AUTO_MEMORY_TRIVIAL_TEST_RE.test(trimmed)) return null;
+    if (AUTO_MEMORY_SECRET_PII_RE.test(trimmed)) return null;
 
     for (const clause of splitAutoMemoryCaptureClauses(trimmed)) {
       const normalized = clause.replace(/\s+/g, " ").trim();
@@ -1722,21 +1747,30 @@ export function createAgentChatService(args: {
     if (!candidate) return;
 
     const writePolicy = resolveAgentMemoryWritePolicy({ writeGateMode: candidate.writeMode });
-    const result = memoryService.writeMemory({
-      projectId,
-      scope: "project",
-      category: candidate.category,
-      content: candidate.content,
-      importance: candidate.importance,
-      status: writePolicy.status,
-      tier: writePolicy.tier,
-      confidence: writePolicy.confidence,
-      sourceSessionId: managed.session.id,
-      sourceType: "user",
-      sourceId: "chat:auto-capture",
-      agentId: managed.session.identityKey ?? managed.session.id,
-      writeGateMode: candidate.writeMode,
-    });
+    let result: WriteMemoryResult;
+    try {
+      result = memoryService.writeMemory({
+        projectId,
+        scope: "project",
+        category: candidate.category,
+        content: candidate.content,
+        importance: candidate.importance,
+        status: writePolicy.status,
+        tier: writePolicy.tier,
+        confidence: writePolicy.confidence,
+        sourceSessionId: managed.session.id,
+        sourceType: "user",
+        sourceId: "chat:auto-capture",
+        agentId: managed.session.identityKey ?? managed.session.id,
+        writeGateMode: candidate.writeMode,
+      });
+    } catch (err) {
+      logger.warn("agent_chat.auto_memory_capture_failed", {
+        sessionId: managed.session.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
 
     const notice = buildAutoCapturedMemoryNotice(candidate, result);
     emitChatEvent(managed, {
@@ -1755,12 +1789,6 @@ export function createAgentChatService(args: {
   ): Promise<AutoMemoryTurnPlan> => {
     const classification = classifyAutoMemoryTurn(promptText, attachments.length);
     const shouldLoadBootstrap = shouldLoadAutoMemoryBootstrap(promptText, attachments.length);
-    if (!memoryService || !projectId) {
-      return { classification: "none", contextText: "", telemetry: EMPTY_MEMORY_TELEMETRY, selectedEntries: [] };
-    }
-    if (isLightweightSession(managed.session) || (classification === "none" && !shouldLoadBootstrap)) {
-      return { classification, contextText: "", telemetry: EMPTY_MEMORY_TELEMETRY, selectedEntries: [] };
-    }
 
     const fileContext = (() => {
       if (!memoryFilesService || !shouldLoadBootstrap) {
@@ -1786,6 +1814,22 @@ export function createAgentChatService(args: {
         };
       }
     })();
+
+    if (!memoryService || !projectId) {
+      return {
+        classification: "none",
+        contextText: fileContext.text,
+        telemetry: {
+          ...EMPTY_MEMORY_TELEMETRY,
+          bootstrapLoaded: fileContext.bootstrapLoaded,
+          topicFilesLoaded: fileContext.topicFilesLoaded,
+        },
+        selectedEntries: [],
+      };
+    }
+    if (isLightweightSession(managed.session) || (classification === "none" && !shouldLoadBootstrap)) {
+      return { classification, contextText: "", telemetry: EMPTY_MEMORY_TELEMETRY, selectedEntries: [] };
+    }
 
     if (classification === "none") {
       return {
@@ -3575,7 +3619,9 @@ export function createAgentChatService(args: {
     const hydratedModelId = persisted?.modelId
       ?? resolveModelIdFromStoredValue(fallbackModel, provider)
       ?? fallbackModelIdForProvider(provider);
-    const model = provider === "unified" ? hydratedModelId : fallbackModel;
+    // When persisted modelId is missing we resolved through fallback — use the
+    // hydrated id as the CLI model string so stale metadata doesn't propagate.
+    const model = !persisted?.modelId || provider === "unified" ? hydratedModelId : fallbackModel;
     const lane = laneService.getLaneBaseAndBranch(row.laneId);
 
     const managed: ManagedChatSession = {

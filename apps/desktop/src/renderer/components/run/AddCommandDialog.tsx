@@ -111,10 +111,10 @@ export function AddCommandDialog({
     onSubmit({
       name: name.trim(),
       command: command.trim(),
-      stackId: stackId === "__none__" ? null : stackId === "__new__" ? null : stackId,
-      newStackName: stackId === "__new__" ? newStackName.trim() || null : null,
-      cwd: cwd.trim() || ".",
-      env: envText.trim(),
+      stackId: showAdvanced ? (stackId === "__none__" ? null : stackId === "__new__" ? null : stackId) : null,
+      newStackName: showAdvanced && stackId === "__new__" ? newStackName.trim() || null : null,
+      cwd: showAdvanced ? (cwd.trim() || ".") : ".",
+      env: showAdvanced ? envText.trim() : "",
     });
     onClose();
   };

@@ -8,8 +8,6 @@ import {
 import { isChatToolType } from "../../../lib/sessions";
 import { parseAgentChatTranscript } from "../../../../shared/chatTranscript";
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
-import { deriveRuntimeState } from "./useDeriveRuntimeState";
-import type { DerivedPendingInput } from "../pendingInput";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -75,9 +73,7 @@ export interface UseAgentChatSessionsArgs {
   lockedSingleSessionMode: boolean;
   /** Refs / setters for event state that loadHistory needs to update */
   eventsBySessionRef: React.MutableRefObject<Record<string, AgentChatEventEnvelope[]>>;
-  setEventsBySession: React.Dispatch<React.SetStateAction<Record<string, AgentChatEventEnvelope[]>>>;
-  setTurnActiveBySession: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
-  setPendingInputsBySession: React.Dispatch<React.SetStateAction<Record<string, DerivedPendingInput[]>>>;
+  updateSessionEvents: (sessionId: string, events: AgentChatEventEnvelope[]) => void;
 }
 
 export interface UseAgentChatSessionsReturn {
@@ -107,9 +103,7 @@ export function useAgentChatSessions({
   forceDraftMode = false,
   lockedSingleSessionMode,
   eventsBySessionRef,
-  setEventsBySession,
-  setTurnActiveBySession,
-  setPendingInputsBySession,
+  updateSessionEvents,
 }: UseAgentChatSessionsArgs): UseAgentChatSessionsReturn {
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
@@ -190,7 +184,6 @@ export function useAgentChatSessions({
 
   const loadHistory = useCallback(async (sessionId: string) => {
     if (loadedHistoryRef.current.has(sessionId)) return;
-    loadedHistoryRef.current.add(sessionId);
 
     try {
       const summary = await window.ade.sessions.get(sessionId);
@@ -214,15 +207,13 @@ export function useAgentChatSessions({
         merged = parsed;
       }
 
-      const derived = deriveRuntimeState(merged);
-      eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
-      setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
-      setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: derived.turnActive }));
-      setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
+      updateSessionEvents(sessionId, merged);
+
+      loadedHistoryRef.current.add(sessionId);
     } catch {
-      // Ignore transcript history failures.
+      // Ignore transcript history failures — don't mark as loaded so retries are allowed.
     }
-  }, [eventsBySessionRef, setEventsBySession, setTurnActiveBySession, setPendingInputsBySession]);
+  }, [eventsBySessionRef, updateSessionEvents]);
 
   // ── Side effects ──────────────────────────────────────────────────
 

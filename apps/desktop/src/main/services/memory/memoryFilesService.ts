@@ -272,7 +272,14 @@ export function createProjectMemoryFilesService(args: {
   };
 
   const ensureFilesExist = (): void => {
-    if (fs.existsSync(indexPath)) return;
+    // Check all expected files, not just the index — topic files may be
+    // partially absent if the memory dir was only partially present.
+    if (
+      fs.existsSync(indexPath) &&
+      TOPICS.every((topic) => fs.existsSync(topicPaths[topic.key]))
+    ) {
+      return;
+    }
     sync();
   };
 
@@ -344,10 +351,15 @@ export function createProjectMemoryFilesService(args: {
     if (text.length > maxChars) {
       text = text.slice(0, maxChars).trimEnd();
     }
+
+    // Only report topics that actually survived the final maxChars truncation.
+    // If trailing topic sections were clipped away, they should not appear in loadedTopics.
+    const survivingTopics = loadedTopics.filter((fileName) => text.includes(fileName));
+
     return {
       text,
       bootstrapLoaded: bootstrap.length > 0,
-      topicFilesLoaded: loadedTopics,
+      topicFilesLoaded: survivingTopics,
     };
   };
 

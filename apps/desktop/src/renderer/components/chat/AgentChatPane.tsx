@@ -234,9 +234,7 @@ export function AgentChatPane({
     forceDraftMode,
     lockedSingleSessionMode,
     eventsBySessionRef: eventsHook.eventsBySessionRef,
-    setEventsBySession: eventsHook.setEventsBySession,
-    setTurnActiveBySession: eventsHook.setTurnActiveBySession,
-    setPendingInputsBySession: eventsHook.setPendingInputsBySession,
+    updateSessionEvents: eventsHook.updateSessionEvents,
   });
 
   const {
@@ -268,8 +266,8 @@ export function AgentChatPane({
     eventsBySessionRef,
     pendingEventQueueRef,
     eventFlushTimerRef,
-    setEventsBySession,
-    setPendingInputsBySession,
+    clearSessionEvents,
+    removePendingInput,
   } = eventsHook;
 
   // ── Composer state hook ───────────────────────────────────────────
@@ -598,9 +596,9 @@ export function AgentChatPane({
     if (!request) return;
     try {
       await window.ade.agentChat.respondToInput({ sessionId: selectedSessionId, itemId: request.itemId, decision, responseText, ...(answers ? { answers } : {}) });
-      setPendingInputsBySession((prev) => ({ ...prev, [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== request.itemId) }));
+      removePendingInput(selectedSessionId, request.itemId);
     } catch (approvalError) { setError(approvalError instanceof Error ? approvalError.message : String(approvalError)); }
-  }, [eventsHook.pendingInputsBySession, selectedSessionId, setPendingInputsBySession]);
+  }, [eventsHook.pendingInputsBySession, selectedSessionId, removePendingInput]);
 
   // ── Effects ───────────────────────────────────────────────────────
 
@@ -818,7 +816,7 @@ export function AgentChatPane({
             </div>
           ) : null}
           {isPersistentIdentitySurface && selectedSessionId ? (
-            <button type="button" className="inline-flex items-center rounded-md border border-white/[0.06] px-2.5 py-1 font-sans text-[11px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg" onClick={() => { eventsBySessionRef.current = { ...eventsBySessionRef.current, [selectedSessionId]: [] }; setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] })); setPendingInputsBySession((prev) => ({ ...prev, [selectedSessionId]: [] })); }}>Clear view</button>
+            <button type="button" className="inline-flex items-center rounded-md border border-white/[0.06] px-2.5 py-1 font-sans text-[11px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg" onClick={() => { clearSessionEvents(selectedSessionId); }}>Clear view</button>
           ) : null}
           {resolvedChips.map((chip) => (
             <span key={`${chip.label}:${chip.tone ?? "accent"}`} className={cn("inline-flex items-center rounded-md border px-2 py-1 font-sans text-[10px] font-medium", chatChipToneClass(chip.tone))}>{chip.label}</span>
@@ -901,7 +899,7 @@ export function AgentChatPane({
             onSearchAttachments={searchAttachments}
             includeProjectDocs={includeProjectDocs}
             onIncludeProjectDocsChange={setIncludeProjectDocs}
-            onClearEvents={() => { if (selectedSessionId) { eventsBySessionRef.current = { ...eventsBySessionRef.current, [selectedSessionId]: [] }; setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] })); setPendingInputsBySession((prev) => ({ ...prev, [selectedSessionId]: [] })); } }}
+            onClearEvents={() => { if (selectedSessionId) { clearSessionEvents(selectedSessionId); } }}
             promptSuggestion={promptSuggestion}
             subagentSnapshots={selectedSubagentSnapshots}
           />
@@ -946,7 +944,7 @@ export function AgentChatPane({
                 onApproval={(itemId, decision, responseText) => {
                   if (!selectedSessionId) return;
                   window.ade.agentChat.respondToInput({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
-                    setPendingInputsBySession((prev) => ({ ...prev, [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId) }));
+                    removePendingInput(selectedSessionId, itemId);
                   }).catch((err) => { setError(err instanceof Error ? err.message : String(err)); });
                 }}
               />

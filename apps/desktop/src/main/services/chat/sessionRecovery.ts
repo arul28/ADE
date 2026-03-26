@@ -24,10 +24,11 @@ export function createRecoveryState(): RecoveryState {
 
 export function canAttemptRecovery(state: RecoveryState): boolean {
   if (state.recovering) return false;
-  if (state.attempts >= MAX_RECOVERY_ATTEMPTS) return false;
-  const elapsed = Date.now() - state.lastAttemptAt;
-  // After MAX_RECOVERY_ATTEMPTS, require a cooldown before resetting
-  if (state.attempts >= MAX_RECOVERY_ATTEMPTS && elapsed < RECOVERY_COOLDOWN_MS) return false;
+  if (state.attempts >= MAX_RECOVERY_ATTEMPTS) {
+    // After max attempts, require a cooldown period before allowing retry
+    const elapsed = Date.now() - state.lastAttemptAt;
+    return elapsed >= RECOVERY_COOLDOWN_MS;
+  }
   return true;
 }
 

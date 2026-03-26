@@ -321,6 +321,11 @@ function mapPermissionModeToNativeFields(
   mode: AgentChatPermissionMode | undefined,
 ): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "unifiedPermissionMode">> {
   if (!mode) return {};
+  // "config-toml" means the worker should inherit permissions from the
+  // provider/repo config (e.g. a .toml settings file). Don't rewrite it
+  // into explicit native permission fields — pass through with no overrides
+  // so the managed session respects the config it was supposed to inherit.
+  if (mode === "config-toml") return {};
   if (provider === "claude") {
     const map: Record<string, import("../../../shared/types").AgentChatClaudePermissionMode> = {
       "full-auto": "bypassPermissions",
