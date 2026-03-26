@@ -1485,8 +1485,9 @@ export function createAgentChatService(args: {
   /** Returns true for any non-trivial prompt that should get the bootstrap memory context. */
   const shouldLoadAutoMemoryBootstrap = (
     promptText: string,
-    _attachmentCount = 0,
+    attachmentCount = 0,
   ): boolean => {
+    if (attachmentCount > 0) return true;
     const trimmed = promptText.trim();
     if (trimmed.length < 18) return false;
     if (trimmed.startsWith("/")) return false;
