@@ -804,11 +804,13 @@ describe("createAgentChatService", () => {
       expect(result.session.executionMode).toBe("parallel");
       expect(mockState.sessions.get(result.session.id)?.goal).toBe("Fix the work-tab handoff UI.");
 
-      await new Promise((resolve) => setTimeout(resolve, 25));
       const transcriptPath = mockState.sessions.get(result.session.id)?.transcriptPath;
       expect(transcriptPath).toBeTruthy();
-      const transcript = fs.readFileSync(String(transcriptPath), "utf8");
-      expect(transcript).toContain("Chat handoff from previous session");
+      // Wait for the async transcript write to flush (CI runners can be slow)
+      await vi.waitFor(() => {
+        const transcript = fs.readFileSync(String(transcriptPath), "utf8");
+        expect(transcript).toContain("Chat handoff from previous session");
+      }, { timeout: 2000, interval: 50 });
     });
 
     it("uses AI-generated handoff summaries when a summary model is available", async () => {
