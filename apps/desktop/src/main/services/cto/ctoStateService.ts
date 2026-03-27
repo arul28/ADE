@@ -890,7 +890,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const syncDerivedMemoryDocs = (snapshot = getSnapshot(8)): void => {
     const longTermDoc = renderGeneratedMemoryDoc(
       "CTO Memory",
-      "Internal ADE-generated long-term CTO memory. This mirrors the always-on brief layer plus promoted durable project memory.",
+      "Internal ADE-generated long-term CTO memory. This mirrors the persistent continuity brief plus promoted durable project memory.",
       buildLongTermMemoryLines(snapshot),
     );
     const currentContextDoc = renderGeneratedMemoryDoc(

@@ -12,7 +12,7 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
-import { safeJsonParse, nowIso, looksSensitiveKey } from "../shared/utils";
+import { clipText, getErrorMessage, safeJsonParse, nowIso, sanitizeStructuredData, redactSecrets } from "../shared/utils";
 import type { WorkerAdapterRuntimeService } from "./workerAdapterRuntimeService";
 import type { WorkerAgentService } from "./workerAgentService";
 import type { WorkerBudgetService } from "./workerBudgetService";
@@ -89,13 +89,6 @@ type TimerEntry = {
   timer: NodeJS.Timeout;
   intervalSec: number;
 };
-
-const SENSITIVE_VALUE_PATTERNS = [
-  /\bbearer\s+[a-z0-9._~+/=-]{12,}/i,
-  /\bsk-[a-z0-9]{12,}/i,
-  /\bgh[pousr]_[a-z0-9]{16,}/i,
-  /\bxox[baprs]-[a-z0-9-]{10,}/i,
-];
 
 function clampLimit(limit: number | undefined, fallback = 80): number {
   const candidate = Number(limit ?? fallback);
@@ -179,52 +172,7 @@ function withinActiveHours(agent: AgentIdentity, at = new Date()): boolean {
 }
 
 function sanitizeContext(input: unknown): Record<string, unknown> {
-  const looksSensitiveValue = (value: string): boolean =>
-    SENSITIVE_VALUE_PATTERNS.some((pattern) => pattern.test(value));
-
-  const walk = (value: unknown, keyPath = ""): unknown => {
-    if (Array.isArray(value)) return value.map((entry, index) => walk(entry, `${keyPath}[${index}]`));
-    if (value && typeof value === "object") {
-      const next: Record<string, unknown> = {};
-      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-        if (looksSensitiveKey(key)) {
-          next[key] = "[REDACTED]";
-          continue;
-        }
-        next[key] = walk(child, keyPath ? `${keyPath}.${key}` : key);
-      }
-      return next;
-    }
-    if (typeof value === "string" && looksSensitiveValue(value.trim())) {
-      return "[REDACTED]";
-    }
-    if (typeof value === "string" && value.length > 4_000) {
-      return `${value.slice(0, 4_000)}…`;
-    }
-    return value;
-  };
-
-  const walked = walk(input);
-  return walked && typeof walked === "object" && !Array.isArray(walked)
-    ? walked as Record<string, unknown>
-    : {};
-}
-
-function outputPreview(outputText: string): string {
-  const trimmed = outputText.trim();
-  if (!trimmed.length) return "";
-  return trimmed.length <= 600 ? trimmed : `${trimmed.slice(0, 600)}…`;
-}
-
-function clipText(value: string, maxChars: number): string {
-  const trimmed = value.trim();
-  if (trimmed.length <= maxChars) return trimmed;
-  return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
-}
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  return sanitizeStructuredData(input) ?? {};
 }
 
 export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
@@ -621,6 +569,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
         },
       },
     });
+    const sanitizedOutput = redactSecrets(runtimeResult.outputText);
     updateRunFields(run.id, {
       status: runStatus,
       finished_at: finishedAt,
@@ -632,7 +581,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
         ok: runtimeResult.ok,
         statusCode: runtimeResult.statusCode ?? null,
         heartbeatOk,
-        outputPreview: outputPreview(runtimeResult.outputText),
+        outputPreview: clipText(sanitizedOutput, 600),
         provider: runtimeResult.provider ?? null,
         sessionId: runtimeResult.sessionId ?? null,
       }),
@@ -649,7 +598,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
           runtimeResult.effectiveSurface !== "process" && runtimeResult.effectiveSurface !== "openclaw_webhook"
             ? `Resumed via ${runtimeResult.effectiveSurface}.`
             : "",
-          heartbeatOk ? "No action required." : outputPreview(runtimeResult.outputText) || "No output.",
+          heartbeatOk ? "No action required." : clipText(sanitizedOutput, 600) || "No output.",
         ]
           .filter((entry) => entry.length > 0)
           .join(" "),
@@ -671,7 +620,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       summary: clipText(
         [
           runtimeResult.ok ? "Worker run completed." : "Worker run failed.",
-          heartbeatOk ? "No action required." : outputPreview(runtimeResult.outputText) || "No output.",
+          heartbeatOk ? "No action required." : clipText(sanitizedOutput, 600) || "No output.",
         ].join(" "),
         360
       ),

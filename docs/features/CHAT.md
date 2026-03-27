@@ -27,12 +27,13 @@ Every chat creates an `AgentChatSession`:
 - **id** -- UUID, unique per session.
 - **laneId** -- The lane the session belongs to. Lane context (branch,
   working directory) is injected into the agent's system prompt.
-- **provider / model / modelId** -- What is powering the session. `model` is the human-readable display name; `modelId` is the registry ID (required).
+- **provider / model / modelId** -- What is powering the session. `model` stores the runtime-facing model token (for example `sonnet`, `gpt-5.4-codex`, or a direct API model id); `modelId` is the registry ID when ADE can resolve one.
 - **status** -- `active | idle | ended`.
-- **Permission controls** -- Provider-native fields control what the agent may do autonomously: `claudePermissionMode` (Claude), `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource` (Codex), `unifiedPermissionMode` (unified/API).
+- **Permission controls** -- Provider-native fields control what the agent may do autonomously: `claudePermissionMode` (Claude), `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource` (Codex), `unifiedPermissionMode` (unified/API). A session-level `permissionMode` field stores the abstract mode independently from the provider-native mapping.
 - **identityKey** -- Optional. `"cto"` for the CTO agent, `"agent:<id>"`
   for named employees.
 - **executionMode** -- `focused | parallel | subagents | teams`.
+- **interactionMode** -- `default | plan`. When `plan`, the agent operates in a read-only planning mode where it proposes changes without executing them. Plan approval flows through a dedicated `plan_approval` pending input kind.
 
 Sessions persist their transcript and metadata to disk so they survive
 app restarts. The `AgentChatSessionSummary` exposes title, goal,
@@ -167,7 +168,7 @@ Codex sessions have two independent controls:
 
 ### Orchestrator Permission Mapping
 
-The unified orchestrator adapter translates abstract permission modes (`plan`, `edit`, `full-auto`) into the correct provider-native fields via `mapPermissionModeToNativeFields()`. For Claude this maps to `claudePermissionMode`, for Codex to `codexApprovalPolicy`/`codexSandbox`, and for unified to `unifiedPermissionMode`. The legacy `permissionMode` field has been removed from session types and create args.
+The unified orchestrator adapter translates abstract permission modes (`plan`, `edit`, `full-auto`) into the correct provider-native fields via `mapPermissionModeToNativeFields()`. For Claude this maps to `claudePermissionMode`, for Codex to `codexApprovalPolicy`/`codexSandbox`, and for unified to `unifiedPermissionMode`. Chat sessions still persist an abstract `permissionMode` field alongside the provider-native controls so the UI can summarize session state and legacy flows can be normalized consistently.
 
 All controls can be changed mid-session via `updateSession`.
 
@@ -176,8 +177,8 @@ All controls can be changed mid-session via `updateSession`.
 When an agent needs human input -- either permission to proceed or answers to questions -- the service emits events that the renderer derives into `PendingInputRequest` objects. These are a unified abstraction across all providers:
 
 - `requestId` -- unique identifier for the request.
-- `source` -- `"claude" | "codex" | "unified" | "mission"`.
-- `kind` -- `"approval" | "question" | "structured_question" | "permissions"`.
+- `source` -- `"claude" | "codex" | "unified" | "mission" | "ade"`.
+- `kind` -- `"approval" | "question" | "structured_question" | "permissions" | "plan_approval"`.
 - `questions` -- array of `PendingInputQuestion` with optional predefined options, freeform input, and impact descriptions.
 - `blocking` / `canProceedWithoutAnswer` -- whether the agent is blocked or can continue with a default assumption.
 
@@ -195,7 +196,9 @@ The chat message list renders events through a two-layer pipeline defined in `ch
 
 2. **Grouped envelopes** -- Adjacent work log entries in the same turn are grouped into `work_log_group` blocks so the message list can render them as a single collapsible card (`ChatWorkLogBlock`) rather than individual rows. This keeps the transcript compact when the agent performs many tool operations in a single turn.
 
-Each work log entry carries a `collapseKey` derived from the turn, item, and tool/command identity. Streaming updates for the same tool call or command merge into the existing entry rather than appending new rows.
+Each work log entry carries a `collapseKey` derived from the turn, logical item identity (`logicalItemId` when present, otherwise `itemId`), and tool/command identity. Streaming updates for the same tool call or command merge into the existing entry rather than appending new rows.
+
+Adjacent assistant text events are merged using `shouldMergeTextRows()`, which compares `messageId`, `turnId`, and `itemId` fields to decide whether two text fragments belong to the same logical message. Events with matching `messageId` values always merge; events without `messageId` fall back to turn/item identity. This prevents duplicate text rows when the streaming backend emits fragmented text events.
 
 The `ChatWorkLogBlock` component renders grouped entries with:
 
@@ -223,13 +226,14 @@ The composer (`AgentChatComposer`) supports file/image attachments,
 model switching, reasoning-effort control, context-pack injection, and
 slash commands sourced from the active SDK session. The `@` key opens
 an inline file attachment picker with debounced search and stale-result
-discarding. Permission controls are rendered inline as provider-native
-controls: Claude permission mode, Codex preset modes (Plan / Guarded
-Edit / Full Auto / Custom with raw approval-policy and sandbox
-dropdowns), and unified permission mode. Native text assistance
-(spellcheck, autocorrect, autocapitalize) is enabled on the prompt
-textarea. Claude sessions expose `/compact` and `/memory` as default
-slash commands before the SDK session is initialized.
+discarding. Permission controls are rendered inline with an interaction
+mode selector (`default` / `plan`) and provider-native controls: Claude
+permission mode, Codex preset modes (Plan / Guarded Edit / Full Auto,
+with custom/config-toml state surfaced as a summary row rather than raw
+inline dropdowns), and unified permission mode. Before a Claude SDK
+session is initialized, ADE exposes local slash commands such as
+`/clear` and `/login`; once the SDK is ready, its slash commands are
+merged into the picker.
 
 ## Image Attachments
 
@@ -244,8 +248,9 @@ provider-specific handling:
   blocks.
 
 The composer saves pasted or dropped images to a temporary location via
-the `saveTempAttachment` IPC handler. The service validates MIME types
-before sending to each provider.
+the `saveTempAttachment` IPC handler. Temporary attachments are capped
+at 10 MB, and the service validates MIME types before sending to each
+provider.
 
 ## Session Identity Propagation
 
@@ -257,21 +262,18 @@ owner through a cascade: explicit tool argument, session identity
 field, and finally an implicit fallback for standalone chat sessions
 (no mission/run/step context) using the caller ID.
 
-## Session Recovery
+## Session Continuity
 
-The chat service includes automatic session recovery for transient
-failures (process crashes, network resets, stream closures). The
-`sessionRecovery` module tracks per-session recovery state: attempt
-count, backoff timing, and error classification. Up to 3 recovery
-attempts are allowed with exponential backoff (base 2s). Terminal errors
-(authentication, billing, quota, permission denied) skip recovery
-entirely. Recovery status is surfaced to the user via `provider_health`
-system notice events showing attempt progress, success, or failure.
+Chat sessions persist their state to disk so they survive app restarts.
+The persisted state (version 2) includes recent conversation entries,
+a continuity summary, preferred/selected execution lane IDs, and the
+full provider runtime state. When a session resumes, the service
+reconstructs context from persisted entries and injects the continuity
+summary so the agent retains awareness of prior turns.
 
-For Codex sessions, recovery includes thread identity rebind: when a
-thread ID is lost, the service first checks persisted state, then
-attempts a fresh thread start. Thread ID waiters are notified when
-identity is re-established.
+Codex sessions deduplicate runtime notifications to prevent duplicate
+event processing when the subprocess emits repeated item/turn lifecycle
+events.
 
 ## Virtual Scrolling
 

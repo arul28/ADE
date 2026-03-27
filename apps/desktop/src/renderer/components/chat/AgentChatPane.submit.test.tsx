@@ -4,10 +4,19 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { createDefaultComputerUsePolicy, type AgentChatSessionSummary } from "../../../shared/types";
+import {
+  createDefaultComputerUsePolicy,
+  type AgentChatEventEnvelope,
+  type AgentChatSessionSummary,
+} from "../../../shared/types";
+import { getModelById } from "../../../shared/modelRegistry";
 import { AgentChatPane } from "./AgentChatPane";
 
-function buildSession(sessionId: string): AgentChatSessionSummary {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSummary> = {}): AgentChatSessionSummary {
   return {
     sessionId,
     laneId: "lane-1",
@@ -27,6 +36,8 @@ function buildSession(sessionId: string): AgentChatSessionSummary {
     reasoningEffort: "xhigh",
     computerUse: createDefaultComputerUsePolicy(),
     executionMode: "focused",
+    interactionMode: null,
+    ...overrides,
   };
 }
 
@@ -42,12 +53,32 @@ function buildStatusStartedTranscript(sessionId: string): string {
   })}\n`;
 }
 
+function buildPendingInputTranscript(sessionId: string): string {
+  return `${JSON.stringify({
+    sessionId,
+    timestamp: "2026-03-24T05:57:45.700Z",
+    event: {
+      type: "approval_request",
+      itemId: "approval-1",
+      kind: "tool_call",
+      description: "Which branch should I use?",
+      turnId: "turn-1",
+      detail: {
+        tool: "askUser",
+        question: "Which branch should I use?",
+      },
+    },
+  })}\n`;
+}
+
 function installAdeMocks(options?: {
   transcript?: string;
   sendError?: Error;
   steerError?: Error;
   listError?: Error;
   handoffResult?: { session: { id: string }; usedFallbackSummary: boolean };
+  sessions?: AgentChatSessionSummary[];
+  includeClaudeModel?: boolean;
 }) {
   const send = options?.sendError
     ? vi.fn().mockRejectedValue(options.sendError)
@@ -57,11 +88,12 @@ function installAdeMocks(options?: {
     : vi.fn().mockResolvedValue(undefined);
   const list = options?.listError
     ? vi.fn().mockRejectedValue(options.listError)
-    : vi.fn().mockResolvedValue([buildSession("session-1")]);
+    : vi.fn().mockResolvedValue(options?.sessions ?? [buildSession("session-1")]);
   const handoff = vi.fn().mockResolvedValue(options?.handoffResult ?? {
     session: { id: "handoff-session-1" },
     usedFallbackSummary: false,
   });
+  const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
 
   globalThis.window.ade = {
     projectConfig: {
@@ -81,11 +113,17 @@ function installAdeMocks(options?: {
     agentChat: {
       models: vi.fn().mockImplementation(async ({ provider }: { provider: string }) => {
         if (provider === "codex") return [{ id: "gpt-5.4" }];
+        if (provider === "claude") return options?.includeClaudeModel ? [{ id: "anthropic/claude-sonnet-4-6" }] : [];
         if (provider === "unified") return [{ id: "openai/gpt-5.4-mini" }];
         return [];
       }),
       slashCommands: vi.fn().mockResolvedValue([]),
-      onEvent: vi.fn().mockImplementation(() => () => undefined),
+      onEvent: vi.fn().mockImplementation((listener: (event: AgentChatEventEnvelope) => void) => {
+        chatEventListeners.add(listener);
+        return () => {
+          chatEventListeners.delete(listener);
+        };
+      }),
       handoff,
       send,
       steer,
@@ -116,7 +154,17 @@ function installAdeMocks(options?: {
     },
   } as any;
 
-  return { send, steer, list, handoff };
+  return {
+    send,
+    steer,
+    list,
+    handoff,
+    emitChatEvent: (event: AgentChatEventEnvelope) => {
+      for (const listener of chatEventListeners) {
+        listener(event);
+      }
+    },
+  };
 }
 
 const originalAde = globalThis.window.ade;
@@ -161,7 +209,47 @@ function renderResolverPane(session: AgentChatSessionSummary) {
   );
 }
 
+function renderTabbedPane(session: AgentChatSessionSummary) {
+  return render(
+    <MemoryRouter>
+      <AgentChatPane
+        laneId={session.laneId}
+        initialSessionId={session.sessionId}
+        initialSessionSummary={session}
+      />
+    </MemoryRouter>,
+  );
+}
+
+function expectSessionTabOrder(expectedTitles: string[]) {
+  const tabs = screen.getAllByRole("button")
+    .filter((button) => expectedTitles.includes(button.textContent?.trim() ?? ""));
+  expect(tabs.map((button) => button.textContent?.trim())).toEqual(expectedTitles);
+}
+
 describe("AgentChatPane submit recovery", () => {
+  it("shows a green session indicator while the agent is working", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks({
+      transcript: buildStatusStartedTranscript(session.sessionId),
+    });
+
+    renderTabbedPane(session);
+
+    expect(await screen.findByLabelText("Agent working")).toBeTruthy();
+  });
+
+  it("shows an amber session indicator while waiting for user input", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks({
+      transcript: buildPendingInputTranscript(session.sessionId),
+    });
+
+    renderTabbedPane(session);
+
+    expect(await screen.findByLabelText("Waiting for your input")).toBeTruthy();
+  });
+
   it("keeps the draft cleared after send succeeds even if session refresh fails", async () => {
     const session = buildSession("session-1");
     const { send, list } = installAdeMocks({
@@ -223,6 +311,213 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(send).toHaveBeenCalled();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry after the failure.");
+    });
+  });
+
+  it("sends the selected Claude interaction mode with the next turn", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      permissionMode: "default",
+      interactionMode: "default",
+      claudePermissionMode: "default",
+    });
+    const sessions = [session];
+    const updateSession = vi.fn().mockImplementation(async (args: any) => {
+      sessions[0] = {
+        ...sessions[0]!,
+        interactionMode: args.interactionMode ?? sessions[0]!.interactionMode,
+        claudePermissionMode: args.claudePermissionMode ?? sessions[0]!.claudePermissionMode,
+        permissionMode: args.permissionMode ?? sessions[0]!.permissionMode,
+      };
+      return sessions[0];
+    });
+    const { send } = installAdeMocks({
+      includeClaudeModel: true,
+      sessions,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Plan" }));
+
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        interactionMode: "plan",
+      }));
+    });
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Just plan the implementation." } });
+    fireEvent.click(screen.getByTitle("Send"));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Just plan the implementation.",
+        interactionMode: "plan",
+      }));
+    });
+  });
+
+  it("moves the most recently selected work chat tab to the top", async () => {
+    const newerSession = buildSession("session-newer", {
+      title: "Newer chat",
+      startedAt: "2026-03-24T06:00:00.000Z",
+      lastActivityAt: "2026-03-24T06:05:00.000Z",
+    });
+    const olderSession = buildSession("session-older", {
+      title: "Older chat",
+      startedAt: "2026-03-24T05:00:00.000Z",
+      lastActivityAt: "2026-03-24T05:05:00.000Z",
+    });
+    installAdeMocks({
+      sessions: [olderSession, newerSession],
+    });
+
+    renderTabbedPane(newerSession);
+
+    await waitFor(() => {
+      expectSessionTabOrder(["Newer chat", "Older chat"]);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Older chat/i }));
+
+    await waitFor(() => {
+      expectSessionTabOrder(["Older chat", "Newer chat"]);
+    });
+  });
+
+  it("keeps the committed model visible until the backend confirms the switch", async () => {
+    const session = buildSession("session-1");
+    const sessions = [session];
+    let resolveUpdateSession!: (value: AgentChatSessionSummary) => void;
+    const updateSession = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveUpdateSession = resolve;
+    }));
+    const warmupModel = vi.fn().mockResolvedValue(undefined);
+    installAdeMocks({
+      sessions,
+      includeClaudeModel: true,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+    window.ade.agentChat.warmupModel = warmupModel as any;
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const currentLabel = getModelById(session.modelId ?? "")?.displayName ?? session.modelId ?? "";
+    const nextLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+    expect(trigger.textContent ?? "").toContain(currentLabel);
+
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("option", { name: nextLabelPattern }));
+
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        modelId: "anthropic/claude-sonnet-4-6",
+      }));
+    });
+    expect(screen.getByRole("button", { name: "Select model" }).textContent ?? "").toContain(currentLabel);
+    expect(warmupModel).not.toHaveBeenCalled();
+
+    const updatedSession: AgentChatSessionSummary = {
+      ...session,
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      reasoningEffort: "medium",
+      permissionMode: "default",
+      interactionMode: "default",
+      claudePermissionMode: "default",
+      computerUse: session.computerUse,
+    };
+    sessions[0] = updatedSession;
+    resolveUpdateSession(updatedSession);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Select model" }).textContent ?? "").toContain(nextLabel);
+    });
+    await waitFor(() => {
+      expect(warmupModel).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        modelId: "anthropic/claude-sonnet-4-6",
+      });
+    });
+  });
+
+  it("keeps the committed model visible when the backend rejects a switch", async () => {
+    const session = buildSession("session-1");
+    const updateSession = vi.fn().mockRejectedValue(new Error("switch failed"));
+    const warmupModel = vi.fn().mockResolvedValue(undefined);
+    installAdeMocks({
+      sessions: [session],
+      includeClaudeModel: true,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+    window.ade.agentChat.warmupModel = warmupModel as any;
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const currentLabel = getModelById(session.modelId ?? "")?.displayName ?? session.modelId ?? "";
+    const nextLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+    expect(trigger.textContent ?? "").toContain(currentLabel);
+
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("option", { name: nextLabelPattern }));
+
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        modelId: "anthropic/claude-sonnet-4-6",
+      }));
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Select model" }).textContent ?? "").toContain(currentLabel);
+    });
+    expect(warmupModel).not.toHaveBeenCalled();
+  });
+
+  it("bumps a work chat to the top when a turn starts mid-stream", async () => {
+    const newerSession = buildSession("session-newer", {
+      title: "Newer chat",
+      startedAt: "2026-03-24T06:00:00.000Z",
+      lastActivityAt: "2026-03-24T06:05:00.000Z",
+    });
+    const olderSession = buildSession("session-older", {
+      title: "Older chat",
+      startedAt: "2026-03-24T05:00:00.000Z",
+      lastActivityAt: "2026-03-24T05:05:00.000Z",
+    });
+    const { emitChatEvent } = installAdeMocks({
+      sessions: [olderSession, newerSession],
+    });
+
+    renderTabbedPane(newerSession);
+
+    await waitFor(() => {
+      expectSessionTabOrder(["Newer chat", "Older chat"]);
+    });
+
+    emitChatEvent({
+      sessionId: olderSession.sessionId,
+      timestamp: "2026-03-24T07:00:00.000Z",
+      event: {
+        type: "status",
+        turnStatus: "started",
+        turnId: "turn-older-1",
+      },
+    });
+
+    await waitFor(() => {
+      expectSessionTabOrder(["Older chat", "Newer chat"]);
     });
   });
 

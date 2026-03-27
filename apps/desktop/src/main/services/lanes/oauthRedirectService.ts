@@ -262,11 +262,11 @@ export function createOAuthRedirectService({
     return `<!DOCTYPE html>
 <html><head><title>OAuth Routing Error — ADE</title>
 <style>
-body{font-family:system-ui,sans-serif;background:#09080C;color:#FAFAFA;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+body{font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;background:#09080C;color:#FAFAFA;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 .c{background:#181423;border:1px solid #2D2840;padding:32px;max-width:520px}
 h1{font-size:16px;color:#EF4444;margin:0 0 12px}
 p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
-code{background:#0B0A0F;padding:2px 6px;font-size:12px;color:#A78BFA}
+code{background:#0B0A0F;padding:2px 6px;font-size:12px;color:#A78BFA;font-family:inherit}
 .h{font-size:11px;color:#5A5670;margin-top:16px}
 </style></head><body><div class="c">
 <h1>OAuth Callback Routing Failed</h1>

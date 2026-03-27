@@ -131,43 +131,73 @@ function buildRenderKey(envelope: AgentChatEventEnvelope, sequence: number): str
   return `${envelope.sessionId}:${sequence}:${envelope.timestamp}`;
 }
 
-function buildToolCollapseKey(event: Extract<AgentChatEvent, { type: "tool_call" | "tool_result" }>): string | undefined {
-  const parts = ["tool"];
+function buildTextRenderKey(event: Extract<AgentChatEvent, { type: "text" }>, envelope: AgentChatEventEnvelope, sequence: number): string {
+  const messageId = event.messageId?.trim();
+  if (messageId) {
+    return `${envelope.sessionId}:text:${messageId}:${sequence}`;
+  }
+  return buildRenderKey(envelope, sequence);
+}
+
+function getTextIdentity(event: Extract<AgentChatEvent, { type: "text" }>): string | null {
+  const messageId = event.messageId?.trim();
+  return messageId?.length ? messageId : null;
+}
+
+function shouldMergeTextRows(
+  previous: Extract<AgentChatEvent, { type: "text" }>,
+  next: Extract<AgentChatEvent, { type: "text" }>,
+): boolean {
+  const previousIdentity = getTextIdentity(previous);
+  const nextIdentity = getTextIdentity(next);
+
+  if (previousIdentity || nextIdentity) {
+    if (previousIdentity && nextIdentity) {
+      return previousIdentity === nextIdentity;
+    }
+    const previousTurnId = previous.turnId ?? null;
+    const nextTurnId = next.turnId ?? null;
+    if (previousTurnId && nextTurnId && previousTurnId === nextTurnId) {
+      const previousItemId = previous.itemId ?? null;
+      const nextItemId = next.itemId ?? null;
+      return !previousItemId || !nextItemId || previousItemId === nextItemId;
+    }
+    return false;
+  }
+
+  const previousTurnId = previous.turnId ?? null;
+  const nextTurnId = next.turnId ?? null;
+  if (previousTurnId && nextTurnId && previousTurnId === nextTurnId) {
+    const previousItemId = previous.itemId ?? null;
+    const nextItemId = next.itemId ?? null;
+    return !previousItemId || !nextItemId || previousItemId === nextItemId;
+  }
+
+  return !previousTurnId && !nextTurnId && !previous.itemId && !next.itemId;
+}
+
+function buildCollapseKey(
+  prefix: string,
+  event: { turnId?: string; itemId?: string; logicalItemId?: string },
+  suffix?: string,
+): string {
+  const parts = [prefix];
   if (event.turnId) parts.push(event.turnId);
-  if (event.itemId) parts.push(event.itemId);
-  parts.push(event.tool);
+  const stableItemId = event.logicalItemId ?? event.itemId;
+  if (stableItemId) parts.push(stableItemId);
+  if (suffix) parts.push(suffix);
   return parts.join("::");
 }
 
-function buildCommandCollapseKey(event: Extract<AgentChatEvent, { type: "command" }>): string | undefined {
-  const parts = ["command"];
-  if (event.turnId) parts.push(event.turnId);
-  if (event.itemId) parts.push(event.itemId);
-  parts.push(event.command);
-  return parts.join("::");
+function buildWorkLogEntryId(
+  collapseKey: string | undefined,
+  event: { itemId?: string; logicalItemId?: string },
+): string {
+  return collapseKey ?? event.logicalItemId ?? event.itemId ?? "work-log-entry";
 }
 
-function buildFileCollapseKey(event: Extract<AgentChatEvent, { type: "file_change" }>): string | undefined {
-  const parts = ["file"];
-  if (event.turnId) parts.push(event.turnId);
-  if (event.itemId) parts.push(event.itemId);
-  return parts.join("::");
-}
-
-function buildWebSearchCollapseKey(event: Extract<AgentChatEvent, { type: "web_search" }>): string | undefined {
-  const parts = ["web-search"];
-  if (event.turnId) parts.push(event.turnId);
-  if (event.itemId) parts.push(event.itemId);
-  parts.push(event.query);
-  return parts.join("::");
-}
-
-function deriveToolTone(status: ChatWorkLogStatus): ChatWorkLogEntryTone {
-  return status === "failed" ? "error" : "tool";
-}
-
-function deriveInfoTone(status: ChatWorkLogStatus): ChatWorkLogEntryTone {
-  return status === "failed" ? "error" : "info";
+function deriveTone(status: ChatWorkLogStatus, normalTone: ChatWorkLogEntryTone): ChatWorkLogEntryTone {
+  return status === "failed" ? "error" : normalTone;
 }
 
 function buildToolWorkLogEvent(
@@ -175,14 +205,15 @@ function buildToolWorkLogEvent(
   timestamp: string,
 ): WorkLogRenderEvent {
   const status = event.type === "tool_call" ? "running" : (event.status ?? "completed");
+  const collapseKey = buildCollapseKey("tool", event, event.tool);
   return {
     type: "work_log_entry",
-    collapseKey: buildToolCollapseKey(event),
+    collapseKey,
     entry: {
-      id: event.itemId,
+      id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
       label: event.tool,
-      tone: deriveToolTone(status),
+      tone: deriveTone(status, "tool"),
       status,
       entryKind: "tool",
       toolName: event.tool,
@@ -199,17 +230,18 @@ function buildCommandWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "command" }>,
   timestamp: string,
 ): WorkLogRenderEvent {
+  const collapseKey = buildCollapseKey("command", event, event.command);
   return {
     type: "work_log_entry",
-    collapseKey: buildCommandCollapseKey(event),
+    collapseKey,
     entry: {
-      id: event.itemId,
+      id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
       label: "Shell",
       command: event.command,
       output: event.output,
       cwd: event.cwd,
-      tone: deriveInfoTone(event.status),
+      tone: deriveTone(event.status, "info"),
       status: event.status,
       entryKind: "command",
       ...(event.itemId ? { itemId: event.itemId } : {}),
@@ -223,11 +255,12 @@ function buildFileWorkLogEvent(
   timestamp: string,
 ): WorkLogRenderEvent {
   const stats = summarizeDiffStats(event.diff);
+  const collapseKey = buildCollapseKey("file", event);
   return {
     type: "work_log_entry",
-    collapseKey: buildFileCollapseKey(event),
+    collapseKey,
     entry: {
-      id: event.itemId,
+      id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
       label: event.path,
       changedFiles: [{
@@ -237,7 +270,7 @@ function buildFileWorkLogEvent(
         deletions: stats.deletions,
         diff: event.diff,
       }],
-      tone: deriveInfoTone(event.status ?? "completed"),
+      tone: deriveTone(event.status ?? "completed", "info"),
       status: event.status ?? "completed",
       entryKind: "file_change",
       ...(event.itemId ? { itemId: event.itemId } : {}),
@@ -250,17 +283,18 @@ function buildWebSearchWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "web_search" }>,
   timestamp: string,
 ): WorkLogRenderEvent {
+  const collapseKey = buildCollapseKey("web-search", event, event.query);
   return {
     type: "work_log_entry",
-    collapseKey: buildWebSearchCollapseKey(event),
+    collapseKey,
     entry: {
-      id: event.itemId,
+      id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
       label: "Web search",
       detail: event.action,
       query: event.query,
       action: event.action,
-      tone: deriveInfoTone(event.status),
+      tone: deriveTone(event.status, "info"),
       status: event.status,
       entryKind: "web_search",
       ...(event.itemId ? { itemId: event.itemId } : {}),
@@ -444,37 +478,22 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "text") {
-    const nextTurn = event.turnId ?? null;
-    const nextItem = event.itemId ?? null;
-    if (nextTurn || nextItem) {
-      let matchIndex = -1;
-      for (let index = rows.length - 1; index >= 0; index -= 1) {
-        const candidate = rows[index];
-        if (!candidate) continue;
-        if (candidate.event.type === "work_log_entry") break;
-        if (
-          candidate.event.type === "text"
-          && (candidate.event.turnId ?? null) === nextTurn
-          && (candidate.event.itemId ?? null) === nextItem
-        ) {
-          matchIndex = index;
-          break;
-        }
-      }
-      if (matchIndex >= 0) {
-        const existing = rows[matchIndex];
-        if (existing?.event.type === "text") {
-          rows[matchIndex] = {
-            ...existing,
-            timestamp: envelope.timestamp,
-            event: {
-              ...existing.event,
-              text: `${existing.event.text}${event.text}`,
-            },
-          };
-          return;
-        }
-      }
+    const previous = rows[rows.length - 1];
+    if (previous?.event.type === "text" && shouldMergeTextRows(previous.event, event)) {
+      const nextTurn = event.turnId ?? null;
+      const nextItem = event.itemId ?? null;
+      rows[rows.length - 1] = {
+        ...previous,
+        timestamp: envelope.timestamp,
+        event: {
+          ...previous.event,
+          text: `${previous.event.text}${event.text}`,
+          ...(nextTurn && !previous.event.turnId ? { turnId: nextTurn } : {}),
+          ...(nextItem && !previous.event.itemId ? { itemId: nextItem } : {}),
+          ...(event.messageId && !previous.event.messageId ? { messageId: event.messageId } : {}),
+        },
+      };
+      return;
     }
   }
 
@@ -545,7 +564,7 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   rows.push({
-    key: buildRenderKey(envelope, sequence),
+    key: event.type === "text" ? buildTextRenderKey(event, envelope, sequence) : buildRenderKey(envelope, sequence),
     timestamp: envelope.timestamp,
     event,
   });

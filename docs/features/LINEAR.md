@@ -32,11 +32,16 @@ describes when and how ADE should act on an issue:
 
 - **Triggers** -- Match on assignees, labels, projects, teams,
   priority, state transitions, owner, creator, or metadata tags.
+  Values inside a trigger group are OR-ed together; populated groups
+  are AND-ed together. Empty trigger groups are ignored.
 - **Target** -- What ADE creates to do the work. Target types include
   `mission`, `employee_session`, `worker_run`, `pr_resolution`, and
   `review_gate`. Each target specifies an executor kind (`cto`,
   `employee`, `worker`), run mode (`autopilot`, `assisted`, `manual`),
-  PR strategy, lane selection, and session reuse policy.
+  PR strategy, lane selection (`primary`, `fresh_issue_lane`, or
+  `operator_prompt`), and session reuse policy. Targets can chain
+  through `downstreamTarget` for multi-stage execution (e.g., a
+  worker run followed by a review gate).
 - **Steps** -- An ordered sequence of actions the dispatcher walks
   through: comment on Linear, set issue state, launch the target, wait
   for completion, attach artifacts, request human review, and close out.
@@ -46,6 +51,9 @@ describes when and how ADE should act on an issue:
   reopen on failure, comment templates, label application, and when
   review-readiness is signaled (`work_complete`, `pr_created`,
   `pr_ready`).
+- **Routing metadata** -- Each workflow can carry `routing.metadataTags`
+  and a `routing.watchOnly` flag. Watch-only workflows record a match
+  without launching any work, useful for observability rules.
 
 Workflows are versioned and can originate from YAML files in the repo
 (`source: "repo"`) or be generated through the UI (`source: "generated"`).
@@ -58,6 +66,21 @@ wins. `LinearWorkflowMatchResult` captures which workflow matched,
 why, and a preview of the steps that will execute -- useful for the
 dry-run simulator exposed in the UI.
 
+## Intake Configuration
+
+The `LinearWorkflowIntake` section of the workflow config controls
+which issues the sync loop considers:
+
+- `projectSlugs` -- Limit polling to specific Linear projects.
+- `activeStateTypes` -- Issue state types treated as actionable
+  (default: `backlog`, `unstarted`, `started`).
+- `terminalStateTypes` -- Issue state types treated as closed
+  (default: `completed`, `canceled`). Issues in a terminal state
+  trigger automatic cancellation of any active workflow runs.
+
+The intake configuration is normalized on save and validated to
+require at least one active and one terminal state type.
+
 ## Dispatcher Service
 
 `linearDispatcherService` owns the run lifecycle:
@@ -69,6 +92,16 @@ dry-run simulator exposed in the UI.
   (success or failure state transitions, comments, artifact links).
 - Handles retry logic with configurable back-off, concurrency limits
   per-issue and globally, and deduplication.
+- Persists `routeContext` (match reason, matched signals, route tags,
+  watch-only flag, candidate list) and `executionContext` (waiting
+  state, stall reason, employee override, active stage index, total
+  stages, downstream pending flag) on each run for observability.
+- Supports `employeeOverride` when resolving queue items, allowing
+  operators to reroute a queued run to a different ADE employee.
+- Resolves employees by matching against worker IDs, slugs, names,
+  and Linear identity fields (user IDs, display names, aliases).
+- Supports multi-stage targets through `downstreamTarget` chaining,
+  advancing through stages via `activeStageIndex`.
 
 Run statuses: `queued -> in_progress -> waiting_for_target ->
 waiting_for_pr -> awaiting_human_review -> awaiting_delegation ->
@@ -122,6 +155,23 @@ The v1 closeout addressed four dispatcher reliability issues:
   still be linked or uploaded during closeout.
 - Transitions the issue to the configured success or failure state.
 
+## Sync Events
+
+The sync service records structured `LinearSyncEventRecord` entries
+for every significant lifecycle moment:
+
+- `issue_closed` -- An issue reached a terminal state; active runs
+  are cancelled.
+- `watch_only_match` -- A watch-only workflow matched an issue
+  without launching work.
+- `workflow_capacity_wait` -- A dispatch was deferred because the
+  workflow's `maxActiveRuns` cap was reached.
+- `issue_deduped` -- A duplicate run was skipped because a run for
+  the same issue is already active in the same workflow.
+
+The dashboard exposes `watchOnlyHits` and `recentEvents` so the
+operator can see observability data without drilling into run details.
+
 ## LinearSyncPanel UI
 
 The **LinearSyncPanel** in the CTO tab provides a full management
@@ -132,14 +182,23 @@ surface:
 - **Workflow editor** -- Create, edit, and preview workflows with a
   visual step builder. A dry-run simulator lets you test trigger
   matching against a sample issue before going live.
+- **Pipeline builder** -- A visual canvas for composing workflow
+  pipelines with trigger, stage, and closeout cards. The builder
+  renders a left-to-right flow with connectors between stages and
+  supports per-stage configuration panels. Components live under
+  `renderer/components/cto/pipeline/`.
 - **Queue dashboard** -- Live counts of queued, dispatched, retrying,
   escalated, awaiting delegation, and failed items. Each queue item
-  links to its workflow run detail with step-by-step timeline.
+  now includes `routeReason`, `matchedSignals`, `routeTags`,
+  `stalledReason`, `waitingFor`, `employeeOverride`, and
+  `activeTargetType` fields for richer inspection.
 - **Dynamic delegation** -- Runs in `awaiting_delegation` status
   expose a dropdown that lets users pick an employee override,
   reassigning the work without restarting the workflow.
 - **Run detail view** -- Drill into a specific run to see steps,
-  events, review state, linked PR status, and supervisor notes.
+  events, sync events, review state, linked PR status, and supervisor
+  notes. The detail now includes `syncEvents` alongside ingress events
+  for a complete timeline.
 - **Setup checklist** -- Guides first-time users through API key
   entry, workflow creation, and ingress configuration.
 
@@ -159,3 +218,23 @@ sync. When a Linear issue is dispatched:
 Linear integration does not require CTO to be running -- workflows
 execute autonomously once configured. But the CTO provides the
 supervisory layer for review gates, escalations, and policy changes.
+
+## Headless MCP Mode
+
+The MCP server (`apps/mcp-server`) now instantiates the full Linear
+service stack -- sync, routing, dispatcher, closeout, intake, outbound,
+and ingress -- through `createHeadlessLinearServices()`. This replaces
+the earlier stub that exposed read-only access. Headless mode shares
+the same issue-update processing path as the desktop runtime:
+
+- Ingress events are forwarded into the sync loop.
+- Employee-session targets create reusable continuity chats (manual
+  shells unless a live agent runtime is attached).
+- Worker-backed targets fail fast with explicit run errors when no
+  worker runtime is available.
+- The `resolveLinearSyncQueueItem` MCP tool now accepts an
+  `employeeOverride` parameter for operator-initiated rerouting.
+- Default lane resolution prefers the primary lane and creates one
+  via `ensurePrimaryLane()` if needed.
+
+The headless runtime disposes cleanly when the MCP server shuts down.

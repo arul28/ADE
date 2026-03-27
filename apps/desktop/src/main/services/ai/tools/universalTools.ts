@@ -14,7 +14,7 @@ import { createMemoryTools, type MemoryWriteEvent, type TurnMemoryPolicyState } 
 import type { createUnifiedMemoryService } from "../../memory/unifiedMemoryService";
 import type { AgentChatApprovalDecision, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
-import { isWithinDir } from "../../shared/utils";
+import { getErrorMessage, isEnoentError, isWithinDir } from "../../shared/utils";
 
 const execFileAsync = promisify(execFile);
 
@@ -47,7 +47,7 @@ export interface UniversalToolSetOptions {
 type ToolCategory = "read" | "write" | "bash";
 
 type ToolApprovalRequest = {
-  category: Exclude<ToolCategory, "read">;
+  category: Exclude<ToolCategory, "read"> | "exitPlanMode";
   description: string;
   detail?: unknown;
 };
@@ -69,15 +69,14 @@ function requiresApproval(mode: PermissionMode, category: ToolCategory): boolean
   }
 }
 
-function makeApproval(
+function approvalProp(
   mode: PermissionMode,
   category: ToolCategory,
   useManualApproval: boolean,
-) {
+): { needsApproval: boolean } | Record<string, never> {
   const needs = requiresApproval(mode, category);
-  if (!needs || useManualApproval) return undefined;
-  // Return a static async function so the AI SDK gates execution
-  return async () => true;
+  if (!needs || useManualApproval) return {};
+  return { needsApproval: true };
 }
 
 async function maybeRequestApproval(args: {
@@ -92,18 +91,21 @@ async function maybeRequestApproval(args: {
   }
 
   if (!args.onApprovalRequest) {
-    return {
-      approved: false,
-      decision: "decline",
-      reason: "Approval is required, but no approval handler is configured.",
-    };
+    return { approved: true };
   }
 
-  return args.onApprovalRequest({
-    category: args.category,
-    description: args.description,
-    detail: args.detail,
-  });
+  try {
+    return await args.onApprovalRequest({
+      category: args.category,
+      description: args.description,
+      detail: args.detail,
+    });
+  } catch (err) {
+    return {
+      approved: false,
+      reason: getErrorMessage(err) || "Approval request failed.",
+    };
+  }
 }
 
 // ── Worker sandbox enforcement ──────────────────────────────────────
@@ -134,6 +136,13 @@ const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|un
 
 const MEMORY_GUARD_REASON = "Search memory before mutating files or running mutating commands for this turn.";
 
+type PathAccessMode = "read" | "write" | "unknown";
+type PathReference = {
+  raw: string;
+  resolved: string;
+  access: PathAccessMode;
+};
+
 function requiresTurnMemoryGuard(state?: TurnMemoryPolicyState): boolean {
   return !!state && state.classification === "required" && !state.orientationSatisfied && !state.explicitSearchPerformed;
 }
@@ -151,6 +160,81 @@ function resolveAllowedWriteRoots(cwd: string, sandboxConfig?: WorkerSandboxConf
     }
   }
   return [...roots];
+}
+
+function canonicalizePathForContainment(absPath: string): string {
+  const resolved = path.resolve(absPath);
+  try {
+    return fs.realpathSync(resolved);
+  } catch (error) {
+    if (!isEnoentError(error)) {
+      throw error;
+    }
+  }
+
+  const parent = path.dirname(resolved);
+  if (parent === resolved) {
+    return resolved;
+  }
+  return path.join(canonicalizePathForContainment(parent), path.basename(resolved));
+}
+
+function toPortablePath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function matchesProtectedPathPattern(
+  pattern: { re: RegExp; src: string },
+  cwd: string,
+  filePath: string,
+  targetPath: string,
+): boolean {
+  const resolvedCwd = path.resolve(cwd);
+  const normalizedRaw = normalizePathToken(filePath);
+  const normalizedTarget = toPortablePath(targetPath);
+  const relativeTarget = toPortablePath(path.relative(resolvedCwd, targetPath));
+  const candidates = new Set<string>([
+    normalizedRaw,
+    normalizedTarget,
+    path.basename(normalizedTarget),
+  ]);
+  if (relativeTarget.length && !relativeTarget.startsWith("..") && !path.isAbsolute(relativeTarget)) {
+    candidates.add(relativeTarget);
+  }
+  return [...candidates].some((candidate) => candidate.length > 0 && pattern.re.test(candidate));
+}
+
+function resolveWritableTargetPath(
+  cwd: string,
+  filePath: string,
+  sandboxConfig?: WorkerSandboxConfig,
+): { targetPath: string | null; error?: string } {
+  const targetPath = path.resolve(cwd, filePath);
+  const realCwd = canonicalizePathForContainment(cwd);
+  const realTargetPath = canonicalizePathForContainment(targetPath);
+  const allowedRoots = resolveAllowedWriteRoots(cwd, sandboxConfig).map((allowedRoot) =>
+    canonicalizePathForContainment(allowedRoot),
+  );
+  const withinAllowedRoots = allowedRoots.some((allowedRoot) => isWithinDir(allowedRoot, realTargetPath));
+  if (!withinAllowedRoots) {
+    return {
+      targetPath: null,
+      error: `Write path is outside allowed roots: ${filePath}`,
+    };
+  }
+  if (sandboxConfig) {
+    const protectedPatterns = compileSandbox(sandboxConfig).protected;
+    const matchedPattern = protectedPatterns.find((pattern) =>
+      matchesProtectedPathPattern(pattern, realCwd, filePath, realTargetPath),
+    );
+    if (matchedPattern) {
+      return {
+        targetPath: null,
+        error: `Write path matches protected file pattern: ${matchedPattern.src}`,
+      };
+    }
+  }
+  return { targetPath };
 }
 
 function normalizePathToken(token: string): string {
@@ -201,9 +285,41 @@ function tokenizeCommand(command: string): string[] {
   return tokens;
 }
 
-function collectPathReferences(command: string, cwd: string): Array<{ raw: string; resolved: string }> {
-  const refs = new Map<string, { raw: string; resolved: string }>();
-  const addPath = (rawValue: string) => {
+function looksLikePathToken(value: string): boolean {
+  return (
+    value.startsWith("/") ||
+    value.startsWith("./") ||
+    value.startsWith("../") ||
+    value.startsWith("~") ||
+    value.startsWith(".") ||
+    value.includes("/")
+  );
+}
+
+function splitCommandSegments(tokens: string[]): string[][] {
+  const segments: string[][] = [];
+  let current: string[] = [];
+  for (const token of tokens) {
+    const normalized = normalizePathToken(token);
+    if (normalized === "|" || normalized === "||" || normalized === "&&" || normalized === ";" || normalized === "&") {
+      if (current.length > 0) segments.push(current);
+      current = [];
+      continue;
+    }
+    current.push(token);
+  }
+  if (current.length > 0) segments.push(current);
+  return segments;
+}
+
+function collectPathReferences(command: string, cwd: string): PathReference[] {
+  const refs = new Map<string, PathReference>();
+  const accessPriority: Record<PathAccessMode, number> = {
+    unknown: 0,
+    read: 1,
+    write: 2,
+  };
+  const addPath = (rawValue: string, access: PathAccessMode = "unknown") => {
     const normalizedRaw = normalizePathToken(rawValue);
     if (!normalizedRaw.length) return;
     if (normalizedRaw === "/dev/null") return;
@@ -217,7 +333,10 @@ function collectPathReferences(command: string, cwd: string): Array<{ raw: strin
           : normalizedRaw;
     const resolved = path.resolve(cwd, expandedPath);
     const key = `${normalizedRaw}::${resolved}`;
-    if (!refs.has(key)) refs.set(key, { raw: normalizedRaw, resolved });
+    const existing = refs.get(key);
+    if (!existing || accessPriority[access] > accessPriority[existing.access]) {
+      refs.set(key, { raw: normalizedRaw, resolved, access });
+    }
   };
 
   for (const token of tokenizeCommand(command)) {
@@ -228,20 +347,74 @@ function collectPathReferences(command: string, cwd: string): Array<{ raw: strin
     if (value.includes("=") && !value.startsWith("./") && !value.startsWith("../") && !value.startsWith("/") && !value.startsWith(".")) {
       continue;
     }
-    if (
-      value.startsWith("/") ||
-      value.startsWith("./") ||
-      value.startsWith("../") ||
-      value.startsWith("~") ||
-      value.startsWith(".") ||
-      value.includes("/")
-    ) {
-      addPath(value);
+    if (looksLikePathToken(value)) {
+      addPath(value, "unknown");
     }
   }
 
   for (const match of command.matchAll(/(?:^|[\s;|&])(?:\d?>|>>)([^\s'";|&<>]+)/g)) {
-    if (match[1]) addPath(match[1]);
+    if (match[1]) addPath(match[1], "write");
+  }
+
+  const markOperands = (commandName: string, args: string[]) => {
+    const normalizedCommand = path.basename(commandName).toLowerCase();
+    const pathOperands = args
+      .map((value) => normalizePathToken(value))
+      .filter((value) => value.length > 0 && !value.startsWith("-") && looksLikePathToken(value));
+    if (!pathOperands.length) return;
+
+    switch (normalizedCommand) {
+      case "cp":
+      case "install":
+      case "ln": {
+        if (pathOperands.length >= 2) {
+          pathOperands.slice(0, -1).forEach((value) => addPath(value, "read"));
+          addPath(pathOperands[pathOperands.length - 1]!, "write");
+        }
+        return;
+      }
+      case "mv":
+      case "rm":
+      case "mkdir":
+      case "touch":
+      case "chmod":
+      case "chown":
+      case "patch":
+      case "truncate":
+        pathOperands.forEach((value) => addPath(value, "write"));
+        return;
+      case "tee":
+        pathOperands.forEach((value) => addPath(value, "write"));
+        return;
+      case "sed":
+        if (args.some((value) => value === "-i" || value.startsWith("-i"))) {
+          pathOperands.forEach((value) => addPath(value, "write"));
+        }
+        return;
+      case "perl":
+        if (args.some((value) => value.startsWith("-i"))) {
+          pathOperands.forEach((value) => addPath(value, "write"));
+        }
+        return;
+      default:
+        return;
+    }
+  };
+
+  for (const segment of splitCommandSegments(tokenizeCommand(command))) {
+    let commandIndex = 0;
+    while (
+      commandIndex < segment.length
+      && normalizePathToken(segment[commandIndex] ?? "").includes("=")
+      && !looksLikePathToken(normalizePathToken(segment[commandIndex] ?? ""))
+    ) {
+      commandIndex += 1;
+    }
+    if (commandIndex >= segment.length) continue;
+    const commandName = normalizePathToken(segment[commandIndex] ?? "");
+    const args = segment.slice(commandIndex + 1);
+    if (!commandName.length) continue;
+    markOperands(commandName, args);
   }
 
   return [...refs.values()];
@@ -266,6 +439,7 @@ export function checkWorkerSandbox(
   }
 
   const safeMatch = compiled.safe.some((re) => re.test(command));
+  const commandMutates = bashCommandLikelyMutates(command);
 
   // 2. Validate file paths against allowedPaths (absolute + relative)
   const rootResolved = path.resolve(projectRoot);
@@ -273,7 +447,9 @@ export function checkWorkerSandbox(
   for (const entry of pathRefs) {
     const p = entry.raw;
     const resolved = entry.resolved;
-    if (resolved.startsWith("/usr/bin/") || resolved.startsWith("/usr/local/bin/") || resolved === "/dev/null") continue;
+    const isSystemExecutablePath = resolved.startsWith("/usr/bin/") || resolved.startsWith("/usr/local/bin/");
+    if (resolved === "/dev/null") continue;
+    if (isSystemExecutablePath && (entry.access === "read" || (!commandMutates && entry.access !== "write"))) continue;
 
     const withinAllowed = config.allowedPaths.some((allowed) => {
       const allowedAbs = path.resolve(projectRoot, allowed);
@@ -285,12 +461,13 @@ export function checkWorkerSandbox(
   }
 
   // 3. Check protected files for write-like commands (safe commands do not bypass this)
-  if (WRITE_COMMAND_RE.test(command)) {
+  if (commandMutates) {
+    const protectedRefs = pathRefs.filter((entry) => entry.access !== "read");
     for (const { re, src } of compiled.protected) {
       if (re.test(command)) {
         return { allowed: false, reason: `Command targets protected file pattern: ${src}` };
       }
-      const targetsProtectedPath = pathRefs.some((entry) => re.test(entry.raw) || re.test(entry.resolved.replace(/\\/g, "/")));
+      const targetsProtectedPath = protectedRefs.some((entry) => matchesProtectedPathPattern({ re, src }, projectRoot, entry.raw, entry.resolved));
       if (targetsProtectedPath) {
         return { allowed: false, reason: `Command targets protected file pattern: ${src}` };
       }
@@ -331,7 +508,7 @@ function createBashTool(
         .default(120_000)
         .describe("Timeout in milliseconds (max 600000)"),
     }),
-    ...((() => { const a = makeApproval(mode, "bash", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
+    ...approvalProp(mode, "bash", Boolean(onApprovalRequest)),
     execute: async ({ command, timeout }) => {
       if (requiresTurnMemoryGuard(turnMemoryPolicyState) && bashCommandLikelyMutates(command)) {
         return {
@@ -409,7 +586,7 @@ function createBashTool(
       } catch (err) {
         return {
           stdout: "",
-          stderr: `Command failed: ${err instanceof Error ? err.message : String(err)}`,
+          stderr: `Command failed: ${getErrorMessage(err)}`,
           exitCode: 1,
         };
       }
@@ -432,7 +609,7 @@ function createWriteFileTool(
       file_path: z.string().describe("Path to the file (absolute or relative to project root)"),
       content: z.string().describe("The full content to write"),
     }),
-    ...((() => { const a = makeApproval(mode, "write", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
+    ...approvalProp(mode, "write", Boolean(onApprovalRequest)),
     execute: async ({ file_path, content }) => {
       if (requiresTurnMemoryGuard(turnMemoryPolicyState)) {
         return {
@@ -459,13 +636,11 @@ function createWriteFileTool(
       }
 
       try {
-        const targetPath = path.resolve(cwd, file_path);
-        const allowedRoots = resolveAllowedWriteRoots(cwd, sandboxConfig);
-        const withinAllowedRoots = allowedRoots.some((allowedRoot) => isWithinDir(allowedRoot, targetPath));
-        if (!withinAllowedRoots) {
+        const { targetPath, error } = resolveWritableTargetPath(cwd, file_path, sandboxConfig);
+        if (!targetPath) {
           return {
             success: false,
-            message: `Write path is outside allowed roots: ${file_path}`,
+            message: error ?? `Write path is outside allowed roots: ${file_path}`,
           };
         }
         await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
@@ -474,7 +649,7 @@ function createWriteFileTool(
       } catch (err) {
         return {
           success: false,
-          message: `Error writing file: ${err instanceof Error ? err.message : String(err)}`,
+          message: `Error writing file: ${getErrorMessage(err)}`,
         };
       }
     },
@@ -482,7 +657,9 @@ function createWriteFileTool(
 }
 
 function createEditFileTool(
+  cwd: string,
   mode: PermissionMode,
+  sandboxConfig?: WorkerSandboxConfig,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
   turnMemoryPolicyState?: TurnMemoryPolicyState,
 ) {
@@ -491,7 +668,7 @@ function createEditFileTool(
       "Make a targeted edit to a file by replacing an exact string match with new content. " +
       "The old_string must appear exactly once in the file unless replace_all is true.",
     inputSchema: z.object({
-      file_path: z.string().describe("Absolute path to the file to edit"),
+      file_path: z.string().describe("Path to the file (absolute or relative to project root)"),
       old_string: z.string().describe("The exact string to find and replace"),
       new_string: z.string().describe("The replacement string"),
       replace_all: z
@@ -500,7 +677,7 @@ function createEditFileTool(
         .default(false)
         .describe("Replace all occurrences instead of requiring a unique match"),
     }),
-    ...((() => { const a = makeApproval(mode, "write", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
+    ...approvalProp(mode, "write", Boolean(onApprovalRequest)),
     execute: async ({ file_path, old_string, new_string, replace_all }) => {
       if (requiresTurnMemoryGuard(turnMemoryPolicyState)) {
         return {
@@ -529,17 +706,25 @@ function createEditFileTool(
       }
 
       try {
+        const { targetPath, error } = resolveWritableTargetPath(cwd, file_path, sandboxConfig);
+        if (!targetPath) {
+          return {
+            success: false,
+            message: error ?? `Write path is outside allowed roots: ${file_path}`,
+          };
+        }
+
         let content: string;
         try {
-          content = await fs.promises.readFile(file_path, "utf-8");
+          content = await fs.promises.readFile(targetPath, "utf-8");
         } catch {
-          return { success: false, message: `File not found: ${file_path}` };
+          return { success: false, message: `File not found: ${targetPath}` };
         }
 
         if (!content.includes(old_string)) {
           return {
             success: false,
-            message: `The old_string was not found in ${file_path}`,
+            message: `The old_string was not found in ${targetPath}`,
           };
         }
 
@@ -550,7 +735,7 @@ function createEditFileTool(
             return {
               success: false,
               message:
-                `old_string appears multiple times in ${file_path}. ` +
+                `old_string appears multiple times in ${targetPath}. ` +
                 "Provide more context to make the match unique, or set replace_all to true.",
             };
           }
@@ -560,12 +745,12 @@ function createEditFileTool(
           ? content.split(old_string).join(new_string)
           : content.replace(old_string, new_string);
 
-        await fs.promises.writeFile(file_path, updated, "utf-8");
-        return { success: true, message: `Successfully edited ${file_path}` };
+        await fs.promises.writeFile(targetPath, updated, "utf-8");
+        return { success: true, message: `Successfully edited ${targetPath}` };
       } catch (err) {
         return {
           success: false,
-          message: `Error editing file: ${err instanceof Error ? err.message : String(err)}`,
+          message: `Error editing file: ${getErrorMessage(err)}`,
         };
       }
     },
@@ -637,7 +822,7 @@ function createListDirTool() {
       } catch (err) {
         return {
           entries: [],
-          error: `Error listing directory: ${err instanceof Error ? err.message : String(err)}`,
+          error: `Error listing directory: ${getErrorMessage(err)}`,
         };
       }
     },
@@ -661,7 +846,7 @@ function createGitStatusTool(cwd: string) {
         );
         return { branch: branch.trim(), status: stdout.trim(), clean: stdout.trim() === "" };
       } catch (err) {
-        return { error: `git status failed: ${err instanceof Error ? err.message : String(err)}` };
+        return { error: `git status failed: ${getErrorMessage(err)}` };
       }
     },
   });
@@ -694,7 +879,7 @@ function createGitDiffTool(cwd: string) {
         const truncated = stdout.length > 200_000;
         return { diff: stdout.slice(0, 200_000), truncated };
       } catch (err) {
-        return { diff: "", error: `git diff failed: ${err instanceof Error ? err.message : String(err)}` };
+        return { diff: "", error: `git diff failed: ${getErrorMessage(err)}` };
       }
     },
   });
@@ -720,7 +905,7 @@ function createGitLogTool(cwd: string) {
         const { stdout } = await execFileAsync("git", args, { cwd, timeout: 15_000 });
         return { log: stdout.trim() };
       } catch (err) {
-        return { log: "", error: `git log failed: ${err instanceof Error ? err.message : String(err)}` };
+        return { log: "", error: `git log failed: ${getErrorMessage(err)}` };
       }
     },
   });
@@ -744,9 +929,50 @@ function createAskUserTool(onAskUser?: (question: string) => Promise<string>) {
       } catch (err) {
         return {
           answer: "",
-          error: `Failed to get user response: ${err instanceof Error ? err.message : String(err)}`,
+          error: `Failed to get user response: ${getErrorMessage(err)}`,
         };
       }
+    },
+  });
+}
+
+function createExitPlanModeTool(
+  onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+) {
+  return tool({
+    description:
+      "Exit plan mode and request user approval to proceed with implementation. " +
+      "Call this after you have written your plan and are ready for the user to review it. " +
+      "The user will see a plan approval UI and can approve or reject your plan.",
+    inputSchema: z.object({
+      planDescription: z.string().optional().describe("A summary of the plan for the user to review"),
+    }),
+    execute: async ({ planDescription }) => {
+      if (!onApprovalRequest) {
+        return { approved: false, message: "No approval handler configured. Stay in plan mode and ask the user to review your plan in chat." };
+      }
+      const summary = planDescription?.trim() || "Plan ready for review.";
+      let result: ToolApprovalResult;
+      try {
+        result = await onApprovalRequest({
+          category: "exitPlanMode",
+          description: summary,
+          detail: { tool: "exitPlanMode", planContent: summary },
+        });
+      } catch (err) {
+        const reason = getErrorMessage(err) || "Approval request failed.";
+        return {
+          approved: false,
+          message: `Plan approval could not be requested. ${reason}`,
+        };
+      }
+      if (result.approved) {
+        return { approved: true, message: "User approved the plan. Proceed with implementation." };
+      }
+      const feedback = typeof result.reason === "string" && result.reason.trim().length > 0
+        ? result.reason.trim()
+        : "Please revise your approach and try again.";
+      return { approved: false, message: `User rejected the plan. ${feedback}` };
     },
   });
 }
@@ -818,7 +1044,7 @@ export function createUniversalToolSet(
     webSearch: webSearchTool,
 
     // Write tools (auto in edit+full-auto, gated in plan)
-    editFile: createEditFileTool(permissionMode, onApprovalRequest, turnMemoryPolicyState),
+    editFile: createEditFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
     writeFile: createWriteFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
 
     // Bash (auto only in full-auto, gated in plan+edit)
@@ -828,6 +1054,10 @@ export function createUniversalToolSet(
     // Interactive
     askUser: createAskUserTool(onAskUser),
   };
+
+  if (permissionMode === "plan") {
+    tools.exitPlanMode = createExitPlanModeTool(onApprovalRequest);
+  }
 
   // Conditionally add memory tools
   if (memoryService && projectId) {

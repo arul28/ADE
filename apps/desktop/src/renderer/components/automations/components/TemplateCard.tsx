@@ -40,7 +40,7 @@ export function TemplateCard({
         <div className="min-w-0 flex-1">
           <div
             className="text-[12px] font-bold tracking-[-0.2px] text-[#FAFAFA]"
-            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+            style={{ fontFamily: "var(--font-sans)" }}
           >
             {template.name}
           </div>

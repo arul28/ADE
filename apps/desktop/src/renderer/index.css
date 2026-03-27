@@ -1,6 +1,5 @@
 @import "tailwindcss";
 
-/* JetBrains Mono Variable Font (primary mono) */
 @font-face {
   font-family: 'JetBrains Mono';
   src: url('../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2') format('woff2');
@@ -9,16 +8,7 @@
   font-display: swap;
 }
 
-/* Space Grotesk Variable Font (primary sans / headlines) */
-@font-face {
-  font-family: 'Space Grotesk';
-  src: url('../../node_modules/@fontsource-variable/space-grotesk/files/space-grotesk-latin-wght-normal.woff2') format('woff2');
-  font-weight: 300 700;
-  font-style: normal;
-  font-display: swap;
-}
-
-/* Geist Variable Fonts (fallback) */
+/* Geist variable font used everywhere in the renderer */
 @font-face {
   font-family: 'Geist';
   src: url('../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2') format('woff2');
@@ -26,6 +16,7 @@
   font-style: normal;
   font-display: swap;
 }
+
 @font-face {
   font-family: 'Geist Mono';
   src: url('../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2') format('woff2');
@@ -309,6 +300,21 @@ body {
   -webkit-font-smoothing: antialiased;
   font-feature-settings: "ss01";
   letter-spacing: 0;
+}
+
+button,
+input,
+textarea,
+select,
+option {
+  font-family: var(--font-sans);
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
 }
 
 /* Keep xterm glyph metrics isolated from global typography rules. */

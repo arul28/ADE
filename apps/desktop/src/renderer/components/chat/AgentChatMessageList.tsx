@@ -1,5 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -11,7 +10,6 @@ import {
   FileCode,
   CheckCircle,
   XCircle,
-  SpinnerGap,
   Circle,
   Checks,
   ListChecks,
@@ -47,10 +45,9 @@ import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
-import { HighlightedCode } from "./CodeHighlighter";
+import { ChatStatusGlyph } from "./chatStatusVisuals";
 import {
   collapseChatTranscriptEventsIncremental,
-  deriveTurnDividerData,
   formatStructuredValue,
   groupConsecutiveWorkLogRows,
   readRecord,
@@ -59,7 +56,6 @@ import {
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
-import { ChatTurnDivider, type TurnDividerData } from "./ChatTurnDivider";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 
@@ -129,6 +125,72 @@ function formatFileAction(kind: Extract<AgentChatEvent, { type: "file_change" }>
   }
 }
 
+function hasNoticeDetail(detail: string | AgentChatNoticeDetail | undefined): boolean {
+  if (detail == null) return false;
+  if (typeof detail === "string") return detail.trim().length > 0;
+  return Boolean(
+    detail.title?.trim()
+    || detail.summary?.trim()
+    || detail.metrics?.length
+    || detail.sections?.length,
+  );
+}
+
+function renderNoticeDetail(detail: string | AgentChatNoticeDetail): React.ReactNode {
+  if (typeof detail === "string") {
+    return <div className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg/60">{detail}</div>;
+  }
+
+  return (
+    <div className="space-y-3 text-[11px] leading-relaxed text-fg/60">
+      {detail.title?.trim() ? <div className="font-medium text-fg/75">{detail.title.trim()}</div> : null}
+      {detail.summary?.trim() ? <div className="whitespace-pre-wrap break-words">{detail.summary.trim()}</div> : null}
+      {detail.metrics?.length ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {detail.metrics.map((metric) => (
+            <div
+              key={`${metric.label}:${metric.value}`}
+              className="rounded-lg border border-border/12 bg-black/10 px-2.5 py-2"
+            >
+              <div className="text-[10px] uppercase tracking-[0.14em] text-muted-fg/55">{metric.label}</div>
+              <div className={cn("mt-1 text-sm font-medium", metric.tone ? chatChipToneClass(metric.tone) : "text-fg/75")}>
+                {metric.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {detail.sections?.map((section) => (
+        <div key={section.title} className="space-y-1.5">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-muted-fg/55">{section.title}</div>
+          <div className="space-y-1.5">
+            {section.items.map((item, index) => (
+              typeof item === "string" ? (
+                <div
+                  key={`${section.title}:text:${index}`}
+                  className="whitespace-pre-wrap break-words rounded-lg border border-border/12 bg-black/10 px-2.5 py-2"
+                >
+                  {item}
+                </div>
+              ) : (
+                <div
+                  key={`${section.title}:${item.label}:${item.value}:${index}`}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border/12 bg-black/10 px-2.5 py-2"
+                >
+                  <span className="text-muted-fg/60">{item.label}</span>
+                  <span className={cn("text-right font-medium", item.tone ? chatChipToneClass(item.tone) : "text-fg/75")}>
+                    {item.value}
+                  </span>
+                </div>
+              )
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function formatTokenCount(value: number | null | undefined): string | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -158,13 +220,13 @@ function renderSubagentUsage(usage: {
 }
 
 const GLASS_CARD_CLASS =
-  "overflow-hidden rounded-[14px] border border-[color:var(--chat-card-border)] bg-[var(--chat-card-bg)] shadow-[var(--chat-card-shadow)]";
+  "overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#121216]";
 
 const WORK_LOG_CARD_CLASS =
-  "border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)]/88";
+  "border border-white/[0.06] bg-[#111317]/70";
 
 const RECESSED_BLOCK_CLASS =
-  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] px-4 py-3 font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg)]";
+  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09090b] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
 
 function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
   if (toolName.startsWith("mcp__")) {
@@ -185,93 +247,25 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
   return null;
 }
 
-const MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "var(--chat-card-border)",
-  background: "var(--chat-card-bg)",
-};
-
-const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "var(--chat-panel-border)",
-  background: "var(--chat-panel-bg)",
-};
-
-const ASSISTANT_MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "var(--chat-panel-border)",
-  background: "var(--chat-panel-bg-strong)",
-};
-
-function renderNoticeDetailMetric(metric: {
-  label: string;
-  value: string;
-  tone?: ChatSurfaceChipTone;
-}) {
-  return (
-    <div key={`${metric.label}:${metric.value}`} className="flex items-start justify-between gap-3">
-      <div className="min-w-0 font-sans text-[10px] uppercase tracking-[0.16em] text-fg/42">
-        {metric.label}
-      </div>
-      <div className={cn(
-        "shrink-0 font-sans text-[11px] font-medium",
-        chatChipToneClass(metric.tone ?? "muted"),
-      )}>
-        {metric.value}
-      </div>
-    </div>
-  );
+function messageCardStyle(): React.CSSProperties {
+  return {
+    borderColor: "rgba(245, 158, 11, 0.16)",
+    background: "#171412",
+  };
 }
 
-function renderNoticeDetailSectionItem(item: string | { label: string; value: string; tone?: ChatSurfaceChipTone }) {
-  if (typeof item === "string") {
-    return <div className="pl-3 text-[12px] leading-6 text-fg/70 before:mr-2 before:content-['•']">{item}</div>;
-  }
-  return renderNoticeDetailMetric(item);
+function surfaceInlineCardStyle(): React.CSSProperties {
+  return {
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    background: "#14161a",
+  };
 }
 
-function renderNoticeDetail(detail: string | AgentChatNoticeDetail) {
-  if (typeof detail === "string") {
-    return <div className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg/66">{detail}</div>;
-  }
-
-  const sections = detail.sections ?? [];
-  const hasAdditionalDetail = Boolean(detail.metrics?.length || sections.length);
-
-  return (
-    <div className="space-y-3 font-sans text-[11px] text-fg/72">
-      {detail.title ? (
-        <div className="text-[11px] font-semibold tracking-tight text-fg/88">
-          {detail.title}
-        </div>
-      ) : null}
-      {detail.summary && !hasAdditionalDetail ? (
-        <div className="whitespace-pre-wrap break-words leading-relaxed text-fg/68">
-          {detail.summary}
-        </div>
-      ) : null}
-      {detail.metrics?.length ? (
-        <div className="space-y-1.5 border-t border-white/[0.06] pt-2">
-          {detail.metrics.map((metric) => renderNoticeDetailMetric(metric))}
-        </div>
-      ) : null}
-      {sections.length ? (
-        <div className="space-y-2 border-t border-white/[0.06] pt-2">
-          {sections.map((section) => (
-            <div key={section.title} className="space-y-1">
-              <div className="font-sans text-[10px] uppercase tracking-[0.16em] text-fg/48">
-                {section.title}
-              </div>
-              <div className="space-y-1">
-                {section.items.map((item, index) => (
-                  <div key={`${section.title}:${index}`}>
-                    {renderNoticeDetailSectionItem(item)}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
+function assistantMessageCardStyle(): React.CSSProperties {
+  return {
+    borderColor: "rgba(148, 163, 184, 0.14)",
+    background: "#101318",
+  };
 }
 
 function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
@@ -358,9 +352,8 @@ function MessageCopyButton({
 /* ── Status indicators ── */
 
 function StatusIcon({ status }: { status: "running" | "completed" | "failed" }) {
-  if (status === "completed") return <CheckCircle size={13} weight="bold" className="text-emerald-400" />;
-  if (status === "failed") return <XCircle size={13} weight="bold" className="text-red-400" />;
-  return <Circle size={11} weight="fill" className="text-accent/80" />;
+  if (status === "completed" || status === "failed") return <ChatStatusGlyph status={status} size={13} />;
+  return <ChatStatusGlyph status="working" size={13} />;
 }
 
 function PlanStepIcon({ status }: { status: string }) {
@@ -387,8 +380,10 @@ function statusColorClass(status: string | undefined): string {
       return "text-emerald-400/70";
     case "failed":
       return "text-red-400/70";
+    case "running":
+      return "text-amber-400/70";
     default:
-      return "text-accent/70";
+      return "text-emerald-400/70";
   }
 }
 
@@ -476,7 +471,7 @@ function InlineDisclosureRow({
         <div className="min-w-0 flex-1">{summary}</div>
       </button>
       {expandable && open ? (
-        <div className="ml-5 mt-1 space-y-2 border-l border-[color:var(--chat-panel-border)] pl-3">
+        <div className="ml-5 mt-1 space-y-2 border-l border-white/[0.05] pl-3">
           {children}
         </div>
       ) : null}
@@ -552,15 +547,18 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   }, [onOpenWorkspacePath, workspaceLaneId]);
 
   return (
-    <div className="ade-prose-themed prose prose-invert max-w-none font-sans text-[13px] leading-[1.78] text-fg/92 prose-headings:mb-2 prose-headings:mt-5 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-2.5 prose-ul:my-3 prose-ol:my-3 prose-li:my-1 prose-strong:text-fg prose-blockquote:border-l-white/12 prose-blockquote:text-fg/78 prose-hr:my-4 prose-hr:border-white/[0.06] prose-table:my-4 prose-th:border-white/[0.08] prose-th:bg-white/[0.03] prose-th:px-3 prose-th:py-2 prose-td:border-white/[0.06] prose-td:px-3 prose-td:py-2 prose-code:font-mono prose-code:text-[var(--chat-code-fg)] prose-code:bg-[var(--chat-code-bg)] prose-code:border prose-code:border-[color:var(--chat-code-border)] prose-code:px-1.5 prose-code:py-0.5 prose-pre:font-mono">
+    <div className="prose prose-invert max-w-none text-[13px] leading-[1.78] text-fg/92 prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-3 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1 prose-strong:text-fg prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-blockquote:text-fg/78 prose-hr:my-5 prose-hr:border-white/[0.08] prose-table:my-4 prose-th:border-white/[0.08] prose-th:bg-white/[0.03] prose-th:px-3 prose-th:py-2 prose-td:border-white/[0.06] prose-td:px-3 prose-td:py-2">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           h1: ({ children }) => <h1 className="text-[1rem]">{children}</h1>,
           h2: ({ children }) => <h2 className="text-[0.95rem]">{children}</h2>,
           h3: ({ children }) => <h3 className="text-[0.9rem]">{children}</h3>,
+          ul: ({ children }) => <ul className="my-3 list-disc space-y-1.5 pl-5">{children}</ul>,
+          ol: ({ children }) => <ol className="my-3 list-decimal space-y-1.5 pl-5">{children}</ol>,
+          li: ({ children }) => <li className="pl-1 text-fg/88">{children}</li>,
           blockquote: ({ children }) => (
-            <blockquote className="border-l border-[color:var(--chat-panel-border)] pl-3 italic">
+            <blockquote className="border-l-2 border-white/20 pl-4 italic text-fg/72">
               {children}
             </blockquote>
           ),
@@ -569,30 +567,19 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
               <table className="w-full border-collapse text-[12px]">{children}</table>
             </div>
           ),
-          pre: ({ children }) => {
-            // When code blocks are handled by HighlightedCode, skip the default <pre> wrapper
-            // since HighlightedCode provides its own styled container.
-            const child = React.Children.toArray(children)[0];
-            if (React.isValidElement(child) && (child as React.ReactElement).type === HighlightedCode) {
-              return <>{children}</>;
-            }
-            return (
-              <pre className={cn("my-3 max-h-80", RECESSED_BLOCK_CLASS)}>
-                {children}
-              </pre>
-            );
-          },
+          pre: ({ children }) => (
+            <pre className={cn("my-3 max-h-80", RECESSED_BLOCK_CLASS)}>
+              {children}
+            </pre>
+          ),
           code: ({ className, children }) => {
             const text = String(children ?? "");
-            const langMatch = typeof className === "string" ? className.match(/language-(\S+)/) : null;
-            const isBlock = /\n/.test(text) || langMatch != null;
+            const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
             const workspacePath = !isBlock ? normalizeWorkspacePathCandidate(text) : null;
             const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(workspacePath));
-            if (isBlock) {
-              const language = langMatch?.[1] ?? "text";
-              return <HighlightedCode code={text} language={language} />;
-            }
-            return pathIsClickable ? (
+            return isBlock ? (
+              <code className="font-mono text-[11px] text-fg/82">{children}</code>
+            ) : pathIsClickable ? (
               <span
                 role="button"
                 tabIndex={0}
@@ -604,7 +591,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
                 {children}
               </span>
             ) : (
-              <code className="rounded-md border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--chat-code-fg)]">{children}</code>
+              <code className="rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[11px] text-fg/90">{children}</code>
             );
           },
           a: ({ children, href }) => {
@@ -670,16 +657,16 @@ function CollapsibleCard({
   const isOpen = forceOpen === true ? true : open;
 
   return (
-    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={SURFACE_INLINE_CARD_STYLE}>
+    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={surfaceInlineCardStyle()}>
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-sans text-[11px] font-medium"
+        className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-mono text-[11px]"
         onClick={() => setOpen((v) => !v)}
       >
         {isOpen ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {isOpen ? <div className="border-t border-[color:var(--chat-panel-border)] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
+      {isOpen ? <div className="border-t border-white/[0.04] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
     </div>
   );
 }
@@ -721,12 +708,10 @@ const ACTIVITY_LABELS: Record<string, string> = {
   running_command: "Running command",
   searching: "Searching",
   reading: "Reading",
-  tool_calling: "Calling tool",
-  web_searching: "Web searching",
-  spawning_agent: "Spawning agent"
+  tool_calling: "Calling tool"
 };
 
-function ThinkingDots({ toneClass = "bg-fg/30" }: { toneClass?: string }) {
+function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string }) {
   return (
     <span className="inline-flex items-center gap-1" aria-hidden="true">
       {[0, 1, 2].map((index) => (
@@ -746,8 +731,8 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
 
   return (
-    <div className="flex items-center gap-2 py-1 font-sans text-[12px] text-fg/46">
-      <ThinkingDots />
+    <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
+      <ThinkingDots toneClass="bg-emerald-300/75" />
       <span className="truncate">{displayText}</span>
     </div>
   );
@@ -773,7 +758,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
   return (
     <CollapsibleCard
       summary={
-        <div className="flex items-center gap-2 font-sans text-[11px]">
+        <div className="flex items-center gap-2 font-mono text-[11px]">
           <StatusIcon status={event.status ?? "completed"} />
           <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", meta.badgeCls)}>
             <ToolIcon size={11} weight="bold" />
@@ -804,7 +789,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
             <button
               key={`${suggestion.surface}:${suggestion.href}`}
               type="button"
-              className="rounded-[8px] border border-accent/20 bg-accent/[0.08] px-2.5 py-1 font-sans text-[10px] font-semibold text-accent/85 transition-colors hover:bg-accent/[0.14] hover:text-accent"
+              className="rounded-[8px] border border-accent/20 bg-accent/[0.08] px-2.5 py-1 font-mono text-[10px] font-semibold text-accent/85 transition-colors hover:bg-accent/[0.14] hover:text-accent"
               onClick={() => navigate(suggestion.href)}
             >
               {suggestion.label}
@@ -818,7 +803,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
       {isTruncated ? (
         <button
           type="button"
-        className="mt-1.5 font-sans text-[10px] text-accent/60 hover:text-accent"
+          className="mt-1.5 font-mono text-[10px] text-accent/60 hover:text-accent"
           onClick={() => setExpanded((v) => !v)}
         >
           {expanded ? "collapse" : `show all (${resultStr.length} chars)`}
@@ -833,7 +818,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
 function resolveModelLabel(modelId?: string, model?: string): string | null {
   if (modelId) {
     const desc = getModelById(modelId);
-    if (desc) return desc.displayName;
+    if (desc) return `${desc.displayName} (${modelId})`;
     return modelId;
   }
   if (model) {
@@ -850,6 +835,55 @@ function resolveModelMeta(modelId?: string, model?: string): { label: string | n
     label: resolveModelLabel(modelId, model),
     family: descriptor?.family ?? null,
     cliCommand: descriptor?.cliCommand ?? null,
+  };
+}
+
+type TurnModelDescriptor = { label: string; modelId?: string; model?: string };
+
+type DerivedTurnModelState = {
+  map: Map<string, TurnModelDescriptor>;
+  lastModel: TurnModelDescriptor | null;
+  processedLength: number;
+  lastProcessedEnvelope: AgentChatEventEnvelope | null;
+};
+
+export function deriveTurnModelState(
+  events: AgentChatEventEnvelope[],
+  previous: DerivedTurnModelState | null = null,
+): DerivedTurnModelState {
+  const canIncrementallyAppend =
+    !!previous
+    && previous.processedLength <= events.length
+    && (
+      previous.processedLength === 0
+      || previous.lastProcessedEnvelope === events[previous.processedLength - 1]
+    );
+
+  const map = canIncrementallyAppend && previous
+    ? new Map(previous.map)
+    : new Map<string, TurnModelDescriptor>();
+  let lastModel = canIncrementallyAppend ? (previous?.lastModel ?? null) : null;
+  const startIndex = canIncrementallyAppend && previous ? previous.processedLength : 0;
+
+  for (let index = startIndex; index < events.length; index += 1) {
+    const evt = events[index]?.event;
+    if (!evt || evt.type !== "done") continue;
+    const modelLabel = resolveModelLabel(evt.modelId, evt.model);
+    if (!evt.turnId || !modelLabel) continue;
+    const model = {
+      label: modelLabel,
+      ...(evt.modelId ? { modelId: evt.modelId } : {}),
+      ...(evt.model ? { model: evt.model } : {}),
+    };
+    map.set(evt.turnId, model);
+    lastModel = model;
+  }
+
+  return {
+    map,
+    lastModel,
+    processedLength: events.length,
+    lastProcessedEnvelope: events.length > 0 ? events[events.length - 1]! : null,
   };
 }
 
@@ -929,14 +963,9 @@ function CommandEventCard({
   const timelineVerb = commandTimelineVerb(event.status);
   const timelineSummary = (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
-      <span className={cn(
-        "inline-flex h-1.5 w-1.5 rounded-full",
-        event.status === "completed"
-          ? "bg-emerald-400/85"
-          : event.status === "failed"
-            ? "bg-red-400/85"
-            : "bg-amber-400/85",
-      )} />
+      <span className="inline-flex h-3 w-3 items-center justify-center">
+        <ChatStatusGlyph status={event.status === "running" ? "working" : event.status} size={11} />
+      </span>
       <Terminal size={11} weight="regular" className="text-fg/34" />
       <span className="font-medium text-fg/62">{timelineVerb}</span>
       <span className="min-w-0 flex-1 truncate text-fg/76">{event.command}</span>
@@ -951,12 +980,12 @@ function CommandEventCard({
 
   const commandBody = (
     <>
-      <div className="rounded-lg border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] px-3.5 py-2.5 font-mono text-[11px] text-[var(--chat-code-fg)]">
+      <div className="rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[11px] text-fg/80">
         <span className="select-none text-amber-500/40">$ </span>
         {event.command}
       </div>
       {hasOutput ? (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] px-3.5 py-2.5 font-mono text-[11px] leading-[1.5] text-[var(--chat-code-fg)]">
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[11px] leading-[1.5] text-fg/60">
           {event.output}
         </pre>
       ) : null}
@@ -985,14 +1014,9 @@ function FileChangeEventCard({
   const dirname = dirnamePathLabel(event.path);
   const summary = (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
-      <span className={cn(
-        "inline-flex h-1.5 w-1.5 rounded-full",
-        event.status === "failed"
-          ? "bg-red-400/85"
-          : event.status === "running"
-            ? "bg-amber-400/85"
-            : "bg-emerald-400/85",
-      )} />
+      <span className="inline-flex h-3 w-3 items-center justify-center">
+        <ChatStatusGlyph status={event.status === "running" ? "working" : (event.status ?? "completed")} size={11} />
+      </span>
       <FileCode size={11} weight="regular" className="text-fg/34" />
       <span className="font-medium text-fg/62">{formatFileAction(event.kind)}</span>
       <span className="truncate text-fg/78">{basename}</span>
@@ -1011,7 +1035,7 @@ function FileChangeEventCard({
       {hasDiff ? (
         <DiffPreview diff={event.diff} />
       ) : (
-        <div className="font-sans text-[11px] text-muted-fg/40">No diff payload available.</div>
+        <div className="font-mono text-[11px] text-muted-fg/40">No diff payload available.</div>
       )}
     </InlineDisclosureRow>
   );
@@ -1039,7 +1063,7 @@ function renderEvent(
         <div className="flex justify-end">
           <div
             className={cn(GLASS_CARD_CLASS, "max-w-[88%] border-l-2 border-l-amber-400/40 px-4 py-3")}
-            style={SURFACE_INLINE_CARD_STYLE}
+            style={surfaceInlineCardStyle()}
           >
             <div className="mb-1.5 flex items-center gap-2">
               <span className="relative flex h-2 w-2">
@@ -1061,7 +1085,7 @@ function renderEvent(
     }
     return (
       <div className="flex justify-end">
-        <div className={cn(GLASS_CARD_CLASS, "group max-w-[82%] px-4 py-3")} style={MESSAGE_CARD_STYLE}>
+        <div className={cn(GLASS_CARD_CLASS, "group max-w-[82%] px-4 py-3")} style={messageCardStyle()}>
           <div className="mb-2 flex items-center gap-2">
             <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-amber-300/20 bg-amber-400/[0.10]">
               <User size={10} weight="regular" className="text-amber-200/90" />
@@ -1097,10 +1121,10 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "group max-w-[94%] px-4 py-3 transition-[min-height] duration-300 ease-out",
-            options?.turnActive ? "min-h-[5.5rem]" : "min-h-0",
+            "group max-w-[94%] px-4 py-3",
+            options?.turnActive && "min-h-[5.5rem]",
           )}
-          style={ASSISTANT_MESSAGE_CARD_STYLE}
+          style={assistantMessageCardStyle()}
         >
           <div className="mb-2 flex items-center gap-2">
             <span className="inline-flex h-4.5 w-4.5 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03]">
@@ -1117,7 +1141,7 @@ function renderEvent(
               <span className="font-sans text-[10px] text-fg/34">{formatTime(envelope.timestamp)}</span>
             </div>
           </div>
-          <div className={cn("transition-[min-height] duration-300 ease-out", options?.turnActive ? "min-h-[4.75rem]" : "min-h-0")}>
+          <div>
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         </div>
@@ -1166,11 +1190,11 @@ function renderEvent(
               </div>
             ))
           ) : (
-            <div className="font-sans text-[11px] text-muted-fg/40">No plan steps yet.</div>
+            <div className="font-mono text-[11px] text-muted-fg/40">No plan steps yet.</div>
           )}
         </div>
         {event.explanation ? (
-          <div className="mt-2 border-t border-[color:var(--chat-panel-border)] pt-2 text-[11px] text-muted-fg/50">{event.explanation}</div>
+          <div className="mt-2 border-t border-white/[0.05] pt-2 text-[11px] text-muted-fg/50">{event.explanation}</div>
         ) : null}
       </InlineDisclosureRow>
     );
@@ -1226,7 +1250,7 @@ function renderEvent(
               </div>
             ))
           ) : (
-            <div className="font-sans text-[11px] text-muted-fg/40">No items yet.</div>
+            <div className="font-mono text-[11px] text-muted-fg/40">No items yet.</div>
           )}
         </div>
       </InlineDisclosureRow>
@@ -1258,7 +1282,7 @@ function renderEvent(
             isFailed ? "bg-red-500/10" : "bg-cyan-500/10",
           )}>
             {isRunning ? (
-              <SpinnerGap size={15} weight="bold" className="animate-spin text-cyan-400/80" />
+              <ChatStatusGlyph status="working" size={15} />
             ) : isFailed ? (
               <XCircle size={15} weight="bold" className="text-red-400/80" />
             ) : (
@@ -1299,7 +1323,7 @@ function renderEvent(
     return (
       <div className="flex items-center gap-2.5 rounded-lg border border-indigo-500/10 bg-indigo-500/[0.04] px-3.5 py-2">
         {isStarted ? (
-          <SpinnerGap size={13} weight="bold" className="animate-spin text-indigo-400/60" />
+          <ChatStatusGlyph status="working" size={13} />
         ) : (
           <ShieldCheck size={13} weight="bold" className="text-indigo-400/60" />
         )}
@@ -1343,7 +1367,7 @@ function renderEvent(
         <div className="h-px w-full bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
         <div className="flex items-center gap-3 px-4 py-3">
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-500/10">
-            <SpinnerGap size={14} weight="bold" className="animate-spin text-violet-400/80" />
+            <ChatStatusGlyph status="working" size={14} />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -1368,7 +1392,7 @@ function renderEvent(
         summary={
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
             <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-violet-500/10">
-              <SpinnerGap size={11} weight="bold" className="animate-spin text-violet-400/70" />
+              <ChatStatusGlyph status="working" size={11} />
             </div>
             <span className="font-medium text-fg/62">Agent running</span>
             {event.lastToolName?.trim() ? (
@@ -1426,13 +1450,13 @@ function renderEvent(
   /* ── Structured Question ── */
   if (event.type === "structured_question") {
     return (
-      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={MESSAGE_CARD_STYLE}>
+      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={messageCardStyle()}>
         <div className="mb-2 flex items-center gap-2">
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
             <ChatCircleText size={13} weight="bold" className="text-[var(--chat-accent)]" />
           </span>
-          <span className="font-sans text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--chat-accent)]">Agent Question</span>
-          <span className="ml-auto font-sans text-[9px] text-muted-fg/25">{formatTime(envelope.timestamp)}</span>
+          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-[var(--chat-accent)]">Agent Question</span>
+          <span className="ml-auto font-mono text-[9px] text-muted-fg/25">{formatTime(envelope.timestamp)}</span>
         </div>
         <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] px-4 py-3 text-[12.5px] leading-[1.65] text-fg/85">
           {event.question}
@@ -1443,7 +1467,7 @@ function renderEvent(
               <button
                 key={option.value}
                 type="button"
-                className="border border-accent/40 bg-transparent px-3 py-1.5 font-sans text-[10px] font-semibold uppercase tracking-[0.14em] text-fg/70 transition-colors hover:bg-accent/15"
+                className="border border-accent/40 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/15"
                 onClick={() => options?.onApproval?.(event.itemId, "accept", option.value)}
               >
                 {option.label}
@@ -1451,7 +1475,7 @@ function renderEvent(
             ))}
           </div>
         ) : null}
-        <div className="mt-2 font-sans text-[9px] text-muted-fg/35">or type a custom answer</div>
+        <div className="mt-2 font-mono text-[9px] text-muted-fg/35">or type a custom answer</div>
       </div>
     );
   }
@@ -1512,71 +1536,45 @@ function renderEvent(
 
   /* ── System Notice ── */
   if (event.type === "system_notice") {
-    const kindStyles: Record<string, { border: string; bg: string; text: string; icon: typeof Warning | typeof Info; label: string }> = {
-      auth: { border: "border-amber-500/18", bg: "bg-amber-500/[0.08]", text: "text-amber-300", icon: Warning, label: "auth" },
-      rate_limit: { border: "border-red-500/18", bg: "bg-red-500/[0.08]", text: "text-red-300", icon: Warning, label: "rate limit" },
-      hook: { border: "border-violet-500/18", bg: "bg-violet-500/[0.08]", text: "text-violet-300", icon: Note, label: "hook" },
-      file_persist: { border: "border-emerald-500/18", bg: "bg-emerald-500/[0.08]", text: "text-emerald-300", icon: Note, label: "saved" },
-      memory: { border: "border-cyan-500/18", bg: "bg-cyan-500/[0.08]", text: "text-cyan-300", icon: MagnifyingGlass, label: "memory" },
-      provider_health: { border: "border-sky-400/18", bg: "bg-sky-500/[0.08]", text: "text-sky-300", icon: Info, label: "provider health" },
-      thread_error: { border: "border-red-400/18", bg: "bg-red-500/[0.08]", text: "text-red-300", icon: Warning, label: "thread error" },
-      info: { border: "border-border/14", bg: "bg-surface-recessed/70", text: "text-muted-fg/55", icon: Note, label: "info" },
+    const kindStyles: Record<string, { border: string; bg: string; text: string; icon: typeof Warning }> = {
+      auth: { border: "border-amber-500/18", bg: "bg-amber-500/[0.06]", text: "text-amber-300", icon: Warning },
+      rate_limit: { border: "border-red-500/18", bg: "bg-red-500/[0.06]", text: "text-red-300", icon: Warning },
+      hook: { border: "border-violet-500/18", bg: "bg-violet-500/[0.06]", text: "text-violet-300", icon: Note },
+      file_persist: { border: "border-emerald-500/18", bg: "bg-emerald-500/[0.06]", text: "text-emerald-300", icon: Note },
+      memory: { border: "border-cyan-500/18", bg: "bg-cyan-500/[0.06]", text: "text-cyan-300", icon: MagnifyingGlass },
+      info: { border: "border-border/14", bg: "bg-surface-recessed/70", text: "text-muted-fg/55", icon: Note },
     };
     const style = kindStyles[event.noticeKind] ?? kindStyles.info!;
     const NoticeIcon = style.icon;
-    const detailText = typeof event.detail === "string" ? event.detail.trim() : "";
-    const structuredDetail = typeof event.detail === "object" && event.detail !== null ? (event.detail as AgentChatNoticeDetail) : null;
-    const hasDetail = detailText.length > 0 || structuredDetail != null;
-    const detailPreview = structuredDetail?.summary && structuredDetail.summary.trim().length > 0
-      ? structuredDetail.summary.trim()
-      : detailText.length > 0
-        ? summarizeInlineText(detailText, 120)
-        : null;
-
-    if (event.noticeKind === "memory") {
-      // Compact memory notice — just a single-line pill
-      return (
-        <div className="flex items-center gap-2 py-0.5">
-          <div className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/15 bg-cyan-500/[0.05] px-2.5 py-1 font-sans text-[10px] text-cyan-300/70">
-            <MagnifyingGlass size={10} weight="bold" />
-            <span>{event.message}</span>
-          </div>
-        </div>
-      );
-    }
+    const hasDetail = hasNoticeDetail(event.detail);
 
     if (hasDetail) {
       return (
         <CollapsibleCard
           defaultOpen={false}
           summary={
-            <div className="flex items-center gap-2 font-sans text-[11px]">
+            <div className="flex items-center gap-2 font-mono text-[11px]">
               <NoticeIcon size={12} weight="bold" className={style.text} />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
-                    {style.label}
-                  </span>
-                  <span className="truncate text-[10px] font-medium text-fg/74">{event.message}</span>
-                </div>
-                {detailPreview ? <div className="mt-0.5 truncate text-[10px] text-fg/42">{detailPreview}</div> : null}
-              </div>
+              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
+                {event.noticeKind.replace("_", " ")}
+              </span>
+              <span className="flex-1 truncate text-[10px] text-fg/55">{event.message}</span>
             </div>
           }
           className={style.border}
         >
-          {structuredDetail ? renderNoticeDetail(structuredDetail as AgentChatNoticeDetail) : renderNoticeDetail(detailText)}
+          {event.detail ? renderNoticeDetail(event.detail) : null}
         </CollapsibleCard>
       );
     }
 
     return (
       <div className={cn(
-        "inline-flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-sans text-[10px] uppercase tracking-[0.16em]",
+        "inline-flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
         style.border, style.bg, style.text,
       )}>
         <NoticeIcon size={11} weight="bold" />
-        <span className="text-[9px] font-semibold">{style.label}</span>
+        <span className="text-[9px] font-bold">{event.noticeKind.replace("_", " ")}</span>
         <span className="normal-case tracking-normal text-fg/55">{event.message}</span>
       </div>
     );
@@ -1598,7 +1596,7 @@ function renderEvent(
         defaultOpen={false}
         forceOpen={isLive ? true : undefined}
         summary={
-          <span className="font-sans text-[12px] text-fg/52">
+          <span className="font-mono text-[12px] text-fg/52">
             {isLive ? (
               <span className="flex items-center gap-2">
                 <ThinkingDots toneClass="bg-fg/40" />
@@ -1642,7 +1640,7 @@ function renderEvent(
       <CollapsibleCard
         defaultOpen={event.status === "failed"}
         summary={
-          <div className="flex items-center gap-2 font-sans text-[12px] text-fg/50">
+          <div className="flex items-center gap-2 font-mono text-[12px] text-fg/50">
             {event.status === "running" ? (
               <ThinkingDots />
             ) : event.status === "failed" ? (
@@ -1661,20 +1659,20 @@ function renderEvent(
       >
         <div className="space-y-3">
           <div>
-            <div className="mb-1 font-sans text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Arguments</div>
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Arguments</div>
             {argCount ? (
               <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
                 {formatStructuredValue(args)}
               </pre>
             ) : (
-              <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-[color:var(--chat-panel-border)] bg-white/[0.03] px-4 py-2 font-mono text-[10px] text-muted-fg/40">
+              <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-white/[0.04] bg-black/20 px-4 py-2 font-mono text-[10px] text-muted-fg/40">
                 No arguments
               </div>
             )}
           </div>
           {resultText ? (
             <div>
-              <div className="mb-1 font-sans text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Result</div>
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Result</div>
               <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
                 {resultText}
               </pre>
@@ -1728,7 +1726,7 @@ function renderEvent(
       <CollapsibleCard
         defaultOpen={false}
         summary={
-          <div className="flex items-center gap-2 font-sans text-[12px] text-fg/50">
+          <div className="flex items-center gap-2 font-mono text-[12px] text-fg/50">
             <CaretRight size={10} weight="bold" className="text-fg/30" />
             <ToolIcon size={13} weight="regular" className="text-fg/40" />
             <span className="truncate">{label}</span>
@@ -1776,6 +1774,7 @@ function renderEvent(
     const normalizedTool = detailTool.toLowerCase();
     const isQuestionRequest = requestKind === "question" || requestKind === "structured_question";
     const isPermissionRequest = requestKind === "permissions";
+    const isPlanApproval = requestKind === "plan_approval";
     const isAskUser = ((normalizedTool === "askuser" || normalizedTool === "ask_user") && question.length > 0) || isQuestionRequest;
     const detailText = (() => {
       if (event.detail == null || isAskUser) return "";
@@ -1793,18 +1792,21 @@ function renderEvent(
       bodyText = event.description;
     }
     return (
-      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={SURFACE_INLINE_CARD_STYLE}>
+      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
         <div className="mb-2 flex items-center gap-2">
           {isAskUser ? (
-            <span
-              aria-hidden="true"
-              className="inline-flex h-2.5 w-2.5 rounded-full bg-amber-400/85 shadow-[0_0_0_3px_rgba(245,158,11,0.12)]"
-            />
+            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-500/[0.10] shadow-[0_0_0_3px_rgba(245,158,11,0.12)]">
+              <ChatStatusGlyph status="waiting" size={11} />
+            </span>
+          ) : isPlanApproval ? (
+            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-500/[0.10] shadow-[0_0_0_3px_rgba(139,92,246,0.12)]">
+              <ChatStatusGlyph status="waiting" size={11} />
+            </span>
           ) : (
             <Warning size={13} weight="bold" className="text-amber-500" />
           )}
           <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">
-            {isAskUser ? "Needs Input" : isPermissionRequest ? "Permission Request" : "Approval Required"}
+            {isAskUser ? "Needs Input" : isPlanApproval ? "Plan Approval" : isPermissionRequest ? "Permission Request" : "Approval Required"}
           </span>
           <span className="font-mono text-[10px] text-muted-fg/40">{requestSource || event.kind}</span>
         </div>
@@ -1827,8 +1829,8 @@ function renderEvent(
           <div className="mt-3">
             <CollapsibleCard
               defaultOpen={false}
-              summary={<span className="font-sans text-[10px] uppercase tracking-wider text-amber-300/70">Request Details</span>}
-              className="border-transparent bg-[var(--chat-panel-bg)]/35"
+              summary={<span className="font-mono text-[10px] uppercase tracking-wider text-amber-300/70">Request Details</span>}
+              className="border-transparent bg-surface/35"
             >
               <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
                 {detailText}
@@ -1837,41 +1839,60 @@ function renderEvent(
           </div>
         ) : null}
         {isAskUser ? (
-          <div className="mt-3 border border-accent/15 bg-accent/[0.05] px-3 py-2 font-sans text-[10px] uppercase tracking-[0.16em] text-accent/65">
+          <div className="mt-3 border border-accent/15 bg-accent/[0.05] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-accent/65">
             Answer this from the question modal to keep the agent moving.
           </div>
         ) : null}
         {handleApproval && !isAskUser ? (
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              className="border border-accent/40 bg-accent/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-accent/25"
-              onClick={() => handleApproval("accept")}
-            >
-              Accept
-            </button>
-            <button
-              type="button"
-              className="border border-accent/20 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/10"
-              onClick={() => handleApproval("accept_for_session")}
-            >
-              Accept All
-            </button>
-            <button
-              type="button"
-              className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
-              onClick={() => handleApproval("decline")}
-            >
-              Decline
-            </button>
-            <button
-              type="button"
-              className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
-              onClick={() => handleApproval("cancel")}
-            >
-              Dismiss
-            </button>
-          </div>
+          isPlanApproval ? (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                className="border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-200 transition-colors hover:bg-emerald-500/25"
+                onClick={() => handleApproval("accept")}
+              >
+                Approve &amp; Implement
+              </button>
+              <button
+                type="button"
+                className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
+                onClick={() => handleApproval("decline")}
+              >
+                Reject &amp; Revise
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                className="border border-accent/40 bg-accent/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-accent/25"
+                onClick={() => handleApproval("accept")}
+              >
+                Accept
+              </button>
+              <button
+                type="button"
+                className="border border-accent/20 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/10"
+                onClick={() => handleApproval("accept_for_session")}
+              >
+                Accept All
+              </button>
+              <button
+                type="button"
+                className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
+                onClick={() => handleApproval("decline")}
+              >
+                Decline
+              </button>
+              <button
+                type="button"
+                className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
+                onClick={() => handleApproval("cancel")}
+              >
+                Dismiss
+              </button>
+            </div>
+          )
         ) : null}
       </div>
     );
@@ -1880,16 +1901,16 @@ function renderEvent(
   /* ── Error ── */
   if (event.type === "error") {
     return (
-      <div className={cn(GLASS_CARD_CLASS, "group border-red-500/12 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
+      <div className={cn(GLASS_CARD_CLASS, "group border-red-500/12 p-0")} style={surfaceInlineCardStyle()}>
         <div className="h-px w-full bg-gradient-to-r from-transparent via-red-500/40 to-transparent" />
         <div className="p-4">
           <div className="mb-2 flex items-center gap-2">
             <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-red-500/10">
               <Warning size={13} weight="bold" className="text-red-400/90" />
             </div>
-            <span className="font-sans text-[11px] font-semibold uppercase tracking-[0.16em] text-fg/85">Error</span>
+            <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">Error</span>
             {event.errorInfo && typeof event.errorInfo !== "string" && event.errorInfo.category ? (
-              <span className="inline-flex items-center rounded-md border border-red-500/12 bg-red-500/[0.06] px-1.5 py-0.5 font-sans text-[8px] font-semibold uppercase tracking-[0.16em] text-red-300/70">
+              <span className="inline-flex items-center rounded-md border border-red-500/12 bg-red-500/[0.06] px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-red-300/70">
                 {event.errorInfo.category}
               </span>
             ) : null}
@@ -1899,7 +1920,7 @@ function renderEvent(
           </div>
           <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg/80">{event.message}</div>
           {event.errorInfo ? (
-            <div className="mt-2 font-sans text-[10px] text-muted-fg/40">
+            <div className="mt-2 font-mono text-[10px] text-muted-fg/40">
               {typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}
             </div>
           ) : null}
@@ -1923,11 +1944,11 @@ function renderEvent(
     return (
       <div
         className={cn(
-          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-sans text-[10px] uppercase tracking-[0.16em]",
+          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
           isFailure
-            ? "border-red-500/14 bg-red-500/[0.07] text-red-300"
+            ? "border-red-500/14 bg-red-500/[0.05] text-red-300"
             : isInterrupted
-              ? "border-amber-500/14 bg-amber-500/[0.07] text-amber-300"
+              ? "border-amber-500/14 bg-amber-500/[0.05] text-amber-300"
               : "border-border/14 bg-surface-recessed/70 text-muted-fg/55"
         )}
       >
@@ -1953,9 +1974,9 @@ function renderEvent(
     return (
       <div
         className={cn(
-          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-sans text-[10px] uppercase tracking-[0.16em]",
+          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
           isFailure
-            ? "border-red-500/14 bg-red-500/[0.07] text-red-300"
+            ? "border-red-500/14 bg-red-500/[0.05] text-red-300"
             : "border-border/14 bg-surface-recessed/70 text-muted-fg/55"
         )}
       >
@@ -2018,8 +2039,8 @@ function renderEvent(
         ? "border-red-500/15 bg-red-500/[0.05] text-red-200"
         : "border-amber-500/15 bg-amber-500/[0.05] text-amber-200";
     return (
-        <div className={cn("rounded-lg border px-3 py-2.5", statusTone)}>
-        <div className="flex flex-wrap items-center gap-2 font-sans text-[10px] uppercase tracking-[0.14em]">
+      <div className={cn("rounded-lg border px-3 py-2.5", statusTone)}>
+        <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em]">
           <span>Completion</span>
           <span className="text-current/80">{event.report.status}</span>
           {event.report.artifacts.length > 0 ? (
@@ -2184,8 +2205,8 @@ function TurnSummaryCard({
     : null;
 
   return (
-    <div className="overflow-hidden rounded-[20px] border border-[color:var(--chat-card-border)] bg-[var(--chat-card-bg)] shadow-[var(--chat-card-shadow)]">
-      <div className="border-b border-[color:var(--chat-panel-border)] px-4 py-3">
+    <div className="overflow-hidden rounded-[20px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(26,26,29,0.92),rgba(19,19,22,0.94))] shadow-[0_24px_80px_-48px_rgba(0,0,0,0.85)]">
+      <div className="border-b border-white/[0.05] px-4 py-3">
         <div className="flex items-center gap-2">
           <ListChecks size={13} weight="bold" className="text-fg/58" />
           <span className="font-sans text-[13px] font-medium text-fg/86">
@@ -2196,7 +2217,7 @@ function TurnSummaryCard({
           {onReviewChanges && summary.files.length > 0 ? (
             <button
               type="button"
-              className="ml-auto inline-flex items-center gap-1 rounded-md border border-[color:var(--chat-panel-border)] bg-white/[0.03] px-2.5 py-1 text-[11px] text-fg/70 transition-colors hover:bg-white/[0.05] hover:text-fg/88"
+              className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-fg/70 transition-colors hover:bg-white/[0.05] hover:text-fg/88"
               onClick={onReviewChanges}
             >
               Review changes
@@ -2206,7 +2227,7 @@ function TurnSummaryCard({
       </div>
 
       {summary.tasks.length ? (
-        <div className="space-y-1 border-b border-[color:var(--chat-panel-border)] px-4 py-3">
+        <div className="space-y-1 border-b border-white/[0.05] px-4 py-3">
           {summary.tasks.map((task, index) => (
             <div key={task.id || `${task.description}:${index}`} className="flex items-start gap-2.5 py-1">
               <div className="mt-0.5 shrink-0">
@@ -2223,7 +2244,7 @@ function TurnSummaryCard({
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-3 px-4 py-3 font-sans text-[10px] text-fg/44">
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3 font-mono text-[10px] text-fg/44">
         {filesLabel ? (
           <span>
             {filesLabel}
@@ -2268,39 +2289,6 @@ function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
   return null;
 }
 
-function deriveTurnStartedAt(events: AgentChatEventEnvelope[], turnId: string | null): string | null {
-  if (!turnId) return null;
-  for (const envelope of events) {
-    const eventTurnId = getEventTurnId(envelope.event);
-    if (eventTurnId !== turnId) continue;
-    if (envelope.event.type === "status" && envelope.event.turnStatus === "started") {
-      return envelope.timestamp;
-    }
-  }
-  for (const envelope of events) {
-    if (getEventTurnId(envelope.event) === turnId) {
-      return envelope.timestamp;
-    }
-  }
-  return null;
-}
-
-function formatElapsedTimer(startedAt: string | null, nowMs: number): string | null {
-  if (!startedAt) return null;
-  const startedMs = Date.parse(startedAt);
-  if (!Number.isFinite(startedMs)) return null;
-  const totalSeconds = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes < 60) {
-    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-}
-
 function getGroupedTurnId(envelope: TranscriptGroupedEnvelope | undefined): string | null {
   if (!envelope) return null;
   if (envelope.event.type === "work_log_group") {
@@ -2315,8 +2303,6 @@ type EventRowProps = {
   envelope: TranscriptGroupedEnvelope;
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
-  currentTurn: string | null;
-  turnDividerMap: Map<string, { turnId: string; startTimestamp: string; endTimestamp?: string; model?: string; modelId?: string; filesChanged: number; insertions: number; deletions: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number; status?: "completed" | "interrupted" | "failed" }>;
   turnModel: { label: string; modelId?: string; model?: string } | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   surfaceMode?: ChatSurfaceMode;
@@ -2331,8 +2317,6 @@ const EventRow = React.memo(function EventRow({
   envelope,
   showTurnDivider,
   turnDividerLabel,
-  currentTurn,
-  turnDividerMap,
   turnModel,
   onApproval,
   surfaceMode = "standard",
@@ -2344,31 +2328,22 @@ const EventRow = React.memo(function EventRow({
 }: EventRowProps) {
   return (
     <div className="space-y-3">
-      {showTurnDivider && currentTurn ? (() => {
-        const dividerData = turnDividerMap.get(currentTurn);
-        return dividerData ? (
-          <ChatTurnDivider data={{
-            ...dividerData,
-            timestamp: dividerData.startTimestamp,
-            endTimestamp: dividerData.endTimestamp,
-          }} />
-        ) : (
-          <div className="my-1 flex items-center gap-3">
-            <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 font-sans text-[10px] text-fg/30">
-              {turnModel?.label ? (
-                <>
-                  <ModelGlyph modelId={turnModel.modelId} model={turnModel.model} size={10} className="text-fg/25" />
-                  <span className="text-fg/25">{turnModel.label}</span>
-                  <span className="text-fg/12">&middot;</span>
-                </>
-              ) : null}
-              <span>{turnDividerLabel ?? "Turn"}</span>
-            </span>
-            <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
-          </div>
-        );
-      })() : null}
+      {showTurnDivider ? (
+        <div className="my-1 flex items-center gap-3">
+          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
+          <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 font-sans text-[10px] text-fg/30">
+            {turnModel?.label ? (
+              <>
+                <ModelGlyph modelId={turnModel.modelId} model={turnModel.model} size={10} className="text-fg/25" />
+                <span className="text-fg/25">{turnModel.label}</span>
+                <span className="text-fg/12">&middot;</span>
+              </>
+            ) : null}
+            <span>{turnDividerLabel ?? "Turn"}</span>
+          </span>
+          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
+        </div>
+      ) : null}
       {envelope.event.type === "work_log_group"
         ? (
           <ChatWorkLogBlock
@@ -2381,16 +2356,140 @@ const EventRow = React.memo(function EventRow({
   );
 });
 
+/**
+ * MeasuredEventRow wraps EventRow and reports its rendered height back to the
+ * virtualizer so subsequent frames use real measured sizes instead of estimates.
+ */
+const MeasuredEventRow = React.memo(function MeasuredEventRow({
+  index,
+  onMeasure,
+  ...rest
+}: EventRowProps & { index: number; onMeasure: (index: number, height: number) => void }) {
+  const rowRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const height = entry.target instanceof HTMLElement ? entry.target.offsetHeight : entry.contentRect.height;
+      if (height > 0) onMeasure(index, height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [index, onMeasure]);
+
+  return (
+    <div ref={rowRef}>
+      <EventRow {...rest} />
+    </div>
+  );
+});
+
 /* ── Virtualization constants ── */
 
 /** Estimated height per message row (px) used before real measurement. */
 const ESTIMATED_ROW_HEIGHT = 80;
+/** Gap between rows from `space-y-3` (Tailwind 0.75rem = 12px). */
+const ROW_GAP = 12;
 /** Number of extra rows to render above/below the visible viewport. */
 const OVERSCAN = 10;
 /** Minimum number of rows before virtualization kicks in. */
 const VIRTUALIZATION_THRESHOLD = 60;
-/** Number of recent rows rendered outside the virtualizer (non-virtualized tail). */
-const TAIL_ROW_COUNT = 8;
+
+export function calculateVirtualWindow({
+  rowCount,
+  scrollTop,
+  containerHeight,
+  rowHeight,
+  overscan = OVERSCAN,
+  rowGap = ROW_GAP,
+}: {
+  rowCount: number;
+  scrollTop: number;
+  containerHeight: number;
+  rowHeight: (index: number) => number;
+  overscan?: number;
+  rowGap?: number;
+}): {
+  startIndex: number;
+  endIndex: number;
+  totalHeight: number;
+  offsetTop: number;
+} {
+  if (rowCount <= 0) {
+    return { startIndex: 0, endIndex: 0, totalHeight: 0, offsetTop: 0 };
+  }
+
+  let cumulative = 0;
+  const offsets: number[] = new Array(rowCount);
+  for (let i = 0; i < rowCount; i += 1) {
+    offsets[i] = cumulative;
+    cumulative += rowHeight(i) + rowGap;
+  }
+  const totalHeight = cumulative - rowGap;
+  const viewTop = scrollTop;
+  const viewBottom = scrollTop + containerHeight;
+
+  let lo = 0;
+  let hi = rowCount - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const rowBottom = offsets[mid]! + rowHeight(mid);
+    if (rowBottom < viewTop) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  const firstVisible = lo;
+
+  let lastVisible = firstVisible;
+  while (lastVisible < rowCount - 1 && offsets[lastVisible + 1]! < viewBottom) {
+    lastVisible += 1;
+  }
+
+  const startIndex = Math.max(0, firstVisible - overscan);
+  const endIndex = Math.min(rowCount, lastVisible + 1 + overscan);
+
+  return {
+    startIndex,
+    endIndex,
+    totalHeight,
+    offsetTop: offsets[startIndex] ?? 0,
+  };
+}
+
+export function reconcileMeasuredScrollTop({
+  index,
+  previousHeight,
+  nextHeight,
+  scrollTop,
+  rowHeight,
+  rowGap = ROW_GAP,
+}: {
+  index: number;
+  previousHeight: number;
+  nextHeight: number;
+  scrollTop: number;
+  rowHeight: (index: number) => number;
+  rowGap?: number;
+}): number {
+  const delta = nextHeight - previousHeight;
+  if (delta === 0) return scrollTop;
+
+  let rowTop = 0;
+  for (let i = 0; i < index; i += 1) {
+    rowTop += rowHeight(i) + rowGap;
+  }
+
+  const rowBottom = rowTop + previousHeight;
+  if (rowBottom <= scrollTop) {
+    return Math.max(0, scrollTop + delta);
+  }
+  return scrollTop;
+}
 
 export function AgentChatMessageList({
   events,
@@ -2420,12 +2519,21 @@ export function AgentChatMessageList({
   });
   const [stickToBottom, setStickToBottom] = useState(true);
   const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const stickToBottomRef = useRef(true);
   const onApprovalRef = useRef(onApproval);
 
-  // Map of row index → measured height (filled in lazily as rows render, used as estimateSize fallback)
+  // Virtualization scroll tracking
+  const [scrollTop, setScrollTop] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(0);
+  const [measurementTick, setMeasurementTick] = useState(0);
+  // Map of row index → measured height (filled in lazily as rows render)
   const measuredHeights = useRef<Map<number, number>>(new Map());
+  // Track previous events identity to clear stale measurements on session switch
+  const prevEventsRef = useRef<AgentChatEventEnvelope[]>(events);
+  if (prevEventsRef.current !== events && events.length > 0 && (events[0] !== prevEventsRef.current[0])) {
+    measuredHeights.current.clear();
+  }
+  prevEventsRef.current = events;
 
   useEffect(() => {
     onApprovalRef.current = onApproval;
@@ -2444,12 +2552,8 @@ export function AgentChatMessageList({
   const groupedRows = useMemo(() => groupConsecutiveWorkLogRows(rows), [rows]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
-  const activeTurnStartedAt = useMemo(
-    () => (showStreamingIndicator ? deriveTurnStartedAt(events, activeTurnId) : null),
-    [activeTurnId, events, showStreamingIndicator],
-  );
   const turnSummary = useMemo(() => deriveTurnSummary(events), [events]);
-  const turnDividerMap = useMemo(() => deriveTurnDividerData(events), [events]);
+
   const currentLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
     ? (location.state as { laneId: string }).laneId
     : null;
@@ -2475,38 +2579,34 @@ export function AgentChatMessageList({
   }, []);
 
   const openWorkspacePath = useCallback(async (path: string) => {
-    try {
-      let resolvedWorkspaces = filesWorkspaces;
-      let target = resolveFilesNavigationTarget({
-        path,
-        workspaces: resolvedWorkspaces,
-        fallbackLaneId: currentLaneId,
-      });
-      if (!target && normalizeWorkspacePathCandidate(path)?.startsWith("/")) {
-        const listWorkspaces = window.ade?.files?.listWorkspaces;
-        if (typeof listWorkspaces === "function") {
-          try {
-            resolvedWorkspaces = await listWorkspaces();
-            setFilesWorkspaces(resolvedWorkspaces);
-            target = resolveFilesNavigationTarget({
-              path,
-              workspaces: resolvedWorkspaces,
-              fallbackLaneId: currentLaneId,
-            });
-          } catch {
-            target = null;
-          }
+    let resolvedWorkspaces = filesWorkspaces;
+    let target = resolveFilesNavigationTarget({
+      path,
+      workspaces: resolvedWorkspaces,
+      fallbackLaneId: currentLaneId,
+    });
+    if (!target && normalizeWorkspacePathCandidate(path)?.startsWith("/")) {
+      const listWorkspaces = window.ade?.files?.listWorkspaces;
+      if (typeof listWorkspaces === "function") {
+        try {
+          resolvedWorkspaces = await listWorkspaces();
+          setFilesWorkspaces(resolvedWorkspaces);
+          target = resolveFilesNavigationTarget({
+            path,
+            workspaces: resolvedWorkspaces,
+            fallbackLaneId: currentLaneId,
+          });
+        } catch {
+          target = null;
         }
       }
-      if (!target) return;
-      const state = target.laneId
-        ? { openFilePath: target.openFilePath, laneId: target.laneId }
-        : { openFilePath: target.openFilePath };
-      navigate("/files", { state });
-      onOpenWorkspacePath?.(target.openFilePath, target.laneId);
-    } catch (err) {
-      console.warn("[AgentChatMessageList] Failed to open workspace path:", path, err);
     }
+    if (!target) return;
+    const state = target.laneId
+      ? { openFilePath: target.openFilePath, laneId: target.laneId }
+      : { openFilePath: target.openFilePath };
+    navigate("/files", { state });
+    onOpenWorkspacePath?.(target.openFilePath, target.laneId);
   }, [currentLaneId, filesWorkspaces, navigate, onOpenWorkspacePath]);
 
   const handleReviewChanges = useCallback(() => {
@@ -2519,41 +2619,16 @@ export function AgentChatMessageList({
     navigate(suggestion.href);
   }, [navigate]);
 
-  const doneEvents = useMemo(
-    () => events.filter((envelope) => envelope.event.type === "done"),
-    [events],
-  );
+  const turnModelStateRef = useRef<DerivedTurnModelState | null>(null);
   const turnModelState = useMemo(() => {
-    const map = new Map<string, { label: string; modelId?: string; model?: string }>();
-    let lastModel: { label: string; modelId?: string; model?: string } | null = null;
-    for (const envelope of doneEvents) {
-      const evt = envelope.event;
-      if (evt.type !== "done") continue; // type-narrowing guard
-      const modelLabel = resolveModelLabel(evt.modelId, evt.model);
-      if (!evt.turnId || !modelLabel) continue;
-      const model = {
-        label: modelLabel,
-        ...(evt.modelId ? { modelId: evt.modelId } : {}),
-        ...(evt.model ? { model: evt.model } : {}),
-      };
-      map.set(evt.turnId, model);
-      lastModel = model;
-    }
-    return { map, lastModel };
-  }, [doneEvents]);
+    const nextState = deriveTurnModelState(events, turnModelStateRef.current);
+    turnModelStateRef.current = nextState;
+    return nextState;
+  }, [events]);
 
   useEffect(() => {
     stickToBottomRef.current = stickToBottom;
   }, [stickToBottom]);
-
-  useEffect(() => {
-    if (!activeTurnId) return;
-    setNowMs(Date.now());
-    const timer = window.setInterval(() => {
-      setNowMs(Date.now());
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [activeTurnId]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -2562,61 +2637,70 @@ export function AgentChatMessageList({
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
-  }, [groupedRows, stickToBottom, showStreamingIndicator]);
+  }, [groupedRows, measurementTick, stickToBottom, showStreamingIndicator]);
+
+  // Observe the scroll container's size so we know the viewport height.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (typeof ResizeObserver === "undefined") {
+      // Fallback for test environments / old browsers
+      setContainerHeight(el.clientHeight);
+      return;
+    }
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerHeight(entry.contentRect.height);
+      }
+    });
+    ro.observe(el);
+    setContainerHeight(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
 
   const shouldVirtualize = groupedRows.length >= VIRTUALIZATION_THRESHOLD;
 
-  // Split rows into virtualized (old/completed) and tail (recent + active turn) sections.
-  // The tail section is rendered outside the virtualizer so streaming text updates
-  // don't trigger virtualizer measurement callbacks, eliminating scroll jank.
-  const { virtualizedRows, tailRows } = useMemo(() => {
-    if (!shouldVirtualize) return { virtualizedRows: [] as TranscriptGroupedEnvelope[], tailRows: groupedRows };
+  /** Returns the best-known height for a given row index. */
+  const rowHeight = useCallback((index: number) => {
+    return measuredHeights.current.get(index) ?? ESTIMATED_ROW_HEIGHT;
+  }, []);
 
-    // Find the first row of the active turn
-    let activeTurnStartIndex = groupedRows.length;
-    if (activeTurnId) {
-      for (let i = 0; i < groupedRows.length; i++) {
-        const turnId = getGroupedTurnId(groupedRows[i]);
-        if (turnId === activeTurnId) {
-          activeTurnStartIndex = i;
-          break;
+  /** Callback from MeasuredEventRow when it measures its real DOM height. */
+  const handleMeasure = useCallback((index: number, height: number) => {
+    const prev = measuredHeights.current.get(index);
+    if (prev !== height) {
+      measuredHeights.current.set(index, height);
+      setMeasurementTick((value) => value + 1);
+      const scrollEl = scrollRef.current;
+      if (scrollEl && shouldVirtualize && !stickToBottomRef.current) {
+        const adjustedScrollTop = reconcileMeasuredScrollTop({
+          index,
+          previousHeight: prev ?? ESTIMATED_ROW_HEIGHT,
+          nextHeight: height,
+          scrollTop: scrollEl.scrollTop,
+          rowHeight,
+        });
+        if (adjustedScrollTop !== scrollEl.scrollTop) {
+          scrollEl.scrollTop = adjustedScrollTop;
+          setScrollTop(adjustedScrollTop);
         }
       }
     }
+  }, [rowHeight, shouldVirtualize]);
 
-    // Tail = max(last TAIL_ROW_COUNT rows, all rows from active turn start)
-    const tailStart = Math.min(
-      Math.max(0, groupedRows.length - TAIL_ROW_COUNT),
-      activeTurnStartIndex,
-    );
-
-    return {
-      virtualizedRows: groupedRows.slice(0, tailStart),
-      tailRows: groupedRows.slice(tailStart),
-    };
-  }, [groupedRows, activeTurnId, shouldVirtualize]);
-
-  const virtualizedRowCount = virtualizedRows.length;
-
-  // @tanstack/react-virtual virtualizer for the old/completed rows section.
-  const virtualizer = useVirtualizer({
-    count: virtualizedRowCount,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => measuredHeights.current.get(index) ?? ESTIMATED_ROW_HEIGHT,
-    overscan: OVERSCAN,
-    scrollMargin: 0,
-  });
-
-  // When the virtualizer measures elements, cache their heights for future estimateSize calls.
-  const virtualItems = virtualizer.getVirtualItems();
-  useEffect(() => {
-    for (const item of virtualItems) {
-      const prev = measuredHeights.current.get(item.index);
-      if (prev !== item.size) {
-        measuredHeights.current.set(item.index, item.size);
-      }
+  // Compute the visible window of rows when virtualization is active.
+  const { startIndex, endIndex, totalHeight, offsetTop } = useMemo(() => {
+    if (!shouldVirtualize) {
+      return { startIndex: 0, endIndex: groupedRows.length, totalHeight: 0, offsetTop: 0 };
     }
-  }, [virtualItems]);
+
+    return calculateVirtualWindow({
+      rowCount: groupedRows.length,
+      scrollTop,
+      containerHeight,
+      rowHeight,
+    });
+  }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
@@ -2626,18 +2710,13 @@ export function AgentChatMessageList({
       stickToBottomRef.current = nextStick;
       setStickToBottom(nextStick);
     }
-  }, []);
+    if (shouldVirtualize) {
+      setScrollTop(target.scrollTop);
+    }
+  }, [shouldVirtualize]);
 
-  const jumpToLiveOutput = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    stickToBottomRef.current = true;
-    setStickToBottom(true);
-  }, []);
-
-  /** Renders a single row with turn-divider logic. Used by both virtualized and non-virtualized paths. */
-  const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number) => {
+  /** Renders a single row with turn-divider logic. Used by both paths. */
+  const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
     const currentTurn = getGroupedTurnId(envelope);
     const previousTurn = getGroupedTurnId(groupedRows[index - 1]);
     const showTurnDivider = currentTurn && currentTurn !== previousTurn;
@@ -2648,14 +2727,33 @@ export function AgentChatMessageList({
       ? (turnModelState.map.get(currentTurn) ?? null)
       : turnModelState.lastModel;
 
+    if (virtualized) {
+      return (
+        <MeasuredEventRow
+          key={envelope.key}
+          index={index}
+          onMeasure={handleMeasure}
+          envelope={envelope}
+          showTurnDivider={Boolean(showTurnDivider)}
+          turnDividerLabel={turnDividerLabel}
+          turnModel={turnModel}
+          onApproval={handleApproval}
+          surfaceMode={surfaceMode}
+          surfaceProfile={surfaceProfile}
+          assistantLabel={assistantLabel}
+          turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
+          onOpenWorkspacePath={openWorkspacePath}
+          onNavigateSuggestion={handleNavigateSuggestion}
+        />
+      );
+    }
+
     return (
       <EventRow
         key={envelope.key}
         envelope={envelope}
         showTurnDivider={Boolean(showTurnDivider)}
         turnDividerLabel={turnDividerLabel}
-        currentTurn={currentTurn ?? null}
-        turnDividerMap={turnDividerMap}
         turnModel={turnModel}
         onApproval={handleApproval}
         surfaceMode={surfaceMode}
@@ -2666,14 +2764,28 @@ export function AgentChatMessageList({
         onNavigateSuggestion={handleNavigateSuggestion}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, turnDividerMap, handleApproval, openWorkspacePath, handleNavigateSuggestion]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion]);
+
+  // Compute the bottom spacer height for virtualized mode.
+  const bottomSpacerHeight = useMemo(() => {
+    if (!shouldVirtualize) return 0;
+    let h = 0;
+    for (let i = endIndex; i < groupedRows.length; i++) {
+      h += rowHeight(i) + ROW_GAP;
+    }
+    // The trailing gap accounts for the space between the last rendered row
+    // and the first unrendered row — keep it so the total content fills
+    // totalHeight exactly (offsetTop already includes the gap before the
+    // first rendered row via the offsets array).
+    return Math.max(0, h);
+  }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 
   const streamingIndicator = showStreamingIndicator ? (
     latestActivity ? (
       <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
     ) : (
-      <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-fg/40">
-        <ThinkingDots />
+      <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
+        <ThinkingDots toneClass="bg-emerald-300/75" />
         <span>Working...</span>
       </div>
     )
@@ -2682,43 +2794,13 @@ export function AgentChatMessageList({
   const turnSummaryCard = turnSummary ? (
     <TurnSummaryCard summary={turnSummary} onReviewChanges={turnSummary.files.length > 0 ? handleReviewChanges : undefined} />
   ) : null;
-  const activeElapsedLabel = activeTurnId ? formatElapsedTimer(activeTurnStartedAt, nowMs) : null;
-  const stickyStreamingBanner = showStreamingIndicator && activeTurnId ? (
-    <div className="sticky top-3 z-20 mb-4 flex animate-[fadeSlideIn_200ms_ease-out] justify-center px-1">
-      <div
-        className="flex w-full max-w-[32rem] items-center gap-3 rounded-[14px] border border-sky-400/18 bg-[color:color-mix(in_srgb,var(--chat-panel-bg)_88%,rgba(10,14,22,0.2))] px-3.5 py-2.5 shadow-[0_12px_40px_rgba(3,7,18,0.35)] backdrop-blur transition-all duration-200"
-      >
-        <span className="inline-flex items-center gap-1 text-sky-200/85">
-          <ThinkingDots toneClass="bg-sky-300/75" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-sans text-[12px] font-medium text-sky-100/90">
-            {latestActivity?.detail ? replaceInternalToolNames(latestActivity.detail) : "Still working"}
-          </div>
-          <div className="truncate font-sans text-[10px] uppercase tracking-[0.16em] text-sky-200/55">
-            {activeElapsedLabel ? `Working for ${activeElapsedLabel}` : "Turn running"}
-          </div>
-        </div>
-        {!stickToBottom ? (
-          <button
-            type="button"
-            className="rounded-full border border-sky-300/18 bg-sky-400/[0.08] px-2.5 py-1 font-sans text-[10px] font-medium text-sky-100 transition-colors hover:bg-sky-400/[0.14]"
-            onClick={jumpToLiveOutput}
-          >
-            Jump to live output
-          </button>
-        ) : null}
-      </div>
-    </div>
-  ) : null;
 
   return (
     <div
       ref={scrollRef}
-      className={cn("h-full min-h-0 overflow-auto bg-[var(--chat-surface-bg)] px-4 pt-5 pb-8", className)}
+      className={cn("h-full min-h-0 overflow-auto bg-[#09090b] px-4 pt-5 pb-8", className)}
       onScroll={handleScroll}
     >
-      {stickyStreamingBanner}
       {rows.length === 0 && !streamingIndicator ? (
         <div className="flex h-full flex-col items-center justify-center gap-5">
           <div className="relative flex h-20 w-20 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)]">
@@ -2727,63 +2809,32 @@ export function AgentChatMessageList({
           </div>
           <div className="space-y-1 text-center">
             <div className="font-sans text-[18px] font-semibold tracking-tight text-fg/78">Start a chat session</div>
-            <span className="font-sans text-[10px] uppercase tracking-[2px] text-muted-fg/28">
+            <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/28">
               {surfaceMode === "resolver" ? "Launch the resolver to start the transcript" : "Start a conversation"}
             </span>
           </div>
         </div>
       ) : shouldVirtualize ? (
-        /* ── Hybrid virtualized path: virtualizer for old rows + non-virtualized tail ── */
+        /* ── Virtualized path: only render rows in / near the viewport ── */
         <div className="space-y-3">
-          {/* Virtualized section: old/completed rows managed by @tanstack/react-virtual */}
-          {virtualizedRowCount > 0 ? (
-            <div
-              style={{
-                height: virtualizer.getTotalSize(),
-                width: "100%",
-                position: "relative",
-              }}
-            >
-              {virtualItems.map((virtualRow) => {
-                const envelope = virtualizedRows[virtualRow.index];
-                if (!envelope) return null;
-                return (
-                  <div
-                    key={envelope.key}
-                    data-index={virtualRow.index}
-                    ref={virtualizer.measureElement}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
-                      transform: `translateY(${virtualRow.start}px)`,
-                    }}
-                  >
-                    {renderRow(envelope, virtualRow.index)}
-                  </div>
-                );
-              })}
+          <div style={{ height: totalHeight, position: "relative" }}>
+            {/* Top spacer pushes rendered rows to their correct scroll position */}
+            <div style={{ height: offsetTop }} aria-hidden />
+            <div className="space-y-3">
+              {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) =>
+                renderRow(envelope, startIndex + i, true)
+              )}
             </div>
-          ) : null}
-
-          {/* Non-virtualized tail: last rows + active turn rows — streaming updates only affect this section */}
-          {tailRows.map((envelope, i) => {
-            const globalIndex = virtualizedRowCount + i;
-            return (
-              <React.Fragment key={envelope.key}>
-                {renderRow(envelope, globalIndex)}
-              </React.Fragment>
-            );
-          })}
-
+            {/* Bottom spacer fills remaining scroll area */}
+            <div style={{ height: bottomSpacerHeight }} aria-hidden />
+          </div>
           {streamingIndicator}
           {turnSummaryCard}
         </div>
       ) : (
         /* ── Non-virtualized path: render all rows (small conversation) ── */
         <div className="space-y-3">
-          {groupedRows.map((envelope, index) => renderRow(envelope, index))}
+          {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
           {streamingIndicator}
           {turnSummaryCard}
         </div>

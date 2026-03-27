@@ -251,6 +251,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Concurrency guard for refresh
   const refreshInFlight = React.useRef(false);
+  const refreshPending = React.useRef(false);
   const prsRef = React.useRef<PrWithConflicts[]>([]);
   const mergeContextByPrIdRef = React.useRef<Record<string, PrMergeContext>>({});
   React.useEffect(() => { prsRef.current = prs; }, [prs]);
@@ -307,10 +308,17 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
-  // Core refresh (guarded against concurrent calls)
+  // Core refresh (guarded against concurrent calls).
+  // If a refresh is requested while one is already in flight, we set a
+  // pending flag so that once the current flight completes it immediately
+  // kicks off another refresh instead of silently dropping the request.
   const refresh = useCallback(async () => {
-    if (refreshInFlight.current) return;
+    if (refreshInFlight.current) {
+      refreshPending.current = true;
+      return;
+    }
     refreshInFlight.current = true;
+    refreshPending.current = false;
     // Only show the loading indicator during the initial fetch —
     // background refreshes should NOT flash loading state.
     const isInitial = !initialLoadDone.current;
@@ -384,6 +392,12 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       initialLoadDone.current = true;
       refreshInFlight.current = false;
+
+      // If another refresh was requested while we were in flight, run it now.
+      if (refreshPending.current) {
+        refreshPending.current = false;
+        void refresh();
+      }
     }
   }, [activeTab, refreshMergeContexts, refreshQueueStates]);
 
@@ -405,28 +419,48 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     if (Date.now() < rateLimitedUntilRef.current) return;
 
     detailFetchInProgress.current = true;
-    Promise.all([
+    Promise.allSettled([
       window.ade.prs.getStatus(prId),
       window.ade.prs.getChecks(prId),
       window.ade.prs.getReviews(prId),
       window.ade.prs.getComments(prId),
     ])
-      .then(([status, checks, reviews, comments]) => {
+      .then(([statusResult, checksResult, reviewsResult, commentsResult]) => {
         // Only apply if this PR is still selected
         if (selectedPrIdRef.current !== prId) return;
-        setDetailStatus((prev) => (jsonEqual(prev, status) ? prev : status));
-        setDetailChecks((prev) => (jsonEqual(prev, checks) ? prev : checks));
-        setDetailReviews((prev) => (jsonEqual(prev, reviews) ? prev : reviews));
-        setDetailComments((prev) => (jsonEqual(prev, comments) ? prev : comments));
-      })
-      .catch((err) => {
-        const msg = String(err?.message ?? err);
-        if (msg.includes("rate limit") || msg.includes("API rate")) {
-          // Back off for 5 minutes on rate limit
-          rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
-          console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
+
+        // Check for rate-limit errors in any rejected result
+        for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
+          if (result.status === "rejected") {
+            const msg = String(result.reason?.message ?? result.reason);
+            if (msg.includes("rate limit") || msg.includes("API rate")) {
+              rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+              console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
+              return; // Don't apply partial results during rate limiting
+            }
+          }
+        }
+
+        // Apply successful results; keep previous value for any that failed
+        if (statusResult.status === "fulfilled") {
+          setDetailStatus((prev) => (jsonEqual(prev, statusResult.value) ? prev : statusResult.value));
         } else {
-          console.warn("[PrsContext] Failed to refresh PR detail data:", err);
+          console.warn("[PrsContext] Failed to refresh PR status:", statusResult.reason);
+        }
+        if (checksResult.status === "fulfilled") {
+          setDetailChecks((prev) => (jsonEqual(prev, checksResult.value) ? prev : checksResult.value));
+        } else {
+          console.warn("[PrsContext] Failed to refresh PR checks:", checksResult.reason);
+        }
+        if (reviewsResult.status === "fulfilled") {
+          setDetailReviews((prev) => (jsonEqual(prev, reviewsResult.value) ? prev : reviewsResult.value));
+        } else {
+          console.warn("[PrsContext] Failed to refresh PR reviews:", reviewsResult.reason);
+        }
+        if (commentsResult.status === "fulfilled") {
+          setDetailComments((prev) => (jsonEqual(prev, commentsResult.value) ? prev : commentsResult.value));
+        } else {
+          console.warn("[PrsContext] Failed to refresh PR comments:", commentsResult.reason);
         }
       })
       .finally(() => {
@@ -434,8 +468,14 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       });
   }, []);
 
-  // Load detail data when selected PR changes, then poll every 8s
+  // Load detail data when selected PR changes, then poll every 60s.
+  // Reset rate-limit backoff on each mount / PR change so stale backoff
+  // from a previous session doesn't block the first fetch.
   useEffect(() => {
+    // Reset rate-limit backoff whenever the selected PR changes (including
+    // on remount) so stale backoff from a previous session is cleared.
+    rateLimitedUntilRef.current = 0;
+
     if (!selectedPrId) {
       setDetailStatus(null);
       setDetailChecks([]);
@@ -444,12 +484,14 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Guard: don't attempt to load details for a PR that's not in our list
+    // Guard: don't attempt to load details for a PR that's not in our list.
+    // The PR was likely deleted or merged -- the empty state will show naturally.
     if (!prsRef.current.some((p) => p.id === selectedPrId)) {
       setDetailStatus(null);
       setDetailChecks([]);
       setDetailReviews([]);
       setDetailComments([]);
+      setSelectedPrId(null);
       return;
     }
 
@@ -458,27 +500,56 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     setDetailBusy(true);
     detailFetchInProgress.current = true;
 
-    Promise.all([
+    Promise.allSettled([
       window.ade.prs.getStatus(prId),
       window.ade.prs.getChecks(prId),
       window.ade.prs.getReviews(prId),
       window.ade.prs.getComments(prId),
     ])
-      .then(([status, checks, reviews, comments]) => {
+      .then(([statusResult, checksResult, reviewsResult, commentsResult]) => {
         if (cancelled) return;
-        setDetailStatus(status);
-        setDetailChecks(checks);
-        setDetailReviews(reviews);
-        setDetailComments(comments);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.warn("[PrsContext] Failed to load PR detail data:", err);
-        // Clear stale data on error so UI doesn't show outdated info
-        setDetailStatus(null);
-        setDetailChecks([]);
-        setDetailReviews([]);
-        setDetailComments([]);
+
+        // Check for rate-limit errors in any rejected result
+        for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
+          if (result.status === "rejected") {
+            const msg = String(result.reason?.message ?? result.reason);
+            if (msg.includes("rate limit") || msg.includes("API rate")) {
+              rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+              console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
+              // Clear stale data on rate limit
+              setDetailStatus(null);
+              setDetailChecks([]);
+              setDetailReviews([]);
+              setDetailComments([]);
+              return;
+            }
+          }
+        }
+
+        if (statusResult.status === "fulfilled") {
+          setDetailStatus(statusResult.value ?? null);
+        } else {
+          console.warn("[PrsContext] Failed to load PR status:", statusResult.reason);
+          setDetailStatus(null);
+        }
+        if (checksResult.status === "fulfilled") {
+          setDetailChecks(checksResult.value);
+        } else {
+          console.warn("[PrsContext] Failed to load PR checks:", checksResult.reason);
+          setDetailChecks([]);
+        }
+        if (reviewsResult.status === "fulfilled") {
+          setDetailReviews(reviewsResult.value);
+        } else {
+          console.warn("[PrsContext] Failed to load PR reviews:", reviewsResult.reason);
+          setDetailReviews([]);
+        }
+        if (commentsResult.status === "fulfilled") {
+          setDetailComments(commentsResult.value);
+        } else {
+          console.warn("[PrsContext] Failed to load PR comments:", commentsResult.reason);
+          setDetailComments([]);
+        }
       })
       .finally(() => {
         detailFetchInProgress.current = false;
@@ -495,6 +566,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      // Reset rate-limit backoff on cleanup so remounts start fresh
+      rateLimitedUntilRef.current = 0;
     };
   }, [selectedPrId, refreshDetailSilently]);
 

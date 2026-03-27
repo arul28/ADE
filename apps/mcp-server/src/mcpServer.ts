@@ -1161,7 +1161,8 @@ const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
       properties: {
         queueItemId: { type: "string", minLength: 1 },
         action: { type: "string", enum: ["approve", "reject", "retry", "complete"] },
-        note: { type: "string" }
+        note: { type: "string" },
+        employeeOverride: { type: "string" }
       }
     }
   },
@@ -1692,8 +1693,9 @@ function requireLinearRoutingService(runtime: AdeMcpRuntime): NonNullable<AdeMcp
 }
 
 async function resolveDefaultLaneId(runtime: AdeMcpRuntime): Promise<string> {
-  const lanes = await runtime.laneService.list({ includeArchived: false });
-  const laneId = lanes[0]?.id?.trim?.() || "";
+  await runtime.laneService.ensurePrimaryLane().catch(() => {});
+  const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false });
+  const laneId = (lanes.find((lane) => lane.laneType === "primary") ?? lanes[0])?.id?.trim?.() || "";
   if (!laneId) {
     throw new JsonRpcError(JsonRpcErrorCode.internalError, "No active lane is available for CTO operator actions.");
   }
@@ -1722,6 +1724,7 @@ async function runCtoOperatorBridgeTool(
     currentSessionId: session.identity.callerId || "mcp-cto",
     defaultLaneId,
     defaultModelId,
+    resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || defaultLaneId,
     laneService: runtime.laneService,
     missionService: runtime.missionService,
     aiOrchestratorService: runtime.aiOrchestratorService,
@@ -3162,6 +3165,7 @@ async function runTool(args: {
         queueItemId: assertNonEmptyString(toolArgs.queueItemId, "queueItemId"),
         action: assertNonEmptyString(toolArgs.action, "action") as "approve" | "reject" | "retry" | "complete",
         note: asOptionalTrimmedString(toolArgs.note) ?? undefined,
+        employeeOverride: asOptionalTrimmedString(toolArgs.employeeOverride) ?? undefined,
       });
     }
 

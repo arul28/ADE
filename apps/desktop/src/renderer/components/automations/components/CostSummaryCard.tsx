@@ -23,7 +23,7 @@ export function CostSummaryCard({
       <div className="flex items-center justify-between">
         <span
           className="text-[11px] font-bold tracking-[-0.2px] text-[#FAFAFA]"
-          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+          style={{ fontFamily: "var(--font-sans)" }}
         >
           {provider}
         </span>

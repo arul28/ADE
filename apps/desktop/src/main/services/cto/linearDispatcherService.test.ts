@@ -36,10 +36,17 @@ const issueFixture: NormalizedLinearIssue = {
   raw: {},
 };
 
+const intake = {
+  projectSlugs: ["acme-platform"],
+  activeStateTypes: ["backlog", "unstarted", "started"],
+  terminalStateTypes: ["completed", "canceled"],
+};
+
 function buildPolicy(targetType: "mission" | "review_gate" | "worker_run"): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -69,6 +76,7 @@ function buildEmployeeSessionPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -97,6 +105,7 @@ function buildDirectCtoSessionPolicy(overrides?: Partial<LinearWorkflowConfig["w
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -132,6 +141,7 @@ function buildSupervisedWorkerPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -172,6 +182,7 @@ function buildWorkerExplicitCompletionPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -204,6 +215,7 @@ function buildPrReadyPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -238,6 +250,7 @@ function buildPrPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -254,6 +267,165 @@ function buildPrPolicy(): LinearWorkflowConfig {
           { id: "complete", type: "complete_issue", name: "Complete issue" },
         ],
         closeout: { successState: "in_review", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links", reviewReadyWhen: "pr_created" },
+      },
+    ],
+    files: [],
+    migration: { hasLegacyConfig: false, needsSave: false },
+    legacyConfig: null,
+  };
+}
+
+function buildDownstreamEmployeeSessionPolicy(): LinearWorkflowConfig {
+  return {
+    version: 1,
+    source: "repo",
+    intake,
+    settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+    workflows: [
+      {
+        id: "downstream-session-flow",
+        name: "Downstream session flow",
+        enabled: true,
+        priority: 125,
+        triggers: { assignees: ["CTO"], labels: ["workflow:downstream-session"] },
+        target: {
+          type: "worker_run",
+          runMode: "autopilot",
+          workerSelector: { mode: "slug", value: "backend-dev" },
+          laneSelection: "primary",
+          downstreamTarget: {
+            type: "employee_session",
+            employeeIdentityKey: "cto",
+            runMode: "assisted",
+            laneSelection: "primary",
+            sessionReuse: "reuse_existing",
+          },
+        },
+        steps: [
+          { id: "launch", type: "launch_target", name: "Launch worker run" },
+          { id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "runtime_completed" },
+          { id: "complete", type: "complete_issue", name: "Complete issue" },
+        ],
+        closeout: { successState: "in_review", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
+      },
+    ],
+    files: [],
+    migration: { hasLegacyConfig: false, needsSave: false },
+    legacyConfig: null,
+  };
+}
+
+function buildDownstreamManualCompletionPolicy(): LinearWorkflowConfig {
+  return {
+    version: 1,
+    source: "repo",
+    intake,
+    settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+    workflows: [
+      {
+        id: "downstream-manual-flow",
+        name: "Downstream manual flow",
+        enabled: true,
+        priority: 126,
+        triggers: { assignees: ["CTO"], labels: ["workflow:downstream-manual"] },
+        target: {
+          type: "employee_session",
+          runMode: "assisted",
+          employeeIdentityKey: "cto",
+          laneSelection: "primary",
+          sessionReuse: "fresh_session",
+          downstreamTarget: {
+            type: "employee_session",
+            runMode: "assisted",
+            employeeIdentityKey: "cto",
+            laneSelection: "primary",
+            sessionReuse: "fresh_session",
+          },
+        },
+        steps: [
+          { id: "launch", type: "launch_target", name: "Launch chat" },
+          { id: "wait", type: "wait_for_target_status", name: "Wait" },
+          { id: "complete", type: "complete_issue", name: "Complete issue" },
+        ],
+        closeout: { successState: "in_review", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
+      },
+    ],
+    files: [],
+    migration: { hasLegacyConfig: false, needsSave: false },
+    legacyConfig: null,
+  };
+}
+
+function buildEmployeeToWorkerHandoffPolicy(): LinearWorkflowConfig {
+  return {
+    version: 1,
+    source: "repo",
+    intake,
+    settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+    workflows: [
+      {
+        id: "employee-to-worker-flow",
+        name: "Employee to worker flow",
+        enabled: true,
+        priority: 127,
+        triggers: { assignees: ["CTO"], labels: ["workflow:employee-to-worker"] },
+        target: {
+          type: "employee_session",
+          runMode: "assisted",
+          employeeIdentityKey: "cto",
+          laneSelection: "primary",
+          sessionReuse: "reuse_existing",
+          downstreamTarget: {
+            type: "worker_run",
+            runMode: "autopilot",
+            workerSelector: { mode: "slug", value: "backend-dev" },
+            laneSelection: "primary",
+          },
+        },
+        steps: [
+          { id: "launch", type: "launch_target", name: "Launch chat" },
+          { id: "wait", type: "wait_for_target_status", name: "Wait" },
+          { id: "complete", type: "complete_issue", name: "Complete issue" },
+        ],
+        closeout: { successState: "in_review", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
+      },
+    ],
+    files: [],
+    migration: { hasLegacyConfig: false, needsSave: false },
+    legacyConfig: null,
+  };
+}
+function buildInvalidDownstreamPrPolicy(): LinearWorkflowConfig {
+  return {
+    version: 1,
+    source: "repo",
+    intake,
+    settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+    workflows: [
+      {
+        id: "invalid-downstream-pr",
+        name: "Invalid downstream PR",
+        enabled: true,
+        priority: 130,
+        triggers: { assignees: ["CTO"], labels: ["workflow:downstream-pr"] },
+        target: {
+          type: "worker_run",
+          runMode: "autopilot",
+          workerSelector: { mode: "slug", value: "backend-dev" },
+          laneSelection: "primary",
+          downstreamTarget: {
+            type: "pr_resolution",
+            runMode: "autopilot",
+            workerSelector: { mode: "slug", value: "backend-dev" },
+            laneSelection: "primary",
+          },
+        },
+        steps: [
+          { id: "launch", type: "launch_target", name: "Launch worker run" },
+          { id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "runtime_completed" },
+          { id: "complete", type: "complete_issue", name: "Complete issue" },
+        ],
+        closeout: { successState: "in_review", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
       },
     ],
     files: [],
@@ -312,7 +484,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => {}),
         listSessions: vi.fn(async () => []),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Fix it." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -357,7 +529,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => {}),
         listSessions: vi.fn(async () => []),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "noop" })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -407,7 +579,7 @@ describe("linearDispatcherService", () => {
         sendMessage,
         listSessions: vi.fn(async () => [{ sessionId: "session-1", laneId: "lane-1", status: "idle" }]),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please implement the issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -458,7 +630,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => {}),
         listSessions: vi.fn(async () => []),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Fix it." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -478,6 +650,59 @@ describe("linearDispatcherService", () => {
     expect(dispatcher.listQueue()[0]?.status).toBe("queued");
     const detail = await dispatcher.getRunDetail(run.id, policy);
     expect(detail?.run.status).toBe("awaiting_delegation");
+    db.close();
+  });
+
+  it("rewinds launch_target when retrying a run that is awaiting delegation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-retry-awaiting-delegation-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildEmployeeSessionPolicy();
+    const employeeIssue = {
+      ...issueFixture,
+      assigneeId: "unknown-agent",
+      assigneeName: "Unknown Agent",
+      labels: ["workflow:backend"],
+    };
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => employeeIssue),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => []) } as any,
+      workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun(employeeIssue, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+
+    const detailBeforeRetry = await dispatcher.getRunDetail(run.id, policy);
+    expect(detailBeforeRetry?.steps.find((step) => step.workflowStepId === "launch")?.status).toBe("completed");
+
+    await dispatcher.resolveRunAction(run.id, "retry", "Try again.", policy);
+
+    const detailAfterRetry = await dispatcher.getRunDetail(run.id, policy);
+    expect(detailAfterRetry?.steps.find((step) => step.workflowStepId === "launch")?.status).toBe("pending");
     db.close();
   });
 
@@ -506,7 +731,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => ({ id: "message-1" })),
         listSessions: vi.fn(async () => [{ sessionId: "session-cto-1", laneId: "lane-1", status: "idle" }]),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -564,7 +789,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => ({ id: "message-1" })),
         listSessions: vi.fn(async () => sessions),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -641,6 +866,7 @@ describe("linearDispatcherService", () => {
         listSessions: vi.fn(async () => [{ sessionId: "session-fresh-1", laneId: "lane-2", status: "idle" }]),
       } as any,
       laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: createLane,
       } as any,
@@ -696,7 +922,7 @@ describe("linearDispatcherService", () => {
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Implement the issue." })) } as any,
       closeoutService: { applyOutcome: closeout } as any,
       outboundService: createOutboundServiceMocks(),
@@ -722,6 +948,179 @@ describe("linearDispatcherService", () => {
     const completed = await dispatcher.advanceRun(run.id, policy);
     expect(completed?.status).toBe("completed");
     expect(closeout).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
+  it("scopes manual completion markers to the active downstream stage", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-downstream-manual-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildDownstreamManualCompletionPolicy();
+    const ensureIdentitySession = vi
+      .fn()
+      .mockResolvedValueOnce({ id: "session-1" })
+      .mockResolvedValueOnce({ id: "session-2" });
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => []) } as any,
+      workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession,
+        sendMessage: vi.fn(async () => ({ id: "message-1" })),
+        listSessions: vi.fn(async () => [
+          { sessionId: "session-1", laneId: "lane-1", identityKey: "cto", status: "idle", lastActivityAt: "2026-03-05T00:00:00.000Z" },
+          { sessionId: "session-2", laneId: "lane-1", identityKey: "cto", status: "idle", lastActivityAt: "2026-03-05T00:01:00.000Z" },
+        ]),
+      } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:downstream-manual"], assigneeName: "CTO" }, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+    await dispatcher.resolveRunAction(run.id, "complete", "Stage 1 finished.", policy);
+
+    const afterHandoff = await dispatcher.advanceRun(run.id, policy);
+    expect(afterHandoff?.status).toBe("waiting_for_target");
+    expect(dispatcher.listQueue()[0]?.sessionId).toBe("session-2");
+
+    const stillWaiting = await dispatcher.advanceRun(run.id, policy);
+    expect(stillWaiting?.status).toBe("waiting_for_target");
+    expect(dispatcher.listQueue()[0]?.sessionId).toBe("session-2");
+    expect(ensureIdentitySession).toHaveBeenCalledTimes(2);
+    db.close();
+  });
+
+  it("clears incompatible CTO overrides before handing off to a worker-backed downstream target", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-override-handoff-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildEmployeeToWorkerHandoffPolicy();
+    const triggerWakeup = vi.fn(async () => ({ runId: "worker-run-1" }));
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: {
+        listAgents: vi.fn(() => [{ id: "agent-1", slug: "backend-dev", adapterType: "claude-local", capabilities: [] }]),
+      } as any,
+      workerHeartbeatService: {
+        triggerWakeup,
+        listRuns: vi.fn(() => []),
+      } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-1" })),
+        sendMessage: vi.fn(async () => ({ id: "message-1" })),
+        listSessions: vi.fn(async () => [{ sessionId: "session-1", laneId: "lane-1", identityKey: "cto", status: "idle", lastActivityAt: "2026-03-05T00:00:00.000Z" }]),
+      } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:employee-to-worker"], assigneeName: "CTO" }, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+    await dispatcher.resolveRunAction(run.id, "complete", "Hand off to a worker.", policy, "cto");
+
+    const handedOff = await dispatcher.advanceRun(run.id, policy);
+    expect(handedOff?.status).toBe("waiting_for_target");
+    expect(handedOff?.linkedWorkerRunId).toBe("worker-run-1");
+    expect(dispatcher.listQueue()[0]?.employeeOverride).toBeNull();
+    expect(triggerWakeup).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
+  it("preserves a launched session instead of scheduling a retry after a partial launch failure", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-partial-launch-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildDirectCtoSessionPolicy();
+    const ensureIdentitySession = vi.fn(async () => ({ id: "session-cto-1" }));
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => []) } as any,
+      workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession,
+        sendMessage: vi.fn(async () => {
+          throw new Error("Chat delivery failed after session creation.");
+        }),
+        listSessions: vi.fn(async () => [{ sessionId: "session-cto-1", laneId: "lane-1", identityKey: "cto", status: "idle", lastActivityAt: "2026-03-05T00:00:00.000Z" }]),
+      } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:backend"], assigneeName: "CTO" }, buildMatch(policy));
+    const preserved = await dispatcher.advanceRun(run.id, policy);
+
+    expect(preserved?.status).toBe("waiting_for_target");
+    expect(preserved?.linkedSessionId).toBe("session-cto-1");
+    expect(dispatcher.listQueue()[0]?.status).not.toBe("retry_wait");
+
+    const detail = await dispatcher.getRunDetail(run.id, policy);
+    expect(detail?.steps.find((step) => step.workflowStepId === "launch")?.status).toBe("completed");
+
+    const resumed = await dispatcher.advanceRun(run.id, policy);
+    expect(resumed?.status).toBe("waiting_for_target");
+    expect(ensureIdentitySession).toHaveBeenCalledTimes(1);
     db.close();
   });
 
@@ -754,7 +1153,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => ({ id: "message-1" })),
         listSessions: vi.fn(async () => [{ sessionId: "session-cto-1", laneId: "lane-1", status: "idle" }]),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
       closeoutService: { applyOutcome: closeout } as any,
       outboundService: createOutboundServiceMocks(),
@@ -849,6 +1248,7 @@ describe("linearDispatcherService", () => {
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: vi.fn(async () => ({ id: "lane-2", name: "ABC-42 fresh lane" })),
       } as any,
@@ -876,6 +1276,66 @@ describe("linearDispatcherService", () => {
     expect(updateBodies[updateBodies.length - 1]).toContain("### Closeout Summary");
     expect(updateBodies[updateBodies.length - 1]).toContain("https://github.com/acme/repo/pull/55");
     expect(updateBodies[updateBodies.length - 1]).toContain(`file://${artifactPath}`);
+    db.close();
+  });
+
+  it("persists downstream session ownership after handing work from a worker to an employee session", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-downstream-session-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildDownstreamEmployeeSessionPolicy();
+    const outboundService = createOutboundServiceMocks();
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: {
+        listAgents: vi.fn(() => [{ id: "agent-1", slug: "backend-dev", adapterType: "claude-local", capabilities: [] }]),
+      } as any,
+      workerHeartbeatService: {
+        triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
+        listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
+      } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-cto-2" })),
+        sendMessage: vi.fn(async () => ({ id: "message-1" })),
+        listSessions: vi.fn(async () => [{ sessionId: "session-cto-2", laneId: "lane-1", status: "idle", identityKey: "cto" }]),
+      } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService,
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:downstream-session"] }, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+    await dispatcher.advanceRun(run.id, policy);
+
+    const queueItem = dispatcher.listQueue()[0]!;
+    expect(queueItem.sessionId).toBe("session-cto-2");
+    expect(queueItem.sessionLabel).toBe("CTO");
+    expect(queueItem.workerId).toBeNull();
+    expect(queueItem.workerSlug).toBeNull();
+    expect(outboundService.publishWorkflowStatus).toHaveBeenLastCalledWith(expect.objectContaining({
+      delegatedOwner: "CTO",
+      sessionId: "session-cto-2",
+    }));
     db.close();
   });
 
@@ -907,6 +1367,7 @@ describe("linearDispatcherService", () => {
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: createLane,
       } as any,
@@ -962,6 +1423,7 @@ describe("linearDispatcherService", () => {
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: vi.fn(async () => ({ id: "lane-2", name: "Fresh lane" })),
       } as any,
@@ -1016,7 +1478,7 @@ describe("linearDispatcherService", () => {
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a PR." })) } as any,
       closeoutService: { applyOutcome: closeout } as any,
       outboundService: createOutboundServiceMocks(),
@@ -1105,7 +1567,7 @@ describe("linearDispatcherService", () => {
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a review-ready PR." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -1130,6 +1592,56 @@ describe("linearDispatcherService", () => {
     expect(getStatus).toHaveBeenCalledTimes(4);
     expect(dispatcher.listQueue()[0]?.prChecksStatus).toBe("passing");
     expect(dispatcher.listQueue()[0]?.prReviewStatus).toBe("approved");
+    db.close();
+  });
+
+  it("fails before launching a downstream PR stage when the workflow is missing wait_for_pr", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-invalid-downstream-pr-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildInvalidDownstreamPrPolicy();
+    const triggerWakeup = vi
+      .fn()
+      .mockResolvedValueOnce({ runId: "worker-run-1" })
+      .mockResolvedValueOnce({ runId: "worker-run-2" });
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => [{ id: "agent-1", slug: "backend-dev", adapterType: "claude-local", capabilities: [] }]) } as any,
+      workerHeartbeatService: {
+        triggerWakeup,
+        listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
+      } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a PR." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-42", githubPrNumber: 42 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:downstream-pr"] }, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+
+    const retried = await dispatcher.advanceRun(run.id, policy);
+    expect(retried?.status).toBe("failed");
+    expect(triggerWakeup).toHaveBeenCalledTimes(1);
     db.close();
   });
 });

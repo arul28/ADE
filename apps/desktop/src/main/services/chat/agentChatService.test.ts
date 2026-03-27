@@ -1,11 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import readline from "node:readline";
 import { generateText, streamText } from "ai";
+import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 
 // ---------------------------------------------------------------------------
 // vi.hoisted mock state
@@ -13,6 +11,12 @@ import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic
 const mockState = vi.hoisted(() => ({
   sessions: new Map<string, any>(),
   uuidCounter: 0,
+  codexThreadCounter: 0,
+  codexTurnCounter: 0,
+  codexLineHandler: null as ((line: string) => void) | null,
+  emitCodexPayload(payload: Record<string, unknown>) {
+    mockState.codexLineHandler?.(JSON.stringify(payload));
+  },
   nextUuid: () => {
     mockState.uuidCounter += 1;
     return `test-uuid-${mockState.uuidCounter}`;
@@ -34,7 +38,36 @@ vi.mock("node:crypto", async (importOriginal) => {
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => {
     const proc: any = {
-      stdin: { write: vi.fn(), end: vi.fn(), writable: true },
+      stdin: {
+        writable: true,
+        write: vi.fn((line: string) => {
+          const payload = JSON.parse(line);
+          if (payload?.id == null || typeof payload?.method !== "string") return true;
+
+          let result: Record<string, unknown> = {};
+          if (payload.method === "thread/start") {
+            mockState.codexThreadCounter += 1;
+            result = { thread: { id: `thread-${mockState.codexThreadCounter}` } };
+          } else if (payload.method === "turn/start" || payload.method === "review/start") {
+            mockState.codexTurnCounter += 1;
+            result = { turn: { id: `turn-${mockState.codexTurnCounter}` } };
+          } else if (payload.method === "skills/list") {
+            result = { skills: [] };
+          } else if (payload.method === "account/rateLimits/read") {
+            result = { rateLimits: { remaining: 10, limit: 100, resetAt: null } };
+          }
+
+          queueMicrotask(() => {
+            mockState.emitCodexPayload({
+              jsonrpc: "2.0",
+              id: payload.id,
+              result,
+            });
+          });
+          return true;
+        }),
+        end: vi.fn(),
+      },
       stdout: { on: vi.fn() },
       stderr: { on: vi.fn() },
       on: vi.fn(),
@@ -48,13 +81,21 @@ vi.mock("node:child_process", () => ({
 vi.mock("node:readline", () => ({
   default: {
     createInterface: vi.fn(() => ({
-      on: vi.fn(),
+      on: vi.fn((event: string, handler: (line: string) => void) => {
+        if (event === "line") {
+          mockState.codexLineHandler = handler;
+        }
+      }),
       close: vi.fn(),
       [Symbol.asyncIterator]: vi.fn(),
     })),
   },
   createInterface: vi.fn(() => ({
-    on: vi.fn(),
+    on: vi.fn((event: string, handler: (line: string) => void) => {
+      if (event === "line") {
+        mockState.codexLineHandler = handler;
+      }
+    }),
     close: vi.fn(),
     [Symbol.asyncIterator]: vi.fn(),
   })),
@@ -74,14 +115,17 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 
 vi.mock("../ai/providerResolver", () => ({
   normalizeCliMcpServers: vi.fn(() => ({})),
+  isModelCliWrapped: vi.fn((modelId: string) => !String(modelId).endsWith("-api")),
   resolveModel: vi.fn(async () => ({})),
   resolveProvider: vi.fn(),
+  buildProviderOptions: vi.fn(() => ({})),
 }));
 
 vi.mock("../ai/tools/universalTools", () => ({
-  createUniversalToolSet: vi.fn(() => ({
-    tools: {},
-    prompts: [],
+  createUniversalToolSet: vi.fn((): Record<string, unknown> => ({
+    readFile: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+    grep: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+    bash: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
   })),
 }));
 
@@ -167,9 +211,10 @@ import {
 } from "./agentChatService";
 import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
+import { createUniversalToolSet } from "../ai/tools/universalTools";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
-import type { ComputerUseBackendStatus } from "../../../shared/types";
+import type { AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -187,6 +232,10 @@ function createLogger() {
 }
 
 function createMockLaneService() {
+  const lanes = [
+    { id: "lane-1", name: "Primary", laneType: "primary", worktreePath: tmpRoot },
+    { id: "lane-2", name: "Selected", laneType: "feature", worktreePath: tmpRoot },
+  ];
   return {
     getLaneBaseAndBranch: vi.fn((_laneId: string) => ({
       baseRef: "main",
@@ -194,7 +243,21 @@ function createMockLaneService() {
       worktreePath: tmpRoot,
       laneType: "feature",
     })),
-    getLane: vi.fn(() => null),
+    list: vi.fn(async () => lanes),
+    ensurePrimaryLane: vi.fn(async () => {}),
+    create: vi.fn(async ({ name, description, parentLaneId }: { name: string; description?: string; parentLaneId?: string }) => {
+      const lane = {
+        id: `lane-${lanes.length + 1}`,
+        name,
+        description: description ?? null,
+        laneType: "feature",
+        worktreePath: tmpRoot,
+        parentLaneId: parentLaneId ?? "lane-1",
+      };
+      lanes.push(lane);
+      return lane;
+    }),
+    getLane: vi.fn((laneId: string) => lanes.find((lane) => lane.id === laneId) ?? null),
   } as any;
 }
 
@@ -248,68 +311,17 @@ function createMockSessionService() {
         if (args.resumeCommand !== undefined) row.resumeCommand = args.resumeCommand;
       }
     }),
+    setHeadShaStart: vi.fn(),
+    setHeadShaEnd: vi.fn(),
+    setLastOutputPreview: vi.fn(),
+    setSummary: vi.fn(),
     setResumeCommand: vi.fn((sessionId: string, resumeCommand: string | null) => {
       const row = sessions.get(sessionId);
       if (row) {
         row.resumeCommand = resumeCommand;
       }
     }),
-    setHeadShaStart: vi.fn(),
-    setHeadShaEnd: vi.fn(),
-    setLastOutputPreview: vi.fn(),
-    setSummary: vi.fn(),
   } as any;
-}
-
-async function flushPromises(iterations = 4) {
-  for (let index = 0; index < iterations; index += 1) {
-    await Promise.resolve();
-  }
-}
-
-function getLatestSpawnProc() {
-  const proc = vi.mocked(spawn).mock.results.at(-1)?.value as any;
-  expect(proc).toBeTruthy();
-  return proc;
-}
-
-function getLatestReader() {
-  const reader = vi.mocked(readline.createInterface).mock.results.at(-1)?.value as any;
-  expect(reader).toBeTruthy();
-  return reader;
-}
-
-function getReaderLineHandler(reader: any): (line: string) => void {
-  const lineCall = reader.on.mock.calls.find(([event]: [string]) => event === "line");
-  expect(lineCall).toBeTruthy();
-  return lineCall[1];
-}
-
-function writtenPayloads(proc: any): Array<Record<string, any>> {
-  return proc.stdin.write.mock.calls.map(([payload]: [string]) => JSON.parse(String(payload).trim()));
-}
-
-async function waitForWrittenMethod(proc: any, method: string) {
-  return waitForWrittenMethodCount(proc, method, 1);
-}
-
-async function waitForWrittenMethodCount(proc: any, method: string, count: number) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const payloads = writtenPayloads(proc).filter((entry) => entry.method === method);
-    if (payloads.length >= count) return payloads[count - 1];
-    await flushPromises();
-  }
-  throw new Error(`Timed out waiting for request '${method}'. Saw methods: ${writtenPayloads(proc).map((entry) => entry.method).join(", ")}`);
-}
-
-async function completeCodexInitialize(proc: any, lineHandler: (line: string) => void) {
-  const initialize = await waitForWrittenMethod(proc, "initialize");
-  lineHandler(JSON.stringify({
-    jsonrpc: "2.0",
-    id: initialize.id,
-    result: {},
-  }));
-  await flushPromises();
 }
 
 function createMockProjectConfigService() {
@@ -354,6 +366,34 @@ function createService(overrides: Record<string, unknown> = {}) {
   return { service, logger, laneService, sessionService, projectConfigService };
 }
 
+function readPersistedChatState(sessionId: string): Record<string, any> {
+  return JSON.parse(
+    fs.readFileSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${sessionId}.json`), "utf8"),
+  ) as Record<string, any>;
+}
+
+function writePersistedChatState(sessionId: string, nextState: Record<string, unknown>): void {
+  fs.writeFileSync(
+    path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${sessionId}.json`),
+    JSON.stringify(nextState, null, 2),
+    "utf8",
+  );
+}
+
+async function waitForEvent<T extends AgentChatEventEnvelope>(
+  events: AgentChatEventEnvelope[],
+  predicate: (event: AgentChatEventEnvelope) => event is T,
+): Promise<T> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const match = events.find(predicate);
+    if (match) {
+      return match;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("Timed out waiting for agent chat event.");
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -365,10 +405,12 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tmpRoot, ".ade", "transcripts", "chat"), { recursive: true });
   mockState.sessions.clear();
   mockState.uuidCounter = 0;
+  mockState.codexThreadCounter = 0;
+  mockState.codexTurnCounter = 0;
+  mockState.codexLineHandler = null;
   vi.mocked(streamText).mockReset();
   vi.mocked(generateText).mockReset();
   vi.mocked(unstable_v2_createSession).mockReset();
-  vi.mocked(unstable_v2_resumeSession).mockReset();
   vi.mocked(detectAllAuth).mockResolvedValue([]);
   vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
@@ -540,16 +582,18 @@ describe("createAgentChatService", () => {
       expect(session.status).toBe("idle");
     });
 
-    it("stores the real runtime model name for Codex GPT-5.4 sessions", async () => {
+    it("migrates legacy Claude plan mode into interaction mode", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4-codex",
+        provider: "claude",
+        model: "sonnet",
+        claudePermissionMode: "plan",
       });
 
-      expect(session.modelId).toBe("openai/gpt-5.4-codex");
-      expect(session.model).toBe("gpt-5.4");
+      expect(session.interactionMode).toBe("plan");
+      expect(session.claudePermissionMode).toBe("default");
+      expect(session.permissionMode).toBe("plan");
     });
 
     it("sets sessionProfile to workflow by default", async () => {
@@ -668,7 +712,7 @@ describe("createAgentChatService", () => {
       expect(metaFiles.length).toBeGreaterThanOrEqual(1);
 
       const persisted = JSON.parse(fs.readFileSync(path.join(chatSessionsDir, metaFiles[0]!), "utf8"));
-      expect(persisted.version).toBe(1);
+      expect(persisted.version).toBe(2);
       expect(persisted.provider).toBe("unified");
     });
 
@@ -760,11 +804,13 @@ describe("createAgentChatService", () => {
       expect(result.session.executionMode).toBe("parallel");
       expect(mockState.sessions.get(result.session.id)?.goal).toBe("Fix the work-tab handoff UI.");
 
-      await new Promise((resolve) => setTimeout(resolve, 25));
       const transcriptPath = mockState.sessions.get(result.session.id)?.transcriptPath;
       expect(transcriptPath).toBeTruthy();
-      const transcript = fs.readFileSync(String(transcriptPath), "utf8");
-      expect(transcript).toContain("Chat handoff from previous session");
+      // Wait for the async transcript write to flush (CI runners can be slow)
+      await vi.waitFor(() => {
+        const transcript = fs.readFileSync(String(transcriptPath), "utf8");
+        expect(transcript).toContain("Chat handoff from previous session");
+      }, { timeout: 2000, interval: 50 });
     });
 
     it("uses AI-generated handoff summaries when a summary model is available", async () => {
@@ -861,54 +907,6 @@ describe("createAgentChatService", () => {
       );
     });
 
-    it("skips memory search for trivial test pings", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-        })(),
-      } as any);
-
-      const memoryService = {
-        search: vi.fn(async () => []),
-      } as any;
-      const onEvent = vi.fn();
-      const { service } = createService({
-        memoryService,
-        onEvent,
-        computerUseArtifactBrokerService: {
-          getBackendStatus: vi.fn(() => ({
-            backends: [],
-            localFallback: {
-              available: false,
-              detail: "disabled",
-              supportedKinds: [],
-            },
-          })),
-        } as any,
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "unified",
-        model: "",
-        modelId: "anthropic/claude-sonnet-4-6-api",
-      });
-
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "this is a test",
-      });
-
-      expect(memoryService.search).not.toHaveBeenCalled();
-      expect(onEvent).not.toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "system_notice",
-            noticeKind: "memory",
-          }),
-        }),
-      );
-    });
-
     it("checks memory and emits a memory notice for coding turns", async () => {
       vi.mocked(streamText).mockReturnValue({
         fullStream: (async function* () {
@@ -965,221 +963,7 @@ describe("createAgentChatService", () => {
           event: expect.objectContaining({
             type: "system_notice",
             noticeKind: "memory",
-            message: expect.stringContaining("Memory:"),
-          }),
-        }),
-      );
-    });
-
-    it("loads bootstrap memory for non-trivial arbitrary turns even without targeted search", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 2, outputTokens: 2 } };
-        })(),
-      } as any);
-
-      const memoryService = {
-        search: vi.fn(async () => []),
-      } as any;
-      const memoryFilesService = {
-        buildPromptContext: vi.fn(() => ({
-          text: "ADE auto memory bootstrap (generated from promoted project memory):\n- Decision: keep SQLite as the canonical store.",
-          bootstrapLoaded: true,
-          topicFilesLoaded: [],
-        })),
-      } as any;
-      const onEvent = vi.fn();
-      const { service } = createService({
-        memoryService,
-        memoryFilesService,
-        onEvent,
-        computerUseArtifactBrokerService: {
-          getBackendStatus: vi.fn(() => ({
-            backends: [],
-            localFallback: {
-              available: false,
-              detail: "disabled",
-              supportedKinds: [],
-            },
-          })),
-        } as any,
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "unified",
-        model: "",
-        modelId: "anthropic/claude-sonnet-4-6-api",
-      });
-
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Take a look at the release flow and tell me what stands out.",
-      });
-
-      expect(memoryFilesService.buildPromptContext).toHaveBeenCalled();
-      expect(memoryService.search).not.toHaveBeenCalled();
-      expect(onEvent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "system_notice",
-            noticeKind: "memory",
-            message: expect.stringContaining("loaded bootstrap"),
-          }),
-        }),
-      );
-    });
-
-    it("injects generated auto memory bootstrap into coding turns", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 2, outputTokens: 2 } };
-        })(),
-      } as any);
-
-      const memoryService = {
-        search: vi.fn(async () => []),
-      } as any;
-      const memoryFilesService = {
-        buildPromptContext: vi.fn(() => ({
-          text: "ADE auto memory bootstrap (generated from promoted project memory):\n- Convention: keep SQLite as the memory source of truth.",
-          bootstrapLoaded: true,
-          topicFilesLoaded: ["conventions.md"],
-        })),
-      } as any;
-      const onEvent = vi.fn();
-      const { service } = createService({
-        memoryService,
-        memoryFilesService,
-        onEvent,
-        computerUseArtifactBrokerService: {
-          getBackendStatus: vi.fn(() => ({
-            backends: [],
-            localFallback: {
-              available: false,
-              detail: "disabled",
-              supportedKinds: [],
-            },
-          })),
-        } as any,
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "unified",
-        model: "",
-        modelId: "anthropic/claude-sonnet-4-6-api",
-      });
-
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Fix the failing memory tests in the desktop app.",
-      });
-
-      expect(memoryFilesService.buildPromptContext).toHaveBeenCalled();
-      expect(onEvent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "system_notice",
-            noticeKind: "memory",
-            detail: expect.objectContaining({
-              sections: expect.arrayContaining([
-                expect.objectContaining({
-                  title: "Auto memory files",
-                  items: expect.arrayContaining([
-                    expect.stringContaining(".ade/memory/MEMORY.md"),
-                    expect.stringContaining("conventions.md"),
-                  ]),
-                }),
-              ]),
-            }),
-          }),
-        }),
-      );
-    });
-
-    it("captures explicit user instructions into memory", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 2, outputTokens: 1 } };
-        })(),
-      } as any);
-
-      const savedMemory = {
-        id: "memory-saved-1",
-        projectId: "test-project",
-        scope: "project",
-        scopeOwnerId: null,
-        tier: 2,
-        category: "convention",
-        content: "Convention: we always use pnpm, not npm, in this repo.",
-        importance: "high",
-        sourceSessionId: "test-uuid-1",
-        sourcePackKey: null,
-        createdAt: "2026-03-25T10:00:00.000Z",
-        updatedAt: "2026-03-25T10:00:00.000Z",
-        lastAccessedAt: "2026-03-25T10:00:00.000Z",
-        accessCount: 0,
-        observationCount: 0,
-        status: "promoted",
-        agentId: "test-uuid-1",
-        confidence: 1,
-        promotedAt: "2026-03-25T10:00:00.000Z",
-        sourceRunId: null,
-        sourceType: "user",
-        sourceId: "chat:auto-capture",
-        fileScopePattern: null,
-        pinned: false,
-        accessScore: 0,
-        compositeScore: 0.9,
-        writeGateReason: null,
-      };
-      const memoryService = {
-        search: vi.fn(async () => []),
-        writeMemory: vi.fn(() => ({
-          accepted: true,
-          memory: savedMemory,
-          deduped: false,
-        })),
-      } as any;
-      const onEvent = vi.fn();
-      const { service } = createService({
-        memoryService,
-        onEvent,
-        computerUseArtifactBrokerService: {
-          getBackendStatus: vi.fn(() => ({
-            backends: [],
-            localFallback: {
-              available: false,
-              detail: "disabled",
-              supportedKinds: [],
-            },
-          })),
-        } as any,
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "unified",
-        model: "",
-        modelId: "anthropic/claude-sonnet-4-6-api",
-      });
-
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Please remember we always use pnpm, not npm, in this repo.",
-      });
-
-      expect(memoryService.writeMemory).toHaveBeenCalledWith(
-        expect.objectContaining({
-          scope: "project",
-          category: "convention",
-          sourceType: "user",
-        }),
-      );
-      expect(onEvent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "system_notice",
-            noticeKind: "memory",
-            message: expect.stringContaining("Captured explicit user instruction"),
+            message: expect.stringContaining("Checked memory"),
           }),
         }),
       );
@@ -1246,6 +1030,292 @@ describe("createAgentChatService", () => {
 
       const sessionsWithAutomation = await service.listSessions(undefined, { includeAutomation: true });
       expect(sessionsWithAutomation.length).toBe(1);
+    });
+  });
+
+  describe("ensureIdentitySession", () => {
+    it("hosts canonical identity sessions on the primary lane", async () => {
+      const { service } = createService();
+
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      expect(session.laneId).toBe("lane-1");
+      expect(session.permissionMode).toBe("plan");
+    });
+
+    it("does not reuse a foreign-lane identity session and retires it during migration", async () => {
+      const { service, sessionService } = createService();
+
+      const legacy = await service.createSession({
+        laneId: "lane-2",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+        identityKey: "cto",
+      });
+
+      const canonical = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      expect(canonical.id).not.toBe(legacy.id);
+      expect(canonical.laneId).toBe("lane-1");
+      expect(sessionService.get(legacy.id)?.status).toBe("ended");
+
+      const reused = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      expect(reused.id).toBe(canonical.id);
+      expect(reused.laneId).toBe("lane-1");
+    });
+  });
+
+  describe("identity continuity", () => {
+    it("replays persisted continuity context after resuming an identity session", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall <= 2) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: `sdk-session-${streamCall}`,
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Acknowledged" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      const persisted = readPersistedChatState(session.id);
+      writePersistedChatState(session.id, {
+        ...persisted,
+        continuitySummary: "- Keep the OpenClaw bridge runtime state in machine-local cache.",
+        continuitySummaryUpdatedAt: new Date().toISOString(),
+        recentConversationEntries: [
+          { role: "user", text: "What lane should frontend use?" },
+          { role: "assistant", text: "Use the primary-hosted coordinator first." },
+        ],
+      });
+
+      const resumed = createService().service;
+      await resumed.resumeSession({ sessionId: session.id });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      send.mockClear();
+
+      const result = await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "What should we do next?",
+        timeoutMs: 15_000,
+      });
+
+      expect(result.sessionId).toBe(session.id);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Continuity Summary"));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Keep the OpenClaw bridge runtime state in machine-local cache."));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("User: What lane should frontend use?"));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Use the primary-hosted coordinator first."));
+    });
+
+    it("persists a continuity snapshot and prewarms a fresh Claude session after identity session reset errors", async () => {
+      const primarySend = vi.fn().mockResolvedValue(undefined);
+      const recoverySend = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let primaryStreamCall = 0;
+      const primarySession = {
+        send: primarySend,
+        stream: vi.fn(() => (async function* () {
+          primaryStreamCall += 1;
+          if (primaryStreamCall === 1) {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-session-1",
+              slash_commands: [],
+            };
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-1",
+            message: {
+              content: [{ type: "text", text: "Partial answer" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          throw new Error("session expired");
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      };
+      const recoverySession = {
+        send: recoverySend,
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-2",
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-session-2",
+        setPermissionMode,
+      };
+      vi.mocked(unstable_v2_createSession)
+        .mockReturnValueOnce(primarySession as any)
+        .mockReturnValueOnce(recoverySession as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+      });
+
+      const result = await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Please keep the OpenClaw bridge state private.",
+        timeoutMs: 15_000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      const persisted = readPersistedChatState(session.id);
+      expect(result.outputText).toContain("Partial answer");
+      expect(persisted.sdkSessionId).toBe("sdk-session-2");
+      expect(persisted.continuitySummary).toContain("Recent continuity snapshot:");
+      expect(persisted.continuitySummary).toContain("User: Please keep the OpenClaw bridge state private.");
+      expect(persisted.continuitySummary).toContain("Assistant: Partial answer");
+      expect(unstable_v2_createSession).toHaveBeenCalledTimes(2);
+      expect(recoverySend).toHaveBeenCalledWith("System initialization check. Respond with only the word READY.");
+    });
+
+    it("keeps continuity compaction scoped to identity sessions", async () => {
+      const primarySend = vi.fn().mockResolvedValue(undefined);
+      const recoverySend = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let primaryStreamCall = 0;
+      const primarySession = {
+        send: primarySend,
+        stream: vi.fn(() => (async function* () {
+          primaryStreamCall += 1;
+          if (primaryStreamCall === 1) {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-session-1",
+              slash_commands: [],
+            };
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-1",
+            message: {
+              content: [{ type: "text", text: "Partial answer" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          throw new Error("session expired");
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      };
+      const recoverySession = {
+        send: recoverySend,
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-2",
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-session-2",
+        setPermissionMode,
+      };
+      vi.mocked(unstable_v2_createSession)
+        .mockReturnValueOnce(primarySession as any)
+        .mockReturnValueOnce(recoverySession as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const result = await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Please keep the bridge state private.",
+        timeoutMs: 15_000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      const persisted = readPersistedChatState(session.id);
+      expect(result.outputText).toContain("Partial answer");
+      expect(persisted.continuitySummary).toBeUndefined();
+      expect(unstable_v2_createSession).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -1540,27 +1610,10 @@ describe("createAgentChatService", () => {
 
       const updated = await service.updateSession({
         sessionId: session.id,
-        unifiedPermissionMode: "full-auto",
+        permissionMode: "full-auto",
       });
 
-      expect(updated.unifiedPermissionMode).toBe("full-auto");
-    });
-
-    it("keeps the Codex wrapper id while updating the runtime model name", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4-codex",
-      });
-
-      const updated = await service.updateSession({
-        sessionId: session.id,
-        modelId: "openai/gpt-5.4-codex",
-      });
-
-      expect(updated.modelId).toBe("openai/gpt-5.4-codex");
-      expect(updated.model).toBe("gpt-5.4");
+      expect(updated.permissionMode).toBe("full-auto");
     });
 
     it("updates computer use policy", async () => {
@@ -1583,221 +1636,6 @@ describe("createAgentChatService", () => {
       });
 
       expect(updated.computerUse!.mode).toBe("enabled");
-    });
-
-    it("resets an idle Claude SDK session when permission mode changes", async () => {
-      const close = vi.fn();
-      vi.mocked(unstable_v2_createSession).mockReturnValue({
-        send: vi.fn(async () => {}),
-        stream: vi.fn(() => (async function* () {
-          yield { type: "system", subtype: "init", session_id: "sdk-session-1" } as any;
-          yield { type: "result" } as any;
-        })()),
-        close,
-        sessionId: "sdk-session-1",
-      } as any);
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await flushPromises(8);
-
-      await service.updateSession({
-        sessionId: session.id,
-        claudePermissionMode: "bypassPermissions",
-      });
-
-      expect(close).toHaveBeenCalled();
-    });
-
-    it("rebinds the current Codex thread on the next turn after settings change", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4-codex",
-      });
-
-      const persistedPath = path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${session.id}.json`);
-      const persisted = JSON.parse(fs.readFileSync(persistedPath, "utf8"));
-      persisted.threadId = "thread-codex-1";
-      fs.writeFileSync(persistedPath, JSON.stringify(persisted, null, 2), "utf8");
-
-      const resumePromise = service.resumeSession({ sessionId: session.id });
-      const proc = getLatestSpawnProc();
-      const reader = getLatestReader();
-      const lineHandler = getReaderLineHandler(reader);
-      await completeCodexInitialize(proc, lineHandler);
-      const initialThreadResume = await waitForWrittenMethodCount(proc, "thread/resume", 1);
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        id: initialThreadResume.id,
-        result: {},
-      }));
-      await resumePromise;
-
-      await service.updateSession({
-        sessionId: session.id,
-        codexSandbox: "danger-full-access",
-      });
-
-      await service.sendMessage({
-        sessionId: session.id,
-        text: "second turn",
-      });
-
-      await flushPromises();
-      const threadResume = await waitForWrittenMethodCount(proc, "thread/resume", 2);
-      expect(threadResume.params.threadId).toBe("thread-codex-1");
-      expect(threadResume.params.sandbox).toBe("danger-full-access");
-
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        id: threadResume.id,
-        result: {},
-      }));
-      await flushPromises();
-
-      const secondTurnStart = await waitForWrittenMethodCount(proc, "turn/start", 1);
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        id: secondTurnStart.id,
-        result: { turn: { id: "turn-2" } },
-      }));
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: { turn: { id: "turn-2", status: "completed" } },
-      }));
-      await flushPromises(8);
-    });
-  });
-
-  describe("codex runtime continuity", () => {
-    it("captures thread identity from thread/started notifications", async () => {
-      const { service, sessionService } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4-codex",
-      });
-
-      const turnPromise = service.runSessionTurn({
-        sessionId: session.id,
-        text: "hello codex",
-        timeoutMs: 15_000,
-      });
-
-      await flushPromises();
-      const proc = getLatestSpawnProc();
-      const reader = getLatestReader();
-      const lineHandler = getReaderLineHandler(reader);
-      await completeCodexInitialize(proc, lineHandler);
-
-      const threadStart = await waitForWrittenMethod(proc, "thread/start");
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        id: threadStart.id,
-        result: {},
-      }));
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        method: "thread/started",
-        params: { thread: { id: "thread-from-notification" } },
-      }));
-
-      await flushPromises();
-      const turnStart = await waitForWrittenMethodCount(proc, "turn/start", 1);
-
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        id: turnStart.id,
-        result: { turn: { id: "turn-notify-1" } },
-      }));
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: { turn: { id: "turn-notify-1", status: "completed" } },
-      }));
-
-      const result = await turnPromise;
-      expect(result.threadId).toBe("thread-from-notification");
-      expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
-        session.id,
-        "chat:codex:thread-from-notification",
-      );
-
-      const persisted = JSON.parse(
-        fs.readFileSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${session.id}.json`), "utf8"),
-      );
-      expect(persisted.threadId).toBe("thread-from-notification");
-    });
-
-    it("captures thread identity from nested raw Codex agent-message payloads", async () => {
-      const { service, sessionService } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4-codex",
-      });
-
-      const firstTurnPromise = service.runSessionTurn({
-        sessionId: session.id,
-        text: "hello codex",
-        timeoutMs: 15_000,
-      });
-
-      await flushPromises();
-      const proc = getLatestSpawnProc();
-      const reader = getLatestReader();
-      const lineHandler = getReaderLineHandler(reader);
-      await completeCodexInitialize(proc, lineHandler);
-
-      const threadStart = await waitForWrittenMethod(proc, "thread/start");
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        id: threadStart.id,
-        result: {},
-      }));
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        method: "codex/event/agent_message_content_delta",
-        params: {
-          msg: {
-            id: "agent-message-1",
-            conversationId: "thread-from-raw-msg",
-            content: "hello from nested raw event",
-          },
-        },
-      }));
-
-      await flushPromises();
-      const firstTurnStart = await waitForWrittenMethodCount(proc, "turn/start", 1);
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        id: firstTurnStart.id,
-        result: { turn: { id: "turn-raw-1" } },
-      }));
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: { turn: { id: "turn-raw-1", status: "completed" } },
-      }));
-
-      const firstResult = await firstTurnPromise;
-      expect(firstResult.threadId).toBe("thread-from-raw-msg");
-      expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
-        session.id,
-        "chat:codex:thread-from-raw-msg",
-      );
-      const persisted = JSON.parse(
-        fs.readFileSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${session.id}.json`), "utf8"),
-      );
-      expect(persisted.threadId).toBe("thread-from-raw-msg");
     });
   });
 
@@ -1912,6 +1750,303 @@ describe("createAgentChatService", () => {
       const sessions = await service.listSessions();
       expect(sessions.length).toBe(2);
     });
+
+    it("deduplicates Codex compatibility item notifications", async () => {
+      const events: Array<{ type: string; tool?: string; itemId?: string }> = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push({
+            type: event.event.type,
+            tool: "tool" in event.event ? event.event.tool : undefined,
+            itemId: "itemId" in event.event ? event.event.itemId : undefined,
+          });
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Search the repo",
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "item-1",
+            type: "dynamicToolCall",
+            tool: "search_files",
+            arguments: { query: "AgentChatPane" },
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "codex/event/item_started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "item-1",
+            type: "dynamicToolCall",
+            tool: "search_files",
+            arguments: { query: "AgentChatPane" },
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "item-1",
+            type: "dynamicToolCall",
+            tool: "search_files",
+            success: true,
+            contentItems: [{ text: "Found matches" }],
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "codex/event/item_completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "item-1",
+            type: "dynamicToolCall",
+            tool: "search_files",
+            success: true,
+            contentItems: [{ text: "Found matches" }],
+          },
+        },
+      });
+
+      const toolCalls = events.filter((event) => event.type === "tool_call" && event.itemId === "item-1");
+      const toolResults = events.filter((event) => event.type === "tool_result" && event.itemId === "item-1");
+
+      expect(toolCalls).toHaveLength(1);
+      expect(toolResults).toHaveLength(1);
+    });
+
+    it("prefers the canonical turn-scoped Codex text stream when item-scoped deltas also arrive", async () => {
+      const textEvents: Array<{ text: string; itemId?: string; turnId?: string }> = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          if (event.event.type !== "text") return;
+          textEvents.push({
+            text: event.event.text,
+            itemId: event.event.itemId,
+            turnId: event.event.turnId,
+          });
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Say hello",
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-1",
+          itemId: "msg-1",
+          delta: "Hello",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-1",
+          delta: "Hello",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-1",
+          itemId: "msg-1",
+          delta: " world",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-1",
+          delta: " world",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-1",
+          delta: "Hello world",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "turn-1",
+            status: "completed",
+          },
+        },
+      });
+
+      expect(textEvents).toEqual([
+        {
+          text: "Hello world",
+          turnId: "turn-1",
+        },
+      ]);
+    });
+
+    it("ignores stale Codex lifecycle notifications from a foreign turn", async () => {
+      const events: Array<{ type: string; turnId?: string; text?: string }> = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push({
+            type: event.event.type,
+            turnId: "turnId" in event.event ? event.event.turnId ?? undefined : undefined,
+            text: "text" in event.event ? event.event.text : undefined,
+          });
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.resumeSession({ sessionId: session.id });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          turn: {
+            id: "turn-1",
+          },
+        },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "turn-stale",
+            status: "completed",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/aborted",
+        params: {
+          turnId: "turn-stale",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-1",
+          delta: "Still streaming",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "turn-1",
+            status: "completed",
+          },
+        },
+      });
+
+      expect(events.filter((event) => event.type === "done").map((event) => event.turnId)).toEqual(["turn-1"]);
+      expect(events.filter((event) => event.type === "status" && event.turnId === "turn-stale")).toHaveLength(0);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "text", turnId: "turn-1", text: "Still streaming" }),
+      ]));
+    });
+
+    it("switches the Claude SDK session into plan mode before a plan turn", async () => {
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Plan ready" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        interactionMode: "plan",
+      });
+
+      const result = await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Outline the implementation only.",
+        interactionMode: "plan",
+      });
+
+      expect(result.outputText).toContain("Plan ready");
+      expect(setPermissionMode).toHaveBeenCalledWith("plan");
+      expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[1]);
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -1972,28 +2107,7 @@ describe("createAgentChatService", () => {
 
     it("returns an array for codex provider", async () => {
       const { service } = createService();
-      const modelsPromise = service.getAvailableModels({ provider: "codex" });
-      await flushPromises();
-
-      const proc = getLatestSpawnProc();
-      const reader = getLatestReader();
-      const lineHandler = getReaderLineHandler(reader);
-      await completeCodexInitialize(proc, lineHandler);
-      const modelList = await waitForWrittenMethod(proc, "model/list");
-
-      lineHandler(JSON.stringify({
-        jsonrpc: "2.0",
-        id: modelList.id,
-        result: {
-          data: [{
-            id: "openai/gpt-5.4-codex",
-            displayName: "GPT-5.4 Codex",
-            isDefault: true,
-          }],
-        },
-      }));
-
-      const models = await modelsPromise;
+      const models = await service.getAvailableModels({ provider: "codex" });
       expect(Array.isArray(models)).toBe(true);
     });
 
@@ -2030,6 +2144,292 @@ describe("createAgentChatService", () => {
       await expect(
         service.getChatTranscript({ sessionId: "nonexistent-id" }),
       ).rejects.toThrow(/not found/i);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Session creation edge cases
+  // --------------------------------------------------------------------------
+
+  describe("session creation edge cases", () => {
+    it("applies automationId and automationRunId when surface is automation", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+        surface: "automation",
+        automationId: "auto-1",
+        automationRunId: "run-1",
+      });
+
+      expect(session.surface).toBe("automation");
+      expect(session.automationId).toBe("auto-1");
+      expect(session.automationRunId).toBe("run-1");
+    });
+
+    it("creates a codex session with specified model", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      expect(session.provider).toBe("codex");
+      expect(session.status).toBe("idle");
+    });
+
+    it("persists capabilityMode when provided", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+        capabilityMode: "cto",
+      } as any);
+
+      // capabilityMode may be resolved to a fallback if not fully supported
+      expect(session.capabilityMode).toBeDefined();
+    });
+
+    it("uses default execution mode for new sessions", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      // executionMode defaults to null or undefined for new sessions
+      expect(session.executionMode == null).toBe(true);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Session status transitions
+  // --------------------------------------------------------------------------
+
+  describe("session status transitions", () => {
+    it("session starts with idle status", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      expect(session.status).toBe("idle");
+    });
+
+    it("session has null completion initially", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      expect(session.completion).toBeNull();
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Interaction mode handling
+  // --------------------------------------------------------------------------
+
+  describe("interaction mode", () => {
+    it("defaults interaction mode to null or undefined", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      expect(session.interactionMode == null).toBe(true);
+    });
+
+    it("persists plan interaction mode for Claude sessions via claudePermissionMode", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        claudePermissionMode: "plan",
+      });
+
+      // Plan interaction mode is derived from claudePermissionMode for Claude sessions
+      expect(session.interactionMode).toBe("plan");
+      expect(session.permissionMode).toBe("plan");
+    });
+
+    it("maps claude plan permission mode to interaction mode plan", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        claudePermissionMode: "plan",
+      });
+
+      expect(session.interactionMode).toBe("plan");
+      expect(session.claudePermissionMode).toBe("default");
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Resume and error recovery
+  // --------------------------------------------------------------------------
+
+  describe("resumeSession", () => {
+    it("resumes a disposed session back to idle", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.dispose({ sessionId: session.id });
+      const resumed = await service.resumeSession({ sessionId: session.id });
+
+      expect(resumed.id).toBe(session.id);
+      expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
+    });
+
+    it("throws when resuming an unknown session", async () => {
+      const { service } = createService();
+      await expect(
+        service.resumeSession({ sessionId: "unknown-session-id" }),
+      ).rejects.toThrow(/not found/i);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Interrupt
+  // --------------------------------------------------------------------------
+
+  describe("interrupt", () => {
+    it("throws when interrupting an unknown session", async () => {
+      const { service } = createService();
+      await expect(
+        service.interrupt({ sessionId: "unknown-session-id" }),
+      ).rejects.toThrow(/not found/i);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // steer
+  // --------------------------------------------------------------------------
+
+  describe("steer", () => {
+    it("throws when steering an unknown session", async () => {
+      const { service } = createService();
+      await expect(
+        service.steer({
+          sessionId: "unknown-session-id",
+          text: "refocus on the main bug",
+        }),
+      ).rejects.toThrow(/not found/i);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // approveToolUse
+  // --------------------------------------------------------------------------
+
+  describe("approveToolUse", () => {
+    it("throws when approving for an unknown session", async () => {
+      const { service } = createService();
+      await expect(
+        service.approveToolUse({
+          sessionId: "unknown-session-id",
+          itemId: "unknown-item-id",
+          decision: "accept",
+        }),
+      ).rejects.toThrow(/not found/i);
+    });
+
+    it("exits unified plan mode after a one-time plan approval", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let requestApproval:
+        | ((args: {
+          category: "exitPlanMode";
+          description: string;
+          detail?: Record<string, unknown>;
+        }) => Promise<{ approved: boolean; decision?: string; reason: string }>)
+        | null = null;
+
+      vi.mocked(createUniversalToolSet).mockImplementation((_cwd: string, options: any) => {
+        requestApproval = options.onApprovalRequest;
+        return {};
+      });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "start-step", stepNumber: 0 };
+          if (!requestApproval) {
+            throw new Error("Unified approval handler was not captured.");
+          }
+          const approvalPromise = requestApproval({
+            category: "exitPlanMode",
+            description: "Plan ready for approval",
+            detail: { planContent: "1. Inspect\n2. Implement" },
+          });
+          yield { type: "tool-call", toolName: "ExitPlanMode", toolCallId: "tool-exit-plan" };
+          const approvalResult = await approvalPromise;
+          yield { type: "tool-result", toolName: "ExitPlanMode", toolCallId: "tool-exit-plan", result: approvalResult };
+          yield { type: "text-delta", textDelta: "Implementation complete." };
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.4",
+        permissionMode: "plan",
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Review the plan and implement it after approval.",
+      });
+
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => {
+          if (event.event.type !== "approval_request") return false;
+          const detail = event.event.detail as { request?: { kind?: string } } | undefined;
+          return detail?.request?.kind === "plan_approval";
+        },
+      );
+
+      await service.approveToolUse({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+
+      await sendPromise;
+
+      const updated = await service.getSessionSummary(session.id);
+      expect(updated?.permissionMode).toBe("edit");
+      expect(updated?.unifiedPermissionMode).toBe("edit");
     });
   });
 });

@@ -139,7 +139,7 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "edit",
-        label: "Guarded Edit",
+        label: "Guarded edit",
         shortDesc: "Writable sandbox with approval on failures",
         detail: "Workspace-write sandbox with approval policy set to on-failure. Codex can edit files and run commands autonomously inside the worktree, but escalations and sandbox failures still stop for approval.",
         allows: ["File reads", "File writes & patches", "Shell commands in workspace-write sandbox"],
@@ -148,7 +148,7 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "full-auto",
-        label: "Full Auto",
+        label: "Full auto",
         shortDesc: "Unrestricted \u2014 skips all approval prompts",
         detail: "Danger-full-access sandbox, approval policy: never. Codex runs shell commands and applies patches without interruption. No filesystem or network restrictions.",
         allows: ["shell \u2014 unrestricted", "apply_patch \u2014 unrestricted", "Network access"],

@@ -135,13 +135,24 @@ function QueueHistoryPanel({
   groups,
   lanes,
   onOpenGitHubTab,
+  loading,
 }: {
   groups: QueueGroupSummary[];
   lanes: LaneSummary[];
   onOpenGitHubTab: (prId: string) => void;
+  loading?: boolean;
 }) {
   const navigate = useNavigate();
   const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane] as const)), [lanes]);
+
+  if (loading && !groups.length) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 32, gap: 8 }}>
+        <ArrowsClockwise size={16} className="animate-spin" style={{ color: COLORS.textMuted }} />
+        <span style={{ fontSize: 13, color: COLORS.textMuted, fontFamily: SANS_FONT }}>Loading queue history...</span>
+      </div>
+    );
+  }
 
   if (!groups.length) {
     return <EmptyState title="No queue history" description="Completed and cancelled queue workflows will appear here." />;
@@ -609,6 +620,7 @@ export function WorkflowsTab({
     setSelectedRebaseItemId,
     rebaseNeeds,
     queueStates,
+    loading: prsLoading,
     resolverModel,
     resolverReasoningLevel,
     resolverPermissionMode,
@@ -824,7 +836,7 @@ export function WorkflowsTab({
               onRefresh={refreshWorkflows}
             />
           ) : (
-            <QueueHistoryPanel groups={queueByView.history} lanes={lanes} onOpenGitHubTab={onOpenGitHubTab} />
+            <QueueHistoryPanel groups={queueByView.history} lanes={lanes} onOpenGitHubTab={onOpenGitHubTab} loading={prsLoading} />
           )
         ) : null}
 

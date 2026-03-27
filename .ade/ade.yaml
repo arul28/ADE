@@ -1,5 +1,12 @@
 version: 1
-processes: []
+processes:
+  - id: ad55deza
+    name: Dev
+    command:
+      - npm
+      - run
+      - dev
+    cwd: apps/desktop
 stackButtons: []
 testSuites: []
 laneOverlayPolicies: []

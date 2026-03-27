@@ -5,7 +5,7 @@ import type { LinearArtifactMode, NormalizedLinearIssue } from "../../../shared/
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { IssueTracker } from "./issueTracker";
-import { nowIso, uniqueStrings, getErrorMessage } from "../shared/utils";
+import { nowIso, uniqueStrings, getErrorMessage, renderTemplateString } from "../shared/utils";
 
 function bodyHash(body: string): string {
   return createHash("sha256").update(body).digest("hex");
@@ -205,8 +205,10 @@ export function createLinearOutboundService(args: {
     reviewReadyReason?: string | null;
     waitingFor?: string | null;
     note?: string | null;
+    commentTemplate?: string | null;
+    templateValues?: Record<string, unknown>;
   }): Promise<void> => {
-    const body = [
+    const defaultBody = [
       buildHeader(params.issue),
       "### Workflow",
       `- Workflow: ${params.workflowName}`,
@@ -227,6 +229,42 @@ export function createLinearOutboundService(args: {
       "### Latest update",
       params.note?.trim() || "Workflow run updated.",
     ].join("\n");
+    const renderedTemplate = params.commentTemplate?.trim()
+      ? normalizeText(
+          renderTemplateString(params.commentTemplate, {
+            issue: params.issue,
+            workflow: {
+              name: params.workflowName,
+            },
+            run: {
+              id: params.runId,
+              status: params.state,
+              currentStep: params.currentStep ?? null,
+              laneId: params.laneId ?? null,
+              missionId: params.missionId ?? null,
+              sessionId: params.sessionId ?? null,
+              workerRunId: params.workerRunId ?? null,
+              prId: params.prId ?? null,
+            },
+            target: {
+              type: params.targetType,
+              owner: params.delegatedOwner ?? null,
+              id: params.sessionId ?? params.workerRunId ?? params.missionId ?? params.prId ?? params.laneId ?? null,
+            },
+            pr: {
+              id: params.prId ?? null,
+            },
+            review: {
+              state: params.reviewState ?? null,
+              readyReason: params.reviewReadyReason ?? null,
+            },
+            note: params.note ?? null,
+            waitingFor: params.waitingFor ?? null,
+            ...(params.templateValues ?? {}),
+          }),
+        )
+      : "";
+    const body = renderedTemplate.length ? renderedTemplate : defaultBody;
 
     await updateWorkpad({ issueId: params.issue.id, body });
   };
@@ -286,6 +324,8 @@ export function createLinearOutboundService(args: {
     prLinks?: string[];
     artifactPaths?: string[];
     artifactMode: LinearArtifactMode;
+    commentTemplate?: string | null;
+    templateValues?: Record<string, unknown>;
   }): Promise<void> => {
     await publishWorkflowCloseout({
       issue: params.issue,
@@ -296,6 +336,8 @@ export function createLinearOutboundService(args: {
       prLinks: params.prLinks,
       artifactPaths: params.artifactPaths,
       artifactMode: params.artifactMode,
+      commentTemplate: params.commentTemplate,
+      templateValues: params.templateValues,
     });
   };
 
@@ -309,6 +351,8 @@ export function createLinearOutboundService(args: {
     prLinks?: string[];
     artifactPaths?: string[];
     artifactMode: LinearArtifactMode;
+    commentTemplate?: string | null;
+    templateValues?: Record<string, unknown>;
   }): Promise<void> => {
     const prLinks = uniqueStrings((params.prLinks ?? []).filter((entry) => entry.trim().length > 0));
     const uploadedArtifacts = await uploadArtifacts({
@@ -317,7 +361,7 @@ export function createLinearOutboundService(args: {
       mode: params.artifactMode,
     });
 
-    const body = [
+    const defaultBody = [
       buildHeader(params.issue),
       "### Status",
       `- Final state: ${params.status}`,
@@ -335,6 +379,30 @@ export function createLinearOutboundService(args: {
         ? ["", "### Artifacts", ...uploadedArtifacts.map((link) => `- ${link}`)]
         : []),
     ].join("\n");
+    const renderedTemplate = params.commentTemplate?.trim()
+      ? normalizeText(
+          renderTemplateString(params.commentTemplate, {
+            issue: params.issue,
+            workflow: {},
+            run: {
+              status: params.status,
+            },
+            target: {
+              label: params.targetLabel,
+              id: params.targetId ?? null,
+            },
+            pr: {
+              links: prLinks,
+            },
+            review: {},
+            note: params.summary,
+            waitingFor: null,
+            artifacts: uploadedArtifacts,
+            ...(params.templateValues ?? {}),
+          }),
+        )
+      : "";
+    const body = renderedTemplate.length ? renderedTemplate : defaultBody;
 
     await updateWorkpad({ issueId: params.issue.id, body });
   };

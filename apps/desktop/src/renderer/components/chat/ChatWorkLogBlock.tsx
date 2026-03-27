@@ -19,6 +19,7 @@ import {
 } from "./chatTranscriptRows";
 import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
+import { ChatStatusGlyph, chatStatusTextClass } from "./chatStatusVisuals";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
@@ -103,50 +104,31 @@ function DiffPreview({ diff }: { diff: string }) {
   );
 }
 
+const FAILED_ICON_CLASS = "text-red-300/80";
+
 function workToneIcon(entry: ChatWorkLogEntry): { icon: Icon; className: string } {
-  if (entry.entryKind === "tool" && entry.toolName) {
-    return {
-      icon: getToolMeta(entry.toolName).icon,
-      className: entry.status === "failed" ? "text-red-300/80" : "text-fg/34",
-    };
+  const isFailed = entry.status === "failed";
+
+  switch (entry.entryKind) {
+    case "tool":
+      if (entry.toolName) {
+        return { icon: getToolMeta(entry.toolName).icon, className: isFailed ? FAILED_ICON_CLASS : "text-fg/34" };
+      }
+      break;
+    case "command":
+      return { icon: Terminal, className: isFailed ? FAILED_ICON_CLASS : "text-amber-300/75" };
+    case "file_change":
+      return { icon: FileCode, className: isFailed ? FAILED_ICON_CLASS : "text-emerald-300/75" };
+    case "web_search":
+      return { icon: Globe, className: isFailed ? FAILED_ICON_CLASS : "text-cyan-300/75" };
   }
 
-  if (entry.entryKind === "command") {
-    return {
-      icon: Terminal,
-      className: entry.status === "failed" ? "text-red-300/80" : "text-amber-300/75",
-    };
-  }
-
-  if (entry.entryKind === "file_change") {
-    return {
-      icon: FileCode,
-      className: entry.status === "failed" ? "text-red-300/80" : "text-emerald-300/75",
-    };
-  }
-
-  if (entry.entryKind === "web_search") {
-    return {
-      icon: Globe,
-      className: entry.status === "failed" ? "text-red-300/80" : "text-cyan-300/75",
-    };
-  }
-
-  return {
-    icon: Warning,
-    className: "text-fg/34",
-  };
+  return { icon: Warning, className: "text-fg/34" };
 }
 
-function workStatusDot(status: ChatWorkLogEntry["status"]): string {
-  switch (status) {
-    case "completed":
-      return "bg-emerald-400/85";
-    case "failed":
-      return "bg-red-400/85";
-    default:
-      return "bg-amber-400/85";
-  }
+function workStatusState(status: ChatWorkLogEntry["status"]): "working" | "completed" | "failed" {
+  if (status === "completed" || status === "failed") return status;
+  return "working";
 }
 
 function workStatusLabel(status: ChatWorkLogEntry["status"]): string {
@@ -164,9 +146,7 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "tool" && entry.toolName) {
     const meta = getToolMeta(entry.toolName);
     const toolDisplay = describeToolIdentifier(entry.toolName);
-    const args = entry.args && typeof entry.args === "object" && !Array.isArray(entry.args)
-      ? entry.args as Record<string, unknown>
-      : {};
+    const args = readRecord(entry.args) ?? {};
     const targetLine = meta.getTarget ? meta.getTarget(args) : null;
     if (targetLine) return `${meta.label} ${targetLine}`.trim();
     if (toolDisplay.secondaryLabel) return `${meta.label} ${toolDisplay.secondaryLabel}`.trim();
@@ -219,8 +199,9 @@ function workEntryPreview(entry: ChatWorkLogEntry): string {
     if (typeof entry.result === "string" && entry.result.trim().length > 0) {
       return summarizeInlineText(entry.result, 110);
     }
-    if (entry.args && typeof entry.args === "object" && !Array.isArray(entry.args)) {
-      const values = Object.values(entry.args as Record<string, unknown>)
+    const argsRecord = readRecord(entry.args);
+    if (argsRecord) {
+      const values = Object.values(argsRecord)
         .map((value) => typeof value === "string" ? value : JSON.stringify(value))
         .filter((value): value is string => Boolean(value && value.trim().length));
       if (values.length > 0) return summarizeInlineText(values.join(" "), 110);
@@ -258,10 +239,8 @@ function WorkLogEntryDetail({
   }
 
   if (entry.entryKind === "tool") {
-    const args = entry.args && typeof entry.args === "object" && !Array.isArray(entry.args)
-      ? entry.args
-      : null;
-    if (args && Object.keys(args as Record<string, unknown>).length > 0) {
+    const args = readRecord(entry.args);
+    if (args && Object.keys(args).length > 0) {
       sections.push(
         <div key="args">
           <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Arguments</div>
@@ -381,10 +360,11 @@ export function ChatWorkLogBlock({
 }) {
   const [expandedGroup, setExpandedGroup] = useState(false);
   const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({});
+  const reversedEntries = [...entries].reverse();
   const hasOverflow = entries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
   const visibleEntries = hasOverflow && !expandedGroup
-    ? entries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
-    : entries;
+    ? reversedEntries.slice(0, MAX_VISIBLE_WORK_LOG_ENTRIES)
+    : reversedEntries;
   const hiddenCount = entries.length - visibleEntries.length;
   const onlyToolEntries = entries.every((entry) => entry.entryKind === "tool");
   const groupLabel = onlyToolEntries ? "Tool calls" : "Work log";
@@ -434,7 +414,9 @@ export function ChatWorkLogBlock({
                 ) : (
                   <CaretRight size={10} weight="bold" className="text-fg/30" />
                 )}
-                <span className={cn("inline-flex h-1.5 w-1.5 rounded-full", workStatusDot(entry.status))} />
+                <span className="inline-flex h-3 w-3 items-center justify-center">
+                  <ChatStatusGlyph status={workStatusState(entry.status)} size={11} />
+                </span>
                 <EntryIcon size={12} weight="regular" className={iconClassName} />
                 <div className="min-w-0 flex-1 overflow-hidden">
                   <p className="truncate font-mono text-[11px] leading-5 text-fg/78">
@@ -443,11 +425,7 @@ export function ChatWorkLogBlock({
                 </div>
                 <span className={cn(
                   "shrink-0 font-mono text-[9px] uppercase tracking-[0.12em]",
-                  entry.status === "failed"
-                    ? "text-red-300/80"
-                    : entry.status === "completed"
-                      ? "text-emerald-300/75"
-                      : "text-amber-300/75",
+                  chatStatusTextClass(workStatusState(entry.status)),
                 )}>
                   {statusLabel}
                 </span>

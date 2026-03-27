@@ -690,7 +690,7 @@ export function createExternalConnectionAuthService(args: {
           await exchangeOAuthCode(session, code);
           finalizeSession(session, { status: "completed" });
           res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-          res.end("<!doctype html><html><body style=\"font-family:system-ui;padding:24px\">External MCP connected. You can close this window and return to ADE.</body></html>");
+          res.end("<!doctype html><html><body style=\"font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px\">External MCP connected. You can close this window and return to ADE.</body></html>");
         } catch (error: unknown) {
           const message = getErrorMessage(error);
           finalizeSession(session, { status: "failed", error: message });

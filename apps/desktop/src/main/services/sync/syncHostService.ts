@@ -6,6 +6,7 @@ import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
+  AgentChatEventEnvelope,
   CrsqlChangeRow,
   FileContent,
   FileTreeNode,
@@ -14,11 +15,14 @@ import type {
   FilesWorkspace,
   PtyDataEvent,
   PtyExitEvent,
+  SyncChatEventPayload,
   SyncBrainStatusPayload,
   SyncChangesetBatchPayload,
   SyncCommandPayload,
   SyncCommandResultPayload,
   SyncEnvelope,
+  SyncChatSubscribeSnapshotPayload,
+  SyncChatUnsubscribePayload,
   SyncFileBlob,
   SyncFileRequest,
   SyncFileResponsePayload,
@@ -29,6 +33,7 @@ import type {
   SyncPairingSession,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types";
+import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { Logger } from "../logging/logger";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -73,6 +78,8 @@ type PeerState = {
   remoteAddress: string | null;
   remotePort: number | null;
   subscribedSessionIds: Set<string>;
+  subscribedChatSessionIds: Set<string>;
+  chatTranscriptOffsets: Map<string, number>;
 };
 
 type SyncHostServiceArgs = {
@@ -311,6 +318,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     void pumpChanges().catch((error) => {
       args.logger.warn("sync_host.poll_failed", { error: error instanceof Error ? error.message : String(error) });
     });
+    void pumpChatEvents().catch((error) => {
+      args.logger.warn("sync_host.chat_poll_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
   }, pollIntervalMs);
   const heartbeatTimer = setInterval(() => {
     const sentAt = nowIso();
@@ -348,6 +358,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       remoteAddress: sanitizeRemoteAddress(request.socket.remoteAddress),
       remotePort: request.socket.remotePort ?? null,
       subscribedSessionIds: new Set(),
+      subscribedChatSessionIds: new Set(),
+      chatTranscriptOffsets: new Map(),
     };
     peers.add(peer);
     ws.on("message", (raw) => {
@@ -463,6 +475,62 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       send(peer.ws, "brain_status", payload);
+    }
+  }
+
+  async function readChatTranscriptEventsSince(
+    transcriptPath: string,
+    startOffset: number,
+  ): Promise<{ events: AgentChatEventEnvelope[]; nextOffset: number }> {
+    let fh: fs.promises.FileHandle | null = null;
+    try {
+      fh = await fs.promises.open(transcriptPath, "r");
+      const stat = await fh.stat();
+      const size = stat.size;
+      const normalizedStart = Math.max(0, Math.min(startOffset, size));
+      if (size <= normalizedStart) {
+        return { events: [], nextOffset: size };
+      }
+
+      const out = Buffer.alloc(size - normalizedStart);
+      await fh.read(out, 0, out.length, normalizedStart);
+      const lastNewline = out.lastIndexOf(0x0a);
+      if (lastNewline < 0) {
+        return { events: [], nextOffset: normalizedStart };
+      }
+
+      const completeSlice = out.subarray(0, lastNewline + 1);
+      const raw = completeSlice.toString("utf8");
+      return {
+        events: parseAgentChatTranscript(raw),
+        nextOffset: normalizedStart + completeSlice.length,
+      };
+    } catch {
+      return { events: [], nextOffset: Math.max(0, startOffset) };
+    } finally {
+      await fh?.close().catch(() => {});
+    }
+  }
+
+  async function pumpChatEvents(): Promise<void> {
+    if (disposed) return;
+
+    for (const peer of peers) {
+      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      for (const sessionId of peer.subscribedChatSessionIds) {
+        const session = args.sessionService.get(sessionId);
+        if (!session?.transcriptPath) continue;
+
+        const startOffset = peer.chatTranscriptOffsets.get(sessionId) ?? 0;
+        const { events, nextOffset } = await readChatTranscriptEventsSince(session.transcriptPath, startOffset);
+        if (nextOffset !== startOffset) {
+          peer.chatTranscriptOffsets.set(sessionId, nextOffset);
+        }
+        for (const event of events) {
+          const chatEventPayload: SyncChatEventPayload = event;
+          send(peer.ws, "chat_event", chatEventPayload);
+        }
+      }
     }
   }
 
@@ -837,6 +905,47 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const sessionId = toOptionalString(payload?.sessionId);
         if (sessionId) {
           peer.subscribedSessionIds.delete(sessionId);
+        }
+        break;
+      }
+      case "chat_subscribe": {
+        const payload = envelope.payload as { sessionId?: string; maxBytes?: number } | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        if (!sessionId) break;
+        peer.subscribedChatSessionIds.add(sessionId);
+
+        const session = args.sessionService.get(sessionId);
+        const maxBytes = Math.max(
+          1_024,
+          Math.min(2_000_000, Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_SNAPSHOT_BYTES)),
+        );
+        const raw = session?.transcriptPath
+          ? await args.sessionService.readTranscriptTail(
+              session.transcriptPath,
+              maxBytes,
+              { raw: true, alignToLineBoundary: true },
+            )
+          : "";
+        const events = parseAgentChatTranscript(raw).filter((event) => event.sessionId === sessionId);
+        const transcriptSize = session?.transcriptPath && fs.existsSync(session.transcriptPath)
+          ? fs.statSync(session.transcriptPath).size
+          : 0;
+        peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
+        const snapshot: SyncChatSubscribeSnapshotPayload = {
+          sessionId,
+          capturedAt: nowIso(),
+          truncated: transcriptSize > maxBytes,
+          events,
+        };
+        send(peer.ws, "chat_subscribe", snapshot, envelope.requestId);
+        break;
+      }
+      case "chat_unsubscribe": {
+        const payload = envelope.payload as SyncChatUnsubscribePayload | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        if (sessionId) {
+          peer.subscribedChatSessionIds.delete(sessionId);
+          peer.chatTranscriptOffsets.delete(sessionId);
         }
         break;
       }

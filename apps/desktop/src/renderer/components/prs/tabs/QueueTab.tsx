@@ -244,7 +244,10 @@ function reorderQueueMemberIds(prIds: string[], draggedPrId: string, targetPrId:
   if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) return prIds;
   const next = [...prIds];
   const [moved] = next.splice(draggedIndex, 1);
-  next.splice(targetIndex, 0, moved);
+  // After removing the dragged element, all indices above draggedIndex shift
+  // down by 1. When dragging downward we must adjust the insertion point.
+  const insertIndex = draggedIndex < targetIndex ? targetIndex - 1 : targetIndex;
+  next.splice(insertIndex, 0, moved);
   return next;
 }
 

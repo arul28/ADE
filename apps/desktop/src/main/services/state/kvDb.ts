@@ -2633,6 +2633,8 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       closeout_state text not null default 'pending',
       terminal_outcome text,
       last_error text,
+      route_context_json text,
+      execution_context_json text,
       source_issue_snapshot_json text not null default '{}',
       created_at text not null,
       updated_at text not null
@@ -2645,6 +2647,8 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   try { db.run("alter table linear_workflow_runs add column pr_checks_status text"); } catch {}
   try { db.run("alter table linear_workflow_runs add column pr_review_status text"); } catch {}
   try { db.run("alter table linear_workflow_runs add column latest_review_note text"); } catch {}
+  try { db.run("alter table linear_workflow_runs add column route_context_json text"); } catch {}
+  try { db.run("alter table linear_workflow_runs add column execution_context_json text"); } catch {}
   db.run("create index if not exists idx_linear_workflow_runs_project_status on linear_workflow_runs(project_id, status, updated_at)");
   db.run("create index if not exists idx_linear_workflow_runs_issue on linear_workflow_runs(project_id, issue_id, updated_at)");
 

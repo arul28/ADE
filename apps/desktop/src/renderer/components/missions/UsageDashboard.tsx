@@ -16,7 +16,7 @@ function modelBadgeStyle(model: string): React.CSSProperties {
   return {
     background: `${color}18`,
     color,
-    fontFamily: "JetBrains Mono, monospace",
+    fontFamily: "var(--font-sans)",
     fontSize: "9px",
     fontWeight: 700,
     textTransform: "uppercase",
@@ -221,7 +221,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
 
   if (loading && !stats) {
     return (
-      <div className="flex items-center justify-center h-48" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
+      <div className="flex items-center justify-center h-48" style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
         <SpinnerGap size={16} weight="regular" className="animate-spin mr-1.5" style={{ color: "#71717A" }} />
         Loading usage data...
       </div>
@@ -230,7 +230,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
 
   if (!stats) {
     return (
-      <div className="flex items-center justify-center h-48" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
+      <div className="flex items-center justify-center h-48" style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
         No usage data available
       </div>
     );
@@ -246,7 +246,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
     <div className="flex flex-col gap-3 p-4 overflow-y-auto">
       {/* Scope indicator + time range filter */}
       <div className="flex items-center justify-between px-3 py-1.5" style={{ background: "#13101A", border: "1px solid #1E1B26" }}>
-        <span style={{ color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "1px" }}>
+        <span style={{ color: "#FAFAFA", fontFamily: "var(--font-sans)", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "1px" }}>
           {scopeLabel}
         </span>
         <div className="flex items-center gap-1">
@@ -260,7 +260,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 background: timeRange === opt.value ? "#A78BFA18" : "transparent",
                 border: timeRange === opt.value ? "1px solid #A78BFA30" : "1px solid transparent",
                 color: timeRange === opt.value ? "#A78BFA" : "#71717A",
-                fontFamily: "JetBrains Mono, monospace",
+                fontFamily: "var(--font-sans)",
                 fontSize: "9px",
                 fontWeight: 700,
                 textTransform: "uppercase",
@@ -277,12 +277,12 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
 
       {budget ? (
         <section>
-          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>
+          <h3 style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>
             Mission Budget
           </h3>
           <div className="flex flex-col gap-2" style={{ background: "#13101A", border: "1px solid #1E1B26", padding: "10px" }}>
             {budget.mode === "subscription" ? (
-              <div className="flex flex-wrap items-center gap-3" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+              <div className="flex flex-wrap items-center gap-3" style={{ color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
                 <span>Mode: subscription</span>
                 <span>Pressure: {budget.pressure}</span>
                 <span>Active workers: {budget.activeWorkers}</span>
@@ -290,7 +290,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 <span>Time: {formatBudgetMs(budget.mission.usedTimeMs)} / {formatBudgetMs(budget.mission.maxTimeMs ?? null)}</span>
               </div>
             ) : (
-              <div className="flex flex-wrap items-center gap-3" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+              <div className="flex flex-wrap items-center gap-3" style={{ color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
                 <span>Mode: {budget.mode}</span>
                 <span>Pressure: {budget.pressure}</span>
                 <span>Active workers: {budget.activeWorkers}</span>
@@ -300,17 +300,17 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 <span>Burn: {budget.burnRateUsdPerHour != null ? `${formatCost(budget.burnRateUsdPerHour)}/h` : "n/a"}</span>
               </div>
             )}
-            <div style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+            <div style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
               {budget.recommendation}
             </div>
             {budget.mode === "subscription" ? (
-              <div style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+              <div style={{ color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
                 Subscription mode uses telemetry-only stats (no predictive cost forecast).
                 {budget.dataSources.length > 0 ? ` Source: ${budget.dataSources.join(", ")}.` : ""}
               </div>
             ) : null}
             {budget.mode !== "subscription" && budget.forecast ? (
-              <div className="grid grid-cols-1 gap-0.5" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+              <div className="grid grid-cols-1 gap-0.5" style={{ color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
                 <div>
                   Forecast cost (low/median/high): {
                     [budget.forecast.lowCostUsd, budget.forecast.medianCostUsd, budget.forecast.highCostUsd]
@@ -342,7 +342,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 const pct = budgetPercent(Number(entry.used), Number(entry.limit));
                 return (
                   <div key={entry.key} className="space-y-0.5">
-                    <div className="flex items-center justify-between" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                    <div className="flex items-center justify-between" style={{ color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
                       <span>{entry.label}</span>
                       <span>{entry.display}</span>
                     </div>
@@ -360,7 +360,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
               })}
             </div>
             {budget.mode !== "subscription" ? (
-              <div className="flex flex-wrap items-center gap-2" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+              <div className="flex flex-wrap items-center gap-2" style={{ color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
                 <span>Rate Limits:</span>
                 {budget.rateLimits.length === 0 ? (
                   <span style={{ color: "#71717A" }}>none reported</span>
@@ -375,14 +375,14 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
             ) : null}
             {budget.mode !== "subscription" && budget.perPhase.length > 0 ? (
               <div className="flex flex-col gap-1">
-                <div style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
+                <div style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
                   By Phase
                 </div>
                 {budget.perPhase.slice(0, 8).map((phase) => (
                   <div
                     key={phase.phaseKey}
                     className="flex items-center justify-between px-2 py-1"
-                    style={{ background: "#0F0D14", border: "1px solid #1E1B26", color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}
+                    style={{ background: "#0F0D14", border: "1px solid #1E1B26", color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "10px" }}
                   >
                     <span>{phase.phaseName}</span>
                     <span>{formatTokens(phase.usedTokens)} tok</span>
@@ -394,14 +394,14 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
             ) : null}
             {budget.mode !== "subscription" && budget.perWorker.length > 0 ? (
               <div className="flex flex-col gap-1">
-                <div style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
+                <div style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
                   Top Workers
                 </div>
                 {budget.perWorker.slice(0, 5).map((worker) => (
                   <div
                     key={worker.stepId}
                     className="flex items-center justify-between px-2 py-1"
-                    style={{ background: "#0F0D14", border: "1px solid #1E1B26", color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}
+                    style={{ background: "#0F0D14", border: "1px solid #1E1B26", color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "10px" }}
                   >
                     <span className="truncate max-w-[45%]">{worker.title}</span>
                     <span>{formatTokens(worker.usedTokens)} tok</span>
@@ -416,7 +416,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
 
       {/* Error banner */}
       {error && (
-        <div className="px-3 py-2 text-xs" style={{ background: "#EF444418", border: "1px solid #EF444430", color: "#EF4444", fontFamily: "JetBrains Mono, monospace" }}>
+        <div className="px-3 py-2 text-xs" style={{ background: "#EF444418", border: "1px solid #EF444430", color: "#EF4444", fontFamily: "var(--font-sans)" }}>
           Failed to load usage data: {error}
         </div>
       )}
@@ -424,8 +424,8 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       {/* Empty state */}
       {isEmpty ? (
         <div className="flex flex-col items-center justify-center py-10 text-center gap-2">
-          <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: "14px", fontWeight: 500, color: "#71717A" }}>No usage data yet</span>
-          <span className="leading-relaxed max-w-xs" style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "12px" }}>
+          <span style={{ fontFamily: "var(--font-sans)", fontSize: "14px", fontWeight: 500, color: "#71717A" }}>No usage data yet</span>
+          <span className="leading-relaxed max-w-xs" style={{ color: "#52525B", fontFamily: "var(--font-sans)", fontSize: "12px" }}>
             Usage metrics will appear here once AI agents begin processing steps.
             This includes token counts, costs, compute time, and model breakdowns.
           </span>
@@ -445,7 +445,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       {/* Active Sessions */}
       {stats.activeSessions.length > 0 && (
         <section>
-          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>Live Sessions</h3>
+          <h3 style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>Live Sessions</h3>
           <div className="flex flex-col gap-1">
             {stats.activeSessions.map((s) => (
               <div key={s.id} className="flex items-center gap-2 px-2.5 py-1.5" style={{ background: "#13101A", border: "1px solid #1E1B26" }}>
@@ -459,8 +459,8 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 >
                   {getModelDisplayName(s.model, s.provider)}
                 </span>
-                <span className="ml-auto" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{s.feature}</span>
-                <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatDuration(s.elapsedMs)}</span>
+                <span className="ml-auto" style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px" }}>{s.feature}</span>
+                <span style={{ color: "#52525B", fontFamily: "var(--font-sans)", fontSize: "10px" }}>{formatDuration(s.elapsedMs)}</span>
               </div>
             ))}
           </div>
@@ -470,7 +470,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       {/* Model Breakdown */}
       {stats.byModel.length > 0 && (
         <section>
-          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>By Model</h3>
+          <h3 style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>By Model</h3>
           <div className="flex flex-col gap-1.5">
             {stats.byModel.map((m) => {
               const total = m.inputTokens + m.outputTokens;
@@ -487,12 +487,12 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                         {getModelDisplayName(m.model, m.provider)}
                       </span>
                       {isSub ? (
-                        <span className="px-1 py-0.5" style={{ background: "#22C55E18", color: "#22C55E", fontFamily: "JetBrains Mono, monospace", fontSize: "8px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>SUB</span>
+                        <span className="px-1 py-0.5" style={{ background: "#22C55E18", color: "#22C55E", fontFamily: "var(--font-sans)", fontSize: "8px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>SUB</span>
                       ) : (
-                        <span className="px-1 py-0.5" style={{ background: "#F59E0B18", color: "#F59E0B", fontFamily: "JetBrains Mono, monospace", fontSize: "8px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>API</span>
+                        <span className="px-1 py-0.5" style={{ background: "#F59E0B18", color: "#F59E0B", fontFamily: "var(--font-sans)", fontSize: "8px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>API</span>
                       )}
                     </div>
-                    <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                    <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
                       <span>{m.sessions} sessions</span>
                       <span>{formatTokens(total)} tokens</span>
                       {hasAnyApiAuth && !isSub ? <span>{formatCost(m.costEstimateUsd)}</span> : null}
@@ -511,7 +511,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       {/* Provider Breakdown */}
       {byProvider.length > 0 && (
         <section>
-          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>By Provider</h3>
+          <h3 style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>By Provider</h3>
           <div className="flex flex-col gap-1">
             {byProvider.map((p) => {
               const total = p.inputTokens + p.outputTokens;
@@ -522,16 +522,16 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 <div key={p.provider} className="flex flex-col gap-0.5">
                   <div className="flex items-center justify-between text-xs">
                     <div className="flex items-center gap-1.5">
-                      <span className="px-1.5 py-0.5" style={{ background: "#71717A18", color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
+                      <span className="px-1.5 py-0.5" style={{ background: "#71717A18", color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
                         {p.provider}
                       </span>
                       {provIsSub ? (
-                        <span className="px-1 py-0.5" style={{ background: "#22C55E18", color: "#22C55E", fontFamily: "JetBrains Mono, monospace", fontSize: "8px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>SUB</span>
+                        <span className="px-1 py-0.5" style={{ background: "#22C55E18", color: "#22C55E", fontFamily: "var(--font-sans)", fontSize: "8px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>SUB</span>
                       ) : (
-                        <span className="px-1 py-0.5" style={{ background: "#F59E0B18", color: "#F59E0B", fontFamily: "JetBrains Mono, monospace", fontSize: "8px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>API</span>
+                        <span className="px-1 py-0.5" style={{ background: "#F59E0B18", color: "#F59E0B", fontFamily: "var(--font-sans)", fontSize: "8px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>API</span>
                       )}
                     </div>
-                    <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                    <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
                       <span>{p.sessions} sessions</span>
                       <span>{formatTokens(total)} tokens</span>
                       {hasAnyApiAuth && !provIsSub ? <span>{formatCost(p.costEstimateUsd)}</span> : null}
@@ -550,12 +550,12 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       {/* Mission Breakdown (hidden when scoped to a single mission) */}
       {!missionId && stats.missionBreakdown.length > 0 && (
         <section>
-          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>By Mission</h3>
+          <h3 style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>By Mission</h3>
           <div className="flex flex-col gap-0.5">
             {stats.missionBreakdown.map((m) => (
               <div key={m.missionId} className="flex items-center justify-between px-2.5 py-1.5 text-[11px]" style={{ background: "#13101A", border: "1px solid #1E1B26" }}>
-                <span className="truncate max-w-[60%]" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace" }}>{m.missionTitle}</span>
-                <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
+                <span className="truncate max-w-[60%]" style={{ color: "#A1A1AA", fontFamily: "var(--font-sans)" }}>{m.missionTitle}</span>
+                <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px" }}>
                   <span>{formatTokens(m.totalTokens)}</span>
                   {hasAnyApiAuth ? <span>{formatCost(m.costEstimateUsd)}</span> : null}
                 </div>
@@ -568,7 +568,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       {/* Recent Sessions */}
       {stats.recentSessions.length > 0 && (
         <section>
-          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>Recent Sessions</h3>
+          <h3 style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>Recent Sessions</h3>
           <div className="flex flex-col gap-0.5">
             {stats.recentSessions.slice(0, 20).map((s) => (
               <div key={s.id} className="flex items-center gap-2 px-2.5 py-1 text-[11px]" style={{ background: "#13101A", border: "1px solid #1E1B26" }}>
@@ -583,9 +583,9 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
                 >
                   {getModelDisplayName(s.model, s.provider)}
                 </span>
-                <span className="truncate" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}>{s.feature}</span>
-                <span className="ml-auto" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatTokens(s.inputTokens + s.outputTokens)}</span>
-                <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatDuration(s.durationMs)}</span>
+                <span className="truncate" style={{ color: "#71717A", fontFamily: "var(--font-sans)" }}>{s.feature}</span>
+                <span className="ml-auto" style={{ color: "#A1A1AA", fontFamily: "var(--font-sans)", fontSize: "10px" }}>{formatTokens(s.inputTokens + s.outputTokens)}</span>
+                <span style={{ color: "#52525B", fontFamily: "var(--font-sans)", fontSize: "10px" }}>{formatDuration(s.durationMs)}</span>
               </div>
             ))}
           </div>
@@ -597,17 +597,17 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       {/* Candidate Memories */}
       {candidates.length > 0 && (
         <section>
-          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>
+          <h3 style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>
             Candidate Memories ({candidates.length})
           </h3>
           <div className="flex flex-col gap-0.5">
             {candidates.map((c) => (
               <div key={c.id} className="flex items-start gap-2 px-2.5 py-1.5 text-[11px]" style={{ background: "#13101A", border: "1px solid #1E1B26" }}>
-                <span className="shrink-0 px-1 py-0.5" style={{ background: "#F59E0B18", color: "#F59E0B", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
+                <span className="shrink-0 px-1 py-0.5" style={{ background: "#F59E0B18", color: "#F59E0B", fontFamily: "var(--font-sans)", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
                   {c.category}
                 </span>
-                <span className="flex-1 truncate" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace" }}>{c.content}</span>
-                <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", whiteSpace: "nowrap" }}>
+                <span className="flex-1 truncate" style={{ color: "#A1A1AA", fontFamily: "var(--font-sans)" }}>{c.content}</span>
+                <span style={{ color: "#52525B", fontFamily: "var(--font-sans)", fontSize: "10px", whiteSpace: "nowrap" }}>
                   {(c.confidence * 100).toFixed(0)}%
                 </span>
                 <button
@@ -640,10 +640,10 @@ function SummaryCard({ icon: Icon, label, value, sub }: { icon: React.ElementTyp
     <div className="flex flex-col gap-0.5" style={{ background: "#13101A", border: "1px solid #1E1B26", padding: "16px" }}>
       <div className="flex items-center gap-1.5">
         <Icon size={12} weight="regular" style={{ color: "#71717A" }} />
-        <span style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>{label}</span>
+        <span style={{ color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>{label}</span>
       </div>
-      <span style={{ color: "#FAFAFA", fontFamily: "'Space Grotesk', sans-serif", fontSize: "28px", fontWeight: 700 }}>{value}</span>
-      {sub && <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{sub}</span>}
+      <span style={{ color: "#FAFAFA", fontFamily: "var(--font-sans)", fontSize: "28px", fontWeight: 700 }}>{value}</span>
+      {sub && <span style={{ color: "#52525B", fontFamily: "var(--font-sans)", fontSize: "10px" }}>{sub}</span>}
     </div>
   );
 }

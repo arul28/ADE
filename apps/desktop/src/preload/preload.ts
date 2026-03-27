@@ -1332,7 +1332,7 @@ contextBridge.exposeInMainWorld("ade", {
     getForLane: async (laneId: string): Promise<PrSummary | null> => ipcRenderer.invoke(IPC.prsGetForLane, { laneId }),
     listAll: async (): Promise<PrSummary[]> => ipcRenderer.invoke(IPC.prsListAll),
     refresh: async (args: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> => ipcRenderer.invoke(IPC.prsRefresh, args),
-    getStatus: async (prId: string): Promise<PrStatus> => ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
+    getStatus: async (prId: string): Promise<PrStatus | null> => ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
     getChecks: async (prId: string): Promise<PrCheck[]> => ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
     getComments: async (prId: string): Promise<PrComment[]> => ipcRenderer.invoke(IPC.prsGetComments, { prId }),
     getReviews: async (prId: string): Promise<PrReview[]> => ipcRenderer.invoke(IPC.prsGetReviews, { prId }),

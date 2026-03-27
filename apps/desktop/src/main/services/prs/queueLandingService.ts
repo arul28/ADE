@@ -352,12 +352,65 @@ export function createQueueLandingService({
     return value.includes("merge conflict") || value.includes("resolve conflicts");
   };
 
+  const ALLOWED_TRANSITIONS: Record<QueueEntryState, readonly QueueEntryState[]> = {
+    pending: ["landing", "rebasing", "skipped", "paused"],
+    landing: ["landing", "landed", "failed", "paused"],
+    rebasing: ["resolving", "pending", "failed", "paused"],
+    resolving: ["pending", "failed", "paused"],
+    landed: [],
+    failed: ["skipped"],
+    skipped: [],
+    paused: ["pending", "landing", "skipped"],
+  };
+
+  const isValidTransition = (from: QueueEntryState, to: QueueEntryState): boolean => {
+    return ALLOWED_TRANSITIONS[from]?.includes(to) ?? false;
+  };
+
+  /** Log and reject an invalid transition. Returns true when the transition is allowed. */
+  const guardTransition = (
+    entry: QueueLandingEntry,
+    to: QueueEntryState,
+    context?: Record<string, unknown>,
+  ): boolean => {
+    if (isValidTransition(entry.state, to)) return true;
+    logger.warn("queue_landing.invalid_transition", {
+      prId: entry.prId,
+      from: entry.state,
+      to,
+      ...context,
+    });
+    return false;
+  };
+
+  /** Mark an entry as successfully landed and advance the queue position. */
+  const markEntryLanded = (
+    state: QueueLandingState,
+    entry: QueueLandingEntry,
+    index: number,
+    mergeCommitSha: string | null | undefined,
+  ): void => {
+    entry.state = "landed";
+    entry.error = undefined;
+    entry.waitingOn = null;
+    entry.mergeCommitSha = mergeCommitSha;
+    entry.updatedAt = nowIso();
+    state.currentPosition = index + 1;
+    state.activePrId = null;
+    state.activeResolverRunId = null;
+    state.lastError = null;
+    state.waitReason = null;
+    persistAndEmitState(state);
+    emitQueueStep(state.groupId, entry.prId, "landed", index);
+  };
+
   const pauseWithReason = (
     state: QueueLandingState,
     entry: QueueLandingEntry,
     waitReason: QueueWaitReason,
     message: string,
   ): QueueLandingState => {
+    if (!guardTransition(entry, "paused", { reason: message })) return state;
     entry.state = "paused";
     entry.waitingOn = waitReason;
     entry.error = message;
@@ -377,6 +430,7 @@ export function createQueueLandingService({
     waitReason: QueueWaitReason,
     message: string,
   ): QueueLandingState => {
+    if (!guardTransition(entry, "failed", { reason: message })) return state;
     entry.state = "failed";
     entry.waitingOn = waitReason;
     entry.error = message;
@@ -385,6 +439,7 @@ export function createQueueLandingService({
     state.lastError = message;
     state.waitReason = waitReason;
     state.activePrId = entry.prId;
+    state.activeResolverRunId = null;
     persistAndEmitState(state);
     emitQueueStep(state.groupId, entry.prId, "failed", entry.position);
     return state;
@@ -425,6 +480,10 @@ export function createQueueLandingService({
       originRunId: state.config.originRunId,
       originLabel: state.config.originLabel ?? `queue:${state.groupId}`,
     });
+    if (isQueueCancelledOrDone(state.queueId)) {
+      logger.debug("queue_landing.cancelled_during_resolve", { queueId: state.queueId, prId: entry.prId });
+      return { ok: false, error: "Queue was cancelled or stopped during conflict resolution." };
+    }
     state.activeResolverRunId = run.runId;
     entry.resolverRunId = run.runId;
     persistAndEmitState(state);
@@ -445,6 +504,10 @@ export function createQueueLandingService({
       };
     }
 
+    if (isQueueCancelledOrDone(state.queueId)) {
+      logger.debug("queue_landing.cancelled_before_commit", { queueId: state.queueId, prId: entry.prId });
+      return { ok: false, error: "Queue was cancelled or stopped before committing resolver changes." };
+    }
     const commitMessage = `Resolve queue conflicts for PR #${entry.prNumber ?? entry.prId} via ADE`;
     await runGitOrThrow(["add", "--", ...touchedPaths], { cwd: lane.worktreePath, timeoutMs: 60_000 });
     await runGitOrThrow(["commit", "-m", commitMessage, "--", ...touchedPaths], {
@@ -456,6 +519,9 @@ export function createQueueLandingService({
     await pushLaneBranch(entry.laneId);
 
     entry.resolvedByAi = true;
+    // Return the entry to the landing state before the retry attempt so the
+    // existing queue transition rules still apply on the second land call.
+    entry.state = "landing";
     entry.mergeCommitSha = commitSha;
     entry.updatedAt = nowIso();
     entry.error = undefined;
@@ -464,6 +530,14 @@ export function createQueueLandingService({
     state.waitReason = null;
     persistAndEmitState(state);
     return { ok: true, run };
+  };
+
+  /** Re-read the persisted row and return true if the queue has been cancelled or completed externally. */
+  const isQueueCancelledOrDone = (queueId: string): boolean => {
+    const freshRow = getRow(queueId);
+    if (!freshRow) return true;
+    const freshState = freshRow.state as QueueState;
+    return freshState === "cancelled" || freshState === "completed" || freshState === "paused";
   };
 
   const launchLandingLoop = (queueId: string): void => {
@@ -494,6 +568,7 @@ export function createQueueLandingService({
         }
 
         const entry = state.entries[index]!;
+        if (!guardTransition(entry, "landing", { queueId })) return;
         state.currentPosition = index;
         state.activePrId = entry.prId;
         state.activeResolverRunId = null;
@@ -508,6 +583,10 @@ export function createQueueLandingService({
         try {
           if (state.config.ciGating) {
             const status = await prService.getStatus(entry.prId);
+            if (isQueueCancelledOrDone(queueId)) {
+              logger.debug("queue_landing.cancelled_after_ci_check", { queueId, prId: entry.prId });
+              return;
+            }
             if (status.checksStatus === "pending" || status.checksStatus === "failing") {
               pauseWithReason(
                 state,
@@ -539,8 +618,16 @@ export function createQueueLandingService({
             method: state.config.method,
             archiveLane: state.config.archiveLane,
           });
+          if (isQueueCancelledOrDone(queueId)) {
+            logger.debug("queue_landing.cancelled_after_land", { queueId, prId: entry.prId });
+            return;
+          }
           if (!landResult.success && isMergeConflictMessage(landResult.error)) {
             const resolved = await maybeResolveConflict(state, entry);
+            if (isQueueCancelledOrDone(queueId)) {
+              logger.debug("queue_landing.cancelled_after_resolve", { queueId, prId: entry.prId });
+              return;
+            }
             if (!resolved.ok) {
               failEntry(state, entry, resolved.error.includes("manual") ? "manual" : "resolver_failed", resolved.error);
               logger.warn("queue_landing.resolve_failed", {
@@ -550,11 +637,19 @@ export function createQueueLandingService({
               });
               return;
             }
+            // The shared resolver hands control back to the normal landing path.
+            // Mark the entry as landing again so the retry can complete valid queue-state transitions.
+            entry.state = "landing";
+            entry.updatedAt = nowIso();
             const retried = await prService.land({
               prId: entry.prId,
               method: state.config.method,
               archiveLane: state.config.archiveLane,
             });
+            if (isQueueCancelledOrDone(queueId)) {
+              logger.debug("queue_landing.cancelled_after_retry_land", { queueId, prId: entry.prId });
+              return;
+            }
             if (!retried.success) {
               if (state.config.ciGating && isMergeConflictMessage(retried.error)) {
                 failEntry(state, entry, "merge_conflict", retried.error ?? "Queue PR still has merge conflicts after AI resolution.");
@@ -565,18 +660,8 @@ export function createQueueLandingService({
               }
               return;
             }
-            entry.state = "landed";
-            entry.error = undefined;
-            entry.waitingOn = null;
-            entry.mergeCommitSha = retried.mergeCommitSha;
-            entry.updatedAt = nowIso();
-            state.currentPosition = index + 1;
-            state.activePrId = null;
-            state.activeResolverRunId = null;
-            state.lastError = null;
-            state.waitReason = null;
-            persistAndEmitState(state);
-            emitQueueStep(state.groupId, entry.prId, "landed", index);
+            if (!guardTransition(entry, "landed", { queueId })) return;
+            markEntryLanded(state, entry, index, retried.mergeCommitSha);
             continue;
           }
 
@@ -592,18 +677,8 @@ export function createQueueLandingService({
             return;
           }
 
-          entry.state = "landed";
-          entry.error = undefined;
-          entry.waitingOn = null;
-          entry.mergeCommitSha = landResult.mergeCommitSha;
-          entry.updatedAt = nowIso();
-          state.currentPosition = index + 1;
-          state.activePrId = null;
-          state.activeResolverRunId = null;
-          state.lastError = null;
-          state.waitReason = null;
-          persistAndEmitState(state);
-          emitQueueStep(state.groupId, entry.prId, "landed", index);
+          if (!guardTransition(entry, "landed", { queueId })) return;
+          markEntryLanded(state, entry, index, landResult.mergeCommitSha);
         } catch (error) {
           const message = getErrorMessage(error);
           failEntry(state, entry, "manual", message);
@@ -708,7 +783,7 @@ export function createQueueLandingService({
     if (state.state !== "paused") return state;
     state.config = resolveQueueConfig(args, state, getGroup(state.groupId));
     const currentEntry = state.entries[state.currentPosition];
-    if (currentEntry && (currentEntry.state === "failed" || currentEntry.state === "paused" || currentEntry.state === "resolving")) {
+    if (currentEntry && (currentEntry.state === "failed" || currentEntry.state === "paused" || currentEntry.state === "resolving" || currentEntry.state === "landing")) {
       currentEntry.state = "pending";
       currentEntry.error = undefined;
       currentEntry.waitingOn = null;
@@ -735,8 +810,15 @@ export function createQueueLandingService({
     const state = rowToState(row);
     if (state.state === "completed" || state.state === "cancelled") return state;
     for (const entry of state.entries) {
-      if (entry.state === "pending" || entry.state === "landing" || entry.state === "failed" || entry.state === "paused" || entry.state === "resolving") {
+      if (isValidTransition(entry.state, "skipped")) {
         entry.state = "skipped";
+        entry.waitingOn = "canceled";
+        entry.updatedAt = nowIso();
+      } else if (entry.state !== "landed" && entry.state !== "skipped") {
+        // Force-cancel entries in states that don't normally allow skip (e.g. landing, resolving)
+        logger.warn("queue_landing.force_cancel_entry", { queueId, prId: entry.prId, fromState: entry.state });
+        entry.state = "failed";
+        entry.error = "Queue cancelled while entry was in progress.";
         entry.waitingOn = "canceled";
         entry.updatedAt = nowIso();
       }
@@ -758,6 +840,7 @@ export function createQueueLandingService({
     const state = rowToState(row);
     const entry = state.entries.find((candidate) => candidate.prId === prId);
     if (!entry || entry.state === "landed") return state;
+    if (!guardTransition(entry, "skipped", { queueId })) return state;
     entry.state = "skipped";
     entry.waitingOn = null;
     entry.error = undefined;

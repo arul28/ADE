@@ -735,7 +735,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                   fill={isSkipped || isSuperseded ? COLORS.textMuted : COLORS.textPrimary}
                   fontSize={11}
                   fontWeight={500}
-                  fontFamily="'Space Grotesk', sans-serif"
+                  fontFamily="var(--font-sans)"
                   textDecoration={isSkipped || isSuperseded ? "line-through" : undefined}
                 >
                   {truncateTitle(node.step.title)}
@@ -749,7 +749,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                   fill={statusColor}
                   fontSize={9}
                   fontWeight={400}
-                  fontFamily="JetBrains Mono, monospace"
+                  fontFamily="var(--font-sans)"
                 >
                   {node.step.status}
                 </text>
@@ -817,7 +817,7 @@ export const OrchestratorDAG = React.memo(function OrchestratorDAG({ steps, atte
                       fill={statusColor}
                       fontSize={9}
                       fontWeight={600}
-                      fontFamily="JetBrains Mono, monospace"
+                      fontFamily="var(--font-sans)"
                     >
                       {node.attemptCount}
                     </text>

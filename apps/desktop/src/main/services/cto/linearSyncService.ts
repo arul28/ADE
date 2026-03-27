@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type {
   CtoGetLinearWorkflowRunDetailArgs,
   CtoResolveLinearSyncQueueItemArgs,
   LinearSyncDashboard,
+  LinearSyncEventRecord,
   LinearSyncQueueItem,
   LinearWorkflowConfig,
   LinearWorkflowRunDetail,
@@ -14,10 +16,21 @@ import type { LinearRoutingService } from "./linearRoutingService";
 import type { LinearIntakeService } from "./linearIntakeService";
 import type { LinearDispatcherService } from "./linearDispatcherService";
 import type { IssueTracker } from "./issueTracker";
-import { getErrorMessage, nowIso } from "../shared/utils";
+import { getErrorMessage, nowIso, safeJsonParse } from "../shared/utils";
 
-function isIssueOpen(issue: NormalizedLinearIssue): boolean {
-  return issue.stateType !== "completed" && issue.stateType !== "canceled";
+const DEFAULT_TERMINAL_STATE_TYPES = ["completed", "canceled"] as const;
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.map((value) => value?.trim().toLowerCase() ?? "").filter(Boolean)));
+}
+
+function getTerminalStateTypes(policy: LinearWorkflowConfig): string[] {
+  const values = uniqueStrings(policy.intake.terminalStateTypes ?? [...DEFAULT_TERMINAL_STATE_TYPES]);
+  return values.length ? values : [...DEFAULT_TERMINAL_STATE_TYPES];
+}
+
+function isIssueOpen(issue: NormalizedLinearIssue, policy: LinearWorkflowConfig): boolean {
+  return !new Set(getTerminalStateTypes(policy)).has((issue.stateType ?? "").trim().toLowerCase());
 }
 
 function snapshotChanged(issue: NormalizedLinearIssue): boolean {
@@ -50,6 +63,63 @@ export function createLinearSyncService(args: {
   let inFlight = false;
   let lastSkipReason: string | null = null;
   const reconciliationIntervalSec = Math.max(15, Math.floor(args.reconciliationIntervalSec ?? 30));
+
+  const appendSyncEvent = (input: {
+    issueId?: string | null;
+    queueItemId?: string | null;
+    eventType: string;
+    status?: string | null;
+    message?: string | null;
+    payload?: Record<string, unknown> | null;
+  }): void => {
+    args.db.run(
+      `
+        insert into linear_sync_events(id, project_id, issue_id, queue_item_id, event_type, status, message, payload_json, created_at)
+        values(?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        randomUUID(),
+        args.projectId,
+        input.issueId ?? null,
+        input.queueItemId ?? null,
+        input.eventType,
+        input.status ?? null,
+        input.message ?? null,
+        input.payload ? JSON.stringify(input.payload) : null,
+        nowIso(),
+      ],
+    );
+  };
+
+  const listRecentSyncEvents = (limit = 12): LinearSyncEventRecord[] =>
+    args.db.all<{
+      id: string;
+      issue_id: string | null;
+      queue_item_id: string | null;
+      event_type: string;
+      status: string | null;
+      message: string | null;
+      payload_json: string | null;
+      created_at: string;
+    }>(
+      `
+        select id, issue_id, queue_item_id, event_type, status, message, payload_json, created_at
+        from linear_sync_events
+        where project_id = ?
+        order by datetime(created_at) desc
+        limit ?
+      `,
+      [args.projectId, Math.max(1, Math.floor(limit))],
+    ).map((row) => ({
+      id: row.id,
+      issueId: row.issue_id,
+      queueItemId: row.queue_item_id,
+      eventType: row.event_type,
+      status: row.status,
+      message: row.message,
+      payload: safeJsonParse<Record<string, unknown> | null>(row.payload_json, null),
+      createdAt: row.created_at,
+    }));
 
   const logSkip = (reason: "no_enabled_workflows" | "no_credentials", meta: Record<string, unknown>) => {
     if (lastSkipReason === reason) return;
@@ -129,39 +199,106 @@ export function createLinearSyncService(args: {
   const dispatchNewRuns = async (policy: LinearWorkflowConfig) => {
     const candidates = await args.intakeService.fetchCandidates(policy);
     for (const issue of candidates) {
-      // Enforce per-workflow concurrency caps before each dispatch
-      const maxActive = policy.workflows.reduce<number | undefined>((cap, wf) => {
-        const limit = wf.concurrency?.maxActiveRuns;
-        if (limit == null) return cap;
-        return cap == null ? limit : Math.max(cap, limit);
-      }, undefined);
-      if (maxActive != null) {
-        const activeCount = args.dispatcherService.listActiveRuns().length;
-        if (activeCount >= maxActive) break;
-      }
       await processIssueSnapshot(issue, policy);
     }
   };
 
   const processIssueSnapshot = async (issue: NormalizedLinearIssue, policy: LinearWorkflowConfig): Promise<void> => {
     args.intakeService.persistSnapshot(issue);
-    if (!isIssueOpen(issue)) {
-      const activeRun = args.dispatcherService.findActiveRunForIssue(issue.id);
-      if (activeRun) {
+    if (!isIssueOpen(issue, policy)) {
+      const activeRuns = args.dispatcherService.listActiveRuns().filter((run) => run.issueId === issue.id);
+      for (const activeRun of activeRuns) {
         await args.dispatcherService.cancelRun(activeRun.id, `Issue externally ${issue.stateType}`, policy);
+        appendSyncEvent({
+          issueId: issue.id,
+          queueItemId: activeRun.id,
+          eventType: "issue_closed",
+          status: "cancelled",
+          message: `Issue is now ${issue.stateType}; cancelling the active workflow run.`,
+        });
       }
       return;
     }
-    const activeRun = args.dispatcherService.findActiveRunForIssue(issue.id);
-    if (!activeRun && !snapshotChanged(issue)) return;
-    if (!activeRun) {
-      const match = await args.routingService.routeIssue({ issue, policy });
-      if (!match.workflow) return;
-      const run = args.dispatcherService.createRun(issue, match);
-      await args.dispatcherService.advanceRun(run.id, policy);
+    const match = await args.routingService.routeIssue({ issue, policy });
+    if (!match.workflow) return;
+    if (match.workflow.routing?.watchOnly) {
+      if (!snapshotChanged(issue)) return;
+      appendSyncEvent({
+        issueId: issue.id,
+        eventType: "watch_only_match",
+        status: "observed",
+        message: `Observed '${issue.identifier}' with watch-only workflow '${match.workflow.name}'.`,
+        payload: {
+          workflowId: match.workflow.id,
+          workflowName: match.workflow.name,
+          reason: match.reason,
+          matchedSignals: match.candidates.find((candidate) => candidate.workflowId === match.workflow?.id)?.matchedSignals ?? [],
+        },
+      });
       return;
     }
-    await args.dispatcherService.advanceRun(activeRun.id, policy);
+    if (!snapshotChanged(issue)) return;
+    const activeRuns = args.dispatcherService.listActiveRuns();
+    const workflowActiveRuns = activeRuns.filter((run) => run.workflowId === match.workflow!.id);
+    const issueWorkflowRuns = workflowActiveRuns.filter((run) => run.issueId === issue.id);
+    const dedupeByIssue = match.workflow.concurrency?.dedupeByIssue !== false;
+    if (dedupeByIssue && issueWorkflowRuns.length > 0) {
+      appendSyncEvent({
+        issueId: issue.id,
+        eventType: "issue_deduped",
+        status: "deferred",
+        message: `Skipped duplicate run for '${issue.identifier}' in workflow '${match.workflow.name}'.`,
+        payload: {
+          workflowId: match.workflow.id,
+          activeRunIds: issueWorkflowRuns.map((run) => run.id),
+        },
+      });
+      return;
+    }
+    const maxActiveRuns = match.workflow.concurrency?.maxActiveRuns;
+    if (maxActiveRuns != null && workflowActiveRuns.length >= maxActiveRuns) {
+      appendSyncEvent({
+        issueId: issue.id,
+        eventType: "workflow_capacity_wait",
+        status: "deferred",
+        message: `Workflow '${match.workflow.name}' is at capacity.`,
+        payload: {
+          workflowId: match.workflow.id,
+          activeRuns: workflowActiveRuns.length,
+          maxActiveRuns,
+        },
+      });
+      return;
+    }
+    const perIssue = match.workflow.concurrency?.perIssue;
+    if (perIssue != null && issueWorkflowRuns.length >= perIssue) {
+      appendSyncEvent({
+        issueId: issue.id,
+        eventType: "issue_per_workflow_limit",
+        status: "deferred",
+        message: `Issue '${issue.identifier}' already has ${issueWorkflowRuns.length} active run(s) for '${match.workflow.name}'.`,
+        payload: {
+          workflowId: match.workflow.id,
+          activeRuns: issueWorkflowRuns.length,
+          perIssue,
+        },
+      });
+      return;
+    }
+    const run = args.dispatcherService.createRun(issue, match);
+    appendSyncEvent({
+      issueId: issue.id,
+      queueItemId: run.id,
+      eventType: "run_created",
+      status: "queued",
+      message: `Queued workflow '${match.workflow.name}' for '${issue.identifier}'.`,
+      payload: {
+        workflowId: match.workflow.id,
+        workflowName: match.workflow.name,
+        reason: match.reason,
+      },
+    });
+    await args.dispatcherService.advanceRun(run.id, policy);
   };
 
   const advanceRuns = async (policy: LinearWorkflowConfig) => {
@@ -247,9 +384,9 @@ export function createLinearSyncService(args: {
     }
     const issue = await args.issueTracker.fetchIssueById(issueId);
     if (!issue) return;
-    const previousSnapshotRow = args.db.get<{ payload_json: string | null }>(
+    const previousSnapshotRow = args.db.get<{ payload_json: string | null; hash: string | null }>(
       `
-        select payload_json
+        select payload_json, hash
         from linear_issue_snapshots
         where project_id = ?
           and issue_id = ?
@@ -258,13 +395,18 @@ export function createLinearSyncService(args: {
       [args.projectId, issueId]
     );
     const previousIssue = previousSnapshotRow?.payload_json
-      ? JSON.parse(previousSnapshotRow.payload_json) as Partial<NormalizedLinearIssue>
+      ? safeJsonParse<Partial<NormalizedLinearIssue> | null>(previousSnapshotRow.payload_json, null)
       : null;
     const issueWithHistory: NormalizedLinearIssue = {
       ...issue,
       previousStateId: previousIssue?.stateId ?? null,
       previousStateName: previousIssue?.stateName ?? null,
       previousStateType: previousIssue?.stateType ?? null,
+      raw: {
+        ...(issue.raw ?? {}),
+        _snapshotHash: args.intakeService.issueHash(issue),
+        _previousSnapshotHash: previousSnapshotRow?.hash ?? null,
+      },
     };
     const policy = args.flowPolicyService.getPolicy();
     const workflowsEnabled = workflowEnabled(policy);
@@ -329,6 +471,17 @@ export function createLinearSyncService(args: {
       },
       { queued: 0, retryWaiting: 0, escalated: 0, dispatched: 0, failed: 0 }
     );
+    const watchOnlyHits = Number(
+      args.db.get<{ total: number }>(
+        `
+          select count(*) as total
+          from linear_sync_events
+          where project_id = ?
+            and event_type = 'watch_only_match'
+        `,
+        [args.projectId],
+      )?.total ?? 0,
+    );
 
     return {
       enabled: Boolean(state?.enabled ?? 0),
@@ -340,6 +493,8 @@ export function createLinearSyncService(args: {
       lastError: state?.last_error ?? null,
       queue: counts,
       claimsActive: counts.queued + counts.retryWaiting + counts.escalated + counts.dispatched,
+      watchOnlyHits,
+      recentEvents: listRecentSyncEvents(),
     };
   };
 
@@ -354,7 +509,13 @@ export function createLinearSyncService(args: {
 
   const resolveQueueItem = async (input: CtoResolveLinearSyncQueueItemArgs): Promise<LinearSyncQueueItem | null> => {
     const policy = args.flowPolicyService.getPolicy();
-    const run = await args.dispatcherService.resolveRunAction(input.queueItemId, input.action, input.note, policy);
+    const run = await args.dispatcherService.resolveRunAction(
+      input.queueItemId,
+      input.action,
+      input.note,
+      policy,
+      input.employeeOverride,
+    );
     if (!run) return null;
     if (run.status !== "completed" && run.status !== "failed" && run.status !== "cancelled") {
       await args.dispatcherService.advanceRun(run.id, policy);

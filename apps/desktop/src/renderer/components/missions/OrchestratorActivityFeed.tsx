@@ -274,7 +274,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
           value={category}
           onChange={(e) => setCategory(e.target.value)}
           className="h-7 px-2 text-[10px] outline-none"
-          style={{ background: "#0C0A10", border: "1px solid #27272A", color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
+          style={{ background: "#0C0A10", border: "1px solid #27272A", color: "#FAFAFA", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
         >
           {CATEGORY_OPTIONS.map((opt) => (
             <option key={opt} value={opt}>{opt}</option>
@@ -286,7 +286,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
           onChange={(e) => setSearchText(e.target.value)}
           placeholder="Filter events..."
           className="h-7 w-40 px-2 text-[11px] outline-none"
-          style={{ background: "#0C0A10", border: "1px solid #27272A", color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace", borderRadius: 0 }}
+          style={{ background: "#0C0A10", border: "1px solid #27272A", color: "#FAFAFA", fontFamily: "var(--font-sans)", borderRadius: 0 }}
         />
 
         <div className="flex overflow-hidden" style={{ border: "1px solid #1E1B26", borderRadius: 0 }}>
@@ -296,8 +296,8 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
               onClick={() => setSeverity(sev)}
               className="px-2 py-0.5 text-[11px] font-medium transition-colors"
               style={severity === sev
-                ? { background: "#A78BFA18", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace" }
-                : { background: "#13101A", color: "#71717A", fontFamily: "JetBrains Mono, monospace" }
+                ? { background: "#A78BFA18", color: "#A78BFA", fontFamily: "var(--font-sans)" }
+                : { background: "#13101A", color: "#71717A", fontFamily: "var(--font-sans)" }
               }
             >
               {sev === "all" ? "All" : sev === "warnings" ? "Warnings" : "Errors"}
@@ -309,7 +309,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
           <button
             onClick={() => { setCategory("All Events"); setSeverity("all"); setSearchText(""); }}
             className="text-[11px] transition-colors hover:text-white"
-            style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}
+            style={{ color: "#71717A", fontFamily: "var(--font-sans)" }}
           >
             Clear
           </button>
@@ -320,8 +320,8 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
           onClick={() => setShowRawEvents((prev) => !prev)}
           className="px-2 py-0.5 text-[10px] font-medium transition-colors"
           style={showRawEvents
-            ? { background: "#A78BFA18", border: "1px solid #A78BFA30", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace" }
-            : { background: "#13101A", border: "1px solid #1E1B26", color: "#71717A", fontFamily: "JetBrains Mono, monospace" }
+            ? { background: "#A78BFA18", border: "1px solid #A78BFA30", color: "#A78BFA", fontFamily: "var(--font-sans)" }
+            : { background: "#13101A", border: "1px solid #1E1B26", color: "#71717A", fontFamily: "var(--font-sans)" }
           }
           title="Show raw maintenance events (scheduler ticks, cap adjustments, heartbeats)."
         >
@@ -343,14 +343,14 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
               if (scrollRef.current) scrollRef.current.scrollTop = 0;
             }}
             className="sticky top-0 z-10 w-full px-2 py-1 text-[10px] text-center transition-colors"
-            style={{ background: "#A78BFA", color: "#0F0D14", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
+            style={{ background: "#A78BFA", color: "#0F0D14", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
           >
             Jump to latest
           </button>
         )}
 
         {grouped.length === 0 ? (
-          <div className="px-3 py-6 text-center text-xs" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}>
+          <div className="px-3 py-6 text-center text-xs" style={{ color: "#71717A", fontFamily: "var(--font-sans)" }}>
             {events.length === 0 ? "No events yet" : "No events match the active filters"}
           </div>
         ) : (
@@ -377,24 +377,24 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
                       </span>
                       <span
                         className="px-1.5 py-0.5 text-[10px]"
-                        style={{ background: "#1E1B26", color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
+                        style={{ background: "#1E1B26", color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
                       >
                         {config.label}
                       </span>
                       {/* Count badge (VAL-UX-002) */}
                       <span
                         className="px-1.5 py-0.5 text-[10px] font-bold"
-                        style={{ background: "#A78BFA18", color: "#A78BFA", border: "1px solid #A78BFA30", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", letterSpacing: "0.5px", borderRadius: 0 }}
+                        style={{ background: "#A78BFA18", color: "#A78BFA", border: "1px solid #A78BFA30", fontFamily: "var(--font-sans)", fontSize: "10px", letterSpacing: "0.5px", borderRadius: 0 }}
                       >
                         x{group.count}
                       </span>
-                      <span className="text-xs truncate" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}>
+                      <span className="text-xs truncate" style={{ color: "#71717A", fontFamily: "var(--font-sans)" }}>
                         {representative.reason}
                       </span>
                       <span
                         className="ml-auto shrink-0 text-[11px]"
                         title={formatTimestamp(representative.createdAt)}
-                        style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}
+                        style={{ color: "#52525B", fontFamily: "var(--font-sans)", fontSize: "10px" }}
                       >
                         {relativeTime(representative.createdAt)}
                       </span>
@@ -442,7 +442,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
                         <div className="flex items-center gap-2">
                           <span
                             className="px-1.5 py-0.5 text-[10px]"
-                            style={{ background: "#1E1B26", color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
+                            style={{ background: "#1E1B26", color: "#71717A", fontFamily: "var(--font-sans)", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
                           >
                             {evConfig.label}
                           </span>
@@ -457,7 +457,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
                                   background: `${srcColor}18`,
                                   color: srcColor,
                                   border: `1px solid ${srcColor}30`,
-                                  fontFamily: "JetBrains Mono, monospace",
+                                  fontFamily: "var(--font-sans)",
                                   fontSize: "10px",
                                   fontWeight: 700,
                                   textTransform: "uppercase",
@@ -474,13 +474,13 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
                           <span
                             className="shrink-0"
                             title={formatTimestamp(ev.createdAt)}
-                            style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}
+                            style={{ color: "#52525B", fontFamily: "var(--font-sans)", fontSize: "10px" }}
                           >
                             {relativeTime(ev.createdAt)}
                           </span>
                         </div>
                         {ev.stepId && (
-                          <div className="mt-0.5 truncate" style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "11px" }}>
+                          <div className="mt-0.5 truncate" style={{ color: "#52525B", fontFamily: "var(--font-sans)", fontSize: "11px" }}>
                             step: {ev.stepId.slice(0, 8)}
                             {ev.attemptId ? ` / attempt: ${ev.attemptId.slice(0, 8)}` : ""}
                           </div>
@@ -488,7 +488,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
                         {isExpanded && ev.detail && (
                           <pre
                             className="mt-1.5 max-h-[200px] overflow-auto p-2 whitespace-pre-wrap break-all"
-                            style={{ background: "#0C0A10", fontFamily: "JetBrains Mono, monospace", color: "#71717A", fontSize: "10px", borderRadius: 0 }}
+                            style={{ background: "#0C0A10", fontFamily: "var(--font-sans)", color: "#71717A", fontSize: "10px", borderRadius: 0 }}
                           >
                             {JSON.stringify(ev.detail, null, 2)}
                           </pre>
@@ -503,7 +503,7 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
         )}
       </div>
 
-      <div className="text-right" style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", textTransform: "uppercase", letterSpacing: "1px" }}>
+      <div className="text-right" style={{ color: "#52525B", fontFamily: "var(--font-sans)", fontSize: "10px", textTransform: "uppercase", letterSpacing: "1px" }}>
         {filteredEvents.length} event{filteredEvents.length !== 1 ? "s" : ""}
         {filteredEvents.length !== events.length ? ` (filtered from ${events.length})` : ""}
       </div>

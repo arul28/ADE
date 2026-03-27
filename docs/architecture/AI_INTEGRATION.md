@@ -2022,9 +2022,9 @@ The MCP server now operates in **dual mode**:
 
 A `JsonRpcTransport` abstraction layer supports both stdio and Unix socket transports. The smart entry point auto-detects whether `.ade/mcp.sock` exists: if the desktop is running, the server connects as an embedded proxy; otherwise it starts in headless mode with its own AI backend.
 
-### 2. No Agent Chat Participation
+### 2. Limited Agent Chat in Headless Mode
 
-`agentChatService` is null in MCP mode. External consumers cannot participate in agent chat sessions. Mission progress can only be observed via:
+Headless MCP mode now provisions a lightweight `agentChatService` through `createHeadlessLinearServices()`. This service supports employee-session targets for Linear workflow dispatch (creating reusable continuity chats), but it is a manual shell -- no live agent runtime is attached. Worker-backed targets fail fast with explicit run errors when no worker runtime is available. Full interactive chat participation still requires the desktop runtime. Mission progress can be observed via:
 
 - `stream_events` (event polling)
 - `get_worker_states` (agent state snapshots)

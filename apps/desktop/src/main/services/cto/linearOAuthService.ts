@@ -182,7 +182,7 @@ export function createLinearOAuthService(args: {
         await exchangeCode(session, code);
         finalizeSession(session, { status: "completed" });
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        res.end("<!doctype html><html><body style=\"font-family:system-ui;padding:24px\">Linear connected. You can close this window and return to ADE.</body></html>");
+        res.end("<!doctype html><html><body style=\"font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px\">Linear connected. You can close this window and return to ADE.</body></html>");
       } catch (error) {
         const message = error instanceof Error ? error.message : "OAuth callback failed.";
         finalizeSession(session, { status: "failed", error: message });

@@ -11,6 +11,7 @@ import { looksLikeLowSignalNoise } from "./missionHelpers";
 
 // ── Design token shortcuts ──
 const STATUS_GREEN = COLORS.success;
+const STATUS_WARNING = COLORS.warning;
 const STATUS_GRAY = "#6b7280";
 const STATUS_RED = COLORS.danger;
 
@@ -92,8 +93,9 @@ export function statusDotForWorker(state?: string): string {
     case "spawned":
     case "initializing":
     case "working":
-    case "waiting_input":
       return STATUS_GREEN;
+    case "waiting_input":
+      return STATUS_WARNING;
     case "completed":
     case "idle":
     case "disposed":

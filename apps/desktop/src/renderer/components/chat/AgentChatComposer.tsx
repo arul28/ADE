@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { At, CaretDown, Image, Paperclip, Square, PaperPlaneTilt, Lightning } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { At, CaretDown, Image, Paperclip, Square, X, PaperPlaneTilt } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -9,6 +9,7 @@ import {
   type AgentChatCodexSandbox,
   type AgentChatExecutionMode,
   type AgentChatFileRef,
+  type AgentChatInteractionMode,
   type AgentChatSlashCommand,
   type AgentChatUnifiedPermissionMode,
   type ComputerUseOwnerSnapshot,
@@ -19,10 +20,14 @@ import {
 import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
+import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatSubagentStrip } from "./ChatSubagentStrip";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
+
+const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 type ExecutionModeOption = {
   value: AgentChatExecutionMode;
@@ -46,10 +51,7 @@ const LOCAL_SLASH_COMMANDS: SlashCommandEntry[] = [
 ];
 
 /** Well-known defaults shown before the SDK session is initialized. */
-const CLAUDE_DEFAULT_COMMANDS: SlashCommandEntry[] = [
-  { command: "/compact", label: "Compact", description: "Compact conversation history", source: "sdk" },
-  { command: "/memory", label: "Memory", description: "View or edit CLAUDE.md", source: "sdk" },
-];
+const CLAUDE_DEFAULT_COMMANDS: SlashCommandEntry[] = [];
 
 const CODEX_DEFAULT_COMMANDS: SlashCommandEntry[] = [
   { command: "/review", label: "Review", description: "Review uncommitted changes", source: "sdk" },
@@ -101,70 +103,32 @@ function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: 
   return result;
 }
 
-const CLAUDE_PERMISSION_OPTIONS: Array<{ value: AgentChatClaudePermissionMode; label: string }> = [
-  { value: "default", label: "Default" },
-  { value: "plan", label: "Plan" },
-  { value: "acceptEdits", label: "Accept edits" },
-  { value: "bypassPermissions", label: "Bypass" },
+const CLAUDE_MODE_OPTIONS: Array<{ value: AgentChatClaudePermissionMode; label: string; detail: string; safety: "safe" | "semi-auto" | "danger" }> = [
+  { value: "default", label: "Default", detail: "Claude uses the normal approval flow for reads, edits, and tools.", safety: "safe" },
+  { value: "plan", label: "Plan", detail: "Read-only Claude turns for analysis and implementation planning.", safety: "safe" },
+  { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", safety: "semi-auto" },
+  { value: "bypassPermissions", label: "Bypass", detail: "Skip Claude permission prompts for this chat.", safety: "danger" },
 ];
 
-const CODEX_APPROVAL_OPTIONS: Array<{ value: AgentChatCodexApprovalPolicy; label: string }> = [
-  { value: "untrusted", label: "Untrusted" },
-  { value: "on-request", label: "On request" },
-  { value: "on-failure", label: "On failure" },
-  { value: "never", label: "Never" },
-];
+type CodexPermissionPreset = "plan" | "edit" | "full-auto" | "custom";
 
-const CODEX_SANDBOX_OPTIONS: Array<{ value: AgentChatCodexSandbox; label: string }> = [
-  { value: "read-only", label: "Read only" },
-  { value: "workspace-write", label: "Workspace write" },
-  { value: "danger-full-access", label: "Danger full access" },
-];
-
-const CODEX_CONFIG_SOURCE_OPTIONS: Array<{ value: AgentChatCodexConfigSource; label: string }> = [
-  { value: "flags", label: "ADE flags" },
-  { value: "config-toml", label: "config.toml" },
-];
+function resolveCodexPermissionPreset(args: {
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+}): CodexPermissionPreset {
+  if (args.codexConfigSource === "config-toml") return "custom";
+  if (args.codexApprovalPolicy === "untrusted" && args.codexSandbox === "read-only") return "plan";
+  if (args.codexApprovalPolicy === "on-failure" && args.codexSandbox === "workspace-write") return "edit";
+  if (args.codexApprovalPolicy === "never" && args.codexSandbox === "danger-full-access") return "full-auto";
+  return "custom";
+}
 
 const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode; label: string }> = [
   { value: "plan", label: "Plan" },
   { value: "edit", label: "Edit" },
   { value: "full-auto", label: "Full auto" },
 ];
-
-type CodexComposerMode = "plan" | "guarded-edit" | "full-auto" | "custom";
-
-const CODEX_MODE_PRESETS: Record<Exclude<CodexComposerMode, "custom">, {
-  approval: AgentChatCodexApprovalPolicy;
-  sandbox: AgentChatCodexSandbox;
-}> = {
-  plan: { approval: "untrusted", sandbox: "read-only" },
-  "guarded-edit": { approval: "on-failure", sandbox: "workspace-write" },
-  "full-auto": { approval: "never", sandbox: "danger-full-access" },
-};
-
-const CODEX_MODE_OPTIONS: Array<{
-  value: CodexComposerMode;
-  label: string;
-  detail: string;
-}> = [
-  { value: "plan", label: "Plan", detail: "Read only" },
-  { value: "guarded-edit", label: "Guarded edit", detail: "Safer edits" },
-  { value: "full-auto", label: "Full auto", detail: "No prompts" },
-  { value: "custom", label: "Custom", detail: "Use config.toml" },
-];
-
-function resolveCodexComposerMode(
-  configSource: AgentChatCodexConfigSource | undefined,
-  approval: AgentChatCodexApprovalPolicy | undefined,
-  sandbox: AgentChatCodexSandbox | undefined,
-): CodexComposerMode {
-  if (configSource === "config-toml") return "custom";
-  if (approval === CODEX_MODE_PRESETS.plan.approval && sandbox === CODEX_MODE_PRESETS.plan.sandbox) return "plan";
-  if (approval === CODEX_MODE_PRESETS["guarded-edit"].approval && sandbox === CODEX_MODE_PRESETS["guarded-edit"].sandbox) return "guarded-edit";
-  if (approval === CODEX_MODE_PRESETS["full-auto"].approval && sandbox === CODEX_MODE_PRESETS["full-auto"].sandbox) return "full-auto";
-  return "custom";
-}
 
 type AdvancedSettingsPopoverProps = {
   executionModeOptions: ExecutionModeOption[];
@@ -194,14 +158,15 @@ function AdvancedSettingsPopover({
   onIncludeProjectDocsChange,
 }: AdvancedSettingsPopoverProps) {
   const [hoveredExecutionMode, setHoveredExecutionMode] = useState<AgentChatExecutionMode | null>(null);
+  const activeBackend = computerUseSnapshot?.activeBackend?.name ?? (computerUsePolicy.allowLocalFallback ? "Fallback allowed" : "No fallback");
   const activeExecutionMode = executionModeOptions.find((option) => option.value === executionMode) ?? executionModeOptions[0] ?? null;
   const helpMode = hoveredExecutionMode
     ? executionModeOptions.find((option) => option.value === hoveredExecutionMode) ?? activeExecutionMode
     : activeExecutionMode;
 
   return (
-    <div className="absolute bottom-full right-0 z-30 mb-3 w-[min(44rem,calc(100vw-2rem))] overflow-hidden rounded-[22px] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)] shadow-[0_24px_90px_-40px_rgba(0,0,0,0.88)] backdrop-blur-xl">
-      <div className="border-b border-[color:var(--chat-panel-border)] px-4 py-3">
+    <div className="absolute bottom-full right-0 z-30 mb-3 w-[min(44rem,calc(100vw-2rem))] overflow-hidden rounded-[22px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(18,20,28,0.98),rgba(10,12,18,0.98))] shadow-[0_24px_90px_-40px_rgba(0,0,0,0.88)] backdrop-blur-xl">
+      <div className="border-b border-white/[0.05] px-4 py-3">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <div className="font-sans text-[12px] font-semibold tracking-tight text-fg/86">Advanced settings</div>
@@ -330,7 +295,7 @@ function AdvancedSettingsPopover({
         </div>
 
         {helpMode ? (
-          <div className="rounded-[18px] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)]/78 px-3 py-2">
+          <div className="rounded-[18px] border border-white/[0.06] bg-black/20 px-3 py-2">
             <div className="flex items-center justify-between gap-2">
               <span className="font-sans text-[10px] font-semibold uppercase tracking-[0.16em] text-fg/48">Mode help</span>
               <span className="font-sans text-[10px] text-fg/38">{helpMode.label}</span>
@@ -345,10 +310,10 @@ function AdvancedSettingsPopover({
 
 function ComputerUseSettingsModal({
   open,
-  policy: _policy,
+  policy,
   snapshot,
   onClose,
-  onChange: _onChange,
+  onChange,
   onOpenProof,
 }: {
   open: boolean;
@@ -370,8 +335,8 @@ function ComputerUseSettingsModal({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-sm overflow-hidden rounded-[28px] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)] shadow-[0_28px_110px_-36px_rgba(0,0,0,0.82)]">
-        <div className="border-b border-[color:var(--chat-panel-border)] bg-[linear-gradient(90deg,rgba(56,189,248,0.12),transparent)] px-5 py-4">
+      <div className="w-full max-w-sm overflow-hidden rounded-[28px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(15,21,34,0.96),rgba(10,13,22,0.94))] shadow-[0_28px_110px_-36px_rgba(0,0,0,0.82)]">
+        <div className="border-b border-white/[0.05] bg-[linear-gradient(90deg,rgba(56,189,248,0.12),transparent)] px-5 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <div className="font-sans text-[15px] font-semibold tracking-tight text-fg/88">Computer use</div>
@@ -431,6 +396,7 @@ export function AgentChatComposer({
   sendOnEnter,
   busy,
   sessionProvider,
+  interactionMode,
   claudePermissionMode,
   codexApprovalPolicy,
   codexSandbox,
@@ -456,7 +422,10 @@ export function AgentChatComposer({
   onRemoveAttachment,
   onSearchAttachments,
   onExecutionModeChange,
+  onInteractionModeChange,
+  onClaudeModeChange,
   onClaudePermissionModeChange,
+  onCodexPresetChange,
   onCodexApprovalPolicyChange,
   onCodexSandboxChange,
   onCodexConfigSourceChange,
@@ -481,6 +450,7 @@ export function AgentChatComposer({
   sendOnEnter: boolean;
   busy: boolean;
   sessionProvider?: string;
+  interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -506,7 +476,14 @@ export function AgentChatComposer({
   onRemoveAttachment: (path: string) => void;
   onSearchAttachments: (query: string) => Promise<AgentChatFileRef[]>;
   onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
+  onInteractionModeChange?: (mode: AgentChatInteractionMode) => void;
+  onClaudeModeChange?: (mode: AgentChatClaudePermissionMode) => void;
   onClaudePermissionModeChange?: (mode: AgentChatClaudePermissionMode) => void;
+  onCodexPresetChange?: (next: {
+    codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+    codexSandbox: AgentChatCodexSandbox;
+    codexConfigSource: AgentChatCodexConfigSource;
+  }) => void;
   onCodexApprovalPolicyChange?: (policy: AgentChatCodexApprovalPolicy) => void;
   onCodexSandboxChange?: (sandbox: AgentChatCodexSandbox) => void;
   onCodexConfigSourceChange?: (source: AgentChatCodexConfigSource) => void;
@@ -524,12 +501,14 @@ export function AgentChatComposer({
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentResults, setAttachmentResults] = useState<AgentChatFileRef[]>([]);
   const [attachmentCursor, setAttachmentCursor] = useState(0);
+  const [attachError, setAttachError] = useState<string | null>(null);
 
   const [slashPickerOpen, setSlashPickerOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [slashCursor, setSlashCursor] = useState(0);
+  const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
+  const [hoveredCodexPreset, setHoveredCodexPreset] = useState<"plan" | "edit" | "full-auto" | null>(null);
 
-  const [attachError, setAttachError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [advancedMenuOpen, setAdvancedMenuOpen] = useState(false);
   const [computerUseModalOpen, setComputerUseModalOpen] = useState(false);
@@ -539,7 +518,6 @@ export function AgentChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const advancedMenuRef = useRef<HTMLDivElement | null>(null);
   const advancedButtonRef = useRef<HTMLButtonElement | null>(null);
-  const searchRequestIdRef = useRef(0);
   const fileAddInProgressRef = useRef(false);
   const canAttach = !turnActive;
 
@@ -619,22 +597,23 @@ export function AgentChatComposer({
       setAttachmentCursor(0);
       return;
     }
-    const requestId = ++searchRequestIdRef.current;
+    let cancelled = false;
     const timeout = window.setTimeout(() => {
       setAttachmentBusy(true);
       onSearchAttachments(query)
         .then((results) => {
-          if (searchRequestIdRef.current !== requestId) return;
+          if (cancelled) return;
           setAttachmentResults(results.filter((r) => !attachedPaths.has(r.path)));
           setAttachmentCursor(0);
         })
-        .catch(() => { if (searchRequestIdRef.current === requestId) setAttachmentResults([]); })
-        .finally(() => { if (searchRequestIdRef.current === requestId) setAttachmentBusy(false); });
+        .catch(() => { if (!cancelled) setAttachmentResults([]); })
+        .finally(() => { if (!cancelled) setAttachmentBusy(false); });
     }, 120);
-    return () => { searchRequestIdRef.current++; window.clearTimeout(timeout); };
+    return () => { cancelled = true; window.clearTimeout(timeout); };
   }, [attachmentPickerOpen, attachmentQuery, attachedPaths, onSearchAttachments]);
 
   const selectAttachment = (attachment: AgentChatFileRef) => {
+    setAttachError(null);
     onAddAttachment(attachment);
     setAttachmentPickerOpen(false);
   };
@@ -643,37 +622,38 @@ export function AgentChatComposer({
     if (!canAttach || !files?.length) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
+    setAttachError(null);
     try {
       for (const file of Array.from(files)) {
         const fileWithPath = file as File & { path?: string };
         const hasRealPath = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length > 0;
 
         if (hasRealPath) {
-          // File from filesystem (drag-drop from Finder, native picker)
           const filePath = fileWithPath.path!;
           onAddAttachment({ path: filePath, type: inferAttachmentType(filePath, file.type) });
-        } else {
-          // Clipboard paste or browser drag — no filesystem path.
-          // Read the blob, save to a temp file via IPC, then attach.
-          const MAX_BLOB_SIZE = 10 * 1024 * 1024; // 10 MB
-          if (file.size > MAX_BLOB_SIZE) {
-            setAttachError(`File "${file.name || "clipboard"}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 10 MB.`);
-            continue;
-          }
-          try {
-            const buf = await file.arrayBuffer();
-            const bytes = new Uint8Array(buf);
-            let binary = "";
-            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-            const base64 = btoa(binary);
-            const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
-              data: base64,
-              filename: file.name || "clipboard.png",
-            });
-            onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
-          } catch {
-            // Silently skip files that can't be saved
-          }
+          continue;
+        }
+
+        if (file.size > MAX_TEMP_ATTACHMENT_BYTES) {
+          setAttachError(
+            `File "${file.name || "clipboard"}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 10 MB.`,
+          );
+          continue;
+        }
+
+        try {
+          const buf = await file.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let binary = "";
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          const base64 = btoa(binary);
+          const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
+            data: base64,
+            filename: file.name || "clipboard.png",
+          });
+          onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
+        } catch {
+          setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
         }
       }
     } finally {
@@ -692,28 +672,200 @@ export function AgentChatComposer({
   };
 
   const nativeControlsDisabled = permissionModeLocked;
-  const codexMode = useMemo(
-    () => resolveCodexComposerMode(codexConfigSource, codexApprovalPolicy, codexSandbox),
-    [codexApprovalPolicy, codexConfigSource, codexSandbox],
+  const claudeSelectionMode = claudePermissionMode === "plan" || interactionMode === "plan"
+    ? "plan"
+    : claudePermissionMode ?? "default";
+  const codexPreset = resolveCodexPermissionPreset({
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+  });
+  const codexPresetOptions = useMemo(
+    () => getPermissionOptions({ family: "openai", isCliWrapped: true })
+      .filter((option) => option.value === "plan" || option.value === "edit" || option.value === "full-auto"),
+    [],
   );
-  const showCodexFlagControls = sessionProvider === "codex" && codexMode === "custom";
+  const applyCodexPreset = useCallback((preset: Exclude<CodexPermissionPreset, "custom">) => {
+    const next = preset === "plan"
+      ? {
+          codexApprovalPolicy: "untrusted" as const,
+          codexSandbox: "read-only" as const,
+          codexConfigSource: "flags" as const,
+        }
+      : preset === "edit"
+        ? {
+            codexApprovalPolicy: "on-failure" as const,
+            codexSandbox: "workspace-write" as const,
+            codexConfigSource: "flags" as const,
+          }
+        : {
+            codexApprovalPolicy: "never" as const,
+            codexSandbox: "danger-full-access" as const,
+            codexConfigSource: "flags" as const,
+          };
+
+    if (onCodexPresetChange) {
+      onCodexPresetChange(next);
+      return;
+    }
+    onCodexConfigSourceChange?.(next.codexConfigSource);
+    onCodexApprovalPolicyChange?.(next.codexApprovalPolicy);
+    onCodexSandboxChange?.(next.codexSandbox);
+  }, [
+    onCodexApprovalPolicyChange,
+    onCodexConfigSourceChange,
+    onCodexPresetChange,
+    onCodexSandboxChange,
+  ]);
+  const claudeControlDetail = useMemo(() => {
+    if (sessionProvider !== "claude") return null;
+    const option = CLAUDE_MODE_OPTIONS.find((item) => item.value === (hoveredClaudeMode ?? claudeSelectionMode));
+    return option?.detail ?? null;
+  }, [claudeSelectionMode, hoveredClaudeMode, sessionProvider]);
+  const codexCustomSummary = useMemo(() => {
+    if (sessionProvider !== "codex" || codexPreset !== "custom") return null;
+    if (codexConfigSource === "config-toml") {
+      return "Custom Codex mode: config.toml controls approval and sandbox.";
+    }
+    const approvalLabel = {
+      "untrusted": "Plan",
+      "on-request": "On request",
+      "on-failure": "Guarded edit",
+      "never": "Full auto",
+    }[codexApprovalPolicy ?? "on-request"];
+    const sandboxLabel = {
+      "read-only": "Read only",
+      "workspace-write": "Workspace write",
+      "danger-full-access": "Danger full access",
+    }[codexSandbox ?? "workspace-write"];
+    return `Custom Codex mode: ${codexConfigSource === "flags" ? "ADE flags" : "config.toml"} · ${approvalLabel} · ${sandboxLabel}`;
+  }, [codexApprovalPolicy, codexConfigSource, codexPreset, codexSandbox, sessionProvider]);
+  const codexControlDetail = useMemo(() => {
+    if (sessionProvider !== "codex") return null;
+    if (hoveredCodexPreset) {
+      return codexPresetOptions.find((option) => option.value === hoveredCodexPreset)?.detail ?? null;
+    }
+    if (codexPreset === "custom") {
+      return codexCustomSummary;
+    }
+    return codexPresetOptions.find((option) => option.value === codexPreset)?.detail ?? null;
+  }, [codexCustomSummary, codexPreset, codexPresetOptions, hoveredCodexPreset, sessionProvider]);
   const nativeControlPanel = useMemo(() => {
-    const renderSelect = <T extends string,>(
+    const renderButtonGroup = <T extends string,>(
       label: string,
       value: T | undefined,
-      options: Array<{ value: T; label: string }>,
+      options: Array<{ value: T; label: string; detail: string; safety?: "safe" | "semi-auto" | "danger" }>,
       onChange: ((value: T) => void) | undefined,
       disabled = false,
+      onHoverChange?: (value: T | null) => void,
     ) => (
-      <label className="flex items-center gap-1.5 rounded-md border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg-strong)] px-2 py-1">
-        <span className="font-sans text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{label}</span>
+      <div className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
+        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{label}</span>
+        <div className="flex items-center gap-px rounded-md border border-white/[0.06] bg-[#14141b] p-0.5">
+          {options.map((option) => {
+            const active = value === option.value;
+            const colors = option.safety ? safetyColors(option.safety) : null;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={cn(
+                  "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                  active
+                    ? (colors ? `${colors.activeBg} text-fg/80` : "bg-white/[0.08] text-fg/80")
+                    : "text-muted-fg/35 hover:text-muted-fg/60",
+                  disabled ? "cursor-not-allowed opacity-50" : "",
+                )}
+                disabled={disabled || !onChange}
+                onClick={() => onChange?.(option.value)}
+                onMouseEnter={() => onHoverChange?.(option.value)}
+                onMouseLeave={() => onHoverChange?.(null)}
+                onFocus={() => onHoverChange?.(option.value)}
+                onBlur={() => onHoverChange?.(null)}
+                title={option.detail}
+                aria-pressed={active}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+
+    if (sessionProvider === "claude") {
+      return (
+        <div className="flex flex-wrap items-start gap-2">
+          {renderButtonGroup("Claude", claudeSelectionMode, CLAUDE_MODE_OPTIONS, (mode) => {
+            if (onClaudeModeChange) {
+              onClaudeModeChange(mode);
+              return;
+            }
+            if (mode === "plan") {
+              onInteractionModeChange?.("plan");
+              onClaudePermissionModeChange?.("plan");
+              return;
+            }
+            onInteractionModeChange?.("default");
+            onClaudePermissionModeChange?.(mode);
+          }, nativeControlsDisabled, setHoveredClaudeMode)}
+        </div>
+      );
+    }
+
+    if (sessionProvider === "codex") {
+      return (
+        <div className="flex flex-wrap items-start gap-2">
+          <div className="flex items-center gap-px rounded-md border border-white/[0.06] bg-[#1a1a22] p-0.5">
+            {codexPresetOptions.map((option) => {
+              const active = codexPreset === option.value;
+              const colors = safetyColors(option.safety);
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={cn(
+                    "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                    active ? `${colors.activeBg} text-fg/80` : "text-muted-fg/35 hover:text-muted-fg/60",
+                    nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "",
+                  )}
+                  disabled={nativeControlsDisabled}
+                  onClick={() => applyCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
+                  onMouseEnter={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
+                  onMouseLeave={() => setHoveredCodexPreset(null)}
+                  onFocus={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
+                  onBlur={() => setHoveredCodexPreset(null)}
+                  title={option.detail}
+                  aria-pressed={active}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+            <div
+              className={cn(
+                "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider",
+                codexPreset === "custom" ? "bg-white/[0.06] text-fg/80" : "text-muted-fg/35",
+              )}
+              title={codexCustomSummary ?? "Custom Codex approval/sandbox combination"}
+            >
+              Custom
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
+        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">ADE</span>
         <select
-          value={value}
-          disabled={disabled || !onChange}
-          onChange={(event) => onChange?.(event.target.value as T)}
+          value={unifiedPermissionMode}
+          disabled={nativeControlsDisabled || !onUnifiedPermissionModeChange}
+          onChange={(event) => onUnifiedPermissionModeChange?.(event.target.value as AgentChatUnifiedPermissionMode)}
           className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
         >
-          {options.map((option) => (
+          {UNIFIED_PERMISSION_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
             </option>
@@ -721,79 +873,22 @@ export function AgentChatComposer({
         </select>
       </label>
     );
-
-    if (sessionProvider === "claude") {
-      return renderSelect("Claude", claudePermissionMode, CLAUDE_PERMISSION_OPTIONS, onClaudePermissionModeChange, nativeControlsDisabled);
-    }
-
-    const setCodexMode = (mode: CodexComposerMode) => {
-      if (nativeControlsDisabled) return;
-      if (!onCodexConfigSourceChange || !onCodexApprovalPolicyChange || !onCodexSandboxChange) return;
-
-      if (mode === "custom") {
-        onCodexConfigSourceChange("config-toml");
-        return;
-      }
-
-      const preset = CODEX_MODE_PRESETS[mode];
-      onCodexConfigSourceChange("flags");
-      onCodexApprovalPolicyChange(preset.approval);
-      onCodexSandboxChange(preset.sandbox);
-    };
-
-    if (sessionProvider === "codex") {
-      return (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <div className="inline-flex overflow-hidden rounded-md border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg-strong)]">
-            {CODEX_MODE_OPTIONS.map((option) => {
-              const isActive = codexMode === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  disabled={nativeControlsDisabled}
-                  aria-pressed={isActive}
-                  title={option.detail}
-                  onClick={() => setCodexMode(option.value)}
-                  className={cn(
-                    "border-r border-white/[0.05] px-2.5 py-1.5 font-sans text-[10px] font-medium transition-colors last:border-r-0",
-                    isActive
-                      ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] text-[var(--chat-accent)]"
-                      : "text-muted-fg/48 hover:bg-white/[0.04] hover:text-fg/74",
-                    nativeControlsDisabled && "cursor-not-allowed opacity-60",
-                  )}
-                >
-                  <div className="whitespace-nowrap">{option.label}</div>
-                </button>
-              );
-            })}
-          </div>
-          {showCodexFlagControls ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {renderSelect("Config", codexConfigSource, CODEX_CONFIG_SOURCE_OPTIONS, onCodexConfigSourceChange, nativeControlsDisabled)}
-              {renderSelect("Approval", codexApprovalPolicy, CODEX_APPROVAL_OPTIONS, onCodexApprovalPolicyChange, nativeControlsDisabled)}
-              {renderSelect("Sandbox", codexSandbox, CODEX_SANDBOX_OPTIONS, onCodexSandboxChange, nativeControlsDisabled)}
-            </div>
-          ) : null}
-        </div>
-      );
-    }
-
-    return renderSelect("ADE", unifiedPermissionMode, UNIFIED_PERMISSION_OPTIONS, onUnifiedPermissionModeChange, nativeControlsDisabled);
   }, [
+    claudeSelectionMode,
     claudePermissionMode,
-    codexMode,
-    codexApprovalPolicy,
+    applyCodexPreset,
+    codexPreset,
+    codexPresetOptions,
+    codexCustomSummary,
     codexConfigSource,
-    codexSandbox,
+    hoveredClaudeMode,
+    hoveredCodexPreset,
     nativeControlsDisabled,
+    onClaudeModeChange,
     onClaudePermissionModeChange,
-    onCodexApprovalPolicyChange,
-    onCodexConfigSourceChange,
-    onCodexSandboxChange,
+    onInteractionModeChange,
     onUnifiedPermissionModeChange,
     sessionProvider,
-    showCodexFlagControls,
     unifiedPermissionMode,
   ]);
   /* ── Keyboard handler for textarea ── */
@@ -887,43 +982,73 @@ export function AgentChatComposer({
       mode={surfaceMode}
       className="m-3 mt-0 rounded-[var(--chat-radius-shell)]"
       pendingBanner={pendingInput ? (
-        <div className="px-4 py-3">
-          <div className="mb-2 flex items-center gap-2">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
-              <Lightning size={11} weight="bold" className="text-amber-300" />
-            </span>
-            <span className="font-sans text-[9px] font-semibold uppercase tracking-widest text-amber-200">
-              {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? "Approval" : "Input needed"} · {pendingInput.source}
-            </span>
-          </div>
-          <div className="mb-2 font-sans text-[11px] leading-relaxed text-fg/68">
-            {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
-          </div>
-          {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
+        pendingInput.kind === "plan_approval" ? (
+          <div className="px-4 py-3">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-violet-400/20 bg-violet-500/10">
+                <ChatStatusGlyph status="waiting" size={11} />
+              </span>
+              <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-violet-200">
+                Plan Approval · {pendingInput.source}
+              </span>
+            </div>
+            <div className="mb-2 max-h-48 overflow-y-auto font-mono text-[11px] leading-relaxed text-fg/68 whitespace-pre-wrap">
+              {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent has prepared a plan."}
+            </div>
             <div className="flex items-center gap-1.5">
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-sans text-[9px] font-semibold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20" onClick={() => onApproval("accept")}>Accept</button>
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-sans text-[9px] font-semibold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10" onClick={() => onApproval("accept_for_session")}>Accept all</button>
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-sans text-[9px] font-semibold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Decline</button>
+              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-emerald-400/30 bg-emerald-500/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-emerald-200/80 transition-colors hover:bg-emerald-500/20" onClick={() => onApproval("accept")}>Approve &amp; Implement</button>
+              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Reject &amp; Revise</button>
             </div>
-          ) : (
-            <div className="font-sans text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
-              Open the question modal to answer and continue.
+          </div>
+        ) : (
+          <div className="px-4 py-3">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
+                <ChatStatusGlyph status="waiting" size={11} />
+              </span>
+              <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200">
+                {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? "Approval" : "Input needed"} · {pendingInput.source}
+              </span>
             </div>
-          )}
-        </div>
+            <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/68">
+              {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
+            </div>
+            {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
+              <div className="flex items-center gap-1.5">
+                <button type="button" className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20" onClick={() => onApproval("accept")}>Accept</button>
+                <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10" onClick={() => onApproval("accept_for_session")}>Accept all</button>
+                <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Decline</button>
+              </div>
+            ) : (
+              <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
+                Open the question modal to answer and continue.
+              </div>
+            )}
+          </div>
+        )
       ) : undefined}
       trays={
-        attachments.length || subagentSnapshots.length ? (
+        attachments.length || subagentSnapshots.length || attachError ? (
           <div className="space-y-2 px-1 py-2">
+            {attachError ? (
+              <div className="flex items-center gap-1.5 px-3">
+                <span className="text-[10px] text-red-300/75">{attachError}</span>
+                <button
+                  type="button"
+                  aria-label="Dismiss error"
+                  className="shrink-0 rounded p-0.5 text-red-300/60 hover:text-red-200/80 transition-colors"
+                  onClick={() => setAttachError(null)}
+                >
+                  <X size={10} weight="bold" />
+                </button>
+              </div>
+            ) : null}
             {subagentSnapshots.length ? (
               <ChatSubagentStrip
                 snapshots={subagentSnapshots}
                 placement="composer"
                 onInterruptTurn={turnActive ? onInterrupt : undefined}
               />
-            ) : null}
-            {attachError ? (
-              <div className="px-3 py-1 text-[11px] text-red-400/90">{attachError}<button type="button" className="ml-2 text-red-400/60 hover:text-red-400" onClick={() => setAttachError(null)}>dismiss</button></div>
             ) : null}
             <ChatAttachmentTray
               attachments={attachments}
@@ -947,8 +1072,8 @@ export function AgentChatComposer({
             }}
           />
           {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)]/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
-              <div className="border-b border-[color:var(--chat-panel-border)] px-3 py-2 font-sans text-[9px] font-semibold uppercase tracking-widest text-muted-fg/35">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+              <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
                 Commands
               </div>
               <div className="max-h-52 overflow-auto py-1">
@@ -957,7 +1082,7 @@ export function AgentChatComposer({
                     key={cmd.command}
                     type="button"
                     className={cn(
-                      "flex w-full items-center gap-3 px-3 py-2 text-left font-sans text-[10px]",
+                      "flex w-full items-center gap-3 px-3 py-2 text-left font-mono text-[10px]",
                       index === slashCursor ? "bg-accent/10 text-fg" : "text-fg/55 hover:bg-border/6",
                     )}
                     onMouseEnter={() => setSlashCursor(index)}
@@ -975,15 +1100,15 @@ export function AgentChatComposer({
           ) : null}
 
           {attachmentPickerOpen ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)]/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
-              <div className="flex items-center gap-2 border-b border-[color:var(--chat-panel-border)] px-3 py-2">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+              <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2">
                 <At size={11} weight="bold" className="text-muted-fg/30" />
                 <input
                   ref={attachmentInputRef}
                   value={attachmentQuery}
                   onChange={(e) => setAttachmentQuery(e.target.value)}
                   placeholder="Search files..."
-                  className="h-5 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
+                  className="h-5 flex-1 bg-transparent font-mono text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
                   onKeyDown={(event) => {
                     if (event.key === "Escape") { event.preventDefault(); setAttachmentPickerOpen(false); return; }
                     if (event.key === "ArrowDown") { event.preventDefault(); setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0))); return; }
@@ -997,16 +1122,16 @@ export function AgentChatComposer({
               </div>
               <div className="max-h-40 overflow-auto py-1">
                 {!attachmentQuery.trim().length ? (
-                  <div className="px-3 py-2 font-sans text-[10px] text-muted-fg/25">Type to search files...</div>
+                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Type to search files...</div>
                 ) : attachmentBusy ? (
-                  <div className="px-3 py-2 font-sans text-[10px] text-muted-fg/25">Searching...</div>
+                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Searching...</div>
                 ) : attachmentResults.length ? (
                   attachmentResults.map((result, index) => (
                     <button
                       key={result.path}
                       type="button"
                       className={cn(
-                        "flex w-full items-center gap-2 px-3 py-2 text-left font-sans text-[10px] text-fg/60",
+                        "flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[10px] text-fg/60",
                         index === attachmentCursor ? "bg-accent/10 text-fg/85" : "hover:bg-border/6",
                       )}
                       onMouseEnter={() => setAttachmentCursor(index)}
@@ -1017,7 +1142,7 @@ export function AgentChatComposer({
                     </button>
                   ))
                 ) : (
-                  <div className="px-3 py-2 font-sans text-[10px] text-muted-fg/25">No matching files.</div>
+                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">No matching files.</div>
                 )}
               </div>
             </div>
@@ -1025,53 +1150,66 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="px-3 py-2">
-          <div className="flex flex-wrap items-start gap-2">
+        <div className="space-y-2 px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-              <div className="min-w-0 shrink">{nativeControlPanel}</div>
-              <div className="min-w-0 shrink">
-                <UnifiedModelSelector
-                  value={modelId}
-                  onChange={onModelChange}
-                  availableModelIds={availableModelIds}
-                  disabled={modelSelectionLocked}
-                  showReasoning
-                  reasoningEffort={reasoningEffort}
-                  onReasoningEffortChange={onReasoningEffortChange}
-                />
-              </div>
+              {nativeControlPanel}
             </div>
 
-            <div className="ml-auto flex shrink-0 flex-wrap items-center gap-1.5">
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                  disabled={!canAttach}
-                  onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-                  title="Attach files or images (@)"
-                >
-                  @
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md px-1.5 py-1 text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                  disabled={!canAttach}
-                  onClick={openUploadPicker}
-                  title="Upload file from disk"
-                >
-                  <Paperclip size={12} />
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                  onClick={() => { onDraftChange("/"); setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); textareaRef.current?.focus(); }}
-                  title="Commands (/)"
-                >
-                  /
-                </button>
-              </div>
+            <div className="min-w-0 shrink">
+              <UnifiedModelSelector
+                value={modelId}
+                onChange={onModelChange}
+                availableModelIds={availableModelIds}
+                disabled={modelSelectionLocked}
+                showReasoning
+                reasoningEffort={reasoningEffort}
+                onReasoningEffortChange={onReasoningEffortChange}
+              />
+            </div>
+          </div>
+          {claudeControlDetail ? (
+            <div className="px-1 text-[10px] leading-5 text-muted-fg/40">
+              {claudeControlDetail}
+            </div>
+          ) : null}
+          {codexControlDetail ? (
+            <div className="px-1 text-[10px] leading-5 text-muted-fg/40">
+              {codexControlDetail}
+            </div>
+          ) : null}
 
+          <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                disabled={!canAttach}
+                onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
+                title="Attach files or images (@)"
+              >
+                @
+              </button>
+              <button
+                type="button"
+                className="rounded-md px-1.5 py-1 text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                disabled={!canAttach}
+                onClick={openUploadPicker}
+                title="Upload file from disk"
+              >
+                <Paperclip size={12} />
+              </button>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
+                onClick={() => { const d = textareaRef.current?.value ?? ""; if (!d.length) { onDraftChange("/"); } setSlashPickerOpen(true); setSlashQuery(d.startsWith("/") ? d.slice(1) : ""); setSlashCursor(0); textareaRef.current?.focus(); }}
+                title="Commands (/)"
+              >
+                /
+              </button>
+            </div>
+
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
               <div className="relative">
                 <button
                   ref={advancedButtonRef}
@@ -1173,7 +1311,7 @@ export function AgentChatComposer({
         {dragActive ? (
           <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,rgba(5,5,8,0.58))] backdrop-blur-sm">
             <div className="rounded-[var(--chat-radius-card)] border border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)] bg-card/92 px-5 py-4 text-center shadow-[var(--chat-composer-shadow)]">
-              <div className="font-sans text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Drop files to attach</div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Drop files to attach</div>
               <div className="mt-1 text-[12px] text-fg/74">Images and files will be added to this turn.</div>
             </div>
           </div>
@@ -1188,7 +1326,7 @@ export function AgentChatComposer({
             >
               <span className="text-[13px] leading-[1.6] text-fg/18 italic">
                 {promptSuggestion}
-                <span className="ml-2 inline-flex items-center rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-sans text-[9px] not-italic text-fg/20">
+                <span className="ml-2 inline-flex items-center rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-mono text-[9px] not-italic text-fg/20">
                   Tab
                 </span>
               </span>
@@ -1204,15 +1342,12 @@ export function AgentChatComposer({
               if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
             }}
             className={cn(
-              "min-h-[40px] max-h-[160px] w-full resize-none bg-transparent px-4 py-3 font-sans text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+              "min-h-[40px] max-h-[40vh] w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
               dragActive ? "opacity-30" : "",
             )}
             placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Message the assistant..."))}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            spellCheck
-            autoCorrect="on"
-            autoCapitalize="sentences"
           />
         </div>
       </div>

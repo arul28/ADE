@@ -133,6 +133,7 @@ export type AgentChatEvent =
   | {
       type: "text";
       text: string;
+      messageId?: string;
       turnId?: string;
       itemId?: string;
     }
@@ -141,6 +142,7 @@ export type AgentChatEvent =
       tool: string;
       args: unknown;
       itemId: string;
+      logicalItemId?: string;
       parentItemId?: string;
       turnId?: string;
     }
@@ -149,6 +151,7 @@ export type AgentChatEvent =
       tool: string;
       result: unknown;
       itemId: string;
+      logicalItemId?: string;
       parentItemId?: string;
       turnId?: string;
       status?: "running" | "completed" | "failed";
@@ -159,6 +162,7 @@ export type AgentChatEvent =
       diff: string;
       kind: "create" | "modify" | "delete";
       itemId: string;
+      logicalItemId?: string;
       turnId?: string;
       status?: "running" | "completed" | "failed";
     }
@@ -168,6 +172,7 @@ export type AgentChatEvent =
       cwd: string;
       output: string;
       itemId: string;
+      logicalItemId?: string;
       turnId?: string;
       exitCode?: number | null;
       durationMs?: number | null;
@@ -189,6 +194,7 @@ export type AgentChatEvent =
   | {
       type: "approval_request";
       itemId: string;
+      logicalItemId?: string;
       kind: "command" | "file_change" | "tool_call";
       description: string;
       turnId?: string;
@@ -319,6 +325,7 @@ export type AgentChatEvent =
       query: string;
       action?: string;
       itemId: string;
+      logicalItemId?: string;
       turnId?: string;
       status: "running" | "completed" | "failed";
     }
@@ -362,10 +369,11 @@ export type AgentChatEventEnvelope = {
 
 export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
+export type AgentChatInteractionMode = "default" | "plan";
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
 export type AgentChatSurface = "work" | "automation";
-export type PendingInputSource = "claude" | "codex" | "unified" | "mission";
-export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions";
+export type PendingInputSource = "claude" | "codex" | "unified" | "mission" | "ade";
+export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval";
 
 export type PendingInputOption = {
   label: string;
@@ -405,12 +413,14 @@ export type AgentChatSession = {
   id: string;
   laneId: string;
   provider: AgentChatProvider;
-  /** Human-readable display name for the model (e.g. "Claude Sonnet 4.6"). Kept as a plain string for serialization/persistence compatibility. */
+  /** Runtime-facing model token (CLI shortId or direct API model id), persisted as a plain string for compatibility. */
   model: string;
-  modelId: ModelId;
+  modelId?: ModelId;
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
+  permissionMode?: AgentChatPermissionMode;
+  interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -440,6 +450,8 @@ export type AgentChatSessionSummary = {
   goal?: string | null;
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
+  permissionMode?: AgentChatPermissionMode;
+  interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -520,6 +532,8 @@ export type AgentChatCreateArgs = {
   modelId?: ModelId;
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode;
+  interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -558,6 +572,7 @@ export type AgentChatSendArgs = {
   attachments?: AgentChatFileRef[];
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
+  interactionMode?: AgentChatInteractionMode | null;
 };
 
 export type AgentChatSteerArgs = {
@@ -601,6 +616,8 @@ export type AgentChatUpdateSessionArgs = {
   title?: string | null;
   modelId?: ModelId;
   reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode;
+  interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;

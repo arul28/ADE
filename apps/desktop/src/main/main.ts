@@ -1,6 +1,7 @@
 import { app, BrowserWindow, nativeImage, shell } from "electron";
 import { execSync } from "node:child_process";
 import path from "node:path";
+type NodePtyType = typeof import("node-pty");
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { openKvDb } from "./services/state/kvDb";
@@ -37,7 +38,7 @@ import { detectDefaultBaseRef, resolveRepoRoot, toProjectInfo, upsertProjectRow 
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
-import type { ProjectInfo } from "../shared/types";
+import type { PortLease, ProjectInfo } from "../shared/types";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -402,7 +403,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
       err: toErrorMessage(error)
     });
     const fallbackHtml = encodeURIComponent(
-      `<html><body style="margin:0;background:#0f0d14;color:#f8f8f2;font-family:monospace;padding:24px;">` +
+      `<html><body style="margin:0;background:#0f0d14;color:#f8f8f2;font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;">` +
       `<h2 style="margin:0 0 12px;">ADE failed to load renderer</h2>` +
       `<p style="margin:0 0 8px;">URL: ${rendererUrl.replace(/</g, "&lt;")}</p>` +
       `<p style="margin:0;">Error: ${toErrorMessage(error).replace(/</g, "&lt;")}</p>` +
@@ -498,7 +499,7 @@ app.whenReady().then(async () => {
   const loadPty = () => {
     // node-pty is a native dependency; keep the require inside the main process runtime.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require("node-pty") as typeof import("node-pty");
+    return require("node-pty") as NodePtyType;
   };
 
   const normalizeProjectRoot = (projectRoot: string) => path.resolve(projectRoot);
@@ -671,7 +672,7 @@ app.whenReady().then(async () => {
       logger,
       broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesPortEvent, ev),
       persistLeases: (leases) => db.setJson("port_leases", leases),
-      loadLeases: () => db.getJson<import("../shared/types").PortLease[]>("port_leases") ?? [],
+      loadLeases: () => db.getJson<PortLease[]>("port_leases") ?? [],
     });
     portAllocationService.restore();
 
@@ -1240,7 +1241,6 @@ app.whenReady().then(async () => {
       transcriptsDir: adePaths.transcriptsDir,
       projectId,
       memoryService,
-      memoryFilesService,
       fileService,
       workerAgentService,
       workerHeartbeatService,

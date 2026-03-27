@@ -81,10 +81,15 @@ const errorBannerStyle: React.CSSProperties = {
   borderRadius: 0,
   padding: "10px 14px",
   fontSize: 11,
-  fontFamily: "'JetBrains Mono', monospace",
+  fontFamily: "var(--font-sans)",
   color: C.error,
   whiteSpace: "pre-wrap",
+  maxHeight: "200px",
+  overflowY: "auto",
 };
+
+/** Regex for characters/patterns not allowed in git branch names. */
+const INVALID_GIT_REF_RE = /[\s~^:?*\[\\]|\.{2}|^\/|\/$/;
 
 function StepOutcome({ outcome }: { outcome: IntegrationProposalStep["outcome"] }) {
   if (outcome === "clean") return <CheckCircle size={14} weight="fill" style={{ color: C.success }} />;
@@ -150,7 +155,7 @@ function Stepper({ currentStep }: { currentStep: number }) {
                   : isActive
                     ? C.accentSubtleBg
                     : "transparent",
-                fontFamily: "'JetBrains Mono', monospace",
+                fontFamily: "var(--font-sans)",
                 fontSize: 11,
                 fontWeight: 700,
                 color: isCompleted
@@ -165,7 +170,7 @@ function Stepper({ currentStep }: { currentStep: number }) {
               <span style={{
                 fontSize: 10,
                 fontWeight: isActive ? 700 : 500,
-                fontFamily: "'JetBrains Mono', monospace",
+                fontFamily: "var(--font-sans)",
                 textTransform: "uppercase" as const,
                 letterSpacing: "1px",
                 color: isCompleted
@@ -293,7 +298,7 @@ function LaneCheckboxList({
               style={{ accentColor: C.accent }}
             />
             <span style={{
-              fontFamily: "'JetBrains Mono', monospace",
+              fontFamily: "var(--font-sans)",
               fontSize: 12,
               fontWeight: 600,
               color: C.textPrimary,
@@ -305,7 +310,7 @@ function LaneCheckboxList({
               {lane.name}
             </span>
             <span style={{
-              fontFamily: "'JetBrains Mono', monospace",
+              fontFamily: "var(--font-sans)",
               fontSize: 11,
               color: C.textMuted,
             }}>
@@ -469,8 +474,11 @@ export function CreatePrModal({
   const [laneSyncStatusById, setLaneSyncStatusById] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [laneSyncLoadingById, setLaneSyncLoadingById] = React.useState<Record<string, boolean>>({});
 
+  const [draftError, setDraftError] = React.useState<string | null>(null);
+
   const handleDraftAI = async (laneId: string) => {
     setDrafting(true);
+    setDraftError(null);
     try {
       const result = await window.ade.prs.draftDescription({ laneId });
       if (mode === "normal") {
@@ -478,7 +486,7 @@ export function CreatePrModal({
         setNormalBody(result.body);
       }
     } catch (err: unknown) {
-      setExecError(err instanceof Error ? err.message : String(err));
+      setDraftError(err instanceof Error ? err.message : String(err));
     } finally {
       setDrafting(false);
     }
@@ -489,6 +497,9 @@ export function CreatePrModal({
   const [execError, setExecError] = React.useState<string | null>(null);
   const [results, setResults] = React.useState<PrSummary[] | null>(null);
   const [integrationResult, setIntegrationResult] = React.useState<CreateIntegrationPrResult | null>(null);
+  const [integrationProgress, setIntegrationProgress] = React.useState<string | null>(null);
+  const [integrationBranchError, setIntegrationBranchError] = React.useState<string | null>(null);
+  const [queueErrors, setQueueErrors] = React.useState<Array<{ laneId: string; error: string }>>([]);
 
   const openRebaseTab = React.useCallback((laneId: string) => {
     onOpenChange(false);
@@ -513,6 +524,7 @@ export function CreatePrModal({
       setResults(null);
       setNormalBody("");
       setDrafting(false);
+      setDraftError(null);
       setIntegrationSources([]);
       setIntegrationName("");
       setIntegrationTitle("");
@@ -521,6 +533,9 @@ export function CreatePrModal({
       setProposal(null);
       setSimulating(false);
       setIntegrationResult(null);
+      setIntegrationProgress(null);
+      setIntegrationBranchError(null);
+      setQueueErrors([]);
     }, 200);
     return () => clearTimeout(id);
   }, [open]);
@@ -585,6 +600,9 @@ export function CreatePrModal({
   const handleCreate = async () => {
     setBusy(true);
     setExecError(null);
+    setQueueErrors([]);
+    setIntegrationProgress(null);
+    let lastProgressLabel: string | null = null;
     try {
       if (mode === "normal") {
         const lane = lanes.find((l) => l.id === normalLaneId);
@@ -599,6 +617,7 @@ export function CreatePrModal({
           })
         });
         setResults([pr]);
+        setNumericStep(3);
       } else if (mode === "queue") {
         const baseBranch = primaryLane?.branchRef ?? "main";
         const result = await runWithDirtyWorktreeConfirmation({
@@ -611,15 +630,18 @@ export function CreatePrModal({
           })
         });
         if (result.errors.length > 0) {
-          setExecError(result.errors.map((e) => `${e.laneId}: ${e.error}`).join("\n"));
+          setQueueErrors(result.errors);
         }
         setResults(result.prs);
+        setNumericStep(3);
       } else if (mode === "integration") {
         if (!proposal) {
           setExecError("Run a simulation first to create a proposal.");
           setBusy(false);
           return;
         }
+        lastProgressLabel = "Saving proposal";
+        setIntegrationProgress("Saving proposal...");
         await window.ade.prs.updateProposal({
           proposalId: proposal.proposalId,
           title: integrationTitle || "Integration workflow",
@@ -627,16 +649,25 @@ export function CreatePrModal({
           draft: integrationDraft,
           integrationLaneName: integrationName || `integration/${Date.now().toString(36)}`,
         });
+        lastProgressLabel = "Creating integration lane";
+        setIntegrationProgress("Creating integration lane...");
         await window.ade.prs.createIntegrationLaneForProposal({
           proposalId: proposal.proposalId,
         });
+        setIntegrationProgress(null);
         // No PR created — proposal saved for later commit from Integration tab
         setResults([]);
+        setNumericStep(3);
       }
-      setNumericStep(3);
     } catch (err: unknown) {
-      setExecError(err instanceof Error ? err.message : String(err));
-      setNumericStep(3);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (mode === "integration" && lastProgressLabel) {
+        setExecError(`Failed during "${lastProgressLabel}": ${msg}`);
+      } else {
+        setExecError(msg);
+      }
+      setIntegrationProgress(null);
+      // Stay on current step so user can see the error and retry
     } finally {
       setBusy(false);
     }
@@ -667,10 +698,14 @@ export function CreatePrModal({
     setProposal(null);
   };
 
+  const integrationNameTrimmed = integrationName.trim();
+  const integrationBranchValid = integrationNameTrimmed.length > 0 && !INVALID_GIT_REF_RE.test(integrationNameTrimmed) && !integrationNameTrimmed.startsWith("/") && !integrationNameTrimmed.endsWith("/") && !integrationNameTrimmed.endsWith(".lock") && !integrationNameTrimmed.endsWith(".");
+
   const canCreateIntegration =
     integrationSources.length >= 2 &&
     !!proposal &&
-    proposal.overallOutcome !== "blocked";
+    proposal.overallOutcome !== "blocked" &&
+    integrationBranchValid;
 
   /* Can user advance to step 2 or submit from step 2? Same readiness check. */
   const canProceed =
@@ -679,10 +714,14 @@ export function CreatePrModal({
     (mode === "integration" && canCreateIntegration);
 
   const goToStep2 = () => {
+    setExecError(null);
+    setDraftError(null);
     setNumericStep(2);
   };
 
   const goBackToStep1 = () => {
+    setExecError(null);
+    setDraftError(null);
     setNumericStep(1);
   };
 
@@ -736,7 +775,7 @@ export function CreatePrModal({
   );
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root open={open} onOpenChange={(next) => { if (!next && busy) return; onOpenChange(next); }}>
       <Dialog.Portal>
         <Dialog.Overlay
           style={{
@@ -778,7 +817,7 @@ export function CreatePrModal({
             gap: 12,
           }}>
             <span style={{
-              fontFamily: "'JetBrains Mono', monospace",
+              fontFamily: "var(--font-sans)",
               fontSize: 14,
               fontWeight: 700,
               color: C.accent,
@@ -786,7 +825,7 @@ export function CreatePrModal({
               01
             </span>
             <Dialog.Title style={{
-              fontFamily: "'Space Grotesk', sans-serif",
+              fontFamily: "var(--font-sans)",
               fontSize: 16,
               fontWeight: 700,
               color: C.textPrimary,
@@ -797,15 +836,17 @@ export function CreatePrModal({
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
+                disabled={busy}
                 style={{
                   background: "transparent",
                   border: "none",
-                  cursor: "pointer",
-                  color: C.textMuted,
+                  cursor: busy ? "not-allowed" : "pointer",
+                  color: busy ? C.textDisabled : C.textMuted,
                   padding: 4,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
+                  opacity: busy ? 0.4 : 1,
                 }}
                 aria-label="Close"
               >
@@ -873,7 +914,7 @@ export function CreatePrModal({
                           <span style={{
                             fontSize: 10,
                             fontWeight: 700,
-                            fontFamily: "'JetBrains Mono', monospace",
+                            fontFamily: "var(--font-sans)",
                             textTransform: "uppercase" as const,
                             letterSpacing: "1px",
                             color: selected ? C.textPrimary : C.textSecondary,
@@ -882,7 +923,7 @@ export function CreatePrModal({
                           </span>
                           <span style={{
                             fontSize: 10,
-                            fontFamily: "'JetBrains Mono', monospace",
+                            fontFamily: "var(--font-sans)",
                             color: C.textMuted,
                             textAlign: "center",
                             lineHeight: "14px",
@@ -976,7 +1017,7 @@ export function CreatePrModal({
                               }}
                             >
                               <div style={{
-                                fontFamily: "'Space Grotesk', sans-serif",
+                                fontFamily: "var(--font-sans)",
                                 fontSize: 20,
                                 fontWeight: 700,
                                 color: stat.color,
@@ -986,7 +1027,7 @@ export function CreatePrModal({
                               <div style={{
                                 fontSize: 9,
                                 fontWeight: 700,
-                                fontFamily: "'JetBrains Mono', monospace",
+                                fontFamily: "var(--font-sans)",
                                 textTransform: "uppercase" as const,
                                 letterSpacing: "1px",
                                 color: C.textMuted,
@@ -1188,7 +1229,7 @@ export function CreatePrModal({
                       <div style={{
                         marginTop: 8,
                         fontSize: 11,
-                        fontFamily: "'JetBrains Mono', monospace",
+                        fontFamily: "var(--font-sans)",
                         color: C.textSecondary,
                       }}>
                         {queueLaneIds.length} lane{queueLaneIds.length !== 1 ? "s" : ""} selected
@@ -1227,7 +1268,7 @@ export function CreatePrModal({
                           border: `1px solid ${C.accentBorder}`,
                           borderRadius: 0,
                           color: (integrationSources.length < 2 || simulating) ? C.textDisabled : C.accent,
-                          fontFamily: "'JetBrains Mono', monospace",
+                          fontFamily: "var(--font-sans)",
                           fontSize: 11,
                           fontWeight: 600,
                           padding: "8px 14px",
@@ -1244,7 +1285,7 @@ export function CreatePrModal({
                       {integrationSources.length < 2 && (
                         <span style={{
                           fontSize: 11,
-                          fontFamily: "'JetBrains Mono', monospace",
+                          fontFamily: "var(--font-sans)",
                           color: C.textDisabled,
                         }}>
                           Select at least 2 lanes
@@ -1273,7 +1314,7 @@ export function CreatePrModal({
                           <span style={{
                             fontSize: 10,
                             fontWeight: 700,
-                            fontFamily: "'JetBrains Mono', monospace",
+                            fontFamily: "var(--font-sans)",
                             textTransform: "uppercase" as const,
                             letterSpacing: "1px",
                             padding: "4px 8px",
@@ -1291,7 +1332,7 @@ export function CreatePrModal({
                               alignItems: "center",
                               gap: 8,
                               fontSize: 12,
-                              fontFamily: "'JetBrains Mono', monospace",
+                              fontFamily: "var(--font-sans)",
                             }}>
                               <StepOutcome outcome={s.outcome} />
                               <span style={{ color: C.textPrimary, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -1308,7 +1349,7 @@ export function CreatePrModal({
                             <div style={{
                               fontSize: 10,
                               fontWeight: 700,
-                              fontFamily: "'JetBrains Mono', monospace",
+                              fontFamily: "var(--font-sans)",
                               textTransform: "uppercase" as const,
                               letterSpacing: "1px",
                               color: C.warning,
@@ -1321,7 +1362,7 @@ export function CreatePrModal({
                               .map((f, i) => (
                                 <div key={i} style={{
                                   fontSize: 11,
-                                  fontFamily: "'JetBrains Mono', monospace",
+                                  fontFamily: "var(--font-sans)",
                                   color: `${C.warning}99`,
                                   paddingLeft: 8,
                                   lineHeight: "18px",
@@ -1339,12 +1380,40 @@ export function CreatePrModal({
                       <input
                         type="text"
                         value={integrationName}
-                        onChange={(e) => setIntegrationName(e.target.value)}
-                        style={inputStyle}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setIntegrationName(val);
+                          const trimmed = val.trim();
+                          if (trimmed.length === 0) {
+                            setIntegrationBranchError(null);
+                          } else if (INVALID_GIT_REF_RE.test(trimmed)) {
+                            setIntegrationBranchError("Branch name contains invalid characters (spaces, ~, ^, :, ?, *, [, \\, or consecutive dots).");
+                          } else if (trimmed.startsWith("/") || trimmed.endsWith("/")) {
+                            setIntegrationBranchError("Branch name must not start or end with \"/\".");
+                          } else if (trimmed.endsWith(".lock") || trimmed.endsWith(".")) {
+                            setIntegrationBranchError("Branch name must not end with \".lock\" or \".\".");
+                          } else {
+                            setIntegrationBranchError(null);
+                          }
+                        }}
+                        style={{
+                          ...inputStyle,
+                          ...(integrationBranchError ? { borderColor: C.error } : {}),
+                        }}
                         placeholder="integration/feature-bundle"
-                        onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
-                        onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
+                        onFocus={(e) => { e.currentTarget.style.borderColor = integrationBranchError ? C.error : C.accent; }}
+                        onBlur={(e) => { e.currentTarget.style.borderColor = integrationBranchError ? C.error : C.borderSubtle; }}
                       />
+                      {integrationBranchError && (
+                        <div style={{
+                          fontSize: 11,
+                          fontFamily: "var(--font-sans)",
+                          color: C.error,
+                          marginTop: 4,
+                        }}>
+                          {integrationBranchError}
+                        </div>
+                      )}
                     </div>
                   </>
                 )}
@@ -1394,7 +1463,7 @@ export function CreatePrModal({
                             </div>
                             <div>
                               <div style={{
-                                fontFamily: "'JetBrains Mono', monospace",
+                                fontFamily: "var(--font-sans)",
                                 fontSize: 12,
                                 fontWeight: 600,
                                 color: C.textPrimary,
@@ -1402,7 +1471,7 @@ export function CreatePrModal({
                                 {m.label}
                               </div>
                               <div style={{
-                                fontFamily: "'JetBrains Mono', monospace",
+                                fontFamily: "var(--font-sans)",
                                 fontSize: 11,
                                 color: C.textMuted,
                                 marginTop: 2,
@@ -1460,7 +1529,7 @@ export function CreatePrModal({
                             border: `1px solid ${C.accentBorder}`,
                             borderRadius: 0,
                             color: (!normalLaneId || drafting) ? C.textDisabled : C.accent,
-                            fontFamily: "'JetBrains Mono', monospace",
+                            fontFamily: "var(--font-sans)",
                             fontSize: 10,
                             fontWeight: 700,
                             textTransform: "uppercase" as const,
@@ -1496,7 +1565,7 @@ export function CreatePrModal({
                       display: "flex",
                       alignItems: "center",
                       gap: 10,
-                      fontFamily: "'JetBrains Mono', monospace",
+                      fontFamily: "var(--font-sans)",
                       fontSize: 12,
                       color: C.textPrimary,
                       cursor: "pointer",
@@ -1529,7 +1598,7 @@ export function CreatePrModal({
                               display: "flex",
                               alignItems: "center",
                               gap: 8,
-                              fontFamily: "'JetBrains Mono', monospace",
+                              fontFamily: "var(--font-sans)",
                               fontSize: 12,
                               color: C.textPrimary,
                             }}>
@@ -1556,7 +1625,7 @@ export function CreatePrModal({
                       display: "flex",
                       alignItems: "center",
                       gap: 10,
-                      fontFamily: "'JetBrains Mono', monospace",
+                      fontFamily: "var(--font-sans)",
                       fontSize: 12,
                       color: C.textPrimary,
                       cursor: "pointer",
@@ -1584,7 +1653,7 @@ export function CreatePrModal({
                       <span style={labelStyle}>INTEGRATION SUMMARY</span>
                       <div style={{
                         fontSize: 12,
-                        fontFamily: "'JetBrains Mono', monospace",
+                        fontFamily: "var(--font-sans)",
                         color: C.textSecondary,
                         marginBottom: 8,
                       }}>
@@ -1594,7 +1663,7 @@ export function CreatePrModal({
                         <span style={{
                           fontSize: 10,
                           fontWeight: 700,
-                          fontFamily: "'JetBrains Mono', monospace",
+                          fontFamily: "var(--font-sans)",
                           textTransform: "uppercase" as const,
                           letterSpacing: "1px",
                           padding: "4px 8px",
@@ -1637,7 +1706,7 @@ export function CreatePrModal({
                       display: "flex",
                       alignItems: "center",
                       gap: 10,
-                      fontFamily: "'JetBrains Mono', monospace",
+                      fontFamily: "var(--font-sans)",
                       fontSize: 12,
                       color: C.textPrimary,
                       cursor: "pointer",
@@ -1653,8 +1722,27 @@ export function CreatePrModal({
                   </>
                 )}
 
+                {draftError && (
+                  <div style={errorBannerStyle}>Draft failed: {draftError}</div>
+                )}
+
                 {execError && (
                   <div style={errorBannerStyle}>{execError}</div>
+                )}
+
+                {integrationProgress && (
+                  <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 11,
+                    fontFamily: "var(--font-sans)",
+                    color: C.accent,
+                    padding: "8px 0",
+                  }}>
+                    <CircleNotch size={12} className="animate-spin" />
+                    {integrationProgress}
+                  </div>
                 )}
               </div>
             )}
@@ -1676,7 +1764,7 @@ export function CreatePrModal({
                     }}>
                       <CheckCircle size={18} weight="fill" style={{ color: C.success }} />
                       <span style={{
-                        fontFamily: "'Space Grotesk', sans-serif",
+                        fontFamily: "var(--font-sans)",
                         fontSize: 16,
                         fontWeight: 700,
                         color: C.textPrimary,
@@ -1688,7 +1776,7 @@ export function CreatePrModal({
                       background: C.bgInput,
                       border: `1px solid ${C.border}`,
                       padding: "12px 16px",
-                      fontFamily: "'JetBrains Mono', monospace",
+                      fontFamily: "var(--font-sans)",
                       fontSize: 12,
                       color: C.textSecondary,
                     }}>
@@ -1708,16 +1796,33 @@ export function CreatePrModal({
                       gap: 8,
                       marginBottom: 12,
                     }}>
-                      <CheckCircle size={18} weight="fill" style={{ color: C.success }} />
+                      {queueErrors.length > 0 ? (
+                        <Warning size={18} weight="fill" style={{ color: C.warning }} />
+                      ) : (
+                        <CheckCircle size={18} weight="fill" style={{ color: C.success }} />
+                      )}
                       <span style={{
-                        fontFamily: "'Space Grotesk', sans-serif",
+                        fontFamily: "var(--font-sans)",
                         fontSize: 16,
                         fontWeight: 700,
                         color: C.textPrimary,
                       }}>
-                        Created {results.length} PR{results.length !== 1 ? "s" : ""}
+                        {queueErrors.length > 0
+                          ? `Created ${results.length} of ${results.length + queueErrors.length} PRs. ${queueErrors.length} failed.`
+                          : `Created ${results.length} PR${results.length !== 1 ? "s" : ""}`}
                       </span>
                     </div>
+                    {queueErrors.length > 0 && (
+                      <div style={{
+                        ...errorBannerStyle,
+                        marginBottom: 10,
+                      }}>
+                        {queueErrors.map((e) => {
+                          const lane = lanes.find((l) => l.id === e.laneId);
+                          return `${lane?.name ?? e.laneId}: ${e.error}`;
+                        }).join("\n")}
+                      </div>
+                    )}
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {results.map((pr) => (
                         <div
@@ -1734,7 +1839,7 @@ export function CreatePrModal({
                         >
                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                             <span style={{
-                              fontFamily: "'JetBrains Mono', monospace",
+                              fontFamily: "var(--font-sans)",
                               fontSize: 12,
                               fontWeight: 700,
                               color: C.accent,
@@ -1742,7 +1847,7 @@ export function CreatePrModal({
                               #{pr.githubPrNumber}
                             </span>
                             <span style={{
-                              fontFamily: "'JetBrains Mono', monospace",
+                              fontFamily: "var(--font-sans)",
                               fontSize: 12,
                               color: C.textSecondary,
                             }}>
@@ -1756,7 +1861,7 @@ export function CreatePrModal({
                               border: `1px solid ${C.accentBorder}`,
                               borderRadius: 0,
                               color: C.accent,
-                              fontFamily: "'JetBrains Mono', monospace",
+                              fontFamily: "var(--font-sans)",
                               fontSize: 10,
                               fontWeight: 700,
                               textTransform: "uppercase" as const,
@@ -1785,7 +1890,7 @@ export function CreatePrModal({
                             display: "flex",
                             alignItems: "center",
                             gap: 8,
-                            fontFamily: "'JetBrains Mono', monospace",
+                            fontFamily: "var(--font-sans)",
                             fontSize: 12,
                             padding: "6px 0",
                           }}>
@@ -1845,7 +1950,7 @@ export function CreatePrModal({
                       border: `1px solid ${C.borderSubtle}`,
                       borderRadius: 0,
                       color: C.textSecondary,
-                      fontFamily: "'JetBrains Mono', monospace",
+                      fontFamily: "var(--font-sans)",
                       fontSize: 11,
                       fontWeight: 700,
                       textTransform: "uppercase" as const,
@@ -1866,7 +1971,7 @@ export function CreatePrModal({
                     border: `1px solid ${C.borderSubtle}`,
                     borderRadius: 0,
                     color: C.textSecondary,
-                    fontFamily: "'JetBrains Mono', monospace",
+                    fontFamily: "var(--font-sans)",
                     fontSize: 11,
                     fontWeight: 700,
                     textTransform: "uppercase" as const,
@@ -1898,7 +2003,7 @@ export function CreatePrModal({
                     border: "none",
                     borderRadius: 0,
                     color: C.bgMain,
-                    fontFamily: "'JetBrains Mono', monospace",
+                    fontFamily: "var(--font-sans)",
                     fontSize: 11,
                     fontWeight: 700,
                     textTransform: "uppercase" as const,
@@ -1924,7 +2029,7 @@ export function CreatePrModal({
                     border: "none",
                     borderRadius: 0,
                     color: C.bgMain,
-                    fontFamily: "'JetBrains Mono', monospace",
+                    fontFamily: "var(--font-sans)",
                     fontSize: 11,
                     fontWeight: 700,
                     textTransform: "uppercase" as const,
@@ -1950,7 +2055,7 @@ export function CreatePrModal({
                       border: "none",
                       borderRadius: 0,
                       color: C.bgMain,
-                      fontFamily: "'JetBrains Mono', monospace",
+                      fontFamily: "var(--font-sans)",
                       fontSize: 11,
                       fontWeight: 700,
                       textTransform: "uppercase" as const,

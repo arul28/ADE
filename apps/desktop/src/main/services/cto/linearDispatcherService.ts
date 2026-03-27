@@ -5,9 +5,11 @@ import type {
   LinearIngressEventRecord,
   LinearSyncQueueItem,
   LinearWorkflowConfig,
+  LinearWorkflowExecutionContext,
   LinearWorkflowDefinition,
   LinearWorkflowEventPayload,
   LinearWorkflowMatchResult,
+  LinearWorkflowRouteContext,
   LinearWorkflowRunDetail,
   LinearWorkflowRun,
   LinearWorkflowRunEvent,
@@ -18,7 +20,7 @@ import type {
   NormalizedLinearIssue,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
-import { nowIso } from "../shared/utils";
+import { nowIso, safeJsonParse } from "../shared/utils";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
@@ -62,6 +64,8 @@ type RunRow = {
   closeout_state: LinearWorkflowRun["closeoutState"];
   terminal_outcome: LinearWorkflowRun["terminalOutcome"];
   source_issue_snapshot_json: string;
+  route_context_json: string | null;
+  execution_context_json: string | null;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -119,6 +123,8 @@ function toRun(row: RunRow): LinearWorkflowRun {
     closeoutState: row.closeout_state,
     terminalOutcome: row.terminal_outcome,
     sourceIssueSnapshot: JSON.parse(row.source_issue_snapshot_json),
+    routeContext: safeJsonParse(row.route_context_json, null),
+    executionContext: safeJsonParse(row.execution_context_json, null),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -155,22 +161,10 @@ function toRunEvent(row: EventRow): LinearWorkflowRunEvent {
   };
 }
 
-function buildPrompt(issue: NormalizedLinearIssue): string {
-  return [
-    `${issue.identifier}: ${issue.title}`,
-    "",
-    issue.description || "No description provided.",
-    "",
-    `Project: ${issue.projectSlug}`,
-    `Priority: ${issue.priorityLabel}`,
-    `Labels: ${issue.labels.join(", ") || "none"}`,
-  ].join("\n");
-}
-
-function describePrBehavior(workflow: LinearWorkflowDefinition): string {
-  const strategy = workflow.target.prStrategy;
+function describePrBehavior(target: LinearWorkflowDefinition["target"]): string {
+  const strategy = target.prStrategy;
   if (!strategy) return "No PR will be created unless a later workflow step requires one.";
-  const timing = workflow.target.prTiming ?? "after_target_complete";
+  const timing = target.prTiming ?? "after_target_complete";
   if (strategy.kind === "manual") {
     return `Track a manually created PR (${timing === "after_start" ? "watch immediately" : "wait after delegated work"}).`;
   }
@@ -192,6 +186,14 @@ function resolveWorkflowTargetStatus(
 
 function targetStatusAllowsTerminalSuccess(targetStatus: LinearWorkflowTargetStatus): boolean {
   return targetStatus === "completed" || targetStatus === "runtime_completed" || targetStatus === "any_terminal";
+}
+
+function getTargetStages(target: LinearWorkflowDefinition["target"]): LinearWorkflowDefinition["target"][] {
+  const { downstreamTarget, ...current } = target;
+  return [
+    current as LinearWorkflowDefinition["target"],
+    ...(downstreamTarget ? getTargetStages(downstreamTarget) : []),
+  ];
 }
 
 export function createLinearDispatcherService(args: {
@@ -256,15 +258,6 @@ export function createLinearDispatcherService(args: {
     });
   };
 
-  const parsePayload = <T = Record<string, unknown>>(value: string | null): T | null => {
-    if (!value) return null;
-    try {
-      return JSON.parse(value) as T;
-    } catch {
-      return null;
-    }
-  };
-
   const getRunRow = (runId: string): RunRow | null =>
     args.db.get<RunRow>(
       `
@@ -284,7 +277,7 @@ export function createLinearDispatcherService(args: {
           select *
           from linear_workflow_runs
           where project_id = ?
-            and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'retry_wait')
+            and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'awaiting_lane_choice', 'retry_wait')
           order by datetime(created_at) asc
         `,
         [args.projectId]
@@ -297,7 +290,7 @@ export function createLinearDispatcherService(args: {
         select count(*) as total
         from linear_workflow_runs
         where project_id = ?
-          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'retry_wait')
+          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'awaiting_lane_choice', 'retry_wait')
         limit 1
       `,
       [args.projectId]
@@ -347,6 +340,8 @@ export function createLinearDispatcherService(args: {
     retryAfter: string | null;
     closeoutState: LinearWorkflowRun["closeoutState"];
     terminalOutcome: LinearWorkflowRun["terminalOutcome"];
+    routeContext: LinearWorkflowRouteContext | null;
+    executionContext: LinearWorkflowExecutionContext | null;
     lastError: string | null;
   }>): void => {
     const existing = getRunRow(runId);
@@ -373,6 +368,8 @@ export function createLinearDispatcherService(args: {
             retry_after = ?,
             closeout_state = ?,
             terminal_outcome = ?,
+            route_context_json = ?,
+            execution_context_json = ?,
             last_error = ?,
             updated_at = ?
         where id = ?
@@ -398,6 +395,8 @@ export function createLinearDispatcherService(args: {
         patch.retryAfter === undefined ? existing.retry_after : patch.retryAfter,
         patch.closeoutState ?? existing.closeout_state,
         patch.terminalOutcome === undefined ? existing.terminal_outcome : patch.terminalOutcome,
+        patch.routeContext === undefined ? existing.route_context_json : patch.routeContext ? JSON.stringify(patch.routeContext) : null,
+        patch.executionContext === undefined ? existing.execution_context_json : patch.executionContext ? JSON.stringify(patch.executionContext) : null,
         patch.lastError === undefined ? existing.last_error : patch.lastError,
         nowIso(),
         runId,
@@ -405,6 +404,58 @@ export function createLinearDispatcherService(args: {
       ]
     );
   };
+
+  const mergeExecutionContext = (
+    runId: string,
+    patch: Partial<Record<string, unknown>> | null,
+  ): LinearWorkflowExecutionContext | null => {
+    const current = getRunRow(runId);
+    if (!current) return null;
+    const existing = safeJsonParse<Record<string, unknown> | null>(current.execution_context_json, null) ?? {};
+    if (!patch) {
+      updateRun(runId, { executionContext: null });
+      return null;
+    }
+    const next = { ...existing, ...patch } as LinearWorkflowExecutionContext;
+    updateRun(runId, { executionContext: next });
+    return next;
+  };
+
+  const getActiveTargetStageIndex = (run: LinearWorkflowRun, workflow: LinearWorkflowDefinition): number => {
+    const requested = Number(run.executionContext?.activeStageIndex ?? 0);
+    const stages = getTargetStages(workflow.target);
+    if (!Number.isFinite(requested)) return 0;
+    return Math.max(0, Math.min(stages.length - 1, Math.floor(requested)));
+  };
+
+  const getActiveTarget = (run: LinearWorkflowRun, workflow: LinearWorkflowDefinition): LinearWorkflowDefinition["target"] => {
+    const stages = getTargetStages(workflow.target);
+    return stages[getActiveTargetStageIndex(run, workflow)] ?? stages[0] ?? workflow.target;
+  };
+
+  const buildTargetStageId = (
+    run: LinearWorkflowRun,
+    workflow: LinearWorkflowDefinition,
+    step: LinearWorkflowStep,
+  ): string => {
+    const activeTarget = getActiveTarget(run, workflow);
+    return `${step.id}:${getActiveTargetStageIndex(run, workflow)}:${activeTarget.type}`;
+  };
+
+  const stripManualCompletionState = (
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    const {
+      completionSource: _completionSource,
+      stageId: _stageId,
+      targetState: _targetState,
+      ...rest
+    } = payload;
+    return rest;
+  };
+
+  const hasDurableLaunchMarker = (run: LinearWorkflowRun): boolean =>
+    Boolean(run.linkedMissionId || run.linkedSessionId || run.linkedWorkerRunId || run.linkedPrId);
 
   const updateStep = (stepId: string, patch: Partial<{
     status: StepRow["status"];
@@ -445,34 +496,24 @@ export function createLinearDispatcherService(args: {
     label: string;
   };
 
-  const resolveWorker = (workflow: LinearWorkflowDefinition): ResolvedWorkerTarget | null => {
-    const selector = workflow.target.workerSelector;
-    const workers = args.workerAgentService.listAgents({ includeDeleted: false });
-    if (!selector || selector.mode === "none") return null;
-    if (selector.mode === "id") {
-      const match = workers.find((entry) => entry.id === selector.value);
-      return match ? { id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType } : null;
-    }
-    if (selector.mode === "slug") {
-      const match = workers.find((entry) => entry.slug === selector.value);
-      return match ? { id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType } : null;
-    }
-    if (selector.mode === "capability") {
-      const match = workers.find((entry) => entry.capabilities.includes(selector.value));
-      return match ? { id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType } : null;
-    }
-    return null;
-  };
+  const listWorkers = () => args.workerAgentService.listAgents({ includeDeleted: false });
 
-  const resolveWorkerFromAssignee = (issue: NormalizedLinearIssue): ResolvedWorkerTarget | null => {
-    const assigneeValues = new Set(
-      [issue.assigneeId, issue.assigneeName]
-        .map((value) => (value ?? "").trim().toLowerCase())
-        .filter(Boolean)
-    );
-    if (!assigneeValues.size) return null;
-    const workers = args.workerAgentService.listAgents({ includeDeleted: false });
-    for (const worker of workers) {
+  const toResolvedWorker = (worker: {
+    id: string;
+    slug: string;
+    adapterType: AdapterType;
+    name: string;
+  }): ResolvedWorkerTarget & { name: string } => ({
+    id: worker.id,
+    slug: worker.slug,
+    adapterType: worker.adapterType,
+    name: worker.name,
+  });
+
+  const resolveWorkerByToken = (value: string | null | undefined): (ResolvedWorkerTarget & { name: string }) | null => {
+    const normalized = (value ?? "").trim().toLowerCase();
+    if (!normalized) return null;
+    for (const worker of listWorkers()) {
       const aliases = new Set(
         [
           worker.id,
@@ -482,12 +523,105 @@ export function createLinearDispatcherService(args: {
           ...(worker.linearIdentity?.displayNames ?? []),
           ...(worker.linearIdentity?.aliases ?? []),
         ]
-          .map((value) => (value ?? "").trim().toLowerCase())
-          .filter(Boolean)
+          .map((entry) => (entry ?? "").trim().toLowerCase())
+          .filter(Boolean),
       );
-      if ([...assigneeValues].some((value) => aliases.has(value))) {
-        return { id: worker.id, slug: worker.slug, adapterType: worker.adapterType as AdapterType };
+      if (aliases.has(normalized)) {
+        return toResolvedWorker({
+          id: worker.id,
+          slug: worker.slug,
+          adapterType: worker.adapterType as AdapterType,
+          name: worker.name,
+        });
       }
+    }
+    return null;
+  };
+
+  const isCtoAlias = (policy: LinearWorkflowConfig, value: string | null | undefined): boolean => {
+    const normalized = (value ?? "").trim().toLowerCase();
+    if (!normalized) return false;
+    const ctoAliases = new Set(
+      [
+        policy.settings.ctoLinearAssigneeId,
+        policy.settings.ctoLinearAssigneeName,
+        ...(policy.settings.ctoLinearAssigneeAliases ?? []),
+        "cto",
+      ]
+        .map((entry) => (entry ?? "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    return ctoAliases.has(normalized);
+  };
+
+  const resolveOverrideWorker = (
+    policy: LinearWorkflowConfig,
+    override: string | null | undefined,
+  ): (ResolvedWorkerTarget & { name: string }) | "cto" | null => {
+    const trimmed = (override ?? "").trim();
+    if (!trimmed) return null;
+    if (isCtoAlias(policy, trimmed)) return "cto";
+    const normalized = trimmed.toLowerCase();
+    if (normalized.startsWith("agent:")) {
+      const agentId = trimmed.slice("agent:".length).trim();
+      const direct = agentId ? args.workerAgentService.getAgent(agentId) : null;
+      if (!direct) {
+        throw new Error(`Unknown employee override '${trimmed}'.`);
+      }
+      return toResolvedWorker({
+        id: direct.id,
+        slug: direct.slug,
+        adapterType: direct.adapterType as AdapterType,
+        name: direct.name,
+      });
+    }
+    const worker = resolveWorkerByToken(trimmed);
+    if (!worker) {
+      throw new Error(`Unknown employee override '${trimmed}'.`);
+    }
+    return worker;
+  };
+
+  const resolveWorker = (
+    policy: LinearWorkflowConfig,
+    target: LinearWorkflowDefinition["target"],
+    override?: string | null,
+  ): (ResolvedWorkerTarget & { name: string }) | null => {
+    const overridden = resolveOverrideWorker(policy, override);
+    if (overridden === "cto") {
+      return null;
+    }
+    if (overridden) {
+      return overridden;
+    }
+    const selector = target.workerSelector;
+    const workers = listWorkers();
+    if (!selector || selector.mode === "none") return null;
+    if (selector.mode === "id") {
+      const match = workers.find((entry) => entry.id === selector.value);
+      return match ? toResolvedWorker({ id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType, name: match.name }) : null;
+    }
+    if (selector.mode === "slug") {
+      const match = workers.find((entry) => entry.slug === selector.value);
+      return match ? toResolvedWorker({ id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType, name: match.name }) : null;
+    }
+    if (selector.mode === "capability") {
+      const match = workers.find((entry) => entry.capabilities.includes(selector.value));
+      return match ? toResolvedWorker({ id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType, name: match.name }) : null;
+    }
+    return null;
+  };
+
+  const resolveWorkerFromAssignee = (issue: NormalizedLinearIssue): ResolvedWorkerTarget | null => {
+    const assigneeValues = new Set(
+      [issue.assigneeId, issue.assigneeName]
+        .map((value) => (value ?? "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    if (!assigneeValues.size) return null;
+    for (const assigneeValue of assigneeValues) {
+      const match = resolveWorkerByToken(assigneeValue);
+      if (match) return match;
     }
     return null;
   };
@@ -496,28 +630,34 @@ export function createLinearDispatcherService(args: {
     const assigneeValues = new Set(
       [issue.assigneeId, issue.assigneeName]
         .map((value) => (value ?? "").trim().toLowerCase())
-        .filter(Boolean)
+        .filter(Boolean),
     );
     if (!assigneeValues.size) return false;
-    const ctoAliases = new Set(
-      [
-        policy.settings.ctoLinearAssigneeId,
-        policy.settings.ctoLinearAssigneeName,
-        ...(policy.settings.ctoLinearAssigneeAliases ?? []),
-        "cto",
-      ]
-        .map((value) => (value ?? "").trim().toLowerCase())
-        .filter(Boolean)
-    );
-    return [...assigneeValues].some((value) => ctoAliases.has(value));
+    return [...assigneeValues].some((value) => isCtoAlias(policy, value));
   };
 
   const resolveEmployeeTarget = (
     policy: LinearWorkflowConfig,
-    workflow: LinearWorkflowDefinition,
-    issue: NormalizedLinearIssue
+    target: LinearWorkflowDefinition["target"],
+    issue: NormalizedLinearIssue,
+    override?: string | null,
   ): ResolvedEmployeeSessionTarget | null => {
-    const explicitIdentity = workflow.target.employeeIdentityKey?.trim() ?? "";
+    const overridden = resolveOverrideWorker(policy, override);
+    if (overridden === "cto") {
+      return {
+        identityKey: "cto",
+        worker: null,
+        label: "CTO",
+      };
+    }
+    if (overridden) {
+      return {
+        identityKey: `agent:${overridden.id}`,
+        worker: overridden,
+        label: overridden.name,
+      };
+    }
+    const explicitIdentity = target.employeeIdentityKey?.trim() ?? "";
     if (explicitIdentity === "cto") {
       return {
         identityKey: "cto",
@@ -543,7 +683,7 @@ export function createLinearDispatcherService(args: {
         label: "CTO",
       };
     }
-    const worker = resolveWorkerFromAssignee(issue) ?? resolveWorker(workflow);
+    const worker = resolveWorkerFromAssignee(issue) ?? resolveWorker(policy, target);
     if (!worker) {
       return {
         identityKey: null,
@@ -558,28 +698,78 @@ export function createLinearDispatcherService(args: {
     };
   };
 
+  const isEmployeeOverrideCompatibleWithTarget = (
+    policy: LinearWorkflowConfig,
+    targetType: LinearWorkflowDefinition["target"]["type"],
+    override: string | null | undefined,
+  ): boolean => {
+    const trimmed = (override ?? "").trim();
+    if (!trimmed) return true;
+    try {
+      const resolved = resolveOverrideWorker(policy, trimmed);
+      if (resolved === "cto") {
+        return targetType !== "worker_run" && targetType !== "pr_resolution";
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const buildLaunchPayloadFromRun = (
+    run: LinearWorkflowRun,
+    workflow: LinearWorkflowDefinition,
+    policy: LinearWorkflowConfig,
+  ): Record<string, unknown> => {
+    const activeTarget = getActiveTarget(run, workflow);
+    const issue = run.sourceIssueSnapshot as NormalizedLinearIssue;
+    const payload: Record<string, unknown> = {
+      activeTargetType: run.executionContext?.activeTargetType ?? activeTarget.type,
+      laneId: run.executionLaneId,
+      missionId: run.linkedMissionId,
+      sessionId: run.linkedSessionId,
+      workerRunId: run.linkedWorkerRunId,
+      prId: run.linkedPrId,
+    };
+    if (run.executionContext?.workerId) payload.workerId = run.executionContext.workerId;
+    if (run.executionContext?.workerSlug) payload.workerSlug = run.executionContext.workerSlug;
+    if (run.executionContext?.sessionLabel) payload.sessionLabel = run.executionContext.sessionLabel;
+    if (activeTarget.type === "employee_session") {
+      const employeeTarget = resolveEmployeeTarget(policy, activeTarget, issue, run.executionContext?.employeeOverride ?? null);
+      if (employeeTarget?.identityKey) payload.sessionIdentityKey = employeeTarget.identityKey;
+      if (employeeTarget?.label) payload.sessionLabel = employeeTarget.label;
+    }
+    return payload;
+  };
+
   const primaryLane = async () => {
+    await args.laneService.ensurePrimaryLane().catch(() => {});
     const lanes = await args.laneService.list({ includeArchived: false, includeStatus: false });
     const preferred = lanes.find((entry) => entry.laneType === "primary") ?? lanes[0];
     if (!preferred) throw new Error("No lane available for employee session launch.");
     return preferred;
   };
 
-  const buildDelegationPrompt = (run: LinearWorkflowRun, workflow: LinearWorkflowDefinition, issue: NormalizedLinearIssue): string => {
+  const buildDelegationPrompt = (
+    run: LinearWorkflowRun,
+    workflow: LinearWorkflowDefinition,
+    target: LinearWorkflowDefinition["target"],
+    issue: NormalizedLinearIssue,
+  ): string => {
     const rendered = args.templateService.renderTemplate({
-      templateId: workflow.target.sessionTemplate ?? workflow.target.missionTemplate ?? "default",
+      templateId: target.sessionTemplate ?? target.missionTemplate ?? "default",
       issue,
       route: {
         workflowId: workflow.id,
         workflowName: workflow.name,
-        runMode: workflow.target.runMode ?? "autopilot",
+        runMode: target.runMode ?? "autopilot",
       },
       worker: {
         assigneeId: issue.assigneeId,
         assigneeName: issue.assigneeName,
       },
     });
-    const prMode = `PR behavior: ${describePrBehavior(workflow)}`;
+    const prMode = `PR behavior: ${describePrBehavior(target)}`;
     const supervisorFeedback = run.latestReviewNote?.trim()
       ? [
           "",
@@ -599,9 +789,33 @@ export function createLinearDispatcherService(args: {
     ].join("\n");
   };
 
+  const readDelegationContext = (run: LinearWorkflowRun, launchContext?: Record<string, unknown> | null) => {
+    const source = launchContext ?? {};
+    const executionContext = run.executionContext ?? null;
+    const workerId =
+      executionContext && "workerId" in executionContext
+        ? (typeof executionContext.workerId === "string" ? executionContext.workerId : null)
+        : typeof source.workerId === "string"
+          ? source.workerId
+          : null;
+    const workerSlug =
+      executionContext && "workerSlug" in executionContext
+        ? (typeof executionContext.workerSlug === "string" ? executionContext.workerSlug : null)
+        : typeof source.workerSlug === "string"
+          ? source.workerSlug
+          : null;
+    const sessionLabel =
+      executionContext && "sessionLabel" in executionContext
+        ? (typeof executionContext.sessionLabel === "string" ? executionContext.sessionLabel : null)
+        : typeof source.sessionLabel === "string"
+          ? source.sessionLabel
+          : null;
+    return { workerId, workerSlug, sessionLabel };
+  };
+
   const getLaunchContext = (runId: string): Record<string, unknown> => {
     const step = getStepRows(runId).find((entry) => entry.type === "launch_target");
-    return parsePayload<Record<string, unknown>>(step?.payload_json ?? null) ?? {};
+    return safeJsonParse<Record<string, unknown> | null>(step?.payload_json ?? null, null) ?? {};
   };
 
   const syncWorkflowWorkpad = async (input: {
@@ -616,19 +830,16 @@ export function createLinearDispatcherService(args: {
     const issue = run.sourceIssueSnapshot as NormalizedLinearIssue;
     const launchContext = getLaunchContext(run.id);
     const currentStep = input.workflow.steps.find((entry) => entry.id === run.currentStepId) ?? null;
+    const delegatedContext = readDelegationContext(run, launchContext);
     const delegatedOwner =
-      typeof launchContext.sessionLabel === "string" && launchContext.sessionLabel.trim().length
-        ? launchContext.sessionLabel.trim()
-        : typeof launchContext.workerSlug === "string" && launchContext.workerSlug.trim().length
-          ? launchContext.workerSlug.trim()
-          : typeof launchContext.workerId === "string" && launchContext.workerId.trim().length
-            ? launchContext.workerId.trim()
-            : null;
+      [delegatedContext.sessionLabel, delegatedContext.workerSlug, delegatedContext.workerId]
+        .map((value) => value?.trim() ?? "")
+        .find((value) => value.length > 0) ?? null;
     await args.outboundService.publishWorkflowStatus({
       issue,
       workflowName: run.workflowName,
       runId: run.id,
-      targetType: run.targetType,
+      targetType: run.executionContext?.activeTargetType ?? run.targetType,
       state: run.status,
       currentStep: currentStep?.name ?? currentStep?.id ?? null,
       delegatedOwner,
@@ -639,8 +850,32 @@ export function createLinearDispatcherService(args: {
       prId: run.linkedPrId,
       reviewState: run.reviewState,
       reviewReadyReason: run.reviewReadyReason,
-      waitingFor: input.waitingFor,
+      waitingFor: input.waitingFor ?? run.executionContext?.waitingFor ?? null,
       note: input.note,
+      commentTemplate: input.workflow.closeout?.commentTemplate ?? null,
+      templateValues: {
+        workflow: {
+          id: input.workflow.id,
+          name: input.workflow.name,
+        },
+        run,
+        target: {
+          type: run.executionContext?.activeTargetType ?? run.targetType,
+          id: run.linkedSessionId ?? run.linkedWorkerRunId ?? run.linkedMissionId ?? run.linkedPrId ?? run.executionLaneId ?? null,
+          owner: delegatedOwner,
+        },
+        pr: {
+          id: run.linkedPrId,
+          state: run.prState,
+          checksStatus: run.prChecksStatus,
+          reviewStatus: run.prReviewStatus,
+        },
+        review: {
+          state: run.reviewState,
+          readyReason: run.reviewReadyReason,
+          note: run.latestReviewNote,
+        },
+      },
     });
   };
 
@@ -657,21 +892,86 @@ export function createLinearDispatcherService(args: {
     return null;
   };
 
+  const updateExecutionState = (
+    runId: string,
+    patch: Partial<LinearWorkflowExecutionContext>,
+  ): LinearWorkflowExecutionContext | null => mergeExecutionContext(runId, patch);
+
+  const clearExecutionWaitState = (runId: string): LinearWorkflowExecutionContext | null =>
+    updateExecutionState(runId, {
+      waitingFor: null,
+      stalledReason: null,
+    });
+
+  const getRetryDelaySec = (workflow: LinearWorkflowDefinition, retryCount: number): number => {
+    const baseDelay = workflow.retry?.backoffSeconds ?? workflow.retry?.baseDelaySec ?? 30;
+    const safeBase = Math.max(5, Math.floor(baseDelay));
+    return safeBase * (2 ** Math.max(0, retryCount));
+  };
+
+  const scheduleRetry = async (
+    run: LinearWorkflowRun,
+    workflow: LinearWorkflowDefinition,
+    error: unknown,
+    context: { eventType: string; messagePrefix: string; waitingFor?: string | null },
+  ): Promise<void> => {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const currentAttempts = run.retryCount ?? 0;
+    const maxAttempts = Math.max(0, workflow.retry?.maxAttempts ?? 0);
+    if (currentAttempts >= maxAttempts) {
+      appendEvent(run.id, context.eventType, "failed", `${context.messagePrefix}: ${errorMessage}`, {
+        retryCount: currentAttempts,
+        maxAttempts,
+      });
+      await finalizeRun(run, workflow, "failed", `${context.messagePrefix}: ${errorMessage}`);
+      return;
+    }
+
+    const retryCount = currentAttempts + 1;
+    const delaySec = getRetryDelaySec(workflow, currentAttempts);
+    const retryAfter = new Date(Date.now() + delaySec * 1000).toISOString();
+    updateExecutionState(run.id, {
+      waitingFor: context.waitingFor ?? "automatic retry",
+      stalledReason: `${context.messagePrefix}: ${errorMessage}`,
+    });
+    updateRun(run.id, {
+      status: "retry_wait",
+      retryCount,
+      retryAfter,
+      lastError: errorMessage,
+    });
+    appendEvent(run.id, context.eventType, "retry_wait", `${context.messagePrefix}: ${errorMessage}`, {
+      retryCount,
+      retryAfter,
+      delaySec,
+    });
+    await syncWorkflowWorkpad({
+      runId: run.id,
+      workflow,
+      note: `${context.messagePrefix}: ${errorMessage}. Retrying automatically.`,
+      waitingFor: context.waitingFor ?? "automatic retry",
+    });
+  };
+
   const ensureExecutionLane = async (
     run: LinearWorkflowRun,
     workflow: LinearWorkflowDefinition,
+    target: LinearWorkflowDefinition["target"],
     issue: NormalizedLinearIssue
   ): Promise<string | null> => {
-    if (workflow.target.type === "mission" || workflow.target.type === "review_gate") {
+    if (target.type === "mission" || target.type === "review_gate") {
       return null;
     }
     if (run.executionLaneId) return run.executionLaneId;
+    if (target.laneSelection === "operator_prompt") {
+      return null;
+    }
     const preferredPrimary = await primaryLane();
-    if (workflow.target.laneSelection !== "fresh_issue_lane") {
+    if (target.laneSelection !== "fresh_issue_lane") {
       return preferredPrimary.id;
     }
     const lane = await args.laneService.create({
-      name: (workflow.target.freshLaneName?.trim() || `${issue.identifier} ${issue.title}`).slice(0, 72),
+      name: (target.freshLaneName?.trim() || `${issue.identifier} ${issue.title}`).slice(0, 72),
       description: `Linear workflow ${workflow.name} for ${issue.identifier}`,
       parentLaneId: preferredPrimary.id,
     });
@@ -705,6 +1005,7 @@ export function createLinearDispatcherService(args: {
   const ensureLinkedPr = async (
     run: LinearWorkflowRun,
     workflow: LinearWorkflowDefinition,
+    target: LinearWorkflowDefinition["target"],
     laneIdOverride?: string | null
   ): Promise<string | null> => {
     if (run.linkedPrId) {
@@ -728,7 +1029,7 @@ export function createLinearDispatcherService(args: {
       return existing.id;
     }
 
-    if (!workflow.target.prStrategy) {
+    if (!target.prStrategy || target.prStrategy.kind === "manual") {
       return null;
     }
 
@@ -785,8 +1086,22 @@ export function createLinearDispatcherService(args: {
     workflow: LinearWorkflowDefinition,
     step: LinearWorkflowStep,
   ): Promise<TargetCompletionEvaluation> => {
-    const targetStatus = resolveWorkflowTargetStatus(workflow.target.type, step.targetStatus);
-    if (workflow.target.type === "mission") {
+    const target = getActiveTarget(run, workflow);
+    const targetStatus = resolveWorkflowTargetStatus(target.type, step.targetStatus);
+
+    // Check for a manual completion signal stored in the step payload by resolveRunAction.
+    const manualStepRow = getStepRows(run.id).find((r) => r.workflow_step_id === step.id);
+    if (manualStepRow) {
+      const manualPayload = safeJsonParse<Record<string, unknown> | null>(manualStepRow.payload_json, null);
+      if (
+        manualPayload?.completionSource === "manual"
+        && manualPayload.stageId === buildTargetStageId(run, workflow, step)
+      ) {
+        return { state: "completed", payload: { ...manualPayload, targetStatus } };
+      }
+    }
+
+    if (target.type === "mission") {
       if (!run.linkedMissionId) {
         return { state: "failed", payload: { targetStatus, reason: "missing_mission_link" } };
       }
@@ -818,7 +1133,7 @@ export function createLinearDispatcherService(args: {
       };
     }
 
-    if (workflow.target.type === "employee_session") {
+    if (target.type === "employee_session") {
       const launchContext = getLaunchContext(run.id);
       const identityKey = typeof launchContext.sessionIdentityKey === "string" ? launchContext.sessionIdentityKey.trim() : "";
       const sessions = await args.agentChatService.listSessions();
@@ -875,7 +1190,7 @@ export function createLinearDispatcherService(args: {
       };
     }
 
-    if (workflow.target.type === "worker_run" || workflow.target.type === "pr_resolution") {
+    if (target.type === "worker_run" || target.type === "pr_resolution") {
       if (!run.linkedWorkerRunId) {
         return { state: "failed", payload: { targetStatus, reason: "missing_worker_run_link" } };
       }
@@ -940,12 +1255,26 @@ export function createLinearDispatcherService(args: {
     workflow: LinearWorkflowDefinition,
     issue: NormalizedLinearIssue
   ): Promise<Partial<LinearWorkflowRun> & Record<string, unknown>> => {
-    const worker = resolveWorker(workflow);
-    const employeeTarget = resolveEmployeeTarget(policy, workflow, issue);
+    const target = getActiveTarget(run, workflow);
+    const stageIndex = getActiveTargetStageIndex(run, workflow);
+    const totalStages = getTargetStages(workflow.target).length;
+    const override = run.executionContext?.employeeOverride ?? null;
+    const overrideSource = override ? "operator" : null;
+    const worker = resolveWorker(policy, target, override);
+    const employeeTarget = resolveEmployeeTarget(policy, target, issue, override);
 
-    if (workflow.target.type === "mission") {
+    updateExecutionState(run.id, {
+      activeTargetType: target.type,
+      activeStageIndex: stageIndex,
+      totalStages,
+      downstreamPending: stageIndex < totalStages - 1,
+      employeeOverride: override,
+      overrideSource,
+    });
+
+    if (target.type === "mission") {
       const rendered = args.templateService.renderTemplate({
-        templateId: workflow.target.missionTemplate ?? "default",
+        templateId: target.missionTemplate ?? "default",
         issue,
         route: {
           workflowId: workflow.id,
@@ -958,43 +1287,89 @@ export function createLinearDispatcherService(args: {
         prompt: rendered.prompt,
         priority: issue.priorityLabel === "urgent" ? "urgent" : issue.priorityLabel === "high" ? "high" : issue.priorityLabel === "low" ? "low" : "normal",
         autostart: false,
-        launchMode: workflow.target.runMode === "manual" ? "manual" : "autopilot",
+        launchMode: target.runMode === "manual" ? "manual" : "autopilot",
         employeeAgentId: worker?.id,
-        ...(workflow.target.prStrategy ? { executionPolicy: { prStrategy: workflow.target.prStrategy } } : {}),
-        ...(workflow.target.phaseProfile ? { phaseProfileId: workflow.target.phaseProfile } : {}),
+        ...(target.prStrategy ? { executionPolicy: { prStrategy: target.prStrategy } } : {}),
+        ...(target.phaseProfile ? { phaseProfileId: target.phaseProfile } : {}),
       });
       await args.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
-        runMode: workflow.target.runMode === "manual" ? "manual" : "autopilot",
+        runMode: target.runMode === "manual" ? "manual" : "autopilot",
         metadata: {
           source: "linear_workflow",
           linearIssueId: issue.id,
           workflowId: workflow.id,
         },
       });
+      updateRun(run.id, {
+        linkedMissionId: mission.id,
+        status: "waiting_for_target",
+      });
+      updateExecutionState(run.id, {
+        waitingFor: "delegated work",
+        stalledReason: null,
+        workerId: worker?.id ?? null,
+        workerSlug: worker?.slug ?? null,
+        sessionLabel: null,
+      });
       const missionPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
         linkedMissionId: mission.id,
         status: "waiting_for_target",
         workerId: worker?.id ?? null,
         workerSlug: worker?.slug ?? null,
+        sessionLabel: null,
+        activeTargetType: target.type,
       };
       return missionPatch;
     }
 
-    if (workflow.target.type === "employee_session") {
+    if (target.type === "employee_session") {
       if (!employeeTarget || !employeeTarget.identityKey) {
         appendEvent(run.id, "run.awaiting_delegation", "waiting", `No employee could be resolved for workflow '${workflow.name}'. Queued for manual delegation.`);
         emitRunEvent(run, "delegated", `Awaiting manual delegation for ${run.identifier}.`);
+        updateExecutionState(run.id, {
+          waitingFor: "manual delegation",
+          stalledReason: "No employee could be resolved for this workflow.",
+          employeeOverride: override,
+          overrideSource,
+          workerId: null,
+          workerSlug: null,
+          sessionLabel: employeeTarget?.label ?? null,
+        });
         return {
           status: "awaiting_delegation" as LinearWorkflowRunStatus,
+          workerId: null,
+          workerSlug: null,
+          sessionLabel: employeeTarget?.label ?? null,
+          activeTargetType: target.type,
         };
       }
-      const laneId = await ensureExecutionLane(run, workflow, issue);
-      if (!laneId) throw new Error(`Workflow '${workflow.name}' could not resolve a lane for employee session launch.`);
+      const laneId = await ensureExecutionLane(run, workflow, target, issue);
+      if (!laneId) {
+        appendEvent(run.id, "run.awaiting_lane_choice", "waiting", `Workflow '${workflow.name}' is paused until an operator chooses an execution lane.`, {
+          laneSelection: target.laneSelection ?? "primary",
+        });
+        updateExecutionState(run.id, {
+          waitingFor: "operator lane choice",
+          stalledReason: "Workflow contract requires an operator to choose the execution lane.",
+          employeeOverride: override,
+          overrideSource,
+          workerId: employeeTarget.worker?.id ?? null,
+          workerSlug: employeeTarget.worker?.slug ?? null,
+          sessionLabel: employeeTarget.label,
+        });
+        return {
+          status: "awaiting_lane_choice" as LinearWorkflowRunStatus,
+          workerId: employeeTarget.worker?.id ?? null,
+          workerSlug: employeeTarget.worker?.slug ?? null,
+          sessionLabel: employeeTarget.label,
+          activeTargetType: target.type,
+        };
+      }
       const session = await args.agentChatService.ensureIdentitySession({
         identityKey: employeeTarget.identityKey,
         laneId,
-        reuseExisting: workflow.target.sessionReuse !== "fresh_session" && workflow.target.laneSelection !== "fresh_issue_lane",
+        reuseExisting: target.sessionReuse !== "fresh_session" && target.laneSelection !== "fresh_issue_lane",
       });
       if (employeeTarget.worker) {
         const taskKey = args.workerTaskSessionService.deriveTaskKey({
@@ -1030,9 +1405,23 @@ export function createLinearDispatcherService(args: {
           },
         });
       }
+      updateRun(run.id, {
+        executionLaneId: laneId,
+        linkedSessionId: session.id,
+        status: "waiting_for_target",
+      });
       await args.agentChatService.sendMessage({
         sessionId: session.id,
-        text: buildDelegationPrompt(run, workflow, issue),
+        text: buildDelegationPrompt(run, workflow, target, issue),
+      });
+      updateExecutionState(run.id, {
+        waitingFor: "explicit completion",
+        stalledReason: null,
+        employeeOverride: override,
+        overrideSource,
+        workerId: employeeTarget.worker?.id ?? null,
+        workerSlug: employeeTarget.worker?.slug ?? null,
+        sessionLabel: employeeTarget.label,
       });
       const sessionPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
         executionLaneId: laneId,
@@ -1043,9 +1432,10 @@ export function createLinearDispatcherService(args: {
         sessionIdentityKey: employeeTarget.identityKey,
         sessionLabel: employeeTarget.label,
         laneId,
+        activeTargetType: target.type,
       };
-      if (workflow.target.prStrategy && workflow.target.prTiming === "after_start") {
-        const linkedPrId = await ensureLinkedPr({ ...run, ...sessionPatch }, workflow, laneId);
+      if (target.prStrategy && target.prTiming === "after_start") {
+        const linkedPrId = await ensureLinkedPr({ ...run, ...sessionPatch }, workflow, target, laneId);
         if (linkedPrId) {
           sessionPatch.linkedPrId = linkedPrId;
         }
@@ -1053,10 +1443,30 @@ export function createLinearDispatcherService(args: {
       return sessionPatch;
     }
 
-    if (workflow.target.type === "worker_run" || workflow.target.type === "pr_resolution") {
+    if (target.type === "worker_run" || target.type === "pr_resolution") {
       if (!worker) throw new Error(`Workflow '${workflow.name}' could not resolve a worker.`);
-      const laneId = await ensureExecutionLane(run, workflow, issue);
-      if (!laneId) throw new Error(`Workflow '${workflow.name}' could not resolve a lane for worker launch.`);
+      const laneId = await ensureExecutionLane(run, workflow, target, issue);
+      if (!laneId) {
+        appendEvent(run.id, "run.awaiting_lane_choice", "waiting", `Workflow '${workflow.name}' is paused until an operator chooses an execution lane.`, {
+          laneSelection: target.laneSelection ?? "primary",
+        });
+        updateExecutionState(run.id, {
+          waitingFor: "operator lane choice",
+          stalledReason: "Workflow contract requires an operator to choose the execution lane.",
+          employeeOverride: override,
+          overrideSource,
+          workerId: worker.id,
+          workerSlug: worker.slug,
+          sessionLabel: null,
+        });
+        return {
+          status: "awaiting_lane_choice" as LinearWorkflowRunStatus,
+          workerId: worker.id,
+          workerSlug: worker.slug,
+          sessionLabel: null,
+          activeTargetType: target.type,
+        };
+      }
       const taskKey = args.workerTaskSessionService.deriveTaskKey({
         agentId: worker.id,
         laneId,
@@ -1093,26 +1503,42 @@ export function createLinearDispatcherService(args: {
         reason: "assignment",
         taskKey,
         issueKey: issue.identifier,
-        prompt: buildDelegationPrompt(run, workflow, issue),
+        prompt: buildDelegationPrompt(run, workflow, target, issue),
         context: {
           source: "linear_workflow",
           issueId: issue.id,
           workflowId: workflow.id,
-          prStrategy: workflow.target.prStrategy ?? null,
+          prStrategy: target.prStrategy ?? null,
           laneId,
           runId: run.id,
         },
       });
+      updateRun(run.id, {
+        executionLaneId: laneId,
+        linkedWorkerRunId: wake.runId,
+        status: target.type === "pr_resolution" ? "waiting_for_pr" : "waiting_for_target",
+      });
+      updateExecutionState(run.id, {
+        waitingFor: target.type === "pr_resolution" ? "pull request progress" : "delegated work",
+        stalledReason: null,
+        employeeOverride: override,
+        overrideSource,
+        workerId: worker.id,
+        workerSlug: worker.slug,
+        sessionLabel: null,
+      });
       const workerPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
         executionLaneId: laneId,
         linkedWorkerRunId: wake.runId,
-        status: workflow.target.type === "pr_resolution" ? "waiting_for_pr" : "waiting_for_target",
+        status: target.type === "pr_resolution" ? "waiting_for_pr" : "waiting_for_target",
         workerId: worker.id,
         workerSlug: worker.slug,
+        sessionLabel: null,
         laneId,
+        activeTargetType: target.type,
       };
-      if (workflow.target.prStrategy && workflow.target.prTiming === "after_start") {
-        const linkedPrId = await ensureLinkedPr({ ...run, ...workerPatch }, workflow, laneId);
+      if (target.prStrategy && target.prTiming === "after_start") {
+        const linkedPrId = await ensureLinkedPr({ ...run, ...workerPatch }, workflow, target, laneId);
         if (linkedPrId) {
           workerPatch.linkedPrId = linkedPrId;
         }
@@ -1120,9 +1546,16 @@ export function createLinearDispatcherService(args: {
       return workerPatch;
     }
 
+    updateExecutionState(run.id, {
+      waitingFor: "supervisor review",
+      stalledReason: null,
+      employeeOverride: override,
+      overrideSource,
+    });
     return {
       reviewState: "pending",
       status: "awaiting_human_review",
+      activeTargetType: target.type,
     };
   };
 
@@ -1220,6 +1653,48 @@ export function createLinearDispatcherService(args: {
     return fresh;
   };
 
+  const preserveDurableLaunchAfterError = (
+    runId: string,
+    workflow: LinearWorkflowDefinition,
+    policy: LinearWorkflowConfig,
+    error: unknown,
+  ): LinearWorkflowRun | null => {
+    const currentRow = getRunRow(runId);
+    if (!currentRow) return null;
+    const currentRun = toRun(currentRow);
+    if (!hasDurableLaunchMarker(currentRun)) {
+      return null;
+    }
+
+    const currentStep = currentRun.currentStepId
+      ? workflow.steps.find((entry) => entry.id === currentRun.currentStepId) ?? null
+      : workflow.steps[currentRun.currentStepIndex] ?? null;
+    const currentStepRow = currentStep
+      ? getStepRows(runId).find((entry) => entry.workflow_step_id === currentStep.id) ?? null
+      : null;
+
+    if (currentStep?.type === "launch_target" && currentStepRow && currentStepRow.status !== "completed") {
+      updateStep(currentStepRow.id, {
+        status: "completed",
+        completedAt: nowIso(),
+        payload: buildLaunchPayloadFromRun(currentRun, workflow, policy),
+      });
+      updateRun(runId, {
+        currentStepIndex: currentRun.currentStepIndex + 1,
+        currentStepId: workflow.steps[currentRun.currentStepIndex + 1]?.id ?? null,
+      });
+    }
+
+    appendEvent(
+      runId,
+      "run.launch_preserved_after_error",
+      "warning",
+      `Preserved launched target after error: ${error instanceof Error ? error.message : String(error)}`,
+      buildLaunchPayloadFromRun(toRun(getRunRow(runId)!), workflow, policy),
+    );
+    return toRun(getRunRow(runId)!);
+  };
+
   const advanceRun = async (runId: string, policy: LinearWorkflowConfig): Promise<LinearWorkflowRun | null> => {
     const row = getRunRow(runId);
     if (!row) return null;
@@ -1235,34 +1710,36 @@ export function createLinearDispatcherService(args: {
       return toRun(getRunRow(run.id)!);
     }
 
-    const refreshedIssue = await refreshIssueSnapshot(run.id, run.issueId);
-    if (refreshedIssue && (refreshedIssue.stateType === "completed" || refreshedIssue.stateType === "canceled")) {
-      const reason = refreshedIssue.stateType === "completed" ? "completed" : "cancelled";
-      appendEvent(run.id, "run.cancelled", "cancelled", `Issue ${run.identifier} is no longer open (state: ${refreshedIssue.stateName}).`);
-      await finalizeRun(run, workflow, "cancelled", `Issue ${run.identifier} was ${reason} externally.`);
-      return toRun(getRunRow(run.id)!);
-    }
+    try {
+      const refreshedIssue = await refreshIssueSnapshot(run.id, run.issueId);
+      if (refreshedIssue && (refreshedIssue.stateType === "completed" || refreshedIssue.stateType === "canceled")) {
+        const reason = refreshedIssue.stateType === "completed" ? "completed" : "cancelled";
+        appendEvent(run.id, "run.cancelled", "cancelled", `Issue ${run.identifier} is no longer open (state: ${refreshedIssue.stateName}).`);
+        await finalizeRun(run, workflow, "cancelled", `Issue ${run.identifier} was ${reason} externally.`);
+        return toRun(getRunRow(run.id)!);
+      }
 
-    const steps = getStepRows(run.id);
-    for (let index = run.currentStepIndex; index < steps.length; index += 1) {
-      const stepRow = steps[index]!;
-      const step = workflow.steps.find((entry) => entry.id === stepRow.workflow_step_id);
-      if (!step) continue;
-      updateRun(run.id, { currentStepIndex: index, currentStepId: step.id, status: "in_progress" });
-      if (stepRow.status === "completed") continue;
-      updateStep(stepRow.id, { status: "running", startedAt: stepRow.started_at ?? nowIso() });
+      const steps = getStepRows(run.id);
+      for (let index = run.currentStepIndex; index < steps.length; index += 1) {
+        const stepRow = steps[index]!;
+        const step = workflow.steps.find((entry) => entry.id === stepRow.workflow_step_id);
+        if (!step) continue;
+        updateRun(run.id, { currentStepIndex: index, currentStepId: step.id, status: "in_progress" });
+        if (stepRow.status === "completed") continue;
+        updateStep(stepRow.id, { status: "running", startedAt: stepRow.started_at ?? nowIso() });
 
       if (step.type === "launch_target") {
         const liveRun = toRun(getRunRow(run.id)!);
         const patch = await executeTarget(liveRun, policy, workflow, liveRun.sourceIssueSnapshot as NormalizedLinearIssue);
+        const launchedTargetType = String((patch.activeTargetType as string | undefined) ?? liveRun.executionContext?.activeTargetType ?? liveRun.targetType);
         updateRun(run.id, { ...patch, currentStepIndex: index + 1, currentStepId: workflow.steps[index + 1]?.id ?? null });
         updateStep(stepRow.id, { status: "completed", completedAt: nowIso(), payload: patch });
-        appendEvent(run.id, "step.launch_target", "completed", `Launched ${workflow.target.type}.`, patch as Record<string, unknown>);
-        emitRunEvent(toRun(getRunRow(run.id)!), "delegated", `Delegated to ${workflow.target.type}.`);
+        appendEvent(run.id, "step.launch_target", "completed", `Launched ${launchedTargetType}.`, patch as Record<string, unknown>);
+        emitRunEvent(toRun(getRunRow(run.id)!), "delegated", `Delegated to ${launchedTargetType}.`);
         await syncWorkflowWorkpad({
           runId: run.id,
           workflow,
-          note: `Delegated to ${workflow.target.type.replace(/_/g, " ")}.`,
+          note: `Delegated to ${launchedTargetType.replace(/_/g, " ")}.`,
           waitingFor:
             patch.status === "waiting_for_target"
               ? "delegated work"
@@ -1272,12 +1749,15 @@ export function createLinearDispatcherService(args: {
                   ? "supervisor review"
                   : patch.status === "awaiting_delegation"
                     ? "manual delegation"
-                    : null,
+                    : patch.status === "awaiting_lane_choice"
+                      ? "operator lane choice"
+                      : null,
         });
         const nextStep = workflow.steps[index + 1] ?? null;
         const shouldPauseAfterLaunch =
           patch.status === "awaiting_human_review"
           || patch.status === "awaiting_delegation"
+          || patch.status === "awaiting_lane_choice"
           || (patch.status === "waiting_for_target" && nextStep?.type === "wait_for_target_status")
           || (patch.status === "waiting_for_pr" && nextStep?.type === "wait_for_pr");
         if (shouldPauseAfterLaunch) {
@@ -1288,12 +1768,24 @@ export function createLinearDispatcherService(args: {
 
       if (step.type === "wait_for_target_status") {
         const liveRun = toRun(getRunRow(run.id)!);
+        const activeTarget = getActiveTarget(liveRun, workflow);
+        const stages = getTargetStages(workflow.target);
+        const activeStageIndex = getActiveTargetStageIndex(liveRun, workflow);
+        const nextTarget = stages[activeStageIndex + 1] ?? null;
         const evaluation = await evaluateTargetCompletion(liveRun, workflow, step);
         if (evaluation.runPatch) {
           updateRun(run.id, evaluation.runPatch);
         }
         if (evaluation.state === "waiting") {
-          updateRun(run.id, { status: "waiting_for_target" });
+          const waitFor = String((evaluation.payload as { waitingFor?: string }).waitingFor ?? "delegated work");
+          updateExecutionState(run.id, {
+            waitingFor: waitFor,
+            stalledReason:
+              waitFor === "explicit_completion"
+                ? "Waiting for an explicit ADE completion signal."
+                : null,
+          });
+          updateRun(run.id, { status: activeTarget.type === "pr_resolution" ? "waiting_for_pr" : "waiting_for_target" });
           updateStep(stepRow.id, { status: "waiting", payload: evaluation.payload });
           await syncWorkflowWorkpad({
             runId: run.id,
@@ -1302,11 +1794,15 @@ export function createLinearDispatcherService(args: {
               evaluation.payload && typeof evaluation.payload.sessionRelinked === "boolean" && evaluation.payload.sessionRelinked
                 ? "Relinked the delegated session and resumed waiting."
                 : "Delegated work is still in progress.",
-            waitingFor: String((evaluation.payload as { waitingFor?: string }).waitingFor ?? "delegated work"),
+            waitingFor: waitFor,
           });
           return toRun(getRunRow(run.id)!);
         }
         if (evaluation.state === "failed" || evaluation.state === "cancelled") {
+          updateExecutionState(run.id, {
+            waitingFor: null,
+            stalledReason: `Target ${evaluation.state}.`,
+          });
           updateStep(stepRow.id, { status: "failed", completedAt: nowIso(), payload: evaluation.payload });
           await finalizeRun(
             toRun(getRunRow(run.id)!),
@@ -1316,6 +1812,109 @@ export function createLinearDispatcherService(args: {
           );
           return toRun(getRunRow(run.id)!);
         }
+
+        if (nextTarget) {
+          const nextStageIndex = activeStageIndex + 1;
+          const currentOverride = liveRun.executionContext?.employeeOverride ?? null;
+          const shouldClearOverride =
+            Boolean(currentOverride)
+            && (
+              nextTarget.type !== activeTarget.type
+              || !isEmployeeOverrideCompatibleWithTarget(policy, nextTarget.type, currentOverride)
+            );
+          updateRun(run.id, {
+            linkedMissionId: null,
+            linkedSessionId: null,
+            linkedWorkerRunId: null,
+          });
+          updateExecutionState(run.id, {
+            activeStageIndex: nextStageIndex,
+            activeTargetType: nextTarget.type,
+            downstreamPending: nextStageIndex < stages.length - 1,
+            waitingFor: null,
+            stalledReason: null,
+            ...(shouldClearOverride ? { employeeOverride: null, overrideSource: null } : {}),
+          });
+          const stagedRun = toRun(getRunRow(run.id)!);
+          const plannedDownstreamTargetType = String(nextTarget.type);
+          const waitForPrIndex =
+            plannedDownstreamTargetType === "pr_resolution"
+              ? workflow.steps.findIndex((entry, stepIndex) => stepIndex > index && entry.type === "wait_for_pr")
+              : -1;
+          if (plannedDownstreamTargetType === "pr_resolution" && waitForPrIndex < 0) {
+            throw new Error(`Workflow '${workflow.name}' launched a PR-resolution stage without a later wait_for_pr step.`);
+          }
+          const downstreamPatch = await executeTarget(stagedRun, policy, workflow, stagedRun.sourceIssueSnapshot as NormalizedLinearIssue);
+          const downstreamTargetType = String((downstreamPatch.activeTargetType as string | undefined) ?? plannedDownstreamTargetType);
+          if ((downstreamPatch.status === "waiting_for_pr" || downstreamTargetType === "pr_resolution") && waitForPrIndex < 0) {
+            throw new Error(`Workflow '${workflow.name}' launched a PR-resolution stage without a later wait_for_pr step.`);
+          }
+          if (downstreamPatch.status === "waiting_for_pr" && waitForPrIndex >= 0) {
+            updateRun(run.id, {
+              ...downstreamPatch,
+              currentStepIndex: waitForPrIndex,
+              currentStepId: workflow.steps[waitForPrIndex]?.id ?? null,
+            });
+            updateStep(stepRow.id, {
+              status: "completed",
+              completedAt: nowIso(),
+              payload: {
+                ...evaluation.payload,
+                downstreamStageIndex: nextStageIndex,
+                downstreamTargetType,
+              },
+            });
+            appendEvent(run.id, "run.downstream_target_started", "completed", `Started downstream stage ${downstreamTargetType}.`, {
+              downstreamStageIndex: nextStageIndex,
+              downstreamTargetType,
+            });
+            await syncWorkflowWorkpad({
+              runId: run.id,
+              workflow,
+              note: `Stage ${activeStageIndex + 1} finished; delegated to ${downstreamTargetType.replace(/_/g, " ")}.`,
+              waitingFor: "pull request",
+            });
+            return toRun(getRunRow(run.id)!);
+          }
+
+          const downstreamWaitingFor =
+            downstreamPatch.status === "awaiting_human_review"
+              ? "supervisor review"
+              : downstreamPatch.status === "awaiting_delegation"
+                ? "manual delegation"
+                : downstreamPatch.status === "awaiting_lane_choice"
+                  ? "operator lane choice"
+                  : downstreamPatch.status === "waiting_for_pr"
+                    ? "pull request"
+                    : "delegated work";
+          updateRun(run.id, {
+            ...downstreamPatch,
+            currentStepIndex: index,
+            currentStepId: step.id,
+          });
+          updateStep(stepRow.id, {
+            status: "waiting",
+            payload: {
+              ...stripManualCompletionState(evaluation.payload),
+              downstreamStageIndex: nextStageIndex,
+              downstreamTargetType,
+              waitingFor: downstreamWaitingFor,
+            },
+          });
+          appendEvent(run.id, "run.downstream_target_started", "completed", `Started downstream stage ${downstreamTargetType}.`, {
+            downstreamStageIndex: nextStageIndex,
+            downstreamTargetType,
+          });
+          await syncWorkflowWorkpad({
+            runId: run.id,
+            workflow,
+            note: `Stage ${activeStageIndex + 1} finished; delegated to ${downstreamTargetType.replace(/_/g, " ")}.`,
+            waitingFor: downstreamWaitingFor,
+          });
+          return toRun(getRunRow(run.id)!);
+        }
+
+        clearExecutionWaitState(run.id);
         if ((workflow.closeout?.reviewReadyWhen ?? "work_complete") === "work_complete") {
           updateRun(run.id, { reviewReadyReason: "work_complete" });
         }
@@ -1331,7 +1930,8 @@ export function createLinearDispatcherService(args: {
 
       if (step.type === "wait_for_pr") {
         const refreshed = toRun(getRunRow(run.id)!);
-        const linkedPrId = await ensureLinkedPr(refreshed, workflow);
+        const target = getActiveTarget(refreshed, workflow);
+        const linkedPrId = await ensureLinkedPr(refreshed, workflow, target);
         if (!linkedPrId) {
           updateRun(run.id, { status: "waiting_for_pr" });
           updateStep(stepRow.id, { status: "waiting", payload: { waitingFor: "pr_link" } });
@@ -1444,6 +2044,13 @@ export function createLinearDispatcherService(args: {
               linkedMissionId: null,
               linkedSessionId: null,
               linkedWorkerRunId: null,
+            });
+            updateExecutionState(run.id, {
+              activeStageIndex: 0,
+              activeTargetType: null,
+              downstreamPending: false,
+              waitingFor: null,
+              stalledReason: null,
             });
             appendEvent(run.id, "run.review_changes_requested", "queued", liveRun.latestReviewNote ?? "Supervisor requested changes.", {
               reviewerIdentityKey: reviewContext.reviewerIdentityKey,
@@ -1601,11 +2208,28 @@ export function createLinearDispatcherService(args: {
       updateStep(stepRow.id, { status: "completed", completedAt: nowIso() });
     }
 
-    const finalRun = toRun(getRunRow(run.id)!);
-    if (finalRun.status !== "completed" && finalRun.status !== "failed" && finalRun.status !== "cancelled") {
-      await finalizeRun(finalRun, workflow, "completed", "Workflow completed successfully.");
+      const finalRun = toRun(getRunRow(run.id)!);
+      if (finalRun.status !== "completed" && finalRun.status !== "failed" && finalRun.status !== "cancelled") {
+        await finalizeRun(finalRun, workflow, "completed", "Workflow completed successfully.");
+      }
+      return toRun(getRunRow(run.id)!);
+    } catch (error) {
+      const preservedRun = preserveDurableLaunchAfterError(run.id, workflow, policy, error);
+      if (preservedRun) {
+        return preservedRun;
+      }
+      await scheduleRetry(
+        toRun(getRunRow(run.id) ?? row),
+        workflow,
+        error,
+        {
+          eventType: "run.retry_scheduled",
+          messagePrefix: "Workflow execution failed",
+          waitingFor: "automatic retry",
+        },
+      );
+      return toRun(getRunRow(run.id)!);
     }
-    return toRun(getRunRow(run.id)!);
   };
 
   const createRun = (issue: NormalizedLinearIssue, match: LinearWorkflowMatchResult): LinearWorkflowRun => {
@@ -1614,15 +2238,29 @@ export function createLinearDispatcherService(args: {
     }
     const now = nowIso();
     const id = randomUUID();
+    const routeContext: LinearWorkflowRouteContext = {
+      reason: match.reason,
+      matchedSignals: match.candidates.find((candidate) => candidate.workflowId === match.workflowId)?.matchedSignals ?? [],
+      routeTags: match.workflow.routing?.metadataTags ?? [],
+      watchOnly: match.workflow.routing?.watchOnly === true,
+      candidates: match.candidates,
+    };
+    const executionContext: LinearWorkflowExecutionContext = {
+      activeTargetType: match.target.type,
+      activeStageIndex: 0,
+      totalStages: getTargetStages(match.target).length,
+      downstreamPending: getTargetStages(match.target).length > 1,
+      routeTags: match.workflow.routing?.metadataTags ?? [],
+    };
     args.db.run(
       `
         insert into linear_workflow_runs(
           id, project_id, issue_id, identifier, title, workflow_id, workflow_name, workflow_version, source, target_type,
           status, current_step_index, current_step_id, execution_lane_id, linked_mission_id, linked_session_id, linked_worker_run_id, linked_pr_id,
           review_state, supervisor_identity_key, review_ready_reason, pr_state, pr_checks_status, pr_review_status, latest_review_note,
-          retry_count, retry_after, closeout_state, terminal_outcome, source_issue_snapshot_json, last_error, created_at, updated_at
+          retry_count, retry_after, closeout_state, terminal_outcome, route_context_json, execution_context_json, source_issue_snapshot_json, last_error, created_at, updated_at
         )
-        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, null, null, null, null, null, null, null, null, null, null, null, null, 0, null, 'pending', null, ?, null, ?, ?)
+        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, null, null, null, null, null, null, null, null, null, null, null, null, 0, null, 'pending', null, ?, ?, ?, null, ?, ?)
       `,
       [
         id,
@@ -1636,13 +2274,15 @@ export function createLinearDispatcherService(args: {
         match.workflow.source ?? "generated",
         match.target.type,
         match.workflow.steps[0]?.id ?? null,
+        JSON.stringify(routeContext),
+        JSON.stringify(executionContext),
         JSON.stringify(issue),
         now,
         now,
       ]
     );
 
-    match.workflow.steps.forEach((step, index) => {
+    match.workflow.steps.forEach((step) => {
       args.db.run(
         `
           insert into linear_workflow_run_steps(
@@ -1654,9 +2294,11 @@ export function createLinearDispatcherService(args: {
       );
     });
 
-    appendEvent(id, "run.created", "queued", `Matched workflow '${match.workflow.name}'.`, {
+      appendEvent(id, "run.created", "queued", `Matched workflow '${match.workflow.name}'.`, {
       candidates: match.candidates,
       nextStepsPreview: match.nextStepsPreview,
+      routeTags: routeContext.routeTags,
+      matchedSignals: routeContext.matchedSignals,
     });
     const created = toRun(getRunRow(id)!);
     emitRunEvent(created, "matched", `Matched workflow '${match.workflow.name}'.`);
@@ -1670,7 +2312,7 @@ export function createLinearDispatcherService(args: {
         from linear_workflow_runs
         where project_id = ?
           and issue_id = ?
-          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'retry_wait')
+          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'awaiting_lane_choice', 'retry_wait')
         order by datetime(created_at) desc
         limit 1
       `,
@@ -1701,7 +2343,8 @@ export function createLinearDispatcherService(args: {
     queueItemId: string,
     action: "approve" | "reject" | "retry" | "complete",
     note: string | undefined,
-    policy: LinearWorkflowConfig
+    policy: LinearWorkflowConfig,
+    employeeOverride?: string,
   ): Promise<LinearWorkflowRun | null> => {
     const row = getRunRow(queueItemId);
     const run = row ? toRun(row) : null;
@@ -1709,26 +2352,46 @@ export function createLinearDispatcherService(args: {
     const workflow = policy.workflows.find((entry) => entry.id === run.workflowId);
     const currentStep = workflow?.steps.find((entry) => entry.id === run.currentStepId) ?? null;
     const currentStepRow = getStepRows(run.id).find((entry) => entry.workflow_step_id === run.currentStepId) ?? null;
-    const currentTargetStatus = workflow && currentStep?.type === "wait_for_target_status"
-      ? resolveWorkflowTargetStatus(workflow.target.type, currentStep.targetStatus)
+    const activeTarget = workflow ? getActiveTarget(run, workflow) : null;
+    const currentTargetStatus = workflow && currentStep?.type === "wait_for_target_status" && activeTarget
+      ? resolveWorkflowTargetStatus(activeTarget.type, currentStep.targetStatus)
       : null;
     const reviewContext = workflow && currentStep?.type === "request_human_review"
       ? buildReviewContext(workflow, currentStep)
       : null;
+    const trimmedOverride = employeeOverride?.trim();
+    const resolvedOverride = trimmedOverride?.length ? resolveOverrideWorker(policy, trimmedOverride) : null;
+    if (trimmedOverride !== undefined) {
+      if (
+        resolvedOverride === "cto"
+        && (activeTarget?.type === "worker_run" || activeTarget?.type === "pr_resolution")
+      ) {
+        throw new Error("Choose a worker override for worker-backed targets.");
+      }
+      updateExecutionState(run.id, {
+        employeeOverride: trimmedOverride && trimmedOverride.length ? trimmedOverride : null,
+        overrideSource: trimmedOverride && trimmedOverride.length ? "operator" : null,
+      });
+      appendEvent(run.id, "run.override_updated", "queued", trimmedOverride?.length ? `Operator selected ${trimmedOverride}.` : "Operator cleared the employee override.", {
+        employeeOverride: trimmedOverride && trimmedOverride.length ? trimmedOverride : null,
+      });
+    }
 
     if (action === "complete") {
       if (!workflow || !currentStep || !currentStepRow || currentStep.type !== "wait_for_target_status" || currentTargetStatus !== "explicit_completion") {
         throw new Error("This workflow run is not waiting on an explicit ADE completion signal.");
       }
-      const existingPayload = parsePayload<Record<string, unknown>>(currentStepRow.payload_json);
+      const existingPayload = safeJsonParse<Record<string, unknown> | null>(currentStepRow.payload_json, null);
+      // Store the manual-completion signal in the step payload but do NOT mark
+      // the step as "completed" — let advanceRun evaluate the target, handle
+      // downstream stage handoffs, and finalize the step through its normal path.
       updateStep(currentStepRow.id, {
-        status: "completed",
-        completedAt: nowIso(),
         payload: {
           ...(existingPayload ?? {}),
           targetState: "completed",
           targetStatus: currentTargetStatus,
           completionSource: "manual",
+          stageId: buildTargetStageId(run, workflow, currentStep),
           note: note ?? null,
         },
       });
@@ -1739,15 +2402,6 @@ export function createLinearDispatcherService(args: {
       appendEvent(run.id, "run.target_completed", "completed", note ?? "Marked complete from ADE.", {
         stepId: currentStep.id,
         targetStatus: currentTargetStatus,
-      });
-      if ((workflow.closeout?.reviewReadyWhen ?? "work_complete") === "work_complete") {
-        updateRun(run.id, { reviewReadyReason: "work_complete" });
-      }
-      maybeEmitReviewReady(run.id, workflow, findStepIndex(workflow, currentStep.id), "work_complete", "Delegated work was marked complete in ADE.");
-      await syncWorkflowWorkpad({
-        runId: run.id,
-        workflow,
-        note: note ?? "Delegated work was marked complete in ADE.",
       });
     } else if (action === "approve") {
       if (currentStepRow && currentStep?.type === "request_human_review") {
@@ -1782,7 +2436,21 @@ export function createLinearDispatcherService(args: {
         latestReviewNote: note ?? "Rejected by reviewer.",
         status: reviewContext?.rejectAction === "loop_back" ? "queued" : "in_progress",
         lastError: note ?? "Rejected by reviewer.",
+        ...(reviewContext?.rejectAction === "loop_back" ? {
+          linkedMissionId: null,
+          linkedSessionId: null,
+          linkedWorkerRunId: null,
+        } : {}),
       });
+      if (reviewContext?.rejectAction === "loop_back") {
+        updateExecutionState(run.id, {
+          activeStageIndex: 0,
+          activeTargetType: null,
+          downstreamPending: false,
+          waitingFor: null,
+          stalledReason: null,
+        });
+      }
       appendEvent(run.id, "run.rejected", "queued", note ?? "Rejected by reviewer.", {
         reviewerIdentityKey: reviewContext?.reviewerIdentityKey ?? null,
         rejectAction: reviewContext?.rejectAction ?? null,
@@ -1796,11 +2464,52 @@ export function createLinearDispatcherService(args: {
         });
       }
     } else {
+      const resetStep = (stepRow: StepRow | null) => {
+        if (!stepRow) return;
+        updateStep(stepRow.id, {
+          status: "pending",
+          startedAt: null,
+          completedAt: null,
+          payload: null,
+        });
+      };
+      const launchTargetStepRow =
+        currentStepRow?.type === "launch_target"
+          ? currentStepRow
+          : getStepRows(run.id).find((entry) => entry.type === "launch_target") ?? null;
+      const shouldResetLaunchTarget =
+        launchTargetStepRow?.status === "completed"
+        && (
+          run.status === "awaiting_delegation"
+          || run.status === "awaiting_lane_choice"
+          || currentStep?.type === "wait_for_target_status"
+          || currentStep?.type === "wait_for_pr"
+        );
+      if (currentStepRow?.status === "failed") {
+        resetStep(currentStepRow);
+      }
+      if (shouldResetLaunchTarget && launchTargetStepRow?.id !== currentStepRow?.id) {
+        resetStep(launchTargetStepRow);
+      } else if (shouldResetLaunchTarget) {
+        resetStep(launchTargetStepRow);
+      }
       updateRun(run.id, {
         status: "queued",
         retryAfter: null,
         retryCount: run.retryCount + 1,
+        currentStepIndex: 0,
+        currentStepId: null,
         latestReviewNote: note ?? run.latestReviewNote,
+        linkedMissionId: null,
+        linkedSessionId: null,
+        linkedWorkerRunId: null,
+      });
+      updateExecutionState(run.id, {
+        activeStageIndex: 0,
+        activeTargetType: null,
+        downstreamPending: false,
+        waitingFor: null,
+        stalledReason: null,
       });
       appendEvent(run.id, "run.retried", "queued", note ?? "Queued for retry.", null);
     }
@@ -1820,13 +2529,15 @@ export function createLinearDispatcherService(args: {
       [args.projectId]
     );
     return rows.map((row) => {
+      const queueRun = toRun(row);
       const steps = getStepRows(row.id);
       const currentStep = steps.find((entry) => entry.workflow_step_id === row.current_step_id) ?? null;
-      const launchContext = parsePayload<Record<string, unknown>>(
-        steps.find((entry) => entry.type === "launch_target")?.payload_json ?? null
+      const launchContext = safeJsonParse<Record<string, unknown> | null>(
+        steps.find((entry) => entry.type === "launch_target")?.payload_json ?? null, null
       ) ?? {};
+      const delegatedContext = readDelegationContext(queueRun, launchContext);
       const status: LinearSyncQueueItem["status"] =
-        row.status === "queued" || row.status === "awaiting_delegation"
+        row.status === "queued" || row.status === "awaiting_delegation" || row.status === "awaiting_lane_choice"
           ? "queued"
           : row.status === "retry_wait"
             ? "retry_wait"
@@ -1850,8 +2561,9 @@ export function createLinearDispatcherService(args: {
         workflowName: row.workflow_name,
         targetType: row.target_type,
         laneId: row.execution_lane_id ?? (typeof launchContext.laneId === "string" ? launchContext.laneId : null),
-        workerId: typeof launchContext.workerId === "string" ? launchContext.workerId : null,
-        workerSlug: typeof launchContext.workerSlug === "string" ? launchContext.workerSlug : null,
+        workerId: delegatedContext.workerId,
+        workerSlug: delegatedContext.workerSlug,
+        sessionLabel: delegatedContext.sessionLabel,
         missionId: row.linked_mission_id,
         sessionId: row.linked_session_id,
         workerRunId: row.linked_worker_run_id,
@@ -1868,6 +2580,13 @@ export function createLinearDispatcherService(args: {
         attemptCount: row.retry_count,
         nextAttemptAt: row.retry_after,
         lastError: row.last_error,
+        routeReason: queueRun.routeContext?.reason ?? null,
+        matchedSignals: queueRun.routeContext?.matchedSignals ?? [],
+        routeTags: queueRun.routeContext?.routeTags ?? [],
+        stalledReason: queueRun.executionContext?.stalledReason ?? null,
+        waitingFor: queueRun.executionContext?.waitingFor ?? null,
+        employeeOverride: queueRun.executionContext?.employeeOverride ?? null,
+        activeTargetType: queueRun.executionContext?.activeTargetType ?? null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
@@ -1900,6 +2619,35 @@ export function createLinearDispatcherService(args: {
         [args.projectId, refreshed.issueId]
       ) as LinearIngressEventRecord[],
       issue: refreshed.sourceIssueSnapshot as NormalizedLinearIssue,
+      syncEvents: args.db.all<{
+        id: string;
+        issueId: string | null;
+        queueItemId: string | null;
+        eventType: string;
+        status: string | null;
+        message: string | null;
+        payload: string | null;
+        createdAt: string;
+      }>(
+        `
+          select id, issue_id as issueId, queue_item_id as queueItemId, event_type as eventType, status, message, payload_json as payload, created_at as createdAt
+          from linear_sync_events
+          where project_id = ?
+            and (issue_id = ? or queue_item_id = ?)
+          order by datetime(created_at) desc
+          limit 12
+        `,
+        [args.projectId, refreshed.issueId, refreshed.id]
+      ).map((entry) => ({
+        id: entry.id,
+        issueId: entry.issueId,
+        queueItemId: entry.queueItemId,
+        eventType: entry.eventType,
+        status: entry.status,
+        message: entry.message,
+        payload: safeJsonParse<Record<string, unknown> | null>(entry.payload, null),
+        createdAt: entry.createdAt,
+      })),
       reviewContext: currentStep?.type === "request_human_review"
         ? buildReviewContext(workflow!, currentStep)
         : null,

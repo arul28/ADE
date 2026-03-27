@@ -296,7 +296,7 @@ function clearProposalIdFromLocation(): void {
 }
 
 function getIntegrationLaneWarningMessages(proposal: IntegrationProposal | null): string[] {
-  if (!proposal?.integrationLaneId) return [];
+  if (!proposal || !proposal.integrationLaneId) return [];
   const laneLabel = proposal.integrationLaneName?.trim() || "integration lane";
   const messages: string[] = [];
   const changeStatus = proposal.resolutionState?.laneChangeStatus;
@@ -1882,7 +1882,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               <div className="flex items-center" style={{ gap: 8 }}>
                 <span
                   className="truncate font-bold"
-                  style={{ fontSize: 18, color: "#FAFAFA", fontFamily: "'Space Grotesk', sans-serif" }}
+                  style={{ fontSize: 18, color: "#FAFAFA", fontFamily: "var(--font-sans)" }}
                 >
                   {selectedProposal.title || "Untitled Proposal"}
                 </span>

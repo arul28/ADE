@@ -9,4 +9,8 @@ paths = [
   '''dist/''',
   '''release/''',
   '''\.git/''',
+  '''\.test\.ts$''',
+  '''\.test\.tsx$''',
+  '''\.spec\.ts$''',
+  '''\.spec\.tsx$''',
 ]

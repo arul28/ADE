@@ -7,6 +7,7 @@ import type {
   LinearWorkflowConfig,
   LinearWorkflowConfigFileMeta,
   LinearWorkflowDefinition,
+  LinearWorkflowIntake,
   LinearWorkflowSettings,
   LinearWorkflowWorkerSelector,
 } from "../../../shared/types";
@@ -17,6 +18,8 @@ import { isRecord } from "../shared/utils";
 const WORKFLOW_VERSION = 1 as const;
 const SETTINGS_FILE = "_settings.yaml";
 const LEGACY_SNAPSHOT_FILE = "legacy-linear-sync.snapshot.json";
+const DEFAULT_ACTIVE_STATE_TYPES = ["backlog", "unstarted", "started"] as const;
+const DEFAULT_TERMINAL_STATE_TYPES = ["completed", "canceled"] as const;
 
 function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -38,36 +41,94 @@ function slugify(value: string): string {
     .replace(/^-+|-+$/g, "") || "workflow";
 }
 
+function normalizeIntake(input: unknown): LinearWorkflowIntake {
+  const source = isRecord(input) ? input : {};
+  return {
+    ...(ensureStringArray(source.projectSlugs).length
+      ? { projectSlugs: ensureStringArray(source.projectSlugs) }
+      : {}),
+    ...(ensureStringArray(source.activeStateTypes).length
+      ? { activeStateTypes: ensureStringArray(source.activeStateTypes) }
+      : { activeStateTypes: [...DEFAULT_ACTIVE_STATE_TYPES] }),
+    ...(ensureStringArray(source.terminalStateTypes).length
+      ? { terminalStateTypes: ensureStringArray(source.terminalStateTypes) }
+      : { terminalStateTypes: [...DEFAULT_TERMINAL_STATE_TYPES] }),
+  };
+}
+
+function normalizeWorkerSelector(input: unknown): LinearWorkflowWorkerSelector | undefined {
+  const workerSelector = isRecord(input) ? input : null;
+  if (!workerSelector) return undefined;
+  if (
+    workerSelector.mode !== "id"
+    && workerSelector.mode !== "slug"
+    && workerSelector.mode !== "capability"
+    && workerSelector.mode !== "none"
+  ) {
+    return undefined;
+  }
+  if (workerSelector.mode === "none") return { mode: "none" };
+  if (typeof workerSelector.value !== "string" || workerSelector.value.trim().length === 0) return undefined;
+  return {
+    mode: workerSelector.mode,
+    value: workerSelector.value.trim(),
+  } as LinearWorkflowWorkerSelector;
+}
+
+function normalizeTarget(input: unknown): LinearWorkflowDefinition["target"] | null {
+  if (!isRecord(input)) return null;
+  const targetType = input.type;
+  if (
+    targetType !== "mission"
+    && targetType !== "employee_session"
+    && targetType !== "worker_run"
+    && targetType !== "pr_resolution"
+    && targetType !== "review_gate"
+  ) {
+    return null;
+  }
+
+  const normalizedSelector = normalizeWorkerSelector(input.workerSelector);
+
+  const downstreamTarget = normalizeTarget(input.downstreamTarget);
+
+  return {
+    type: targetType,
+    ...(normalizedSelector ? { workerSelector: normalizedSelector } : {}),
+    ...(typeof input.employeeIdentityKey === "string" && input.employeeIdentityKey.trim().length
+      ? { employeeIdentityKey: input.employeeIdentityKey.trim() as LinearWorkflowDefinition["target"]["employeeIdentityKey"] }
+      : {}),
+    ...(typeof input.sessionTemplate === "string" ? { sessionTemplate: input.sessionTemplate } : {}),
+    ...(typeof input.missionTemplate === "string" ? { missionTemplate: input.missionTemplate } : {}),
+    ...(input.executorKind === "cto" || input.executorKind === "employee" || input.executorKind === "worker"
+      ? { executorKind: input.executorKind }
+      : {}),
+    ...(input.runMode === "autopilot" || input.runMode === "assisted" || input.runMode === "manual"
+      ? { runMode: input.runMode }
+      : {}),
+    ...(input.prTiming === "after_start" || input.prTiming === "after_target_complete" || input.prTiming === "none"
+      ? { prTiming: input.prTiming }
+      : {}),
+    ...(input.laneSelection === "primary" || input.laneSelection === "fresh_issue_lane" || input.laneSelection === "operator_prompt"
+      ? { laneSelection: input.laneSelection }
+      : {}),
+    ...(input.sessionReuse === "reuse_existing" || input.sessionReuse === "fresh_session"
+      ? { sessionReuse: input.sessionReuse }
+      : {}),
+    ...(typeof input.freshLaneName === "string" ? { freshLaneName: input.freshLaneName } : {}),
+    ...(typeof input.phaseProfile === "string" ? { phaseProfile: input.phaseProfile } : {}),
+    ...(isRecord(input.prStrategy) ? { prStrategy: input.prStrategy as LinearWorkflowDefinition["target"]["prStrategy"] } : {}),
+    ...(downstreamTarget ? { downstreamTarget } : {}),
+  };
+}
+
 function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDefinition | null {
   if (!isRecord(input)) return null;
   const id = typeof input.id === "string" && input.id.trim().length ? input.id.trim() : fallbackId;
   const name = typeof input.name === "string" && input.name.trim().length ? input.name.trim() : id;
   if (!isRecord(input.target) || !isRecord(input.triggers)) return null;
-  const targetType = input.target.type;
-  if (
-    targetType !== "mission" &&
-    targetType !== "employee_session" &&
-    targetType !== "worker_run" &&
-    targetType !== "pr_resolution" &&
-    targetType !== "review_gate"
-  ) {
-    return null;
-  }
-
-  const workerSelector = isRecord(input.target.workerSelector)
-    ? input.target.workerSelector
-    : null;
-  const normalizedSelector: LinearWorkflowWorkerSelector | undefined = workerSelector
-    && (workerSelector.mode === "id" || workerSelector.mode === "slug" || workerSelector.mode === "capability" || workerSelector.mode === "none")
-    ? workerSelector.mode === "none"
-      ? { mode: "none" }
-      : typeof workerSelector.value === "string" && workerSelector.value.trim().length
-        ? {
-            mode: workerSelector.mode,
-            value: workerSelector.value.trim(),
-          } as LinearWorkflowWorkerSelector
-        : undefined
-    : undefined;
+  const target = normalizeTarget(input.target);
+  if (!target) return null;
 
   return {
     id,
@@ -102,35 +163,10 @@ function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDe
           ...(ensureStringArray(input.routing.metadataTags).length
             ? { metadataTags: ensureStringArray(input.routing.metadataTags) }
             : {}),
+          ...(typeof input.routing.watchOnly === "boolean" ? { watchOnly: input.routing.watchOnly } : {}),
         }
       : undefined,
-    target: {
-      type: targetType,
-      ...(normalizedSelector ? { workerSelector: normalizedSelector } : {}),
-      ...(typeof input.target.employeeIdentityKey === "string" && input.target.employeeIdentityKey.trim().length
-        ? { employeeIdentityKey: input.target.employeeIdentityKey.trim() as LinearWorkflowDefinition["target"]["employeeIdentityKey"] }
-        : {}),
-      ...(typeof input.target.sessionTemplate === "string" ? { sessionTemplate: input.target.sessionTemplate } : {}),
-      ...(typeof input.target.missionTemplate === "string" ? { missionTemplate: input.target.missionTemplate } : {}),
-      ...(input.target.executorKind === "cto" || input.target.executorKind === "employee" || input.target.executorKind === "worker"
-        ? { executorKind: input.target.executorKind }
-        : {}),
-      ...(input.target.runMode === "autopilot" || input.target.runMode === "assisted" || input.target.runMode === "manual"
-        ? { runMode: input.target.runMode }
-        : {}),
-      ...(input.target.prTiming === "after_start" || input.target.prTiming === "after_target_complete" || input.target.prTiming === "none"
-        ? { prTiming: input.target.prTiming }
-        : {}),
-      ...(input.target.laneSelection === "primary" || input.target.laneSelection === "fresh_issue_lane"
-        ? { laneSelection: input.target.laneSelection }
-        : {}),
-      ...(input.target.sessionReuse === "reuse_existing" || input.target.sessionReuse === "fresh_session"
-        ? { sessionReuse: input.target.sessionReuse }
-        : {}),
-      ...(typeof input.target.freshLaneName === "string" ? { freshLaneName: input.target.freshLaneName } : {}),
-      ...(typeof input.target.phaseProfile === "string" ? { phaseProfile: input.target.phaseProfile } : {}),
-      ...(isRecord(input.target.prStrategy) ? { prStrategy: input.target.prStrategy as LinearWorkflowDefinition["target"]["prStrategy"] } : {}),
-    },
+    target,
     steps: Array.isArray(input.steps)
       ? input.steps
           .filter(isRecord)
@@ -159,7 +195,9 @@ function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDe
           ...(typeof input.closeout.failureState === "string" ? { failureState: input.closeout.failureState } : {}),
           ...(typeof input.closeout.successComment === "string" ? { successComment: input.closeout.successComment } : {}),
           ...(typeof input.closeout.failureComment === "string" ? { failureComment: input.closeout.failureComment } : {}),
+          ...(typeof input.closeout.commentTemplate === "string" ? { commentTemplate: input.closeout.commentTemplate } : {}),
           ...(ensureStringArray(input.closeout.applyLabels).length ? { applyLabels: ensureStringArray(input.closeout.applyLabels) } : {}),
+          ...(ensureStringArray(input.closeout.labels).length ? { labels: ensureStringArray(input.closeout.labels) } : {}),
           ...(typeof input.closeout.reopenOnFailure === "boolean" ? { reopenOnFailure: input.closeout.reopenOnFailure } : {}),
           ...(typeof input.closeout.resolveOnSuccess === "boolean" ? { resolveOnSuccess: input.closeout.resolveOnSuccess } : {}),
           ...(input.closeout.reviewReadyWhen === "work_complete" || input.closeout.reviewReadyWhen === "pr_created" || input.closeout.reviewReadyWhen === "pr_ready"
@@ -179,6 +217,7 @@ function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDe
       ? {
           ...(Number.isFinite(Number(input.retry.maxAttempts)) ? { maxAttempts: Math.max(0, Math.floor(Number(input.retry.maxAttempts))) } : {}),
           ...(Number.isFinite(Number(input.retry.baseDelaySec)) ? { baseDelaySec: Math.max(5, Math.floor(Number(input.retry.baseDelaySec))) } : {}),
+          ...(Number.isFinite(Number(input.retry.backoffSeconds)) ? { backoffSeconds: Math.max(5, Math.floor(Number(input.retry.backoffSeconds))) } : {}),
         }
       : undefined,
     concurrency: isRecord(input.concurrency)
@@ -189,6 +228,7 @@ function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDe
           ...(Number.isFinite(Number(input.concurrency.perIssue))
             ? { perIssue: Math.max(1, Math.floor(Number(input.concurrency.perIssue))) }
             : {}),
+          ...(typeof input.concurrency.dedupeByIssue === "boolean" ? { dedupeByIssue: input.concurrency.dedupeByIssue } : {}),
         }
       : undefined,
     observability: isRecord(input.observability)
@@ -213,6 +253,7 @@ function migrateLegacyConfig(legacy: LinearSyncConfig | null | undefined): Linea
     const base = createDefaultLinearWorkflowConfig();
     return {
       ...base,
+      intake: normalizeIntake(null),
       workflows: [
         baseWorkflow,
         {
@@ -353,6 +394,11 @@ function migrateLegacyConfig(legacy: LinearSyncConfig | null | undefined): Linea
   return {
     version: WORKFLOW_VERSION,
     source: "generated",
+    intake: {
+      projectSlugs: projects.map((project) => project.slug).filter(Boolean),
+      activeStateTypes: [...DEFAULT_ACTIVE_STATE_TYPES],
+      terminalStateTypes: [...DEFAULT_TERMINAL_STATE_TYPES],
+    },
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows,
     files: [],
@@ -383,17 +429,25 @@ export function createLinearWorkflowFileService(args: {
       .map((entry) => path.join(workflowDir, entry));
   };
 
-  const readSettings = (): LinearWorkflowSettings => {
-    if (!fs.existsSync(settingsPath)) return {};
+  const readSettings = (): { settings: LinearWorkflowSettings; intake: LinearWorkflowIntake } => {
+    if (!fs.existsSync(settingsPath)) {
+      return {
+        settings: {},
+        intake: normalizeIntake(null),
+      };
+    }
     const raw = fs.readFileSync(settingsPath, "utf8");
     const parsed = YAML.parse(raw);
-    if (!isRecord(parsed)) return {};
+    if (!isRecord(parsed)) return { settings: {}, intake: normalizeIntake(null) };
     return {
-      ...(typeof parsed.ctoLinearAssigneeId === "string" ? { ctoLinearAssigneeId: parsed.ctoLinearAssigneeId } : {}),
-      ...(typeof parsed.ctoLinearAssigneeName === "string" ? { ctoLinearAssigneeName: parsed.ctoLinearAssigneeName } : {}),
-      ...(ensureStringArray(parsed.ctoLinearAssigneeAliases).length
-        ? { ctoLinearAssigneeAliases: ensureStringArray(parsed.ctoLinearAssigneeAliases) }
-        : {}),
+      settings: {
+        ...(typeof parsed.ctoLinearAssigneeId === "string" ? { ctoLinearAssigneeId: parsed.ctoLinearAssigneeId } : {}),
+        ...(typeof parsed.ctoLinearAssigneeName === "string" ? { ctoLinearAssigneeName: parsed.ctoLinearAssigneeName } : {}),
+        ...(ensureStringArray(parsed.ctoLinearAssigneeAliases).length
+          ? { ctoLinearAssigneeAliases: ensureStringArray(parsed.ctoLinearAssigneeAliases) }
+          : {}),
+      },
+      intake: normalizeIntake(parsed.intake),
     };
   };
 
@@ -401,6 +455,20 @@ export function createLinearWorkflowFileService(args: {
     const files = listWorkflowFiles();
     const workflowFiles = files.filter((filePath) => path.basename(filePath) !== SETTINGS_FILE);
     if (!workflowFiles.length) {
+      if (fs.existsSync(settingsPath)) {
+        const settingsDoc = readSettings();
+        const generated = migrateLegacyConfig(legacyConfig);
+        return {
+          ...generated,
+          intake: settingsDoc.intake,
+          settings: settingsDoc.settings,
+          migration: {
+            hasLegacyConfig: generated.migration?.hasLegacyConfig === true,
+            needsSave: generated.migration?.needsSave === true,
+            compatibilitySnapshotPath: legacyConfig ? legacySnapshotPath : null,
+          },
+        };
+      }
       const generated = migrateLegacyConfig(legacyConfig);
       return {
         ...generated,
@@ -412,7 +480,7 @@ export function createLinearWorkflowFileService(args: {
       };
     }
 
-    const settings = readSettings();
+    const settingsDoc = readSettings();
     const workflows = workflowFiles
       .map((filePath, index) => {
         const raw = fs.readFileSync(filePath, "utf8");
@@ -453,7 +521,8 @@ export function createLinearWorkflowFileService(args: {
     return {
       version: WORKFLOW_VERSION,
       source: "repo",
-      settings,
+      intake: settingsDoc.intake,
+      settings: settingsDoc.settings,
       workflows,
       files: fileEntries,
       migration: {
@@ -476,6 +545,7 @@ export function createLinearWorkflowFileService(args: {
       ctoLinearAssigneeId: config.settings.ctoLinearAssigneeId ?? null,
       ctoLinearAssigneeName: config.settings.ctoLinearAssigneeName ?? "CTO",
       ctoLinearAssigneeAliases: config.settings.ctoLinearAssigneeAliases ?? ["cto"],
+      intake: normalizeIntake(config.intake),
     }, { indent: 2 });
     fs.writeFileSync(settingsPath, settingsYaml, "utf8");
     nextWorkflowPaths.add(settingsPath);

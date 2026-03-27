@@ -1,6 +1,7 @@
 import React from "react";
 import type { editor as MonacoEditor } from "monaco-editor";
 import type { MergeSimulationResult } from "../../../../shared/types";
+import { MONO_FONT } from "../laneDesignTokens";
 import { useAppStore, type ThemeId } from "../../../state/appStore";
 import { extensionToLanguage } from "./extensionToLanguage";
 
@@ -145,7 +146,7 @@ export function ConflictFileDiff({
           lineNumbers: "on",
           wordWrap: "on",
           scrollBeyondLastLine: false,
-          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+          fontFamily: MONO_FONT,
           fontSize: 12,
           lineHeight: 18,
           folding: true,

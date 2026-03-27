@@ -28,6 +28,44 @@ const STATUS_DOT: Record<string, string> = {
   failed: "#EF4444"
 };
 
+const SECTION_HEADER_STYLE: React.CSSProperties = {
+  color: "#52525B",
+  letterSpacing: "1px",
+  fontFamily: "var(--font-sans)",
+};
+
+function ChannelSection({
+  label,
+  threads,
+  selectedThreadId,
+  onSelectThread,
+}: {
+  label: string;
+  threads: OrchestratorChatThread[];
+  selectedThreadId: string | null;
+  onSelectThread: (id: string) => void;
+}) {
+  if (threads.length === 0) return null;
+  return (
+    <>
+      <div
+        className="px-2 pt-2 pb-0.5 text-[9px] font-medium uppercase tracking-wider"
+        style={SECTION_HEADER_STYLE}
+      >
+        {label}
+      </div>
+      {threads.map((t) => (
+        <ChannelButton
+          key={t.id}
+          thread={t}
+          isSelected={selectedThreadId === t.id}
+          onClick={() => onSelectThread(t.id)}
+        />
+      ))}
+    </>
+  );
+}
+
 export const AgentChannels = React.memo(function AgentChannels({ missionId, threads, onSendMessage }: AgentChannelsProps) {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<OrchestratorChatMessage[]>([]);
@@ -168,7 +206,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
         <div className="px-3 py-2" style={{ borderBottom: "1px solid #1E1B26" }}>
           <div
             className="text-xs font-semibold"
-            style={{ color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace", letterSpacing: "1px", textTransform: "uppercase" }}
+            style={{ color: "#FAFAFA", fontFamily: "var(--font-sans)", letterSpacing: "1px", textTransform: "uppercase" }}
           >
             CHANNELS
           </div>
@@ -184,65 +222,9 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
             />
           )}
 
-          {/* Teammates */}
-          {teammates.length > 0 && (
-            <>
-              <div
-                className="px-2 pt-2 pb-0.5 text-[9px] font-medium uppercase tracking-wider"
-                style={{ color: "#52525B", letterSpacing: "1px", fontFamily: "JetBrains Mono, monospace" }}
-              >
-                TEAMMATES
-              </div>
-              {teammates.map((t) => (
-                <ChannelButton
-                  key={t.id}
-                  thread={t}
-                  isSelected={selectedThreadId === t.id}
-                  onClick={() => setSelectedThreadId(t.id)}
-                />
-              ))}
-            </>
-          )}
-
-          {/* Active workers */}
-          {activeWorkers.length > 0 && (
-            <>
-              <div
-                className="px-2 pt-2 pb-0.5 text-[9px] font-medium uppercase tracking-wider"
-                style={{ color: "#52525B", letterSpacing: "1px", fontFamily: "JetBrains Mono, monospace" }}
-              >
-                ACTIVE
-              </div>
-              {activeWorkers.map((t) => (
-                <ChannelButton
-                  key={t.id}
-                  thread={t}
-                  isSelected={selectedThreadId === t.id}
-                  onClick={() => setSelectedThreadId(t.id)}
-                />
-              ))}
-            </>
-          )}
-
-          {/* Completed workers */}
-          {completedWorkers.length > 0 && (
-            <>
-              <div
-                className="px-2 pt-2 pb-0.5 text-[9px] font-medium uppercase tracking-wider"
-                style={{ color: "#52525B", letterSpacing: "1px", fontFamily: "JetBrains Mono, monospace" }}
-              >
-                COMPLETED
-              </div>
-              {completedWorkers.map((t) => (
-                <ChannelButton
-                  key={t.id}
-                  thread={t}
-                  isSelected={selectedThreadId === t.id}
-                  onClick={() => setSelectedThreadId(t.id)}
-                />
-              ))}
-            </>
-          )}
+          <ChannelSection label="TEAMMATES" threads={teammates} selectedThreadId={selectedThreadId} onSelectThread={setSelectedThreadId} />
+          <ChannelSection label="ACTIVE" threads={activeWorkers} selectedThreadId={selectedThreadId} onSelectThread={setSelectedThreadId} />
+          <ChannelSection label="COMPLETED" threads={completedWorkers} selectedThreadId={selectedThreadId} onSelectThread={setSelectedThreadId} />
 
           {threads.length === 0 && (
             <div className="px-2 py-4 text-center text-[10px]" style={{ color: "#71717A" }}>
@@ -259,7 +241,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
           <Hash size={14} weight="regular" style={{ color: "#71717A" }} />
           <span
             className="text-xs font-semibold"
-            style={{ color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace" }}
+            style={{ color: "#FAFAFA", fontFamily: "var(--font-sans)" }}
           >
             {channelName}
           </span>
@@ -269,33 +251,8 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
               style={{ backgroundColor: STATUS_DOT[selectedThread.status] ?? "#52525B" }}
             />
           )}
-          {/* Thread identity badge in header */}
           {selectedThread && (
-            selectedThread.threadType === "coordinator" ? (
-              <span
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-                style={COORDINATOR_BADGE_STYLE}
-              >
-                <Crown size={10} weight="fill" />
-                Coordinator
-              </span>
-            ) : selectedThread.threadType === "teammate" ? (
-              <span
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-                style={TEAMMATE_BADGE_STYLE}
-              >
-                <UsersThree size={10} weight="fill" />
-                Teammate
-              </span>
-            ) : (
-              <span
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-                style={WORKER_BADGE_STYLE}
-              >
-                <Wrench size={10} weight="fill" />
-                Worker{selectedThread.stepKey ? `: ${selectedThread.stepKey}` : ""}
-              </span>
-            )
+            <ThreadTypeBadge threadType={selectedThread.threadType} stepKey={selectedThread.stepKey} />
           )}
         </div>
 
@@ -328,7 +285,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
                 background: "#A78BFA",
                 color: "#0F0D14",
                 borderRadius: 0,
-                fontFamily: "JetBrains Mono, monospace",
+                fontFamily: "var(--font-sans)",
                 fontSize: "10px",
                 textTransform: "uppercase",
                 letterSpacing: "1px"
@@ -360,7 +317,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
               style={{
                 background: "#0C0A10",
                 border: inputFocused ? "1px solid #A78BFA" : "1px solid #27272A",
-                fontFamily: "JetBrains Mono, monospace",
+                fontFamily: "var(--font-sans)",
                 color: "#FAFAFA",
                 borderRadius: 0
               }}
@@ -380,6 +337,42 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
     </div>
   );
 });
+
+function ThreadTypeBadge({
+  threadType,
+  stepKey,
+  iconSize = 10,
+  className = "inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]",
+}: {
+  threadType: OrchestratorChatThread["threadType"];
+  stepKey?: string | null;
+  iconSize?: number;
+  className?: string;
+}) {
+  switch (threadType) {
+    case "coordinator":
+      return (
+        <span className={className} style={COORDINATOR_BADGE_STYLE}>
+          <Crown size={iconSize} weight="fill" />
+          Coordinator
+        </span>
+      );
+    case "teammate":
+      return (
+        <span className={className} style={TEAMMATE_BADGE_STYLE}>
+          <UsersThree size={iconSize} weight="fill" />
+          Teammate
+        </span>
+      );
+    default:
+      return (
+        <span className={className} style={WORKER_BADGE_STYLE}>
+          <Wrench size={iconSize} weight="fill" />
+          Worker{stepKey ? `: ${stepKey}` : ""}
+        </span>
+      );
+  }
+}
 
 const CHANNEL_SELECTED_STYLE: React.CSSProperties = {
   background: "#A78BFA12",
@@ -520,8 +513,6 @@ const ChannelButton = React.memo(function ChannelButton({
 }) {
   const displayName = label ?? thread.title;
   const statusColor = STATUS_DOT[thread.status] ?? "#52525B";
-  const isPlanner = thread.threadType === "coordinator";
-  const isTeammate = thread.threadType === "teammate";
   const threadStepKey = thread.stepKey ?? null;
 
   return (
@@ -556,33 +547,13 @@ const ChannelButton = React.memo(function ChannelButton({
           </span>
         )}
       </div>
-      {/* Thread role badge */}
       <div className="flex items-center gap-1 pl-5">
-        {isPlanner ? (
-          <span
-            className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
-            style={COORDINATOR_BADGE_STYLE}
-          >
-            <Crown size={8} weight="fill" />
-            Coordinator
-          </span>
-        ) : isTeammate ? (
-          <span
-            className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
-            style={TEAMMATE_BADGE_STYLE}
-          >
-            <UsersThree size={8} weight="fill" />
-            Teammate
-          </span>
-        ) : (
-          <span
-            className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
-            style={WORKER_BADGE_STYLE}
-          >
-            <Wrench size={8} weight="fill" />
-            Worker{threadStepKey ? `: ${threadStepKey}` : ""}
-          </span>
-        )}
+        <ThreadTypeBadge
+          threadType={thread.threadType}
+          stepKey={threadStepKey}
+          iconSize={8}
+          className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
+        />
       </div>
     </button>
   );
@@ -608,7 +579,7 @@ const MessageBubble = React.memo(function MessageBubble({ msg, attemptNameMap }:
 
   const timestampStyle: React.CSSProperties = {
     color: "#52525B",
-    fontFamily: "JetBrains Mono, monospace",
+    fontFamily: "var(--font-sans)",
     fontSize: "9px"
   };
 

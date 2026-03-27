@@ -1,9 +1,16 @@
 import type {
   AgentChatCreateArgs,
+  AgentChatApproveArgs,
+  AgentChatDisposeArgs,
   AgentChatGetSummaryArgs,
   AgentChatListArgs,
   AgentChatProvider,
+  AgentChatRespondToInputArgs,
+  AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSteerArgs,
+  AgentChatInterruptArgs,
+  AgentChatUpdateSessionArgs,
   ApplyLaneTemplateArgs,
   ArchiveLaneArgs,
   AttachLaneArgs,
@@ -304,6 +311,84 @@ function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendAr
   return {
     sessionId: requireString(value.sessionId, "chat.send requires sessionId."),
     text: requireString(value.text, "chat.send requires text."),
+  };
+}
+
+function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteerArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.steer requires sessionId."),
+    text: requireString(value.text, "chat.steer requires text."),
+  };
+}
+
+function parseAgentChatInterruptArgs(value: Record<string, unknown>): AgentChatInterruptArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.interrupt requires sessionId."),
+  };
+}
+
+function parseAgentChatResumeArgs(value: Record<string, unknown>): AgentChatResumeArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.resume requires sessionId."),
+  };
+}
+
+function parseAgentChatApproveArgs(value: Record<string, unknown>): AgentChatApproveArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.approve requires sessionId."),
+    itemId: requireString(value.itemId, "chat.approve requires itemId."),
+    decision: requireString(value.decision, "chat.approve requires decision.") as AgentChatApproveArgs["decision"],
+    ...(asTrimmedString(value.responseText) ? { responseText: asTrimmedString(value.responseText)! } : {}),
+  };
+}
+
+function parseAgentChatRespondToInputArgs(value: Record<string, unknown>): AgentChatRespondToInputArgs {
+  const parsed: AgentChatRespondToInputArgs = {
+    sessionId: requireString(value.sessionId, "chat.respondToInput requires sessionId."),
+    itemId: requireString(value.itemId, "chat.respondToInput requires itemId."),
+  };
+
+  if (typeof value.decision === "string" && value.decision.trim().length > 0) {
+    parsed.decision = value.decision.trim() as AgentChatRespondToInputArgs["decision"];
+  }
+  if (isRecord(value.answers)) {
+    parsed.answers = Object.fromEntries(
+      Object.entries(value.answers).map(([key, entry]) => {
+        if (Array.isArray(entry)) {
+          return [key, entry.map((item) => String(item))];
+        }
+        return [key, String(entry)];
+      }),
+    );
+  }
+  if (typeof value.responseText === "string" && value.responseText.trim().length > 0) {
+    parsed.responseText = value.responseText.trim();
+  }
+  return parsed;
+}
+
+function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentChatUpdateSessionArgs {
+  const parsed: AgentChatUpdateSessionArgs = {
+    sessionId: requireString(value.sessionId, "chat.updateSession requires sessionId."),
+  };
+
+  if ("title" in value) parsed.title = value.title == null ? null : asTrimmedString(value.title) ?? null;
+  if ("modelId" in value) parsed.modelId = value.modelId == null ? undefined : asTrimmedString(value.modelId) as AgentChatUpdateSessionArgs["modelId"];
+  if ("reasoningEffort" in value) parsed.reasoningEffort = value.reasoningEffort == null ? null : asTrimmedString(value.reasoningEffort) ?? null;
+  if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatUpdateSessionArgs["permissionMode"];
+  if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatUpdateSessionArgs["interactionMode"];
+  if ("claudePermissionMode" in value) parsed.claudePermissionMode = value.claudePermissionMode == null ? undefined : asTrimmedString(value.claudePermissionMode) as AgentChatUpdateSessionArgs["claudePermissionMode"];
+  if ("codexApprovalPolicy" in value) parsed.codexApprovalPolicy = value.codexApprovalPolicy == null ? undefined : asTrimmedString(value.codexApprovalPolicy) as AgentChatUpdateSessionArgs["codexApprovalPolicy"];
+  if ("codexSandbox" in value) parsed.codexSandbox = value.codexSandbox == null ? undefined : asTrimmedString(value.codexSandbox) as AgentChatUpdateSessionArgs["codexSandbox"];
+  if ("codexConfigSource" in value) parsed.codexConfigSource = value.codexConfigSource == null ? undefined : asTrimmedString(value.codexConfigSource) as AgentChatUpdateSessionArgs["codexConfigSource"];
+  if ("unifiedPermissionMode" in value) parsed.unifiedPermissionMode = value.unifiedPermissionMode == null ? undefined : asTrimmedString(value.unifiedPermissionMode) as AgentChatUpdateSessionArgs["unifiedPermissionMode"];
+  if ("computerUse" in value) parsed.computerUse = value.computerUse == null ? null : value.computerUse as AgentChatUpdateSessionArgs["computerUse"];
+  return parsed;
+}
+
+function parseAgentChatDisposeArgs(value: Record<string, unknown>): AgentChatDisposeArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.dispose requires sessionId."),
   };
 }
 
@@ -923,6 +1008,30 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(parseAgentChatSendArgs(payload));
+    return { ok: true };
+  });
+  register("chat.interrupt", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
+    return { ok: true };
+  });
+  register("chat.steer", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").steer(parseAgentChatSteerArgs(payload));
+    return { ok: true };
+  });
+  register("chat.approve", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").approveToolUse(parseAgentChatApproveArgs(payload));
+    return { ok: true };
+  });
+  register("chat.respondToInput", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").respondToInput(parseAgentChatRespondToInputArgs(payload));
+    return { ok: true };
+  });
+  register("chat.resume", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").resumeSession(parseAgentChatResumeArgs(payload)));
+  register("chat.updateSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").updateSession(parseAgentChatUpdateSessionArgs(payload)));
+  register("chat.dispose", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").dispose(parseAgentChatDisposeArgs(payload));
     return { ok: true };
   });
   register("chat.models", { viewerAllowed: true }, async (payload) =>

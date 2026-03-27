@@ -8,6 +8,7 @@ import {
   ArrowsOutSimple,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { ChatStatusGlyph } from "./chatStatusVisuals";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 
 function formatTokenCount(value: number | null | undefined): string | null {
@@ -35,7 +36,6 @@ function summarizeRuntime(snapshot: ChatSubagentSnapshot): string | null {
 function statusMeta(status: ChatSubagentSnapshot["status"]): {
   label: string;
   chipClassName: string;
-  dotClassName: string;
   icon: JSX.Element;
   accentColor: string;
 } {
@@ -44,7 +44,6 @@ function statusMeta(status: ChatSubagentSnapshot["status"]): {
       return {
         label: "Done",
         chipClassName: "border-emerald-400/15 bg-emerald-500/[0.06] text-emerald-300/90",
-        dotClassName: "bg-emerald-400",
         icon: <CheckCircle size={12} weight="fill" className="text-emerald-400" />,
         accentColor: "emerald",
       };
@@ -52,7 +51,6 @@ function statusMeta(status: ChatSubagentSnapshot["status"]): {
       return {
         label: "Failed",
         chipClassName: "border-red-500/15 bg-red-500/[0.06] text-red-300/90",
-        dotClassName: "bg-red-400",
         icon: <XCircle size={12} weight="fill" className="text-red-400" />,
         accentColor: "red",
       };
@@ -60,17 +58,15 @@ function statusMeta(status: ChatSubagentSnapshot["status"]): {
       return {
         label: "Stopped",
         chipClassName: "border-amber-400/15 bg-amber-500/[0.06] text-amber-300/90",
-        dotClassName: "bg-amber-400",
         icon: <ClockCounterClockwise size={12} weight="bold" className="text-amber-400" />,
         accentColor: "amber",
       };
     default:
       return {
         label: "Running",
-        chipClassName: "border-violet-400/15 bg-violet-500/[0.06] text-violet-300/90",
-        dotClassName: "bg-violet-400",
-        icon: <span className="inline-block h-2.5 w-2.5 rounded-full bg-violet-400" />,
-        accentColor: "violet",
+        chipClassName: "border-emerald-400/15 bg-emerald-500/[0.06] text-emerald-300/90",
+        icon: <ChatStatusGlyph status="working" size={12} />,
+        accentColor: "emerald",
       };
   }
 }

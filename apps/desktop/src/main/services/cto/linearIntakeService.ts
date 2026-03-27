@@ -30,16 +30,20 @@ export function createLinearIntakeService(args: {
   projectId: string;
   issueTracker: IssueTracker;
 }) {
+  const uniqueStrings = (values: Array<string | null | undefined>): string[] =>
+    Array.from(new Set(values.map((value) => value?.trim() ?? "").filter(Boolean)));
+
   const fetchCandidates = async (policy: LinearWorkflowConfig): Promise<NormalizedLinearIssue[]> => {
-    const projectSlugs = Array.from(
-      new Set(
-        policy.workflows.flatMap((workflow) => workflow.triggers.projectSlugs ?? []).filter(Boolean)
-      )
-    );
-    const querySlugs = projectSlugs.length ? projectSlugs : (policy.legacyConfig?.projects ?? []).map((entry) => entry.slug);
+    const workflowProjectSlugs = policy.workflows.flatMap((workflow) => workflow.triggers.projectSlugs ?? []).filter(Boolean);
+    const querySlugs = uniqueStrings([
+      ...(policy.intake.projectSlugs ?? []),
+      ...workflowProjectSlugs,
+      ...((policy.legacyConfig?.projects ?? []).map((entry) => entry.slug)),
+    ]);
+    const activeStateTypes = uniqueStrings(policy.intake.activeStateTypes ?? ["backlog", "unstarted", "started"]);
     const issues = await args.issueTracker.fetchCandidateIssues({
       projectSlugs: querySlugs,
-      stateTypes: ["backlog", "unstarted", "started"],
+      stateTypes: activeStateTypes,
     });
 
     const eligible = issues.filter((issue) => !issue.hasOpenBlockers);

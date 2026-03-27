@@ -320,6 +320,47 @@ export function normalizeSet(values: string[] | undefined): Set<string> {
   return new Set((values ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean));
 }
 
+// ── Template rendering helpers ──────────────────────────────────────
+
+/** Walk a dotted path like "a.b.c" into a nested object. */
+export function getPathValue(source: Record<string, unknown>, dottedPath: string): unknown {
+  const segments = dottedPath
+    .split(".")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (segments.length === 0) return null;
+  let cursor: unknown = source;
+  for (const segment of segments) {
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return null;
+    cursor = (cursor as Record<string, unknown>)[segment];
+  }
+  return cursor;
+}
+
+/** Render {{ path }} placeholders against a values object. */
+export function renderTemplateString(template: string, values: Record<string, unknown>): string {
+  return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, rawPath) => {
+    const value = getPathValue(values, String(rawPath));
+    if (value == null) return "";
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    if (Array.isArray(value)) {
+      return value.map((entry) => String(entry)).join(", ");
+    }
+    return JSON.stringify(value);
+  });
+}
+
+// ── Text clipping helpers ──────────────────────────────────────────
+
+/** Clip text to `maxLength`, appending an ellipsis if truncated. */
+export function clipText(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
 // ── Secret detection helpers ────────────────────────────────────────
 
 const ENV_REF_PATTERN = /^\$\{env:[A-Z0-9_]+\}$/;
@@ -331,6 +372,33 @@ export function isEnvRef(value: string): boolean {
 
 export function hasEnvRefToken(value: string): boolean {
   return ENV_REF_TOKEN_PATTERN.test(value);
+}
+
+/**
+ * Redact common secret patterns from a plain-text string.
+ *
+ * This complements `sanitizeStructuredData` (which operates on parsed objects)
+ * by scrubbing raw output text before it is persisted in logs or result_json.
+ */
+export function redactSecrets(text: string, replacement: string = "[REDACTED]"): string {
+  if (!text) return text;
+  return text
+    // Bearer tokens
+    .replace(/\bbearer\s+[A-Za-z0-9\-._~+/]+=*/gi, replacement)
+    // OpenAI / Anthropic-style keys
+    .replace(/\bsk-[A-Za-z0-9]{12,}\b/g, replacement)
+    // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, replacement)
+    // Slack tokens
+    .replace(/\bxox[baprs]-[A-Za-z0-9\-]{10,}\b/g, replacement)
+    // AWS access keys
+    .replace(/\b(AKIA|ASIA)[A-Z0-9]{16}\b/g, replacement)
+    // GitHub fine-grained PATs (github_pat_...)
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, replacement)
+    // JSON-style sensitive keys: "apiKey":"...", "token":"...", "secret":"...", etc.
+    .replace(/"(api[_-]?key|secret|token|password|authorization)"\s*:\s*"[^"]{4,}"/gi, `"$1":"${replacement}"`)
+    // Generic high-entropy hex/base64 secrets assigned to common key names
+    .replace(/(api[_-]?key|secret|token|password|authorization)\s*[:=]\s*["']?[A-Za-z0-9\-._~+/]{16,}["']?/gi, `$1=${replacement}`);
 }
 
 export function looksSensitiveKey(key: string): boolean {
@@ -346,4 +414,75 @@ export function looksSensitiveValue(value: string): boolean {
   if (/^xox[baprs]-[a-z0-9-]{10,}/i.test(trimmed)) return true;
   if (/api[_-]?key|secret|token|password/i.test(trimmed)) return true;
   return false;
+}
+
+export type SanitizeStructuredDataOptions = {
+  blockedTopLevelKeys?: Iterable<string>;
+  maxArrayEntries?: number;
+  maxObjectEntries?: number;
+  maxStringLength?: number;
+  redactionText?: string;
+};
+
+export function sanitizeStructuredData(
+  input: unknown,
+  options: SanitizeStructuredDataOptions = {},
+): Record<string, unknown> | null {
+  if (!isRecord(input)) return null;
+
+  const blockedTopLevelKeys = new Set(
+    Array.from(options.blockedTopLevelKeys ?? [])
+      .map((value) => String(value ?? "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const maxArrayEntries = Math.max(1, Math.floor(options.maxArrayEntries ?? 50));
+  const maxObjectEntries = Math.max(1, Math.floor(options.maxObjectEntries ?? 50));
+  const maxStringLength = Math.max(32, Math.floor(options.maxStringLength ?? 4_000));
+  const redactionText = options.redactionText ?? "[REDACTED]";
+
+  const clipString = (value: string): string => {
+    if (value.length <= maxStringLength) return value;
+    return `${value.slice(0, maxStringLength - 1)}…`;
+  };
+
+  const seen = new WeakSet<object>();
+
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+      return value.slice(0, maxArrayEntries).map((entry) => walk(entry));
+    }
+    if (isRecord(value)) {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+      const next: Record<string, unknown> = {};
+      for (const [index, [key, child]] of Object.entries(value).entries()) {
+        if (index >= maxObjectEntries) break;
+        if (looksSensitiveKey(key)) {
+          next[key] = redactionText;
+          continue;
+        }
+        next[key] = walk(child);
+      }
+      return next;
+    }
+    if (typeof value === "string") {
+      if (looksSensitiveValue(value)) return redactionText;
+      return clipString(value);
+    }
+    return value;
+  };
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [index, [key, value]] of Object.entries(input).entries()) {
+    if (index >= maxObjectEntries) break;
+    if (blockedTopLevelKeys.has(key.toLowerCase())) continue;
+    if (looksSensitiveKey(key)) {
+      sanitized[key] = redactionText;
+      continue;
+    }
+    sanitized[key] = walk(value);
+  }
+  return sanitized;
 }

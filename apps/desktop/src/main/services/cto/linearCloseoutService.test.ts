@@ -160,7 +160,7 @@ describe("linearCloseoutService", () => {
     expect(issueTracker.updateIssueState).toHaveBeenCalledWith(issueFixture.id, "state-done");
     expect(issueTracker.addLabel).toHaveBeenCalledWith(issueFixture.id, "ade");
     expect(issueTracker.createComment).toHaveBeenCalledWith(issueFixture.id, "Closeout applied.");
-    expect(publishMissionCloseout).toHaveBeenCalledWith({
+    expect(publishMissionCloseout).toHaveBeenCalledWith(expect.objectContaining({
       issue: issueFixture,
       missionId: "mission-1",
       status: "completed",
@@ -177,7 +177,8 @@ describe("linearCloseoutService", () => {
         "https://example.com/browser-trace.zip",
       ],
       artifactMode: "links",
-    });
+      commentTemplate: null,
+    }));
   });
 
   it("publishes non-mission PR links and broker artifacts to the generic Linear closeout", async () => {
@@ -234,7 +235,7 @@ describe("linearCloseoutService", () => {
       summary: "Worker handoff wrapped with linked proof.",
     });
 
-    expect(publishWorkflowCloseout).toHaveBeenCalledWith({
+    expect(publishWorkflowCloseout).toHaveBeenCalledWith(expect.objectContaining({
       issue: issueFixture,
       status: "completed",
       summary: "Worker handoff wrapped with linked proof.",
@@ -253,6 +254,7 @@ describe("linearCloseoutService", () => {
         "https://example.com/pr-proof.json",
       ],
       artifactMode: "links",
-    });
+      commentTemplate: null,
+    }));
   });
 });
