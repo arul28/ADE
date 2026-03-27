@@ -433,6 +433,30 @@ export function createLinearDispatcherService(args: {
     return stages[getActiveTargetStageIndex(run, workflow)] ?? stages[0] ?? workflow.target;
   };
 
+  const buildTargetStageId = (
+    run: LinearWorkflowRun,
+    workflow: LinearWorkflowDefinition,
+    step: LinearWorkflowStep,
+  ): string => {
+    const activeTarget = getActiveTarget(run, workflow);
+    return `${step.id}:${getActiveTargetStageIndex(run, workflow)}:${activeTarget.type}`;
+  };
+
+  const stripManualCompletionState = (
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    const {
+      completionSource: _completionSource,
+      stageId: _stageId,
+      targetState: _targetState,
+      ...rest
+    } = payload;
+    return rest;
+  };
+
+  const hasDurableLaunchMarker = (run: LinearWorkflowRun): boolean =>
+    Boolean(run.linkedMissionId || run.linkedSessionId || run.linkedWorkerRunId || run.linkedPrId);
+
   const updateStep = (stepId: string, patch: Partial<{
     status: StepRow["status"];
     startedAt: string | null;
@@ -672,6 +696,50 @@ export function createLinearDispatcherService(args: {
       worker,
       label: worker.slug,
     };
+  };
+
+  const isEmployeeOverrideCompatibleWithTarget = (
+    policy: LinearWorkflowConfig,
+    targetType: LinearWorkflowDefinition["target"]["type"],
+    override: string | null | undefined,
+  ): boolean => {
+    const trimmed = (override ?? "").trim();
+    if (!trimmed) return true;
+    try {
+      const resolved = resolveOverrideWorker(policy, trimmed);
+      if (resolved === "cto") {
+        return targetType !== "worker_run" && targetType !== "pr_resolution";
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const buildLaunchPayloadFromRun = (
+    run: LinearWorkflowRun,
+    workflow: LinearWorkflowDefinition,
+    policy: LinearWorkflowConfig,
+  ): Record<string, unknown> => {
+    const activeTarget = getActiveTarget(run, workflow);
+    const issue = run.sourceIssueSnapshot as NormalizedLinearIssue;
+    const payload: Record<string, unknown> = {
+      activeTargetType: run.executionContext?.activeTargetType ?? activeTarget.type,
+      laneId: run.executionLaneId,
+      missionId: run.linkedMissionId,
+      sessionId: run.linkedSessionId,
+      workerRunId: run.linkedWorkerRunId,
+      prId: run.linkedPrId,
+    };
+    if (run.executionContext?.workerId) payload.workerId = run.executionContext.workerId;
+    if (run.executionContext?.workerSlug) payload.workerSlug = run.executionContext.workerSlug;
+    if (run.executionContext?.sessionLabel) payload.sessionLabel = run.executionContext.sessionLabel;
+    if (activeTarget.type === "employee_session") {
+      const employeeTarget = resolveEmployeeTarget(policy, activeTarget, issue, run.executionContext?.employeeOverride ?? null);
+      if (employeeTarget?.identityKey) payload.sessionIdentityKey = employeeTarget.identityKey;
+      if (employeeTarget?.label) payload.sessionLabel = employeeTarget.label;
+    }
+    return payload;
   };
 
   const primaryLane = async () => {
@@ -1025,7 +1093,10 @@ export function createLinearDispatcherService(args: {
     const manualStepRow = getStepRows(run.id).find((r) => r.workflow_step_id === step.id);
     if (manualStepRow) {
       const manualPayload = safeJsonParse<Record<string, unknown> | null>(manualStepRow.payload_json, null);
-      if (manualPayload?.completionSource === "manual") {
+      if (
+        manualPayload?.completionSource === "manual"
+        && manualPayload.stageId === buildTargetStageId(run, workflow, step)
+      ) {
         return { state: "completed", payload: { ...manualPayload, targetStatus } };
       }
     }
@@ -1230,6 +1301,10 @@ export function createLinearDispatcherService(args: {
           workflowId: workflow.id,
         },
       });
+      updateRun(run.id, {
+        linkedMissionId: mission.id,
+        status: "waiting_for_target",
+      });
       updateExecutionState(run.id, {
         waitingFor: "delegated work",
         stalledReason: null,
@@ -1330,6 +1405,11 @@ export function createLinearDispatcherService(args: {
           },
         });
       }
+      updateRun(run.id, {
+        executionLaneId: laneId,
+        linkedSessionId: session.id,
+        status: "waiting_for_target",
+      });
       await args.agentChatService.sendMessage({
         sessionId: session.id,
         text: buildDelegationPrompt(run, workflow, target, issue),
@@ -1432,6 +1512,11 @@ export function createLinearDispatcherService(args: {
           laneId,
           runId: run.id,
         },
+      });
+      updateRun(run.id, {
+        executionLaneId: laneId,
+        linkedWorkerRunId: wake.runId,
+        status: target.type === "pr_resolution" ? "waiting_for_pr" : "waiting_for_target",
       });
       updateExecutionState(run.id, {
         waitingFor: target.type === "pr_resolution" ? "pull request progress" : "delegated work",
@@ -1568,6 +1653,48 @@ export function createLinearDispatcherService(args: {
     return fresh;
   };
 
+  const preserveDurableLaunchAfterError = (
+    runId: string,
+    workflow: LinearWorkflowDefinition,
+    policy: LinearWorkflowConfig,
+    error: unknown,
+  ): LinearWorkflowRun | null => {
+    const currentRow = getRunRow(runId);
+    if (!currentRow) return null;
+    const currentRun = toRun(currentRow);
+    if (!hasDurableLaunchMarker(currentRun)) {
+      return null;
+    }
+
+    const currentStep = currentRun.currentStepId
+      ? workflow.steps.find((entry) => entry.id === currentRun.currentStepId) ?? null
+      : workflow.steps[currentRun.currentStepIndex] ?? null;
+    const currentStepRow = currentStep
+      ? getStepRows(runId).find((entry) => entry.workflow_step_id === currentStep.id) ?? null
+      : null;
+
+    if (currentStep?.type === "launch_target" && currentStepRow && currentStepRow.status !== "completed") {
+      updateStep(currentStepRow.id, {
+        status: "completed",
+        completedAt: nowIso(),
+        payload: buildLaunchPayloadFromRun(currentRun, workflow, policy),
+      });
+      updateRun(runId, {
+        currentStepIndex: currentRun.currentStepIndex + 1,
+        currentStepId: workflow.steps[currentRun.currentStepIndex + 1]?.id ?? null,
+      });
+    }
+
+    appendEvent(
+      runId,
+      "run.launch_preserved_after_error",
+      "warning",
+      `Preserved launched target after error: ${error instanceof Error ? error.message : String(error)}`,
+      buildLaunchPayloadFromRun(toRun(getRunRow(runId)!), workflow, policy),
+    );
+    return toRun(getRunRow(runId)!);
+  };
+
   const advanceRun = async (runId: string, policy: LinearWorkflowConfig): Promise<LinearWorkflowRun | null> => {
     const row = getRunRow(runId);
     if (!row) return null;
@@ -1688,6 +1815,13 @@ export function createLinearDispatcherService(args: {
 
         if (nextTarget) {
           const nextStageIndex = activeStageIndex + 1;
+          const currentOverride = liveRun.executionContext?.employeeOverride ?? null;
+          const shouldClearOverride =
+            Boolean(currentOverride)
+            && (
+              nextTarget.type !== activeTarget.type
+              || !isEmployeeOverrideCompatibleWithTarget(policy, nextTarget.type, currentOverride)
+            );
           updateRun(run.id, {
             linkedMissionId: null,
             linkedSessionId: null,
@@ -1699,6 +1833,7 @@ export function createLinearDispatcherService(args: {
             downstreamPending: nextStageIndex < stages.length - 1,
             waitingFor: null,
             stalledReason: null,
+            ...(shouldClearOverride ? { employeeOverride: null, overrideSource: null } : {}),
           });
           const stagedRun = toRun(getRunRow(run.id)!);
           const plannedDownstreamTargetType = String(nextTarget.type);
@@ -1760,7 +1895,7 @@ export function createLinearDispatcherService(args: {
           updateStep(stepRow.id, {
             status: "waiting",
             payload: {
-              ...evaluation.payload,
+              ...stripManualCompletionState(evaluation.payload),
               downstreamStageIndex: nextStageIndex,
               downstreamTargetType,
               waitingFor: downstreamWaitingFor,
@@ -2079,6 +2214,10 @@ export function createLinearDispatcherService(args: {
       }
       return toRun(getRunRow(run.id)!);
     } catch (error) {
+      const preservedRun = preserveDurableLaunchAfterError(run.id, workflow, policy, error);
+      if (preservedRun) {
+        return preservedRun;
+      }
       await scheduleRetry(
         toRun(getRunRow(run.id) ?? row),
         workflow,
@@ -2252,6 +2391,7 @@ export function createLinearDispatcherService(args: {
           targetState: "completed",
           targetStatus: currentTargetStatus,
           completionSource: "manual",
+          stageId: buildTargetStageId(run, workflow, currentStep),
           note: note ?? null,
         },
       });

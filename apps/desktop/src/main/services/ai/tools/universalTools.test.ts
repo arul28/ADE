@@ -75,9 +75,15 @@ describe("checkWorkerSandbox", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("allows /usr/bin and /usr/local/bin paths", () => {
+  it("allows read-only access to /usr/bin and /usr/local/bin paths", () => {
     const result = checkWorkerSandbox("cat /usr/bin/env", DEFAULT_WORKER_SANDBOX_CONFIG, "/tmp/project");
     expect(result.allowed).toBe(true);
+  });
+
+  it("rejects mutating writes into /usr/local/bin even under the default sandbox", () => {
+    const result = checkWorkerSandbox("cp ./payload /usr/local/bin/tool", DEFAULT_WORKER_SANDBOX_CONFIG, "/tmp/project");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
   });
 
   it("blocks commands that are not in the safe list when blockByDefault is enabled", () => {
@@ -278,6 +284,40 @@ describe("createUniversalToolSet", () => {
     expect(fs.readFileSync(deepPath, "utf-8")).toBe("deep write");
   });
 
+  it("blocks writeFile to protected files when the raw path matches a protected pattern", async () => {
+    const cwd = makeTmpDir("ade-tools-write-protected-raw-");
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "full-auto",
+      sandboxConfig: sandboxWith({ protectedFiles: ["(^|/)\\.env$"] }),
+    });
+
+    const result = await (tools.writeFile as any).execute({
+      file_path: ".env",
+      content: "SECRET=value\n",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("protected file pattern");
+    expect(fs.existsSync(path.join(cwd, ".env"))).toBe(false);
+  });
+
+  it("blocks writeFile through symlinked directories that escape the allowed roots", async () => {
+    const cwd = makeTmpDir("ade-tools-write-symlink-root-");
+    const outsideDir = makeTmpDir("ade-tools-write-symlink-outside-");
+    const linkedDir = path.join(cwd, "linked-outside");
+    fs.symlinkSync(outsideDir, linkedDir, "dir");
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const result = await (tools.writeFile as any).execute({
+      file_path: path.join(linkedDir, "escape.txt"),
+      content: "blocked",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("outside allowed roots");
+    expect(fs.existsSync(path.join(outsideDir, "escape.txt"))).toBe(false);
+  });
+
   // ── editFile tool ───────────────────────────────────────────────
 
   it("performs a single-occurrence edit successfully", async () => {
@@ -380,6 +420,45 @@ describe("createUniversalToolSet", () => {
     expect(fs.readFileSync(filePath, "utf-8")).toBe("Hello world\n");
   });
 
+  it("blocks editFile when the resolved path matches a protected pattern", async () => {
+    const cwd = makeTmpDir("ade-tools-edit-protected-resolved-");
+    const filePath = path.join(cwd, ".env");
+    fs.writeFileSync(filePath, "TOKEN=one\n", "utf-8");
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "full-auto",
+      sandboxConfig: sandboxWith({ protectedFiles: ["(^|/)\\.env$"] }),
+    });
+
+    const result = await (tools.editFile as any).execute({
+      file_path: filePath,
+      old_string: "one",
+      new_string: "two",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("protected file pattern");
+    expect(fs.readFileSync(filePath, "utf-8")).toBe("TOKEN=one\n");
+  });
+
+  it("blocks editFile through symlinked directories that escape the allowed roots", async () => {
+    const cwd = makeTmpDir("ade-tools-edit-symlink-root-");
+    const outsideDir = makeTmpDir("ade-tools-edit-symlink-outside-");
+    const linkedDir = path.join(cwd, "linked-outside");
+    const outsideFile = path.join(outsideDir, "escape.txt");
+    fs.writeFileSync(outsideFile, "outside\n", "utf-8");
+    fs.symlinkSync(outsideDir, linkedDir, "dir");
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const result = await (tools.editFile as any).execute({
+      file_path: path.join(linkedDir, "escape.txt"),
+      old_string: "outside",
+      new_string: "inside",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("outside allowed roots");
+    expect(fs.readFileSync(outsideFile, "utf-8")).toBe("outside\n");
+  });
   // ── Memory guard ────────────────────────────────────────────────
 
   it("blocks mutating tools on required turns until memory orientation is satisfied", async () => {
