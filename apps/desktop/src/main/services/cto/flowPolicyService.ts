@@ -4,6 +4,7 @@ import type {
   LinearSyncConfig,
   LinearWorkflowConfig,
   LinearWorkflowDefinition,
+  LinearWorkflowIntake,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, safeJsonParse } from "../shared/utils";
@@ -16,6 +17,10 @@ type ProjectConfigServiceLike = {
 const DEFAULT_POLICY: LinearWorkflowConfig = {
   version: 1,
   source: "generated",
+  intake: {
+    activeStateTypes: ["backlog", "unstarted", "started"],
+    terminalStateTypes: ["completed", "canceled"],
+  },
   settings: {
     ctoLinearAssigneeName: "CTO",
     ctoLinearAssigneeAliases: ["cto"],
@@ -29,15 +34,141 @@ const DEFAULT_POLICY: LinearWorkflowConfig = {
   legacyConfig: null,
 };
 
-function clone<T>(value: T): T {
-  return structuredClone(value);
+function uniqueStrings(values: Array<string | null | undefined> | null | undefined): string[] {
+  return Array.from(
+    new Set(
+      (values ?? [])
+        .map((entry) => entry?.trim() ?? "")
+        .filter((entry) => entry.length > 0)
+    )
+  );
+}
+
+function normalizeIntake(
+  input: LinearWorkflowIntake | null | undefined,
+  workflows: LinearWorkflowDefinition[],
+  legacy: LinearSyncConfig | null | undefined,
+): LinearWorkflowIntake {
+  const workflowProjectSlugs = workflows.flatMap((workflow) => workflow.triggers.projectSlugs ?? []);
+  const legacyProjectSlugs = legacy?.projects?.map((entry) => entry.slug) ?? [];
+  const projectSlugs = uniqueStrings(input?.projectSlugs ?? [...workflowProjectSlugs, ...legacyProjectSlugs]);
+  return {
+    ...(projectSlugs.length ? { projectSlugs } : {}),
+    activeStateTypes: uniqueStrings(input?.activeStateTypes ?? DEFAULT_POLICY.intake.activeStateTypes),
+    terminalStateTypes: uniqueStrings(input?.terminalStateTypes ?? DEFAULT_POLICY.intake.terminalStateTypes),
+  };
+}
+
+function normalizeTarget(target: LinearWorkflowDefinition["target"]): LinearWorkflowDefinition["target"] {
+  return {
+    ...target,
+    ...(target.workerSelector ? { workerSelector: structuredClone(target.workerSelector) } : {}),
+    ...(target.prStrategy ? { prStrategy: structuredClone(target.prStrategy) } : {}),
+    ...(target.downstreamTarget ? { downstreamTarget: normalizeTarget(target.downstreamTarget) } : {}),
+  };
 }
 
 function normalizePolicy(input?: LinearWorkflowConfig | null): LinearWorkflowConfig {
   const source = input ?? DEFAULT_POLICY;
+  const workflows = (source.workflows ?? [])
+    .filter((entry) => Boolean(entry?.id) && Boolean(entry?.name))
+    .map<LinearWorkflowDefinition>((entry) => ({
+      ...entry,
+      source: entry.source === "repo" ? "repo" : "generated",
+      priority: Number.isFinite(Number(entry.priority)) ? Math.floor(Number(entry.priority)) : 100,
+      enabled: entry.enabled !== false,
+      target: normalizeTarget(entry.target),
+      triggers: {
+        assignees: uniqueStrings(entry.triggers.assignees),
+        labels: uniqueStrings(entry.triggers.labels),
+        projectSlugs: uniqueStrings(entry.triggers.projectSlugs),
+        teamKeys: uniqueStrings(entry.triggers.teamKeys),
+        priority: uniqueStrings(entry.triggers.priority) as LinearWorkflowDefinition["triggers"]["priority"],
+        stateTransitions: (entry.triggers.stateTransitions ?? [])
+          .map((transition) => ({
+            ...(uniqueStrings(transition.from).length ? { from: uniqueStrings(transition.from) } : {}),
+            ...(uniqueStrings(transition.to).length ? { to: uniqueStrings(transition.to) } : {}),
+          }))
+          .filter((transition) => (transition.to?.length ?? 0) > 0),
+        owner: uniqueStrings(entry.triggers.owner),
+        creator: uniqueStrings(entry.triggers.creator),
+        metadataTags: uniqueStrings(entry.triggers.metadataTags),
+      },
+      ...(entry.routing
+        ? {
+            routing: {
+              ...(uniqueStrings(entry.routing.metadataTags).length
+                ? { metadataTags: uniqueStrings(entry.routing.metadataTags) }
+                : {}),
+              ...(entry.routing.watchOnly === true ? { watchOnly: true } : {}),
+            },
+          }
+        : {}),
+      steps: (entry.steps ?? []).map((step, index) => ({
+        ...step,
+        id: step.id?.trim() || `step-${index + 1}`,
+      })),
+      ...(entry.closeout
+        ? {
+            closeout: {
+              ...entry.closeout,
+              ...(uniqueStrings(entry.closeout.applyLabels).length
+                ? { applyLabels: uniqueStrings(entry.closeout.applyLabels) }
+                : {}),
+              ...(uniqueStrings(entry.closeout.labels).length
+                ? { labels: uniqueStrings(entry.closeout.labels) }
+                : {}),
+            },
+          }
+        : {}),
+      ...(entry.humanReview
+        ? {
+            humanReview: {
+              ...entry.humanReview,
+              ...(uniqueStrings(entry.humanReview.reviewers).length
+                ? { reviewers: uniqueStrings(entry.humanReview.reviewers) }
+                : {}),
+            },
+          }
+        : {}),
+      ...(entry.retry
+        ? {
+            retry: {
+              ...entry.retry,
+              ...(Number.isFinite(Number(entry.retry.maxAttempts))
+                ? { maxAttempts: Math.max(0, Math.floor(Number(entry.retry.maxAttempts))) }
+                : {}),
+              ...(Number.isFinite(Number(entry.retry.baseDelaySec))
+                ? { baseDelaySec: Math.max(5, Math.floor(Number(entry.retry.baseDelaySec))) }
+                : {}),
+              ...(Number.isFinite(Number(entry.retry.backoffSeconds))
+                ? { backoffSeconds: Math.max(5, Math.floor(Number(entry.retry.backoffSeconds))) }
+                : {}),
+            },
+          }
+        : {}),
+      ...(entry.concurrency
+        ? {
+            concurrency: {
+              ...entry.concurrency,
+              ...(Number.isFinite(Number(entry.concurrency.maxActiveRuns))
+                ? { maxActiveRuns: Math.max(1, Math.floor(Number(entry.concurrency.maxActiveRuns))) }
+                : {}),
+              ...(Number.isFinite(Number(entry.concurrency.perIssue))
+                ? { perIssue: Math.max(1, Math.floor(Number(entry.concurrency.perIssue))) }
+                : {}),
+              ...(typeof entry.concurrency.dedupeByIssue === "boolean"
+                ? { dedupeByIssue: entry.concurrency.dedupeByIssue }
+                : {}),
+            },
+          }
+        : {}),
+    }))
+    .sort((left, right) => right.priority - left.priority || left.name.localeCompare(right.name));
   return {
     version: 1,
     source: source.source === "repo" ? "repo" : "generated",
+    intake: normalizeIntake(source.intake, workflows, source.legacyConfig),
     settings: {
       ...(typeof source.settings?.ctoLinearAssigneeId === "string" ? { ctoLinearAssigneeId: source.settings.ctoLinearAssigneeId } : {}),
       ctoLinearAssigneeName: source.settings?.ctoLinearAssigneeName?.trim() || "CTO",
@@ -45,19 +176,7 @@ function normalizePolicy(input?: LinearWorkflowConfig | null): LinearWorkflowCon
         .map((entry) => entry.trim())
         .filter(Boolean),
     },
-    workflows: (source.workflows ?? [])
-      .filter((entry) => Boolean(entry?.id) && Boolean(entry?.name))
-      .map<LinearWorkflowDefinition>((entry) => ({
-        ...entry,
-        source: entry.source === "repo" ? "repo" : "generated",
-        priority: Number.isFinite(Number(entry.priority)) ? Math.floor(Number(entry.priority)) : 100,
-        enabled: entry.enabled !== false,
-        steps: (entry.steps ?? []).map((step, index) => ({
-          ...step,
-          id: step.id?.trim() || `step-${index + 1}`,
-        })),
-      }))
-      .sort((left, right) => right.priority - left.priority || left.name.localeCompare(right.name)),
+    workflows,
     files: Array.isArray(source.files) ? source.files : [],
     migration: source.migration
       ? {
@@ -142,7 +261,7 @@ export function createFlowPolicyService(args: {
       id: randomUUID(),
       actor,
       createdAt: nowIso(),
-      policy: clone(policy),
+      policy: structuredClone(policy),
     };
     args.db.run(
       `
@@ -173,6 +292,12 @@ export function createFlowPolicyService(args: {
   const validatePolicy = (policy: LinearWorkflowConfig): { ok: boolean; issues: string[] } => {
     const issues: string[] = [];
     const normalized = normalizePolicy(policy);
+    if (!normalized.intake.activeStateTypes?.length) {
+      issues.push("At least one intake active state type is required.");
+    }
+    if (!normalized.intake.terminalStateTypes?.length) {
+      issues.push("At least one intake terminal state type is required.");
+    }
     if (!normalized.workflows.length) {
       issues.push("At least one workflow is required.");
     }
@@ -270,7 +395,7 @@ export function createFlowPolicyService(args: {
     validatePolicy,
     normalizePolicy,
     diffPolicyPaths,
-    defaults: clone(DEFAULT_POLICY),
+    defaults: structuredClone(DEFAULT_POLICY),
   };
 }
 

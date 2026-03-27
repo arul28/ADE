@@ -132,7 +132,7 @@ The left pane is a scrollable list of all active lanes for the current project.
 
 **Stack graph** (bottom of left pane): A lightweight visual representation of parent-child lane relationships (including clear connections back to the Primary lane). A one-click “Open canvas” action jumps to the full Workspace Graph for deeper exploration.
 
-**Create Lane button**: Opens a dropdown menu offering "Create new lane" or "Add existing worktree as lane". Both options open a dialog built on the shared `LaneDialogShell` component. The create dialog lets the user choose a name, optional template, and starting point (from primary with a base branch selector, or as a child of an existing lane). The attach dialog accepts a lane name and an absolute worktree path.
+**Create Lane button**: Opens a dropdown menu offering "Create new lane" or "Add existing worktree as lane". Both options open a dialog built on the shared `LaneDialogShell` component. The create dialog lets the user choose a name, optional template, and starting point (from primary with a base branch selector, or as a child of an existing lane). The attach dialog accepts a lane name, an absolute worktree path, and an optional description.
 
 ### Center Pane — Lane Detail Area
 

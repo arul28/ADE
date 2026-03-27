@@ -101,7 +101,7 @@ import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
-import { asNumber, asString, normalizeBranchName, nowIso } from "../shared/utils";
+import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso } from "../shared/utils";
 
 type PullRequestRow = {
   id: string;
@@ -1877,70 +1877,95 @@ export function createPrService({
       });
 
       const mergeCommitSha = asString(merge.data?.sha) || null;
+
+      // --- Post-merge cleanup: failures here must not mask a successful merge ---
       const headBranch = row.head_branch;
       let branchDeleted = false;
-      try {
-        await githubService.apiRequest({
-          method: "DELETE",
-          path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
-        });
-        branchDeleted = true;
-      } catch (error) {
-        logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: error instanceof Error ? error.message : String(error) });
-      }
-
-      // Remove PR from any group membership before archiving (lane archive blocks if still in a group)
-      db.run("delete from pr_group_members where pr_id = ?", [row.id]);
-
       let laneArchived = false;
-      if (args.archiveLane) {
-        try {
-          await laneService.archive({ laneId: row.lane_id });
-          laneArchived = true;
-        } catch (archiveErr) {
-          logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: archiveErr instanceof Error ? archiveErr.message : String(archiveErr) });
-        }
-      }
 
-      await fetchRemoteTrackingBranch({
-        projectRoot,
-        targetBranch: row.base_branch,
-      }).catch((error) => {
-        logger.warn("prs.fetch_base_branch_failed", {
-          prId: row.id,
-          baseBranch: row.base_branch,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
       try {
-        laneService.invalidateCache?.();
-      } catch (cacheError) {
-        logger.warn("prs.lane_cache_invalidation_failed", {
-          prId: row.id,
-          error: cacheError instanceof Error ? cacheError.message : String(cacheError),
+        try {
+          await githubService.apiRequest({
+            method: "DELETE",
+            path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
+          });
+          branchDeleted = true;
+        } catch (error) {
+          logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: getErrorMessage(error) });
+        }
+
+        // Remove PR from any group membership before archiving (lane archive blocks if still in a group)
+        try {
+          db.run("delete from pr_group_members where pr_id = ?", [row.id]);
+        } catch (groupErr) {
+          logger.warn("prs.group_membership_cleanup_failed", { prId: row.id, error: getErrorMessage(groupErr) });
+        }
+
+        if (args.archiveLane) {
+          try {
+            await laneService.archive({ laneId: row.lane_id });
+            laneArchived = true;
+          } catch (archiveErr) {
+            logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: getErrorMessage(archiveErr) });
+          }
+        }
+
+        await fetchRemoteTrackingBranch({
+          projectRoot,
+          targetBranch: row.base_branch,
+        }).catch((error) => {
+          logger.warn("prs.fetch_base_branch_failed", {
+            prId: row.id,
+            baseBranch: row.base_branch,
+            error: getErrorMessage(error),
+          });
         });
+        try {
+          laneService.invalidateCache?.();
+        } catch (cacheError) {
+          logger.warn("prs.lane_cache_invalidation_failed", {
+            prId: row.id,
+            error: getErrorMessage(cacheError),
+          });
+        }
+
+        operationService.finish({
+          operationId: op.operationId,
+          status: "succeeded",
+          metadataPatch: { mergeCommitSha, branchDeleted, laneArchived }
+        });
+
+        markHotRefresh([row.id]);
+        await refreshOne(row.id).catch(() => {});
+        await conflictService?.scanRebaseNeeds().catch((error) => {
+          logger.warn("prs.refresh_rebase_needs_failed", {
+            prId: row.id,
+            error: getErrorMessage(error),
+          });
+        });
+        await rebaseSuggestionService?.refresh().catch((error) => {
+          logger.warn("prs.refresh_rebase_suggestions_failed", {
+            prId: row.id,
+            error: getErrorMessage(error),
+          });
+        });
+      } catch (cleanupError) {
+        // The merge itself succeeded -- cleanup failure must not mask that.
+        const cleanupMsg = getErrorMessage(cleanupError);
+        logger.error("prs.post_merge_cleanup_failed", {
+          prId: row.id,
+          mergeCommitSha,
+          error: cleanupMsg,
+        });
+        // Best-effort: mark the operation as succeeded even if cleanup threw
+        try {
+          operationService.finish({
+            operationId: op.operationId,
+            status: "succeeded",
+            metadataPatch: { mergeCommitSha, branchDeleted, laneArchived, cleanupError: cleanupMsg }
+          });
+        } catch { /* already finished or double-finish -- ignore */ }
       }
-
-      operationService.finish({
-        operationId: op.operationId,
-        status: "succeeded",
-        metadataPatch: { mergeCommitSha, branchDeleted, laneArchived }
-      });
-
-      markHotRefresh([row.id]);
-      await refreshOne(row.id).catch(() => {});
-      await conflictService?.scanRebaseNeeds().catch((error) => {
-        logger.warn("prs.refresh_rebase_needs_failed", {
-          prId: row.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      await rebaseSuggestionService?.refresh().catch((error) => {
-        logger.warn("prs.refresh_rebase_suggestions_failed", {
-          prId: row.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
 
       return {
         prId: row.id,

@@ -51,8 +51,9 @@ export const RADII = {
   xl: 16,
 } as const;
 
-export const MONO_FONT = "JetBrains Mono, monospace";
-export const SANS_FONT = "Geist, -apple-system, BlinkMacSystemFont, sans-serif";
+export const APP_FONT_STACK = "\"Geist\", -apple-system, BlinkMacSystemFont, sans-serif";
+export const SANS_FONT = "var(--font-sans)";
+export const MONO_FONT = "var(--font-mono)";
 
 export const LABEL_STYLE: CSSProperties = {
   fontSize: 11,

@@ -44,18 +44,18 @@ function CollapsibleSection({ title, color, defaultOpen = true, right, children 
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className={cn(cardCls, "overflow-hidden !p-0")}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-between w-full px-4 py-3.5 text-left hover:bg-white/[0.02] transition-colors"
-      >
-        <div className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full" style={{ background: color, boxShadow: `0 0 14px ${color}55` }} />
+      <div className="flex items-center justify-between gap-3 px-4 py-3.5 hover:bg-white/[0.02] transition-colors">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <div className="h-2 w-2 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 14px ${color}55` }} />
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-fg/86">{title}</span>
-          {open ? <CaretDown size={10} className="text-muted-fg/30" /> : <CaretRight size={10} className="text-muted-fg/30" />}
-        </div>
-        {right && <div onClick={(e) => e.stopPropagation()}>{right}</div>}
-      </button>
+          {open ? <CaretDown size={10} className="text-muted-fg/30 shrink-0" /> : <CaretRight size={10} className="text-muted-fg/30 shrink-0" />}
+        </button>
+        {right ? <div className="shrink-0">{right}</div> : null}
+      </div>
       {open && <div className="border-t border-white/[0.05]">{children}</div>}
     </div>
   );
@@ -267,7 +267,7 @@ export function CtoSettingsPanel({
               {coreMemory.projectSummary || "No project summary yet."}
             </div>
             <div className="mt-2 text-[11px] leading-5 text-muted-fg/40">
-              This is the always-on CTO brief that gets reloaded after compaction and across fresh chat resumes.
+              This is the persistent CTO brief that ADE reloads after compaction and across fresh chat resumes.
             </div>
             {[
               { items: coreMemory.criticalConventions, label: "Conventions", color: ACCENT.blue },

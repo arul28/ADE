@@ -8,6 +8,7 @@ import {
   statusDotForWorker,
   workerStatusToParticipantStatus,
   normalizeMentionKey,
+  collapsePlannerStreamMessages,
 } from "./chatFilters";
 
 function makeMessage(overrides: Partial<OrchestratorChatMessage> = {}): OrchestratorChatMessage {
@@ -151,15 +152,79 @@ describe("isSignalMessage", () => {
       ),
     ).toBe(true);
   });
+
+  it("keeps approval_request kind", () => {
+    expect(
+      isSignalMessage(
+        makeMessage({
+          content: "approval needed",
+          metadata: { structuredStream: { kind: "approval_request" } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps user_message kind", () => {
+    expect(
+      isSignalMessage(
+        makeMessage({
+          content: "user input",
+          metadata: { structuredStream: { kind: "user_message" } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("filters reasoning kind with noise content", () => {
+    expect(
+      isSignalMessage(
+        makeMessage({
+          content: "streaming...",
+          metadata: { structuredStream: { kind: "reasoning" } },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps reasoning kind with substantive content", () => {
+    expect(
+      isSignalMessage(
+        makeMessage({
+          content: "I need to consider the architecture of the auth module first",
+          metadata: { structuredStream: { kind: "reasoning" } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("filters interrupted status when message is noise", () => {
+    expect(
+      isSignalMessage(
+        makeMessage({
+          content: "streaming...",
+          metadata: { structuredStream: { kind: "status", status: "interrupted", message: "" } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects empty content for non-user non-structured messages", () => {
+    expect(isSignalMessage(makeMessage({ content: "" }))).toBe(false);
+    expect(isSignalMessage(makeMessage({ content: "   " }))).toBe(false);
+  });
 });
 
 describe("statusDotForWorker", () => {
-  it("returns green for active states", () => {
-    for (const state of ["spawned", "initializing", "working", "waiting_input"]) {
+  it("returns green for working states", () => {
+    for (const state of ["spawned", "initializing", "working"]) {
       expect(statusDotForWorker(state)).toMatch(/^#/);
-      // All these should return the same green color
       expect(statusDotForWorker(state)).toBe(statusDotForWorker("spawned"));
     }
+  });
+
+  it("returns amber when the worker is waiting for input", () => {
+    expect(statusDotForWorker("waiting_input")).toMatch(/^#/);
+    expect(statusDotForWorker("waiting_input")).not.toBe(statusDotForWorker("working"));
   });
 
   it("returns gray for terminal/idle states", () => {
@@ -208,5 +273,44 @@ describe("normalizeMentionKey", () => {
   it("uses fallback for empty strings", () => {
     const used = new Set<string>();
     expect(normalizeMentionKey("", "fallback-1", used)).toBe("fallback-1");
+  });
+
+  it("strips special characters", () => {
+    const used = new Set<string>();
+    expect(normalizeMentionKey("Hello@World#123", "fallback", used)).toBe("hello-world-123");
+  });
+
+  it("handles multiple deduplication levels", () => {
+    const used = new Set<string>(["hello", "hello-2", "hello-3"]);
+    expect(normalizeMentionKey("Hello", "fallback", used)).toBe("hello-4");
+    expect(used.has("hello-4")).toBe(true);
+  });
+
+  it("trims whitespace-only input and uses fallback", () => {
+    const used = new Set<string>();
+    expect(normalizeMentionKey("   ", "default-key", used)).toBe("default-key");
+  });
+});
+
+// ── collapsePlannerStreamMessages ──
+
+describe("collapsePlannerStreamMessages", () => {
+  it("returns the same messages when there is nothing to collapse", () => {
+    const messages = [
+      makeMessage({ id: "m1", role: "user", content: "hello" }),
+      makeMessage({ id: "m2", role: "worker", content: "ok" }),
+    ];
+    const result = collapsePlannerStreamMessages(messages);
+    expect(result).toHaveLength(2);
+  });
+
+  it("returns empty array for empty input", () => {
+    expect(collapsePlannerStreamMessages([])).toEqual([]);
+  });
+
+  it("returns single message unchanged", () => {
+    const messages = [makeMessage({ id: "m1" })];
+    const result = collapsePlannerStreamMessages(messages);
+    expect(result).toHaveLength(1);
   });
 });

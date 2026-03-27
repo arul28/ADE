@@ -579,9 +579,17 @@ export function createLaneService({
     }
   };
 
+  /** Look up the active (non-archived) primary lane. */
+  const getActivePrimaryLane = (): { id: string; branch_ref: string } | undefined => {
+    return db.get<{ id: string; branch_ref: string }>(
+      "select id, branch_ref from lanes where project_id = ? and lane_type = 'primary' and status != 'archived' limit 1",
+      [projectId],
+    ) ?? undefined;
+  };
+
   const ensurePrimaryLane = async (): Promise<void> => {
     const existing = db.get<{ id: string }>(
-      "select id from lanes where project_id = ? and lane_type = 'primary' limit 1",
+      "select id from lanes where project_id = ? and lane_type = 'primary' and status != 'archived' limit 1",
       [projectId]
     );
     if (existing?.id) return;
@@ -1205,7 +1213,12 @@ export function createLaneService({
       });
 
       const parentLaneIdRaw = typeof args.parentLaneId === "string" ? args.parentLaneId.trim() : "";
-      const parentLaneId = parentLaneIdRaw.length ? parentLaneIdRaw : null;
+      let parentLaneId = parentLaneIdRaw.length ? parentLaneIdRaw : null;
+      // Default to primary lane when no parent is specified.
+      if (!parentLaneId) {
+        const primaryRow = getActivePrimaryLane();
+        if (primaryRow?.id) parentLaneId = primaryRow.id;
+      }
       const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
       if (parentLaneId && !parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
       if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
@@ -2113,7 +2126,11 @@ export function createLaneService({
 
       const laneId = randomUUID();
       const now = new Date().toISOString();
-      const baseRef = defaultBaseRef;
+
+      // Default parent to the primary lane so attached lanes are properly parented.
+      const primaryRow = getActivePrimaryLane();
+      const parentLaneId = primaryRow?.id ?? null;
+      const baseRef = primaryRow?.branch_ref ?? defaultBaseRef;
 
       db.run(
         `
@@ -2121,9 +2138,9 @@ export function createLaneService({
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
           attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, null, null, null, null, 'active', ?, null)
+        values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, ?, null, null, null, 'active', ?, null)
       `,
-        [laneId, projectId, laneName, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
+        [laneId, projectId, laneName, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, parentLaneId, now]
       );
       invalidateLaneListCache();
 
@@ -2139,13 +2156,18 @@ export function createLaneService({
 
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Failed to attach lane: ${laneId}`);
+      const rowsById = getRowsById(true);
       const status = await computeLaneStatus(attachedPath, baseRef, branchRef);
+      const parentRow = parentLaneId ? getLaneRow(parentLaneId) : null;
+      const parentStatus = parentRow
+        ? await computeLaneStatus(parentRow.worktree_path, parentRow.base_ref, parentRow.branch_ref)
+        : null;
       return toLaneSummary({
         row,
         status,
-        parentStatus: null,
+        parentStatus,
         childCount: 0,
-        stackDepth: 0
+        stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() })
       });
     },
 

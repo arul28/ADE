@@ -31,7 +31,7 @@ const MAX_BYTES = 4096;
 
 const TRANSCRIPT_STYLE: React.CSSProperties = {
   background: "#0C0A10",
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--font-sans)",
   fontSize: "10px",
   color: "#A1A1AA",
 };
@@ -103,7 +103,7 @@ export const WorkerTranscriptPane = React.memo(function WorkerTranscriptPane({ a
     return (
       <div
         className="flex items-center justify-center p-6 text-[11px]"
-        style={{ border: "1px solid #1E1B26", background: "#13101A", color: "#71717A", fontFamily: "JetBrains Mono, monospace", textTransform: "uppercase", letterSpacing: "1px" }}
+        style={{ border: "1px solid #1E1B26", background: "#13101A", color: "#71717A", fontFamily: "var(--font-sans)", textTransform: "uppercase", letterSpacing: "1px" }}
       >
         No active workers
       </div>
@@ -127,7 +127,7 @@ export const WorkerTranscriptPane = React.memo(function WorkerTranscriptPane({ a
               <div className="h-2 w-2 rounded-full animate-pulse" style={{ background: "#22C55E" }} />
               <span
                 className="flex-1 truncate"
-                style={{ color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace", fontSize: "11px", fontWeight: 600 }}
+                style={{ color: "#FAFAFA", fontFamily: "var(--font-sans)", fontSize: "11px", fontWeight: 600 }}
               >
                 {worker.stepTitle}
               </span>
@@ -135,7 +135,7 @@ export const WorkerTranscriptPane = React.memo(function WorkerTranscriptPane({ a
                 className="px-1.5 py-0.5"
                 style={{
                   ...badge.style,
-                  fontFamily: "JetBrains Mono, monospace",
+                  fontFamily: "var(--font-sans)",
                   fontSize: "9px",
                   fontWeight: 700,
                   textTransform: "uppercase",

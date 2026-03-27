@@ -280,7 +280,7 @@ function ProviderUsageCard({
         <Lightning size={14} weight="regular" className="text-[#A78BFA]" />
         <span
           className="text-[12px] font-bold tracking-[-0.2px] text-[#FAFAFA]"
-          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+          style={{ fontFamily: "var(--font-sans)" }}
         >
           {provider}
         </span>
@@ -331,7 +331,7 @@ function ExtraUsageCard({ extra }: { extra: ExtraUsage }) {
         <Lightning size={14} weight="regular" className="text-[#A78BFA]" />
         <span
           className="text-[12px] font-bold tracking-[-0.2px] text-[#FAFAFA]"
-          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+          style={{ fontFamily: "var(--font-sans)" }}
         >
           {extra.provider === "claude" ? "Claude" : "Codex"} Extra Usage
         </span>

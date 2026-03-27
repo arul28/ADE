@@ -115,6 +115,7 @@ export function LanesPage() {
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
   const [attachPath, setAttachPath] = useState("");
+  const [attachDescription, setAttachDescription] = useState("");
   const [attachBusy, setAttachBusy] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const canCreateLane = Boolean(project?.rootPath);
@@ -1117,11 +1118,13 @@ export function LanesPage() {
     setAttachBusy(true);
     setAttachError(null);
     try {
-      const lane = await window.ade.lanes.attach({ name, attachedPath });
+      const description = attachDescription.trim() || undefined;
+      const lane = await window.ade.lanes.attach({ name, attachedPath, description });
       await refreshLanes();
       setAttachOpen(false);
       setAttachName("");
       setAttachPath("");
+      setAttachDescription("");
       setAttachError(null);
       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
     } catch (err) {
@@ -1129,7 +1132,7 @@ export function LanesPage() {
     } finally {
       setAttachBusy(false);
     }
-  }, [attachName, attachPath, attachBusy, refreshLanes, navigate]);
+  }, [attachName, attachPath, attachDescription, attachBusy, refreshLanes, navigate]);
 
   const openManageDialog = useCallback((laneId: string) => {
     selectLane(laneId);
@@ -1225,7 +1228,7 @@ export function LanesPage() {
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
-      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}`, position: "relative", zIndex: 10, overflow: "visible" }}>
         {/* Numbered title group */}
         <div className="flex items-center gap-2 shrink-0">
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>05</span>
@@ -1910,6 +1913,8 @@ export function LanesPage() {
         setAttachName={setAttachName}
         attachPath={attachPath}
         setAttachPath={setAttachPath}
+        attachDescription={attachDescription}
+        setAttachDescription={setAttachDescription}
         busy={attachBusy}
         error={attachError}
         onSubmit={handleAttachSubmit}

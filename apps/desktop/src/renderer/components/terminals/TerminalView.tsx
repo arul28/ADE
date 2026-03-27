@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { cn } from "../ui/cn";
+import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { useAppStore, type ThemeId } from "../../state/appStore";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
@@ -498,7 +499,7 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
     cursorBlink: true,
     cursorInactiveStyle: "none",
     scrollback: 6000,
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    fontFamily: MONO_FONT,
     fontSize: 13,
     lineHeight: 1.2,
     theme: args.theme

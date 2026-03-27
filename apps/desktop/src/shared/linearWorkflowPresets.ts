@@ -254,6 +254,10 @@ export function createDefaultLinearWorkflowConfig(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "generated",
+    intake: {
+      activeStateTypes: ["backlog", "unstarted", "started"],
+      terminalStateTypes: ["completed", "canceled"],
+    },
     settings: {
       ctoLinearAssigneeName: "CTO",
       ctoLinearAssigneeAliases: ["cto"],

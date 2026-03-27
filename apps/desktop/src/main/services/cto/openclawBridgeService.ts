@@ -26,7 +26,16 @@ import type {
   TestEvent,
   OrchestratorRuntimeEvent,
 } from "../../../shared/types";
-import { getErrorMessage, nowIso, parseIsoToEpoch, stableStringify, toBase64Url, writeTextAtomic } from "../shared/utils";
+import {
+  clipText,
+  getErrorMessage,
+  isRecord,
+  nowIso,
+  parseIsoToEpoch,
+  sanitizeStructuredData,
+  toBase64Url,
+  writeTextAtomic,
+} from "../shared/utils";
 
 const DEFAULT_BRIDGE_PORT = 18791;
 const HTTP_BODY_LIMIT_BYTES = 1_000_000;
@@ -39,6 +48,16 @@ const CONNECT_CHALLENGE_TIMEOUT_MS = 2_000;
 const TICK_WATCH_FLOOR_MS = 1_000;
 const DEFAULT_TICK_INTERVAL_MS = 30_000;
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+const BRIDGE_CONTEXT_MAX_STRING_LENGTH = 4_000;
+const BRIDGE_CONTEXT_MAX_OBJECT_ENTRIES = 50;
+const BRIDGE_CONTEXT_MAX_ARRAY_ENTRIES = 50;
+const HISTORY_BODY_MAX_LENGTH = 1_200;
+const HISTORY_ERROR_MAX_LENGTH = 400;
+const HISTORY_SUMMARY_MAX_LENGTH = 160;
+const OPENCLAW_HISTORY_FILE = "openclaw-history.json";
+const OPENCLAW_OUTBOX_FILE = "openclaw-outbox.json";
+const OPENCLAW_IDEMPOTENCY_FILE = "openclaw-idempotency.json";
+const OPENCLAW_ROUTES_FILE = "openclaw-routes.json";
 
 type DeviceIdentity = {
   deviceId: string;
@@ -134,11 +153,6 @@ type OpenclawBridgeServiceArgs = {
   onStatusChange?: (status: OpenclawBridgeStatus) => void;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-
 function trimToNull(value: unknown): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed.length ? trimmed : null;
@@ -150,9 +164,16 @@ function summarizeMessage(text: string, maxLength = 120): string {
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
-function sanitizeContext(context: unknown): Record<string, unknown> | null {
-  if (!isRecord(context)) return null;
-  return JSON.parse(stableStringify(context)) as Record<string, unknown>;
+function sanitizeContext(
+  context: unknown,
+  options?: { blockedTopLevelKeys?: Iterable<string> },
+): Record<string, unknown> | null {
+  return sanitizeStructuredData(context, {
+    blockedTopLevelKeys: options?.blockedTopLevelKeys,
+    maxStringLength: BRIDGE_CONTEXT_MAX_STRING_LENGTH,
+    maxObjectEntries: BRIDGE_CONTEXT_MAX_OBJECT_ENTRIES,
+    maxArrayEntries: BRIDGE_CONTEXT_MAX_ARRAY_ENTRIES,
+  });
 }
 
 function buildDeviceAuthPayloadV3(params: {
@@ -246,21 +267,6 @@ function signDevicePayload(privateKeyPem: string, payload: string): string {
 
 function publicKeyRawBase64UrlFromPem(publicKeyPem: string): string {
   return toBase64Url(derivePublicKeyRaw(publicKeyPem));
-}
-
-function defaultConfig(): OpenclawBridgeConfig {
-  return {
-    enabled: false,
-    bridgePort: DEFAULT_BRIDGE_PORT,
-    gatewayUrl: null,
-    gatewayToken: null,
-    deviceToken: null,
-    hooksToken: null,
-    allowedAgentIds: [],
-    defaultTarget: "cto",
-    allowEmployeeTargets: true,
-    notificationRoutes: [],
-  };
 }
 
 function normalizeNotificationRoute(value: unknown): OpenclawNotificationRoute | null {
@@ -395,17 +401,62 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
   const logger = args.logger ?? null;
   const secretPath = path.join(args.adeDir, "local.secret.yaml");
   const ctoDir = path.join(args.adeDir, "cto");
+  const cacheDir = path.join(args.adeDir, "cache", "openclaw");
   const devicePath = path.join(ctoDir, "openclaw-device.json");
-  const historyPath = path.join(ctoDir, "openclaw-history.json");
-  const outboxPath = path.join(ctoDir, "openclaw-outbox.json");
-  const idempotencyPath = path.join(ctoDir, "openclaw-idempotency.json");
-  const routeCachePath = path.join(ctoDir, "openclaw-routes.json");
+  const historyPath = path.join(cacheDir, OPENCLAW_HISTORY_FILE);
+  const outboxPath = path.join(cacheDir, OPENCLAW_OUTBOX_FILE);
+  const idempotencyPath = path.join(cacheDir, OPENCLAW_IDEMPOTENCY_FILE);
+  const routeCachePath = path.join(cacheDir, OPENCLAW_ROUTES_FILE);
   fs.mkdirSync(ctoDir, { recursive: true });
+  fs.mkdirSync(cacheDir, { recursive: true });
+
+  const migrateLegacyRuntimeFile = (legacyFileName: string, nextPath: string): void => {
+    const legacyPath = path.join(ctoDir, legacyFileName);
+    if (!fs.existsSync(legacyPath)) return;
+    try {
+      if (!fs.existsSync(nextPath)) {
+        writeTextAtomic(nextPath, fs.readFileSync(legacyPath, "utf8"));
+      }
+    } catch (error) {
+      logger?.warn("openclaw.runtime_state_migration_failed", {
+        legacyPath,
+        nextPath,
+        error: getErrorMessage(error),
+      });
+      return;
+    }
+    try {
+      fs.unlinkSync(legacyPath);
+    } catch (error) {
+      logger?.warn("openclaw.runtime_state_cleanup_failed", {
+        legacyPath,
+        error: getErrorMessage(error),
+      });
+    }
+  };
+
+  migrateLegacyRuntimeFile(OPENCLAW_HISTORY_FILE, historyPath);
+  migrateLegacyRuntimeFile(OPENCLAW_OUTBOX_FILE, outboxPath);
+  migrateLegacyRuntimeFile(OPENCLAW_IDEMPOTENCY_FILE, idempotencyPath);
+  migrateLegacyRuntimeFile(OPENCLAW_ROUTES_FILE, routeCachePath);
 
   const deviceIdentity = loadOrCreateDeviceIdentity(devicePath);
   let config = readConfig();
-  let history = readJsonFile<OpenclawMessageRecord[]>(historyPath, []);
-  let outbox = readJsonFile<OutboxEntry[]>(outboxPath, []);
+  let history: OpenclawMessageRecord[] = readJsonFile<OpenclawMessageRecord[]>(historyPath, []).map((record): OpenclawMessageRecord => ({
+    ...record,
+    body: clipText(String(record.body ?? ""), HISTORY_BODY_MAX_LENGTH),
+    summary: summarizeMessage(String(record.summary ?? record.body ?? ""), HISTORY_SUMMARY_MAX_LENGTH),
+    ...(sanitizeContext(record.context) ? { context: sanitizeContext(record.context) } : { context: null }),
+    ...(sanitizeContext(record.metadata) ? { metadata: sanitizeContext(record.metadata) } : { metadata: null }),
+    ...(typeof record.error === "string" ? { error: clipText(record.error, HISTORY_ERROR_MAX_LENGTH) } : {}),
+  }));
+  let outbox: OutboxEntry[] = readJsonFile<OutboxEntry[]>(outboxPath, []).map((entry): OutboxEntry => ({
+    ...entry,
+    envelope: {
+      ...entry.envelope,
+      context: sanitizeContext(entry.envelope.context) ?? null,
+    },
+  }));
   let idempotencyState = pruneIdempotencyState(readJsonFile<PersistedIdempotencyState>(idempotencyPath, {}));
   let routeCache = readJsonFile<PersistedRouteCache>(routeCachePath, { byAgentId: {} });
 
@@ -416,7 +467,6 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
   let wsConnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempt = 0;
-  let lastSeq: number | null = null;
   let tickTimer: ReturnType<typeof setInterval> | null = null;
   let lastTickAt: number | null = null;
   let requestedStop = false;
@@ -523,12 +573,20 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
   }
 
   function saveHistoryRecord(record: OpenclawMessageRecord): OpenclawMessageRecord {
-    history = [...history.filter((entry) => entry.id !== record.id), record]
+    const sanitizedRecord: OpenclawMessageRecord = {
+      ...record,
+      body: clipText(record.body, HISTORY_BODY_MAX_LENGTH),
+      summary: summarizeMessage(record.summary || record.body, HISTORY_SUMMARY_MAX_LENGTH),
+      context: sanitizeContext(record.context),
+      ...(record.error ? { error: clipText(record.error, HISTORY_ERROR_MAX_LENGTH) } : {}),
+      ...(record.metadata ? { metadata: sanitizeContext(record.metadata) } : {}),
+    };
+    history = [...history.filter((entry) => entry.id !== sanitizedRecord.id), sanitizedRecord]
       .sort((a, b) => parseIsoToEpoch(a.createdAt) - parseIsoToEpoch(b.createdAt))
       .slice(-HISTORY_CAP);
     persistRuntimeState();
-    setStatus({ lastMessageAt: record.createdAt });
-    return record;
+    setStatus({ lastMessageAt: sanitizedRecord.createdAt });
+    return sanitizedRecord;
   }
 
   function getHistoryMessages(limit = 40): OpenclawMessageRecord[] {
@@ -582,18 +640,14 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
     return fallbackMessage?.trim() || "No reply was generated.";
   }
 
-  async function resolveLaneId(): Promise<string> {
-    const sessions = await args.agentChatService.listSessions();
-    const mostRecent = sessions
-      .slice()
-      .sort((a, b) => parseIsoToEpoch(b.lastActivityAt) - parseIsoToEpoch(a.lastActivityAt))[0];
-    if (mostRecent?.laneId) return mostRecent.laneId;
-    const lanes = await args.laneService.list({ includeArchived: false });
-    const laneId = lanes[0]?.id ?? null;
-    if (!laneId) {
+  async function resolvePrimaryLaneId(): Promise<string> {
+    await args.laneService.ensurePrimaryLane().catch(() => {});
+    const lanes = await args.laneService.list({ includeArchived: false, includeStatus: false });
+    const preferred = lanes.find((entry) => entry.laneType === "primary") ?? lanes[0] ?? null;
+    if (!preferred?.id) {
       throw new Error("No lane is available to host the OpenClaw bridge session.");
     }
-    return laneId;
+    return preferred.id;
   }
 
   function resolveTarget(targetHint?: OpenclawTargetHint | null): { identityKey: "cto" | `agent:${string}`; resolvedTarget: OpenclawTargetHint; fallbackReason?: string } {
@@ -625,15 +679,10 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
   }
 
   function applyContextPolicy(context: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
-    const safe = sanitizeContext(context);
-    if (!safe) return null;
     const policy = normalizeContextPolicy(args.ctoStateService?.getIdentity().openclawContextPolicy);
-    if (policy.shareMode === "full") return safe;
-    const blocked = new Set(policy.blockedCategories.map((entry) => entry.toLowerCase()));
-    if (!blocked.size) return safe;
-    return Object.fromEntries(
-      Object.entries(safe).filter(([key]) => !blocked.has(key.toLowerCase())),
-    );
+    return sanitizeContext(context, {
+      blockedTopLevelKeys: policy.shareMode === "full" ? [] : policy.blockedCategories,
+    });
   }
 
   function buildPromptFromInbound(
@@ -665,7 +714,7 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
     routeTarget: OpenclawTargetHint;
     fallbackReason?: string;
   }> {
-    const laneId = await resolveLaneId();
+    const laneId = await resolvePrimaryLaneId();
     const resolved = resolveTarget(targetHint);
     const session = await args.agentChatService.ensureIdentitySession({
       identityKey: resolved.identityKey,
@@ -704,6 +753,7 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
     const message = filteredContext
       ? `${envelope.message.trim()}\n\n[filtered_context]\n${JSON.stringify(filteredContext, null, 2)}`
       : envelope.message.trim();
+    const historyBody = envelope.message.trim();
     const recordBase: OpenclawMessageRecord = {
       id: randomUUID(),
       requestId,
@@ -712,8 +762,8 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
       status: "queued",
       agentId: envelope.agentId ?? null,
       sessionKey: envelope.sessionKey ?? null,
-      body: message,
-      summary: summarizeMessage(message),
+      body: historyBody,
+      summary: summarizeMessage(historyBody),
       context: filteredContext,
       createdAt: nowIso(),
       metadata: envelope.notificationType ? { notificationType: envelope.notificationType } : undefined,
@@ -806,7 +856,7 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
           sessionKey: entry.envelope.sessionKey ?? null,
           body: entry.envelope.message,
           summary: summarizeMessage(entry.envelope.message),
-          context: sanitizeContext(entry.envelope.context),
+          context: applyContextPolicy(entry.envelope.context),
           createdAt: nowIso(),
           error: entry.lastError ?? "Outbox attempts exhausted.",
         });
@@ -919,6 +969,7 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
       throw new Error("OpenClaw inbound message is required.");
     }
     const requestId = trimToNull(envelope.requestId) ?? trimToNull(envelope.idempotencyKey) ?? randomUUID();
+    const normalizedContext = applyContextPolicy(envelope.context);
     if (hasSeenIdempotency(requestId)) {
       saveHistoryRecord({
         id: randomUUID(),
@@ -931,7 +982,7 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
         targetHint: envelope.targetHint ?? null,
         body: message,
         summary: summarizeMessage(message),
-        context: sanitizeContext(envelope.context),
+        context: normalizedContext,
         createdAt: nowIso(),
       });
       return { requestId, sessionId: "", routeTarget: config.defaultTarget, duplicate: true };
@@ -944,7 +995,6 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
     }
 
     markIdempotency(requestId);
-    const normalizedContext = sanitizeContext(envelope.context);
     const targetSession = await ensureTargetSession(envelope.targetHint ?? config.defaultTarget);
     const route: ConversationRoute = {
       agentId: trimToNull(envelope.agentId),
@@ -1190,9 +1240,6 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
           sendConnectFrame();
           return;
         }
-        if (typeof parsed.seq === "number") {
-          lastSeq = parsed.seq;
-        }
         if (parsed.event === "tick") {
           lastTickAt = Date.now();
         }
@@ -1334,6 +1381,21 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
   }
 
   async function handleQueryRequest(envelope: OpenclawInboundEnvelope, res: ServerResponse): Promise<void> {
+    const resolvedTarget = resolveTarget(envelope.targetHint ?? config.defaultTarget);
+    if (resolvedTarget.resolvedTarget !== "cto") {
+      const dispatch = await dispatchInbound("query", envelope);
+      jsonResponse(res, 200, {
+        ok: true,
+        accepted: true,
+        async: true,
+        status: "working",
+        requestId: dispatch.requestId,
+        duplicate: dispatch.duplicate,
+        sessionId: dispatch.sessionId,
+        routeTarget: dispatch.routeTarget,
+      });
+      return;
+    }
     const timeoutMs = Number.isFinite(Number(envelope.timeoutMs))
       ? Math.max(1_000, Math.min(300_000, Math.floor(Number(envelope.timeoutMs))))
       : 120_000;
@@ -1420,7 +1482,7 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
       threadId: trimToNull(parsed.threadId),
       message: String(parsed.message ?? "").trim(),
       targetHint: parsed.targetHint ? normalizeTargetHint(parsed.targetHint, config.defaultTarget) : undefined,
-      context: sanitizeContext(parsed.context),
+      context: isRecord(parsed.context) ? parsed.context : null,
       timeoutMs: Number.isFinite(Number(parsed.timeoutMs)) ? Number(parsed.timeoutMs) : undefined,
     };
     try {

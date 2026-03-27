@@ -30,7 +30,7 @@ export function EmptyState({
       ) : null}
       <div
         className="text-[14px] font-bold tracking-[-0.3px] text-[#FAFAFA]"
-        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+        style={{ fontFamily: "var(--font-sans)" }}
       >
         {title}
       </div>

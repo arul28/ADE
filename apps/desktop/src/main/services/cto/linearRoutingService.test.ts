@@ -38,6 +38,11 @@ function buildPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake: {
+      projectSlugs: ["acme-platform"],
+      activeStateTypes: ["backlog", "unstarted", "started"],
+      terminalStateTypes: ["completed", "canceled"],
+    },
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {

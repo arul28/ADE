@@ -305,7 +305,7 @@ export function MissionHeader() {
             </span>
           )}
         </div>
-        {!chatFocused && executionProgress.total > 0 && (
+        {!chatFocused && executionProgress.total > 0 && executionProgress.pct > 0 && (
           <MissionProgressBar pct={executionProgress.pct} />
         )}
       </div>
@@ -446,6 +446,10 @@ function CompactUsageMeter() {
 
   const claudeWindows = snapshot.windows.filter((w) => w.provider === "claude");
   const codexWindows = snapshot.windows.filter((w) => w.provider === "codex");
+
+  // Hide the meter entirely when all windows report 0% and there's no mission cost — it's not useful yet
+  const allZero = snapshot.windows.every((w) => w.percentUsed === 0) && perMissionCost <= 0;
+  if (allZero) return null;
 
   return (
     <div

@@ -36,10 +36,17 @@ const issueFixture: NormalizedLinearIssue = {
   raw: {},
 };
 
+const intake = {
+  projectSlugs: ["acme-platform"],
+  activeStateTypes: ["backlog", "unstarted", "started"],
+  terminalStateTypes: ["completed", "canceled"],
+};
+
 function buildPolicy(targetType: "mission" | "review_gate" | "worker_run"): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -69,6 +76,7 @@ function buildEmployeeSessionPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -97,6 +105,7 @@ function buildDirectCtoSessionPolicy(overrides?: Partial<LinearWorkflowConfig["w
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -132,6 +141,7 @@ function buildSupervisedWorkerPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -172,6 +182,7 @@ function buildWorkerExplicitCompletionPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -204,6 +215,7 @@ function buildPrReadyPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -238,6 +250,7 @@ function buildPrPolicy(): LinearWorkflowConfig {
   return {
     version: 1,
     source: "repo",
+    intake,
     settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
     workflows: [
       {
@@ -312,7 +325,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => {}),
         listSessions: vi.fn(async () => []),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Fix it." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -357,7 +370,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => {}),
         listSessions: vi.fn(async () => []),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "noop" })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -407,7 +420,7 @@ describe("linearDispatcherService", () => {
         sendMessage,
         listSessions: vi.fn(async () => [{ sessionId: "session-1", laneId: "lane-1", status: "idle" }]),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please implement the issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -458,7 +471,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => {}),
         listSessions: vi.fn(async () => []),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Fix it." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -506,7 +519,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => ({ id: "message-1" })),
         listSessions: vi.fn(async () => [{ sessionId: "session-cto-1", laneId: "lane-1", status: "idle" }]),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -564,7 +577,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => ({ id: "message-1" })),
         listSessions: vi.fn(async () => sessions),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),
@@ -641,6 +654,7 @@ describe("linearDispatcherService", () => {
         listSessions: vi.fn(async () => [{ sessionId: "session-fresh-1", laneId: "lane-2", status: "idle" }]),
       } as any,
       laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: createLane,
       } as any,
@@ -696,7 +710,7 @@ describe("linearDispatcherService", () => {
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Implement the issue." })) } as any,
       closeoutService: { applyOutcome: closeout } as any,
       outboundService: createOutboundServiceMocks(),
@@ -754,7 +768,7 @@ describe("linearDispatcherService", () => {
         sendMessage: vi.fn(async () => ({ id: "message-1" })),
         listSessions: vi.fn(async () => [{ sessionId: "session-cto-1", laneId: "lane-1", status: "idle" }]),
       } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
       closeoutService: { applyOutcome: closeout } as any,
       outboundService: createOutboundServiceMocks(),
@@ -849,6 +863,7 @@ describe("linearDispatcherService", () => {
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: vi.fn(async () => ({ id: "lane-2", name: "ABC-42 fresh lane" })),
       } as any,
@@ -907,6 +922,7 @@ describe("linearDispatcherService", () => {
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: createLane,
       } as any,
@@ -962,6 +978,7 @@ describe("linearDispatcherService", () => {
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
       laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
         list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
         create: vi.fn(async () => ({ id: "lane-2", name: "Fresh lane" })),
       } as any,
@@ -1016,7 +1033,7 @@ describe("linearDispatcherService", () => {
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a PR." })) } as any,
       closeoutService: { applyOutcome: closeout } as any,
       outboundService: createOutboundServiceMocks(),
@@ -1105,7 +1122,7 @@ describe("linearDispatcherService", () => {
       missionService: { create: vi.fn(), get: vi.fn() } as any,
       aiOrchestratorService: { startMissionRun: vi.fn() } as any,
       agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
       templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a review-ready PR." })) } as any,
       closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
       outboundService: createOutboundServiceMocks(),

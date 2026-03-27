@@ -10,6 +10,8 @@ export function AttachLaneDialog({
   setAttachName,
   attachPath,
   setAttachPath,
+  attachDescription,
+  setAttachDescription,
   busy,
   error,
   onSubmit
@@ -20,6 +22,8 @@ export function AttachLaneDialog({
   setAttachName: (v: string) => void;
   attachPath: string;
   setAttachPath: (v: string) => void;
+  attachDescription: string;
+  setAttachDescription: (v: string) => void;
   busy: boolean;
   error: string | null;
   onSubmit: () => void;
@@ -74,6 +78,20 @@ export function AttachLaneDialog({
           </div>
         </section>
 
+        <section className={SECTION_CLASS_NAME}>
+          <label className="block">
+            <span className={LABEL_CLASS_NAME}>Description (optional)</span>
+            <textarea
+              value={attachDescription}
+              onChange={(event) => setAttachDescription(event.target.value)}
+              placeholder="Brief description of what this lane is for"
+              className={`${INPUT_CLASS_NAME} h-20 resize-none py-2`}
+              disabled={busy}
+              rows={2}
+            />
+          </label>
+        </section>
+
         {error ? (
           <div className="flex items-start gap-2 rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
             <WarningCircle size={16} className="mt-0.5 shrink-0" />
@@ -88,6 +106,7 @@ export function AttachLaneDialog({
               onOpenChange(false);
               setAttachName("");
               setAttachPath("");
+              setAttachDescription("");
             }}
             disabled={busy}
           >

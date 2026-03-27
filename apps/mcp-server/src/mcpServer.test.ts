@@ -434,7 +434,7 @@ function createRuntime() {
       getDashboard: vi.fn(() => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: null, lastSuccessAt: null, lastError: null, queue: { queued: 1, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
       runSyncNow: vi.fn(async () => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: "2026-03-17T19:11:00.000Z", lastSuccessAt: "2026-03-17T19:11:00.000Z", lastError: null, queue: { queued: 0, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
       listQueue: vi.fn(() => [{ id: "run-queued", status: "queued" }]),
-      resolveQueueItem: vi.fn(async ({ queueItemId, action }: { queueItemId: string; action: string }) => ({ id: queueItemId, status: action })),
+      resolveQueueItem: vi.fn(async ({ queueItemId, action, employeeOverride }: { queueItemId: string; action: string; employeeOverride?: string }) => ({ id: queueItemId, status: action, employeeOverride: employeeOverride ?? null })),
       getRunDetail: vi.fn(async ({ runId }: { runId: string }) => ({ run: { id: runId, status: "queued" }, issue: { id: "issue-1" } })),
     } as any,
     linearIngressService: {
@@ -866,6 +866,33 @@ describe("mcpServer", () => {
       expect.objectContaining({
         enabled: true,
         ingressMode: "webhook-first",
+      }),
+    );
+  });
+
+  it("forwards employeeOverride when resolving a Linear sync queue item", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = await callTool(handler, "resolveLinearSyncQueueItem", {
+      queueItemId: "run-queued",
+      action: "approve",
+      employeeOverride: "agent:worker-1",
+    });
+
+    expect((runtime.linearSyncService as any).resolveQueueItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queueItemId: "run-queued",
+        action: "approve",
+        employeeOverride: "agent:worker-1",
+      }),
+    );
+    expect(result.structuredContent).toEqual(
+      expect.objectContaining({
+        id: "run-queued",
+        status: "approve",
+        employeeOverride: "agent:worker-1",
       }),
     );
   });

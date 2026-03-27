@@ -6,7 +6,7 @@ import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { isRunOwnedSession } from "../../lib/sessions";
 
-const DEFAULT_LANE_WORK_STATE: WorkProjectViewState = {
+const EMPTY_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
   activeItemId: null,
   selectedItemId: null,
@@ -41,6 +41,8 @@ export function useLaneWorkSessions(laneId: string | null) {
   const selectLane = useAppStore((state) => state.selectLane);
   const laneWorkViewByScope = useAppStore((state) => state.laneWorkViewByScope);
   const setLaneWorkViewState = useAppStore((state) => state.setLaneWorkViewState);
+  const workViewByProject = useAppStore((state) => state.workViewByProject);
+  const setWorkViewState = useAppStore((state) => state.setWorkViewState);
 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -64,8 +66,8 @@ export function useLaneWorkSessions(laneId: string | null) {
 
   const hasStoredState = scopeKey.length > 0 && scopeKey in laneWorkViewByScope;
   const laneViewState = scopeKey
-    ? laneWorkViewByScope[scopeKey] ?? DEFAULT_LANE_WORK_STATE
-    : DEFAULT_LANE_WORK_STATE;
+    ? laneWorkViewByScope[scopeKey] ?? EMPTY_WORK_STATE
+    : EMPTY_WORK_STATE;
 
   const setViewState = useCallback(
     (
@@ -190,86 +192,127 @@ export function useLaneWorkSessions(laneId: string | null) {
     return map;
   }, [sessions]);
 
+  // Derive open items from project-level state filtered to this lane's sessions.
+  // This keeps open tabs in sync between the Work tab and the Lane work pane.
+  const projectViewState = useMemo(() => {
+    if (!projectRoot) return EMPTY_WORK_STATE;
+    return workViewByProject[projectRoot] ?? EMPTY_WORK_STATE;
+  }, [projectRoot, workViewByProject]);
+
+  const laneOpenItemIds = useMemo(() => {
+    const laneSessionIds = new Set(sessions.map((s) => s.id));
+    return projectViewState.openItemIds.filter((id) => laneSessionIds.has(id));
+  }, [projectViewState.openItemIds, sessions]);
+
   const visibleSessions = useMemo(() => {
-    return laneViewState.openItemIds
+    return laneOpenItemIds
       .map((sessionId) => sessionsById.get(sessionId))
       .filter((session): session is TerminalSessionSummary => session != null);
-  }, [laneViewState.openItemIds, sessionsById]);
+  }, [laneOpenItemIds, sessionsById]);
 
+  // Validate lane-local activeItemId/selectedItemId against the derived open items.
+  // openItemIds are managed at the project level, so we only fix up lane-local pointers here.
   useEffect(() => {
     if (!hasLoadedOnceRef.current) return;
-    const validIds = new Set(sessions.map((session) => session.id));
     setViewState((prev) => {
-      const nextOpen = prev.openItemIds.filter((sessionId) => validIds.has(sessionId));
       const userIsViewingDraft = prev.activeItemId == null && prev.selectedItemId == null;
+      if (userIsViewingDraft) return prev;
 
-      let nextActive: string | null = null;
-      if (!userIsViewingDraft) {
-        const activeStillValid = prev.activeItemId && validIds.has(prev.activeItemId) && nextOpen.includes(prev.activeItemId);
-        nextActive = activeStillValid ? prev.activeItemId : nextOpen[0] ?? null;
-      }
+      const nextActive = prev.activeItemId && laneOpenItemIds.includes(prev.activeItemId)
+        ? prev.activeItemId
+        : laneOpenItemIds[0] ?? null;
 
-      let nextSelected: string | null = null;
-      if (!userIsViewingDraft) {
-        const selectedStillValid = prev.selectedItemId && validIds.has(prev.selectedItemId);
-        nextSelected = selectedStillValid ? prev.selectedItemId : nextActive;
-      }
+      const validIds = new Set(sessions.map((s) => s.id));
+      const nextSelected = prev.selectedItemId && validIds.has(prev.selectedItemId)
+        ? prev.selectedItemId
+        : nextActive;
 
-      if (
-        arraysEqual(prev.openItemIds, nextOpen)
-        && prev.activeItemId === nextActive
-        && prev.selectedItemId === nextSelected
-      ) {
+      if (prev.activeItemId === nextActive && prev.selectedItemId === nextSelected) {
         return prev;
       }
 
       return {
         ...prev,
-        openItemIds: nextOpen,
         activeItemId: nextActive,
         selectedItemId: nextSelected,
       };
     });
-  }, [sessions, setViewState]);
+  }, [laneOpenItemIds, sessions, setViewState]);
+
+  useEffect(() => {
+    if (!laneId || !projectRoot || !hasStoredState) return;
+    if (laneOpenItemIds.length > 0) return;
+    const migratedOpen = laneViewState.openItemIds.filter((id) => sessionsById.has(id));
+    if (migratedOpen.length === 0) return;
+    setWorkViewState(projectRoot, (prev) => {
+      const nextOpen = [...prev.openItemIds];
+      for (const sessionId of migratedOpen) {
+        if (!nextOpen.includes(sessionId)) {
+          nextOpen.push(sessionId);
+        }
+      }
+      return arraysEqual(nextOpen, prev.openItemIds) ? prev : { ...prev, openItemIds: nextOpen };
+    });
+  }, [hasStoredState, laneId, laneOpenItemIds.length, laneViewState.openItemIds, projectRoot, sessionsById, setWorkViewState]);
 
   useEffect(() => {
     if (!laneId || hasStoredState || sessions.length === 0) return;
-    setViewState((prev) => {
-      if (prev.openItemIds.length > 0 || prev.activeItemId != null || prev.selectedItemId != null) {
-        return prev;
-      }
-      const preferredSessions = activeSessions.length > 0 ? activeSessions : sessions.slice(0, 1);
-      const nextOpen = preferredSessions.map((session) => session.id);
-      const preferredActive = focusedSessionId && nextOpen.includes(focusedSessionId)
-        ? focusedSessionId
-        : nextOpen[0] ?? null;
-      return {
-        ...prev,
-        openItemIds: nextOpen,
-        activeItemId: preferredActive,
-        selectedItemId: preferredActive,
-      };
+    // If lane already has open items derived from project-level, skip auto-init
+    if (laneOpenItemIds.length > 0) return;
+
+    const preferredSessions = activeSessions.length > 0 ? activeSessions : sessions.slice(0, 1);
+    const nextOpen = preferredSessions.map((session) => session.id);
+
+    // Add to project-level open items (single source of truth)
+    setWorkViewState(projectRoot, (prev) => {
+      const toAdd = nextOpen.filter((id) => !prev.openItemIds.includes(id));
+      if (toAdd.length === 0) return prev;
+      return { ...prev, openItemIds: [...prev.openItemIds, ...toAdd] };
     });
-  }, [activeSessions, focusedSessionId, hasStoredState, laneId, sessions, setViewState]);
+
+    // Set lane-local active/selected
+    const preferredActive = focusedSessionId && nextOpen.includes(focusedSessionId)
+      ? focusedSessionId
+      : nextOpen[0] ?? null;
+    setViewState((prev) => {
+      if (prev.activeItemId != null) return prev;
+      return { ...prev, activeItemId: preferredActive, selectedItemId: preferredActive };
+    });
+  }, [activeSessions, focusedSessionId, hasStoredState, laneId, laneOpenItemIds, projectRoot, sessions, setViewState, setWorkViewState]);
 
   const openSessionTab = useCallback((sessionId: string) => {
-    setViewState((prev) => {
+    // Add to project-level open items (single source of truth for open tabs)
+    setWorkViewState(projectRoot, (prev) => {
       const nextOpen = prev.openItemIds.includes(sessionId)
         ? prev.openItemIds
         : [...prev.openItemIds, sessionId];
-      return {
-        ...prev,
-        openItemIds: nextOpen,
-        activeItemId: sessionId,
-        selectedItemId: sessionId,
-      };
+      return { ...prev, openItemIds: nextOpen };
     });
-  }, [setViewState]);
+    // Set lane-local active/selected
+    setViewState((prev) => ({
+      ...prev,
+      activeItemId: sessionId,
+      selectedItemId: sessionId,
+    }));
+  }, [projectRoot, setWorkViewState, setViewState]);
 
+  const prevFocusedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!laneId || !focusedSessionId) return;
+    if (!laneId) {
+      prevFocusedRef.current = null;
+      return;
+    }
+    if (!focusedSessionId) {
+      prevFocusedRef.current = null;
+      return;
+    }
+    // Only react when focusedSessionId actually changes, not when sessionsById
+    // refreshes due to background output. This prevents snapping the user away
+    // from draft mode (new chat creation) every time a running session emits output.
+    if (prevFocusedRef.current === focusedSessionId) return;
     const session = sessionsById.get(focusedSessionId);
     if (!session) return;
+    prevFocusedRef.current = focusedSessionId;
     openSessionTab(session.id);
   }, [focusedSessionId, laneId, openSessionTab, sessionsById]);
 
@@ -288,46 +331,52 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [setViewState]);
 
   const setActiveItemId = useCallback((sessionId: string | null) => {
-    setViewState((prev) => {
-      if (!sessionId) {
-        return {
-          ...prev,
-          activeItemId: null,
-          selectedItemId: null,
-        };
-      }
-      const nextOpen = prev.openItemIds.includes(sessionId)
-        ? prev.openItemIds
-        : [...prev.openItemIds, sessionId];
-      return {
-        ...prev,
-        openItemIds: nextOpen,
-        activeItemId: sessionId,
-        selectedItemId: sessionId,
-      };
-    });
-  }, [setViewState]);
+    if (sessionId) {
+      // Ensure the session is in project-level open items
+      setWorkViewState(projectRoot, (prev) => {
+        const nextOpen = prev.openItemIds.includes(sessionId)
+          ? prev.openItemIds
+          : [...prev.openItemIds, sessionId];
+        return { ...prev, openItemIds: nextOpen };
+      });
+    }
+    setViewState((prev) => ({
+      ...prev,
+      activeItemId: sessionId,
+      selectedItemId: sessionId,
+    }));
+  }, [projectRoot, setWorkViewState, setViewState]);
 
   const closeTab = useCallback((sessionId: string) => {
-    setViewState((prev) => {
-      const currentIndex = prev.openItemIds.indexOf(sessionId);
-      if (currentIndex < 0) return prev;
+    // Remove from project-level open items (single source of truth)
+    setWorkViewState(projectRoot, (prev) => {
       const nextOpen = prev.openItemIds.filter((id) => id !== sessionId);
-      const fallbackActive =
-        nextOpen.length > 0
-          ? nextOpen[Math.min(currentIndex, nextOpen.length - 1)] ?? nextOpen[0] ?? null
-          : null;
+      if (nextOpen.length === prev.openItemIds.length) return prev;
+      // Also update project-level active/selected if they pointed to this session
+      const nextActive = prev.activeItemId === sessionId
+        ? (nextOpen.length > 0 ? nextOpen[Math.min(prev.openItemIds.indexOf(sessionId), nextOpen.length - 1)] ?? null : null)
+        : prev.activeItemId;
+      const nextSelected = prev.selectedItemId === sessionId ? nextActive : prev.selectedItemId;
+      return { ...prev, openItemIds: nextOpen, activeItemId: nextActive, selectedItemId: nextSelected };
+    });
+    // Update lane-local active/selected
+    const nextLaneOpen = laneOpenItemIds.filter((id) => id !== sessionId);
+    const currentIndex = laneOpenItemIds.indexOf(sessionId);
+    const fallbackActive =
+      nextLaneOpen.length > 0
+        ? nextLaneOpen[Math.min(currentIndex, nextLaneOpen.length - 1)] ?? nextLaneOpen[0] ?? null
+        : null;
+    setViewState((prev) => {
       const nextActive = prev.activeItemId === sessionId ? fallbackActive : prev.activeItemId;
       const nextSelected = prev.selectedItemId === sessionId ? nextActive : prev.selectedItemId;
       return {
         ...prev,
-        openItemIds: nextOpen,
         activeItemId: nextActive,
         selectedItemId: nextSelected,
-        draftKind: nextOpen.length === 0 ? "chat" : prev.draftKind,
+        draftKind: nextLaneOpen.length === 0 ? "chat" : prev.draftKind,
       };
     });
-  }, [setViewState]);
+  }, [laneOpenItemIds, projectRoot, setWorkViewState, setViewState]);
 
   const launchPtySession = useCallback(
     async (args: {

@@ -14,7 +14,7 @@ import { createMemoryTools, type MemoryWriteEvent, type TurnMemoryPolicyState } 
 import type { createUnifiedMemoryService } from "../../memory/unifiedMemoryService";
 import type { AgentChatApprovalDecision, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
-import { isWithinDir } from "../../shared/utils";
+import { getErrorMessage, isWithinDir } from "../../shared/utils";
 
 const execFileAsync = promisify(execFile);
 
@@ -47,7 +47,7 @@ export interface UniversalToolSetOptions {
 type ToolCategory = "read" | "write" | "bash";
 
 type ToolApprovalRequest = {
-  category: Exclude<ToolCategory, "read">;
+  category: Exclude<ToolCategory, "read"> | "exitPlanMode";
   description: string;
   detail?: unknown;
 };
@@ -69,15 +69,14 @@ function requiresApproval(mode: PermissionMode, category: ToolCategory): boolean
   }
 }
 
-function makeApproval(
+function approvalProp(
   mode: PermissionMode,
   category: ToolCategory,
   useManualApproval: boolean,
-) {
+): { needsApproval: () => Promise<boolean> } | Record<string, never> {
   const needs = requiresApproval(mode, category);
-  if (!needs || useManualApproval) return undefined;
-  // Return a static async function so the AI SDK gates execution
-  return async () => true;
+  if (!needs || useManualApproval) return {};
+  return { needsApproval: async () => true };
 }
 
 async function maybeRequestApproval(args: {
@@ -331,7 +330,7 @@ function createBashTool(
         .default(120_000)
         .describe("Timeout in milliseconds (max 600000)"),
     }),
-    ...((() => { const a = makeApproval(mode, "bash", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
+    ...approvalProp(mode, "bash", Boolean(onApprovalRequest)),
     execute: async ({ command, timeout }) => {
       if (requiresTurnMemoryGuard(turnMemoryPolicyState) && bashCommandLikelyMutates(command)) {
         return {
@@ -409,7 +408,7 @@ function createBashTool(
       } catch (err) {
         return {
           stdout: "",
-          stderr: `Command failed: ${err instanceof Error ? err.message : String(err)}`,
+          stderr: `Command failed: ${getErrorMessage(err)}`,
           exitCode: 1,
         };
       }
@@ -432,7 +431,7 @@ function createWriteFileTool(
       file_path: z.string().describe("Path to the file (absolute or relative to project root)"),
       content: z.string().describe("The full content to write"),
     }),
-    ...((() => { const a = makeApproval(mode, "write", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
+    ...approvalProp(mode, "write", Boolean(onApprovalRequest)),
     execute: async ({ file_path, content }) => {
       if (requiresTurnMemoryGuard(turnMemoryPolicyState)) {
         return {
@@ -474,7 +473,7 @@ function createWriteFileTool(
       } catch (err) {
         return {
           success: false,
-          message: `Error writing file: ${err instanceof Error ? err.message : String(err)}`,
+          message: `Error writing file: ${getErrorMessage(err)}`,
         };
       }
     },
@@ -500,7 +499,7 @@ function createEditFileTool(
         .default(false)
         .describe("Replace all occurrences instead of requiring a unique match"),
     }),
-    ...((() => { const a = makeApproval(mode, "write", Boolean(onApprovalRequest)); return a ? { needsApproval: a } : {}; })()),
+    ...approvalProp(mode, "write", Boolean(onApprovalRequest)),
     execute: async ({ file_path, old_string, new_string, replace_all }) => {
       if (requiresTurnMemoryGuard(turnMemoryPolicyState)) {
         return {
@@ -565,7 +564,7 @@ function createEditFileTool(
       } catch (err) {
         return {
           success: false,
-          message: `Error editing file: ${err instanceof Error ? err.message : String(err)}`,
+          message: `Error editing file: ${getErrorMessage(err)}`,
         };
       }
     },
@@ -637,7 +636,7 @@ function createListDirTool() {
       } catch (err) {
         return {
           entries: [],
-          error: `Error listing directory: ${err instanceof Error ? err.message : String(err)}`,
+          error: `Error listing directory: ${getErrorMessage(err)}`,
         };
       }
     },
@@ -661,7 +660,7 @@ function createGitStatusTool(cwd: string) {
         );
         return { branch: branch.trim(), status: stdout.trim(), clean: stdout.trim() === "" };
       } catch (err) {
-        return { error: `git status failed: ${err instanceof Error ? err.message : String(err)}` };
+        return { error: `git status failed: ${getErrorMessage(err)}` };
       }
     },
   });
@@ -694,7 +693,7 @@ function createGitDiffTool(cwd: string) {
         const truncated = stdout.length > 200_000;
         return { diff: stdout.slice(0, 200_000), truncated };
       } catch (err) {
-        return { diff: "", error: `git diff failed: ${err instanceof Error ? err.message : String(err)}` };
+        return { diff: "", error: `git diff failed: ${getErrorMessage(err)}` };
       }
     },
   });
@@ -720,7 +719,7 @@ function createGitLogTool(cwd: string) {
         const { stdout } = await execFileAsync("git", args, { cwd, timeout: 15_000 });
         return { log: stdout.trim() };
       } catch (err) {
-        return { log: "", error: `git log failed: ${err instanceof Error ? err.message : String(err)}` };
+        return { log: "", error: `git log failed: ${getErrorMessage(err)}` };
       }
     },
   });
@@ -744,9 +743,41 @@ function createAskUserTool(onAskUser?: (question: string) => Promise<string>) {
       } catch (err) {
         return {
           answer: "",
-          error: `Failed to get user response: ${err instanceof Error ? err.message : String(err)}`,
+          error: `Failed to get user response: ${getErrorMessage(err)}`,
         };
       }
+    },
+  });
+}
+
+function createExitPlanModeTool(
+  onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+) {
+  return tool({
+    description:
+      "Exit plan mode and request user approval to proceed with implementation. " +
+      "Call this after you have written your plan and are ready for the user to review it. " +
+      "The user will see a plan approval UI and can approve or reject your plan.",
+    inputSchema: z.object({
+      planDescription: z.string().optional().describe("A summary of the plan for the user to review"),
+    }),
+    execute: async ({ planDescription }) => {
+      if (!onApprovalRequest) {
+        return { approved: false, message: "No approval handler configured. Stay in plan mode and ask the user to review your plan in chat." };
+      }
+      const summary = planDescription?.trim() || "Plan ready for review.";
+      const result = await onApprovalRequest({
+        category: "exitPlanMode",
+        description: summary,
+        detail: { tool: "exitPlanMode", planContent: summary },
+      });
+      if (result.approved) {
+        return { approved: true, message: "User approved the plan. Proceed with implementation." };
+      }
+      const feedback = typeof result.reason === "string" && result.reason.trim().length > 0
+        ? result.reason.trim()
+        : "Please revise your approach and try again.";
+      return { approved: false, message: `User rejected the plan. ${feedback}` };
     },
   });
 }
@@ -827,6 +858,7 @@ export function createUniversalToolSet(
 
     // Interactive
     askUser: createAskUserTool(onAskUser),
+    exitPlanMode: createExitPlanModeTool(onApprovalRequest),
   };
 
   // Conditionally add memory tools

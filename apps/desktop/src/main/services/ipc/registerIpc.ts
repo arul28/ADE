@@ -1066,8 +1066,9 @@ async function resolveFirstAvailableLaneId(
 ): Promise<string> {
   const laneId = typeof requestedLaneId === "string" ? requestedLaneId.trim() : "";
   if (laneId) return laneId;
+  await ctx.laneService.ensurePrimaryLane().catch(() => {});
   const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
-  return lanes[0]?.id ?? "";
+  return (lanes.find((lane) => lane.laneType === "primary") ?? lanes[0])?.id ?? "";
 }
 
 async function resolveLaneOverlayContext(ctx: AppContext, laneId: string) {
@@ -3126,6 +3127,10 @@ export function registerIpc({
     const lane = await ctx.laneService.importBranch(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
+    triggerAutoContextDocs(ctx, {
+      event: "lane_create",
+      reason: `lanes_import_branch:${lane.id}`,
+    });
     return lane;
   });
 
@@ -3134,6 +3139,10 @@ export function registerIpc({
     const lane = await ctx.laneService.attach(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
+    triggerAutoContextDocs(ctx, {
+      event: "lane_create",
+      reason: `lanes_attach:${lane.id}`,
+    });
     return lane;
   });
 
@@ -3142,6 +3151,10 @@ export function registerIpc({
     const lane = await ctx.laneService.adoptAttached(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
+    triggerAutoContextDocs(ctx, {
+      event: "lane_create",
+      reason: `lanes_adopt_attached:${lane.id}`,
+    });
     return lane;
   });
 
@@ -3819,6 +3832,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatSaveTempAttachment, async (_event, arg: { data: string; filename: string }): Promise<{ path: string }> => {
     const ctx = getCtx();
+    const content = Buffer.from(arg.data, "base64");
+    if (content.byteLength > 10 * 1024 * 1024) {
+      throw new Error("Temporary attachments must be 10 MB or smaller.");
+    }
     // Save within the project's .ade directory so CLI subprocesses (Claude Code)
     // have filesystem access. Fall back to system temp if no project is open.
     const baseDir = ctx.project?.rootPath
@@ -3827,7 +3844,7 @@ export function registerIpc({
     fs.mkdirSync(baseDir, { recursive: true });
     const ext = path.extname(arg.filename) || ".png";
     const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
-    fs.writeFileSync(destPath, Buffer.from(arg.data, "base64"));
+    fs.writeFileSync(destPath, content);
     return { path: destPath };
   });
 

@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
-import { AgentChatMessageList } from "./AgentChatMessageList";
+import {
+  AgentChatMessageList,
+  calculateVirtualWindow,
+  reconcileMeasuredScrollTop,
+} from "./AgentChatMessageList";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   const match = screen.getAllByRole("button").find((button) => matcher.test(button.textContent ?? ""));
@@ -424,6 +428,44 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(findButtonByTextContent(/echo ok/i)).toBeTruthy();
   });
 
+  it("recomputes virtualization windows when measured heights change", () => {
+    const baseline = calculateVirtualWindow({
+      rowCount: 100,
+      scrollTop: 2000,
+      containerHeight: 240,
+      rowHeight: () => 80,
+    });
+    const updated = calculateVirtualWindow({
+      rowCount: 100,
+      scrollTop: 2000,
+      containerHeight: 240,
+      rowHeight: (index) => (index === 0 ? 180 : 80),
+    });
+
+    expect(updated.totalHeight).toBeGreaterThan(baseline.totalHeight);
+    expect(updated.offsetTop).toBeGreaterThan(baseline.offsetTop);
+  });
+
+  it("keeps the current viewport anchored when rows above it grow", () => {
+    const adjusted = reconcileMeasuredScrollTop({
+      index: 2,
+      previousHeight: 80,
+      nextHeight: 140,
+      scrollTop: 400,
+      rowHeight: () => 80,
+    });
+    const unchanged = reconcileMeasuredScrollTop({
+      index: 8,
+      previousHeight: 80,
+      nextHeight: 140,
+      scrollTop: 400,
+      rowHeight: () => 80,
+    });
+
+    expect(adjusted).toBe(460);
+    expect(unchanged).toBe(400);
+  });
+
   it("keeps activity rows in the streaming indicator instead of the transcript", () => {
     const sharedEvents: AgentChatEventEnvelope[] = [
       {
@@ -566,7 +608,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByTestId("location").textContent).toBe("/files::{\"laneId\":\"lane-123\"}");
   });
 
-  it("renders ask-user requests with a static amber dot instead of a spinner", () => {
+  it("renders ask-user requests with an amber waiting spinner", () => {
     const view = renderMessageList([
       {
         sessionId: "session-1",
@@ -586,8 +628,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     expect(screen.getByText("Needs Input")).toBeTruthy();
-    expect(view.container.querySelector(".animate-spin")).toBeNull();
-    expect(view.container.querySelector(".bg-amber-400\\/85")).toBeTruthy();
+    expect(view.container.querySelector(".animate-spin.text-amber-400")).toBeTruthy();
   });
 
   it("labels provider chats as Codex and preserves explicit assistant labels", () => {

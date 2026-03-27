@@ -47,8 +47,9 @@ A high-density, technical aesthetic for ADE shell surfaces (sidebar + top header
 
 ## Typography Contract
 
-- UI text: `JetBrains Mono` via `var(--font-mono)`
-- Headlines: `Space Grotesk` via `var(--font-sans)`
+- UI text: `var(--font-sans)` (Geist, system sans-serif stack)
+- Code and terminal surfaces: `var(--font-mono)` (system monospace stack)
+- Headlines: `var(--font-sans)`
 - Shell controls and tabs:
   - size: `11px`
   - letter spacing: `0`

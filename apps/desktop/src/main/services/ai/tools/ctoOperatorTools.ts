@@ -24,12 +24,19 @@ import type { createMissionService } from "../../missions/missionService";
 import type { createAiOrchestratorService } from "../../orchestrator/aiOrchestratorService";
 import type { createPrService } from "../../prs/prService";
 import type { createProcessService } from "../../processes/processService";
+import { getErrorMessage } from "../../shared/utils";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
   defaultLaneId: string;
   defaultModelId?: string | null;
   defaultReasoningEffort?: string | null;
+  resolveExecutionLane: (args: {
+    requestedLaneId?: string | null;
+    purpose: string;
+    freshLaneName?: string | null;
+    freshLaneDescription?: string | null;
+  }) => Promise<string>;
   laneService: ReturnType<typeof createLaneService>;
   missionService?: ReturnType<typeof createMissionService> | null;
   aiOrchestratorService?: ReturnType<typeof createAiOrchestratorService> | null;
@@ -315,7 +322,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         })),
       };
     } catch (error) {
-      return { success: false as const, error: error instanceof Error ? error.message : String(error) };
+      return { success: false as const, error: getErrorMessage(error) };
     }
   };
 
@@ -348,7 +355,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       });
       return { success: true as const, ...result };
     } catch (error) {
-      return { success: false as const, error: error instanceof Error ? error.message : String(error) };
+      return { success: false as const, error: getErrorMessage(error) };
     }
   };
 
@@ -416,7 +423,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           })),
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -450,8 +457,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       try {
         const selectedModelId = modelId?.trim() || deps.defaultModelId || null;
         const resolved = deriveChatProvider({ modelId: selectedModelId });
+        const executionLaneId = await deps.resolveExecutionLane({
+          requestedLaneId: laneId?.trim() || deps.defaultLaneId,
+          purpose: title?.trim() || "implementation chat",
+          freshLaneName: title?.trim() || "implementation chat",
+          freshLaneDescription: "Dedicated implementation lane launched from the CTO coordinator chat.",
+        });
         const session = await deps.createChat({
-          laneId: laneId?.trim() || deps.defaultLaneId,
+          laneId: executionLaneId,
           provider: resolved.provider,
           model: resolved.model,
           ...(selectedModelId ? { modelId: selectedModelId } : {}),
@@ -487,7 +500,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           modelId: session.modelId ?? null,
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -503,7 +516,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         await deps.sendChatMessage({ sessionId, text });
         return { success: true, sessionId };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -518,7 +531,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         await deps.interruptChat({ sessionId });
         return { success: true, sessionId };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -543,7 +556,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           })),
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -558,7 +571,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         await deps.disposeChat({ sessionId });
         return { success: true, sessionId };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -591,7 +604,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           count: transcript.entries.length,
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -625,10 +638,16 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ prompt, title, laneId, priority, launch, runMode }) => {
       if (!deps.missionService) return { success: false, error: "Mission service is not available." };
       try {
+        const executionLaneId = await deps.resolveExecutionLane({
+          requestedLaneId: laneId?.trim() || deps.defaultLaneId,
+          purpose: title?.trim() || "mission",
+          freshLaneName: title?.trim() || "mission",
+          freshLaneDescription: "Dedicated mission lane launched from the CTO coordinator chat.",
+        });
         const mission = deps.missionService.create({
           prompt,
           ...(title?.trim() ? { title: title.trim() } : {}),
-          ...(laneId?.trim() ? { laneId: laneId.trim() } : {}),
+          laneId: executionLaneId,
           ...(priority ? { priority } : {}),
           autostart: false,
           launchMode: runMode,
@@ -651,12 +670,12 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           run,
           ...buildNavigationPayload(buildNavigationSuggestion({
             surface: "missions",
-            laneId: mission.laneId ?? (laneId?.trim() || deps.defaultLaneId),
+            laneId: mission.laneId ?? executionLaneId,
             missionId: mission.id,
           })),
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -715,7 +734,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           })),
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -755,7 +774,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           })),
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -781,7 +800,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         return { success: true, intervention };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -802,7 +821,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         if (!view) return { success: false, error: `Mission run view not found for mission ${missionId}.` };
         return { success: true, view };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -828,7 +847,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         return { success: true, ...logs };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -856,7 +875,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         return { success: true, count: digests.length, digests };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -884,7 +903,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         return { success: true, result };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -929,7 +948,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         return { success: true, worker };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -967,7 +986,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         } satisfies CtoTriggerAgentWakeupArgs);
         return { success: true, ...result };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1004,7 +1023,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         const prs = refresh ? await deps.prService.refresh() : deps.prService.listAll();
         return { success: true, count: prs.length, prs };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1037,7 +1056,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           comments,
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1054,7 +1073,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         const comment = await deps.prService.addComment({ prId, body });
         return { success: true, comment };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1071,7 +1090,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         await deps.prService.updateTitle({ prId, title });
         return { success: true, prId, title };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1088,7 +1107,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         await deps.prService.updateDescription({ prId, body });
         return { success: true, prId };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1127,7 +1146,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           file,
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1159,7 +1178,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           matches,
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1188,7 +1207,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           })),
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1208,7 +1227,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         return { success: true, runtime };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1228,7 +1247,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         return { success: true, runtime };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1250,7 +1269,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         return { success: true, laneId: laneId?.trim() || deps.defaultLaneId, processId, content };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1305,7 +1324,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         if (!run) return { success: false, error: `Workflow run not found: ${runId}` };
         return { success: true, run };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1325,7 +1344,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         const detail = await deps.linearDispatcherService.getRunDetail(runId, deps.flowPolicyService.getPolicy());
         return { success: true, runId, detail };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1342,7 +1361,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         const comment = await deps.issueTracker.createComment(issueId, body);
         return { success: true, comment };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1376,7 +1395,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         await deps.issueTracker.updateIssueState(issueId, resolvedStateId);
         return { success: true, issueId, stateId: resolvedStateId };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });
@@ -1460,7 +1479,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           rerouted,
         };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        return { success: false, error: getErrorMessage(error) };
       }
     },
   });

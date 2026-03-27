@@ -11,7 +11,7 @@ function PhaseIcon({ active, label, tooltip }: { active: boolean; label: string;
   return (
     <span
       style={{
-        fontFamily: "JetBrains Mono, monospace",
+        fontFamily: "var(--font-sans)",
         fontSize: 8,
         fontWeight: 700,
         textTransform: "uppercase",
@@ -34,7 +34,7 @@ export function MissionPhaseBadge({ phases, profileName, className }: MissionPha
           background: "#1E1B26",
           color: "#71717A",
           border: "1px solid #27272A",
-          fontFamily: "JetBrains Mono, monospace",
+          fontFamily: "var(--font-sans)",
           fontSize: 9,
           fontWeight: 700,
           textTransform: "uppercase",
@@ -58,7 +58,7 @@ export function MissionPhaseBadge({ phases, profileName, className }: MissionPha
             background: "#A78BFA18",
             color: "#A78BFA",
             border: "1px solid #A78BFA30",
-            fontFamily: "JetBrains Mono, monospace",
+            fontFamily: "var(--font-sans)",
             fontSize: 9,
             fontWeight: 700,
             textTransform: "uppercase",

@@ -48,6 +48,8 @@ describe("flowPolicyService", () => {
     const bootstrapped = service.getPolicy();
     expect(bootstrapped.workflows.length).toBeGreaterThan(0);
     expect(bootstrapped.migration?.needsSave).toBe(true);
+    expect(bootstrapped.intake.activeStateTypes).toEqual(["backlog", "unstarted", "started"]);
+    expect(bootstrapped.intake.terminalStateTypes).toEqual(["completed", "canceled"]);
 
     const toSave: LinearWorkflowConfig = {
       ...bootstrapped,
@@ -55,10 +57,17 @@ describe("flowPolicyService", () => {
         ...workflow,
         priority: 200 - index,
       })),
+      intake: {
+        projectSlugs: ["acme-platform"],
+        activeStateTypes: ["backlog", "unstarted"],
+        terminalStateTypes: ["completed", "canceled"],
+      },
     };
 
     const saved = service.savePolicy(toSave, "user-a");
     expect(saved.source).toBe("repo");
+    expect(saved.intake.projectSlugs).toEqual(["acme-platform"]);
+    expect(saved.intake.activeStateTypes).toEqual(["backlog", "unstarted"]);
     expect(fs.readdirSync(path.join(fixture.root, ".ade", "workflows", "linear")).some((entry) => entry.endsWith(".yaml"))).toBe(true);
 
     const revisions = service.listRevisions(10);
@@ -86,6 +95,11 @@ describe("flowPolicyService", () => {
     const validation = service.validatePolicy({
       version: 1,
       source: "generated",
+      intake: {
+        projectSlugs: ["acme-platform"],
+        activeStateTypes: ["backlog", "unstarted", "started"],
+        terminalStateTypes: ["completed", "canceled"],
+      },
       settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
       workflows: [
         {

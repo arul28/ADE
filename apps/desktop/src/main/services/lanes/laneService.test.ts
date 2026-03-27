@@ -64,6 +64,47 @@ describe("laneService createFromUnstaged", () => {
     vi.mocked(runGitOrThrow).mockReset();
   });
 
+  it("recreates the primary lane when the only stored primary lane is archived", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-primary-archived-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-03-11T12:00:00.000Z";
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      ["proj-primary-archived", repoRoot, "demo", "main", now, now],
+    );
+    db.run(
+      `
+        insert into lanes(
+          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["lane-main-archived", "proj-primary-archived", "Main", null, "primary", "main", "main", repoRoot, null, 1, null, null, null, null, "archived", now, now],
+    );
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-primary-archived",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await service.ensurePrimaryLane();
+
+    const lanes = await service.list({ includeArchived: true, includeStatus: false });
+    const activePrimary = lanes.find((lane) => lane.laneType === "primary" && lane.archivedAt == null);
+    expect(activePrimary).toBeTruthy();
+    expect(lanes.filter((lane) => lane.laneType === "primary")).toHaveLength(2);
+  });
+
   it("moves unstaged and untracked changes into a new child lane", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-success-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

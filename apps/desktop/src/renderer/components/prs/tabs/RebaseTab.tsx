@@ -544,7 +544,7 @@ export function RebaseTab({
                   <div
                     className="font-bold"
                     style={{
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: "var(--font-sans)",
                       fontSize: 18,
                       color: S.textPrimary,
                     }}
@@ -787,7 +787,7 @@ export function RebaseTab({
                               </span>
                               <span
                                 className="truncate"
-                                style={{ fontSize: 12, color: S.textPrimary, flex: 1, fontFamily: "'Space Grotesk', sans-serif" }}
+                                style={{ fontSize: 12, color: S.textPrimary, flex: 1, fontFamily: "var(--font-sans)" }}
                               >
                                 {commit.subject}
                               </span>
@@ -1118,7 +1118,7 @@ export function RebaseTab({
                       }}>
                         <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
                           <Warning size={16} weight="fill" style={{ color: S.error }} />
-                          <span style={{ fontSize: 13, fontWeight: 600, color: S.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: S.textPrimary, fontFamily: "var(--font-sans)" }}>
                             Rebase failed — conflicts detected
                           </span>
                         </div>
@@ -1277,7 +1277,7 @@ export function RebaseTab({
                                 ) : (
                                   <StatusDot color={statusColor} pulse={lane.status === "running"} />
                                 )}
-                                <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: S.textPrimary, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600 }}>
+                                <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: S.textPrimary, fontFamily: "var(--font-sans)", fontWeight: 600 }}>
                                   {lane.laneName}
                                 </span>
                                 <span
@@ -1313,7 +1313,7 @@ export function RebaseTab({
                             maxHeight: 140,
                             overflow: "auto",
                             padding: "8px 10px",
-                            fontFamily: "JetBrains Mono, monospace",
+                            fontFamily: "var(--font-sans)",
                             marginTop: 4,
                           }}
                         >

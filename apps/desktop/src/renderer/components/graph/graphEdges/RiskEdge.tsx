@@ -1,4 +1,6 @@
-import { Edge, EdgeProps, Position, getBezierPath } from "@xyflow/react";
+import { Position, getBezierPath } from "@xyflow/react";
+import type { Edge, EdgeProps } from "@xyflow/react";
+import { APP_FONT_STACK } from "../../lanes/laneDesignTokens";
 import { riskStrokeColor, prOverlayColor, prCiDotColor } from "../graphHelpers";
 import type { GraphEdgeData } from "../graphTypes";
 
@@ -83,7 +85,7 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
             textAnchor="middle"
             fontSize={9}
             fill="#E9D5FF"
-            fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
+            fontFamily={APP_FONT_STACK}
             style={{ letterSpacing: "0.08em", textTransform: "uppercase" }}
           >
             feeds
@@ -119,7 +121,7 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
             y={3}
             fontSize={10}
             fill="var(--color-fg)"
-            fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
+            fontFamily={APP_FONT_STACK}
           >
             {badgeText}
           </text>
@@ -129,7 +131,7 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
             textAnchor="end"
             fontSize={9}
             fill="var(--color-muted-fg)"
-            fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
+            fontFamily={APP_FONT_STACK}
           >
             {badgeMeta}
           </text>

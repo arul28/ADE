@@ -20,7 +20,7 @@ export type LinearWorkflowTargetType =
   | "pr_resolution"
   | "review_gate";
 
-export type LinearWorkflowLaneSelection = "primary" | "fresh_issue_lane";
+export type LinearWorkflowLaneSelection = "primary" | "fresh_issue_lane" | "operator_prompt";
 
 export type LinearWorkflowSessionReuse = "reuse_existing" | "fresh_session";
 
@@ -105,6 +105,12 @@ export type LinearWorkflowObservability = {
   persistTimeline?: boolean;
 };
 
+export type LinearWorkflowIntake = {
+  projectSlugs?: string[];
+  activeStateTypes?: string[];
+  terminalStateTypes?: string[];
+};
+
 export type LinearWorkflowStepType =
   | "comment_linear"
   | "set_linear_state"
@@ -185,6 +191,7 @@ export type LinearWorkflowConfigFileMeta = {
 export type LinearWorkflowConfig = {
   version: 1;
   source: LinearWorkflowSource;
+  intake: LinearWorkflowIntake;
   settings: LinearWorkflowSettings;
   workflows: LinearWorkflowDefinition[];
   files: LinearWorkflowConfigFileMeta[];
@@ -285,6 +292,26 @@ export type LinearWorkflowRunStatus =
 
 export type LinearWorkflowRunTerminalOutcome = "completed" | "failed" | "cancelled" | null;
 
+export type LinearWorkflowRouteContext = {
+  reason: string;
+  matchedSignals: string[];
+  routeTags: string[];
+  watchOnly: boolean;
+  candidates?: LinearWorkflowMatchCandidate[];
+};
+
+export type LinearWorkflowExecutionContext = {
+  waitingFor?: string | null;
+  stalledReason?: string | null;
+  employeeOverride?: string | null;
+  overrideSource?: "operator" | null;
+  activeTargetType?: LinearWorkflowTargetType | null;
+  activeStageIndex?: number;
+  totalStages?: number;
+  downstreamPending?: boolean;
+  routeTags?: string[];
+};
+
 export type LinearWorkflowRun = {
   id: string;
   issueId: string;
@@ -316,6 +343,8 @@ export type LinearWorkflowRun = {
   terminalOutcome: LinearWorkflowRunTerminalOutcome;
   lastError?: string | null;
   sourceIssueSnapshot: Record<string, unknown>;
+  routeContext?: LinearWorkflowRouteContext | null;
+  executionContext?: LinearWorkflowExecutionContext | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -627,8 +656,26 @@ export type LinearSyncQueueItem = {
   attemptCount: number;
   nextAttemptAt: string | null;
   lastError: string | null;
+  routeReason: string | null;
+  matchedSignals: string[];
+  routeTags: string[];
+  stalledReason: string | null;
+  waitingFor: string | null;
+  employeeOverride: string | null;
+  activeTargetType: LinearWorkflowTargetType | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type LinearSyncEventRecord = {
+  id: string;
+  issueId: string | null;
+  queueItemId: string | null;
+  eventType: string;
+  status: string | null;
+  message: string | null;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
 };
 
 export type LinearWorkflowRunDetail = {
@@ -636,6 +683,7 @@ export type LinearWorkflowRunDetail = {
   steps: LinearWorkflowRunStep[];
   events: LinearWorkflowRunEvent[];
   ingressEvents: LinearIngressEventRecord[];
+  syncEvents: LinearSyncEventRecord[];
   issue: NormalizedLinearIssue | null;
   reviewContext: {
     reviewerIdentityKey: AgentChatIdentityKey | null;
@@ -672,6 +720,8 @@ export type LinearSyncDashboard = {
     failed: number;
   };
   claimsActive: number;
+  watchOnlyHits: number;
+  recentEvents: LinearSyncEventRecord[];
 };
 
 export type CtoEnsureLinearWebhookArgs = {

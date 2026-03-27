@@ -12,7 +12,7 @@ import {
   Wrench,
   CaretRight,
 } from "@phosphor-icons/react";
-import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 
 // ── Design tokens ──
 const BG_SIDEBAR = "#1a1625";
@@ -213,7 +213,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
       style={{
         fontSize: 10,
         fontWeight: 700,
-        fontFamily: "'Space Grotesk', sans-serif",
+        fontFamily: "var(--font-sans)",
         textTransform: "uppercase",
         letterSpacing: "1px",
         color: TEXT_DIM,

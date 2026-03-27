@@ -66,7 +66,11 @@ describe("openclawBridgeService", () => {
       projectRoot: "/tmp/project",
       adeDir,
       laneService: {
-        list: vi.fn(async () => [{ id: "lane-1" }]),
+        ensurePrimaryLane: vi.fn(async () => {}),
+        list: vi.fn(async () => [
+          { id: "lane-2", laneType: "feature" },
+          { id: "lane-1", laneType: "primary" },
+        ]),
       } as any,
       agentChatService,
       ctoStateService: {
@@ -137,7 +141,10 @@ describe("openclawBridgeService", () => {
     service = createOpenclawBridgeService({
       projectRoot: "/tmp/project",
       adeDir,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1" }]) } as any,
+      laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
+        list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
+      } as any,
       agentChatService: {
         listSessions: vi.fn(async () => []),
         ensureIdentitySession,
@@ -171,6 +178,12 @@ describe("openclawBridgeService", () => {
       }),
     });
     expect(good.status).toBe(200);
+    await expect(good.json()).resolves.toEqual(expect.objectContaining({
+      accepted: true,
+      async: true,
+      status: "working",
+      routeTarget: "agent:frontend",
+    }));
     expect(ensureIdentitySession).toHaveBeenCalledWith(expect.objectContaining({ identityKey: "agent:worker-1" }));
 
     const fallback = await fetch(state.endpoints.queryUrl!, {
@@ -211,7 +224,10 @@ describe("openclawBridgeService", () => {
     service = createOpenclawBridgeService({
       projectRoot: "/tmp/project",
       adeDir,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1" }]) } as any,
+      laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
+        list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
+      } as any,
       agentChatService: {
         listSessions: vi.fn(async () => []),
         ensureIdentitySession: vi.fn(async () => ({ id: "session-cto", laneId: "lane-1" })),
@@ -261,7 +277,10 @@ describe("openclawBridgeService", () => {
     const service = createOpenclawBridgeService({
       projectRoot: "/tmp/project",
       adeDir,
-      laneService: { list: vi.fn(async () => [{ id: "lane-1" }]) } as any,
+      laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
+        list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
+      } as any,
       agentChatService: {
         listSessions: vi.fn(async () => []),
         ensureIdentitySession: vi.fn(async () => ({ id: "session-cto", laneId: "lane-1" })),
@@ -286,5 +305,172 @@ describe("openclawBridgeService", () => {
     expect(record.status).toBe("queued");
     expect(service.getState().status.queuedMessages).toBe(1);
     expect(record.context).toEqual({ lane: "lane-1" });
+  });
+
+  it("recursively redacts inbound bridge context before prompting and persistence", async () => {
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-openclaw-redact-"));
+    writeOpenclawConfig(adeDir, { enabled: false });
+
+    let service!: ReturnType<typeof createOpenclawBridgeService>;
+    const sentMessages: Array<{ text: string }> = [];
+    service = createOpenclawBridgeService({
+      projectRoot: "/tmp/project",
+      adeDir,
+      laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
+        list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
+      } as any,
+      agentChatService: {
+        listSessions: vi.fn(async () => []),
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-cto", laneId: "lane-1" })),
+        sendMessage: vi.fn(async ({ sessionId, text, displayText }: { sessionId: string; text: string; displayText?: string }) => {
+          sentMessages.push({ text });
+          queueMicrotask(() => {
+            service.onAgentChatEvent({
+              sessionId,
+              timestamp: new Date().toISOString(),
+              event: { type: "user_message", text: displayText ?? text, turnId: "turn-1" },
+            });
+            service.onAgentChatEvent({
+              sessionId,
+              timestamp: new Date().toISOString(),
+              event: { type: "text", text: "redacted", turnId: "turn-1" },
+            });
+            service.onAgentChatEvent({
+              sessionId,
+              timestamp: new Date().toISOString(),
+              event: { type: "done", turnId: "turn-1", status: "completed" },
+            });
+          });
+        }),
+      } as any,
+      ctoStateService: {
+        getIdentity: vi.fn(() => ({
+          openclawContextPolicy: { shareMode: "filtered", blockedCategories: ["secret"] },
+        })),
+      } as any,
+    });
+    services.push(service);
+    await service.start();
+
+    const res = await fetch(service.getState().endpoints.queryUrl!, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-hook-token",
+      },
+      body: JSON.stringify({
+        requestId: "req-redact-1",
+        message: "Review this",
+        context: {
+          nested: {
+            apiKey: "sk-secret-value-123456",
+            note: "safe",
+          },
+          secret: "remove-me",
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(sentMessages[0]?.text).toContain("\"apiKey\": \"[REDACTED]\"");
+    expect(sentMessages[0]?.text).toContain("\"note\": \"safe\"");
+    expect(sentMessages[0]?.text).not.toContain("remove-me");
+    const inbound = service.listMessages(10).find((entry) => entry.requestId === "req-redact-1" && entry.direction === "inbound");
+    expect(inbound?.context).toEqual({
+      nested: {
+        apiKey: "[REDACTED]",
+        note: "safe",
+      },
+    });
+  });
+
+  it("keeps shareMode full while still redacting sensitive values", async () => {
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-openclaw-full-share-"));
+    writeOpenclawConfig(adeDir, { enabled: false });
+
+    const service = createOpenclawBridgeService({
+      projectRoot: "/tmp/project",
+      adeDir,
+      laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
+        list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
+      } as any,
+      agentChatService: {
+        listSessions: vi.fn(async () => []),
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-cto", laneId: "lane-1" })),
+        sendMessage: vi.fn(async () => {}),
+      } as any,
+      ctoStateService: {
+        getIdentity: vi.fn(() => ({
+          openclawContextPolicy: { shareMode: "full", blockedCategories: ["secret"] },
+        })),
+      } as any,
+    });
+    services.push(service);
+    await service.start();
+
+    const record = await service.sendMessage({
+      requestId: "queued-message-2",
+      agentId: "discord-cto",
+      message: "Mission finished",
+      context: {
+        secret: "Bearer very-secret-token-value",
+        lane: "lane-1",
+      },
+    });
+
+    expect(record.context).toEqual({
+      secret: "[REDACTED]",
+      lane: "lane-1",
+    });
+  });
+
+  it("migrates legacy runtime files into cache and removes repo-visible copies", async () => {
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-openclaw-migrate-"));
+    writeOpenclawConfig(adeDir, { enabled: false });
+    fs.mkdirSync(path.join(adeDir, "cto"), { recursive: true });
+    fs.writeFileSync(
+      path.join(adeDir, "cto", "openclaw-history.json"),
+      JSON.stringify([{
+        id: "legacy-1",
+        requestId: "legacy-request",
+        direction: "inbound",
+        mode: "hook",
+        status: "received",
+        body: "Legacy body",
+        summary: "Legacy summary",
+        context: {
+          apiKey: "sk-legacy-secret-123456",
+        },
+        createdAt: new Date().toISOString(),
+      }], null, 2),
+      "utf8",
+    );
+
+    const service = createOpenclawBridgeService({
+      projectRoot: "/tmp/project",
+      adeDir,
+      laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
+        list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
+      } as any,
+      agentChatService: {
+        listSessions: vi.fn(async () => []),
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-cto", laneId: "lane-1" })),
+        sendMessage: vi.fn(async () => {}),
+      } as any,
+      ctoStateService: {
+        getIdentity: vi.fn(() => ({
+          openclawContextPolicy: { shareMode: "filtered", blockedCategories: [] },
+        })),
+      } as any,
+    });
+    services.push(service);
+    await service.start();
+
+    expect(fs.existsSync(path.join(adeDir, "cto", "openclaw-history.json"))).toBe(false);
+    expect(fs.existsSync(path.join(adeDir, "cache", "openclaw", "openclaw-history.json"))).toBe(true);
+    expect(service.listMessages(10)[0]?.context).toEqual({ apiKey: "[REDACTED]" });
   });
 });

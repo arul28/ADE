@@ -32,7 +32,10 @@ export function InlineTerminal({
       if (ev.ptyId !== ptyId) return;
       setOutput((prev) => {
         const next = prev + ev.data;
-        return next.length > 200_000 ? next.slice(-200_000) : next;
+        if (next.length > 200_000) {
+          return "[Output truncated - showing last 200k characters]\n" + next.slice(-200_000);
+        }
+        return next;
       });
     });
     return unsub;

@@ -37,6 +37,22 @@ export const shellTabBarCls =
 export const shellBodyCls =
   "flex h-full w-full overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.12),transparent_32%),radial-gradient(circle_at_top_right,rgba(251,191,36,0.1),transparent_26%),linear-gradient(180deg,#0B1017_0%,#090D13_48%,#070A10_100%)] text-fg font-sans";
 
+/* ── Compact header for the CTO page ── */
+export const compactHeaderCls =
+  "flex items-center justify-between gap-4 border-b border-white/[0.06] px-5 py-2.5";
+
+/* ── Stat chip for inline metrics ── */
+export const statChipCls =
+  "inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-[linear-gradient(135deg,rgba(21,28,40,0.72),rgba(14,18,28,0.82))] px-2.5 py-1 text-[11px] font-medium text-fg/68 backdrop-blur-md shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:border-[rgba(56,189,248,0.22)] hover:text-fg/82 hover:shadow-[0_0_12px_rgba(56,189,248,0.06)]";
+
+/* ── Pipeline stage card with glow effect ── */
+export const stageCardCls =
+  "rounded-2xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(19,24,38,0.88),rgba(12,16,26,0.92))] p-4 backdrop-blur-[22px] shadow-[0_16px_48px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-300 hover:border-[rgba(56,189,248,0.24)] hover:shadow-[0_20px_56px_rgba(0,0,0,0.28),0_0_24px_rgba(56,189,248,0.06),inset_0_1px_0_rgba(255,255,255,0.05)] hover:translate-y-[-1px]";
+
+/* ── Pipeline canvas background ── */
+export const pipelineCanvasCls =
+  "rounded-2xl border border-white/[0.05] bg-[radial-gradient(ellipse_at_top,rgba(56,189,248,0.05),transparent_60%),radial-gradient(ellipse_at_bottom_right,rgba(167,139,250,0.04),transparent_50%),linear-gradient(180deg,rgba(8,11,18,0.96),rgba(6,8,14,0.98))] shadow-[inset_0_2px_4px_rgba(0,0,0,0.3),inset_0_1px_0_rgba(255,255,255,0.02)] backdrop-blur-[24px]";
+
 /* ── Agent status colors ── */
 
 export const agentStatusMap: Record<

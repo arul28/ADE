@@ -38,6 +38,7 @@ import {
 } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
+import { createHeadlessLinearServices } from "./headlessLinearServices";
 
 // ── Event Buffer ─────────────────────────────────────────────────
 // In-memory ring buffer for event streaming (10K cap, FIFO eviction).
@@ -414,6 +415,27 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     onDagMutation: (e) => pushEvent("dag_mutation", e as unknown as Record<string, unknown>)
   });
 
+  const headlessLinearServices = createHeadlessLinearServices({
+    projectRoot,
+    adeDir: paths.adeDir,
+    paths,
+    projectId,
+    db,
+    logger,
+    projectConfigService,
+    laneService,
+    operationService,
+    conflictService,
+    missionService,
+    aiOrchestratorService,
+    workerAgentService,
+    workerBudgetService,
+    externalMcpService,
+    computerUseArtifactBrokerService,
+    orchestratorService,
+    openExternal: async () => {},
+  });
+
   return {
     projectRoot,
     workspaceRoot,
@@ -432,18 +454,19 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     missionService,
     ptyService,
     testService,
-    agentChatService: null,
+    agentChatService: headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null,
     memoryService,
     ctoStateService,
     workerAgentService,
-    flowPolicyService: null,
-    linearDispatcherService: null,
-    linearIssueTracker: null,
-    linearSyncService: null,
-    linearIngressService: null,
-    linearRoutingService: null,
-    fileService: null,
-    processService: null,
+    prService: headlessLinearServices.prService,
+    fileService: headlessLinearServices.fileService,
+    flowPolicyService: headlessLinearServices.flowPolicyService,
+    linearDispatcherService: headlessLinearServices.linearDispatcherService,
+    linearIssueTracker: headlessLinearServices.linearIssueTracker,
+    linearSyncService: headlessLinearServices.linearSyncService,
+    linearIngressService: headlessLinearServices.linearIngressService,
+    linearRoutingService: headlessLinearServices.linearRoutingService,
+    processService: headlessLinearServices.processService,
     externalMcpService,
     computerUseArtifactBrokerService,
     orchestratorService,
@@ -451,6 +474,7 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     eventBuffer,
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
+      swallow(() => headlessLinearServices.dispose());
       swallow(() => externalMcpConfigWatcher?.close());
       void externalMcpService.dispose().catch(() => {});
       swallow(() => aiOrchestratorService.dispose());

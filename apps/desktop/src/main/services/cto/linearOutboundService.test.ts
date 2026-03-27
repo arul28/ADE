@@ -309,4 +309,59 @@ describe("linearOutboundService", () => {
     expect(latest).not.toContain("- Target:");
     db.close();
   });
+
+  it("renders comment templates for workflow status and closeout bodies", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-template-comment-"));
+    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const createBodies: string[] = [];
+    const bodies: string[] = [];
+    const service = createLinearOutboundService({
+      db,
+      projectId: "project-1",
+      projectRoot: root,
+      issueTracker: {
+        createComment: vi.fn(async (_issueId: string, body: string) => {
+          createBodies.push(body);
+          return { commentId: "comment-1" };
+        }),
+        updateComment: vi.fn(async (_commentId: string, body: string) => {
+          bodies.push(body);
+        }),
+        uploadAttachment: vi.fn(),
+      } as any,
+      logger: createLogger(),
+    });
+
+    await service.publishWorkflowStatus({
+      issue: issueFixture,
+      workflowName: "Assigned worker run",
+      runId: "run-7",
+      targetType: "worker_run",
+      state: "waiting_for_target",
+      note: "Delegated the issue.",
+      waitingFor: "delegated work",
+      commentTemplate: [
+        "Issue {{ issue.identifier }}",
+        "Workflow {{ workflow.name }}",
+        "Target {{ target.type }}",
+        "Note {{ note }}",
+      ].join("\n"),
+    });
+
+    await service.publishWorkflowCloseout({
+      issue: issueFixture,
+      status: "completed",
+      summary: "Closed.",
+      targetLabel: "worker run",
+      targetId: "worker-22",
+      artifactMode: "links",
+      commentTemplate: "Closeout {{ issue.identifier }} {{ target.id }} {{ note }}",
+    });
+
+    expect(createBodies[0]).toContain("Issue ABC-12");
+    expect(createBodies[0]).toContain("Workflow Assigned worker run");
+    expect(createBodies[0]).toContain("Target worker_run");
+    expect(bodies[0]).toContain("Closeout ABC-12 worker-22 Closed.");
+    db.close();
+  });
 });

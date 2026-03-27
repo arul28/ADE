@@ -11,6 +11,7 @@ import type { createMissionService } from "../missions/missionService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createPrService } from "../prs/prService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import { renderTemplateString } from "../shared/utils";
 
 function resolveStateId(states: Array<{ id: string; name: string; type: string }>, stateKey: string | undefined): string | null {
   if (!stateKey) return null;
@@ -151,6 +152,39 @@ export function createLinearCloseoutService(args: {
   }): Promise<void> => {
     const states = await args.issueTracker.fetchWorkflowStates(input.issue.teamKey);
     const closeout = input.workflow.closeout;
+    const prSummaries = args.prService.listAll();
+    const linkedPr = input.run.linkedPrId
+      ? prSummaries.find((entry) => entry.id === input.run.linkedPrId) ?? null
+      : null;
+    const templateValues: Record<string, unknown> = {
+      issue: input.issue,
+      workflow: {
+        id: input.workflow.id,
+        name: input.workflow.name,
+      },
+      run: input.run,
+      target: {
+        type: input.run.executionContext?.activeTargetType ?? input.workflow.target.type,
+        id:
+          input.run.linkedSessionId
+          ?? input.run.linkedWorkerRunId
+          ?? input.run.linkedMissionId
+          ?? input.run.linkedPrId
+          ?? input.run.executionLaneId
+          ?? null,
+      },
+      pr: {
+        id: input.run.linkedPrId ?? null,
+        url: linkedPr?.githubUrl ?? null,
+      },
+      review: {
+        state: input.run.reviewState,
+        readyReason: input.run.reviewReadyReason,
+        note: input.run.latestReviewNote,
+      },
+      note: input.summary,
+      waitingFor: input.run.executionContext?.waitingFor ?? null,
+    };
 
     const desiredState = input.outcome === "completed"
       ? resolveStateId(states, closeout?.successState)
@@ -159,11 +193,14 @@ export function createLinearCloseoutService(args: {
       await args.issueTracker.updateIssueState(input.issue.id, desiredState);
     }
 
-    for (const label of closeout?.applyLabels ?? []) {
+    for (const label of uniqueStrings([...(closeout?.applyLabels ?? []), ...(closeout?.labels ?? [])])) {
       await args.issueTracker.addLabel(input.issue.id, label);
     }
 
-    const comment = input.outcome === "completed" ? closeout?.successComment : closeout?.failureComment;
+    const renderedTemplate = closeout?.commentTemplate?.trim()
+      ? renderTemplateString(closeout.commentTemplate, templateValues).trim()
+      : "";
+    const comment = renderedTemplate || (input.outcome === "completed" ? closeout?.successComment : closeout?.failureComment);
     if (comment?.trim()) {
       await args.issueTracker.createComment(input.issue.id, comment.trim());
     }
@@ -178,6 +215,14 @@ export function createLinearCloseoutService(args: {
         prLinks: closeoutArtifacts.prLinks,
         artifactPaths: closeoutArtifacts.artifactPaths,
         artifactMode: closeout?.artifactMode ?? "links",
+        commentTemplate: closeout?.commentTemplate ?? null,
+        templateValues: {
+          ...templateValues,
+          pr: {
+            ...(templateValues.pr as Record<string, unknown>),
+            links: closeoutArtifacts.prLinks,
+          },
+        },
       });
       return;
     }
@@ -197,6 +242,14 @@ export function createLinearCloseoutService(args: {
       prLinks: closeoutArtifacts.prLinks,
       artifactPaths: closeoutArtifacts.artifactPaths,
       artifactMode: closeout?.artifactMode ?? "links",
+      commentTemplate: closeout?.commentTemplate ?? null,
+      templateValues: {
+        ...templateValues,
+        pr: {
+          ...(templateValues.pr as Record<string, unknown>),
+          links: closeoutArtifacts.prLinks,
+        },
+      },
     });
   };
 

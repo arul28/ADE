@@ -18,6 +18,8 @@ describe("linearWorkflowFileService", () => {
 
     expect(loaded.source).toBe("generated");
     expect(loaded.migration?.needsSave).toBe(true);
+    expect(loaded.intake.activeStateTypes).toEqual(["backlog", "unstarted", "started"]);
+    expect(loaded.intake.terminalStateTypes).toEqual(["completed", "canceled"]);
     expect(loaded.settings.ctoLinearAssigneeName).toBe("CTO");
     expect(loaded.workflows.map((workflow) => workflow.id)).toEqual([
       "cto-mission-autopilot",
@@ -99,6 +101,9 @@ describe("linearWorkflowFileService", () => {
     expect(loaded.source).toBe("generated");
     expect(loaded.migration?.hasLegacyConfig).toBe(true);
     expect(loaded.migration?.needsSave).toBe(true);
+    expect(loaded.intake.projectSlugs).toEqual(["acme-platform"]);
+    expect(loaded.intake.activeStateTypes).toEqual(["backlog", "unstarted", "started"]);
+    expect(loaded.intake.terminalStateTypes).toEqual(["completed", "canceled"]);
     expect(migrated?.target.type).toBe("mission");
     expect(migrated?.target.missionTemplate).toBe("fast-track");
     expect(migrated?.target.workerSelector).toEqual({ mode: "slug", value: "backend-hotfix" });

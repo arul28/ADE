@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-16
+> Last updated: 2026-03-26
 
-The CTO is ADE's always-on, project-aware agent. It is one persistent ADE project operator, not a family of interchangeable chats. It owns persistent identity, shared project understanding, worker management, Linear workflow coordination, and the operator-facing chat surface for project-level requests.
+The CTO is ADE's persistent, project-aware operator identity. It is one project-level coordinator, not a family of interchangeable chats or a permanently running background loop. It owns persistent identity, shared project understanding, worker management, Linear workflow coordination, and the operator-facing chat surface for project-level requests.
 
 The current runtime is optimized around a simple rule: **make the CTO usable before every optional subsystem is fully hydrated**.
 
@@ -26,7 +26,7 @@ The CTO combines several responsibilities:
 - optional OpenClaw bridge configuration
 - budget and runtime visibility for the CTO org
 
-The CTO is still a persistent agent, but the UI and runtime no longer assume that every one of those subsystems must fully boot the moment the tab opens.
+The CTO is still a persistent agent identity, but the UI and runtime no longer assume that every subsystem must fully boot the moment the tab opens or that a dedicated heartbeat loop must always be running.
 
 ---
 
@@ -103,7 +103,7 @@ The connection panel supports:
 
 ### Workflow engine
 
-The Linear workflow engine is now a full-featured dispatch and execution system. Workflows are defined visually or as YAML and fire when **both** an assignee match AND a workflow label match occur on a Linear issue.
+The Linear workflow engine is now a full-featured dispatch and execution system. Workflows are defined visually or as YAML and fire when all populated trigger groups match. Current trigger groups include assignees, labels, project slugs, team keys, priority, state transitions, owner, creator, and metadata tags. Values inside a trigger group are OR-ed together; populated groups are AND-ed together. Routing can also run in a watch-only mode that records a match without launching work.
 
 Supported workflow targets:
 
@@ -115,7 +115,7 @@ Supported workflow targets:
 
 Each workflow supports:
 
-- configurable trigger conditions (assignee + label, project slugs, team keys)
+- configurable trigger conditions across assignee, label, project, team, priority, state, owner, creator, and metadata-tag groups
 - execution plan steps (state transitions, launch, wait, PR linking, notification)
 - supervisor review paths (after work, before PR, after PR)
 - reject behaviors (loop back, reopen issue, cancel)
@@ -131,6 +131,8 @@ Workflows can route to any configured ADE employee, not just the CTO. The Team p
 - fresh-lane supervised worker runs for delegated implementation
 - arbitrary employee routing based on Linear assignee matching
 - dynamic delegation via the LinearSyncPanel when no employee match is found (runs enter `awaiting_delegation` status with a dropdown for manual assignment before any invalid launch is attempted)
+- explicit employee overrides when the operator wants to reroute a queued run to a different ADE employee
+- lane selection that can use the primary lane, create a fresh issue lane, or pause for an operator lane choice
 
 ### Supervisor review
 
@@ -167,6 +169,10 @@ Current behavior:
 - ingress only auto-starts when realtime configuration is actually present
 - unconfigured ingress stays dormant
 - realtime is optional; polling/sync is the baseline path
+- headless MCP mode now uses the same Linear sync, routing, and dispatcher services as the desktop runtime instead of a disconnected read-only stub
+- headless ingress events are forwarded into the same issue-update processing path used by desktop sync
+- headless employee-session targets create reusable continuity chats, but they are still manual shells unless a live agent runtime is attached
+- worker-backed headless Linear targets fail fast with explicit run errors when no worker runtime is available, rather than stalling in a queued state
 
 This is closer to a "boring first, advanced later" model and avoids surprise background startup work in unconfigured projects.
 
@@ -177,6 +183,12 @@ This is closer to a "boring first, advanced later" model and avoids surprise bac
 OpenClaw is still supported as an external bridge, but it is now explicitly an advanced configuration surface rather than part of first-run CTO setup.
 
 That reduces setup complexity and keeps the core CTO workflow independent of external agent routing.
+
+Runtime-state layout:
+
+- `.ade/cto/openclaw-device.json` remains the durable paired-device identity file
+- `.ade/cache/openclaw/` stores mutable bridge runtime state such as history, outbox, route cache, and idempotency data
+- legacy repo-visible runtime files are migrated into `.ade/cache/openclaw/` on startup
 
 ---
 
@@ -241,6 +253,8 @@ The CTO is a persistent ADE operator with a broad internal tool surface in chat.
 - files and context exports
 - worker agents
 - Linear workflow state
+
+When spawning chats or missions, the CTO resolves the execution lane through `resolveExecutionLane()`, which can use an existing lane, create a fresh dedicated lane, or fall back to the default lane. This keeps delegated work isolated in purpose-built worktrees.
 
 Important boundary:
 

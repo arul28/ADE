@@ -118,6 +118,20 @@ Notification messages emitted by the polling service are now generic (not PR-spe
 
 ---
 
+## Post-merge cleanup resilience
+
+After a successful GitHub merge, cleanup operations (branch deletion, group membership removal, lane archiving, base branch fetch, cache invalidation, rebase-needs scan) are wrapped in an outer try-catch so that a failure in any cleanup step does not mask the successful merge. The operation is marked as succeeded regardless, with a `cleanupError` metadata field when something went wrong. Individual cleanup failures are logged as warnings.
+
+The Create PR modal validates branch names against invalid git ref characters before submission.
+
+---
+
+## Queue landing state machine
+
+The queue landing service enforces an explicit state transition table (`ALLOWED_TRANSITIONS`) for queue entry states. Invalid transitions are logged and rejected rather than silently applied. The `markEntryLanded` helper centralizes the landed-entry bookkeeping (state, position advance, active-PR reset). The cancel path now force-fails entries that are in non-skippable states (e.g., `landing`, `resolving`) with a warning rather than leaving them in an inconsistent state.
+
+---
+
 ## Current product contract
 
 The current PR experience follows these rules:
