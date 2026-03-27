@@ -123,8 +123,8 @@ function toRun(row: RunRow): LinearWorkflowRun {
     closeoutState: row.closeout_state,
     terminalOutcome: row.terminal_outcome,
     sourceIssueSnapshot: JSON.parse(row.source_issue_snapshot_json),
-    routeContext: row.route_context_json ? JSON.parse(row.route_context_json) : null,
-    executionContext: row.execution_context_json ? JSON.parse(row.execution_context_json) : null,
+    routeContext: safeJsonParse(row.route_context_json, null),
+    executionContext: safeJsonParse(row.execution_context_json, null),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -277,7 +277,7 @@ export function createLinearDispatcherService(args: {
           select *
           from linear_workflow_runs
           where project_id = ?
-            and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'retry_wait')
+            and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'awaiting_lane_choice', 'retry_wait')
           order by datetime(created_at) asc
         `,
         [args.projectId]
@@ -290,7 +290,7 @@ export function createLinearDispatcherService(args: {
         select count(*) as total
         from linear_workflow_runs
         where project_id = ?
-          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'retry_wait')
+          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'awaiting_lane_choice', 'retry_wait')
         limit 1
       `,
       [args.projectId]
@@ -1236,7 +1236,7 @@ export function createLinearDispatcherService(args: {
           overrideSource,
         });
         return {
-          status: "awaiting_delegation" as LinearWorkflowRunStatus,
+          status: "awaiting_lane_choice" as LinearWorkflowRunStatus,
           activeTargetType: target.type,
         };
       }
@@ -1323,7 +1323,7 @@ export function createLinearDispatcherService(args: {
           overrideSource,
         });
         return {
-          status: "awaiting_delegation" as LinearWorkflowRunStatus,
+          status: "awaiting_lane_choice" as LinearWorkflowRunStatus,
           activeTargetType: target.type,
         };
       }
@@ -1558,12 +1558,15 @@ export function createLinearDispatcherService(args: {
                   ? "supervisor review"
                   : patch.status === "awaiting_delegation"
                     ? "manual delegation"
-                    : null,
+                    : patch.status === "awaiting_lane_choice"
+                      ? "operator lane choice"
+                      : null,
         });
         const nextStep = workflow.steps[index + 1] ?? null;
         const shouldPauseAfterLaunch =
           patch.status === "awaiting_human_review"
           || patch.status === "awaiting_delegation"
+          || patch.status === "awaiting_lane_choice"
           || (patch.status === "waiting_for_target" && nextStep?.type === "wait_for_target_status")
           || (patch.status === "waiting_for_pr" && nextStep?.type === "wait_for_pr");
         if (shouldPauseAfterLaunch) {
@@ -1676,9 +1679,11 @@ export function createLinearDispatcherService(args: {
               ? "supervisor review"
               : downstreamPatch.status === "awaiting_delegation"
                 ? "manual delegation"
-                : downstreamPatch.status === "waiting_for_pr"
-                  ? "pull request"
-                  : "delegated work";
+                : downstreamPatch.status === "awaiting_lane_choice"
+                  ? "operator lane choice"
+                  : downstreamPatch.status === "waiting_for_pr"
+                    ? "pull request"
+                    : "delegated work";
           updateRun(run.id, {
             ...downstreamPatch,
             currentStepIndex: index,
@@ -1836,6 +1841,13 @@ export function createLinearDispatcherService(args: {
               linkedMissionId: null,
               linkedSessionId: null,
               linkedWorkerRunId: null,
+            });
+            updateExecutionState(run.id, {
+              activeStageIndex: 0,
+              activeTargetType: null,
+              downstreamPending: false,
+              waitingFor: null,
+              stalledReason: null,
             });
             appendEvent(run.id, "run.review_changes_requested", "queued", liveRun.latestReviewNote ?? "Supervisor requested changes.", {
               reviewerIdentityKey: reviewContext.reviewerIdentityKey,
@@ -2093,7 +2105,7 @@ export function createLinearDispatcherService(args: {
         from linear_workflow_runs
         where project_id = ?
           and issue_id = ?
-          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'retry_wait')
+          and status in ('queued', 'in_progress', 'waiting_for_target', 'waiting_for_pr', 'awaiting_human_review', 'awaiting_delegation', 'awaiting_lane_choice', 'retry_wait')
         order by datetime(created_at) desc
         limit 1
       `,
@@ -2141,9 +2153,13 @@ export function createLinearDispatcherService(args: {
       ? buildReviewContext(workflow, currentStep)
       : null;
     const trimmedOverride = employeeOverride?.trim();
+    const resolvedOverride = trimmedOverride?.length ? resolveOverrideWorker(policy, trimmedOverride) : null;
     if (trimmedOverride !== undefined) {
-      if (trimmedOverride.length) {
-        resolveOverrideWorker(policy, trimmedOverride);
+      if (
+        resolvedOverride === "cto"
+        && (activeTarget?.type === "worker_run" || activeTarget?.type === "pr_resolution")
+      ) {
+        throw new Error("Choose a worker override for worker-backed targets.");
       }
       updateExecutionState(run.id, {
         employeeOverride: trimmedOverride && trimmedOverride.length ? trimmedOverride : null,
@@ -2220,7 +2236,21 @@ export function createLinearDispatcherService(args: {
         latestReviewNote: note ?? "Rejected by reviewer.",
         status: reviewContext?.rejectAction === "loop_back" ? "queued" : "in_progress",
         lastError: note ?? "Rejected by reviewer.",
+        ...(reviewContext?.rejectAction === "loop_back" ? {
+          linkedMissionId: null,
+          linkedSessionId: null,
+          linkedWorkerRunId: null,
+        } : {}),
       });
+      if (reviewContext?.rejectAction === "loop_back") {
+        updateExecutionState(run.id, {
+          activeStageIndex: 0,
+          activeTargetType: null,
+          downstreamPending: false,
+          waitingFor: null,
+          stalledReason: null,
+        });
+      }
       appendEvent(run.id, "run.rejected", "queued", note ?? "Rejected by reviewer.", {
         reviewerIdentityKey: reviewContext?.reviewerIdentityKey ?? null,
         rejectAction: reviewContext?.rejectAction ?? null,
@@ -2274,7 +2304,7 @@ export function createLinearDispatcherService(args: {
         steps.find((entry) => entry.type === "launch_target")?.payload_json ?? null, null
       ) ?? {};
       const status: LinearSyncQueueItem["status"] =
-        row.status === "queued" || row.status === "awaiting_delegation"
+        row.status === "queued" || row.status === "awaiting_delegation" || row.status === "awaiting_lane_choice"
           ? "queued"
           : row.status === "retry_wait"
             ? "retry_wait"

@@ -455,6 +455,20 @@ export function createLinearWorkflowFileService(args: {
     const files = listWorkflowFiles();
     const workflowFiles = files.filter((filePath) => path.basename(filePath) !== SETTINGS_FILE);
     if (!workflowFiles.length) {
+      if (fs.existsSync(settingsPath)) {
+        const settingsDoc = readSettings();
+        const generated = migrateLegacyConfig(legacyConfig);
+        return {
+          ...generated,
+          intake: settingsDoc.intake,
+          settings: settingsDoc.settings,
+          migration: {
+            hasLegacyConfig: generated.migration?.hasLegacyConfig === true,
+            needsSave: generated.migration?.needsSave === true,
+            compatibilitySnapshotPath: legacyConfig ? legacySnapshotPath : null,
+          },
+        };
+      }
       const generated = migrateLegacyConfig(legacyConfig);
       return {
         ...generated,

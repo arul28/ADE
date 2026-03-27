@@ -3832,8 +3832,13 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatSaveTempAttachment, async (_event, arg: { data: string; filename: string }): Promise<{ path: string }> => {
     const ctx = getCtx();
+    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+    const maxEncodedLength = Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4;
+    if (typeof arg.data === "string" && arg.data.length > maxEncodedLength) {
+      throw new Error("Temporary attachments must be 10 MB or smaller.");
+    }
     const content = Buffer.from(arg.data, "base64");
-    if (content.byteLength > 10 * 1024 * 1024) {
+    if (content.byteLength > MAX_ATTACHMENT_BYTES) {
       throw new Error("Temporary attachments must be 10 MB or smaller.");
     }
     // Save within the project's .ade directory so CLI subprocesses (Claude Code)

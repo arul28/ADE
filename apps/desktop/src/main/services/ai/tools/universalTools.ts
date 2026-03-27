@@ -858,8 +858,11 @@ export function createUniversalToolSet(
 
     // Interactive
     askUser: createAskUserTool(onAskUser),
-    exitPlanMode: createExitPlanModeTool(onApprovalRequest),
   };
+
+  if (permissionMode === "plan") {
+    tools.exitPlanMode = createExitPlanModeTool(onApprovalRequest);
+  }
 
   // Conditionally add memory tools
   if (memoryService && projectId) {

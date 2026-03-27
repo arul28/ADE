@@ -285,6 +285,7 @@ export type LinearWorkflowRunStatus =
   | "waiting_for_pr"
   | "awaiting_human_review"
   | "awaiting_delegation"
+  | "awaiting_lane_choice"
   | "retry_wait"
   | "completed"
   | "failed"

@@ -364,7 +364,7 @@ describe("openclawBridgeService", () => {
         message: "Review this",
         context: {
           nested: {
-            apiKey: "sk-secret-value-123456",
+            apiKey: "test-api-key-placeholder",
             note: "safe",
           },
           secret: "remove-me",
@@ -441,7 +441,7 @@ describe("openclawBridgeService", () => {
         body: "Legacy body",
         summary: "Legacy summary",
         context: {
-          apiKey: "sk-legacy-secret-123456",
+          apiKey: "test-api-key-placeholder",
         },
         createdAt: new Date().toISOString(),
       }], null, 2),

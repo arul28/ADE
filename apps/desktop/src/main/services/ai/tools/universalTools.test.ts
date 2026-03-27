@@ -166,7 +166,6 @@ describe("createUniversalToolSet", () => {
     expect(tools.writeFile).toBeDefined();
     expect(tools.bash).toBeDefined();
     expect(tools.askUser).toBeDefined();
-    expect(tools.exitPlanMode).toBeDefined();
   });
 
   it("does not include memory tools when memoryService is not provided", () => {
@@ -606,9 +605,15 @@ describe("createUniversalToolSet", () => {
 
   // ── exitPlanMode tool ───────────────────────────────────────────
 
+  it("does not expose exitPlanMode in non-plan permission modes", async () => {
+    const cwd = makeTmpDir("ade-tools-exitplan-nonplan-");
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+    expect(tools.exitPlanMode).toBeUndefined();
+  });
+
   it("returns failure when no approval handler is configured for exitPlanMode", async () => {
     const cwd = makeTmpDir("ade-tools-exitplan-nocb-");
-    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+    const tools = createUniversalToolSet(cwd, { permissionMode: "plan" });
 
     const result = await (tools.exitPlanMode as any).execute({});
 
@@ -620,7 +625,7 @@ describe("createUniversalToolSet", () => {
     const cwd = makeTmpDir("ade-tools-exitplan-approve-");
     const onApprovalRequest = vi.fn().mockResolvedValue({ approved: true });
     const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
+      permissionMode: "plan",
       onApprovalRequest,
     });
 
@@ -639,7 +644,7 @@ describe("createUniversalToolSet", () => {
       reason: "Please add more tests first.",
     });
     const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
+      permissionMode: "plan",
       onApprovalRequest,
     });
 

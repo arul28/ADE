@@ -122,9 +122,10 @@ vi.mock("../ai/providerResolver", () => ({
 }));
 
 vi.mock("../ai/tools/universalTools", () => ({
-  createUniversalToolSet: vi.fn(() => ({
-    tools: {},
-    prompts: [],
+  createUniversalToolSet: vi.fn((): Record<string, unknown> => ({
+    readFile: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+    grep: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+    bash: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
   })),
 }));
 

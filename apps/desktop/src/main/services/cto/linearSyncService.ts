@@ -224,6 +224,7 @@ export function createLinearSyncService(args: {
       const match = await args.routingService.routeIssue({ issue, policy });
       if (!match.workflow) return;
       if (match.workflow.routing?.watchOnly) {
+        if (!snapshotChanged(issue)) return;
         appendSyncEvent({
           issueId: issue.id,
           eventType: "watch_only_match",
@@ -399,7 +400,7 @@ export function createLinearSyncService(args: {
       [args.projectId, issueId]
     );
     const previousIssue = previousSnapshotRow?.payload_json
-      ? JSON.parse(previousSnapshotRow.payload_json) as Partial<NormalizedLinearIssue>
+      ? safeJsonParse<Partial<NormalizedLinearIssue> | null>(previousSnapshotRow.payload_json, null)
       : null;
     const issueWithHistory: NormalizedLinearIssue = {
       ...issue,

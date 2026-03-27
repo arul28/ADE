@@ -12,7 +12,7 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
-import { clipText, getErrorMessage, safeJsonParse, nowIso, sanitizeStructuredData } from "../shared/utils";
+import { clipText, getErrorMessage, safeJsonParse, nowIso, sanitizeStructuredData, redactSecrets } from "../shared/utils";
 import type { WorkerAdapterRuntimeService } from "./workerAdapterRuntimeService";
 import type { WorkerAgentService } from "./workerAgentService";
 import type { WorkerBudgetService } from "./workerBudgetService";
@@ -569,6 +569,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
         },
       },
     });
+    const sanitizedOutput = redactSecrets(runtimeResult.outputText);
     updateRunFields(run.id, {
       status: runStatus,
       finished_at: finishedAt,
@@ -580,7 +581,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
         ok: runtimeResult.ok,
         statusCode: runtimeResult.statusCode ?? null,
         heartbeatOk,
-        outputPreview: clipText(runtimeResult.outputText, 600),
+        outputPreview: clipText(sanitizedOutput, 600),
         provider: runtimeResult.provider ?? null,
         sessionId: runtimeResult.sessionId ?? null,
       }),
@@ -597,7 +598,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
           runtimeResult.effectiveSurface !== "process" && runtimeResult.effectiveSurface !== "openclaw_webhook"
             ? `Resumed via ${runtimeResult.effectiveSurface}.`
             : "",
-          heartbeatOk ? "No action required." : clipText(runtimeResult.outputText, 600) || "No output.",
+          heartbeatOk ? "No action required." : clipText(sanitizedOutput, 600) || "No output.",
         ]
           .filter((entry) => entry.length > 0)
           .join(" "),
@@ -619,7 +620,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       summary: clipText(
         [
           runtimeResult.ok ? "Worker run completed." : "Worker run failed.",
-          heartbeatOk ? "No action required." : clipText(runtimeResult.outputText, 600) || "No output.",
+          heartbeatOk ? "No action required." : clipText(sanitizedOutput, 600) || "No output.",
         ].join(" "),
         360
       ),

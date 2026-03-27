@@ -413,9 +413,11 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
   const migrateLegacyRuntimeFile = (legacyFileName: string, nextPath: string): void => {
     const legacyPath = path.join(ctoDir, legacyFileName);
     if (!fs.existsSync(legacyPath)) return;
+    let copied = false;
     try {
       if (!fs.existsSync(nextPath)) {
         writeTextAtomic(nextPath, fs.readFileSync(legacyPath, "utf8"));
+        copied = true;
       }
     } catch (error) {
       logger?.warn("openclaw.runtime_state_migration_failed", {
@@ -425,6 +427,7 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
       });
       return;
     }
+    if (!copied) return;
     try {
       fs.unlinkSync(legacyPath);
     } catch (error) {
@@ -1383,7 +1386,7 @@ export function createOpenclawBridgeService(args: OpenclawBridgeServiceArgs) {
   async function handleQueryRequest(envelope: OpenclawInboundEnvelope, res: ServerResponse): Promise<void> {
     const resolvedTarget = resolveTarget(envelope.targetHint ?? config.defaultTarget);
     if (resolvedTarget.resolvedTarget !== "cto") {
-      const dispatch = await dispatchInbound("query", envelope);
+      const dispatch = await dispatchInbound("hook", envelope);
       jsonResponse(res, 200, {
         ok: true,
         accepted: true,

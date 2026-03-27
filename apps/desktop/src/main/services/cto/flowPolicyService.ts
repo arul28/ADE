@@ -51,7 +51,11 @@ function normalizeIntake(
 ): LinearWorkflowIntake {
   const workflowProjectSlugs = workflows.flatMap((workflow) => workflow.triggers.projectSlugs ?? []);
   const legacyProjectSlugs = legacy?.projects?.map((entry) => entry.slug) ?? [];
-  const projectSlugs = uniqueStrings(input?.projectSlugs ?? [...workflowProjectSlugs, ...legacyProjectSlugs]);
+  const projectSlugs = uniqueStrings([
+    ...(input?.projectSlugs ?? []),
+    ...workflowProjectSlugs,
+    ...legacyProjectSlugs,
+  ]);
   return {
     ...(projectSlugs.length ? { projectSlugs } : {}),
     activeStateTypes: uniqueStrings(input?.activeStateTypes ?? DEFAULT_POLICY.intake.activeStateTypes),
@@ -71,28 +75,32 @@ function normalizeTarget(target: LinearWorkflowDefinition["target"]): LinearWork
 function normalizePolicy(input?: LinearWorkflowConfig | null): LinearWorkflowConfig {
   const source = input ?? DEFAULT_POLICY;
   const workflows = (source.workflows ?? [])
-    .filter((entry) => Boolean(entry?.id) && Boolean(entry?.name))
-    .map<LinearWorkflowDefinition>((entry) => ({
+    .map<LinearWorkflowDefinition>((entry) => {
+      const target = entry.target ?? ({} as LinearWorkflowDefinition["target"]);
+      const triggers = entry.triggers ?? ({} as LinearWorkflowDefinition["triggers"]);
+      return {
       ...entry,
+      id: entry.id?.trim() || "",
+      name: entry.name?.trim() || "",
       source: entry.source === "repo" ? "repo" : "generated",
       priority: Number.isFinite(Number(entry.priority)) ? Math.floor(Number(entry.priority)) : 100,
       enabled: entry.enabled !== false,
-      target: normalizeTarget(entry.target),
+      target: normalizeTarget(target),
       triggers: {
-        assignees: uniqueStrings(entry.triggers.assignees),
-        labels: uniqueStrings(entry.triggers.labels),
-        projectSlugs: uniqueStrings(entry.triggers.projectSlugs),
-        teamKeys: uniqueStrings(entry.triggers.teamKeys),
-        priority: uniqueStrings(entry.triggers.priority) as LinearWorkflowDefinition["triggers"]["priority"],
-        stateTransitions: (entry.triggers.stateTransitions ?? [])
+        assignees: uniqueStrings(triggers.assignees),
+        labels: uniqueStrings(triggers.labels),
+        projectSlugs: uniqueStrings(triggers.projectSlugs),
+        teamKeys: uniqueStrings(triggers.teamKeys),
+        priority: uniqueStrings(triggers.priority) as LinearWorkflowDefinition["triggers"]["priority"],
+        stateTransitions: (triggers.stateTransitions ?? [])
           .map((transition) => ({
-            ...(uniqueStrings(transition.from).length ? { from: uniqueStrings(transition.from) } : {}),
-            ...(uniqueStrings(transition.to).length ? { to: uniqueStrings(transition.to) } : {}),
+            ...(uniqueStrings(transition?.from).length ? { from: uniqueStrings(transition.from) } : {}),
+            ...(uniqueStrings(transition?.to).length ? { to: uniqueStrings(transition.to) } : {}),
           }))
           .filter((transition) => (transition.to?.length ?? 0) > 0),
-        owner: uniqueStrings(entry.triggers.owner),
-        creator: uniqueStrings(entry.triggers.creator),
-        metadataTags: uniqueStrings(entry.triggers.metadataTags),
+        owner: uniqueStrings(triggers.owner),
+        creator: uniqueStrings(triggers.creator),
+        metadataTags: uniqueStrings(triggers.metadataTags),
       },
       ...(entry.routing
         ? {
@@ -163,7 +171,8 @@ function normalizePolicy(input?: LinearWorkflowConfig | null): LinearWorkflowCon
             },
           }
         : {}),
-    }))
+    };
+    })
     .sort((left, right) => right.priority - left.priority || left.name.localeCompare(right.name));
   return {
     version: 1,

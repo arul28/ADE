@@ -218,6 +218,11 @@ describe("linearSyncService", () => {
     const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
     const createRun = vi.fn();
 
+    const watchOnlyIssue: NormalizedLinearIssue = {
+      ...issueFixture,
+      raw: { _snapshotHash: "hash-new", _previousSnapshotHash: "hash-old" },
+    };
+
     const service = createLinearSyncService({
       db,
       projectId: "project-1",
@@ -257,7 +262,7 @@ describe("linearSyncService", () => {
         })),
       } as any,
       intakeService: {
-        fetchCandidates: vi.fn(async () => [issueFixture]),
+        fetchCandidates: vi.fn(async () => [watchOnlyIssue]),
         persistSnapshot: vi.fn(() => {}),
       } as any,
       issueTracker: {

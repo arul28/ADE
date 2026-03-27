@@ -328,6 +328,7 @@ export function getPathValue(source: Record<string, unknown>, dottedPath: string
     .split(".")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+  if (segments.length === 0) return null;
   let cursor: unknown = source;
   for (const segment of segments) {
     if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return null;
@@ -371,6 +372,29 @@ export function isEnvRef(value: string): boolean {
 
 export function hasEnvRefToken(value: string): boolean {
   return ENV_REF_TOKEN_PATTERN.test(value);
+}
+
+/**
+ * Redact common secret patterns from a plain-text string.
+ *
+ * This complements `sanitizeStructuredData` (which operates on parsed objects)
+ * by scrubbing raw output text before it is persisted in logs or result_json.
+ */
+export function redactSecrets(text: string, replacement: string = "[REDACTED]"): string {
+  if (!text) return text;
+  return text
+    // Bearer tokens
+    .replace(/\bbearer\s+[A-Za-z0-9\-._~+/]+=*/gi, replacement)
+    // OpenAI / Anthropic-style keys
+    .replace(/\bsk-[A-Za-z0-9]{12,}\b/g, replacement)
+    // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, replacement)
+    // Slack tokens
+    .replace(/\bxox[baprs]-[A-Za-z0-9\-]{10,}\b/g, replacement)
+    // AWS access keys
+    .replace(/\b(AKIA|ASIA)[A-Z0-9]{16}\b/g, replacement)
+    // Generic high-entropy hex/base64 secrets assigned to common key names
+    .replace(/(api[_-]?key|secret|token|password|authorization)\s*[:=]\s*["']?[A-Za-z0-9\-._~+/]{16,}["']?/gi, `$1=${replacement}`);
 }
 
 export function looksSensitiveKey(key: string): boolean {
@@ -417,11 +441,17 @@ export function sanitizeStructuredData(
     return `${value.slice(0, maxStringLength)}…`;
   };
 
+  const seen = new WeakSet<object>();
+
   const walk = (value: unknown): unknown => {
     if (Array.isArray(value)) {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
       return value.slice(0, maxArrayEntries).map((entry) => walk(entry));
     }
     if (isRecord(value)) {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
       const next: Record<string, unknown> = {};
       for (const [index, [key, child]] of Object.entries(value).entries()) {
         if (index >= maxObjectEntries) break;

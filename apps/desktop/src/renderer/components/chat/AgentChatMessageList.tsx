@@ -380,6 +380,8 @@ function statusColorClass(status: string | undefined): string {
       return "text-emerald-400/70";
     case "failed":
       return "text-red-400/70";
+    case "running":
+      return "text-amber-400/70";
     default:
       return "text-emerald-400/70";
   }

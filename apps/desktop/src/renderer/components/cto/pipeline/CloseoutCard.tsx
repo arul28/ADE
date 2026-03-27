@@ -15,7 +15,13 @@ export function CloseoutCard({ closeout, selected, onSelect, notificationsEnable
   const successState = enumLabel(ISSUE_STATE_LABELS, closeout?.successState) || closeout?.successState || "Not set";
   const failureState = enumLabel(ISSUE_STATE_LABELS, closeout?.failureState) || closeout?.failureState || "Not set";
 
-  const applyLabels = closeout?.applyLabels ?? closeout?.labels ?? [];
+  const applyLabels = Array.from(
+    new Set(
+      [...(closeout?.applyLabels ?? []), ...(closeout?.labels ?? [])]
+        .map((label) => label.trim())
+        .filter(Boolean),
+    ),
+  );
   const hasLabels = applyLabels.length > 0;
 
   return (

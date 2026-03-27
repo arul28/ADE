@@ -943,7 +943,7 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
-    if (busy || !modelId) return;
+    if (busy || !modelId || !draft.trim().length) return;
     onSubmit();
   };
 
@@ -1031,7 +1031,17 @@ export function AgentChatComposer({
         attachments.length || subagentSnapshots.length || attachError ? (
           <div className="space-y-2 px-1 py-2">
             {attachError ? (
-              <div className="px-3 font-mono text-[10px] text-red-300/75">{attachError}</div>
+              <div className="flex items-center gap-1.5 px-3">
+                <span className="text-[10px] text-red-300/75">{attachError}</span>
+                <button
+                  type="button"
+                  aria-label="Dismiss error"
+                  className="shrink-0 rounded p-0.5 text-red-300/60 hover:text-red-200/80 transition-colors"
+                  onClick={() => setAttachError(null)}
+                >
+                  <X size={10} weight="bold" />
+                </button>
+              </div>
             ) : null}
             {subagentSnapshots.length ? (
               <ChatSubagentStrip

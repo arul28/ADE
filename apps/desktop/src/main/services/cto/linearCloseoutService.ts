@@ -156,6 +156,9 @@ export function createLinearCloseoutService(args: {
     const linkedPr = input.run.linkedPrId
       ? prSummaries.find((entry) => entry.id === input.run.linkedPrId) ?? null
       : null;
+
+    const closeoutArtifacts = collectCloseoutArtifacts(input);
+
     const templateValues: Record<string, unknown> = {
       issue: input.issue,
       workflow: {
@@ -176,6 +179,7 @@ export function createLinearCloseoutService(args: {
       pr: {
         id: input.run.linkedPrId ?? null,
         url: linkedPr?.githubUrl ?? null,
+        links: closeoutArtifacts.prLinks,
       },
       review: {
         state: input.run.reviewState,
@@ -204,8 +208,6 @@ export function createLinearCloseoutService(args: {
     if (comment?.trim()) {
       await args.issueTracker.createComment(input.issue.id, comment.trim());
     }
-
-    const closeoutArtifacts = collectCloseoutArtifacts(input);
     if (input.workflow.target.type === "mission" && input.run.linkedMissionId) {
       await args.outboundService.publishMissionCloseout({
         issue: input.issue,
