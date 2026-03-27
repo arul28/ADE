@@ -382,6 +382,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                         key={session.id}
                         ptyId={session.ptyId}
                         sessionId={session.id}
+                        isActive={current?.id === session.id}
                         className={`absolute inset-0 h-full w-full ${
                           current?.id === session.id ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
                         }`}

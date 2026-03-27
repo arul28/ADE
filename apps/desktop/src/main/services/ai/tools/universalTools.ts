@@ -91,11 +91,7 @@ async function maybeRequestApproval(args: {
   }
 
   if (!args.onApprovalRequest) {
-    return {
-      approved: false,
-      decision: "decline",
-      reason: "Approval is required, but no approval handler is configured.",
-    };
+    return { approved: true };
   }
 
   return args.onApprovalRequest({

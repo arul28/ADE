@@ -2321,10 +2321,15 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
   useLayoutEffect(() => {
     const el = rowRef.current;
     if (!el) return;
-    // Report the actual rendered height (including margin from space-y-3 = 12px gap).
-    const height = el.offsetHeight;
-    if (height > 0) onMeasure(index, height);
-  });
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const height = entry.target instanceof HTMLElement ? entry.target.offsetHeight : entry.contentRect.height;
+      if (height > 0) onMeasure(index, height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [index, onMeasure]);
 
   return (
     <div ref={rowRef}>
@@ -2731,8 +2736,10 @@ export function AgentChatMessageList({
     for (let i = endIndex; i < groupedRows.length; i++) {
       h += rowHeight(i) + ROW_GAP;
     }
-    // Remove trailing gap
-    if (groupedRows.length > endIndex) h -= ROW_GAP;
+    // The trailing gap accounts for the space between the last rendered row
+    // and the first unrendered row — keep it so the total content fills
+    // totalHeight exactly (offsetTop already includes the gap before the
+    // first rendered row via the offsets array).
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 

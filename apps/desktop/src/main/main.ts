@@ -1,7 +1,7 @@
 import { app, BrowserWindow, nativeImage, shell } from "electron";
 import { execSync } from "node:child_process";
 import path from "node:path";
-import * as NodePty from "node-pty";
+type NodePtyType = typeof import("node-pty");
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { openKvDb } from "./services/state/kvDb";
@@ -499,7 +499,7 @@ app.whenReady().then(async () => {
   const loadPty = () => {
     // node-pty is a native dependency; keep the require inside the main process runtime.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require("node-pty") as typeof NodePty;
+    return require("node-pty") as NodePtyType;
   };
 
   const normalizeProjectRoot = (projectRoot: string) => path.resolve(projectRoot);

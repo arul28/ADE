@@ -651,7 +651,6 @@ export function AgentChatComposer({
             data: base64,
             filename: file.name || "clipboard.png",
           });
-          setAttachError(null);
           onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
         } catch {
           setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
@@ -1203,7 +1202,7 @@ export function AgentChatComposer({
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                onClick={() => { onDraftChange("/"); setSlashPickerOpen(true); setSlashQuery(""); setSlashCursor(0); textareaRef.current?.focus(); }}
+                onClick={() => { const d = textareaRef.current?.value ?? ""; if (!d.length) { onDraftChange("/"); } setSlashPickerOpen(true); setSlashQuery(d.startsWith("/") ? d.slice(1) : ""); setSlashCursor(0); textareaRef.current?.focus(); }}
                 title="Commands (/)"
               >
                 /

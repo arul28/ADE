@@ -546,6 +546,20 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
     rendererInitStarted: false
   };
 
+  // Capture-phase paste listener on host: intercepts ALL paste sources (Cmd+V,
+  // Electron default-menu Edit→Paste, right-click, middle-click) before xterm
+  // can split the text into individual onData events.
+  let lastPasteEventAt = 0;
+  host.addEventListener("paste", (ev: ClipboardEvent) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    lastPasteEventAt = Date.now();
+    const text = ev.clipboardData?.getData("text/plain") ?? ev.clipboardData?.getData("text");
+    if (text && !runtime.disposed) {
+      window.ade.pty.write({ ptyId: runtime.ptyId, data: text }).catch(() => {});
+    }
+  }, true);
+
   term.attachCustomKeyEventHandler((ev) => {
     const isMac = navigator.platform.toLowerCase().includes("mac");
     const mod = isMac ? ev.metaKey : ev.ctrlKey;
@@ -554,13 +568,20 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
     if (ev.type !== "keydown") return true;
 
     if (mod && key === "v") {
-      navigator.clipboard
-        .readText()
-        .then((text) => {
-          if (runtime.disposed) return;
-          return window.ade.pty.write({ ptyId: runtime.ptyId, data: text });
-        })
-        .catch(() => {});
+      // Primary paste is handled by the capture-phase paste listener above.
+      // Don't preventDefault — let the browser fire the paste event so the
+      // listener can read clipboardData synchronously.
+      // Fallback: if no paste event fires within 120ms (e.g. browser security
+      // restrictions), read the clipboard asynchronously.
+      const before = lastPasteEventAt;
+      setTimeout(() => {
+        if (lastPasteEventAt !== before || runtime.disposed) return;
+        navigator.clipboard.readText().then((text) => {
+          if (text && !runtime.disposed) {
+            window.ade.pty.write({ ptyId: runtime.ptyId, data: text }).catch(() => {});
+          }
+        }).catch(() => {});
+      }, 120);
       return false;
     }
 
@@ -603,9 +624,24 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
     return true;
   });
 
+  // Batch rapid onData events (e.g. paste via context-menu) into single PTY writes
+  let inputBuf: string[] = [];
+  let inputFlushQueued = false;
+
   runtime.termDataSub = term.onData((data) => {
     if (runtime.disposed) return;
-    window.ade.pty.write({ ptyId: runtime.ptyId, data }).catch(() => {});
+    inputBuf.push(data);
+    if (!inputFlushQueued) {
+      inputFlushQueued = true;
+      queueMicrotask(() => {
+        inputFlushQueued = false;
+        const merged = inputBuf.join("");
+        inputBuf = [];
+        if (merged && !runtime.disposed) {
+          window.ade.pty.write({ ptyId: runtime.ptyId, data: merged }).catch(() => {});
+        }
+      });
+    }
   });
 
   runtime.ptyDataUnsub = window.ade.pty.onData((ev) => {
@@ -662,7 +698,7 @@ export function getTerminalRuntimeHealth(sessionId: string): TerminalHealthCount
   return cloneHealth(runtime.health);
 }
 
-export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; sessionId: string; className?: string }) {
+export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId: string; sessionId: string; className?: string; isActive?: boolean }) {
   const appTheme = useAppStore((s) => s.theme);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<CachedRuntime | null>(null);
@@ -848,6 +884,39 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     });
     return () => cancelAnimationFrame(id);
   }, [sessionId, termTheme]);
+
+  // When this terminal becomes the active tab, force fit + focus + scroll
+  useEffect(() => {
+    if (!isActive) return;
+    const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
+    if (!runtime || runtime.disposed) return;
+
+    const raf = requestAnimationFrame(() => {
+      doFit(runtime, true);
+      try {
+        runtime.term.focus();
+        runtime.term.scrollToBottom();
+      } catch {
+        // ignore
+      }
+    });
+
+    // Second settle pass after CSS transitions complete
+    const timer = setTimeout(() => {
+      if (runtime.disposed) return;
+      doFit(runtime, true);
+      try {
+        runtime.term.focus();
+      } catch {
+        // ignore
+      }
+    }, 100);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+    };
+  }, [isActive, sessionId]);
 
   return (
     <div

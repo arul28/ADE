@@ -936,7 +936,7 @@ export function createLinearDispatcherService(args: {
       return existing.id;
     }
 
-    if (!target.prStrategy) {
+    if (!target.prStrategy || target.prStrategy.kind === "manual") {
       return null;
     }
 
@@ -995,6 +995,16 @@ export function createLinearDispatcherService(args: {
   ): Promise<TargetCompletionEvaluation> => {
     const target = getActiveTarget(run, workflow);
     const targetStatus = resolveWorkflowTargetStatus(target.type, step.targetStatus);
+
+    // Check for a manual completion signal stored in the step payload by resolveRunAction.
+    const manualStepRow = getStepRows(run.id).find((r) => r.workflow_step_id === step.id);
+    if (manualStepRow) {
+      const manualPayload = safeJsonParse<Record<string, unknown> | null>(manualStepRow.payload_json, null);
+      if (manualPayload?.completionSource === "manual") {
+        return { state: "completed", payload: { ...manualPayload, targetStatus } };
+      }
+    }
+
     if (target.type === "mission") {
       if (!run.linkedMissionId) {
         return { state: "failed", payload: { targetStatus, reason: "missing_mission_link" } };
@@ -2175,9 +2185,10 @@ export function createLinearDispatcherService(args: {
         throw new Error("This workflow run is not waiting on an explicit ADE completion signal.");
       }
       const existingPayload = safeJsonParse<Record<string, unknown> | null>(currentStepRow.payload_json, null);
+      // Store the manual-completion signal in the step payload but do NOT mark
+      // the step as "completed" — let advanceRun evaluate the target, handle
+      // downstream stage handoffs, and finalize the step through its normal path.
       updateStep(currentStepRow.id, {
-        status: "completed",
-        completedAt: nowIso(),
         payload: {
           ...(existingPayload ?? {}),
           targetState: "completed",
@@ -2193,15 +2204,6 @@ export function createLinearDispatcherService(args: {
       appendEvent(run.id, "run.target_completed", "completed", note ?? "Marked complete from ADE.", {
         stepId: currentStep.id,
         targetStatus: currentTargetStatus,
-      });
-      if ((workflow.closeout?.reviewReadyWhen ?? "work_complete") === "work_complete") {
-        updateRun(run.id, { reviewReadyReason: "work_complete" });
-      }
-      maybeEmitReviewReady(run.id, workflow, findStepIndex(workflow, currentStep.id), "work_complete", "Delegated work was marked complete in ADE.");
-      await syncWorkflowWorkpad({
-        runId: run.id,
-        workflow,
-        note: note ?? "Delegated work was marked complete in ADE.",
       });
     } else if (action === "approve") {
       if (currentStepRow && currentStep?.type === "request_human_review") {
@@ -2276,6 +2278,8 @@ export function createLinearDispatcherService(args: {
         status: "queued",
         retryAfter: null,
         retryCount: run.retryCount + 1,
+        currentStepIndex: 0,
+        currentStepId: null,
         latestReviewNote: note ?? run.latestReviewNote,
         linkedMissionId: null,
         linkedSessionId: null,

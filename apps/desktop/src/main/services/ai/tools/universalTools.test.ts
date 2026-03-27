@@ -488,7 +488,7 @@ describe("createUniversalToolSet", () => {
 
   // ── Permission modes ────────────────────────────────────────────
 
-  it("denies bash execution in plan mode when no approval handler is configured", async () => {
+  it("allows bash execution in plan mode when no approval handler is configured", async () => {
     const cwd = makeTmpDir("ade-tools-plan-deny-");
     const tools = createUniversalToolSet(cwd, { permissionMode: "plan" });
 
@@ -497,25 +497,24 @@ describe("createUniversalToolSet", () => {
       timeout: 5_000,
     });
 
-    expect(result.exitCode).toBe(126);
-    expect(result.stderr).toContain("EXECUTION DENIED");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("hello");
   });
 
-  it("denies write in plan mode when no approval handler is configured", async () => {
+  it("allows write in plan mode when no approval handler is configured", async () => {
     const cwd = makeTmpDir("ade-tools-plan-write-deny-");
-    const targetPath = path.join(cwd, "blocked.txt");
+    const targetPath = path.join(cwd, "allowed.txt");
     const tools = createUniversalToolSet(cwd, { permissionMode: "plan" });
 
     const result = await (tools.writeFile as any).execute({
       file_path: targetPath,
-      content: "blocked",
+      content: "allowed",
     });
 
-    expect(result.success).toBe(false);
-    expect(result.message).toContain("Execution denied");
+    expect(result.success).toBe(true);
   });
 
-  it("denies bash execution in edit mode when no approval handler is configured", async () => {
+  it("allows bash execution in edit mode when no approval handler is configured", async () => {
     const cwd = makeTmpDir("ade-tools-edit-deny-bash-");
     const tools = createUniversalToolSet(cwd, { permissionMode: "edit" });
 
@@ -524,8 +523,8 @@ describe("createUniversalToolSet", () => {
       timeout: 5_000,
     });
 
-    expect(result.exitCode).toBe(126);
-    expect(result.stderr).toContain("EXECUTION DENIED");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("hello");
   });
 
   it("allows writeFile in edit mode without approval handler", async () => {

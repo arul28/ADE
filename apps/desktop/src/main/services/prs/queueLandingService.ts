@@ -358,7 +358,7 @@ export function createQueueLandingService({
     rebasing: ["resolving", "pending", "failed", "paused"],
     resolving: ["pending", "failed", "paused"],
     landed: [],
-    failed: [],
+    failed: ["skipped"],
     skipped: [],
     paused: ["pending", "landing", "skipped"],
   };
@@ -439,6 +439,7 @@ export function createQueueLandingService({
     state.lastError = message;
     state.waitReason = waitReason;
     state.activePrId = entry.prId;
+    state.activeResolverRunId = null;
     persistAndEmitState(state);
     emitQueueStep(state.groupId, entry.prId, "failed", entry.position);
     return state;
@@ -479,6 +480,10 @@ export function createQueueLandingService({
       originRunId: state.config.originRunId,
       originLabel: state.config.originLabel ?? `queue:${state.groupId}`,
     });
+    if (isQueueCancelledOrDone(state.queueId)) {
+      logger.debug("queue_landing.cancelled_during_resolve", { queueId: state.queueId, prId: entry.prId });
+      return { ok: false, error: "Queue was cancelled or stopped during conflict resolution." };
+    }
     state.activeResolverRunId = run.runId;
     entry.resolverRunId = run.runId;
     persistAndEmitState(state);
@@ -499,6 +504,10 @@ export function createQueueLandingService({
       };
     }
 
+    if (isQueueCancelledOrDone(state.queueId)) {
+      logger.debug("queue_landing.cancelled_before_commit", { queueId: state.queueId, prId: entry.prId });
+      return { ok: false, error: "Queue was cancelled or stopped before committing resolver changes." };
+    }
     const commitMessage = `Resolve queue conflicts for PR #${entry.prNumber ?? entry.prId} via ADE`;
     await runGitOrThrow(["add", "--", ...touchedPaths], { cwd: lane.worktreePath, timeoutMs: 60_000 });
     await runGitOrThrow(["commit", "-m", commitMessage, "--", ...touchedPaths], {
@@ -528,7 +537,7 @@ export function createQueueLandingService({
     const freshRow = getRow(queueId);
     if (!freshRow) return true;
     const freshState = freshRow.state as QueueState;
-    return freshState === "cancelled" || freshState === "completed";
+    return freshState === "cancelled" || freshState === "completed" || freshState === "paused";
   };
 
   const launchLandingLoop = (queueId: string): void => {

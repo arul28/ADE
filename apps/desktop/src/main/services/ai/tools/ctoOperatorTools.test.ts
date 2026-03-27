@@ -107,6 +107,38 @@ describe("createCtoOperatorTools", () => {
     expect(toolKeys).toContain("getMissionLogs");
     expect(toolKeys).toContain("listMissionWorkerDigests");
     expect(toolKeys).toContain("steerMission");
+
+    // Worker tools
+    expect(toolKeys).toContain("listWorkers");
+    expect(toolKeys).toContain("createWorker");
+    expect(toolKeys).toContain("updateWorkerStatus");
+    expect(toolKeys).toContain("wakeWorker");
+    expect(toolKeys).toContain("getWorkerStatus");
+
+    // PR tools
+    expect(toolKeys).toContain("listPullRequests");
+    expect(toolKeys).toContain("getPullRequestStatus");
+    expect(toolKeys).toContain("commentOnPullRequest");
+    expect(toolKeys).toContain("updatePullRequestTitle");
+    expect(toolKeys).toContain("updatePullRequestBody");
+
+    // Linear issue routing / issue tools
+    expect(toolKeys).toContain("routeLinearIssueToCto");
+    expect(toolKeys).toContain("routeLinearIssueToMission");
+    expect(toolKeys).toContain("routeLinearIssueToWorker");
+    expect(toolKeys).toContain("commentOnLinearIssue");
+    expect(toolKeys).toContain("updateLinearIssueState");
+
+    // Process tools
+    expect(toolKeys).toContain("listManagedProcesses");
+    expect(toolKeys).toContain("startManagedProcess");
+    expect(toolKeys).toContain("stopManagedProcess");
+    expect(toolKeys).toContain("getManagedProcessLog");
+
+    // File workspace tools
+    expect(toolKeys).toContain("listFileWorkspaces");
+    expect(toolKeys).toContain("readWorkspaceFile");
+    expect(toolKeys).toContain("searchWorkspaceText");
   });
 
   // ── Chat tools ──────────────────────────────────────────────────
