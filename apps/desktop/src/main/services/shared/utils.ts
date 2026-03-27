@@ -393,6 +393,10 @@ export function redactSecrets(text: string, replacement: string = "[REDACTED]"):
     .replace(/\bxox[baprs]-[A-Za-z0-9\-]{10,}\b/g, replacement)
     // AWS access keys
     .replace(/\b(AKIA|ASIA)[A-Z0-9]{16}\b/g, replacement)
+    // GitHub fine-grained PATs (github_pat_...)
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, replacement)
+    // JSON-style sensitive keys: "apiKey":"...", "token":"...", "secret":"...", etc.
+    .replace(/"(api[_-]?key|secret|token|password|authorization)"\s*:\s*"[^"]{4,}"/gi, `"$1":"${replacement}"`)
     // Generic high-entropy hex/base64 secrets assigned to common key names
     .replace(/(api[_-]?key|secret|token|password|authorization)\s*[:=]\s*["']?[A-Za-z0-9\-._~+/]{16,}["']?/gi, `$1=${replacement}`);
 }
@@ -438,7 +442,7 @@ export function sanitizeStructuredData(
 
   const clipString = (value: string): string => {
     if (value.length <= maxStringLength) return value;
-    return `${value.slice(0, maxStringLength)}…`;
+    return `${value.slice(0, maxStringLength - 1)}…`;
   };
 
   const seen = new WeakSet<object>();

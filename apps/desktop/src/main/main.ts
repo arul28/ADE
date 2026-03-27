@@ -1,7 +1,7 @@
 import { app, BrowserWindow, nativeImage, shell } from "electron";
 import { execSync } from "node:child_process";
 import path from "node:path";
-import type * as NodePty from "node-pty";
+import * as NodePty from "node-pty";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { openKvDb } from "./services/state/kvDb";

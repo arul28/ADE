@@ -220,12 +220,12 @@ describe("workerHeartbeatService", () => {
     fixture.heartbeat.syncFromConfig();
     await vi.advanceTimersByTimeAsync(1_200);
 
-    await waitForCondition(() => {
-      const runs = fixture.heartbeat.listRuns({ agentId: worker.id, limit: 5 });
-      expect(runs.length).toBeGreaterThan(0);
-      expect(runs[0]?.wakeupReason).toBe("timer");
-      expect(runs[0]?.status).toBe("completed");
-    });
+    // Assert directly after advancing fake timers -- waitForCondition cannot
+    // work here because its internal setTimeout/Date.now rely on real timers.
+    const runs = fixture.heartbeat.listRuns({ agentId: worker.id, limit: 5 });
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs[0]?.wakeupReason).toBe("timer");
+    expect(runs[0]?.status).toBe("completed");
     fixture.dispose();
   });
 

@@ -500,27 +500,56 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     setDetailBusy(true);
     detailFetchInProgress.current = true;
 
-    Promise.all([
+    Promise.allSettled([
       window.ade.prs.getStatus(prId),
       window.ade.prs.getChecks(prId),
       window.ade.prs.getReviews(prId),
       window.ade.prs.getComments(prId),
     ])
-      .then(([status, checks, reviews, comments]) => {
+      .then(([statusResult, checksResult, reviewsResult, commentsResult]) => {
         if (cancelled) return;
-        setDetailStatus(status ?? null);
-        setDetailChecks(checks);
-        setDetailReviews(reviews);
-        setDetailComments(comments);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.warn("[PrsContext] Failed to load PR detail data:", err);
-        // Clear stale data on error so UI doesn't show outdated info
-        setDetailStatus(null);
-        setDetailChecks([]);
-        setDetailReviews([]);
-        setDetailComments([]);
+
+        // Check for rate-limit errors in any rejected result
+        for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
+          if (result.status === "rejected") {
+            const msg = String(result.reason?.message ?? result.reason);
+            if (msg.includes("rate limit") || msg.includes("API rate")) {
+              rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+              console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
+              // Clear stale data on rate limit
+              setDetailStatus(null);
+              setDetailChecks([]);
+              setDetailReviews([]);
+              setDetailComments([]);
+              return;
+            }
+          }
+        }
+
+        if (statusResult.status === "fulfilled") {
+          setDetailStatus(statusResult.value ?? null);
+        } else {
+          console.warn("[PrsContext] Failed to load PR status:", statusResult.reason);
+          setDetailStatus(null);
+        }
+        if (checksResult.status === "fulfilled") {
+          setDetailChecks(checksResult.value);
+        } else {
+          console.warn("[PrsContext] Failed to load PR checks:", checksResult.reason);
+          setDetailChecks([]);
+        }
+        if (reviewsResult.status === "fulfilled") {
+          setDetailReviews(reviewsResult.value);
+        } else {
+          console.warn("[PrsContext] Failed to load PR reviews:", reviewsResult.reason);
+          setDetailReviews([]);
+        }
+        if (commentsResult.status === "fulfilled") {
+          setDetailComments(commentsResult.value);
+        } else {
+          console.warn("[PrsContext] Failed to load PR comments:", commentsResult.reason);
+          setDetailComments([]);
+        }
       })
       .finally(() => {
         detailFetchInProgress.current = false;

@@ -143,7 +143,7 @@ describe("createCtoOperatorTools", () => {
 
       expect(deps.createChat).toHaveBeenCalled();
       expect(deps.resolveExecutionLane).toHaveBeenCalledWith(expect.objectContaining({
-        requestedLaneId: "lane-1",
+        requestedLaneId: undefined,
         purpose: "Backend follow-up",
       }));
       expect(deps.updateChatSession).toHaveBeenCalledWith({

@@ -354,7 +354,7 @@ export function createQueueLandingService({
 
   const ALLOWED_TRANSITIONS: Record<QueueEntryState, readonly QueueEntryState[]> = {
     pending: ["landing", "rebasing", "skipped", "paused"],
-    landing: ["landed", "failed", "paused"],
+    landing: ["landing", "landed", "failed", "paused"],
     rebasing: ["resolving", "pending", "failed", "paused"],
     resolving: ["pending", "failed", "paused"],
     landed: [],
@@ -523,6 +523,14 @@ export function createQueueLandingService({
     return { ok: true, run };
   };
 
+  /** Re-read the persisted row and return true if the queue has been cancelled or completed externally. */
+  const isQueueCancelledOrDone = (queueId: string): boolean => {
+    const freshRow = getRow(queueId);
+    if (!freshRow) return true;
+    const freshState = freshRow.state as QueueState;
+    return freshState === "cancelled" || freshState === "completed";
+  };
+
   const launchLandingLoop = (queueId: string): void => {
     const prior = activeLandingLoops.get(queueId) ?? Promise.resolve();
     const loopPromise = prior.then(async () => {
@@ -566,6 +574,10 @@ export function createQueueLandingService({
         try {
           if (state.config.ciGating) {
             const status = await prService.getStatus(entry.prId);
+            if (isQueueCancelledOrDone(queueId)) {
+              logger.debug("queue_landing.cancelled_after_ci_check", { queueId, prId: entry.prId });
+              return;
+            }
             if (status.checksStatus === "pending" || status.checksStatus === "failing") {
               pauseWithReason(
                 state,
@@ -597,8 +609,16 @@ export function createQueueLandingService({
             method: state.config.method,
             archiveLane: state.config.archiveLane,
           });
+          if (isQueueCancelledOrDone(queueId)) {
+            logger.debug("queue_landing.cancelled_after_land", { queueId, prId: entry.prId });
+            return;
+          }
           if (!landResult.success && isMergeConflictMessage(landResult.error)) {
             const resolved = await maybeResolveConflict(state, entry);
+            if (isQueueCancelledOrDone(queueId)) {
+              logger.debug("queue_landing.cancelled_after_resolve", { queueId, prId: entry.prId });
+              return;
+            }
             if (!resolved.ok) {
               failEntry(state, entry, resolved.error.includes("manual") ? "manual" : "resolver_failed", resolved.error);
               logger.warn("queue_landing.resolve_failed", {
@@ -617,6 +637,10 @@ export function createQueueLandingService({
               method: state.config.method,
               archiveLane: state.config.archiveLane,
             });
+            if (isQueueCancelledOrDone(queueId)) {
+              logger.debug("queue_landing.cancelled_after_retry_land", { queueId, prId: entry.prId });
+              return;
+            }
             if (!retried.success) {
               if (state.config.ciGating && isMergeConflictMessage(retried.error)) {
                 failEntry(state, entry, "merge_conflict", retried.error ?? "Queue PR still has merge conflicts after AI resolution.");
@@ -750,7 +774,7 @@ export function createQueueLandingService({
     if (state.state !== "paused") return state;
     state.config = resolveQueueConfig(args, state, getGroup(state.groupId));
     const currentEntry = state.entries[state.currentPosition];
-    if (currentEntry && (currentEntry.state === "failed" || currentEntry.state === "paused" || currentEntry.state === "resolving")) {
+    if (currentEntry && (currentEntry.state === "failed" || currentEntry.state === "paused" || currentEntry.state === "resolving" || currentEntry.state === "landing")) {
       currentEntry.state = "pending";
       currentEntry.error = undefined;
       currentEntry.waitingOn = null;

@@ -73,10 +73,10 @@ function approvalProp(
   mode: PermissionMode,
   category: ToolCategory,
   useManualApproval: boolean,
-): { needsApproval: () => Promise<boolean> } | Record<string, never> {
+): { needsApproval: boolean } | Record<string, never> {
   const needs = requiresApproval(mode, category);
   if (!needs || useManualApproval) return {};
-  return { needsApproval: async () => true };
+  return { needsApproval: true };
 }
 
 async function maybeRequestApproval(args: {

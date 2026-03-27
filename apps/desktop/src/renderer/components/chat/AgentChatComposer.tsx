@@ -875,6 +875,7 @@ export function AgentChatComposer({
       </label>
     );
   }, [
+    claudeSelectionMode,
     claudePermissionMode,
     applyCodexPreset,
     codexPreset,

@@ -178,7 +178,7 @@ export function createLinearCloseoutService(args: {
       },
       pr: {
         id: input.run.linkedPrId ?? null,
-        url: linkedPr?.githubUrl ?? null,
+        url: linkedPr?.githubUrl ?? closeoutArtifacts.prLinks[0] ?? null,
         links: closeoutArtifacts.prLinks,
       },
       review: {

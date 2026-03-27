@@ -49,6 +49,7 @@ function CollapsibleSection({ title, color, defaultOpen = true, right, children 
           type="button"
           onClick={() => setOpen((v) => !v)}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          aria-expanded={open}
         >
           <div className="h-2 w-2 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 14px ${color}55` }} />
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-fg/86">{title}</span>
@@ -56,7 +57,7 @@ function CollapsibleSection({ title, color, defaultOpen = true, right, children 
         </button>
         {right ? <div className="shrink-0">{right}</div> : null}
       </div>
-      {open && <div className="border-t border-white/[0.05]">{children}</div>}
+      {open && <div className="border-t border-white/[0.05]" role="region">{children}</div>}
     </div>
   );
 }

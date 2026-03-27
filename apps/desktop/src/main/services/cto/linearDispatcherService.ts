@@ -2277,8 +2277,17 @@ export function createLinearDispatcherService(args: {
         retryAfter: null,
         retryCount: run.retryCount + 1,
         latestReviewNote: note ?? run.latestReviewNote,
+        linkedMissionId: null,
+        linkedSessionId: null,
+        linkedWorkerRunId: null,
       });
-      clearExecutionWaitState(run.id);
+      updateExecutionState(run.id, {
+        activeStageIndex: 0,
+        activeTargetType: null,
+        downstreamPending: false,
+        waitingFor: null,
+        stalledReason: null,
+      });
       appendEvent(run.id, "run.retried", "queued", note ?? "Queued for retry.", null);
     }
 

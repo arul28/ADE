@@ -2474,6 +2474,12 @@ export function AgentChatMessageList({
   const [measurementTick, setMeasurementTick] = useState(0);
   // Map of row index → measured height (filled in lazily as rows render)
   const measuredHeights = useRef<Map<number, number>>(new Map());
+  // Track previous events identity to clear stale measurements on session switch
+  const prevEventsRef = useRef<AgentChatEventEnvelope[]>(events);
+  if (prevEventsRef.current !== events && events.length > 0 && (events[0] !== prevEventsRef.current[0])) {
+    measuredHeights.current.clear();
+  }
+  prevEventsRef.current = events;
 
   useEffect(() => {
     onApprovalRef.current = onApproval;

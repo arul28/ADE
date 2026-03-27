@@ -458,7 +458,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         const selectedModelId = modelId?.trim() || deps.defaultModelId || null;
         const resolved = deriveChatProvider({ modelId: selectedModelId });
         const executionLaneId = await deps.resolveExecutionLane({
-          requestedLaneId: laneId?.trim() || deps.defaultLaneId,
+          requestedLaneId: laneId?.trim() || undefined,
           purpose: title?.trim() || "implementation chat",
           freshLaneName: title?.trim() || "implementation chat",
           freshLaneDescription: "Dedicated implementation lane launched from the CTO coordinator chat.",
@@ -639,7 +639,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       if (!deps.missionService) return { success: false, error: "Mission service is not available." };
       try {
         const executionLaneId = await deps.resolveExecutionLane({
-          requestedLaneId: laneId?.trim() || deps.defaultLaneId,
+          requestedLaneId: laneId?.trim() || undefined,
           purpose: title?.trim() || "mission",
           freshLaneName: title?.trim() || "mission",
           freshLaneDescription: "Dedicated mission lane launched from the CTO coordinator chat.",

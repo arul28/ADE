@@ -510,7 +510,7 @@ describe("sanitizeStructuredData", () => {
   it("truncates long strings", () => {
     const long = "x".repeat(200);
     const result = sanitizeStructuredData({ text: long }, { maxStringLength: 50 });
-    expect(result!.text).toHaveLength(51); // 50 chars + ellipsis
+    expect(result!.text).toHaveLength(50); // 49 chars + ellipsis = maxStringLength
   });
 
   it("limits array entries", () => {

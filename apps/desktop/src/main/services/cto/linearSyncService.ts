@@ -208,6 +208,7 @@ export function createLinearSyncService(args: {
     if (!isIssueOpen(issue, policy)) {
       const activeRuns = args.dispatcherService.listActiveRuns().filter((run) => run.issueId === issue.id);
       for (const activeRun of activeRuns) {
+        await args.dispatcherService.cancelRun(activeRun.id, `Issue externally ${issue.stateType}`, policy);
         appendSyncEvent({
           issueId: issue.id,
           queueItemId: activeRun.id,
@@ -215,95 +216,89 @@ export function createLinearSyncService(args: {
           status: "cancelled",
           message: `Issue is now ${issue.stateType}; cancelling the active workflow run.`,
         });
-        await args.dispatcherService.cancelRun(activeRun.id, `Issue externally ${issue.stateType}`, policy);
       }
       return;
     }
-    const activeRun = args.dispatcherService.findActiveRunForIssue(issue.id);
-    if (!activeRun) {
-      const match = await args.routingService.routeIssue({ issue, policy });
-      if (!match.workflow) return;
-      if (match.workflow.routing?.watchOnly) {
-        if (!snapshotChanged(issue)) return;
-        appendSyncEvent({
-          issueId: issue.id,
-          eventType: "watch_only_match",
-          status: "observed",
-          message: `Observed '${issue.identifier}' with watch-only workflow '${match.workflow.name}'.`,
-          payload: {
-            workflowId: match.workflow.id,
-            workflowName: match.workflow.name,
-            reason: match.reason,
-            matchedSignals: match.candidates.find((candidate) => candidate.workflowId === match.workflow?.id)?.matchedSignals ?? [],
-          },
-        });
-        return;
-      }
+    const match = await args.routingService.routeIssue({ issue, policy });
+    if (!match.workflow) return;
+    if (match.workflow.routing?.watchOnly) {
       if (!snapshotChanged(issue)) return;
-      const activeRuns = args.dispatcherService.listActiveRuns();
-      const workflowActiveRuns = activeRuns.filter((run) => run.workflowId === match.workflow!.id);
-      const issueWorkflowRuns = workflowActiveRuns.filter((run) => run.issueId === issue.id);
-      const maxActiveRuns = match.workflow.concurrency?.maxActiveRuns;
-      if (maxActiveRuns != null && workflowActiveRuns.length >= maxActiveRuns) {
-        appendSyncEvent({
-          issueId: issue.id,
-          eventType: "workflow_capacity_wait",
-          status: "deferred",
-          message: `Workflow '${match.workflow.name}' is at capacity.`,
-          payload: {
-            workflowId: match.workflow.id,
-            activeRuns: workflowActiveRuns.length,
-            maxActiveRuns,
-          },
-        });
-        return;
-      }
-      const dedupeByIssue = match.workflow.concurrency?.dedupeByIssue !== false;
-      if (dedupeByIssue && issueWorkflowRuns.length > 0) {
-        appendSyncEvent({
-          issueId: issue.id,
-          eventType: "issue_deduped",
-          status: "deferred",
-          message: `Skipped duplicate run for '${issue.identifier}' in workflow '${match.workflow.name}'.`,
-          payload: {
-            workflowId: match.workflow.id,
-            activeRunIds: issueWorkflowRuns.map((run) => run.id),
-          },
-        });
-        return;
-      }
-      const perIssue = match.workflow.concurrency?.perIssue;
-      if (perIssue != null && issueWorkflowRuns.length >= perIssue) {
-        appendSyncEvent({
-          issueId: issue.id,
-          eventType: "issue_per_workflow_limit",
-          status: "deferred",
-          message: `Issue '${issue.identifier}' already has ${issueWorkflowRuns.length} active run(s) for '${match.workflow.name}'.`,
-          payload: {
-            workflowId: match.workflow.id,
-            activeRuns: issueWorkflowRuns.length,
-            perIssue,
-          },
-        });
-        return;
-      }
-      const run = args.dispatcherService.createRun(issue, match);
       appendSyncEvent({
         issueId: issue.id,
-        queueItemId: run.id,
-        eventType: "run_created",
-        status: "queued",
-        message: `Queued workflow '${match.workflow.name}' for '${issue.identifier}'.`,
+        eventType: "watch_only_match",
+        status: "observed",
+        message: `Observed '${issue.identifier}' with watch-only workflow '${match.workflow.name}'.`,
         payload: {
           workflowId: match.workflow.id,
           workflowName: match.workflow.name,
           reason: match.reason,
+          matchedSignals: match.candidates.find((candidate) => candidate.workflowId === match.workflow?.id)?.matchedSignals ?? [],
         },
       });
-      await args.dispatcherService.advanceRun(run.id, policy);
       return;
     }
-    await args.dispatcherService.advanceRun(activeRun.id, policy);
+    if (!snapshotChanged(issue)) return;
+    const activeRuns = args.dispatcherService.listActiveRuns();
+    const workflowActiveRuns = activeRuns.filter((run) => run.workflowId === match.workflow!.id);
+    const issueWorkflowRuns = workflowActiveRuns.filter((run) => run.issueId === issue.id);
+    const dedupeByIssue = match.workflow.concurrency?.dedupeByIssue !== false;
+    if (dedupeByIssue && issueWorkflowRuns.length > 0) {
+      appendSyncEvent({
+        issueId: issue.id,
+        eventType: "issue_deduped",
+        status: "deferred",
+        message: `Skipped duplicate run for '${issue.identifier}' in workflow '${match.workflow.name}'.`,
+        payload: {
+          workflowId: match.workflow.id,
+          activeRunIds: issueWorkflowRuns.map((run) => run.id),
+        },
+      });
+      return;
+    }
+    const maxActiveRuns = match.workflow.concurrency?.maxActiveRuns;
+    if (maxActiveRuns != null && workflowActiveRuns.length >= maxActiveRuns) {
+      appendSyncEvent({
+        issueId: issue.id,
+        eventType: "workflow_capacity_wait",
+        status: "deferred",
+        message: `Workflow '${match.workflow.name}' is at capacity.`,
+        payload: {
+          workflowId: match.workflow.id,
+          activeRuns: workflowActiveRuns.length,
+          maxActiveRuns,
+        },
+      });
+      return;
+    }
+    const perIssue = match.workflow.concurrency?.perIssue;
+    if (perIssue != null && issueWorkflowRuns.length >= perIssue) {
+      appendSyncEvent({
+        issueId: issue.id,
+        eventType: "issue_per_workflow_limit",
+        status: "deferred",
+        message: `Issue '${issue.identifier}' already has ${issueWorkflowRuns.length} active run(s) for '${match.workflow.name}'.`,
+        payload: {
+          workflowId: match.workflow.id,
+          activeRuns: issueWorkflowRuns.length,
+          perIssue,
+        },
+      });
+      return;
+    }
+    const run = args.dispatcherService.createRun(issue, match);
+    appendSyncEvent({
+      issueId: issue.id,
+      queueItemId: run.id,
+      eventType: "run_created",
+      status: "queued",
+      message: `Queued workflow '${match.workflow.name}' for '${issue.identifier}'.`,
+      payload: {
+        workflowId: match.workflow.id,
+        workflowName: match.workflow.name,
+        reason: match.reason,
+      },
+    });
+    await args.dispatcherService.advanceRun(run.id, policy);
   };
 
   const advanceRuns = async (policy: LinearWorkflowConfig) => {
