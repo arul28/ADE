@@ -721,6 +721,30 @@ export function createLinearDispatcherService(args: {
     ].join("\n");
   };
 
+  const readDelegationContext = (run: LinearWorkflowRun, launchContext?: Record<string, unknown> | null) => {
+    const source = launchContext ?? {};
+    const executionContext = run.executionContext ?? null;
+    const workerId =
+      executionContext && "workerId" in executionContext
+        ? (typeof executionContext.workerId === "string" ? executionContext.workerId : null)
+        : typeof source.workerId === "string"
+          ? source.workerId
+          : null;
+    const workerSlug =
+      executionContext && "workerSlug" in executionContext
+        ? (typeof executionContext.workerSlug === "string" ? executionContext.workerSlug : null)
+        : typeof source.workerSlug === "string"
+          ? source.workerSlug
+          : null;
+    const sessionLabel =
+      executionContext && "sessionLabel" in executionContext
+        ? (typeof executionContext.sessionLabel === "string" ? executionContext.sessionLabel : null)
+        : typeof source.sessionLabel === "string"
+          ? source.sessionLabel
+          : null;
+    return { workerId, workerSlug, sessionLabel };
+  };
+
   const getLaunchContext = (runId: string): Record<string, unknown> => {
     const step = getStepRows(runId).find((entry) => entry.type === "launch_target");
     return safeJsonParse<Record<string, unknown> | null>(step?.payload_json ?? null, null) ?? {};
@@ -738,9 +762,10 @@ export function createLinearDispatcherService(args: {
     const issue = run.sourceIssueSnapshot as NormalizedLinearIssue;
     const launchContext = getLaunchContext(run.id);
     const currentStep = input.workflow.steps.find((entry) => entry.id === run.currentStepId) ?? null;
+    const delegatedContext = readDelegationContext(run, launchContext);
     const delegatedOwner =
-      [launchContext.sessionLabel, launchContext.workerSlug, launchContext.workerId]
-        .map((value) => (typeof value === "string" ? value.trim() : ""))
+      [delegatedContext.sessionLabel, delegatedContext.workerSlug, delegatedContext.workerId]
+        .map((value) => value?.trim() ?? "")
         .find((value) => value.length > 0) ?? null;
     await args.outboundService.publishWorkflowStatus({
       issue,
@@ -1208,12 +1233,16 @@ export function createLinearDispatcherService(args: {
       updateExecutionState(run.id, {
         waitingFor: "delegated work",
         stalledReason: null,
+        workerId: worker?.id ?? null,
+        workerSlug: worker?.slug ?? null,
+        sessionLabel: null,
       });
       const missionPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
         linkedMissionId: mission.id,
         status: "waiting_for_target",
         workerId: worker?.id ?? null,
         workerSlug: worker?.slug ?? null,
+        sessionLabel: null,
         activeTargetType: target.type,
       };
       return missionPatch;
@@ -1228,9 +1257,15 @@ export function createLinearDispatcherService(args: {
           stalledReason: "No employee could be resolved for this workflow.",
           employeeOverride: override,
           overrideSource,
+          workerId: null,
+          workerSlug: null,
+          sessionLabel: employeeTarget?.label ?? null,
         });
         return {
           status: "awaiting_delegation" as LinearWorkflowRunStatus,
+          workerId: null,
+          workerSlug: null,
+          sessionLabel: employeeTarget?.label ?? null,
           activeTargetType: target.type,
         };
       }
@@ -1244,9 +1279,15 @@ export function createLinearDispatcherService(args: {
           stalledReason: "Workflow contract requires an operator to choose the execution lane.",
           employeeOverride: override,
           overrideSource,
+          workerId: employeeTarget.worker?.id ?? null,
+          workerSlug: employeeTarget.worker?.slug ?? null,
+          sessionLabel: employeeTarget.label,
         });
         return {
           status: "awaiting_lane_choice" as LinearWorkflowRunStatus,
+          workerId: employeeTarget.worker?.id ?? null,
+          workerSlug: employeeTarget.worker?.slug ?? null,
+          sessionLabel: employeeTarget.label,
           activeTargetType: target.type,
         };
       }
@@ -1298,6 +1339,9 @@ export function createLinearDispatcherService(args: {
         stalledReason: null,
         employeeOverride: override,
         overrideSource,
+        workerId: employeeTarget.worker?.id ?? null,
+        workerSlug: employeeTarget.worker?.slug ?? null,
+        sessionLabel: employeeTarget.label,
       });
       const sessionPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
         executionLaneId: laneId,
@@ -1331,9 +1375,15 @@ export function createLinearDispatcherService(args: {
           stalledReason: "Workflow contract requires an operator to choose the execution lane.",
           employeeOverride: override,
           overrideSource,
+          workerId: worker.id,
+          workerSlug: worker.slug,
+          sessionLabel: null,
         });
         return {
           status: "awaiting_lane_choice" as LinearWorkflowRunStatus,
+          workerId: worker.id,
+          workerSlug: worker.slug,
+          sessionLabel: null,
           activeTargetType: target.type,
         };
       }
@@ -1388,6 +1438,9 @@ export function createLinearDispatcherService(args: {
         stalledReason: null,
         employeeOverride: override,
         overrideSource,
+        workerId: worker.id,
+        workerSlug: worker.slug,
+        sessionLabel: null,
       });
       const workerPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
         executionLaneId: laneId,
@@ -1395,6 +1448,7 @@ export function createLinearDispatcherService(args: {
         status: target.type === "pr_resolution" ? "waiting_for_pr" : "waiting_for_target",
         workerId: worker.id,
         workerSlug: worker.slug,
+        sessionLabel: null,
         laneId,
         activeTargetType: target.type,
       };
@@ -1647,13 +1701,17 @@ export function createLinearDispatcherService(args: {
             stalledReason: null,
           });
           const stagedRun = toRun(getRunRow(run.id)!);
-          const downstreamPatch = await executeTarget(stagedRun, policy, workflow, stagedRun.sourceIssueSnapshot as NormalizedLinearIssue);
-          const downstreamTargetType = String((downstreamPatch.activeTargetType as string | undefined) ?? nextTarget.type);
+          const plannedDownstreamTargetType = String(nextTarget.type);
           const waitForPrIndex =
-            downstreamPatch.status === "waiting_for_pr"
+            plannedDownstreamTargetType === "pr_resolution"
               ? workflow.steps.findIndex((entry, stepIndex) => stepIndex > index && entry.type === "wait_for_pr")
               : -1;
-          if (downstreamPatch.status === "waiting_for_pr" && waitForPrIndex < 0) {
+          if (plannedDownstreamTargetType === "pr_resolution" && waitForPrIndex < 0) {
+            throw new Error(`Workflow '${workflow.name}' launched a PR-resolution stage without a later wait_for_pr step.`);
+          }
+          const downstreamPatch = await executeTarget(stagedRun, policy, workflow, stagedRun.sourceIssueSnapshot as NormalizedLinearIssue);
+          const downstreamTargetType = String((downstreamPatch.activeTargetType as string | undefined) ?? plannedDownstreamTargetType);
+          if ((downstreamPatch.status === "waiting_for_pr" || downstreamTargetType === "pr_resolution") && waitForPrIndex < 0) {
             throw new Error(`Workflow '${workflow.name}' launched a PR-resolution stage without a later wait_for_pr step.`);
           }
           if (downstreamPatch.status === "waiting_for_pr" && waitForPrIndex >= 0) {
@@ -2266,13 +2324,34 @@ export function createLinearDispatcherService(args: {
         });
       }
     } else {
-      if (currentStepRow && currentStepRow.status === "failed") {
-        updateStep(currentStepRow.id, {
+      const resetStep = (stepRow: StepRow | null) => {
+        if (!stepRow) return;
+        updateStep(stepRow.id, {
           status: "pending",
           startedAt: null,
           completedAt: null,
           payload: null,
         });
+      };
+      const launchTargetStepRow =
+        currentStepRow?.type === "launch_target"
+          ? currentStepRow
+          : getStepRows(run.id).find((entry) => entry.type === "launch_target") ?? null;
+      const shouldResetLaunchTarget =
+        launchTargetStepRow?.status === "completed"
+        && (
+          run.status === "awaiting_delegation"
+          || run.status === "awaiting_lane_choice"
+          || currentStep?.type === "wait_for_target_status"
+          || currentStep?.type === "wait_for_pr"
+        );
+      if (currentStepRow?.status === "failed") {
+        resetStep(currentStepRow);
+      }
+      if (shouldResetLaunchTarget && launchTargetStepRow?.id !== currentStepRow?.id) {
+        resetStep(launchTargetStepRow);
+      } else if (shouldResetLaunchTarget) {
+        resetStep(launchTargetStepRow);
       }
       updateRun(run.id, {
         status: "queued",
@@ -2316,6 +2395,7 @@ export function createLinearDispatcherService(args: {
       const launchContext = safeJsonParse<Record<string, unknown> | null>(
         steps.find((entry) => entry.type === "launch_target")?.payload_json ?? null, null
       ) ?? {};
+      const delegatedContext = readDelegationContext(queueRun, launchContext);
       const status: LinearSyncQueueItem["status"] =
         row.status === "queued" || row.status === "awaiting_delegation" || row.status === "awaiting_lane_choice"
           ? "queued"
@@ -2341,8 +2421,9 @@ export function createLinearDispatcherService(args: {
         workflowName: row.workflow_name,
         targetType: row.target_type,
         laneId: row.execution_lane_id ?? (typeof launchContext.laneId === "string" ? launchContext.laneId : null),
-        workerId: typeof launchContext.workerId === "string" ? launchContext.workerId : null,
-        workerSlug: typeof launchContext.workerSlug === "string" ? launchContext.workerSlug : null,
+        workerId: delegatedContext.workerId,
+        workerSlug: delegatedContext.workerSlug,
+        sessionLabel: delegatedContext.sessionLabel,
         missionId: row.linked_mission_id,
         sessionId: row.linked_session_id,
         workerRunId: row.linked_worker_run_id,

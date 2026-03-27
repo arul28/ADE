@@ -359,6 +359,27 @@ describe("createUniversalToolSet", () => {
     expect(result.message).toContain("File not found");
   });
 
+  it("blocks editFile outside the configured sandbox roots", async () => {
+    const cwd = makeTmpDir("ade-tools-edit-sandbox-");
+    const outsideDir = makeTmpDir("ade-tools-edit-sandbox-outside-");
+    const filePath = path.join(outsideDir, "target.txt");
+    fs.writeFileSync(filePath, "Hello world\n", "utf-8");
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "full-auto",
+      sandboxConfig: sandboxWith({ allowedPaths: ["./"] }),
+    });
+
+    const result = await (tools.editFile as any).execute({
+      file_path: filePath,
+      old_string: "Hello",
+      new_string: "Goodbye",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("outside allowed roots");
+    expect(fs.readFileSync(filePath, "utf-8")).toBe("Hello world\n");
+  });
+
   // ── Memory guard ────────────────────────────────────────────────
 
   it("blocks mutating tools on required turns until memory orientation is satisfied", async () => {
@@ -651,6 +672,39 @@ describe("createUniversalToolSet", () => {
 
     expect(result.approved).toBe(false);
     expect(result.message).toContain("Please add more tests first");
+  });
+
+  it("fails closed when an approval callback throws for writeFile", async () => {
+    const cwd = makeTmpDir("ade-tools-write-approval-error-");
+    const targetPath = path.join(cwd, "blocked.txt");
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "plan",
+      onApprovalRequest: vi.fn().mockRejectedValue(new Error("approval bridge unavailable")),
+    });
+
+    const result = await (tools.writeFile as any).execute({
+      file_path: targetPath,
+      content: "blocked",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("approval bridge unavailable");
+    expect(fs.existsSync(targetPath)).toBe(false);
+  });
+
+  it("fails closed when the plan approval bridge throws", async () => {
+    const cwd = makeTmpDir("ade-tools-exitplan-error-");
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "plan",
+      onApprovalRequest: vi.fn().mockRejectedValue(new Error("bridge disconnected")),
+    });
+
+    const result = await (tools.exitPlanMode as any).execute({
+      planDescription: "Ship the fix",
+    });
+
+    expect(result.approved).toBe(false);
+    expect(result.message).toContain("bridge disconnected");
   });
 
   // ── memoryUpdateCore tool ───────────────────────────────────────

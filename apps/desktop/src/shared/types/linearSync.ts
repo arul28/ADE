@@ -310,6 +310,9 @@ export type LinearWorkflowExecutionContext = {
   activeStageIndex?: number;
   totalStages?: number;
   downstreamPending?: boolean;
+  workerId?: string | null;
+  workerSlug?: string | null;
+  sessionLabel?: string | null;
   routeTags?: string[];
 };
 
@@ -641,6 +644,7 @@ export type LinearSyncQueueItem = {
   laneId: string | null;
   workerId: string | null;
   workerSlug: string | null;
+  sessionLabel?: string | null;
   missionId: string | null;
   sessionId: string | null;
   workerRunId: string | null;

@@ -275,6 +275,85 @@ function buildPrPolicy(): LinearWorkflowConfig {
   };
 }
 
+function buildDownstreamEmployeeSessionPolicy(): LinearWorkflowConfig {
+  return {
+    version: 1,
+    source: "repo",
+    intake,
+    settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+    workflows: [
+      {
+        id: "downstream-session-flow",
+        name: "Downstream session flow",
+        enabled: true,
+        priority: 125,
+        triggers: { assignees: ["CTO"], labels: ["workflow:downstream-session"] },
+        target: {
+          type: "worker_run",
+          runMode: "autopilot",
+          workerSelector: { mode: "slug", value: "backend-dev" },
+          laneSelection: "primary",
+          downstreamTarget: {
+            type: "employee_session",
+            employeeIdentityKey: "cto",
+            runMode: "assisted",
+            laneSelection: "primary",
+            sessionReuse: "reuse_existing",
+          },
+        },
+        steps: [
+          { id: "launch", type: "launch_target", name: "Launch worker run" },
+          { id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "runtime_completed" },
+          { id: "complete", type: "complete_issue", name: "Complete issue" },
+        ],
+        closeout: { successState: "in_review", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
+      },
+    ],
+    files: [],
+    migration: { hasLegacyConfig: false, needsSave: false },
+    legacyConfig: null,
+  };
+}
+
+function buildInvalidDownstreamPrPolicy(): LinearWorkflowConfig {
+  return {
+    version: 1,
+    source: "repo",
+    intake,
+    settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+    workflows: [
+      {
+        id: "invalid-downstream-pr",
+        name: "Invalid downstream PR",
+        enabled: true,
+        priority: 130,
+        triggers: { assignees: ["CTO"], labels: ["workflow:downstream-pr"] },
+        target: {
+          type: "worker_run",
+          runMode: "autopilot",
+          workerSelector: { mode: "slug", value: "backend-dev" },
+          laneSelection: "primary",
+          downstreamTarget: {
+            type: "pr_resolution",
+            runMode: "autopilot",
+            workerSelector: { mode: "slug", value: "backend-dev" },
+            laneSelection: "primary",
+          },
+        },
+        steps: [
+          { id: "launch", type: "launch_target", name: "Launch worker run" },
+          { id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "runtime_completed" },
+          { id: "complete", type: "complete_issue", name: "Complete issue" },
+        ],
+        closeout: { successState: "in_review", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
+      },
+    ],
+    files: [],
+    migration: { hasLegacyConfig: false, needsSave: false },
+    legacyConfig: null,
+  };
+}
+
 function buildMatch(policy: LinearWorkflowConfig): LinearWorkflowMatchResult {
   return {
     workflowId: policy.workflows[0]!.id,
@@ -491,6 +570,59 @@ describe("linearDispatcherService", () => {
     expect(dispatcher.listQueue()[0]?.status).toBe("queued");
     const detail = await dispatcher.getRunDetail(run.id, policy);
     expect(detail?.run.status).toBe("awaiting_delegation");
+    db.close();
+  });
+
+  it("rewinds launch_target when retrying a run that is awaiting delegation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-retry-awaiting-delegation-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildEmployeeSessionPolicy();
+    const employeeIssue = {
+      ...issueFixture,
+      assigneeId: "unknown-agent",
+      assigneeName: "Unknown Agent",
+      labels: ["workflow:backend"],
+    };
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => employeeIssue),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => []) } as any,
+      workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun(employeeIssue, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+
+    const detailBeforeRetry = await dispatcher.getRunDetail(run.id, policy);
+    expect(detailBeforeRetry?.steps.find((step) => step.workflowStepId === "launch")?.status).toBe("completed");
+
+    await dispatcher.resolveRunAction(run.id, "retry", "Try again.", policy);
+
+    const detailAfterRetry = await dispatcher.getRunDetail(run.id, policy);
+    expect(detailAfterRetry?.steps.find((step) => step.workflowStepId === "launch")?.status).toBe("pending");
     db.close();
   });
 
@@ -894,6 +1026,66 @@ describe("linearDispatcherService", () => {
     db.close();
   });
 
+  it("persists downstream session ownership after handing work from a worker to an employee session", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-downstream-session-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildDownstreamEmployeeSessionPolicy();
+    const outboundService = createOutboundServiceMocks();
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: {
+        listAgents: vi.fn(() => [{ id: "agent-1", slug: "backend-dev", adapterType: "claude-local", capabilities: [] }]),
+      } as any,
+      workerHeartbeatService: {
+        triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
+        listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
+      } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession: vi.fn(async () => ({ id: "session-cto-2" })),
+        sendMessage: vi.fn(async () => ({ id: "message-1" })),
+        listSessions: vi.fn(async () => [{ sessionId: "session-cto-2", laneId: "lane-1", status: "idle", identityKey: "cto" }]),
+      } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService,
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:downstream-session"] }, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+    await dispatcher.advanceRun(run.id, policy);
+
+    const queueItem = dispatcher.listQueue()[0]!;
+    expect(queueItem.sessionId).toBe("session-cto-2");
+    expect(queueItem.sessionLabel).toBe("CTO");
+    expect(queueItem.workerId).toBeNull();
+    expect(queueItem.workerSlug).toBeNull();
+    expect(outboundService.publishWorkflowStatus).toHaveBeenLastCalledWith(expect.objectContaining({
+      delegatedOwner: "CTO",
+      sessionId: "session-cto-2",
+    }));
+    db.close();
+  });
+
   it("pauses for supervisor approval and can resume after approval", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-supervisor-"));
     const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
@@ -1147,6 +1339,56 @@ describe("linearDispatcherService", () => {
     expect(getStatus).toHaveBeenCalledTimes(4);
     expect(dispatcher.listQueue()[0]?.prChecksStatus).toBe("passing");
     expect(dispatcher.listQueue()[0]?.prReviewStatus).toBe("approved");
+    db.close();
+  });
+
+  it("fails before launching a downstream PR stage when the workflow is missing wait_for_pr", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-invalid-downstream-pr-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildInvalidDownstreamPrPolicy();
+    const triggerWakeup = vi
+      .fn()
+      .mockResolvedValueOnce({ runId: "worker-run-1" })
+      .mockResolvedValueOnce({ runId: "worker-run-2" });
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => [{ id: "agent-1", slug: "backend-dev", adapterType: "claude-local", capabilities: [] }]) } as any,
+      workerHeartbeatService: {
+        triggerWakeup,
+        listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
+      } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a PR." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-42", githubPrNumber: 42 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:downstream-pr"] }, buildMatch(policy));
+    await dispatcher.advanceRun(run.id, policy);
+
+    const retried = await dispatcher.advanceRun(run.id, policy);
+    expect(retried?.status).toBe("failed");
+    expect(triggerWakeup).toHaveBeenCalledTimes(1);
     db.close();
   });
 });

@@ -838,6 +838,55 @@ function resolveModelMeta(modelId?: string, model?: string): { label: string | n
   };
 }
 
+type TurnModelDescriptor = { label: string; modelId?: string; model?: string };
+
+type DerivedTurnModelState = {
+  map: Map<string, TurnModelDescriptor>;
+  lastModel: TurnModelDescriptor | null;
+  processedLength: number;
+  lastProcessedEnvelope: AgentChatEventEnvelope | null;
+};
+
+export function deriveTurnModelState(
+  events: AgentChatEventEnvelope[],
+  previous: DerivedTurnModelState | null = null,
+): DerivedTurnModelState {
+  const canIncrementallyAppend =
+    !!previous
+    && previous.processedLength <= events.length
+    && (
+      previous.processedLength === 0
+      || previous.lastProcessedEnvelope === events[previous.processedLength - 1]
+    );
+
+  const map = canIncrementallyAppend && previous
+    ? new Map(previous.map)
+    : new Map<string, TurnModelDescriptor>();
+  let lastModel = canIncrementallyAppend ? (previous?.lastModel ?? null) : null;
+  const startIndex = canIncrementallyAppend && previous ? previous.processedLength : 0;
+
+  for (let index = startIndex; index < events.length; index += 1) {
+    const evt = events[index]?.event;
+    if (!evt || evt.type !== "done") continue;
+    const modelLabel = resolveModelLabel(evt.modelId, evt.model);
+    if (!evt.turnId || !modelLabel) continue;
+    const model = {
+      label: modelLabel,
+      ...(evt.modelId ? { modelId: evt.modelId } : {}),
+      ...(evt.model ? { model: evt.model } : {}),
+    };
+    map.set(evt.turnId, model);
+    lastModel = model;
+  }
+
+  return {
+    map,
+    lastModel,
+    processedLength: events.length,
+    lastProcessedEnvelope: events.length > 0 ? events[events.length - 1]! : null,
+  };
+}
+
 function ModelGlyph({
   modelId,
   model,
@@ -2570,23 +2619,11 @@ export function AgentChatMessageList({
     navigate(suggestion.href);
   }, [navigate]);
 
+  const turnModelStateRef = useRef<DerivedTurnModelState | null>(null);
   const turnModelState = useMemo(() => {
-    const map = new Map<string, { label: string; modelId?: string; model?: string }>();
-    let lastModel: { label: string; modelId?: string; model?: string } | null = null;
-    for (const envelope of events) {
-      const evt = envelope.event;
-      if (evt.type !== "done") continue;
-      const modelLabel = resolveModelLabel(evt.modelId, evt.model);
-      if (!evt.turnId || !modelLabel) continue;
-      const model = {
-        label: modelLabel,
-        ...(evt.modelId ? { modelId: evt.modelId } : {}),
-        ...(evt.model ? { model: evt.model } : {}),
-      };
-      map.set(evt.turnId, model);
-      lastModel = model;
-    }
-    return { map, lastModel };
+    const nextState = deriveTurnModelState(events, turnModelStateRef.current);
+    turnModelStateRef.current = nextState;
+    return nextState;
   }, [events]);
 
   useEffect(() => {

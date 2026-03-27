@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
+import * as modelRegistry from "../../../shared/modelRegistry";
 import {
   AgentChatMessageList,
   calculateVirtualWindow,
+  deriveTurnModelState,
   reconcileMeasuredScrollTop,
 } from "./AgentChatMessageList";
 
@@ -72,6 +74,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   if (originalAde === undefined) {
     delete (globalThis.window as any).ade;
   } else {
@@ -802,5 +805,49 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("First thought.")).toBeTruthy();
     expect(screen.getByText("Second thought.")).toBeTruthy();
     expect(screen.queryByText("First thought.Second thought.")).toBeNull();
+  });
+});
+
+describe("deriveTurnModelState", () => {
+  it("only processes newly appended done events when history grows", () => {
+    const getModelByIdSpy = vi.spyOn(modelRegistry, "getModelById").mockReturnValue({
+      displayName: "Codex",
+    } as any);
+    const firstBatch: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          modelId: "gpt-5.4-codex",
+        },
+      },
+    ];
+
+    const initialState = deriveTurnModelState(firstBatch);
+    expect(initialState.map.get("turn-1")?.label).toContain("Codex");
+    expect(getModelByIdSpy).toHaveBeenCalledTimes(1);
+
+    const nextState = deriveTurnModelState(
+      [
+        ...firstBatch,
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: {
+            type: "done",
+            turnId: "turn-2",
+            status: "completed",
+            modelId: "gpt-5.4-codex",
+          },
+        },
+      ],
+      initialState,
+    );
+
+    expect(nextState.map.get("turn-2")?.label).toContain("Codex");
+    expect(getModelByIdSpy).toHaveBeenCalledTimes(2);
   });
 });

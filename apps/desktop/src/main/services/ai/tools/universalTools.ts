@@ -94,11 +94,18 @@ async function maybeRequestApproval(args: {
     return { approved: true };
   }
 
-  return args.onApprovalRequest({
-    category: args.category,
-    description: args.description,
-    detail: args.detail,
-  });
+  try {
+    return await args.onApprovalRequest({
+      category: args.category,
+      description: args.description,
+      detail: args.detail,
+    });
+  } catch (err) {
+    return {
+      approved: false,
+      reason: getErrorMessage(err) || "Approval request failed.",
+    };
+  }
 }
 
 // ── Worker sandbox enforcement ──────────────────────────────────────
@@ -146,6 +153,23 @@ function resolveAllowedWriteRoots(cwd: string, sandboxConfig?: WorkerSandboxConf
     }
   }
   return [...roots];
+}
+
+function resolveWritableTargetPath(
+  cwd: string,
+  filePath: string,
+  sandboxConfig?: WorkerSandboxConfig,
+): { targetPath: string | null; error?: string } {
+  const targetPath = path.resolve(cwd, filePath);
+  const allowedRoots = resolveAllowedWriteRoots(cwd, sandboxConfig);
+  const withinAllowedRoots = allowedRoots.some((allowedRoot) => isWithinDir(allowedRoot, targetPath));
+  if (!withinAllowedRoots) {
+    return {
+      targetPath: null,
+      error: `Write path is outside allowed roots: ${filePath}`,
+    };
+  }
+  return { targetPath };
 }
 
 function normalizePathToken(token: string): string {
@@ -454,13 +478,11 @@ function createWriteFileTool(
       }
 
       try {
-        const targetPath = path.resolve(cwd, file_path);
-        const allowedRoots = resolveAllowedWriteRoots(cwd, sandboxConfig);
-        const withinAllowedRoots = allowedRoots.some((allowedRoot) => isWithinDir(allowedRoot, targetPath));
-        if (!withinAllowedRoots) {
+        const { targetPath, error } = resolveWritableTargetPath(cwd, file_path, sandboxConfig);
+        if (!targetPath) {
           return {
             success: false,
-            message: `Write path is outside allowed roots: ${file_path}`,
+            message: error ?? `Write path is outside allowed roots: ${file_path}`,
           };
         }
         await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
@@ -477,7 +499,9 @@ function createWriteFileTool(
 }
 
 function createEditFileTool(
+  cwd: string,
   mode: PermissionMode,
+  sandboxConfig?: WorkerSandboxConfig,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
   turnMemoryPolicyState?: TurnMemoryPolicyState,
 ) {
@@ -486,7 +510,7 @@ function createEditFileTool(
       "Make a targeted edit to a file by replacing an exact string match with new content. " +
       "The old_string must appear exactly once in the file unless replace_all is true.",
     inputSchema: z.object({
-      file_path: z.string().describe("Absolute path to the file to edit"),
+      file_path: z.string().describe("Path to the file (absolute or relative to project root)"),
       old_string: z.string().describe("The exact string to find and replace"),
       new_string: z.string().describe("The replacement string"),
       replace_all: z
@@ -524,17 +548,25 @@ function createEditFileTool(
       }
 
       try {
+        const { targetPath, error } = resolveWritableTargetPath(cwd, file_path, sandboxConfig);
+        if (!targetPath) {
+          return {
+            success: false,
+            message: error ?? `Write path is outside allowed roots: ${file_path}`,
+          };
+        }
+
         let content: string;
         try {
-          content = await fs.promises.readFile(file_path, "utf-8");
+          content = await fs.promises.readFile(targetPath, "utf-8");
         } catch {
-          return { success: false, message: `File not found: ${file_path}` };
+          return { success: false, message: `File not found: ${targetPath}` };
         }
 
         if (!content.includes(old_string)) {
           return {
             success: false,
-            message: `The old_string was not found in ${file_path}`,
+            message: `The old_string was not found in ${targetPath}`,
           };
         }
 
@@ -545,7 +577,7 @@ function createEditFileTool(
             return {
               success: false,
               message:
-                `old_string appears multiple times in ${file_path}. ` +
+                `old_string appears multiple times in ${targetPath}. ` +
                 "Provide more context to make the match unique, or set replace_all to true.",
             };
           }
@@ -555,8 +587,8 @@ function createEditFileTool(
           ? content.split(old_string).join(new_string)
           : content.replace(old_string, new_string);
 
-        await fs.promises.writeFile(file_path, updated, "utf-8");
-        return { success: true, message: `Successfully edited ${file_path}` };
+        await fs.promises.writeFile(targetPath, updated, "utf-8");
+        return { success: true, message: `Successfully edited ${targetPath}` };
       } catch (err) {
         return {
           success: false,
@@ -762,11 +794,20 @@ function createExitPlanModeTool(
         return { approved: false, message: "No approval handler configured. Stay in plan mode and ask the user to review your plan in chat." };
       }
       const summary = planDescription?.trim() || "Plan ready for review.";
-      const result = await onApprovalRequest({
-        category: "exitPlanMode",
-        description: summary,
-        detail: { tool: "exitPlanMode", planContent: summary },
-      });
+      let result: ToolApprovalResult;
+      try {
+        result = await onApprovalRequest({
+          category: "exitPlanMode",
+          description: summary,
+          detail: { tool: "exitPlanMode", planContent: summary },
+        });
+      } catch (err) {
+        const reason = getErrorMessage(err) || "Approval request failed.";
+        return {
+          approved: false,
+          message: `Plan approval could not be requested. ${reason}`,
+        };
+      }
       if (result.approved) {
         return { approved: true, message: "User approved the plan. Proceed with implementation." };
       }
@@ -845,7 +886,7 @@ export function createUniversalToolSet(
     webSearch: webSearchTool,
 
     // Write tools (auto in edit+full-auto, gated in plan)
-    editFile: createEditFileTool(permissionMode, onApprovalRequest, turnMemoryPolicyState),
+    editFile: createEditFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
     writeFile: createWriteFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
 
     // Bash (auto only in full-auto, gated in plan+edit)
