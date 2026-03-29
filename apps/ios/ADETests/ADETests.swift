@@ -1114,6 +1114,105 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .open).map(\.id), ["pr-1"])
   }
 
+  func testLaneListFilteringMatchesSearchPrefixesAndSortOrder() {
+    let snapshots = [
+      makeLaneListSnapshot(
+        id: "lane-primary",
+        name: "main",
+        laneType: "primary",
+        baseRef: "main",
+        branchRef: "main",
+        worktreePath: "/project",
+        description: "Primary lane",
+        status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "running", runningCount: 2, awaitingInputCount: 0, endedCount: 0, sessionCount: 2),
+        createdAt: "2026-03-01T00:00:00.000Z",
+        archivedAt: nil
+      ),
+      makeLaneListSnapshot(
+        id: "lane-attached-active",
+        name: "docs",
+        laneType: "attached",
+        baseRef: "main",
+        branchRef: "docs/cleanup",
+        worktreePath: "/project/docs",
+        description: "Docs cleanup lane",
+        status: LaneStatus(dirty: true, ahead: 3, behind: 1, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1),
+        stateSnapshot: LaneStateSnapshotSummary(
+          laneId: "lane-attached-active",
+          agentSummary: ["summary": .string("Agent waiting on approval")],
+          missionSummary: ["summary": .string("Ship the cleanup")],
+          updatedAt: nil
+        ),
+        createdAt: "2026-03-20T00:00:00.000Z",
+        archivedAt: nil,
+        adoptableAttached: true
+      ),
+      makeLaneListSnapshot(
+        id: "lane-worktree",
+        name: "auth-flow",
+        laneType: "worktree",
+        baseRef: "main",
+        branchRef: "feature/auth",
+        worktreePath: "/project/.ade/worktrees/auth",
+        description: "OAuth flow",
+        status: LaneStatus(dirty: false, ahead: 1, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "awaiting-input", runningCount: 0, awaitingInputCount: 1, endedCount: 0, sessionCount: 1),
+        stateSnapshot: LaneStateSnapshotSummary(
+          laneId: "lane-worktree",
+          agentSummary: ["title": .string("Codex")],
+          missionSummary: ["objective": .string("Handle OAuth redirects")],
+          updatedAt: nil
+        ),
+        createdAt: "2026-03-10T00:00:00.000Z",
+        archivedAt: nil,
+        adoptableAttached: false
+      ),
+      makeLaneListSnapshot(
+        id: "lane-archived",
+        name: "legacy",
+        laneType: "attached",
+        baseRef: "main",
+        branchRef: "legacy/refactor",
+        worktreePath: "/legacy",
+        description: "Legacy lane",
+        status: LaneStatus(dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "running", runningCount: 1, awaitingInputCount: 0, endedCount: 0, sessionCount: 4),
+        createdAt: "2026-02-01T00:00:00.000Z",
+        archivedAt: "2026-03-25T00:00:00.000Z"
+      ),
+    ]
+
+    XCTAssertEqual(laneScopeCount(snapshots, scope: .active), 3)
+    XCTAssertEqual(laneScopeCount(snapshots, scope: .archived), 1)
+    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .running), 2)
+    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .awaitingInput), 1)
+
+    let activeFiltered = laneListFilteredSnapshots(
+      snapshots,
+      scope: .active,
+      runtimeFilter: .all,
+      searchText: "",
+      pinnedLaneIds: ["lane-worktree"]
+    )
+    XCTAssertEqual(activeFiltered.map(\.lane.id), ["lane-primary", "lane-attached-active", "lane-worktree"])
+
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "docs main"))
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "is:dirty type:attached"))
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[2], isPinned: true, query: "is:pinned awaiting"))
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "is:clean is:primary"))
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[2], isPinned: true, query: "is:worktree"))
+    XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "is:unknown"))
+    XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "type:attached"))
+
+    XCTAssertEqual(laneListEmptyStateTitle(scope: .active), "No active lanes")
+    XCTAssertEqual(
+      laneListEmptyStateMessage(scope: .all, searchText: "auth", hasFilters: true),
+      "Try a different search or clear the filter."
+    )
+  }
+
   func testBuildPullRequestTimelineOrdersStateReviewsAndComments() {
     let pr = PullRequestListItem(
       id: "pr-9",
@@ -1830,6 +1929,53 @@ final class ADETests: XCTestCase {
     var bytes = Data([0x01, 0x0b, UInt8(value.utf8.count)])
     bytes.append(contentsOf: value.utf8)
     return bytes
+  }
+
+  private func makeLaneListSnapshot(
+    id: String,
+    name: String,
+    laneType: String,
+    baseRef: String,
+    branchRef: String,
+    worktreePath: String,
+    description: String?,
+    status: LaneStatus,
+    runtime: LaneRuntimeSummary,
+    stateSnapshot: LaneStateSnapshotSummary? = nil,
+    createdAt: String,
+    archivedAt: String?,
+    adoptableAttached: Bool = false
+  ) -> LaneListSnapshot {
+    LaneListSnapshot(
+      lane: LaneSummary(
+        id: id,
+        name: name,
+        description: description,
+        laneType: laneType,
+        baseRef: baseRef,
+        branchRef: branchRef,
+        worktreePath: worktreePath,
+        attachedRootPath: laneType == "attached" ? worktreePath : nil,
+        parentLaneId: nil,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: nil,
+        isEditProtected: false,
+        status: status,
+        color: nil,
+        icon: nil,
+        tags: [],
+        folder: nil,
+        createdAt: createdAt,
+        archivedAt: archivedAt
+      ),
+      runtime: runtime,
+      rebaseSuggestion: nil,
+      autoRebaseStatus: nil,
+      conflictStatus: nil,
+      stateSnapshot: stateSnapshot,
+      adoptableAttached: adoptableAttached
+    )
   }
 
   private func countRows(in baseURL: URL, table: String) throws -> Int {
