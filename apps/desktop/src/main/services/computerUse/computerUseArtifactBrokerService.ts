@@ -90,6 +90,52 @@ function isAllowedExternalArtifactSource(
   });
 }
 
+function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void {
+  const sourceFlags = fs.constants.O_RDONLY | (typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0);
+  const sourceFd = fs.openSync(sourcePath, sourceFlags);
+  const tempPath = `${targetPath}.tmp-${randomUUID()}`;
+  let tempCreated = false;
+
+  try {
+    const sourceStat = fs.fstatSync(sourceFd);
+    if (!sourceStat.isFile()) {
+      throw new Error("Artifact source must be a regular file.");
+    }
+
+    const targetFd = fs.openSync(tempPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, sourceStat.mode & 0o777);
+    tempCreated = true;
+    try {
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      let position = 0;
+      for (;;) {
+        const bytesRead = fs.readSync(sourceFd, buffer, 0, buffer.length, position);
+        if (bytesRead === 0) break;
+
+        let offset = 0;
+        while (offset < bytesRead) {
+          offset += fs.writeSync(targetFd, buffer, offset, bytesRead - offset);
+        }
+        position += bytesRead;
+      }
+      fs.fsyncSync(targetFd);
+    } finally {
+      fs.closeSync(targetFd);
+    }
+
+    fs.renameSync(tempPath, targetPath);
+    tempCreated = false;
+  } finally {
+    if (tempCreated) {
+      try {
+        fs.rmSync(tempPath, { force: true });
+      } catch {
+        // Best-effort cleanup only.
+      }
+    }
+    fs.closeSync(sourceFd);
+  }
+}
+
 function dedupeOwners(owners: ComputerUseArtifactOwner[]): ComputerUseArtifactOwner[] {
   const seen = new Set<string>();
   const result: ComputerUseArtifactOwner[] = [];
@@ -149,7 +195,7 @@ export function createComputerUseArtifactBrokerService(args: {
   logger?: Logger | null;
   onEvent?: (payload: ComputerUseEventPayload) => void;
 }) {
-  const { db, projectId, projectRoot, missionService, orchestratorService, externalMcpService, logger, onEvent } = args;
+  const { db, projectId, projectRoot, missionService, orchestratorService, externalMcpService, onEvent } = args;
   const layout = resolveAdeLayout(projectRoot);
   const allowedImportRoots = Array.from(new Set([
     layout.artifactsDir,
@@ -204,7 +250,7 @@ export function createComputerUseArtifactBrokerService(args: {
         }
         const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
         const targetPath = createComputerUseArtifactPath(projectRoot, title, extension);
-        fs.copyFileSync(absolutePath, targetPath);
+        secureCopyFromDescriptor(absolutePath, targetPath);
         return {
           uri: toProjectArtifactUri(projectRoot, targetPath),
           storageKind: "file",

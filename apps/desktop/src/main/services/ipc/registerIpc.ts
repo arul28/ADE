@@ -1338,6 +1338,16 @@ function buildPrAiDisplayText(context: PrAiResolutionContext): string {
   return "Resolve this PR with AI.";
 }
 
+function getAllowedDirs(getCtx: () => AppContext): string[] {
+  const projectRoot = getCtx().project.rootPath;
+  return [
+    projectRoot,
+    app.getPath("downloads"),
+    app.getPath("documents"),
+    app.getPath("temp"),
+  ];
+}
+
 export function registerIpc({
   getCtx,
   switchProjectFromDialog,
@@ -1684,13 +1694,7 @@ export function registerIpc({
     const normalized = path.resolve(raw);
     // Validate the path is within known safe directories only.
     // Reject requests to reveal arbitrary paths (e.g. ~/.ssh, /etc, /System).
-    const projectRoot = getCtx().project.rootPath;
-    const allowedDirs = [
-      projectRoot,
-      app.getPath("downloads"),
-      app.getPath("documents"),
-      app.getPath("temp"),
-    ];
+    const allowedDirs = getAllowedDirs(getCtx);
     const allowed = allowedDirs.some((dir) => {
       try {
         resolvePathWithinRoot(dir, normalized);
@@ -1727,13 +1731,7 @@ export function registerIpc({
 
       // Validate the renderer-supplied root is a known workspace root
       // (same pattern as appRevealPath).
-      const projectRoot = getCtx().project.rootPath;
-      const allowedRoots = [
-        projectRoot,
-        app.getPath("downloads"),
-        app.getPath("documents"),
-        app.getPath("temp"),
-      ];
+      const allowedRoots = getAllowedDirs(getCtx);
       const rootAllowed = allowedRoots.some((dir) => {
         try {
           resolvePathWithinRoot(dir, rootPath);

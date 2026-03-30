@@ -5,7 +5,11 @@ import { describe, expect, it } from "vitest";
 import { createAutomationPlannerService } from "./automationPlannerService";
 import type { AutomationRuleDraft } from "../../../shared/types";
 
-function createPlannerForTests(args: { suites: Array<{ id: string; name: string }>; projectRoot?: string }) {
+function createPlannerForTests(args: {
+  suites: Array<{ id: string; name: string }>;
+  projectRoot?: string;
+  laneWorktrees?: Record<string, string>;
+}) {
   const logger = {
     debug: () => {},
     info: () => {},
@@ -46,7 +50,9 @@ function createPlannerForTests(args: { suites: Array<{ id: string; name: string 
     },
   } as any;
 
-  const laneService = {} as any;
+  const laneService = {
+    getLaneWorktreePath: (laneId: string) => args.laneWorktrees?.[laneId] ?? projectRoot,
+  } as any;
   const automationService = { list: () => [], syncFromConfig: () => {} } as any;
 
   return {
@@ -61,7 +67,11 @@ function createPlannerForTests(args: { suites: Array<{ id: string; name: string 
   };
 }
 
-function getPlanner(args: { suites: Array<{ id: string; name: string }>; projectRoot?: string }) {
+function getPlanner(args: {
+  suites: Array<{ id: string; name: string }>;
+  projectRoot?: string;
+  laneWorktrees?: Record<string, string>;
+}) {
   const harness = createPlannerForTests(args);
   return harness;
 }
@@ -145,6 +155,35 @@ describe("automationPlannerService.validateDraft", () => {
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
       fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("validates run-command cwd against the target lane worktree", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-root-"));
+    const laneWorktree = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-worktree-"));
+
+    try {
+      fs.mkdirSync(path.join(laneWorktree, "nested"), { recursive: true });
+      const { planner } = getPlanner({
+        suites: [],
+        projectRoot,
+        laneWorktrees: { "lane-1": laneWorktree },
+      });
+      const draft = createDraft({
+        name: "Lane cwd",
+        execution: { kind: "built-in", targetLaneId: "lane-1" } as any,
+        actions: [{ type: "run-command", command: "pwd", cwd: "nested" }],
+      });
+
+      const result = planner.validateDraft({ draft, confirmations: ["confirm.run-command"] });
+      expect(result.ok).toBe(true);
+      expect(result.normalized?.actions[0]).toMatchObject({
+        type: "run-command",
+        cwd: "nested",
+      });
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(laneWorktree, { recursive: true, force: true });
     }
   });
 

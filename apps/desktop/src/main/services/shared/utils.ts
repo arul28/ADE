@@ -177,8 +177,14 @@ function pathEntryExists(filePath: string): boolean {
   try {
     fs.lstatSync(filePath);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    const code = error && typeof error === "object"
+      ? ("code" in error ? (error as NodeJS.ErrnoException).code : undefined)
+      : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -235,6 +241,103 @@ function openReadOnlyNoFollow(filePath: string): number {
   return fs.openSync(filePath, fs.constants.O_RDONLY | noFollowFlag);
 }
 
+function openWriteNoFollow(filePath: string, flags: number, mode: number): number {
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number"
+    ? fs.constants.O_NOFOLLOW
+    : 0;
+  return fs.openSync(filePath, flags | noFollowFlag, mode);
+}
+
+function isPathAlignedWithRoot(rootReal: string, candidatePath: string): boolean {
+  return isWithinDir(candidatePath, rootReal) || isWithinDir(rootReal, candidatePath);
+}
+
+function ensureDirectoryChainWithinRoot(
+  rootReal: string,
+  candidate: string,
+  opts: { createMissing?: boolean } = {},
+): string {
+  const { root: candidateRoot, segments } = splitPathSegments(candidate);
+  let cursor = realpathExisting(candidateRoot);
+
+  if (!isPathAlignedWithRoot(rootReal, cursor)) {
+    throw new Error("Path escapes root");
+  }
+
+  for (const segment of segments) {
+    if (segment === "." || segment === "") continue;
+    if (segment === "..") {
+      cursor = path.dirname(cursor);
+      if (!isPathAlignedWithRoot(rootReal, cursor)) {
+        throw new Error("Path escapes root");
+      }
+      continue;
+    }
+
+    const nextPath = path.join(cursor, segment);
+    try {
+      const stat = fs.lstatSync(nextPath);
+      const resolvedPath = stat.isSymbolicLink() ? realpathExisting(nextPath) : realpathExisting(nextPath);
+      if (!isPathAlignedWithRoot(rootReal, resolvedPath)) {
+        throw new Error("Path escapes root");
+      }
+      if (!fs.statSync(resolvedPath).isDirectory()) {
+        throw new Error(`Path is not a directory: ${nextPath}`);
+      }
+      cursor = resolvedPath;
+    } catch (error) {
+      const code = error && typeof error === "object"
+        ? ("code" in error ? (error as NodeJS.ErrnoException).code : undefined)
+        : undefined;
+      if (code !== "ENOENT" || !opts.createMissing) {
+        throw error;
+      }
+      if (!isPathAlignedWithRoot(rootReal, nextPath)) {
+        throw new Error("Path escapes root");
+      }
+      fs.mkdirSync(nextPath);
+      const createdPath = realpathExisting(nextPath);
+      if (!isPathAlignedWithRoot(rootReal, createdPath)) {
+        throw new Error("Path escapes root");
+      }
+      cursor = createdPath;
+    }
+  }
+
+  return cursor;
+}
+
+function prepareMutationTargetWithinRoot(
+  root: string,
+  candidate: string,
+): { rootReal: string; parentPath: string; targetPath: string } {
+  const rootReal = realpathExisting(path.resolve(root));
+  const expression = candidateExpressionFromRoot(root, candidate);
+  const parentExpression = path.dirname(expression);
+  const parentPath = ensureDirectoryChainWithinRoot(rootReal, parentExpression, { createMissing: true });
+  const targetPath = path.join(parentPath, path.basename(expression));
+  if (!isWithinDir(rootReal, targetPath)) {
+    throw new Error("Path escapes root");
+  }
+  return { rootReal, parentPath, targetPath };
+}
+
+function writeFileByDescriptor(
+  filePath: string,
+  data: string | NodeJS.ArrayBufferView,
+  options?: fs.WriteFileOptions | BufferEncoding,
+): void {
+  const mode = typeof options === "object" && options != null && typeof options.mode === "number"
+    ? options.mode
+    : 0o666;
+  const fd = openWriteNoFollow(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, mode);
+  try {
+    fs.writeFileSync(fd, data, options as fs.WriteFileOptions | BufferEncoding | undefined);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /**
  * Re-resolve and validate a file at open time, then read it through the file
  * descriptor so callers do not rely on a previously checked path string.
@@ -266,6 +369,87 @@ export function readFileWithinRootSecure(root: string, candidate: string): Buffe
   } finally {
     fs.closeSync(fd);
   }
+}
+
+export function secureMkdirWithinRoot(root: string, candidate: string): string {
+  const rootReal = realpathExisting(path.resolve(root));
+  const expression = candidateExpressionFromRoot(root, candidate);
+  return ensureDirectoryChainWithinRoot(rootReal, expression, { createMissing: true });
+}
+
+export function secureWriteFileWithinRoot(
+  root: string,
+  candidate: string,
+  data: string | NodeJS.ArrayBufferView,
+  options?: fs.WriteFileOptions | BufferEncoding,
+): string {
+  const { targetPath } = prepareMutationTargetWithinRoot(root, candidate);
+  writeFileByDescriptor(targetPath, data, options);
+  return targetPath;
+}
+
+export function secureWriteTextAtomicWithinRoot(root: string, candidate: string, text: string): string {
+  const initialTarget = prepareMutationTargetWithinRoot(root, candidate);
+  const tmpPath = path.join(
+    initialTarget.parentPath,
+    `.${path.basename(initialTarget.targetPath) || "tmp"}.${randomUUID()}.tmp`,
+  );
+  writeFileByDescriptor(tmpPath, text, "utf8");
+  try {
+    const { targetPath } = prepareMutationTargetWithinRoot(root, candidate);
+    fs.renameSync(tmpPath, targetPath);
+    return targetPath;
+  } catch (error) {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      // ignore cleanup errors
+    }
+    throw error;
+  }
+}
+
+export function secureCopyFileIntoRoot(root: string, candidate: string, sourcePath: string): string {
+  const initialTarget = prepareMutationTargetWithinRoot(root, candidate);
+  const tmpPath = path.join(
+    initialTarget.parentPath,
+    `.${path.basename(initialTarget.targetPath) || "tmp"}.${randomUUID()}.tmp`,
+  );
+  fs.copyFileSync(sourcePath, tmpPath);
+  try {
+    const { targetPath } = prepareMutationTargetWithinRoot(root, candidate);
+    fs.renameSync(tmpPath, targetPath);
+    return targetPath;
+  } catch (error) {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      // ignore cleanup errors
+    }
+    throw error;
+  }
+}
+
+export function secureCopyPathIntoRoot(root: string, candidate: string, sourcePath: string): string {
+  const stat = fs.statSync(sourcePath);
+  if (stat.isDirectory()) {
+    const targetPath = secureMkdirWithinRoot(root, candidate);
+    for (const entry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+      secureCopyPathIntoRoot(root, path.join(candidate, entry.name), path.join(sourcePath, entry.name));
+    }
+    return targetPath;
+  }
+  return secureCopyFileIntoRoot(root, candidate, sourcePath);
+}
+
+export function secureRenameWithinRoot(root: string, sourceCandidate: string, targetCandidate: string): {
+  sourcePath: string;
+  targetPath: string;
+} {
+  const sourcePath = resolvePathWithinRoot(root, sourceCandidate, { allowMissing: false });
+  const { targetPath } = prepareMutationTargetWithinRoot(root, targetCandidate);
+  fs.renameSync(sourcePath, targetPath);
+  return { sourcePath, targetPath };
 }
 
 // ── String helpers ──────────────────────────────────────────────────

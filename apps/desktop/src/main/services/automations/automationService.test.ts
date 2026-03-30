@@ -559,7 +559,7 @@ describe("automationService integration", () => {
         permissionMode: "plan",
       }));
       const sessionArgs = (createSession as any).mock.calls[0][0] as Record<string, unknown>;
-      expect(Object.prototype.hasOwnProperty.call(sessionArgs, "codexSandbox")).toBe(false);
+      expect(sessionArgs).not.toHaveProperty("codexSandbox");
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }

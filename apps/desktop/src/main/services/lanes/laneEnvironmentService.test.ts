@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { createLaneEnvironmentService } from "./laneEnvironmentService";
 import type { LaneEnvInitConfig, LaneOverlayOverrides, LaneSummary } from "../../../shared/types";
 
@@ -353,6 +353,56 @@ describe("laneEnvironmentService", () => {
         expect(fs.existsSync(dockerLogPath)).toBe(false);
       } finally {
         fs.rmSync(outsideCompose, { force: true });
+      }
+    });
+
+    it("still runs docker teardown when compose path validation hits a non-escape error", async () => {
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-env-bin-"));
+      const dockerLogPath = path.join(projectRoot, "docker-args.log");
+      const dockerPath = path.join(binDir, "docker");
+      fs.writeFileSync(
+        dockerPath,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ADE_TEST_DOCKER_LOG\"\n",
+        { mode: 0o755 }
+      );
+      process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+      process.env.ADE_TEST_DOCKER_LOG = dockerLogPath;
+
+      const composeDir = path.join(projectRoot, "infra");
+      fs.mkdirSync(composeDir, { recursive: true });
+      const composePath = path.join(composeDir, "compose.yaml");
+      fs.writeFileSync(composePath, "services: {}\n");
+
+      const worktreePath = path.join(projectRoot, "wt-cleanup-permission");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const originalLstatSync = fs.lstatSync.bind(fs);
+      const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" as const });
+      const spy = vi.spyOn(fs, "lstatSync").mockImplementation(((filePath: fs.PathLike) => {
+        if (String(filePath) === composePath) {
+          throw permissionError;
+        }
+        return originalLstatSync(filePath);
+      }) as typeof fs.lstatSync);
+
+      try {
+        const lane = makeLane({ id: "lane-clean-permission", name: "cleanup lane", worktreePath });
+        const service = createService();
+        await service.cleanupLaneEnvironment(lane, {
+          docker: { composePath: "infra/compose.yaml", projectPrefix: "lane" }
+        });
+
+        expect(fs.readFileSync(dockerLogPath, "utf-8").trim().split("\n")).toEqual([
+          "compose",
+          "-f",
+          fs.realpathSync(composePath),
+          "-p",
+          "lane-lane-clean-permission",
+          "down",
+          "--remove-orphans"
+        ]);
+      } finally {
+        spy.mockRestore();
       }
     });
   });

@@ -685,6 +685,21 @@ export function createCoordinatorToolSet(deps: {
       return null;
     }
   };
+  const getFsErrorCode = (error: unknown): string | null => {
+    if (!error || typeof error !== "object" || !("code" in error)) return null;
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" ? code : null;
+  };
+  const formatWorkspaceReadError = (kind: "file" | "step output", reference: string, error: unknown): string => {
+    const code = getFsErrorCode(error);
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return `file not found: ${reference}`;
+    }
+    if (code === "EACCES" || code === "EPERM") {
+      return `permission denied: ${reference}`;
+    }
+    return `failed to read ${kind}: ${reference}`;
+  };
   const MAX_CONTENT_SEARCH_PATTERN_LENGTH = 200;
   const filenamePatternToRegExp = (pattern: string): RegExp => {
     const normalized = pattern.replace(/\\/g, "/").trim();
@@ -719,18 +734,24 @@ export function createCoordinatorToolSet(deps: {
       || /\((?:[^()\\]|\\.)*[+*{](?:[^()\\]|\\.)*\)[+*{]/.test(pattern)
       || /(?:^|[^\\])(?:\*|\+|\{[^}]+\})(?:\s*)(?:\*|\+|\{[^}]+\})/.test(pattern);
   };
-  const compileContentSearchRegex = (pattern: string): RegExp => {
+  const compileContentSearchRegex = (pattern: string, explicitRegexMode: boolean = false): RegExp => {
     const normalized = pattern.trim();
     if (!normalized.length) {
       throw new Error("pattern is required");
     }
-    if (isUnsafeContentSearchPattern(normalized)) {
+    if (!explicitRegexMode) {
       return new RegExp(escapeRegExp(normalized), "i");
     }
     try {
+      if (isUnsafeContentSearchPattern(normalized)) {
+        throw new Error("Unsafe regular expression pattern.");
+      }
       return new RegExp(normalized, "i");
-    } catch {
-      return new RegExp(escapeRegExp(normalized), "i");
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unsafe regular expression pattern.") {
+        throw error;
+      }
+      throw new Error(`Invalid regular expression pattern: ${normalized}`);
     }
   };
 
@@ -6092,24 +6113,28 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         if (!fullPath) {
           return { ok: false, error: "Path is outside mission workspace root" };
         }
-        const stat = fs.statSync(fullPath);
-        if (stat.isDirectory()) {
-          const entries = fs.readdirSync(fullPath).slice(0, 100);
-          return { ok: true, type: "directory", entries };
+        try {
+          const stat = fs.statSync(fullPath);
+          if (stat.isDirectory()) {
+            const entries = fs.readdirSync(fullPath).slice(0, 100);
+            return { ok: true, type: "directory", entries };
+          }
+          const content = fs.readFileSync(fullPath, "utf-8");
+          const lines = content.split("\n");
+          const limit = maxLines ?? 200;
+          const truncated = lines.length > limit;
+          const result = truncated ? lines.slice(0, limit).join("\n") : content;
+          return {
+            ok: true,
+            type: "file",
+            filePath,
+            content: result,
+            totalLines: lines.length,
+            truncated,
+          };
+        } catch (error) {
+          return { ok: false, error: formatWorkspaceReadError("file", filePath, error) };
         }
-        const content = fs.readFileSync(fullPath, "utf-8");
-        const lines = content.split("\n");
-        const limit = maxLines ?? 200;
-        const truncated = lines.length > limit;
-        const result = truncated ? lines.slice(0, limit).join("\n") : content;
-        return {
-          ok: true,
-          type: "file",
-          filePath,
-          content: result,
-          totalLines: lines.length,
-          truncated,
-        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { ok: false, error: msg };
@@ -6130,8 +6155,12 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         if (!filePath) {
           return { ok: false, error: "Path is outside mission workspace root" };
         }
-        const content = fs.readFileSync(filePath, "utf-8");
-        return { ok: true, stepKey, content };
+        try {
+          const content = fs.readFileSync(filePath, "utf-8");
+          return { ok: true, stepKey, content };
+        } catch (error) {
+          return { ok: false, error: formatWorkspaceReadError("step output", stepKey, error) };
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { ok: false, error: msg };
@@ -6143,11 +6172,12 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     description:
       "Search project files by name pattern or content. Use to find relevant code or files.",
     inputSchema: z.object({
-      pattern: z.string().describe("Search pattern — a filename glob (e.g. '**/*.ts') or content regex"),
+      pattern: z.string().describe("Search pattern — a filename glob (e.g. '**/*.ts') or literal content text"),
       searchType: z.enum(["filename", "content"]).default("content").describe("Whether to search file names or file content"),
       maxResults: z.number().optional().describe("Maximum results to return (default: 20)"),
+      explicitRegexMode: z.boolean().default(false).describe("Treat content patterns as regular expressions instead of literal text."),
     }),
-    execute: async ({ pattern, searchType, maxResults }) => {
+    execute: async ({ pattern, searchType, maxResults, explicitRegexMode }) => {
       try {
         const g = graph();
         const planningReadBlockReason = getPlanningRepoReadBlockReason(g);
@@ -6192,7 +6222,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         }
         // Content search using a simple line-by-line grep
         const results: Array<{ file: string; line: number; text: string }> = [];
-        const regex = compileContentSearchRegex(pattern);
+        const regex = compileContentSearchRegex(pattern, explicitRegexMode);
         const visited = new Set<string>();
         const walkDir = (dir: string, depth = 0) => {
           if (depth > 6 || results.length >= limit) return;

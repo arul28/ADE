@@ -1891,6 +1891,52 @@ describe("createAgentChatService", () => {
       expect(userMessage.event.attachments).toEqual([{ path: "note.txt", type: "file" }]);
     });
 
+    it("logs attachment read failures and keeps the fallback text generic", async () => {
+      const { service, logger } = createService();
+      const attachmentDir = path.join(tmpRoot, "attachment-dir");
+      fs.mkdirSync(attachmentDir, { recursive: true });
+      vi.mocked(generateText).mockResolvedValue({ text: "Attachment fallback test" } as any);
+      let streamArgs: Record<string, unknown> | null = null;
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        streamArgs = args;
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Check this attachment",
+        attachments: [{ path: "attachment-dir", type: "file" }],
+      });
+
+      const rawMessages = streamArgs && Array.isArray((streamArgs as { messages?: unknown }).messages)
+        ? (streamArgs as { messages: Array<{ role: string; content: unknown }> }).messages
+        : [];
+      const messages = rawMessages;
+      const currentUserMessageText = JSON.stringify(messages.at(-1)?.content);
+
+      expect(currentUserMessageText).toContain("Attachment unavailable: attachment-dir");
+      expect(currentUserMessageText).not.toContain("Path is not a regular file");
+      expect(currentUserMessageText).not.toContain("EISDIR");
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.streaming_attachment_unavailable",
+        expect.objectContaining({
+          attachmentPath: "attachment-dir",
+          error: expect.any(Error),
+        }),
+      );
+    });
+
     it("prefers the canonical turn-scoped Codex text stream when item-scoped deltas also arrive", async () => {
       const textEvents: Array<{ text: string; itemId?: string; turnId?: string }> = [];
       const { service } = createService({

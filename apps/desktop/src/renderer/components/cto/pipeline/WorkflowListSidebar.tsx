@@ -97,7 +97,7 @@ export function WorkflowListSidebar({
               {connection?.connected ? "Manage in Settings" : "Connect in Settings"}
             </Button>
             <Button variant="ghost" size="sm" className="!h-7 !text-[11px]" onClick={onRefresh} disabled={loading} aria-busy={loading}>
-              <ArrowClockwise size={11} />
+              <ArrowClockwise size={11} aria-hidden="true" />
               Refresh
             </Button>
           </div>

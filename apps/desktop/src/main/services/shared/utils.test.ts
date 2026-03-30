@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   isRecord,
   asString,
@@ -288,6 +288,28 @@ describe("resolvePathWithinRoot", () => {
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
       fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rethrows non-missing lstat errors while resolving paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const rootReal = fs.realpathSync(root);
+    const originalLstatSync = fs.lstatSync.bind(fs);
+    const blockedPath = path.join(rootReal, "blocked");
+    const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" as const });
+
+    const spy = vi.spyOn(fs, "lstatSync").mockImplementation(((filePath: fs.PathLike) => {
+      if (String(filePath) === blockedPath) {
+        throw permissionError;
+      }
+      return originalLstatSync(filePath);
+    }) as typeof fs.lstatSync);
+
+    try {
+      expect(() => resolvePathWithinRoot(root, "blocked/child.txt", { allowMissing: true })).toThrow(permissionError);
+    } finally {
+      spy.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

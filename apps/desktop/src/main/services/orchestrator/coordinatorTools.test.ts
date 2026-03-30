@@ -4300,7 +4300,7 @@ describe("coordinatorTools file path containment", () => {
     });
   });
 
-  it("read_file preserves ENOENT for missing in-workspace files", async () => {
+  it("read_file sanitizes missing in-workspace files", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-read-missing-root-"));
     try {
       const { tools } = createCoordinatorHarness({
@@ -4313,7 +4313,8 @@ describe("coordinatorTools file path containment", () => {
       });
 
       expect(result.ok).toBe(false);
-      expect(String(result.error)).toContain("ENOENT");
+      expect(result.error).toBe("file not found: missing.txt");
+      expect(String(result.error)).not.toContain(projectRoot);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -4404,6 +4405,39 @@ describe("coordinatorTools file path containment", () => {
     }
   });
 
+  it("search_files supports explicit regex mode for safe patterns", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-explicit-regex-root-"));
+    fs.mkdirSync(path.join(projectRoot, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "docs", "notes.txt"), "hello   world\n", "utf-8");
+
+    try {
+      const { tools } = createCoordinatorHarness({
+        graph: { run: { metadata: {} }, steps: [], attempts: [] },
+        projectRoot,
+      });
+
+      const result = await (tools.search_files as any).execute({
+        pattern: "^hello\\s+world$",
+        searchType: "content",
+        explicitRegexMode: true,
+        maxResults: 10,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        total: 1,
+      });
+      expect(result.results).toEqual([
+        expect.objectContaining({
+          file: "docs/notes.txt",
+          line: 1,
+        }),
+      ]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("read_step_output sanitizes traversal-like keys and reads only project-scoped output", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-step-output-root-"));
     const maliciousKey = "../../sensitive";
@@ -4427,6 +4461,27 @@ describe("coordinatorTools file path containment", () => {
       stepKey: maliciousKey,
       content: "scoped output",
     });
+  });
+
+  it("read_step_output reports missing files without leaking resolved paths", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-step-output-missing-root-"));
+
+    try {
+      const { tools } = createCoordinatorHarness({
+        graph: { run: { metadata: {} }, steps: [], attempts: [] },
+        projectRoot,
+      });
+
+      const result = await (tools.read_step_output as any).execute({
+        stepKey: "missing-step",
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("file not found: missing-step");
+      expect(String(result.error)).not.toContain(projectRoot);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });
 

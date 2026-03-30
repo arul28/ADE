@@ -10116,6 +10116,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             let suppressGenericIntervention = false;
             const launchFailure = getRunLaunchFailureMetadata(runId);
             if (launchFailure && hasOpenMissionLaunchFailureIntervention({ missionId, runId })) {
+              suppressGenericIntervention = true;
               logger.info("ai_orchestrator.coordinator_unavailable_suppressed", {
                 runId,
                 missionId,
@@ -10123,7 +10124,6 @@ Check all worker statuses and continue managing the mission from here. Read work
                 reason: event.reason,
                 failureStage: launchFailure.failureStage ?? null,
               });
-              return;
             }
 
             // Skip creating a generic coordinator_unavailable intervention if
@@ -10178,7 +10178,6 @@ Check all worker statuses and continue managing the mission from here. Read work
           reason: event.reason,
           recovered: false
         });
-        return;
       }
 
       resolveCoordinatorHealthInterventions({
@@ -10297,14 +10296,16 @@ Check all worker statuses and continue managing the mission from here. Read work
       // transition handlers, quality gates, retry decisions, failure diagnosis,
       // fan-out analysis, or intervention auto-resolution.
       // ────────────────────────────────────────────────────────────────────
-      try {
-        routeEventToCoordinator(coordinator, event, { graph: getEventGraph() });
-      } catch (routeError) {
-        logger.debug("ai_orchestrator.coordinator_v2_route_failed", {
-          runId,
-          reason: event.reason,
-          error: routeError instanceof Error ? routeError.message : String(routeError),
-        });
+      if (coordinator) {
+        try {
+          routeEventToCoordinator(coordinator, event, { graph: getEventGraph() });
+        } catch (routeError) {
+          logger.debug("ai_orchestrator.coordinator_v2_route_failed", {
+            runId,
+            reason: event.reason,
+            error: routeError instanceof Error ? routeError.message : String(routeError),
+          });
+        }
       }
       return;
     },

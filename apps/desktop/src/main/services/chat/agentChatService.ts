@@ -950,6 +950,7 @@ function buildStreamingUserContent(
     attachments: ResolvedAgentChatFileRef[];
     runtimeKind: "claude" | "unified";
     modelDescriptor?: ModelDescriptor;
+    logger?: Logger;
   },
 ): UserContent {
   if (!args.attachments.length) {
@@ -1000,9 +1001,15 @@ function buildStreamingUserContent(
         parts.push({ type: "text", text: `\nAttachment missing: ${attachment.path}` });
         continue;
       }
+      args.logger?.warn("agent_chat.streaming_attachment_unavailable", {
+        attachmentPath: attachment.path,
+        resolvedPath: attachment._resolvedPath,
+        rootPath: attachment._rootPath,
+        error,
+      });
       parts.push({
         type: "text",
-        text: `\nAttachment unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}`,
+        text: `\nAttachment unavailable: ${attachment.path}`,
       });
     }
   }
@@ -1645,6 +1652,18 @@ export function createAgentChatService(args: {
   fs.mkdirSync(chatSessionsDir, { recursive: true });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
+
+  const stageAttachmentForCodexInput = (attachment: ResolvedAgentChatFileRef): string => {
+    const content = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+    const stagedDir = path.join(layout.tmpDir, "agent-chat-attachments");
+    fs.mkdirSync(stagedDir, { recursive: true });
+    const baseName = path.basename(attachment.path) || path.basename(attachment._resolvedPath) || "attachment";
+    const stagedPath = path.join(stagedDir, `${randomUUID()}-${baseName}`);
+    const tempPath = `${stagedPath}.tmp`;
+    fs.writeFileSync(tempPath, content);
+    fs.renameSync(tempPath, stagedPath);
+    return stagedPath;
+  };
 
   const managedSessions = new Map<string, ManagedChatSession>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
@@ -4028,12 +4047,13 @@ export function createAgentChatService(args: {
     });
 
     for (const attachment of resolvedAttachments) {
+      const stagedPath = stageAttachmentForCodexInput(attachment);
       if (attachment.type === "image") {
-        input.push({ type: "localImage", path: attachment._resolvedPath });
+        input.push({ type: "localImage", path: stagedPath });
         continue;
       }
       const name = path.basename(attachment.path) || attachment.path;
-      input.push({ type: "mention", name, path: attachment._resolvedPath });
+      input.push({ type: "mention", name, path: stagedPath });
     }
 
     managed.session.status = "active";
@@ -5013,6 +5033,7 @@ export function createAgentChatService(args: {
             attachments: resolvedAttachments,
             runtimeKind: "unified",
             modelDescriptor: runtime.modelDescriptor,
+            logger,
           }),
         };
       });
