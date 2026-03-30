@@ -113,45 +113,38 @@ struct FilesModeControl: View {
   var body: some View {
     HStack(spacing: 8) {
       ForEach(availableModes) { mode in
-        let isSelected = selection == mode
-        if isSelected {
-          Button {
-            onSelectMode(mode)
-          } label: {
-            VStack(spacing: 2) {
-              Text(mode.title)
-                .font(.caption.weight(.semibold))
-              if mode == .edit && !canEdit {
-                Text("Locked")
-                  .font(.caption2)
-              }
-            }
-            .frame(maxWidth: .infinity)
-          }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
-          .disabled(mode == .edit && !canEdit)
-          .accessibilityLabel(mode.title + ((mode == .edit && !canEdit) ? ", locked" : ""))
-        } else {
-          Button {
-            onSelectMode(mode)
-          } label: {
-            VStack(spacing: 2) {
-              Text(mode.title)
-                .font(.caption.weight(.semibold))
-              if mode == .edit && !canEdit {
-                Text("Locked")
-                  .font(.caption2)
-              }
-            }
-            .frame(maxWidth: .infinity)
-          }
-          .buttonStyle(.glass)
-          .tint(ADEColor.textSecondary)
-          .disabled(mode == .edit && !canEdit)
-          .accessibilityLabel(mode.title + ((mode == .edit && !canEdit) ? ", locked" : ""))
+        modeButton(for: mode, isSelected: selection == mode)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func modeButton(for mode: FilesEditorMode, isSelected: Bool) -> some View {
+    let isLocked = mode == .edit && !canEdit
+    let button = Button {
+      onSelectMode(mode)
+    } label: {
+      VStack(spacing: 2) {
+        Text(mode.title)
+          .font(.caption.weight(.semibold))
+        if isLocked {
+          Text("Locked")
+            .font(.caption2)
         }
       }
+      .frame(maxWidth: .infinity)
+    }
+    .disabled(isLocked)
+    .accessibilityLabel(mode.title + (isLocked ? ", locked" : ""))
+
+    if isSelected {
+      button
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.accent)
+    } else {
+      button
+        .buttonStyle(.glass)
+        .tint(ADEColor.textSecondary)
     }
   }
 }
@@ -163,31 +156,30 @@ struct FilesDiffModeControl: View {
   var body: some View {
     HStack(spacing: 8) {
       ForEach(FilesDiffMode.allCases) { mode in
-        let isSelected = selection == mode
-        if isSelected {
-          Button {
-            onSelectMode(mode)
-          } label: {
-            Text(mode.title)
-              .font(.caption.weight(.semibold))
-              .frame(maxWidth: .infinity)
-          }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
-          .accessibilityLabel(mode.title)
-        } else {
-          Button {
-            onSelectMode(mode)
-          } label: {
-            Text(mode.title)
-              .font(.caption.weight(.semibold))
-              .frame(maxWidth: .infinity)
-          }
-          .buttonStyle(.glass)
-          .tint(ADEColor.textSecondary)
-          .accessibilityLabel(mode.title)
-        }
+        modeButton(for: mode, isSelected: selection == mode)
       }
+    }
+  }
+
+  @ViewBuilder
+  private func modeButton(for mode: FilesDiffMode, isSelected: Bool) -> some View {
+    let button = Button {
+      onSelectMode(mode)
+    } label: {
+      Text(mode.title)
+        .font(.caption.weight(.semibold))
+        .frame(maxWidth: .infinity)
+    }
+    .accessibilityLabel(mode.title)
+
+    if isSelected {
+      button
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.accent)
+    } else {
+      button
+        .buttonStyle(.glass)
+        .tint(ADEColor.textSecondary)
     }
   }
 }

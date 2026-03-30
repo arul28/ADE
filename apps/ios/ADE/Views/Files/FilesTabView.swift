@@ -1,4 +1,10 @@
 import SwiftUI
+import OSLog
+
+private let filesTabLogger = Logger(
+  subsystem: Bundle.main.bundleIdentifier ?? "ADE",
+  category: "FilesTabView"
+)
 
 struct FilesTabView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -10,6 +16,7 @@ struct FilesTabView: View {
   @State private var workspaces: [FilesWorkspace] = []
   @State private var selectedWorkspaceId: String?
   @State private var errorMessage: String?
+  @State private var refreshErrorMessage: String?
   @State private var navigationPath: [FilesRoute] = []
   @State private var refreshFeedbackToken = 0
   @State private var selectedFileTransitionPath: String?
@@ -46,6 +53,18 @@ struct FilesTabView: View {
           reload: { await reload(refreshRemote: true) }
         ) {
           notice.filesListRow()
+        }
+
+        if let refreshErrorMessage, filesStatus.phase == .ready {
+          ADENoticeCard(
+            title: "Refresh incomplete",
+            message: refreshErrorMessage,
+            icon: "arrow.clockwise.circle.fill",
+            tint: ADEColor.warning,
+            actionTitle: nil,
+            action: nil
+          )
+          .filesListRow()
         }
 
         if isLoadingSkeleton {
@@ -182,7 +201,6 @@ struct FilesTabView: View {
       .refreshable { await refreshFromPullGesture() }
       .sensoryFeedback(.selection, trigger: selectedWorkspaceId)
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task { await reload() }
       .task(id: syncService.localStateRevision) { await reload() }
       .task(id: FilesSearchKey(workspaceId: selectedWorkspaceId, query: searchViewModel.quickOpenQuery, isLive: canUseLiveFileActions, retryToken: searchViewModel.retryToken)) {
         await searchViewModel.runQuickOpenSearch(syncService: syncService, workspaceId: selectedWorkspaceId, canUseLiveFileActions: canUseLiveFileActions)
@@ -263,8 +281,18 @@ struct FilesTabView: View {
 
   @MainActor
   private func reload(refreshRemote: Bool = false) async {
+    if refreshRemote {
+      do {
+        try await syncService.refreshLaneSnapshots()
+        refreshErrorMessage = nil
+      } catch {
+        let refreshMessage = SyncUserFacingError.message(for: error)
+        refreshErrorMessage = refreshMessage
+        filesTabLogger.error("refreshLaneSnapshots failed during reload: \(refreshMessage, privacy: .public)")
+      }
+    }
+
     do {
-      if refreshRemote { try? await syncService.refreshLaneSnapshots() }
       workspaces = try await syncService.listWorkspaces()
       selectedWorkspaceId = selectedWorkspaceId.flatMap { candidate in
         workspaces.contains(where: { $0.id == candidate }) ? candidate : nil

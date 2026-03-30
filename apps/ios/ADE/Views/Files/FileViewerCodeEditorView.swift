@@ -5,7 +5,6 @@ struct FilesCodeEditorView: UIViewRepresentable {
   @Binding var text: String
   @Binding var selection: NSRange
   let isEditable: Bool
-  let onTextChange: (String) -> Void
   let onSelectionChange: (NSRange) -> Void
 
   func makeCoordinator() -> Coordinator {
@@ -32,7 +31,7 @@ struct FilesCodeEditorView: UIViewRepresentable {
     uiView.textView.isEditable = isEditable
     uiView.textView.textColor = isEditable ? UIColor(ADEColor.textPrimary) : UIColor(ADEColor.textSecondary)
 
-    if uiView.textView.text != text {
+    if !context.coordinator.isUpdatingFromDelegate && uiView.textView.text != text {
       uiView.textView.text = text
       uiView.updateLineNumbers()
     }
@@ -48,6 +47,7 @@ struct FilesCodeEditorView: UIViewRepresentable {
   final class Coordinator: NSObject, UITextViewDelegate {
     var parent: FilesCodeEditorView
     weak var container: FilesCodeEditorContainerView?
+    var isUpdatingFromDelegate = false
 
     init(parent: FilesCodeEditorView) {
       self.parent = parent
@@ -55,8 +55,9 @@ struct FilesCodeEditorView: UIViewRepresentable {
 
     func textViewDidChange(_ textView: UITextView) {
       guard textView === container?.textView else { return }
+      isUpdatingFromDelegate = true
+      defer { isUpdatingFromDelegate = false }
       parent.text = textView.text
-      parent.onTextChange(textView.text)
       container?.updateLineNumbers()
     }
 
@@ -213,4 +214,3 @@ private extension NSRange {
     return NSRange(location: location, length: min(max(0, self.length), maxLength))
   }
 }
-

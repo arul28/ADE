@@ -417,6 +417,7 @@ export type SyncRemoteCommandAction =
   | "git.generateCommitMessage"
   | "git.listRecentCommits"
   | "git.listCommitFiles"
+  | "git.findLastCommitForFile"
   | "git.getCommitMessage"
   | "git.revertCommit"
   | "git.cherryPickCommit"

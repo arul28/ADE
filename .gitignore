@@ -18,7 +18,7 @@ __pycache__/
 *.db
 
 # Build outputs
-build/
+/build/
 /apps/mcp-server/dist/
 /apps/desktop/release/
 /apps/desktop/dist/
@@ -49,6 +49,10 @@ xcuserdata/
 # Tool configs (personal)
 .claude/
 .factory/
+!.factory/
+.factory/*
+!.factory/services.yaml
+!.factory/resolve-ios-destination.sh
 .codex/
 .pnpm-store/
 /apps/desktop/.ade

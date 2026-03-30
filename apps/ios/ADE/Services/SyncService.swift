@@ -1068,6 +1068,14 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "git.listCommitFiles", args: ["laneId": laneId, "commitSha": commitSha], as: [String].self)
   }
 
+  func findLastCommitForFile(laneId: String, path: String) async throws -> GitCommitSummary? {
+    let raw = try await sendCommand(action: "git.findLastCommitForFile", args: ["laneId": laneId, "path": path])
+    if raw is NSNull {
+      return nil
+    }
+    return try decode(raw, as: GitCommitSummary.self)
+  }
+
   func getCommitMessage(laneId: String, commitSha: String) async throws -> String {
     let raw = try await sendCommand(action: "git.getCommitMessage", args: ["laneId": laneId, "commitSha": commitSha])
     return raw as? String ?? ""

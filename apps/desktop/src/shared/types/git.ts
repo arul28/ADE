@@ -105,6 +105,12 @@ export type GitListCommitFilesArgs = {
   commitSha: string;
 };
 
+export type GitFindLastCommitForFileArgs = {
+  laneId: string;
+  path: string;
+  limit?: number;
+};
+
 export type GitGetCommitMessageArgs = {
   laneId: string;
   commitSha: string;

@@ -555,7 +555,7 @@ struct FilesBreadcrumbBar: View {
         .buttonStyle(.glass)
         .accessibilityLabel("Open root folder")
 
-        ForEach(Array(breadcrumbs.enumerated()), id: \.offset) { _, breadcrumb in
+        ForEach(breadcrumbs, id: \.path) { breadcrumb in
           Image(systemName: "chevron.right")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.textMuted)
@@ -583,8 +583,7 @@ struct FilesBreadcrumbBar: View {
     .adeGlassCard(cornerRadius: 18, padding: 12)
   }
 
-  private var breadcrumbs: [(label: String, path: String, isDirectory: Bool)] {
+  private var breadcrumbs: [FilesBreadcrumbItem] {
     filesBreadcrumbItems(relativePath: relativePath, includeCurrentFile: includeCurrentFile)
-      .map { ($0.label, $0.path, $0.isDirectory) }
   }
 }

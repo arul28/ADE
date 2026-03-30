@@ -1,3 +1,4 @@
+import Darwin
 import SwiftUI
 
 @Observable
@@ -32,11 +33,17 @@ class FileViewerViewModel {
   }
 
   func imageData(for relativePath: String) -> Data? {
-    guard let blob else { return nil }
+    guard let blob, blob.isBinary, isImagePreviewable(relativePath: relativePath) else { return nil }
+
+    let decodedData: Data?
     if blob.encoding.lowercased() == "base64" {
-      return Data(base64Encoded: blob.content)
+      decodedData = Data(base64Encoded: blob.content)
+    } else {
+      decodedData = Data(blob.content.utf8)
     }
-    return Data(blob.content.utf8)
+
+    guard let decodedData, UIImage(data: decodedData) != nil else { return nil }
+    return decodedData
   }
 
   func imageCacheKey(workspace: FilesWorkspace, relativePath: String) -> String {
@@ -86,30 +93,37 @@ class FileViewerViewModel {
     do {
       if isImagePreviewable(relativePath: relativePath),
          let cachedData = ADEImageCache.shared.cachedData(for: cacheKey) {
-        let cachedBlob = SyncFileBlob(
-          path: relativePath,
-          size: cachedData.count,
-          mimeType: nil,
-          encoding: "base64",
-          isBinary: true,
-          content: cachedData.base64EncodedString(),
-          languageId: nil
-        )
-        blob = cachedBlob
-        await loadGitState(syncService: syncService, workspace: workspace, isFilesLive: isFilesLive)
-        await loadMetadata(syncService: syncService, workspace: workspace, relativePath: relativePath, from: cachedBlob, isFilesLive: isFilesLive)
-        if refreshDiff {
-          await loadDiff(syncService: syncService, workspace: workspace, relativePath: relativePath, isFilesLive: isFilesLive)
+        if UIImage(data: cachedData) != nil {
+          let cachedBlob = SyncFileBlob(
+            path: relativePath,
+            size: cachedData.count,
+            mimeType: nil,
+            encoding: "base64",
+            isBinary: true,
+            content: cachedData.base64EncodedString(),
+            languageId: nil
+          )
+          blob = cachedBlob
+          await loadGitState(syncService: syncService, workspace: workspace, isFilesLive: isFilesLive)
+          await loadMetadata(syncService: syncService, workspace: workspace, relativePath: relativePath, from: cachedBlob, isFilesLive: isFilesLive)
+          if refreshDiff {
+            await loadDiff(syncService: syncService, workspace: workspace, relativePath: relativePath, isFilesLive: isFilesLive)
+          }
+          errorMessage = nil
+          return
         }
-        errorMessage = nil
-        return
+        ADEImageCache.shared.removeData(for: cacheKey)
       }
 
       let wasDirty = isDirty
       let loaded = try await syncService.readFile(workspaceId: workspace.id, path: relativePath)
       blob = loaded
-      if loaded.isBinary, isImagePreviewable(relativePath: relativePath), let data = imageData(for: relativePath) {
-        ADEImageCache.shared.store(data, for: cacheKey)
+      if loaded.isBinary, isImagePreviewable(relativePath: relativePath) {
+        if let data = imageData(for: relativePath) {
+          ADEImageCache.shared.store(data, for: cacheKey)
+        } else {
+          ADEImageCache.shared.removeData(for: cacheKey)
+        }
       }
       if !loaded.isBinary && (!wasDirty || draftText.isEmpty) {
         draftText = loaded.content
@@ -160,14 +174,9 @@ class FileViewerViewModel {
 
     if let laneId = workspace.laneId, isFilesLive {
       do {
-        let commits = try await syncService.listRecentCommits(laneId: laneId)
-        for commit in commits.prefix(25) {
-          let files = try await syncService.listCommitFiles(laneId: laneId, commitSha: commit.sha)
-          if files.contains(relativePath) {
-            lastCommitTitle = commit.subject
-            lastCommitDateText = relativeDateDescription(from: commit.authoredAt)
-            break
-          }
+        if let commit = try await syncService.findLastCommitForFile(laneId: laneId, path: relativePath) {
+          lastCommitTitle = commit.subject
+          lastCommitDateText = relativeDateDescription(from: commit.authoredAt)
         }
       } catch {
         // Best-effort metadata.
@@ -344,6 +353,10 @@ class FileViewerViewModel {
   }
 
   private func shouldClearLoadedFile(for error: Error) -> Bool {
+    if containsMissingFileError(error as NSError) {
+      return true
+    }
+
     let message = error.localizedDescription.lowercased()
     return [
       "not found",
@@ -353,6 +366,23 @@ class FileViewerViewModel {
       "missing file",
       "missing path",
     ].contains(where: { message.contains($0) })
+  }
+
+  private func containsMissingFileError(_ error: NSError) -> Bool {
+    if error.domain == NSCocoaErrorDomain &&
+       [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) {
+      return true
+    }
+
+    if error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+      return true
+    }
+
+    if let underlyingError = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+      return containsMissingFileError(underlyingError)
+    }
+
+    return false
   }
 }
 

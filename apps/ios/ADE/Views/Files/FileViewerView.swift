@@ -7,6 +7,7 @@ struct FileEditorView: View {
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismiss
   @State private var viewModel = FileViewerViewModel()
+  @State private var observedLocalStateRevision: Int?
 
   let workspace: FilesWorkspace
   let relativePath: String
@@ -175,6 +176,11 @@ struct FileEditorView: View {
       await viewModel.load(syncService: syncService, workspace: workspace, relativePath: relativePath, isFilesLive: isFilesLive)
     }
     .task(id: syncService.localStateRevision) {
+      let revision = syncService.localStateRevision
+      defer { observedLocalStateRevision = revision }
+      guard let previousRevision = observedLocalStateRevision, previousRevision != revision else {
+        return
+      }
       await viewModel.load(syncService: syncService, workspace: workspace, relativePath: relativePath, isFilesLive: isFilesLive, refreshDiff: viewModel.mode == .diff)
     }
     .task(id: viewModel.mode) {
@@ -305,9 +311,6 @@ struct FileEditorView: View {
             set: { viewModel.updateEditorSelection($0) }
           ),
           isEditable: canEdit,
-          onTextChange: { newText in
-            viewModel.updateDraftText(newText)
-          },
           onSelectionChange: { newSelection in
             viewModel.updateEditorSelection(newSelection)
           }

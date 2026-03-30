@@ -258,9 +258,10 @@ class FileTreeViewModel {
   }
 
   private func validatePromptValue(_ value: String, prompt: FilesPathPrompt) -> Bool {
+    let siblingNodes = childNodesByPath[prompt.basePath] ?? []
     if let validationError = filesNameValidationError(
       for: value,
-      existingNodes: nodes,
+      existingNodes: siblingNodes,
       excluding: prompt.node?.path
     ) {
       actionErrorMessage = validationError

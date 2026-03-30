@@ -11,6 +11,7 @@ import type {
   GitGenerateCommitMessageResult,
   GitCommitSummary,
   GitConflictState,
+  GitFindLastCommitForFileArgs,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
@@ -67,6 +68,59 @@ function ensureRelativeRepoPath(relPath: string): string {
 
 function parseDelimited(line: string): string[] {
   return line.split("\u001f");
+}
+
+function parseGitCommitSummaries(output: string, unpushedShas: Set<string> | null): GitCommitSummary[] {
+  return output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line): GitCommitSummary | null => {
+      const [sha, shortSha, parentsRaw, authorName, authoredAt, subject] = parseDelimited(line);
+      if (!sha || !shortSha) return null;
+      const parents = (parentsRaw ?? "")
+        .split(" ")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      return {
+        sha,
+        shortSha,
+        parents,
+        authorName: authorName ?? "",
+        authoredAt: authoredAt ?? "",
+        subject: subject ?? "",
+        pushed: unpushedShas ? !unpushedShas.has(sha) : false
+      };
+    })
+    .filter((entry): entry is GitCommitSummary => entry != null);
+}
+
+async function loadUnpushedShas(worktreePath: string): Promise<Set<string> | null> {
+  let unpushedShas: Set<string> | null = null;
+  const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
+    cwd: worktreePath,
+    timeoutMs: 10_000
+  });
+  if (upstreamRes.exitCode !== 0) {
+    return unpushedShas;
+  }
+
+  const upstream = upstreamRes.stdout.trim();
+  if (!upstream.length) {
+    return unpushedShas;
+  }
+
+  const unpushedRes = await runGit(["log", "--format=%H", `${upstream}..HEAD`], {
+    cwd: worktreePath,
+    timeoutMs: 15_000
+  });
+  if (unpushedRes.exitCode === 0) {
+    unpushedShas = new Set(
+      unpushedRes.stdout.split("\n").map((line) => line.trim()).filter(Boolean)
+    );
+  }
+
+  return unpushedShas;
 }
 
 async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
@@ -502,52 +556,20 @@ export function createGitOperationsService({
         ["log", `-n${limit}`, "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s"],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
+      const unpushedShas = await loadUnpushedShas(lane.worktreePath);
+      return parseGitCommitSummaries(out, unpushedShas);
+    },
 
-      // Determine which commits are unpushed by comparing with upstream.
-      let unpushedShas: Set<string> | null = null;
-      const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
-        cwd: lane.worktreePath,
-        timeoutMs: 10_000
-      });
-      if (upstreamRes.exitCode === 0) {
-        const upstream = upstreamRes.stdout.trim();
-        if (upstream.length) {
-          const unpushedRes = await runGit(["log", "--format=%H", `${upstream}..HEAD`], {
-            cwd: lane.worktreePath,
-            timeoutMs: 15_000
-          });
-          if (unpushedRes.exitCode === 0) {
-            unpushedShas = new Set(
-              unpushedRes.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
-            );
-          }
-        }
-      }
-
-      const rows = out
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line): GitCommitSummary | null => {
-          const [sha, shortSha, parentsRaw, authorName, authoredAt, subject] = parseDelimited(line);
-          if (!sha || !shortSha) return null;
-          const parents = (parentsRaw ?? "")
-            .split(" ")
-            .map((entry) => entry.trim())
-            .filter(Boolean);
-          return {
-            sha,
-            shortSha,
-            parents,
-            authorName: authorName ?? "",
-            authoredAt: authoredAt ?? "",
-            subject: subject ?? "",
-            pushed: unpushedShas ? !unpushedShas.has(sha) : false
-          };
-        })
-        .filter((entry): entry is GitCommitSummary => entry != null);
-
-      return rows;
+    async findLastCommitForFile(args: GitFindLastCommitForFileArgs): Promise<GitCommitSummary | null> {
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      const relPath = ensureRelativeRepoPath(args.path);
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 1;
+      const out = await runGitOrThrow(
+        ["log", `-n${limit}`, "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s", "--", relPath],
+        { cwd: lane.worktreePath, timeoutMs: 15_000 }
+      );
+      const unpushedShas = await loadUnpushedShas(lane.worktreePath);
+      return parseGitCommitSummaries(out, unpushedShas)[0] ?? null;
     },
 
     async getSyncStatus(args: { laneId: string }): Promise<GitUpstreamSyncStatus> {

@@ -81,6 +81,12 @@ final class ADEImageCache {
     try? data.write(to: url, options: .atomic)
   }
 
+  func removeData(for key: String) {
+    memoryCache.removeObject(forKey: key as NSString)
+    let url = cacheDirectory.appendingPathComponent(diskFilename(for: key))
+    try? fileManager.removeItem(at: url)
+  }
+
   func loadRemoteImage(from url: URL, cacheKey: String? = nil) async throws -> UIImage {
     let key = cacheKey ?? url.absoluteString
     if let image = cachedImage(for: key) {

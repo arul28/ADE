@@ -19,6 +19,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitFileActionArgs,
+  GitFindLastCommitForFileArgs,
   GitGenerateCommitMessageArgs,
   GitGetCommitMessageArgs,
   GitListBranchesArgs,
@@ -370,6 +371,14 @@ function parseGitListCommitFilesArgs(value: Record<string, unknown>): GitListCom
   return {
     laneId: requireString(value.laneId, "git.listCommitFiles requires laneId."),
     commitSha: requireString(value.commitSha, "git.listCommitFiles requires commitSha."),
+  };
+}
+
+function parseGitFindLastCommitForFileArgs(value: Record<string, unknown>): GitFindLastCommitForFileArgs {
+  return {
+    laneId: requireString(value.laneId, "git.findLastCommitForFile requires laneId."),
+    path: requireString(value.path, "git.findLastCommitForFile requires path."),
+    limit: asOptionalNumber(value.limit),
   };
 }
 
@@ -966,6 +975,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     requireService(args.gitService, "Git service not available.").listRecentCommits(parseGitListRecentCommitsArgs(payload)));
   register("git.listCommitFiles", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").listCommitFiles(parseGitListCommitFilesArgs(payload)));
+  register("git.findLastCommitForFile", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").findLastCommitForFile(parseGitFindLastCommitForFileArgs(payload)));
   register("git.getCommitMessage", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getCommitMessage(parseGitGetCommitMessageArgs(payload)));
   register("git.revertCommit", { viewerAllowed: true, queueable: true }, async (payload) =>

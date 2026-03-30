@@ -1,7 +1,7 @@
 commands:
-  build: xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' -configuration Debug CODE_SIGNING_ALLOWED=NO 2>&1 | tail -5
-  test: xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' -configuration Debug CODE_SIGNING_ALLOWED=NO 2>&1 | tail -40
-  build_full: xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' -configuration Debug CODE_SIGNING_ALLOWED=NO
-  test_full: xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' -configuration Debug CODE_SIGNING_ALLOWED=NO
+  build: bash -lc 'set -o pipefail; ios_destination="${IOS_DESTINATION:-$(bash .factory/resolve-ios-destination.sh)}"; xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination "$ios_destination" -configuration Debug CODE_SIGNING_ALLOWED=NO 2>&1 | tail -5'
+  test: bash -lc 'set -o pipefail; ios_destination="${IOS_DESTINATION:-$(bash .factory/resolve-ios-destination.sh)}"; xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination "$ios_destination" -configuration Debug CODE_SIGNING_ALLOWED=NO 2>&1 | tail -40'
+  build_full: bash -lc 'ios_destination="${IOS_DESTINATION:-$(bash .factory/resolve-ios-destination.sh)}"; xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination "$ios_destination" -configuration Debug CODE_SIGNING_ALLOWED=NO'
+  test_full: bash -lc 'ios_destination="${IOS_DESTINATION:-$(bash .factory/resolve-ios-destination.sh)}"; xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination "$ios_destination" -configuration Debug CODE_SIGNING_ALLOWED=NO'
 
 services: {}
