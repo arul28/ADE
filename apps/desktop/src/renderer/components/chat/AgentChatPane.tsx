@@ -53,6 +53,7 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
+const EMPTY_EVENTS: AgentChatEventEnvelope[] = [];
 
 export function resolveChatSessionProfile(_computerUsePolicy: ComputerUsePolicy): AgentChatSessionProfile {
   return "workflow";
@@ -553,7 +554,7 @@ export function AgentChatPane({
     return selectedSession.modelId ?? resolveRegistryModelId(selectedSession.model);
   }, [selectedSession]);
 
-  const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
+  const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? EMPTY_EVENTS : EMPTY_EVENTS;
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const activeProviderConnection = selectedSession?.provider === "claude"

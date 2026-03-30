@@ -149,7 +149,7 @@ export function CtoSettingsPanel({
                 CTO runtime
               </div>
               <div className="mt-2 flex items-center gap-2">
-                <Brain size={16} weight="duotone" style={{ color: ACCENT.purple }} />
+                <Brain size={16} weight="duotone" style={{ color: ACCENT.sky }} />
                 <div className="text-base font-semibold text-fg">Identity, brief, and continuity</div>
               </div>
               <div className="mt-2 text-[12px] leading-6 text-muted-fg/44">
@@ -178,7 +178,7 @@ export function CtoSettingsPanel({
       {/* Identity */}
       <CollapsibleSection
         title="Identity"
-        color={ACCENT.purple}
+        color={ACCENT.sky}
         right={
           !identityEditing ? (
             <Button variant="ghost" size="sm" className="!h-5 !px-1.5" onClick={() => setIdentityEditing(true)}>

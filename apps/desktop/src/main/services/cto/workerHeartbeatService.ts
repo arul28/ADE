@@ -707,7 +707,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     } finally {
       inFlightAgents.delete(agentId);
       finalizeAgentAfterRun(agentId);
-      await dispatchNext(agentId);
+      setTimeout(() => { void dispatchNext(agentId); }, 0);
     }
   };
 

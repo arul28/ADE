@@ -394,11 +394,610 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var threadId: String?
 }
 
+struct AgentChatSession: Codable, Identifiable, Equatable {
+  var id: String { sessionId }
+  var sessionId: String
+  var laneId: String
+  var provider: String
+  var model: String
+  var modelId: String?
+  var sessionProfile: String?
+  var reasoningEffort: String?
+  var executionMode: String?
+  var permissionMode: String?
+  var interactionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var unifiedPermissionMode: String?
+  var identityKey: String?
+  var surface: String?
+  var automationId: String?
+  var automationRunId: String?
+  var capabilityMode: String?
+  var computerUse: RemoteJSONValue?
+  var completion: ChatCompletionReport?
+  var status: String
+  var threadId: String?
+  var createdAt: String
+  var lastActivityAt: String
+}
+
+struct AgentChatCompletionArtifact: Codable, Equatable {
+  var type: String
+  var description: String
+  var reference: String?
+}
+
 struct ChatCompletionReport: Codable, Equatable {
   var timestamp: String
   var summary: String
   var status: String
+  var artifacts: [AgentChatCompletionArtifact]?
   var blockerDescription: String?
+}
+
+enum AgentChatApprovalDecision: String, Codable, Equatable {
+  case accept
+  case acceptForSession = "accept_for_session"
+  case decline
+  case cancel
+}
+
+enum AgentChatFileChangeKind: String, Codable, Equatable {
+  case create
+  case modify
+  case delete
+}
+
+enum AgentChatTurnStatus: String, Codable, Equatable {
+  case started
+  case completed
+  case interrupted
+  case failed
+}
+
+enum AgentChatActivityKind: String, Codable, Equatable {
+  case thinking
+  case working
+  case editingFile = "editing_file"
+  case runningCommand = "running_command"
+  case searching
+  case reading
+  case toolCalling = "tool_calling"
+  case webSearching = "web_searching"
+  case spawningAgent = "spawning_agent"
+}
+
+enum AgentChatNoticeKind: String, Codable, Equatable {
+  case auth
+  case rateLimit = "rate_limit"
+  case hook
+  case filePersist = "file_persist"
+  case info
+  case memory
+  case providerHealth = "provider_health"
+  case threadError = "thread_error"
+}
+
+enum AgentChatApprovalRequestKind: String, Codable, Equatable {
+  case command
+  case fileChange = "file_change"
+  case toolCall = "tool_call"
+}
+
+enum AgentChatSubagentStatus: String, Codable, Equatable {
+  case completed
+  case failed
+  case stopped
+}
+
+enum AgentChatTodoStatus: String, Codable, Equatable {
+  case pending
+  case inProgress = "in_progress"
+  case completed
+}
+
+enum AgentChatAutoApprovalReviewStatus: String, Codable, Equatable {
+  case started
+  case completed
+}
+
+enum AgentChatContextCompactTrigger: String, Codable, Equatable {
+  case manual
+  case auto
+}
+
+enum AgentChatInputAnswerValue: Equatable {
+  case string(String)
+  case strings([String])
+}
+
+extension AgentChatInputAnswerValue: Codable {
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    if let string = try? container.decode(String.self) {
+      self = .string(string)
+      return
+    }
+    if let strings = try? container.decode([String].self) {
+      self = .strings(strings)
+      return
+    }
+    throw DecodingError.typeMismatch(
+      AgentChatInputAnswerValue.self,
+      DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Unsupported chat input answer value.")
+    )
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    switch self {
+    case .string(let value):
+      try container.encode(value)
+    case .strings(let value):
+      try container.encode(value)
+    }
+  }
+}
+
+struct AgentChatPlanStep: Codable, Equatable {
+  var text: String
+  var status: String
+}
+
+struct AgentChatStructuredQuestionOption: Codable, Equatable {
+  var label: String
+  var value: String
+}
+
+struct AgentChatTodoItem: Codable, Equatable {
+  var id: String
+  var description: String
+  var status: AgentChatTodoStatus
+}
+
+struct AgentChatSubagentUsage: Codable, Equatable {
+  var totalTokens: Int?
+  var toolUses: Int?
+  var durationMs: Int?
+}
+
+struct AgentChatTurnUsage: Codable, Equatable {
+  var inputTokens: Int?
+  var outputTokens: Int?
+  var cacheReadTokens: Int?
+  var cacheCreationTokens: Int?
+}
+
+struct AgentChatEventProvenance: Decodable, Equatable {
+  var messageId: String?
+  var threadId: String?
+  var role: String?
+  var targetKind: String?
+  var sourceSessionId: String?
+  var attemptId: String?
+  var stepKey: String?
+  var laneId: String?
+  var runId: String?
+}
+
+struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
+  var id: String {
+    let sequencePart = sequence.map(String.init) ?? timestamp
+    return "\(sessionId):\(sequencePart)"
+  }
+
+  var sessionId: String
+  var timestamp: String
+  var event: AgentChatEvent
+  var sequence: Int?
+  var provenance: AgentChatEventProvenance?
+}
+
+struct AgentChatFileRef: Codable, Equatable {
+  var path: String
+  var type: String
+}
+
+enum AgentChatEvent: Decodable, Equatable {
+  case userMessage(text: String, attachments: [AgentChatFileRef]?, turnId: String?, deliveryState: String?, processed: Bool?)
+  case text(text: String, messageId: String?, turnId: String?, itemId: String?)
+  case toolCall(tool: String, args: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?)
+  case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?)
+  case fileChange(path: String, diff: String, kind: AgentChatFileChangeKind, itemId: String, logicalItemId: String?, turnId: String?, status: String?)
+  case command(command: String, cwd: String, output: String, itemId: String, logicalItemId: String?, turnId: String?, exitCode: Int?, durationMs: Int?, status: String)
+  case plan(steps: [AgentChatPlanStep], turnId: String?, explanation: String?)
+  case reasoning(text: String, turnId: String?, itemId: String?, summaryIndex: Int?)
+  case approvalRequest(itemId: String, logicalItemId: String?, kind: AgentChatApprovalRequestKind, description: String, turnId: String?, detail: RemoteJSONValue?)
+  case status(turnStatus: AgentChatTurnStatus, turnId: String?, message: String?)
+  case delegationState(contract: RemoteJSONValue, message: String?, turnId: String?)
+  case error(message: String, turnId: String?, itemId: String?, errorInfo: RemoteJSONValue?)
+  case done(turnId: String, status: AgentChatTurnStatus, model: String?, modelId: String?, usage: AgentChatTurnUsage?, costUsd: Double?)
+  case activity(activity: AgentChatActivityKind, detail: String?, turnId: String?)
+  case stepBoundary(stepNumber: Int, turnId: String?)
+  case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
+  case subagentStarted(taskId: String, description: String, background: Bool?, turnId: String?)
+  case subagentProgress(taskId: String, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, turnId: String?)
+  case subagentResult(taskId: String, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, turnId: String?)
+  case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
+  case toolUseSummary(summary: String, toolUseIds: [String], turnId: String?)
+  case contextCompact(trigger: AgentChatContextCompactTrigger, preTokens: Int?, turnId: String?)
+  case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?)
+  case completionReport(report: ChatCompletionReport, turnId: String?)
+  case webSearch(query: String, action: String?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
+  case autoApprovalReview(targetItemId: String, reviewStatus: AgentChatAutoApprovalReviewStatus, action: String?, review: String?, turnId: String?)
+  case promptSuggestion(suggestion: String, turnId: String?)
+  case planText(text: String, turnId: String?, itemId: String?)
+  case unknown(type: String)
+}
+
+extension AgentChatEvent {
+  private enum CodingKeys: String, CodingKey {
+    case type
+    case text
+    case attachments
+    case turnId
+    case deliveryState
+    case processed
+    case messageId
+    case itemId
+    case logicalItemId
+    case parentItemId
+    case tool
+    case args
+    case result
+    case path
+    case diff
+    case kind
+    case command
+    case cwd
+    case output
+    case exitCode
+    case durationMs
+    case steps
+    case explanation
+    case summary
+    case summaryIndex
+    case description
+    case detail
+    case turnStatus
+    case contract
+    case message
+    case errorInfo
+    case status
+    case model
+    case modelId
+    case usage
+    case costUsd
+    case activity
+    case stepNumber
+    case items
+    case taskId
+    case background
+    case lastToolName
+    case question
+    case options
+    case toolUseIds
+    case trigger
+    case preTokens
+    case noticeKind
+    case report
+    case query
+    case action
+    case reviewStatus
+    case review
+    case suggestion
+    case targetItemId
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let type = try container.decode(String.self, forKey: .type)
+
+    switch type {
+    case "user_message":
+      self = .userMessage(
+        text: try container.decode(String.self, forKey: .text),
+        attachments: try container.decodeIfPresent([AgentChatFileRef].self, forKey: .attachments),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        deliveryState: try container.decodeIfPresent(String.self, forKey: .deliveryState),
+        processed: try container.decodeIfPresent(Bool.self, forKey: .processed)
+      )
+    case "text":
+      self = .text(
+        text: try container.decode(String.self, forKey: .text),
+        messageId: try container.decodeIfPresent(String.self, forKey: .messageId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId)
+      )
+    case "tool_call":
+      self = .toolCall(
+        tool: try container.decode(String.self, forKey: .tool),
+        args: try container.decode(RemoteJSONValue.self, forKey: .args),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        parentItemId: try container.decodeIfPresent(String.self, forKey: .parentItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "tool_result":
+      self = .toolResult(
+        tool: try container.decode(String.self, forKey: .tool),
+        result: try container.decode(RemoteJSONValue.self, forKey: .result),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        parentItemId: try container.decodeIfPresent(String.self, forKey: .parentItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        status: try container.decodeIfPresent(String.self, forKey: .status)
+      )
+    case "file_change":
+      self = .fileChange(
+        path: try container.decode(String.self, forKey: .path),
+        diff: try container.decode(String.self, forKey: .diff),
+        kind: try container.decode(AgentChatFileChangeKind.self, forKey: .kind),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        status: try container.decodeIfPresent(String.self, forKey: .status)
+      )
+    case "command":
+      self = .command(
+        command: try container.decode(String.self, forKey: .command),
+        cwd: try container.decode(String.self, forKey: .cwd),
+        output: try container.decode(String.self, forKey: .output),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        exitCode: try container.decodeIfPresent(Int.self, forKey: .exitCode),
+        durationMs: try container.decodeIfPresent(Int.self, forKey: .durationMs),
+        status: try container.decode(String.self, forKey: .status)
+      )
+    case "plan":
+      self = .plan(
+        steps: try container.decode([AgentChatPlanStep].self, forKey: .steps),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        explanation: try container.decodeIfPresent(String.self, forKey: .explanation)
+      )
+    case "reasoning":
+      self = .reasoning(
+        text: try container.decode(String.self, forKey: .text),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
+        summaryIndex: try container.decodeIfPresent(Int.self, forKey: .summaryIndex)
+      )
+    case "approval_request":
+      self = .approvalRequest(
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        kind: try container.decode(AgentChatApprovalRequestKind.self, forKey: .kind),
+        description: try container.decode(String.self, forKey: .description),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail)
+      )
+    case "status":
+      self = .status(
+        turnStatus: try container.decode(AgentChatTurnStatus.self, forKey: .turnStatus),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        message: try container.decodeIfPresent(String.self, forKey: .message)
+      )
+    case "delegation_state":
+      self = .delegationState(
+        contract: try container.decode(RemoteJSONValue.self, forKey: .contract),
+        message: try container.decodeIfPresent(String.self, forKey: .message),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "error":
+      self = .error(
+        message: try container.decode(String.self, forKey: .message),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
+        errorInfo: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .errorInfo)
+      )
+    case "done":
+      self = .done(
+        turnId: try container.decode(String.self, forKey: .turnId),
+        status: try container.decode(AgentChatTurnStatus.self, forKey: .status),
+        model: try container.decodeIfPresent(String.self, forKey: .model),
+        modelId: try container.decodeIfPresent(String.self, forKey: .modelId),
+        usage: try container.decodeIfPresent(AgentChatTurnUsage.self, forKey: .usage),
+        costUsd: try container.decodeIfPresent(Double.self, forKey: .costUsd)
+      )
+    case "activity":
+      self = .activity(
+        activity: try container.decode(AgentChatActivityKind.self, forKey: .activity),
+        detail: try container.decodeIfPresent(String.self, forKey: .detail),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "step_boundary":
+      self = .stepBoundary(
+        stepNumber: try container.decode(Int.self, forKey: .stepNumber),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "todo_update":
+      self = .todoUpdate(
+        items: try container.decode([AgentChatTodoItem].self, forKey: .items),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "subagent_started":
+      self = .subagentStarted(
+        taskId: try container.decode(String.self, forKey: .taskId),
+        description: try container.decode(String.self, forKey: .description),
+        background: try container.decodeIfPresent(Bool.self, forKey: .background),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "subagent_progress":
+      self = .subagentProgress(
+        taskId: try container.decode(String.self, forKey: .taskId),
+        description: try container.decodeIfPresent(String.self, forKey: .description),
+        summary: try container.decode(String.self, forKey: .summary),
+        usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
+        lastToolName: try container.decodeIfPresent(String.self, forKey: .lastToolName),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "subagent_result":
+      self = .subagentResult(
+        taskId: try container.decode(String.self, forKey: .taskId),
+        status: try container.decode(AgentChatSubagentStatus.self, forKey: .status),
+        summary: try container.decode(String.self, forKey: .summary),
+        usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "structured_question":
+      self = .structuredQuestion(
+        question: try container.decode(String.self, forKey: .question),
+        options: try container.decodeIfPresent([AgentChatStructuredQuestionOption].self, forKey: .options),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "tool_use_summary":
+      self = .toolUseSummary(
+        summary: try container.decode(String.self, forKey: .summary),
+        toolUseIds: try container.decode([String].self, forKey: .toolUseIds),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "context_compact":
+      self = .contextCompact(
+        trigger: try container.decode(AgentChatContextCompactTrigger.self, forKey: .trigger),
+        preTokens: try container.decodeIfPresent(Int.self, forKey: .preTokens),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "system_notice":
+      self = .systemNotice(
+        noticeKind: try container.decode(AgentChatNoticeKind.self, forKey: .noticeKind),
+        message: try container.decode(String.self, forKey: .message),
+        detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "completion_report":
+      self = .completionReport(
+        report: try container.decode(ChatCompletionReport.self, forKey: .report),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "web_search":
+      self = .webSearch(
+        query: try container.decode(String.self, forKey: .query),
+        action: try container.decodeIfPresent(String.self, forKey: .action),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        status: try container.decode(String.self, forKey: .status)
+      )
+    case "auto_approval_review":
+      self = .autoApprovalReview(
+        targetItemId: try container.decode(String.self, forKey: .targetItemId),
+        reviewStatus: try container.decode(AgentChatAutoApprovalReviewStatus.self, forKey: .reviewStatus),
+        action: try container.decodeIfPresent(String.self, forKey: .action),
+        review: try container.decodeIfPresent(String.self, forKey: .review),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "prompt_suggestion":
+      self = .promptSuggestion(
+        suggestion: try container.decode(String.self, forKey: .suggestion),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "plan_text":
+      self = .planText(
+        text: try container.decode(String.self, forKey: .text),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId)
+      )
+    default:
+      self = .unknown(type: type)
+    }
+  }
+
+  var typeName: String {
+    switch self {
+    case .userMessage: return "user_message"
+    case .text: return "text"
+    case .toolCall: return "tool_call"
+    case .toolResult: return "tool_result"
+    case .fileChange: return "file_change"
+    case .command: return "command"
+    case .plan: return "plan"
+    case .reasoning: return "reasoning"
+    case .approvalRequest: return "approval_request"
+    case .status: return "status"
+    case .delegationState: return "delegation_state"
+    case .error: return "error"
+    case .done: return "done"
+    case .activity: return "activity"
+    case .stepBoundary: return "step_boundary"
+    case .todoUpdate: return "todo_update"
+    case .subagentStarted: return "subagent_started"
+    case .subagentProgress: return "subagent_progress"
+    case .subagentResult: return "subagent_result"
+    case .structuredQuestion: return "structured_question"
+    case .toolUseSummary: return "tool_use_summary"
+    case .contextCompact: return "context_compact"
+    case .systemNotice: return "system_notice"
+    case .completionReport: return "completion_report"
+    case .webSearch: return "web_search"
+    case .autoApprovalReview: return "auto_approval_review"
+    case .promptSuggestion: return "prompt_suggestion"
+    case .planText: return "plan_text"
+    case .unknown(let type): return type
+    }
+  }
+}
+
+extension AgentChatEvent {
+  static func decode(from raw: Any) throws -> AgentChatEvent {
+    let data = try JSONSerialization.data(withJSONObject: raw, options: [])
+    return try JSONDecoder().decode(AgentChatEvent.self, from: data)
+  }
+}
+
+struct AgentChatSubscriptionRequest: Codable, Equatable {
+  var sessionId: String
+}
+
+struct AgentChatSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var text: String
+}
+
+struct AgentChatInterruptRequest: Codable, Equatable {
+  var sessionId: String
+}
+
+struct AgentChatResumeRequest: Codable, Equatable {
+  var sessionId: String
+}
+
+struct AgentChatDisposeRequest: Codable, Equatable {
+  var sessionId: String
+}
+
+struct AgentChatApproveRequest: Codable, Equatable {
+  var sessionId: String
+  var itemId: String
+  var decision: AgentChatApprovalDecision
+  var responseText: String?
+}
+
+struct AgentChatRespondToInputRequest: Codable, Equatable {
+  var sessionId: String
+  var itemId: String
+  var decision: AgentChatApprovalDecision?
+  var answers: [String: AgentChatInputAnswerValue]?
+  var responseText: String?
+}
+
+struct AgentChatUpdateSessionRequest: Codable, Equatable {
+  var sessionId: String
+  var title: String?
+  var modelId: String?
+  var reasoningEffort: String?
+  var permissionMode: String?
+  var interactionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var unifiedPermissionMode: String?
+  var computerUse: RemoteJSONValue?
 }
 
 struct AgentChatTranscriptEntry: Codable, Identifiable, Equatable {

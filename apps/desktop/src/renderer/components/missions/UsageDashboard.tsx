@@ -215,7 +215,7 @@ export const UsageDashboard = React.memo(function UsageDashboard({ missionId, mi
       fetchUsage();
       fetchMissionBudget();
       fetchMemoryData();
-    }, 10_000);
+    }, 30_000);
     return () => clearInterval(interval);
   }, [fetchUsage, fetchMissionBudget, fetchMemoryData]);
 

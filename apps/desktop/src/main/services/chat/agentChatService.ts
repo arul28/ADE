@@ -1626,6 +1626,7 @@ export function createAgentChatService(args: {
   let proofObserver = computerUseArtifactBrokerRef
     ? createProofObserver({ broker: computerUseArtifactBrokerRef })
     : null;
+  const eventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
 
   const layout = resolveAdeLayout(projectRoot);
   const chatSessionsDir = layout.chatSessionsDir;
@@ -3185,6 +3186,13 @@ export function createAgentChatService(args: {
     }
   };
 
+  const subscribeToEvents = (listener: (event: AgentChatEventEnvelope) => void): (() => void) => {
+    eventListeners.add(listener);
+    return () => {
+      eventListeners.delete(listener);
+    };
+  };
+
   const updatePreviewFromText = (
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "text" }>,
@@ -3253,6 +3261,16 @@ export function createAgentChatService(args: {
 
     writeTranscript(managed, envelope);
     onEvent?.(envelope);
+    for (const listener of eventListeners) {
+      try {
+        listener(envelope);
+      } catch (error) {
+        logger.warn("agent_chat.event_listener_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     // Passive proof capture: observe tool results for screenshots/artifacts.
     if (proofObserver && event.type === "tool_result") {
@@ -8954,6 +8972,7 @@ export function createAgentChatService(args: {
     warmupModel,
     listSubagents,
     getSessionCapabilities,
+    subscribeToEvents,
     /** Clean up temp attachment files older than 7 days. Call on app startup. */
     cleanupStaleAttachments() {
       try {

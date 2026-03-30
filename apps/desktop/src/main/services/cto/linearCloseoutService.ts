@@ -198,7 +198,11 @@ export function createLinearCloseoutService(args: {
     }
 
     for (const label of uniqueStrings([...(closeout?.applyLabels ?? []), ...(closeout?.labels ?? [])])) {
-      await args.issueTracker.addLabel(input.issue.id, label);
+      try {
+        await args.issueTracker.addLabel(input.issue.id, label);
+      } catch {
+        // continue applying remaining labels
+      }
     }
 
     const renderedTemplate = closeout?.commentTemplate?.trim()

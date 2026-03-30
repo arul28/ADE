@@ -89,6 +89,7 @@ const ACTIVE_LINEAR_RUN_STATUSES = new Set([
   "waiting_for_pr",
   "awaiting_human_review",
   "awaiting_delegation",
+  "awaiting_lane_choice",
   "retry_wait",
 ]);
 

@@ -2,10 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
+  AgentChatEventEnvelope,
   CrsqlChangeRow,
   FileContent,
   FileTreeNode,
@@ -73,6 +75,7 @@ type PeerState = {
   remoteAddress: string | null;
   remotePort: number | null;
   subscribedSessionIds: Set<string>;
+  subscribedChatSessionIds: Set<string>;
 };
 
 type SyncHostServiceArgs = {
@@ -305,7 +308,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let bonjourInstance: Bonjour | null = null;
   let bonjourAnnouncement: BonjourService | null = null;
   let bonjourPort: number | null = null;
+  let nativeDnsSdProcess: ChildProcess | null = null;
   let lastBroadcastAt: string | null = null;
+  const chatEventSubscription = args.agentChatService?.subscribeToEvents((event) => {
+    broadcastChatEvent(event);
+  }) ?? null;
   const startedAtMs = Date.now();
   const pollTimer = setInterval(() => {
     void pumpChanges().catch((error) => {
@@ -348,6 +355,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       remoteAddress: sanitizeRemoteAddress(request.socket.remoteAddress),
       remotePort: request.socket.remotePort ?? null,
       subscribedSessionIds: new Set(),
+      subscribedChatSessionIds: new Set(),
     };
     peers.add(peer);
     ws.on("message", (raw) => {
@@ -416,6 +424,32 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+
+    // On macOS, also register via the system's dns-sd so that Apple's
+    // NetServiceBrowser (used by iOS / Simulator) can discover the host.
+    if (process.platform === "darwin") {
+      if (nativeDnsSdProcess) {
+        nativeDnsSdProcess.kill();
+        nativeDnsSdProcess = null;
+      }
+      const txtPairs = Object.entries(txt)
+        .filter(([, v]) => v != null && v !== "")
+        .map(([k, v]) => `${k}=${v}`);
+      nativeDnsSdProcess = spawn("dns-sd", [
+        "-R", `ADE Sync ${hostName} ${port}`,
+        "_ade-sync._tcp",
+        "local",
+        String(port),
+        ...txtPairs,
+      ], { stdio: "ignore", detached: false });
+      nativeDnsSdProcess.unref();
+      nativeDnsSdProcess.on("error", (error) => {
+        args.logger.warn("sync_host.native_dnssd_failed", {
+          error: error.message,
+        });
+        nativeDnsSdProcess = null;
+      });
+    }
   };
 
   function send<TPayload>(ws: WebSocket, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): void {
@@ -463,6 +497,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       send(peer.ws, "brain_status", payload);
+    }
+  }
+
+  function broadcastChatEvent(event: AgentChatEventEnvelope): void {
+    if (disposed) return;
+    for (const peer of peers) {
+      if (!peer.authenticated || !peer.subscribedChatSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
+      send(peer.ws, "chat_event", event);
     }
   }
 
@@ -840,6 +882,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         break;
       }
+      case "chat_subscribe": {
+        const payload = envelope.payload as { sessionId?: string } | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        if (sessionId) {
+          peer.subscribedChatSessionIds.add(sessionId);
+        }
+        break;
+      }
+      case "chat_unsubscribe": {
+        const payload = envelope.payload as { sessionId?: string } | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        if (sessionId) {
+          peer.subscribedChatSessionIds.delete(sessionId);
+        }
+        break;
+      }
       case "command":
         await handleCommand(peer, envelope.requestId, envelope.payload as SyncCommandPayload);
         break;
@@ -940,6 +998,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
+      chatEventSubscription?.();
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
@@ -968,6 +1027,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // ignore cleanup failures
         }
         bonjourInstance = null;
+      }
+      if (nativeDnsSdProcess) {
+        nativeDnsSdProcess.kill();
+        nativeDnsSdProcess = null;
       }
     },
   };

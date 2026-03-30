@@ -265,6 +265,8 @@ final class SyncService: ObservableObject {
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastError: String?
   @Published private(set) var terminalBuffers: [String: String] = [:]
+  @Published private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
+  @Published private(set) var subscribedChatSessionIds: Set<String> = []
   @Published private(set) var pendingOperationCount = 0
   @Published private(set) var localStateRevision = 0
   @Published var settingsPresented = false
@@ -450,6 +452,7 @@ final class SyncService: ObservableObject {
       if socket != nil || !pending.isEmpty || connectionState == .connected || connectionState == .connecting || connectionState == .syncing {
         disconnect(clearCredentials: false)
       }
+      resetChatEventState(clearHistory: true)
       allowAutoReconnect = true
       let addressCandidates = deduplicatedAddresses([host] + candidateAddresses)
       let preferredAddress = addressCandidates.first ?? host
@@ -556,6 +559,7 @@ final class SyncService: ObservableObject {
       keychain.clearToken()
       saveProfile(nil)
       saveRemoteCommandDescriptors([])
+      resetChatEventState(clearHistory: true)
       activeHostProfile = nil
       hostName = nil
     }
@@ -833,6 +837,34 @@ final class SyncService: ObservableObject {
     }
     let snapshot = try decode(raw, as: TerminalSnapshot.self)
     terminalBuffers[sessionId] = snapshot.transcript
+  }
+
+  func subscribeToChatEvents(sessionId: String) async throws {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    subscribedChatSessionIds.insert(trimmedSessionId)
+    localStateRevision += 1
+    if canSendLiveRequests() {
+      sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: trimmedSessionId))
+    }
+  }
+
+  func unsubscribeFromChatEvents(sessionId: String) async throws {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    subscribedChatSessionIds.remove(trimmedSessionId)
+    localStateRevision += 1
+    if canSendLiveRequests() {
+      sendEnvelope(type: "chat_unsubscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: trimmedSessionId))
+    }
+  }
+
+  func chatEventHistory(sessionId: String) -> [AgentChatEventEnvelope] {
+    chatEventEnvelopesBySession[sessionId] ?? []
+  }
+
+  func chatSubscriptionPayloads() -> [[String: Any]] {
+    subscribedChatSessionIds.sorted().map { chatSubscriptionPayload(sessionId: $0) }
   }
 
   func runQuickCommand(
@@ -1132,6 +1164,91 @@ final class SyncService: ObservableObject {
 
   func sendChatMessage(sessionId: String, text: String) async throws {
     _ = try await sendCommand(action: "chat.send", args: ["sessionId": sessionId, "text": text])
+  }
+
+  func interruptChatSession(sessionId: String) async throws {
+    _ = try await sendChatCommand(action: "chat.interrupt", payload: AgentChatInterruptRequest(sessionId: sessionId))
+  }
+
+  func steerChatSession(sessionId: String, text: String) async throws {
+    _ = try await sendChatCommand(action: "chat.steer", payload: AgentChatSteerRequest(sessionId: sessionId, text: text))
+  }
+
+  func approveChatSession(
+    sessionId: String,
+    itemId: String,
+    decision: AgentChatApprovalDecision,
+    responseText: String? = nil
+  ) async throws {
+    _ = try await sendChatCommand(
+      action: "chat.approve",
+      payload: AgentChatApproveRequest(sessionId: sessionId, itemId: itemId, decision: decision, responseText: responseText)
+    )
+  }
+
+  func respondToChatInput(
+    sessionId: String,
+    itemId: String,
+    decision: AgentChatApprovalDecision? = nil,
+    answers: [String: AgentChatInputAnswerValue]? = nil,
+    responseText: String? = nil
+  ) async throws {
+    _ = try await sendChatCommand(
+      action: "chat.respondToInput",
+      payload: AgentChatRespondToInputRequest(
+        sessionId: sessionId,
+        itemId: itemId,
+        decision: decision,
+        answers: answers,
+        responseText: responseText
+      )
+    )
+  }
+
+  func resumeChatSession(sessionId: String) async throws -> AgentChatSession {
+    try await sendDecodableChatCommand(
+      action: "chat.resume",
+      payload: AgentChatResumeRequest(sessionId: sessionId),
+      as: AgentChatSession.self
+    )
+  }
+
+  func updateChatSession(
+    sessionId: String,
+    title: String? = nil,
+    modelId: String? = nil,
+    reasoningEffort: String? = nil,
+    permissionMode: String? = nil,
+    interactionMode: String? = nil,
+    claudePermissionMode: String? = nil,
+    codexApprovalPolicy: String? = nil,
+    codexSandbox: String? = nil,
+    codexConfigSource: String? = nil,
+    unifiedPermissionMode: String? = nil,
+    computerUse: RemoteJSONValue? = nil
+  ) async throws -> AgentChatSession {
+    try await sendDecodableChatCommand(
+      action: "chat.updateSession",
+      payload: AgentChatUpdateSessionRequest(
+        sessionId: sessionId,
+        title: title,
+        modelId: modelId,
+        reasoningEffort: reasoningEffort,
+        permissionMode: permissionMode,
+        interactionMode: interactionMode,
+        claudePermissionMode: claudePermissionMode,
+        codexApprovalPolicy: codexApprovalPolicy,
+        codexSandbox: codexSandbox,
+        codexConfigSource: codexConfigSource,
+        unifiedPermissionMode: unifiedPermissionMode,
+        computerUse: computerUse
+      ),
+      as: AgentChatSession.self
+    )
+  }
+
+  func disposeChatSession(sessionId: String) async throws {
+    _ = try await sendChatCommand(action: "chat.dispose", payload: AgentChatDisposeRequest(sessionId: sessionId))
   }
 
   func readArtifact(artifactId: String? = nil, uri: String? = nil, path: String? = nil) async throws -> SyncFileBlob {
@@ -1522,6 +1639,7 @@ final class SyncService: ObservableObject {
     saveProfile(profile)
     startRelayLoop()
     startInitialHydrationTask(for: connectionGeneration)
+    restoreChatEventSubscriptions()
   }
 
   private func failPendingRequests(with error: Error) {
@@ -1645,6 +1763,10 @@ final class SyncService: ObservableObject {
       }
     case "command_result", "file_response", "terminal_snapshot":
       resolve(requestId: requestId, result: .success(payload))
+    case "chat_event":
+      if let dict = payload as? [String: Any], let envelope = try? decode(dict, as: AgentChatEventEnvelope.self) {
+        recordChatEventEnvelope(envelope)
+      }
     case "terminal_data":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String, let chunk = dict["data"] as? String {
         terminalBuffers[sessionId, default: ""] += chunk
@@ -1839,6 +1961,21 @@ final class SyncService: ObservableObject {
     try decode(try await sendCommand(action: action, args: args), as: type)
   }
 
+  private func encodedCommandArgs<T: Encodable>(from payload: T) throws -> [String: Any] {
+    guard let args = try jsonObject(from: payload) as? [String: Any] else {
+      throw NSError(domain: "ADE", code: 24, userInfo: [NSLocalizedDescriptionKey: "Invalid chat command payload."])
+    }
+    return args
+  }
+
+  private func sendChatCommand<T: Encodable>(action: String, payload: T) async throws -> Any {
+    try await sendCommand(action: action, args: try encodedCommandArgs(from: payload))
+  }
+
+  private func sendDecodableChatCommand<T: Encodable, U: Decodable>(action: String, payload: T, as type: U.Type) async throws -> U {
+    try decode(try await sendChatCommand(action: action, payload: payload), as: type)
+  }
+
   private func jsonObject<T: Encodable>(from value: T) throws -> Any {
     let data = try encoder.encode(value)
     return try JSONSerialization.jsonObject(with: data, options: [])
@@ -1939,6 +2076,36 @@ final class SyncService: ObservableObject {
     }
     try enqueueOperation(kind: "command", action: action, args: args)
     return ["queued": true]
+  }
+
+  private func chatSubscriptionPayload(sessionId: String) -> [String: Any] {
+    ["sessionId": sessionId]
+  }
+
+  private func restoreChatEventSubscriptions() {
+    guard canSendLiveRequests() else { return }
+    for sessionId in subscribedChatSessionIds.sorted() {
+      sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: sessionId))
+    }
+  }
+
+  func recordChatEventEnvelope(_ envelope: AgentChatEventEnvelope) {
+    var events = chatEventEnvelopesBySession[envelope.sessionId] ?? []
+    events.append(envelope)
+    if events.count > 500 {
+      events.removeFirst(events.count - 500)
+    }
+    chatEventEnvelopesBySession[envelope.sessionId] = events
+    lastSyncAt = Date()
+    localStateRevision += 1
+  }
+
+  private func resetChatEventState(clearHistory: Bool) {
+    subscribedChatSessionIds.removeAll()
+    if clearHistory {
+      chatEventEnvelopesBySession.removeAll()
+    }
+    localStateRevision += 1
   }
 
   private func performInitialHydration(for connectionGeneration: UInt64) async {

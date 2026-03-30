@@ -182,6 +182,184 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(SyncUserFacingError.message(for: compressedPayloadError), "The host sent unreadable sync data. Reconnect and try again.")
   }
 
+  func testAgentChatEventEnvelopeDecodesRichEventPayloads() throws {
+    let completionJSON = """
+    {
+      "sessionId": "session-1",
+      "timestamp": "2026-03-17T00:00:00.000Z",
+      "sequence": 12,
+      "provenance": {
+        "messageId": "msg-1",
+        "threadId": "thread-1",
+        "role": "agent",
+        "laneId": "lane-1"
+      },
+      "event": {
+        "type": "completion_report",
+        "report": {
+          "timestamp": "2026-03-17T00:00:00.000Z",
+          "summary": "Work completed",
+          "status": "completed",
+          "artifacts": [
+            {
+              "type": "file",
+              "description": "Updated the transcript",
+              "reference": "docs/transcript.md"
+            }
+          ]
+        }
+      }
+    }
+    """
+
+    let completionEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(completionJSON.utf8))
+    XCTAssertEqual(completionEnvelope.sessionId, "session-1")
+    XCTAssertEqual(completionEnvelope.sequence, 12)
+    XCTAssertEqual(completionEnvelope.provenance?.messageId, "msg-1")
+    guard case .completionReport(let report, _) = completionEnvelope.event else {
+      return XCTFail("Expected completion report event.")
+    }
+    XCTAssertEqual(report.summary, "Work completed")
+    XCTAssertEqual(report.artifacts?.first?.reference, "docs/transcript.md")
+
+    let noticeJSON = """
+    {
+      "sessionId": "session-2",
+      "timestamp": "2026-03-17T00:01:00.000Z",
+      "event": {
+        "type": "system_notice",
+        "noticeKind": "rate_limit",
+        "message": "Slow down",
+        "detail": {
+          "summary": "Retry later",
+          "metrics": [
+            { "label": "Remaining", "value": "2" }
+          ]
+        }
+      }
+    }
+    """
+
+    let noticeEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(noticeJSON.utf8))
+    guard case .systemNotice(let noticeKind, let message, let detail, _) = noticeEnvelope.event else {
+      return XCTFail("Expected system notice event.")
+    }
+    XCTAssertEqual(noticeKind, .rateLimit)
+    XCTAssertEqual(message, "Slow down")
+    guard case .object(let detailObject) = detail else {
+      return XCTFail("Expected system notice detail object.")
+    }
+    XCTAssertEqual(detailObject["summary"], .string("Retry later"))
+  }
+
+  @MainActor
+  func testChatSubscriptionStateSurvivesDisconnectAndReplaysPayloads() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    try await service.subscribeToChatEvents(sessionId: "session-1")
+    try await service.subscribeToChatEvents(sessionId: "session-2")
+
+    XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1", "session-2"]))
+    XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["sessionId"] as? String }.sorted(), ["session-1", "session-2"])
+
+    service.disconnect(clearCredentials: false)
+
+    XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1", "session-2"]))
+    XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["sessionId"] as? String }.sorted(), ["session-1", "session-2"])
+
+    try await service.unsubscribeFromChatEvents(sessionId: "session-1")
+    XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-2"]))
+  }
+
+  @MainActor
+  func testChatEventHistoryStoresDecodedEnvelopes() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let envelope = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:00.000Z",
+      event: .text(text: "Working...", messageId: "msg-1", turnId: "turn-1", itemId: "item-1"),
+      sequence: 1,
+      provenance: AgentChatEventProvenance(
+        messageId: "msg-1",
+        threadId: "thread-1",
+        role: "agent",
+        targetKind: nil,
+        sourceSessionId: nil,
+        attemptId: nil,
+        stepKey: nil,
+        laneId: "lane-1",
+        runId: nil
+      )
+    )
+
+    service.recordChatEventEnvelope(envelope)
+
+    XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [envelope])
+  }
+
+  func testChatCommandRequestPayloadsEncodeExpectedShapes() throws {
+    let subscribe = try jsonDictionary(from: AgentChatSubscriptionRequest(sessionId: "session-1"))
+    XCTAssertEqual(subscribe["sessionId"] as? String, "session-1")
+
+    let interrupt = try jsonDictionary(from: AgentChatInterruptRequest(sessionId: "session-1"))
+    XCTAssertEqual(interrupt["sessionId"] as? String, "session-1")
+
+    let steer = try jsonDictionary(from: AgentChatSteerRequest(sessionId: "session-1", text: "Keep going"))
+    XCTAssertEqual(steer["sessionId"] as? String, "session-1")
+    XCTAssertEqual(steer["text"] as? String, "Keep going")
+
+    let resume = try jsonDictionary(from: AgentChatResumeRequest(sessionId: "session-1"))
+    XCTAssertEqual(resume["sessionId"] as? String, "session-1")
+
+    let dispose = try jsonDictionary(from: AgentChatDisposeRequest(sessionId: "session-1"))
+    XCTAssertEqual(dispose["sessionId"] as? String, "session-1")
+
+    let approve = try jsonDictionary(from: AgentChatApproveRequest(
+      sessionId: "session-1",
+      itemId: "approval-1",
+      decision: .acceptForSession,
+      responseText: "Proceed"
+    ))
+    XCTAssertEqual(approve["sessionId"] as? String, "session-1")
+    XCTAssertEqual(approve["itemId"] as? String, "approval-1")
+    XCTAssertEqual(approve["decision"] as? String, "accept_for_session")
+    XCTAssertEqual(approve["responseText"] as? String, "Proceed")
+
+    let respond = try jsonDictionary(from: AgentChatRespondToInputRequest(
+      sessionId: "session-1",
+      itemId: "question-1",
+      decision: .decline,
+      answers: [
+        "choice": .string("later"),
+        "files": .strings(["Sources/App.swift", "Sources/WorkView.swift"])
+      ],
+      responseText: "Not yet"
+    ))
+    XCTAssertEqual(respond["decision"] as? String, "decline")
+    let respondAnswers = respond["answers"] as? [String: Any]
+    XCTAssertEqual(respondAnswers?["choice"] as? String, "later")
+    XCTAssertEqual(respondAnswers?["files"] as? [String], ["Sources/App.swift", "Sources/WorkView.swift"])
+
+    let update = try jsonDictionary(from: AgentChatUpdateSessionRequest(
+      sessionId: "session-1",
+      title: "Review run",
+      modelId: "claude-sonnet-4",
+      reasoningEffort: "high",
+      permissionMode: "edit",
+      interactionMode: "plan",
+      claudePermissionMode: "default",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+      unifiedPermissionMode: "edit",
+      computerUse: .object(["enabled": .bool(true)])
+    ))
+    XCTAssertEqual(update["modelId"] as? String, "claude-sonnet-4")
+    XCTAssertEqual(update["permissionMode"] as? String, "edit")
+    let computerUse = update["computerUse"] as? [String: Any]
+    XCTAssertEqual(computerUse?["enabled"] as? Bool, true)
+  }
+
   func testStaleSendCallbackGuardOnlyHandlesActiveSocket() {
     let url = URL(string: "ws://example.com:8787")!
     let activeSocket = URLSession.shared.webSocketTask(with: url)
@@ -1470,6 +1648,70 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(activeAgents.first?.toolName, "functions.Read")
   }
 
+  func testWorkChatTranscriptHelpersDecodeCommandFileChangeCompletionReportAndUsageEvents() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:00.000Z","sequence":1,"event":{"type":"command","command":"npm test","cwd":"/tmp/work","output":"ok","itemId":"cmd-1","turnId":"turn-1","exitCode":0,"durationMs":1240,"status":"completed"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":2,"event":{"type":"file_change","path":"Sources/WorkTabView.swift","diff":"@@ -1 +1 @@","kind":"modify","itemId":"file-1","turnId":"turn-1","status":"completed"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":3,"event":{"type":"completion_report","report":{"timestamp":"2026-03-25T00:00:02.000Z","summary":"Finished","status":"completed","artifacts":[{"type":"file","description":"Updated the transcript","reference":"docs/transcript.md"}]}}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":4,"event":{"type":"done","turnId":"turn-1","status":"completed","model":"claude-sonnet-4","usage":{"inputTokens":120,"outputTokens":45,"cacheReadTokens":12,"cacheCreationTokens":3},"costUsd":1.23}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+
+    XCTAssertEqual(transcript.count, 4)
+
+    guard case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, let turnId) = transcript[0].event else {
+      return XCTFail("Expected command event.")
+    }
+    XCTAssertEqual(command, "npm test")
+    XCTAssertEqual(cwd, "/tmp/work")
+    XCTAssertEqual(output, "ok")
+    XCTAssertEqual(status, .completed)
+    XCTAssertEqual(itemId, "cmd-1")
+    XCTAssertEqual(exitCode, 0)
+    XCTAssertEqual(durationMs, 1240)
+    XCTAssertEqual(turnId, "turn-1")
+
+    guard case .fileChange(let path, let diff, let kind, let fileStatus, let fileItemId, let fileTurnId) = transcript[1].event else {
+      return XCTFail("Expected file change event.")
+    }
+    XCTAssertEqual(path, "Sources/WorkTabView.swift")
+    XCTAssertEqual(diff, "@@ -1 +1 @@")
+    XCTAssertEqual(kind, "modify")
+    XCTAssertEqual(fileStatus, .completed)
+    XCTAssertEqual(fileItemId, "file-1")
+    XCTAssertEqual(fileTurnId, "turn-1")
+
+    guard case .completionReport(let summary, let reportStatus, let artifacts, let blockerDescription, let reportTurnId) = transcript[2].event else {
+      return XCTFail("Expected completion report event.")
+    }
+    XCTAssertEqual(summary, "Finished")
+    XCTAssertEqual(reportStatus, "completed")
+    XCTAssertEqual(artifacts.first?.reference, "docs/transcript.md")
+    XCTAssertNil(blockerDescription)
+    XCTAssertEqual(reportTurnId, nil)
+
+    guard case .done(let doneStatus, let doneSummary, let usage, let doneTurnId) = transcript[3].event else {
+      return XCTFail("Expected done event.")
+    }
+    XCTAssertEqual(doneStatus, "completed")
+    XCTAssertTrue(doneSummary.contains("claude-sonnet-4"))
+    XCTAssertTrue(doneSummary.contains("inputTokens"))
+    XCTAssertTrue(doneSummary.contains("$1.2300"))
+    XCTAssertEqual(usage?.inputTokens, 120)
+    XCTAssertEqual(usage?.outputTokens, 45)
+    XCTAssertEqual(usage?.costUsd, 1.23)
+    XCTAssertEqual(doneTurnId, "turn-1")
+
+    let sessionUsage = summarizeWorkSessionUsage(from: transcript)
+    XCTAssertEqual(sessionUsage?.turnCount, 1)
+    XCTAssertEqual(sessionUsage?.inputTokens, 120)
+    XCTAssertEqual(sessionUsage?.outputTokens, 45)
+    XCTAssertEqual(sessionUsage?.cacheReadTokens, 12)
+    XCTAssertEqual(sessionUsage?.cacheCreationTokens, 3)
+    XCTAssertEqual(sessionUsage?.costUsd, 1.23)
+  }
+
   func testVisibleWorkTimelineEntriesKeepsNewestPage() {
     let entries = (1...6).map { index in
       WorkTimelineEntry(
@@ -1847,6 +2089,15 @@ final class ADETests: XCTestCase {
 
   private struct DummyHydrationPayload: Decodable {
     let refreshedCount: Int
+  }
+
+  private func jsonDictionary<T: Encodable>(from value: T) throws -> [String: Any] {
+    let data = try JSONEncoder().encode(value)
+    let raw = try JSONSerialization.jsonObject(with: data, options: [])
+    guard let dict = raw as? [String: Any] else {
+      throw NSError(domain: "ADETests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected dictionary JSON payload."])
+    }
+    return dict
   }
 }
 

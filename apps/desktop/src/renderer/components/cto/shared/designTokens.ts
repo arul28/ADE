@@ -12,7 +12,7 @@ export const labelCls =
 
 /* ── Accent palette ── */
 export const ACCENT = {
-  purple: "#38BDF8",
+  sky: "#38BDF8",
   blue: "#60A5FA",
   green: "#34D399",
   pink: "#FB7185",

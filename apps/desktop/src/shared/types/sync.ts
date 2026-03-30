@@ -1,3 +1,5 @@
+import type { AgentChatEventEnvelope } from "./chat";
+
 export type SyncScalarBytes = {
   type: "bytes";
   base64: string;
@@ -343,6 +345,16 @@ export type SyncTerminalExitPayload = {
   at: string;
 };
 
+export type SyncChatSubscribePayload = {
+  sessionId: string;
+};
+
+export type SyncChatUnsubscribePayload = {
+  sessionId: string;
+};
+
+export type SyncChatEventPayload = AgentChatEventEnvelope;
+
 export type SyncBrainStatusPayload = {
   brain: SyncPeerMetadata;
   connectedPeers: SyncPeerConnectionState[];
@@ -403,6 +415,13 @@ export type SyncRemoteCommandAction =
   | "chat.getTranscript"
   | "chat.create"
   | "chat.send"
+  | "chat.interrupt"
+  | "chat.steer"
+  | "chat.approve"
+  | "chat.respondToInput"
+  | "chat.resume"
+  | "chat.updateSession"
+  | "chat.dispose"
   | "chat.models"
   | "git.getChanges"
   | "git.getFile"
@@ -520,6 +539,9 @@ export type SyncTerminalUnsubscribeEnvelope = SyncEnvelopeWithPayload<"terminal_
 export type SyncTerminalSnapshotEnvelope = SyncEnvelopeWithPayload<"terminal_snapshot", SyncTerminalSnapshotPayload>;
 export type SyncTerminalDataEnvelope = SyncEnvelopeWithPayload<"terminal_data", SyncTerminalDataPayload>;
 export type SyncTerminalExitEnvelope = SyncEnvelopeWithPayload<"terminal_exit", SyncTerminalExitPayload>;
+export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload>;
+export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
+export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
 export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", SyncBrainStatusPayload>;
 export type SyncCommandEnvelope = SyncEnvelopeWithPayload<"command", SyncCommandPayload>;
 export type SyncCommandAckEnvelope = SyncEnvelopeWithPayload<"command_ack", SyncCommandAckPayload>;
@@ -540,6 +562,9 @@ export type SyncEnvelope =
   | SyncTerminalSnapshotEnvelope
   | SyncTerminalDataEnvelope
   | SyncTerminalExitEnvelope
+  | SyncChatSubscribeEnvelope
+  | SyncChatUnsubscribeEnvelope
+  | SyncChatEventEnvelope
   | SyncBrainStatusEnvelope
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope

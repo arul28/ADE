@@ -22,7 +22,7 @@ import {
 
 describe("ACCENT", () => {
   it("exports all five named colors as hex strings", () => {
-    expect(ACCENT.purple).toMatch(/^#[0-9A-Fa-f]{6}$/);
+    expect(ACCENT.sky).toMatch(/^#[0-9A-Fa-f]{6}$/);
     expect(ACCENT.blue).toMatch(/^#[0-9A-Fa-f]{6}$/);
     expect(ACCENT.green).toMatch(/^#[0-9A-Fa-f]{6}$/);
     expect(ACCENT.pink).toMatch(/^#[0-9A-Fa-f]{6}$/);
