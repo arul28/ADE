@@ -608,7 +608,14 @@ export function createGitOperationsService({
       } else if (normalizedBehind > 0 && normalizedAhead === 0) {
         recommendedAction = "pull";
       } else if (diverged) {
-        recommendedAction = "pull";
+        // Check if the remote tip is an ancestor of local HEAD — if NOT, the
+        // local history was rewritten (e.g. rebase) and a force-push is needed
+        // instead of a pull.
+        const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
+          cwd: lane.worktreePath,
+          timeoutMs: 5_000
+        });
+        recommendedAction = mergeBaseRes.exitCode === 0 ? "push" : "force_push_lease";
       }
 
       return {
