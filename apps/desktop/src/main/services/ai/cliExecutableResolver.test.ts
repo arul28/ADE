@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   augmentPathWithKnownCliDirs,
   resolveExecutableFromKnownLocations,
@@ -41,6 +41,18 @@ describe("cliExecutableResolver", () => {
     fs.mkdirSync(homeDir, { recursive: true });
     fs.writeFileSync(path.join(homeDir, ".npmrc"), "prefix=~/.npm-global\n", "utf8");
 
+    // Hide system-installed codex so it doesn't win the known-dirs race.
+    const realStatSync = fs.statSync;
+    vi.spyOn(fs, "statSync").mockImplementation(((p: fs.PathLike, opts?: any) => {
+      const s = String(p);
+      if (s.endsWith("/codex") && !s.startsWith(tempRoot!)) {
+        const err: NodeJS.ErrnoException = new Error("ENOENT");
+        err.code = "ENOENT";
+        throw err;
+      }
+      return realStatSync(s, opts);
+    }) as typeof fs.statSync);
+
     const env = {
       HOME: homeDir,
       PATH: "/usr/bin:/bin",
@@ -50,6 +62,8 @@ describe("cliExecutableResolver", () => {
       path: path.join(prefixDir, "bin", "codex"),
       source: "known-dir",
     });
+
+    vi.restoreAllMocks();
   });
 
   it("augments PATH with npm-global bins discovered from ~/.npmrc", () => {

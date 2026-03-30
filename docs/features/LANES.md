@@ -33,6 +33,7 @@
 - [Lane Proxy & Preview](#lane-proxy--preview)
   - [Per-Lane Hostname Isolation (Phase 5 W4)](#per-lane-hostname-isolation-phase-5-w4--done)
   - [Preview URLs (Phase 5 W4)](#preview-urls-phase-5-w4--done)
+- [Lane Cleanup & Lifecycle](#lane-cleanup--lifecycle)
 - [Auth Redirect Handling (Phase 5 W5)](#auth-redirect-handling-phase-5-w5--done)
 - [Runtime Diagnostics (Phase 5 W6)](#runtime-diagnostics-phase-5-w6--done)
 
@@ -190,7 +191,7 @@ The Chat view layout:
 +-----------------------------------------------+
 ```
 
-Chat sessions created from the Chat view are automatically scoped to the selected lane (`cwd` = lane worktree path). The provider/model selector in the composer supports all configured models (CLI, API-key, OpenRouter, and local providers such as LM Studio/Ollama/vLLM). If a user switches model families while a chat session is active, ADE forks a new chat session with the selected model so the active thread remains internally consistent. Chat sessions are tracked as first-class sessions with the same delta computation, pack integration, and context tracking as terminal sessions.
+Chat sessions created from the Chat view are automatically scoped to the selected lane (`cwd` = lane worktree path). The provider/model selector in the composer supports all configured models (CLI, API-key, OpenRouter, and local providers such as LM Studio/Ollama/vLLM). If a user switches model families while a chat session is active, ADE forks a new chat session with the selected model so the active thread remains internally consistent. Chat sessions are tracked as first-class sessions with the same delta computation, pack integration, and context tracking as terminal sessions. The chat header shows the session title (or "New chat" when no session exists yet) and includes a lane navigation button that links back to the parent lane in the Lanes tab. The lane label is passed to `AgentChatPane` via the `laneLabel` prop from `TilingLayout` and `WorkViewArea`.
 
 **Phase 2 improvements (shipped)**: The agent chat view now has polished message/composer/pane styling, Claude provider selection remains stable, and Codex reasoning effort selection is available in the model controls (persisted per lane/model and sent to Codex thread/turn starts).
 
@@ -492,7 +493,7 @@ lanes (
 | LANES-050 | Port allocation and lease manager | DONE — Phase 5 W3 (`portAllocationService.ts`, lease-based port range allocation with conflict detection) |
 | LANES-051 | Per-lane hostname proxy (*.localhost) | DONE — Phase 5 W4 (`laneProxyService.ts`, Host-header routing reverse proxy, 16 tests) |
 | LANES-052 | Preview launch service | DONE — Phase 5 W4 (`LanePreviewPanel.tsx`, one-click preview URL generation and browser launch, 8 tests) |
-| LANES-053 | Lane template CRUD and storage | DONE — Phase 5 W2 (`laneTemplateService.ts`, reusable initialization recipes, template selector in CreateLaneDialog) |
+| LANES-053 | Lane template CRUD and storage | DONE — Phase 5 W2 (`laneTemplateService.ts`, reusable initialization recipes, template selector in CreateLaneDialog, `resolveSetupScript` for platform-specific post-creation scripts) |
 | LANES-054 | Auth redirect handling per-lane: state-parameter routing (single OAuth callback URL, route by state param to correct lane), hostname-based routing (for providers supporting wildcards), setup assistant in Settings | DONE — Phase 5 W5 (`oauthRedirectService.ts`, state-parameter + hostname routing, 18+10 tests) |
 | LANES-055 | LaneOverlayPolicy extension for env/port/proxy | DONE — Phase 5 W1 (extended `LaneOverlayOverrides` with `portRange`, `proxyHostname`, `computeBackend`, `envInit`) |
 | LANES-056 | Runtime diagnostics (health checks, port conflicts) | DONE — Phase 5 W6 (`runtimeDiagnosticsService.ts`, traffic-light health checks with fallback mode, 25+11 tests) |
@@ -530,6 +531,8 @@ Defined in `src/shared/types/config.ts`:
 - `LaneDockerConfig` — Docker Compose path and service names
 - `LaneDependencyInstallConfig` — command, working directory, and package manager
 - `LaneMountPointConfig` — mount source, target, and read-only flag
+- `LaneSetupScriptConfig` — platform-specific setup script with commands/script paths and primary worktree path injection
+- `LaneCleanupConfig` — auto-cleanup policy for stale lanes (max active, archive/delete thresholds, remote branch cleanup)
 
 ### IPC Channels
 
@@ -583,11 +586,22 @@ Each `LaneTemplate` specifies:
 - `mountPoints` — runtime mount configurations
 - `portRange` — default port range for lanes using this template
 - `envVars` — extra environment variables
+- `setupScript` — optional post-creation setup script with platform-specific command/script support
+
+### Setup Script (`LaneSetupScriptConfig`)
+
+Templates can include a setup script that runs after environment initialization completes. The script config supports platform-specific overrides:
+
+- `commands` / `unixCommands` / `windowsCommands` — inline shell commands (platform-specific variants take precedence)
+- `scriptPath` / `unixScriptPath` / `windowsScriptPath` — path to a script file relative to the project root (platform-specific variants take precedence)
+- `injectPrimaryPath` — when true, `$PRIMARY_WORKTREE_PATH` (or `%PRIMARY_WORKTREE_PATH%` on Windows) is available in commands/scripts, referencing the primary lane's worktree root
+
+The `laneTemplateService.resolveSetupScript(template)` method resolves the platform-appropriate commands and script path at runtime, returning `null` if no setup script is configured or if the resolved config has no commands and no script path.
 
 ### UI Components
 
 - **Template selector in CreateLaneDialog**: Users choose a template when creating a lane; the template's config is auto-applied to the new lane's environment initialization.
-- **LaneTemplatesSection in Settings**: Management UI (`src/renderer/components/settings/LaneTemplatesSection.tsx`) for creating, editing, and deleting templates. Supports setting a project-level default template.
+- **LaneTemplatesSection in Settings**: Management UI (`src/renderer/components/settings/LaneTemplatesSection.tsx`) for creating, editing, and deleting templates. Supports setting a project-level default template. Each template card shows feature chips summarizing its configuration (copy paths, env files, dependencies, mounts, docker, ports, env vars, setup script).
 
 ### NO_DEFAULT_LANE_TEMPLATE Sentinel
 
@@ -602,6 +616,39 @@ The `NO_DEFAULT_LANE_TEMPLATE` sentinel value is used when a project explicitly 
 | `ade.lanes.templates.getDefault` | Get the project's default template |
 | `ade.lanes.templates.setDefault` | Set the project's default template |
 | `ade.lanes.templates.apply` | Apply a template to an existing lane |
+
+---
+
+## Lane Cleanup & Lifecycle
+
+ADE supports automatic lane cleanup to prevent lane sprawl in long-running projects. The cleanup policy is configured via `LaneCleanupConfig` in the project config (`local.yaml` / `ade.yaml`) and managed in the Settings UI under the **Lane Behavior** section.
+
+### Configuration
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `maxActiveLanes` | `number` | `0` (unlimited) | Maximum active (non-archived) lanes. Oldest by access time are auto-archived when exceeded. |
+| `cleanupIntervalHours` | `number` | `0` (disabled) | How often (in hours) to scan for stale lanes and run cleanup. |
+| `autoArchiveAfterHours` | `number` | `0` (never) | Auto-archive lanes inactive for this many hours. |
+| `autoDeleteArchivedAfterHours` | `number` | `0` (never) | Permanently delete archived lanes after this many hours. |
+| `deleteRemoteBranchOnCleanup` | `boolean` | `false` | Also delete the remote branch when a lane is auto-deleted. |
+
+### Settings UI
+
+The **Lane Behavior** section in Settings (`LaneBehaviorSection.tsx`) manages both auto-rebase and cleanup configuration:
+
+- **Auto-rebase child lanes** — toggle to automatically rebase dependent lanes when a parent advances
+- **Cleanup & limits** — primary controls for max active lanes and auto-archive inactivity threshold; secondary controls (scan interval, archived deletion period, remote branch cleanup) appear conditionally when cleanup is active
+
+Cleanup configuration is persisted to `local.yaml` via the project config service.
+
+### Types
+
+Defined in `src/shared/types/config.ts`:
+
+- `LaneCleanupConfig` — cleanup policy with all fields above
+- `ProjectConfigFile.laneCleanup` — project-level cleanup config
+- `EffectiveProjectConfig.laneCleanup` — effective (merged) cleanup config
 
 ---
 

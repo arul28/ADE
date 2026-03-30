@@ -835,7 +835,8 @@ export function createPrService({
           });
           markHotRefresh([childPr.id]);
           if (retargetError) {
-            const recorded = await recordAttentionStatusSafely({
+            failedLaneIds.push(child.id);
+            await recordAttentionStatusSafely({
               laneId: child.id,
               parentLaneId: successorParent.id,
               parentHeadSha: null,
@@ -843,9 +844,6 @@ export function createPrService({
               conflictCount: 0,
               message: `Auto-rebase pushed this lane after '${args.landedLaneName}' merged, but ADE could not retarget the PR base to '${successorBaseBranch}': ${retargetError}. The merged parent lane was left in place so you can finish cleanup manually.`,
             }, child.id);
-            if (!recorded) {
-              failedLaneIds.push(child.id);
-            }
             continue;
           }
         }
@@ -1943,7 +1941,7 @@ export function createPrService({
     const headBranch = branchNameFromRef(lane.branchRef);
     const parentLane = lane.parentLaneId ? allLanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
     const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
-    const inferredBaseRef = parentLane?.branchRef ?? (lane.parentLaneId ? lane.baseRef : (primaryLane?.branchRef ?? lane.baseRef));
+    const inferredBaseRef = parentLane?.branchRef ?? lane.baseRef ?? primaryLane?.branchRef ?? "main";
     const baseBranch = (args.baseBranch ?? branchNameFromRef(inferredBaseRef)).trim();
 
     // Push the branch to remote before creating the PR

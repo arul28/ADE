@@ -6,6 +6,7 @@ import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
+import { branchNameFromRef, resolveLaneBaseBranch } from "../shared/laneBranchTargets";
 import { StatusDot } from "../shared/StatusDot";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
@@ -25,14 +26,10 @@ type RebaseTabProps = {
   onNavigate: (path: string) => void;
 };
 
-type UrgencyCategory = "attention" | "clean" | "recent" | "upToDate";
+type RebaseSectionKey = "lane_base" | "pr_target";
 
-function categorize(need: RebaseNeed): UrgencyCategory {
-  if (need.dismissedAt) return "upToDate";
-  if (need.deferredUntil && new Date(need.deferredUntil) > new Date()) return "upToDate";
-  if (need.behindBy === 0) return "upToDate";
-  if (need.conflictPredicted) return "attention";
-  return "clean";
+function rebaseNeedKey(need: RebaseNeed): string {
+  return `${need.laneId}:${need.prId ?? "base"}:${need.baseBranch}`;
 }
 
 /* ── inline style constants ── */
@@ -95,32 +92,45 @@ export function RebaseTab({
   const [commitFilesMap, setCommitFilesMap] = React.useState<Record<string, string[]>>({});
   const [expandedCommitSha, setExpandedCommitSha] = React.useState<string | null>(null);
 
-  const [collapsed, setCollapsed] = React.useState<Record<UrgencyCategory, boolean>>({
-    attention: false,
-    clean: false,
-    recent: true,
-    upToDate: true,
+  const [collapsed, setCollapsed] = React.useState<Record<RebaseSectionKey, boolean>>({
+    lane_base: false,
+    pr_target: false,
   });
 
+  const getLaneBaseBranch = React.useCallback((laneId: string): string => {
+    const lane = laneById.get(laneId) ?? null;
+    return resolveLaneBaseBranch({
+      lane,
+      lanes,
+      primaryBranchRef: null,
+    });
+  }, [laneById, lanes]);
+
+  const isPrTargetNeed = React.useCallback((need: RebaseNeed): boolean => {
+    if (!need.prId) return false;
+    const laneBaseBranch = branchNameFromRef(getLaneBaseBranch(need.laneId));
+    return laneBaseBranch.length > 0 && laneBaseBranch !== branchNameFromRef(need.baseBranch);
+  }, [getLaneBaseBranch]);
+
   const grouped = React.useMemo(() => {
-    const groups: Record<UrgencyCategory, RebaseNeed[]> = {
-      attention: [],
-      clean: [],
-      recent: [],
-      upToDate: [],
+    const groups: Record<RebaseSectionKey, RebaseNeed[]> = {
+      lane_base: [],
+      pr_target: [],
     };
     for (const need of rebaseNeeds) {
-      groups[categorize(need)].push(need);
+      groups[isPrTargetNeed(need) ? "pr_target" : "lane_base"].push(need);
     }
-    groups.attention.sort((a, b) => b.behindBy - a.behindBy);
-    groups.clean.sort((a, b) => b.behindBy - a.behindBy);
+    groups.lane_base.sort((a, b) => b.behindBy - a.behindBy);
+    groups.pr_target.sort((a, b) => b.behindBy - a.behindBy);
     return groups;
-  }, [rebaseNeeds]);
+  }, [isPrTargetNeed, rebaseNeeds]);
 
-  const selectedNeed = React.useMemo(
-    () => rebaseNeeds.find((n) => n.laneId === selectedItemId) ?? null,
-    [rebaseNeeds, selectedItemId],
-  );
+  const selectedNeed = React.useMemo(() => {
+    if (!selectedItemId) return null;
+    return rebaseNeeds.find((need) => rebaseNeedKey(need) === selectedItemId)
+      ?? rebaseNeeds.find((need) => need.laneId === selectedItemId)
+      ?? null;
+  }, [rebaseNeeds, selectedItemId]);
 
   const selectedLane = React.useMemo(
     () => (selectedNeed ? laneById.get(selectedNeed.laneId) ?? null : null),
@@ -128,6 +138,10 @@ export function RebaseTab({
   );
 
   const hasChildren = (selectedLane?.childCount ?? 0) > 0;
+  const selectedNeedIsPrTarget = React.useMemo(
+    () => (selectedNeed ? isPrTargetNeed(selectedNeed) : false),
+    [isPrTargetNeed, selectedNeed],
+  );
 
   // Auto-default scope based on children
   React.useEffect(() => {
@@ -154,9 +168,9 @@ export function RebaseTab({
   // Auto-select first item in highest-urgency group
   React.useEffect(() => {
     if (rebaseNeeds.length === 0 && selectedItemId === null) return;
-    if (selectedItemId && rebaseNeeds.some((n) => n.laneId === selectedItemId)) return;
-    const first = grouped.attention[0] ?? grouped.clean[0] ?? grouped.recent[0] ?? grouped.upToDate[0];
-    onSelectItem(first?.laneId ?? null);
+    if (selectedItemId && rebaseNeeds.some((need) => rebaseNeedKey(need) === selectedItemId || need.laneId === selectedItemId)) return;
+    const first = grouped.lane_base[0] ?? grouped.pr_target[0];
+    onSelectItem(first ? rebaseNeedKey(first) : null);
   }, [rebaseNeeds, selectedItemId, grouped, onSelectItem]);
 
   React.useEffect(() => {
@@ -242,7 +256,16 @@ export function RebaseTab({
     if (!selectedNeed) return;
     setRebaseError(null);
 
+    if (selectedNeedIsPrTarget && selectedLane?.parentLaneId) {
+      setRebaseError("PR-target rebases are only supported for lanes that are already detached from a parent lane.");
+      return;
+    }
+
     if (aiAssisted) {
+      if (selectedNeedIsPrTarget) {
+        setRebaseError("AI-assisted rebase currently only supports lane-base rebases.");
+        return;
+      }
       setResolverLaunching(true);
       try {
         const result = await window.ade.prs.rebaseResolutionStart({
@@ -266,7 +289,8 @@ export function RebaseTab({
         laneId: selectedNeed.laneId,
         scope: runScope,
         pushMode,
-        actor: "user"
+        actor: "user",
+        ...(selectedNeedIsPrTarget ? { baseBranchOverride: selectedNeed.baseBranch } : {}),
       });
       setActiveRun(started.run);
       setRunLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Started run ${started.runId}`].slice(-80));
@@ -370,11 +394,13 @@ export function RebaseTab({
   };
 
   const renderNeedItem = (need: RebaseNeed) => {
-    const isSelected = need.laneId === selectedItemId;
+    const itemKey = rebaseNeedKey(need);
+    const isSelected = itemKey === selectedItemId;
     const laneName = laneById.get(need.laneId)?.name ?? need.laneId;
+    const kindLabel = isPrTargetNeed(need) ? "PR TARGET" : "LANE BASE";
     return (
       <button
-        key={need.laneId}
+        key={itemKey}
         type="button"
         className={cn(
           "flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-xs transition-colors duration-100",
@@ -390,19 +416,21 @@ export function RebaseTab({
         onMouseLeave={(e) => {
           if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
         }}
-        onClick={() => onSelectItem(need.laneId)}
+        onClick={() => onSelectItem(itemKey)}
       >
         <div className="flex items-center gap-2 min-w-0">
           <StatusDot
             color={need.conflictPredicted ? S.warning : need.behindBy > 0 ? S.info : S.success}
             pulse={need.conflictPredicted}
           />
-          <span
-            className="font-mono font-bold truncate"
-            style={{ fontSize: 11, color: S.textPrimary }}
-          >
-            {laneName}
-          </span>
+          <div className="min-w-0">
+            <div className="font-mono font-bold truncate" style={{ fontSize: 11, color: S.textPrimary }}>
+              {laneName}
+            </div>
+            <div className="font-mono truncate" style={{ fontSize: 10, color: S.textMuted }}>
+              {kindLabel} · {need.baseBranch}
+            </div>
+          </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {need.behindBy > 0 && (
@@ -442,11 +470,9 @@ export function RebaseTab({
     );
   };
 
-  const urgencyGroups: Array<{ key: UrgencyCategory; title: string; color: string; icon: typeof Warning }> = [
-    { key: "attention", title: "Needs Rebase", color: S.warning, icon: Warning },
-    { key: "clean", title: "Ready To Rebase", color: S.info, icon: ArrowsDownUp },
-    { key: "recent", title: "Deferred", color: S.accent, icon: Clock },
-    { key: "upToDate", title: "Resolved Recently", color: S.success, icon: CheckCircle },
+  const urgencyGroups: Array<{ key: RebaseSectionKey; title: string; color: string; icon: typeof Warning }> = [
+    { key: "lane_base", title: "Rebase Against Lane Base", color: S.info, icon: ArrowsDownUp },
+    { key: "pr_target", title: "Rebase Against PR Target", color: S.warning, icon: Warning },
   ];
 
   const resolverTargetLaneId = React.useMemo(() => {
@@ -497,7 +523,7 @@ export function RebaseTab({
               <div style={{ padding: 16 }}>
                 <EmptyState
                   title="All lanes up to date"
-                  description="No lanes need rebasing. This view auto-populates when lanes fall behind their base branch."
+                  description="No lanes need rebasing against their lane base or an open PR target."
                 />
               </div>
             ) : (
@@ -556,7 +582,7 @@ export function RebaseTab({
                       className="font-mono"
                       style={{ fontSize: 11, color: S.textMuted }}
                     >
-                      base: {selectedNeed.baseBranch}
+                      {selectedNeedIsPrTarget ? "PR target" : "base"}: {selectedNeed.baseBranch}
                     </span>
                     {selectedNeed.prId && (
                       <span
@@ -585,6 +611,20 @@ export function RebaseTab({
                 </div>
               </div>
             </div>
+
+            {selectedNeedIsPrTarget ? (
+              <div
+                style={{
+                  backgroundColor: S.headerBg,
+                  padding: "8px 12px",
+                  fontSize: 11,
+                  color: S.textMuted,
+                  marginTop: -4,
+                }}
+              >
+                Rebasing from this section will move the lane&apos;s stored base branch onto {selectedNeed.baseBranch} after the rebase succeeds.
+              </div>
+            ) : null}
 
             {/* ── Drift Analysis Card ── */}
             <div
@@ -969,7 +1009,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="primary"
-                  disabled={rebaseBusy || resolverLaunching || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
+                  disabled={selectedNeedIsPrTarget || rebaseBusy || resolverLaunching || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
                   onClick={() => {
                     if (resolverExpanded) {
                       void handleRebase(true);
@@ -1012,6 +1052,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
+                  disabled={selectedNeedIsPrTarget || rebaseBusy}
                   onClick={() => void handleDefer()}
                   style={{ borderRadius: 0, borderColor: S.borderSubtle }}
                 >
@@ -1023,6 +1064,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
+                  disabled={selectedNeedIsPrTarget || rebaseBusy}
                   onClick={() => void handleDismiss()}
                   style={{ borderRadius: 0, borderColor: S.borderSubtle, color: S.textMuted }}
                 >

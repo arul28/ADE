@@ -1267,4 +1267,77 @@ describe("conflictService conflict context integrity", () => {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
   });
+
+  it("prefers origin/<baseRef> for unparented lanes when the remote has advanced", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-root-base-remote-"));
+    const remoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-root-base-remote-origin-"));
+    const remoteWorkRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-root-base-remote-work-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = randomUUID();
+    const now = "2026-03-24T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now]
+      );
+
+      fs.writeFileSync(path.join(repoRoot, "file.txt"), "base\n", "utf8");
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "ade@test.local"]);
+      git(repoRoot, ["config", "user.name", "ADE Test"]);
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+      git(remoteRoot, ["init", "--bare"]);
+      git(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      git(repoRoot, ["push", "-u", "origin", "main"]);
+
+      git(repoRoot, ["checkout", "-b", "feature/root-lane"]);
+
+      git(remoteWorkRoot, ["clone", remoteRoot, "."]);
+      git(remoteWorkRoot, ["config", "user.email", "ade@test.local"]);
+      git(remoteWorkRoot, ["config", "user.name", "ADE Test"]);
+      fs.writeFileSync(path.join(remoteWorkRoot, "base.txt"), "new base commit\n", "utf8");
+      git(remoteWorkRoot, ["add", "base.txt"]);
+      git(remoteWorkRoot, ["commit", "-m", "base advance"]);
+      git(remoteWorkRoot, ["push", "origin", "main"]);
+
+      git(repoRoot, ["fetch", "origin"]);
+
+      const rootLane = createLaneSummary(repoRoot, {
+        id: "lane-root",
+        name: "Root",
+        branchRef: "feature/root-lane",
+        baseRef: "main",
+        parentLaneId: null,
+      });
+
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          list: async () => [rootLane],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/root-lane" }),
+        } as any,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" }, local: {} }),
+        } as any,
+      });
+
+      const needs = await service.scanRebaseNeeds();
+      expect(needs).toHaveLength(1);
+      expect(needs[0]).toMatchObject({
+        laneId: "lane-root",
+        baseBranch: "main",
+      });
+      expect(needs[0]!.behindBy).toBeGreaterThan(0);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+      fs.rmSync(remoteRoot, { recursive: true, force: true });
+      fs.rmSync(remoteWorkRoot, { recursive: true, force: true });
+    }
+  });
 });

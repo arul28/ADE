@@ -477,11 +477,11 @@ export function createAutoRebaseService(args: {
       while (state.pending) {
         state.pending = false;
         await processRoot(rootLaneId, state.reason);
-        await emit();
+        await emit({ includeAll: true });
       }
     } catch (error) {
       logger.warn("autoRebase.run_failed", { rootLaneId, error: String(error) });
-      await emit();
+      await emit({ includeAll: true });
     } finally {
       state.running = false;
       if (state.pending) {

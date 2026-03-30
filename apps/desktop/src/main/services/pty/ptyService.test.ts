@@ -10,7 +10,6 @@ import type { IPty } from "node-pty";
 const mocks = vi.hoisted(() => {
   const existsSyncResults = new Map<string, boolean>();
   const realpathOverrides = new Map<string, string>();
-  const resolveRealpath = (p: string) => realpathOverrides.get(p) ?? path.resolve(p);
   return {
     existsSyncResults,
     realpathOverrides,
@@ -25,8 +24,8 @@ const mocks = vi.hoisted(() => {
       return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
     }),
     realpathSync: Object.assign(
-      vi.fn((p: string) => resolveRealpath(p)),
-      { native: vi.fn((p: string) => resolveRealpath(p)) },
+      vi.fn((p: string) => p),
+      { native: vi.fn((p: string) => p) },
     ),
     statSync: vi.fn((p: string) => {
       if ((existsSyncResults.get(p) ?? true) === false) {
@@ -242,6 +241,9 @@ describe("ptyService", () => {
     vi.clearAllMocks();
     mocks.existsSyncResults.clear();
     mocks.realpathOverrides.clear();
+    const resolveRealpath = (p: string) => mocks.realpathOverrides.get(p) ?? path.resolve(p);
+    mocks.realpathSync.mockImplementation((p: string) => resolveRealpath(p));
+    mocks.realpathSync.native.mockImplementation((p: string) => resolveRealpath(p));
     mocks.existsSyncResults.set("/tmp/test-worktree", true);
     let counter = 0;
     mocks.randomUUID.mockImplementation(() => `uuid-${++counter}`);
@@ -673,6 +675,52 @@ describe("ptyService", () => {
       expect(sessionService.end).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId, exitCode: null, status: "completed" }),
       );
+    });
+
+    it("does not auto-close user-launched Claude sessions when they become waiting-input", async () => {
+      vi.useFakeTimers();
+      try {
+        mocks.runtimeStateFromOsc133Chunk.mockReturnValue("waiting-input");
+        const { service, mockPty } = createHarness();
+        await service.create({ laneId: "lane-1", title: "Claude", cols: 80, rows: 24, toolType: "claude" });
+
+        await vi.advanceTimersByTimeAsync(6000);
+        mockPty._emitter.emit("data", "\u001b]133;A\u0007");
+        await vi.advanceTimersByTimeAsync(2000);
+
+        expect(mockPty.kill).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("still auto-closes orchestrated worker sessions after the wrapped CLI exits", async () => {
+      vi.useFakeTimers();
+      try {
+        mocks.runtimeStateFromOsc133Chunk.mockReturnValue("waiting-input");
+        const { service, mockPty, logger } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Claude worker",
+          cols: 80,
+          rows: 24,
+          toolType: "claude-orchestrated",
+        });
+
+        await vi.advanceTimersByTimeAsync(6000);
+        mockPty._emitter.emit("data", "\u001b]133;A\u0007");
+        await vi.advanceTimersByTimeAsync(1499);
+        expect(mockPty.kill).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(mockPty.kill).toHaveBeenCalledTimes(1);
+        expect(logger.info).toHaveBeenCalledWith(
+          "pty.tool_exit_auto_close",
+          expect.objectContaining({ sessionId, toolType: "claude-orchestrated" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

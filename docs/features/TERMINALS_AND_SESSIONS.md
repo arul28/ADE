@@ -28,6 +28,12 @@ Tracked sessions still feed history, lane refresh, conflict follow-up, and missi
 
 ## Current renderer behavior
 
+### Work view session grid
+
+The Work tab renders active sessions in a responsive card grid (`WorkViewArea`). The grid uses CSS `auto-fill` with `minmax(min(100%, 360px), 1fr)` columns and `minmax(240px, 33vh)` row heights, so card count per row adjusts fluidly to the viewport width without fixed breakpoints. Each card wraps a `SessionSurface` (live terminal via xterm.js or agent chat pane) and supports right-click context menus for session-level actions.
+
+The grid view and a single-session focused view are toggled via a view mode selector in the Work tab header.
+
 ### Shared session-list cache
 
 The renderer now deduplicates repeated `ade.sessions.list` calls through a small shared cache layer. This cache is used by multiple surfaces that previously issued overlapping requests independently.
@@ -76,7 +82,17 @@ The lifecycle model remains the same:
 4. finalize end state and deltas
 5. notify downstream systems such as history, lane refresh, and memory hooks
 
-The important change is that UI observers now subscribe more selectively and reuse cached list results where possible.
+UI observers subscribe selectively and reuse cached list results where possible.
+
+### Refresh-before-activate ordering
+
+When a new session is created or an existing session is opened, the renderer refreshes the session list *before* activating the session tab. This ensures the new session exists in `sessionsById` when the UI resolves `activeSession` for the tab. Without this ordering, the active item ID would point to an unknown session and the view would fall back to the most recent session or display a blank pane until the next refresh cycle.
+
+This pattern applies across all session-creation and session-opening paths:
+
+- `useWorkSessions` and `useLaneWorkSessions`: `refresh()` is called and awaited before `focusSession()` and `openSessionTab()`.
+- `TerminalsPage`: `work.refresh()` is awaited before `work.openSessionTab()`.
+- `AgentChatPane`: The `onSessionCreated` and `refreshSessions` callbacks are awaited (not fire-and-forget) so that the parent surface navigates the user to the chat tab before the first agent turn begins.
 
 ---
 

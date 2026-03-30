@@ -113,6 +113,10 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   unstable_v2_resumeSession: vi.fn(),
 }));
 
+vi.mock("../ai/codexExecutable", () => ({
+  resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),
+}));
+
 vi.mock("../ai/providerResolver", () => ({
   normalizeCliMcpServers: vi.fn(() => ({})),
   isModelCliWrapped: vi.fn((modelId: string) => !String(modelId).endsWith("-api")),
@@ -209,6 +213,7 @@ import {
   buildComputerUseDirective,
   createAgentChatService,
 } from "./agentChatService";
+import { spawn } from "node:child_process";
 import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
 import { createUniversalToolSet } from "../ai/tools/universalTools";
@@ -1965,6 +1970,58 @@ describe("createAgentChatService", () => {
       expect(sessionService.end).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: session.id }),
       );
+    });
+
+    it("evicts disposed chats from the live managed session cache", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      expect(service.getSlashCommands({ sessionId: session.id })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "/clear" }),
+        ]),
+      );
+
+      await service.dispose({ sessionId: session.id });
+
+      expect(service.getSlashCommands({ sessionId: session.id })).toEqual([]);
+    });
+
+    it("terminates the Codex runtime process tree when disposing a live Codex chat", async () => {
+      const processKillSpy = vi.spyOn(process, "kill").mockImplementation(() => true as any);
+      vi.useFakeTimers();
+      try {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Inspect the repo",
+        });
+
+        await service.dispose({ sessionId: session.id });
+
+        expect(spawn).toHaveBeenCalledWith(
+          "codex",
+          ["app-server"],
+          expect.objectContaining({ detached: process.platform !== "win32" }),
+        );
+        expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGTERM");
+
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGKILL");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("throws when disposing an unknown session", async () => {

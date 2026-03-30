@@ -501,7 +501,7 @@ export function useWorkSessions() {
   };
 
   const closeSession = useCallback(
-    async (ptyId: string) => {
+    async (ptyId: string, sessionId?: string) => {
       setClosingPtyIds((prev) => {
         const next = new Set(prev);
         next.add(ptyId);
@@ -509,7 +509,7 @@ export function useWorkSessions() {
       });
       markPtyClosed(ptyId);
       try {
-        await window.ade.pty.dispose({ ptyId });
+        await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
       } finally {
         setClosingPtyIds((prev) => {
           const next = new Set(prev);

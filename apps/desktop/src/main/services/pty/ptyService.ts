@@ -239,10 +239,11 @@ export function createPtyService({
     return ai?.sessionIntelligence;
   };
 
-  /** Tool types that run a CLI tool inside the shell and should auto-close when the tool exits */
+  /** Only orchestrated worker sessions auto-close after the wrapped CLI exits back to shell. */
   const TOOL_TYPES_WITH_AUTO_CLOSE = new Set<TerminalToolType>([
-    "claude", "codex", "claude-orchestrated", "codex-orchestrated",
-    "aider", "cursor", "continue"
+    "claude-orchestrated",
+    "codex-orchestrated",
+    "ai-orchestrated"
   ]);
 
   const clearToolAutoCloseTimer = (ptyId: string) => {

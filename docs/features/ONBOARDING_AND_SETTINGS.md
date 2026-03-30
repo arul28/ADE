@@ -79,6 +79,9 @@ Settings owns durable configuration and infrastructure concerns, organized into 
 - **Memory** — consolidated memory management with two sub-tabs:
   - *Overview* — memory health, scope summaries, promotion status, embedding progress and health monitoring (service state, queue depth, error rates)
   - *Browse All* — full browser for learned memory across all scopes (project, agent, mission) and tiers (Tier 1 Pinned, Tier 2 Active, Tier 3 Fading). Memories that back indexed skill files are hidden from the generic browser and managed via the Workspace skill-file surface; the Memory tab shows a summary card linking there instead.
+- **Lane Templates** — lane template management and lane behavior configuration:
+  - *Templates* — CRUD for reusable lane initialization recipes (env files, docker, dependencies, mount points, port ranges, env vars, setup scripts). Supports setting a project-level default template for new lanes.
+  - *Lane Behavior* — auto-rebase toggle for stacked lanes and lane cleanup/lifecycle policy (max active lanes, auto-archive inactivity threshold, scan interval, archived lane deletion period, remote branch cleanup on auto-delete).
 - **Integrations** — GitHub, Linear, and related connectivity state; automation defaults and credentials. When a stored GitHub token cannot be decrypted (e.g., keychain migration or corruption), the service sets a `tokenDecryptionFailed` flag, logs a WARN-level message, and the UI displays a banner prompting the user to re-authenticate rather than silently failing GitHub operations.
 - **Sync & Devices** — multi-device sync management (Phase 6):
   - Local device identity and rename controls

@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
-import { isWithinDir } from "../shared/utils";
+import { isWithinDir, normalizeBranchName } from "../shared/utils";
 import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
 import type { createOperationService } from "../history/operationService";
@@ -277,6 +277,42 @@ async function resolveParentRebaseTarget(args: {
 
 function describeParentRebaseTarget(parent: LaneRow, label: string): string {
   return label === parent.name ? parent.name : `${parent.name} (${label})`;
+}
+
+async function resolveBranchRebaseTarget(args: {
+  projectRoot: string;
+  branchRef: string;
+  preferRemote: boolean;
+}): Promise<{ headSha: string; label: string; branchName: string }> {
+  const branchName = normalizeBranchName(args.branchRef).trim();
+  if (!branchName) throw new Error("Base branch is empty.");
+  if (args.preferRemote) {
+    await fetchRemoteTrackingBranch({
+      projectRoot: args.projectRoot,
+      targetBranch: branchName,
+    }).catch(() => {});
+  }
+
+  const candidateRefs = args.preferRemote
+    ? [`origin/${branchName}`, branchName]
+    : [branchName, `origin/${branchName}`];
+
+  for (const ref of candidateRefs) {
+    const res = await runGit(
+      ["rev-parse", "--verify", ref],
+      { cwd: args.projectRoot, timeoutMs: 5_000 },
+    );
+    const sha = res.exitCode === 0 ? res.stdout.trim() : "";
+    if (sha) {
+      return { headSha: sha, label: ref, branchName };
+    }
+  }
+
+  throw new Error(`Unable to resolve base branch "${branchName}".`);
+}
+
+function describeBranchRebaseTarget(branchName: string, label: string): string {
+  return label === branchName ? branchName : `${branchName} (${label})`;
 }
 
 function computeStackDepth(args: {
@@ -1437,6 +1473,8 @@ export function createLaneService({
       const pushMode: PushMode = args.pushMode ?? "none";
       const actor = typeof args.actor === "string" && args.actor.trim().length ? args.actor.trim() : "user";
       const reason = typeof args.reason === "string" && args.reason.trim().length ? args.reason.trim() : "rebase";
+      const baseBranchOverride = normalizeBranchName(args.baseBranchOverride ?? "").trim();
+      const persistBaseBranch = baseBranchOverride.length > 0;
 
       const target = getLaneRow(args.laneId);
       if (!target) throw new Error(`Lane not found: ${args.laneId}`);
@@ -1478,28 +1516,20 @@ export function createLaneService({
         startedAt,
         finishedAt: null,
         actor,
-        baseBranch: target.base_ref,
+        baseBranch: baseBranchOverride || target.base_ref,
         lanes,
         currentLaneId: null,
         failedLaneId: null,
         error: null,
         pushedLaneIds: [],
-        canRollback: false
+        canRollback: false,
+        rootBaseRefBefore: target.base_ref,
+        rootBaseRefAfter: baseBranchOverride || target.base_ref,
       };
 
       rebaseRuns.set(runId, run);
       emitRunLog({ runId, laneId: null, message: `Starting rebase run (${scope})` });
       emitRunUpdated(run);
-
-      if (!target.parent_lane_id) {
-        run.state = "failed";
-        run.error = "Lane has no parent; nothing to rebase.";
-        run.finishedAt = new Date().toISOString();
-        run.canRollback = false;
-        emitRunLog({ runId, laneId: target.id, message: run.error });
-        emitRunUpdated(run);
-        return { runId, run: cloneRebaseRun(run) };
-      }
 
       const failRunAtLane = (laneItem: RebaseRunLane, laneId: string, index: number, errorMsg: string): void => {
         laneItem.status = "blocked";
@@ -1522,32 +1552,57 @@ export function createLaneService({
           continue;
         }
 
-        if (!lane.parent_lane_id) {
-          laneItem.status = "skipped";
-          laneItem.error = "Primary lane has no parent to rebase against.";
-          continue;
-        }
-
-        const parent = getLaneRow(lane.parent_lane_id);
-        if (!parent) {
-          failRunAtLane(laneItem, lane.id, index, `Parent lane not found for ${lane.name}`);
-          break;
-        }
-
-        let parentTarget: { headSha: string; label: string };
+        const isRootLane = index === 0 && lane.id === target.id;
+        let parentHead = "";
+        let parentTargetLabel = "";
+        let operationMetadata: Record<string, unknown> = {
+          reason,
+          recursive: scope === "lane_and_descendants",
+        };
         try {
-          parentTarget = await resolveParentRebaseTarget({ projectRoot, parent });
+          if (isRootLane && !lane.parent_lane_id) {
+            const branchTarget = await resolveBranchRebaseTarget({
+              projectRoot,
+              branchRef: baseBranchOverride || lane.base_ref,
+              preferRemote: true,
+            });
+            parentHead = branchTarget.headSha;
+            parentTargetLabel = describeBranchRebaseTarget(branchTarget.branchName, branchTarget.label);
+            operationMetadata = {
+              ...operationMetadata,
+              baseBranchRef: branchTarget.branchName,
+              baseTargetRef: branchTarget.label,
+              baseHeadSha: branchTarget.headSha,
+            };
+          } else {
+            if (!lane.parent_lane_id) {
+              failRunAtLane(laneItem, lane.id, index, `${lane.name} has no parent lane to rebase against.`);
+              break;
+            }
+            const parent = getLaneRow(lane.parent_lane_id);
+            if (!parent) {
+              failRunAtLane(laneItem, lane.id, index, `Parent lane not found for ${lane.name}`);
+              break;
+            }
+            const parentTarget = await resolveParentRebaseTarget({ projectRoot, parent });
+            parentHead = parentTarget.headSha;
+            parentTargetLabel = describeParentRebaseTarget(parent, parentTarget.label);
+            operationMetadata = {
+              ...operationMetadata,
+              parentLaneId: parent.id,
+              parentBranchRef: parent.branch_ref,
+              parentHeadSha: parentHead,
+            };
+          }
         } catch (error) {
           failRunAtLane(
             laneItem,
             lane.id,
             index,
-            error instanceof Error ? error.message : `Unable to resolve parent HEAD for ${parent.name}`,
+            error instanceof Error ? error.message : `Unable to resolve rebase target for ${lane.name}`,
           );
           break;
         }
-        const parentHead = parentTarget.headSha;
-        const parentTargetLabel = describeParentRebaseTarget(parent, parentTarget.label);
 
         run.currentLaneId = lane.id;
         laneItem.preHeadSha = await getHeadSha(lane.worktree_path);
@@ -1573,7 +1628,7 @@ export function createLaneService({
           continue;
         }
         if (alreadyCurrent.exitCode !== 1) {
-          failRunAtLane(laneItem, lane.id, index, alreadyCurrent.stderr.trim() || `Unable to compare ${lane.name} with ${parent.name}`);
+          failRunAtLane(laneItem, lane.id, index, alreadyCurrent.stderr.trim() || `Unable to compare ${lane.name} with ${parentTargetLabel}`);
           break;
         }
 
@@ -1599,13 +1654,7 @@ export function createLaneService({
           laneId: lane.id,
           kind: "lane_rebase",
           preHeadSha: laneItem.preHeadSha,
-          metadata: {
-            reason,
-            parentLaneId: parent.id,
-            parentBranchRef: parent.branch_ref,
-            parentHeadSha: parentHead,
-            recursive: scope === "lane_and_descendants"
-          }
+          metadata: operationMetadata,
         });
 
         const rebaseRes = await runGit(["rebase", parentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
@@ -1686,6 +1735,13 @@ export function createLaneService({
       if (run.state === "running") {
         run.state = "completed";
       }
+      if (run.state === "completed" && persistBaseBranch && target.base_ref !== baseBranchOverride) {
+        db.run(
+          "update lanes set parent_lane_id = null, base_ref = ? where id = ? and project_id = ?",
+          [baseBranchOverride, target.id, projectId],
+        );
+        invalidateLaneListCache();
+      }
       run.canRollback = run.lanes.some((lane) => lane.status === "succeeded");
       emitRunUpdated(run);
       return { runId, run: cloneRebaseRun(run) };
@@ -1752,6 +1808,14 @@ export function createLaneService({
             // ignore callback failures
           }
         }
+      }
+
+      if (run.rootBaseRefBefore && run.rootBaseRefAfter && run.rootBaseRefBefore !== run.rootBaseRefAfter) {
+        db.run(
+          "update lanes set base_ref = ? where id = ? and project_id = ?",
+          [run.rootBaseRefBefore, run.rootLaneId, projectId],
+        );
+        invalidateLaneListCache();
       }
 
       run.state = "aborted";

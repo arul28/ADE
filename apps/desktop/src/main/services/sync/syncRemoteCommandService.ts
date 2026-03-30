@@ -232,6 +232,7 @@ function parseRebaseStartArgs(value: Record<string, unknown>): RebaseStartArgs {
     ...(asTrimmedString(value.pushMode) ? { pushMode: value.pushMode as RebaseStartArgs["pushMode"] } : {}),
     ...(asTrimmedString(value.actor) ? { actor: asTrimmedString(value.actor)! } : {}),
     ...(asTrimmedString(value.reason) ? { reason: asTrimmedString(value.reason)! } : {}),
+    ...(asTrimmedString(value.baseBranchOverride) ? { baseBranchOverride: asTrimmedString(value.baseBranchOverride)! } : {}),
   };
 }
 

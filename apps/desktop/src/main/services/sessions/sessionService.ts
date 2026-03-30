@@ -9,7 +9,7 @@ import type {
   UpdateSessionMetaArgs
 } from "../../../shared/types";
 import { stripAnsi } from "../../utils/ansiStrip";
-import { defaultResumeCommandForTool } from "../../utils/terminalSessionSignals";
+import { defaultResumeCommandForTool, normalizeResumeCommand } from "../../utils/terminalSessionSignals";
 
 type SessionRow = {
   id: string;
@@ -84,16 +84,19 @@ export function createSessionService({ db }: { db: AdeDb }) {
     return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
   };
 
-  const mapRow = (row: SessionRow) => ({
-    ...row,
-    tracked: row.tracked === 1,
-    pinned: row.pinned === 1,
-    goal: row.goal ?? null,
-    toolType: normalizeToolType(row.toolType),
-    summary: row.summary ?? null,
-    runtimeState: runtimeStateFromStatus(row.status),
-    resumeCommand: row.resumeCommand ?? null,
-  });
+  const mapRow = (row: SessionRow) => {
+    const toolType = normalizeToolType(row.toolType);
+    return {
+      ...row,
+      tracked: row.tracked === 1,
+      pinned: row.pinned === 1,
+      goal: row.goal ?? null,
+      toolType,
+      summary: row.summary ?? null,
+      runtimeState: runtimeStateFromStatus(row.status),
+      resumeCommand: normalizeResumeCommand(row.resumeCommand, toolType),
+    };
+  };
 
   const list =({ laneId, status, limit }: { laneId?: string; status?: TerminalSessionStatus; limit?: number } = {}) => {
     const where: string[] = [];
@@ -198,9 +201,12 @@ export function createSessionService({ db }: { db: AdeDb }) {
       }
 
       if (args.resumeCommand !== undefined) {
-        const next = typeof args.resumeCommand === "string" ? args.resumeCommand.trim() : "";
+        const next = normalizeResumeCommand(
+          args.resumeCommand,
+          args.toolType === undefined ? undefined : normalizeToolType(args.toolType),
+        );
         sets.push("resume_command = ?");
-        params.push(next || null);
+        params.push(next);
       }
 
       if (sets.length) {
@@ -245,10 +251,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
       resumeCommand?: string | null;
     }): void {
       const normalizedToolType = normalizeToolType(toolType);
-      const normalizedResumeCommand =
-        typeof resumeCommand === "string" && resumeCommand.trim().length
-          ? resumeCommand.trim()
-          : defaultResumeCommandForTool(normalizedToolType);
+      const normalizedResumeCommand = normalizeResumeCommand(
+        resumeCommand,
+        normalizedToolType,
+      ) ?? defaultResumeCommandForTool(normalizedToolType);
       db.run(
         `
           insert into terminal_sessions(
@@ -303,8 +309,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     setResumeCommand(sessionId: string, resumeCommand: string | null): void {
-      const next = typeof resumeCommand === "string" ? resumeCommand.trim() : "";
-      db.run("update terminal_sessions set resume_command = ? where id = ?", [next || null, sessionId]);
+      const next = normalizeResumeCommand(resumeCommand);
+      db.run("update terminal_sessions set resume_command = ? where id = ?", [next, sessionId]);
     },
 
     end({

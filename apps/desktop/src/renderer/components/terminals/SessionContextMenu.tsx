@@ -19,7 +19,7 @@ export function SessionContextMenu({
 }: {
   menu: SessionContextMenuState;
   onClose: () => void;
-  onCloseSession: (ptyId: string) => void;
+  onCloseSession: (args: { ptyId: string; sessionId: string }) => void;
   onEndChat: (sessionId: string) => void;
   onResume: (session: TerminalSessionSummary) => void;
   onCopyResumeCommand: (command: string) => void;
@@ -47,7 +47,7 @@ export function SessionContextMenu({
         {isRunning && session.ptyId && !isChat ? (
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onCloseSession(session.ptyId!); onClose(); }}
+            onClick={() => { onCloseSession({ ptyId: session.ptyId!, sessionId: session.id }); onClose(); }}
           >
             Close terminal
           </button>

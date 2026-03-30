@@ -122,7 +122,7 @@ describe("autoRebaseService", () => {
     };
     conflictService = {
       getRebaseNeed: vi.fn(async (laneId: string) => resolveNeed(laneId)),
-      scanRebaseNeeds: vi.fn(async () => laneList.map((lane) => resolveNeed(lane.id)).filter((need): need is RebaseNeed => need !== null)),
+      scanRebaseNeeds: vi.fn(async () => []),
     };
     projectConfigService = {
       getEffective: vi.fn(() => ({ git: { autoRebaseOnHeadChange: true } })),
@@ -598,6 +598,9 @@ describe("autoRebaseService", () => {
       });
       laneList = [root, child];
       rebaseNeedOverrides.set("child-1", { behindBy: 3, conflictPredicted: false, conflictingFiles: [] });
+      conflictService.scanRebaseNeeds.mockResolvedValue(
+        laneList.map((lane) => makeRebaseNeed(lane, rebaseNeedOverrides.get(lane.id) ?? undefined)).filter((n) => n.behindBy > 0),
+      );
 
       await service.refreshActiveRebaseNeeds("merge_completed");
       await vi.advanceTimersByTimeAsync(1500);
@@ -759,6 +762,10 @@ describe("autoRebaseService", () => {
         conflictPredicted: false,
         conflictingFiles: [],
       });
+      conflictService.scanRebaseNeeds.mockResolvedValue([
+        makeRebaseNeed(childA, rebaseNeedOverrides.get("child-a")!),
+        makeRebaseNeed(childB, rebaseNeedOverrides.get("child-b")!),
+      ]);
 
       await service.refreshActiveRebaseNeeds("merge_completed");
       await vi.advanceTimersByTimeAsync(1500);

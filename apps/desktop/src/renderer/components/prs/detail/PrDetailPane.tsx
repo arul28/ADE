@@ -20,6 +20,7 @@ import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge, Pr
 import { PrIssueResolverModal } from "../shared/PrIssueResolverModal";
 import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
 import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
+import { describePrTargetDiff } from "../shared/laneBranchTargets";
 import { usePrs } from "../state/PrsContext";
 
 // ---- Sub-tab type ----
@@ -1144,6 +1145,10 @@ function OverviewTab(props: OverviewTabProps) {
   const [checksExpanded, setChecksExpanded] = React.useState(false);
   const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(mergeMethod);
   const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
+  const laneForPr = React.useMemo(
+    () => lanes.find((lane) => lane.id === pr.laneId) ?? null,
+    [lanes, pr.laneId],
+  );
 
   React.useEffect(() => {
     setLocalMergeMethod(mergeMethod);
@@ -1218,6 +1223,48 @@ function OverviewTab(props: OverviewTabProps) {
             <StatusSignal label="Deletions" value={`-${pr.deletions}`} color={COLORS.danger} />
           </div>
         </div>
+
+        {(() => {
+          const targetDiffMessage = describePrTargetDiff({
+            lane: laneForPr,
+            lanes,
+            targetBranch: pr.baseBranch,
+          });
+          if (!targetDiffMessage || pr.state !== "open") return null;
+          return (
+            <div style={{
+              ...cardStyle({ padding: 0, overflow: "hidden" }),
+              flexShrink: 0,
+              borderColor: `${COLORS.info}30`,
+              background: `linear-gradient(135deg, ${COLORS.info}08 0%, transparent 60%)`,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+                <Warning size={18} weight="fill" style={{ color: COLORS.info, flexShrink: 0, filter: `drop-shadow(0 0 4px ${COLORS.info}40)` }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
+                    PR target differs from lane base
+                  </span>
+                  <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, marginLeft: 8 }}>
+                    {targetDiffMessage}
+                  </span>
+                </div>
+                {props.onOpenRebaseTab && (
+                  <button
+                    type="button"
+                    onClick={() => props.onOpenRebaseTab?.(pr.laneId)}
+                    style={outlineButton({
+                      height: 30, padding: "0 14px",
+                      color: COLORS.info,
+                      borderColor: `${COLORS.info}40`,
+                    })}
+                  >
+                    <ArrowsClockwise size={13} weight="bold" /> View Rebase Details
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ---- Rebase Banner (when PR is behind base branch — checks both GitHub API and local lane status) ---- */}
         {(() => {

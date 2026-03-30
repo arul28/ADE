@@ -217,6 +217,7 @@ type CodexRuntime = {
   kind: "codex";
   process: ChildProcessWithoutNullStreams;
   reader: readline.Interface;
+  killTimer: NodeJS.Timeout | null;
   suppressExitError: boolean;
   nextRequestId: number;
   pending: Map<string, PendingRpc>;
@@ -437,6 +438,95 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   if ((rt.kind === "unified" || rt.kind === "claude") && rt.busy) return { ready: false, reason: "Turn already active" };
   if (rt.kind === "unified" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
   return { ready: true };
+}
+
+function isSignalPermissionError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "EPERM");
+}
+
+function isProcessAlive(pid: number | null): boolean {
+  if (pid == null || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isSignalPermissionError(error);
+  }
+}
+
+function isProcessGroupAlive(pid: number | null): boolean {
+  if (process.platform === "win32") return false;
+  if (pid == null || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return isSignalPermissionError(error);
+  }
+}
+
+function signalChildProcessTree(
+  child: ChildProcessWithoutNullStreams,
+  signal: NodeJS.Signals,
+): boolean {
+  const pid = child.pid ?? null;
+  if (process.platform !== "win32" && pid != null && Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(-pid, signal);
+      return true;
+    } catch {
+      // Fall through to direct child signaling if the process group is gone.
+    }
+  }
+
+  try {
+    child.kill(signal);
+    return true;
+  } catch {
+    // Fall through to direct PID signaling if the child wrapper rejects the signal.
+  }
+
+  if (pid == null || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function terminateChildProcessTree(
+  child: ChildProcessWithoutNullStreams,
+  previousKillTimer: NodeJS.Timeout | null,
+  killAfterMs = 1500,
+): NodeJS.Timeout | null {
+  if (previousKillTimer) {
+    clearTimeout(previousKillTimer);
+  }
+
+  try {
+    child.stdin.end();
+  } catch {
+    // ignore
+  }
+
+  const pid = child.pid ?? null;
+  const signaled = signalChildProcessTree(child, "SIGTERM");
+  if (!signaled || pid == null || !Number.isInteger(pid) || pid <= 0 || killAfterMs <= 0) {
+    return null;
+  }
+
+  const timer = setTimeout(() => {
+    if (process.platform !== "win32") {
+      if (!isProcessGroupAlive(pid)) return;
+      signalChildProcessTree(child, "SIGKILL");
+      return;
+    }
+    if (!isProcessAlive(pid)) return;
+    signalChildProcessTree(child, "SIGKILL");
+  }, killAfterMs);
+  timer.unref?.();
+  return timer;
 }
 
 function trimLine(value: string | null | undefined): string | null {
@@ -3022,7 +3112,7 @@ export function createAgentChatService(args: {
     });
     const laneWorktreeChanged = managed.laneWorktreePath !== launchContext.laneWorktreePath;
     managed.laneWorktreePath = launchContext.laneWorktreePath;
-    if (laneWorktreeChanged && (managed.runtime?.kind === "claude" || managed.runtime?.kind === "codex")) {
+    if (laneWorktreeChanged && (managed.runtime?.kind === "claude" || managed.runtime?.kind === "codex" || managed.runtime?.kind === "unified")) {
       teardownRuntime(managed);
       refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
     }
@@ -3745,7 +3835,10 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "codex") {
       managed.runtime.suppressExitError = true;
       try { managed.runtime.reader.close(); } catch { /* ignore */ }
-      try { managed.runtime.process.kill(); } catch { /* ignore */ }
+      managed.runtime.killTimer = terminateChildProcessTree(
+        managed.runtime.process,
+        managed.runtime.killTimer,
+      );
       managed.runtime.pending.clear();
       managed.runtime.approvals.clear();
       managed.runtime = null;
@@ -3959,6 +4052,8 @@ export function createAgentChatService(args: {
     } catch {
       // ignore callback failures
     }
+
+    managedSessions.delete(managed.session.id);
   };
 
   const ensureManagedSession = (sessionId: string): ManagedChatSession => {
@@ -6723,7 +6818,8 @@ export function createAgentChatService(args: {
     }
     const proc = spawn(codexExecutable, ["app-server"], {
       cwd: managed.laneWorktreePath,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
 
     const reader = readline.createInterface({ input: proc.stdout });
@@ -6733,6 +6829,7 @@ export function createAgentChatService(args: {
       kind: "codex",
       process: proc,
       reader,
+      killTimer: null,
       suppressExitError: false,
       nextRequestId: 1,
       pending,
@@ -6867,6 +6964,10 @@ export function createAgentChatService(args: {
 
     proc.on("exit", (code, signal) => {
       const message = `Codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      if (runtime.killTimer) {
+        clearTimeout(runtime.killTimer);
+        runtime.killTimer = null;
+      }
 
       for (const request of pending.values()) {
         request.reject(new Error(message));
@@ -8870,6 +8971,7 @@ export function createAgentChatService(args: {
 
       if (managed.runtime && modelChanged) {
         teardownRuntime(managed);
+        managed.lastLaneDirectiveKey = null;
         refreshReconstructionContext(managed, { includeConversationTail: true });
       }
 

@@ -154,6 +154,7 @@ ADE uses multiple layout systems depending on surface complexity:
 - `PaneTilingLayout`: recursive pane trees for high-density workspaces
 - `SplitPane` / resizable panels: 2-pane and 3-pane structured views
 - Floating pane primitives for modular lane/conflict/terminal sub-surfaces
+- **Work view session grid** (`WorkViewArea`): CSS Grid with `auto-fill` and `minmax` for fluid responsive session card layout that adapts to viewport width without fixed breakpoints
 
 Layout state persistence is backed by IPC calls into local SQLite (`layout`, `tilingTree`, `graphState` domains).
 
