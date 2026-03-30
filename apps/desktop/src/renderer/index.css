@@ -1789,7 +1789,8 @@ button:active, [role="button"]:active {
   .ade-glow-pulse-red,
   .ade-glow-pulse-amber,
   .ade-conflict-breathe,
-  .ade-float {
+  .ade-float,
+  .pull-btn-flash {
     animation: none !important;
   }
   /* Dropdown item stagger — instant appearance under reduced motion */

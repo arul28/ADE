@@ -3538,6 +3538,29 @@ export function registerIpc({
     return { laneId: record.laneId };
   };
 
+  const parseAgentChatCancelSteerArgs = (
+    value: unknown,
+  ): AgentChatCancelSteerArgs => {
+    const record = requireRecord(value, "Agent chat cancel steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat cancel steer sessionId must be a non-empty string");
+    }
+    return { sessionId: record.sessionId };
+  };
+
+  const parseAgentChatEditSteerArgs = (
+    value: unknown,
+  ): AgentChatEditSteerArgs => {
+    const record = requireRecord(value, "Agent chat edit steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat edit steer sessionId must be a non-empty string");
+    }
+    if (typeof record.text !== "string") {
+      throw new Error("Agent chat edit steer text must be a string");
+    }
+    return { sessionId: record.sessionId, text: record.text };
+  };
+
   ipcMain.handle(IPC.lanesOAuthGetStatus, async () => {
     const ctx = getCtx();
     return ctx.oauthRedirectService?.getStatus() ?? {
@@ -3740,14 +3763,14 @@ export function registerIpc({
     await ctx.agentChatService.steer(arg);
   });
 
-  ipcMain.handle(IPC.agentChatCancelSteer, async (_event, arg: AgentChatCancelSteerArgs): Promise<void> => {
+  ipcMain.handle(IPC.agentChatCancelSteer, async (_event, arg: unknown): Promise<void> => {
     const ctx = getCtx();
-    await ctx.agentChatService.cancelSteer(arg);
+    await ctx.agentChatService.cancelSteer(parseAgentChatCancelSteerArgs(arg));
   });
 
-  ipcMain.handle(IPC.agentChatEditSteer, async (_event, arg: AgentChatEditSteerArgs): Promise<void> => {
+  ipcMain.handle(IPC.agentChatEditSteer, async (_event, arg: unknown): Promise<void> => {
     const ctx = getCtx();
-    await ctx.agentChatService.editSteer(arg);
+    await ctx.agentChatService.editSteer(parseAgentChatEditSteerArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {

@@ -45,7 +45,7 @@ describe("terminalAttention", () => {
 
     it("returns a solid red dot for an ended session", () => {
       const dot = sessionStatusDot({
-        status: "exited",
+        status: "completed",
         lastOutputPreview: "Process exited with code 0",
       });
       expect(dot.spinning).toBe(false);

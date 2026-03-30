@@ -22,7 +22,7 @@ const tabTrigger =
 
 function statusDotCls(indicator: ReturnType<typeof sessionIndicatorState>): string {
   if (indicator === "running-active") return "border-2 border-emerald-500 border-t-transparent bg-transparent";
-  if (indicator === "running-needs-attention") return "bg-amber-400";
+  if (indicator === "running-needs-attention") return "bg-amber-300";
   return "bg-red-500";
 }
 

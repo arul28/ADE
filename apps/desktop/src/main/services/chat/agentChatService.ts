@@ -49,6 +49,7 @@ import {
 } from "../../../shared/types";
 import type {
   AgentChatApprovalDecision,
+  AgentChatCancelSteerArgs,
   AgentChatClaudePermissionMode,
   AgentChatCompletionReport,
   AgentChatCodexApprovalPolicy,
@@ -56,6 +57,7 @@ import type {
   AgentChatCodexSandbox,
   AgentChatCreateArgs,
   AgentChatDisposeArgs,
+  AgentChatEditSteerArgs,
   AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
@@ -8355,6 +8357,14 @@ export function createAgentChatService(args: {
     await executePreparedSendMessage(preparedSteer);
   };
 
+  const cancelSteer = async ({ sessionId }: AgentChatCancelSteerArgs): Promise<void> => {
+    await interrupt({ sessionId });
+  };
+
+  const editSteer = async ({ sessionId, text }: AgentChatEditSteerArgs): Promise<void> => {
+    await steer({ sessionId, text });
+  };
+
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
 
@@ -9349,6 +9359,8 @@ export function createAgentChatService(args: {
     sendMessage,
     runSessionTurn,
     steer,
+    cancelSteer,
+    editSteer,
     interrupt,
     resumeSession,
     listSessions,

@@ -285,7 +285,7 @@ describe("prService.createFromLane", () => {
       }
       // All subsequent GETs (fetchPr, checks, reviews, comments, files, actions)
       return {
-        data: args.path.includes("/pulls/99") && !args.path.includes("/")
+        data: args.path.endsWith("/pulls/99")
           ? {
               number: 99,
               html_url: "https://github.com/test-owner/test-repo/pull/99",

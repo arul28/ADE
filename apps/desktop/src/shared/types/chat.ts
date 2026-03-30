@@ -580,6 +580,15 @@ export type AgentChatSteerArgs = {
   text: string;
 };
 
+export type AgentChatCancelSteerArgs = {
+  sessionId: string;
+};
+
+export type AgentChatEditSteerArgs = {
+  sessionId: string;
+  text: string;
+};
+
 export type AgentChatInterruptArgs = {
   sessionId: string;
 };

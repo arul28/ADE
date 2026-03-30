@@ -611,7 +611,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByTestId("location").textContent).toBe("/files::{\"laneId\":\"lane-123\"}");
   });
 
-  it("renders ask-user requests with an amber waiting spinner", () => {
+  it("renders ask-user requests with an amber waiting icon", () => {
     const view = renderMessageList([
       {
         sessionId: "session-1",
@@ -631,7 +631,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     expect(screen.getByText("Needs Input")).toBeTruthy();
-    expect(view.container.querySelector(".animate-spin.text-amber-400")).toBeTruthy();
+    expect(view.container.querySelector("svg.text-amber-400")).toBeTruthy();
+    expect(view.container.querySelector(".animate-spin.text-amber-400")).toBeFalsy();
   });
 
   it("labels provider chats as Codex and preserves explicit assistant labels", () => {
