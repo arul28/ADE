@@ -3383,6 +3383,90 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("keeps coordinator availability interventions open when no live coordinator exists", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Do not clear coordinator blockers without a live coordinator.",
+        laneId: fixture.laneId,
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [],
+      });
+      const runId = started.run.id;
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [
+          {
+            stepKey: "manual-check",
+            title: "Manual check",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+          },
+        ],
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.stepKey === "manual-check" && step.status === "ready");
+      if (!readyStep) throw new Error("Expected manual-check step to be ready");
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual",
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+      });
+      const intervention = fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "failed_step",
+        title: "Coordinator unavailable",
+        body: "Coordinator agent is not available for this run.",
+        requestedAction: "Resume after coordinator runtime is healthy.",
+        metadata: {
+          runId,
+          stepId: readyStep.id,
+          attemptId: attempt.id,
+          reasonCode: "coordinator_unavailable",
+        },
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-step-updated",
+        runId,
+        stepId: readyStep.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "attempt_completed",
+      } as any);
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      const refreshedIntervention = refreshedMission?.interventions.find((entry) => entry.id === intervention.id);
+      expect(refreshedIntervention?.status).toBe("open");
+
+      const resolvedEvents = fixture.orchestratorService.listRuntimeEvents({
+        runId,
+        eventTypes: ["intervention_resolved"],
+        limit: 10,
+      });
+      expect(
+        resolvedEvents.some((entry) =>
+          String((entry.payload as Record<string, unknown> | null)?.interventionId ?? "") === intervention.id
+        )
+      ).toBe(false);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("prefers mission launch failures over later coordinator-unavailable interventions in run view", async () => {
     const fixture = await createFixture();
     try {

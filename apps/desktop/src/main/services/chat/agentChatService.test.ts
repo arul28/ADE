@@ -1844,6 +1844,7 @@ describe("createAgentChatService", () => {
         model: "gpt-5.4",
       });
 
+      const threadsBefore = mockState.codexThreadCounter;
       const turnsBefore = mockState.codexTurnCounter;
       const outsidePath = path.join(process.cwd(), `.ade-agent-chat-outside-${Date.now()}.txt`);
       fs.writeFileSync(outsidePath, "secret", "utf8");
@@ -1856,6 +1857,7 @@ describe("createAgentChatService", () => {
       } finally {
         fs.rmSync(outsidePath, { force: true });
       }
+      expect(mockState.codexThreadCounter).toBe(threadsBefore);
       expect(mockState.codexTurnCounter).toBe(turnsBefore);
     });
 
@@ -1892,7 +1894,12 @@ describe("createAgentChatService", () => {
     });
 
     it("logs attachment read failures and keeps the fallback text generic", async () => {
-      const { service, logger } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
       const attachmentDir = path.join(tmpRoot, "attachment-dir");
       fs.mkdirSync(attachmentDir, { recursive: true });
       vi.mocked(generateText).mockResolvedValue({ text: "Attachment fallback test" } as any);
@@ -1924,10 +1931,21 @@ describe("createAgentChatService", () => {
         : [];
       const messages = rawMessages;
       const currentUserMessageText = JSON.stringify(messages.at(-1)?.content);
+      const userMessageEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+        } => event.event.type === "user_message",
+      );
+      const rendererPayload = JSON.stringify(userMessageEvent.event);
 
       expect(currentUserMessageText).toContain("Attachment unavailable: attachment-dir");
       expect(currentUserMessageText).not.toContain("Path is not a regular file");
       expect(currentUserMessageText).not.toContain("EISDIR");
+      expect(rendererPayload).not.toContain("Path is not a regular file");
+      expect(rendererPayload).not.toContain("EISDIR");
+      expect(rendererPayload).not.toContain(attachmentDir);
+      expect(rendererPayload).not.toContain(tmpRoot);
       expect(logger.warn).toHaveBeenCalledWith(
         "agent_chat.streaming_attachment_unavailable",
         expect.objectContaining({

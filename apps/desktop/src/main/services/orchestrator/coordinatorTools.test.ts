@@ -15,6 +15,8 @@ function createTestDeps(args: {
     text: string;
     priority?: "normal" | "urgent";
   }) => Promise<CoordinatorWorkerDeliveryStatus>;
+  projectRoot?: string;
+  workspaceRoot?: string;
   memoryService?: {
     search: (opts: Record<string, unknown>) => Promise<any[]>;
     searchAcrossScopeOwners?: (opts: Record<string, unknown>) => Promise<any[]>;
@@ -55,14 +57,39 @@ function createTestDeps(args: {
     missionId: "mission-1",
     logger,
     db: {} as any,
-    projectRoot: "/tmp",
-    workspaceRoot: "/tmp/worktree",
+    projectRoot: args.projectRoot ?? "/tmp",
+    workspaceRoot: args.workspaceRoot ?? "/tmp/worktree",
     onDagMutation: vi.fn(),
     sendWorkerMessageToSession: args.sendWorkerMessageToSession,
   });
 
   return { tools, orchestratorService };
 }
+
+describe("coordinator project context", () => {
+  it("redacts the workspace root from get_project_context", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-coordinator-tools-"));
+    try {
+      fs.writeFileSync(path.join(workspaceRoot, "README.md"), "# Test workspace\n", "utf8");
+      const { tools } = createTestDeps({
+        graph: { run: { id: "run-1", metadata: {} }, steps: [], attempts: [] },
+        workspaceRoot,
+      });
+
+      const result = await (tools.get_project_context as any).execute({});
+
+      expect(result).toMatchObject({
+        ok: true,
+        projectRoot: "./",
+        projectRootRedacted: true,
+        rootLabel: "./",
+      });
+      expect(JSON.stringify(result)).not.toContain(workspaceRoot);
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("coordinator memory tools", () => {
   it("memory_search queries project memory with mission scope defaults", async () => {

@@ -276,8 +276,8 @@ function ensureDirectoryChainWithinRoot(
 
     const nextPath = path.join(cursor, segment);
     try {
-      const stat = fs.lstatSync(nextPath);
-      const resolvedPath = stat.isSymbolicLink() ? realpathExisting(nextPath) : realpathExisting(nextPath);
+      fs.lstatSync(nextPath);
+      const resolvedPath = realpathExisting(nextPath);
       if (!isPathAlignedWithRoot(rootReal, resolvedPath)) {
         throw new Error("Path escapes root");
       }

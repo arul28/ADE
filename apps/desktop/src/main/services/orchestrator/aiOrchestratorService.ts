@@ -10178,13 +10178,13 @@ Check all worker statuses and continue managing the mission from here. Read work
           reason: event.reason,
           recovered: false
         });
+      } else {
+        resolveCoordinatorHealthInterventions({
+          runId,
+          note: "Coordinator runtime is healthy again; closed stale coordinator availability intervention.",
+          resolutionReason: "coordinator_recovered",
+        });
       }
-
-      resolveCoordinatorHealthInterventions({
-        runId,
-        note: "Coordinator runtime is healthy again; closed stale coordinator availability intervention.",
-        resolutionReason: "coordinator_recovered",
-      });
 
       // Run finalized — coordinator's job is done, shut it down
       if (event.reason === "finalized") {

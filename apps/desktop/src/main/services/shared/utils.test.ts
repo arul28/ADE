@@ -237,9 +237,7 @@ describe("resolvePathWithinRoot", () => {
       fs.rmSync(outsideDir, { recursive: true, force: true });
     }
   });
-});
 
-describe("resolvePathWithinRoot", () => {
   it("allows a normal child path when intermediate segments do not exist yet", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
     try {

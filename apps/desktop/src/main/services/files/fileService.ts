@@ -139,8 +139,11 @@ function ensureSafePath(
   let absPath: string;
   try {
     absPath = resolvePathWithinRoot(rootPath, joinedPath, { allowMissing: opts.allowMissing });
-  } catch {
-    throw new Error("Refusing to access path outside workspace");
+  } catch (error) {
+    if (error instanceof Error && error.message === "Path escapes root") {
+      throw new Error("Refusing to access path outside workspace");
+    }
+    throw error;
   }
   if (containsDotGit(absPath)) {
     throw new Error("Refusing to access .git internals");

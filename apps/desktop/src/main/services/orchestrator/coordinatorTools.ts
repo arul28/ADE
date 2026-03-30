@@ -6299,9 +6299,12 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         } catch {
           // Ignore
         }
+        const workspaceRootLabel = "./";
         return {
           ok: true,
-          projectRoot: workspaceRoot,
+          projectRoot: workspaceRootLabel,
+          projectRootRedacted: true,
+          rootLabel: workspaceRootLabel,
           topLevelEntries: topLevel,
           docs,
         };

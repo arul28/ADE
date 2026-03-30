@@ -154,6 +154,8 @@ export function WorkflowListSidebar({
                   key={workflow.id}
                   type="button"
                   onClick={() => onSelectWorkflow(workflow.id)}
+                  aria-current={isSelected ? "true" : undefined}
+                  aria-pressed={workflow.enabled}
                   className={cn(
                     "w-full rounded-lg px-3 py-2.5 text-left transition-all duration-200",
                     isSelected ? "bg-[rgba(167,139,250,0.08)]" : "hover:bg-white/[0.03]",
@@ -161,9 +163,15 @@ export function WorkflowListSidebar({
                   style={isSelected ? { border: "1px solid rgba(167,139,250,0.15)" } : { border: "1px solid transparent" }}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="truncate text-xs font-medium text-fg">{workflow.name}</div>
+                    <div className="truncate text-xs font-medium text-fg">
+                      {workflow.name}
+                      <span className="sr-only">
+                        {` ${isSelected ? "selected" : "not selected"} ${workflow.enabled ? "enabled" : "disabled"}`}
+                      </span>
+                    </div>
                     <div
                       className="h-2 w-2 rounded-full shrink-0"
+                      aria-hidden="true"
                       style={{ background: workflow.enabled ? "#34D399" : "#6B7280" }}
                     />
                   </div>
