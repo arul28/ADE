@@ -279,6 +279,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var lastError: String?
   @Published private(set) var terminalBuffers: [String: String] = [:]
   @Published private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
+  @Published private(set) var chatEventRevisionsBySession: [String: Int] = [:]
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
   @Published private(set) var pendingOperationCount = 0
   @Published private(set) var localStateRevision = 0
@@ -315,6 +316,7 @@ final class SyncService: ObservableObject {
   private var allowAutoReconnect = true
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
+  private var supportsChatStreaming = false
 
   var hasCachedHostData: Bool {
     database.hasHydratedControllerData()
@@ -899,9 +901,10 @@ final class SyncService: ObservableObject {
   func subscribeToChatEvents(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
+    guard !subscribedChatSessionIds.contains(trimmedSessionId) else { return }
     subscribedChatSessionIds.insert(trimmedSessionId)
     localStateRevision += 1
-    if canSendLiveRequests() {
+    if canSendLiveRequests() && supportsChatStreaming {
       sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: trimmedSessionId))
     }
   }
@@ -909,15 +912,20 @@ final class SyncService: ObservableObject {
   func unsubscribeFromChatEvents(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
+    guard subscribedChatSessionIds.contains(trimmedSessionId) else { return }
     subscribedChatSessionIds.remove(trimmedSessionId)
     localStateRevision += 1
-    if canSendLiveRequests() {
+    if canSendLiveRequests() && supportsChatStreaming {
       sendEnvelope(type: "chat_unsubscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: trimmedSessionId))
     }
   }
 
   func chatEventHistory(sessionId: String) -> [AgentChatEventEnvelope] {
     chatEventEnvelopesBySession[sessionId] ?? []
+  }
+
+  func chatEventRevision(for sessionId: String) -> Int {
+    chatEventRevisionsBySession[sessionId] ?? 0
   }
 
   func chatSubscriptionPayloads() -> [[String: Any]] {
@@ -1689,10 +1697,27 @@ final class SyncService: ObservableObject {
     let brain = payload["brain"] as? [String: Any]
     let remoteHostIdentity = brain?["deviceId"] as? String
     let remoteHostName = brain?["deviceName"] as? String
+    let features = payload["features"] as? [String: Any]
+    supportsChatStreaming = {
+      if let chatStreaming = features?["chatStreaming"] as? [String: Any],
+         let enabled = chatStreaming["enabled"] as? Bool {
+        return enabled
+      }
+      if let value = features?["chatStreaming"] as? Bool {
+        return value
+      }
+      if let chatStreaming = features?["chat_streaming"] as? [String: Any],
+         let enabled = chatStreaming["enabled"] as? Bool {
+        return enabled
+      }
+      if let value = features?["chat_streaming"] as? Bool {
+        return value
+      }
+      return false
+    }()
     let commandDescriptors: [SyncRemoteCommandDescriptor] = {
       guard
-        let features = payload["features"] as? [String: Any],
-        let commandRouting = features["commandRouting"],
+        let commandRouting = features?["commandRouting"],
         let actions = (commandRouting as? [String: Any])?["actions"]
       else {
         return []
@@ -1873,7 +1898,9 @@ final class SyncService: ObservableObject {
     case "command_result", "file_response", "terminal_snapshot":
       resolve(requestId: requestId, result: .success(payload))
     case "chat_event":
-      if let dict = payload as? [String: Any], let envelope = try? decode(dict, as: AgentChatEventEnvelope.self) {
+      if supportsChatStreaming,
+         let dict = payload as? [String: Any],
+         let envelope = try? decode(dict, as: AgentChatEventEnvelope.self) {
         recordChatEventEnvelope(envelope)
       }
     case "terminal_data":
@@ -2196,7 +2223,7 @@ final class SyncService: ObservableObject {
   }
 
   private func restoreChatEventSubscriptions() {
-    guard canSendLiveRequests() else { return }
+    guard canSendLiveRequests(), supportsChatStreaming else { return }
     for sessionId in subscribedChatSessionIds.sorted() {
       sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: sessionId))
     }
@@ -2209,14 +2236,15 @@ final class SyncService: ObservableObject {
       events.removeFirst(events.count - 500)
     }
     chatEventEnvelopesBySession[envelope.sessionId] = events
+    chatEventRevisionsBySession[envelope.sessionId, default: 0] += 1
     lastSyncAt = Date()
-    localStateRevision += 1
   }
 
   private func resetChatEventState(clearHistory: Bool) {
     subscribedChatSessionIds.removeAll()
     if clearHistory {
       chatEventEnvelopesBySession.removeAll()
+      chatEventRevisionsBySession.removeAll()
     }
     localStateRevision += 1
   }

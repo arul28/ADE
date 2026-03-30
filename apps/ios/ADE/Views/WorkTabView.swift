@@ -79,7 +79,7 @@ struct WorkTabView: View {
       !sessions.contains(where: { $0.id == draft.id })
     }
     return (sessions + draftValues)
-      .filter { isChatSession($0) || chatSummaries[$0.id] != nil }
+      .filter { isChatSession($0) }
       .sorted(by: compareWorkSessionSortOrder)
   }
 
@@ -434,7 +434,7 @@ struct WorkTabView: View {
 
   @MainActor
   private func refreshChatSummaries(for lanes: [LaneSummary]) async {
-    var updated = chatSummaries
+    var updated: [String: AgentChatSessionSummary] = [:]
     await withTaskGroup(of: [(String, AgentChatSessionSummary)].self) { group in
       for lane in lanes where lane.archivedAt == nil {
         group.addTask {
@@ -1205,7 +1205,7 @@ private struct WorkSessionDestinationView: View {
       transcript = initialTranscript ?? []
       await load()
     }
-    .task(id: syncService.localStateRevision) {
+    .task(id: liveChatObservationKey) {
       syncTranscriptFromLiveEvents()
       if let refreshedSession = try? await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
         session = refreshedSession
@@ -1223,6 +1223,10 @@ private struct WorkSessionDestinationView: View {
 
   private var pollingKey: String {
     "\(session?.id ?? sessionId)-\(session?.status ?? "unknown")-\(isLive)"
+  }
+
+  private var liveChatObservationKey: String {
+    "\(sessionId)-\(syncService.chatEventRevision(for: sessionId))"
   }
 
   @MainActor
@@ -1252,23 +1256,33 @@ private struct WorkSessionDestinationView: View {
     }
 
     let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
-    if !liveTranscript.isEmpty {
-      transcript = liveTranscript
-      fallbackEntries = []
-    } else if forceRemote {
+    if forceRemote {
       try? await syncService.subscribeTerminal(sessionId: sessionId)
       let raw = syncService.terminalBuffers[sessionId] ?? ""
       let parsed = parseWorkChatTranscript(raw)
       if !parsed.isEmpty {
-        transcript = parsed
+        transcript = mergeWorkChatTranscripts(base: parsed, live: liveTranscript)
         fallbackEntries = []
       } else if let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
-        fallbackEntries = response.entries
-        transcript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
+        fallbackEntries = []
+        transcript = mergeWorkChatTranscripts(
+          base: makeWorkChatTranscript(from: response.entries, sessionId: sessionId),
+          live: liveTranscript
+        )
       }
     } else if let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
-      fallbackEntries = response.entries
-      transcript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
+      fallbackEntries = []
+      transcript = mergeWorkChatTranscripts(
+        base: makeWorkChatTranscript(from: response.entries, sessionId: sessionId),
+        live: liveTranscript
+      )
+    }
+
+    if !liveTranscript.isEmpty {
+      let baseTranscript = transcript.isEmpty && !fallbackEntries.isEmpty
+        ? makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId)
+        : transcript
+      transcript = mergeWorkChatTranscripts(base: baseTranscript, live: liveTranscript)
     }
 
     localEchoMessages.removeAll { echo in
@@ -1284,8 +1298,10 @@ private struct WorkSessionDestinationView: View {
   private func syncTranscriptFromLiveEvents() {
     let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
     guard !liveTranscript.isEmpty else { return }
-    transcript = liveTranscript
-    fallbackEntries = []
+    let baseTranscript = transcript.isEmpty && !fallbackEntries.isEmpty
+      ? makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId)
+      : transcript
+    transcript = mergeWorkChatTranscripts(base: baseTranscript, live: liveTranscript)
   }
 
   @MainActor
@@ -2452,6 +2468,40 @@ private struct WorkStructuredQuestionCard: View {
   }
 }
 
+private final class WorkArtifactVideoPlayerModel: ObservableObject {
+  let player: AVPlayer
+
+  init(url: URL) {
+    player = AVPlayer(url: url)
+  }
+
+  func update(url: URL) {
+    if let currentURL = (player.currentItem?.asset as? AVURLAsset)?.url, currentURL == url {
+      return
+    }
+    player.replaceCurrentItem(with: AVPlayerItem(url: url))
+  }
+}
+
+private struct WorkArtifactVideoPlayerView: View {
+  let url: URL
+  @StateObject private var model: WorkArtifactVideoPlayerModel
+
+  init(url: URL) {
+    self.url = url
+    _model = StateObject(wrappedValue: WorkArtifactVideoPlayerModel(url: url))
+  }
+
+  var body: some View {
+    VideoPlayer(player: model.player)
+      .frame(height: 220)
+      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .onChange(of: url) { _, newValue in
+        model.update(url: newValue)
+      }
+  }
+}
+
 private struct WorkArtifactView: View {
   let artifact: ComputerUseArtifactSummary
   let content: WorkLoadedArtifactContent?
@@ -2494,14 +2544,10 @@ private struct WorkArtifactView: View {
           .buttonStyle(.plain)
           .accessibilityLabel("Open artifact image \(artifact.title)")
         case .video(let url):
-          VideoPlayer(player: AVPlayer(url: url))
-            .frame(height: 220)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+          WorkArtifactVideoPlayerView(url: url)
         case .remoteURL(let url):
           if artifact.artifactKind == "video_recording" {
-            VideoPlayer(player: AVPlayer(url: url))
-              .frame(height: 220)
-              .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            WorkArtifactVideoPlayerView(url: url)
           } else {
             AsyncImage(url: url) { image in
               image
@@ -4236,6 +4282,119 @@ private func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [
     }
     return lhs.timestamp < rhs.timestamp
   }
+}
+
+private func mergeWorkChatTranscripts(base: [WorkChatEnvelope], live: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
+  guard !live.isEmpty else { return base }
+  guard !base.isEmpty else { return live }
+
+  var merged = base
+  var indexByKey = Dictionary(uniqueKeysWithValues: merged.enumerated().map { (index, envelope) in
+    (workChatEnvelopeMergeKey(envelope), index)
+  })
+
+  for envelope in live {
+    let key = workChatEnvelopeMergeKey(envelope)
+    if let index = indexByKey[key] {
+      merged[index] = envelope
+    } else {
+      indexByKey[key] = merged.count
+      merged.append(envelope)
+    }
+  }
+
+  return merged
+}
+
+private func workChatEnvelopeMergeKey(_ envelope: WorkChatEnvelope) -> String {
+  "\(envelope.sessionId)|\(envelope.timestamp)|\(workChatEventMergeKey(envelope.event))"
+}
+
+private func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
+  switch event {
+  case .userMessage(let text, let turnId):
+    return ["user_message", turnId ?? "", text].joined(separator: "|")
+  case .assistantText(let text, let turnId, let itemId):
+    return ["text", turnId ?? "", itemId ?? "", text].joined(separator: "|")
+  case .toolCall(let tool, let argsText, let itemId, let parentItemId, let turnId):
+    return ["tool_call", turnId ?? "", itemId, parentItemId ?? "", tool, argsText].joined(separator: "|")
+  case .toolResult(let tool, let resultText, let itemId, let parentItemId, let turnId, let status):
+    return ["tool_result", turnId ?? "", itemId, parentItemId ?? "", tool, status.rawValue, resultText].joined(separator: "|")
+  case .activity(let kind, let detail, let turnId):
+    return ["activity", turnId ?? "", kind, detail ?? ""].joined(separator: "|")
+  case .plan(let steps, let explanation, let turnId):
+    return ["plan", turnId ?? "", explanation ?? "", steps.joined(separator: "\n")].joined(separator: "|")
+  case .subagentStarted(let taskId, let description, let background, let turnId):
+    return ["subagent_started", turnId ?? "", taskId, description, background ? "1" : "0"].joined(separator: "|")
+  case .subagentProgress(let taskId, let description, let summary, let toolName, let turnId):
+    return ["subagent_progress", turnId ?? "", taskId, description ?? "", summary, toolName ?? ""].joined(separator: "|")
+  case .subagentResult(let taskId, let status, let summary, let turnId):
+    return ["subagent_result", turnId ?? "", taskId, status, summary].joined(separator: "|")
+  case .structuredQuestion(let question, let options, let itemId, let turnId):
+    return ["structured_question", turnId ?? "", itemId, question, options.joined(separator: "\n")].joined(separator: "|")
+  case .approvalRequest(let description, let detail, let itemId, let turnId):
+    return ["approval_request", turnId ?? "", itemId, description, detail ?? ""].joined(separator: "|")
+  case .todoUpdate(let items, let turnId):
+    return ["todo_update", turnId ?? "", items.joined(separator: "\n")].joined(separator: "|")
+  case .systemNotice(let kind, let message, let detail, let turnId):
+    return ["system_notice", turnId ?? "", kind, message, detail ?? ""].joined(separator: "|")
+  case .error(let message, let detail, let category, let turnId):
+    return ["error", turnId ?? "", category, message, detail ?? ""].joined(separator: "|")
+  case .done(let status, let summary, let usage, let turnId):
+    return ["done", turnId, status, summary, workUsageSummaryMergeKey(usage)].joined(separator: "|")
+  case .promptSuggestion(let text, let turnId):
+    return ["prompt_suggestion", turnId ?? "", text].joined(separator: "|")
+  case .contextCompact(let summary, let turnId):
+    return ["context_compact", turnId ?? "", summary].joined(separator: "|")
+  case .autoApprovalReview(let summary, let turnId):
+    return ["auto_approval_review", turnId ?? "", summary].joined(separator: "|")
+  case .webSearch(let query, let action, let status, let itemId, let turnId):
+    return ["web_search", turnId ?? "", itemId, query, action ?? "", status.rawValue].joined(separator: "|")
+  case .planText(let text, let turnId):
+    return ["plan_text", turnId ?? "", text].joined(separator: "|")
+  case .toolUseSummary(let text, let turnId):
+    return ["tool_use_summary", turnId ?? "", text].joined(separator: "|")
+  case .status(let turnStatus, let message, let turnId):
+    return ["status", turnId ?? "", turnStatus, message ?? ""].joined(separator: "|")
+  case .reasoning(let text, let turnId):
+    return ["reasoning", turnId ?? "", text].joined(separator: "|")
+  case .completionReport(let summary, let status, let artifacts, let blockerDescription, let turnId):
+    return ["completion_report", turnId ?? "", status, summary, blockerDescription ?? "", workCompletionArtifactsMergeKey(artifacts)].joined(separator: "|")
+  case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, let turnId):
+    return [
+      "command",
+      turnId ?? "",
+      itemId,
+      command,
+      cwd,
+      output,
+      status.rawValue,
+      exitCode.map { String($0) } ?? "",
+      durationMs.map { String($0) } ?? "",
+    ].joined(separator: "|")
+  case .fileChange(let path, let diff, let kind, let status, let itemId, let turnId):
+    return ["file_change", turnId ?? "", itemId, path, kind, status.rawValue, diff].joined(separator: "|")
+  case .unknown(let type):
+    return ["unknown", type].joined(separator: "|")
+  }
+}
+
+private func workUsageSummaryMergeKey(_ usage: WorkUsageSummary?) -> String {
+  guard let usage else { return "" }
+  return [
+    String(usage.turnCount),
+    String(usage.inputTokens),
+    String(usage.outputTokens),
+    String(usage.cacheReadTokens),
+    String(usage.cacheCreationTokens),
+    String(usage.costUsd),
+  ].joined(separator: "|")
+}
+
+private func workCompletionArtifactsMergeKey(_ artifacts: [WorkCompletionArtifactModel]) -> String {
+  artifacts.map { artifact in
+    [artifact.type, artifact.description, artifact.reference ?? ""].joined(separator: "~")
+  }.joined(separator: "\n")
 }
 
 private func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {

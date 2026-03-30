@@ -1038,19 +1038,19 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(parseAgentChatSendArgs(payload));
     return { ok: true };
   });
-  register("chat.interrupt", { viewerAllowed: true, queueable: true }, async (payload) => {
+  register("chat.interrupt", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
     return { ok: true };
   });
-  register("chat.steer", { viewerAllowed: true, queueable: true }, async (payload) => {
+  register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").steer(parseAgentChatSteerArgs(payload));
     return { ok: true };
   });
-  register("chat.approve", { viewerAllowed: true, queueable: true }, async (payload) => {
+  register("chat.approve", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").approveToolUse(parseAgentChatApproveArgs(payload));
     return { ok: true };
   });
-  register("chat.respondToInput", { viewerAllowed: true, queueable: true }, async (payload) => {
+  register("chat.respondToInput", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").respondToInput(parseAgentChatRespondToInputArgs(payload));
     return { ok: true };
   });

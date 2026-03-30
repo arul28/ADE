@@ -1001,7 +1001,15 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       type: "chat_subscribe",
       payload: { sessionId: "session-2" },
     }));
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitFor(() => {
+      const peerA = host.getChatSubscriptionSnapshot().find((peer) => peer.deviceId === "peer-chat-a");
+      const peerB = host.getChatSubscriptionSnapshot().find((peer) => peer.deviceId === "peer-chat-b");
+      return Boolean(
+        peerA?.subscribedChatSessionIds.includes("session-1")
+        && peerB?.subscribedChatSessionIds.includes("session-1")
+        && peerB?.subscribedChatSessionIds.includes("session-2")
+      );
+    });
 
     chatService.emit({
       sessionId: "session-1",
@@ -1030,7 +1038,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       type: "chat_unsubscribe",
       payload: { sessionId: "session-1" },
     }));
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitFor(() => !host.getChatSubscriptionSnapshot().find((peer) => peer.deviceId === "peer-chat-b")?.subscribedChatSessionIds.includes("session-1"));
 
     chatService.emit({
       sessionId: "session-1",
@@ -1042,7 +1050,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const replayA = await clientA.queue.next("chat_event");
     expect((replayA.payload as { sessionId: string; event: { text: string } }).sessionId).toBe("session-1");
     await expect(clientB.queue.next("chat_event", 250)).rejects.toThrow(/Timed out waiting for chat_event/);
-  });
+  }, 15_000);
 
   it("resubscribes chat listeners after reconnect and routes chat remote commands", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-chat-commands-"), createLogger() as any);
@@ -1122,7 +1130,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       type: "chat_subscribe",
       payload: { sessionId: "session-1" },
     }));
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitFor(() => Boolean(
+      host.getChatSubscriptionSnapshot()
+        .find((peer) => peer.deviceId === "peer-chat-command-a")
+        ?.subscribedChatSessionIds.includes("session-1")
+    ));
     chatService.emit({
       sessionId: "session-1",
       timestamp: "2026-03-17T00:10:03.000Z",
@@ -1148,7 +1160,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       type: "chat_subscribe",
       payload: { sessionId: "session-1" },
     }));
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitFor(() => Boolean(
+      host.getChatSubscriptionSnapshot()
+        .find((peer) => peer.deviceId === "peer-chat-command-a")
+        ?.subscribedChatSessionIds.includes("session-1")
+    ));
     chatService.emit({
       sessionId: "session-1",
       timestamp: "2026-03-17T00:10:04.000Z",
@@ -1240,7 +1256,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     });
     expect((dispose.result.payload as { ok: boolean }).ok).toBe(true);
     expect(chatService.service.dispose).toHaveBeenCalledWith({ sessionId: "session-1" });
-  });
+  }, 15_000);
 
   it("pairs a phone peer using the desktop PIN and allows paired reconnect auth", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-pairing-"), createLogger() as any);
@@ -1348,6 +1364,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const helloOk = await authQueue.next("hello_ok");
     const helloPayload = helloOk.payload as {
       features: {
+        chatStreaming: { enabled: boolean };
         pairingAuth: { enabled: boolean };
         commandRouting: {
           supportedActions: string[];
@@ -1355,6 +1372,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         };
       };
     };
+    expect(helloPayload.features.chatStreaming.enabled).toBe(true);
     expect(helloPayload.features.pairingAuth.enabled).toBe(true);
     expect(helloPayload.features.commandRouting.supportedActions).toContain("lanes.getDetail");
     expect(helloPayload.features.commandRouting.supportedActions).toContain("lanes.rename");
@@ -1368,6 +1386,22 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         expect.objectContaining({
           action: "lanes.rename",
           policy: expect.objectContaining({ viewerAllowed: true, queueable: true }),
+        }),
+        expect.objectContaining({
+          action: "chat.interrupt",
+          policy: expect.objectContaining({ viewerAllowed: true, queueable: false }),
+        }),
+        expect.objectContaining({
+          action: "chat.steer",
+          policy: expect.objectContaining({ viewerAllowed: true, queueable: false }),
+        }),
+        expect.objectContaining({
+          action: "chat.approve",
+          policy: expect.objectContaining({ viewerAllowed: true, queueable: false }),
+        }),
+        expect.objectContaining({
+          action: "chat.respondToInput",
+          policy: expect.objectContaining({ viewerAllowed: true, queueable: false }),
         }),
       ]),
     );

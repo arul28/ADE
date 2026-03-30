@@ -176,8 +176,8 @@ async function createFixture(options: {
     });
   };
 
-  const dispose = () => {
-    heartbeat.dispose();
+  const dispose = async () => {
+    await heartbeat.dispose();
     db.close();
   };
 
@@ -226,7 +226,7 @@ describe("workerHeartbeatService", () => {
     expect(runs.length).toBeGreaterThan(0);
     expect(runs[0]?.wakeupReason).toBe("timer");
     expect(runs[0]?.status).toBe("completed");
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("active-hours gate blocks timer wakes outside configured window", async () => {
@@ -255,7 +255,7 @@ describe("workerHeartbeatService", () => {
     });
     expect(wake.status).toBe("deferred");
     expect(fixture.runtimeRun).not.toHaveBeenCalled();
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("on-demand wake also respects active-hours gate", async () => {
@@ -285,7 +285,7 @@ describe("workerHeartbeatService", () => {
     });
     expect(wake.status).toBe("deferred");
     expect(fixture.runtimeRun).not.toHaveBeenCalled();
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("cheap-check timer run with no change skips adapter escalation", async () => {
@@ -299,7 +299,7 @@ describe("workerHeartbeatService", () => {
     });
     expect(wake.status).toBe("completed");
     expect(fixture.runtimeRun).not.toHaveBeenCalled();
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("records HEARTBEAT_OK results without errors", async () => {
@@ -322,7 +322,7 @@ describe("workerHeartbeatService", () => {
     expect(run?.status).toBe("completed");
     expect((run?.result as Record<string, unknown>)?.heartbeatOk).toBe(true);
     expect((run?.result as Record<string, unknown>)?.outputPreview).toBe("HEARTBEAT_OK");
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("injects worker reconstruction, task session, and project memory into runtime prompts", async () => {
@@ -368,7 +368,7 @@ describe("workerHeartbeatService", () => {
     expect(prompt).toContain("Task session state:");
     expect(prompt).toContain("task:memory-rich");
     expect(prompt).toContain("Current wakeup request:");
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("appends worker session logs after escalated runs so reconstruction memory compounds", async () => {
@@ -393,7 +393,7 @@ describe("workerHeartbeatService", () => {
     expect(sessions.length).toBe(1);
     expect(sessions[0]?.summary).toContain("Wake reason: manual.");
     expect(sessions[0]?.summary).toContain("task:session-log");
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("propagates meaningful worker runs into CTO subordinate activity", async () => {
@@ -427,7 +427,7 @@ describe("workerHeartbeatService", () => {
         issueKey: "ISSUE-42",
       })
     );
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("coalesces duplicate wakeups while same task is running", async () => {
@@ -500,7 +500,7 @@ describe("workerHeartbeatService", () => {
     const firstRun = latestRuns.find((run) => run.id === firstWake.runId);
     const coalesced = (firstRun?.context.coalescedWakeups as unknown[]) ?? [];
     expect(coalesced.length).toBe(1);
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("promotes deferred wake after active run completes", async () => {
@@ -564,7 +564,7 @@ describe("workerHeartbeatService", () => {
       expect(promoted?.status).toBe("completed");
     });
     expect(runtimeRun).toHaveBeenCalledTimes(2);
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("reaps orphaned queued/running runs on startup and promotes deferred work", async () => {
@@ -621,7 +621,7 @@ describe("workerHeartbeatService", () => {
       expect(runs.find((run) => run.id === "recoverable-deferred")?.status).toBe("completed");
     });
 
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("issue lock checkout blocks parallel run for same issue", async () => {
@@ -681,7 +681,7 @@ describe("workerHeartbeatService", () => {
 
     const secondRun = fixture.heartbeat.listRuns({ agentId: workerB.id, limit: 10 }).find((run) => run.id === secondWake.runId);
     expect(secondRun?.status).toBe("deferred");
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("adopts stale issue lock and fails stale owner run", async () => {
@@ -713,7 +713,7 @@ describe("workerHeartbeatService", () => {
     const staleRun = fixture.heartbeat.listRuns({ agentId: workerA.id, limit: 10 }).find((run) => run.id === "stale-running-run");
     expect(staleRun?.status).toBe("failed");
     expect(staleRun?.errorMessage).toContain("adopted");
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it("reuses persisted worker continuation handles across repeated wakeups on the same delegated task", async () => {
@@ -807,6 +807,6 @@ describe("workerHeartbeatService", () => {
       surface: "codex_app_server",
     });
 
-    fixture.dispose();
+    await fixture.dispose();
   });
 });
