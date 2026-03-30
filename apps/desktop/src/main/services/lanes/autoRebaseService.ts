@@ -154,6 +154,18 @@ export function createAutoRebaseService(args: {
     });
   };
 
+  const safeGetHeadSha = async (worktreePath: string): Promise<string | null> => {
+    try {
+      return await getHeadSha(worktreePath);
+    } catch (error) {
+      logger.warn("autoRebase.parent_head_sha_failed", {
+        worktreePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
     void maybeSweepRoots("listStatuses");
     const lanes = await laneService.list({ includeArchived: false });
@@ -347,6 +359,8 @@ export function createAutoRebaseService(args: {
         continue;
       }
 
+      const parentHeadSha = await safeGetHeadSha(parent.worktreePath);
+
       let lookupFailed = false;
       const need = await conflictService.getRebaseNeed(lane.id).catch((error) => {
         lookupFailed = true;
@@ -371,7 +385,7 @@ export function createAutoRebaseService(args: {
         setStatus({
           laneId: lane.id,
           parentLaneId: lane.parentLaneId,
-          parentHeadSha: await getHeadSha(parent.worktreePath),
+          parentHeadSha,
           state: "rebaseConflict",
           conflictCount: Math.max(1, need.conflictingFiles.length),
           message: `Auto-rebase blocked: ${Math.max(1, need.conflictingFiles.length)} conflict(s) expected. Open the Rebase tab to resolve and publish.`
@@ -393,7 +407,7 @@ export function createAutoRebaseService(args: {
         setStatus({
           laneId: lane.id,
           parentLaneId: lane.parentLaneId,
-          parentHeadSha: await getHeadSha(parent.worktreePath),
+          parentHeadSha,
           state: conflictHint ? "rebaseConflict" : "rebaseFailed",
           conflictCount: conflictHint ? 1 : 0,
           message: conflictHint
@@ -403,31 +417,36 @@ export function createAutoRebaseService(args: {
         continue;
       }
 
+      let pushSucceeded = false;
       try {
         const pushedRun = await laneService.rebasePush({ runId: rebaseRun.runId, laneIds: [lane.id] });
+        const pushedLaneIds = pushedRun.pushedLaneIds ?? [];
         const pushedLane = pushedRun.lanes.find((entry) => entry.laneId === lane.id);
-        if (!pushedRun.pushedLaneIds.includes(lane.id) || pushedLane?.pushed !== true) {
+        if (!pushedLaneIds.includes(lane.id) || pushedLane?.pushed !== true) {
           throw new Error("Auto-push did not complete for the rebased lane.");
         }
+        pushSucceeded = true;
 
         setStatus({
           laneId: lane.id,
           parentLaneId: lane.parentLaneId,
-          parentHeadSha: await getHeadSha(parent.worktreePath),
+          parentHeadSha,
           state: "autoRebased",
           conflictCount: 0,
           message: `Rebased and pushed automatically after '${parent.name}' advanced.`
         });
       } catch (error) {
         let rollbackError: string | null = null;
-        try {
-          await laneService.rebaseRollback({ runId: rebaseRun.runId });
-        } catch (rollbackFailure) {
-          rollbackError = rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure);
-          logger.warn("autoRebase.rollback_failed", {
-            laneId: lane.id,
-            error: rollbackError
-          });
+        if (!pushSucceeded) {
+          try {
+            await laneService.rebaseRollback({ runId: rebaseRun.runId });
+          } catch (rollbackFailure) {
+            rollbackError = rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure);
+            logger.warn("autoRebase.rollback_failed", {
+              laneId: lane.id,
+              error: rollbackError
+            });
+          }
         }
 
         blocked = true;
@@ -436,7 +455,7 @@ export function createAutoRebaseService(args: {
         setStatus({
           laneId: lane.id,
           parentLaneId: lane.parentLaneId,
-          parentHeadSha: await getHeadSha(parent.worktreePath),
+          parentHeadSha,
           state: "rebaseFailed",
           conflictCount: 0,
           message: rollbackError

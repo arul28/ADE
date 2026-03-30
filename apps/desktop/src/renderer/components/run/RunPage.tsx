@@ -644,7 +644,7 @@ export function RunPage() {
           <span style={LABEL_STYLE}>Lane</span>
           <select
             value={effectiveLaneId ?? ""}
-            onChange={(e) => selectRunLane(e.target.value || null)}
+            onChange={(e) => selectRunLane(e.target.value.length ? e.target.value : null)}
             style={{
               height: 28,
               padding: "0 8px",
@@ -658,6 +658,9 @@ export function RunPage() {
               minWidth: 120,
             }}
           >
+            <option value="">
+              No lane selected
+            </option>
             {lanes.map((lane) => (
               <option key={lane.id} value={lane.id}>
                 {lane.name}

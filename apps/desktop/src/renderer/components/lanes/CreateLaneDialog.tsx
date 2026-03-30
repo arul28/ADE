@@ -140,7 +140,7 @@ export function CreateLaneDialog({
             <div className="min-w-0 flex-1">
               <div className={LABEL_CLASS_NAME}>Starting point</div>
               <div className="mt-1 text-sm text-muted-fg">
-                Choose whether the new lane starts from primary or from another lane in the stack.
+                Choose whether the new lane starts as its own branch from primary or stacks under another lane.
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
@@ -157,7 +157,7 @@ export function CreateLaneDialog({
                   }}
                 >
                   <div className="font-medium">From primary</div>
-                  <div className="mt-1 text-xs text-muted-fg">Branch from the primary lane and pick a base branch.</div>
+                  <div className="mt-1 text-xs text-muted-fg">Create an independent lane from the selected branch on primary.</div>
                 </button>
                 <button
                   type="button"
@@ -170,7 +170,7 @@ export function CreateLaneDialog({
                   onClick={() => setCreateAsChild(true)}
                 >
                   <div className="font-medium">Child lane</div>
-                  <div className="mt-1 text-xs text-muted-fg">Stack the lane under an existing lane and inherit its branch.</div>
+                  <div className="mt-1 text-xs text-muted-fg">Stack the lane under an existing lane and follow that parent for rebases.</div>
                 </button>
               </div>
 
@@ -217,7 +217,7 @@ export function CreateLaneDialog({
                     </div>
                   )}
                   <div className="mt-2 text-xs text-muted-fg/80">
-                    Lane will be created from primary/{createBaseBranch || "..."}.
+                    Lane will be created from primary/{createBaseBranch || "..."} as its own lane, not stacked under Primary.
                   </div>
                 </label>
               )}

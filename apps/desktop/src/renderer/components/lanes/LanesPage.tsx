@@ -80,6 +80,35 @@ type RebasePushReviewState = {
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 
+type CreateLaneRequest =
+  | { kind: "child"; args: { name: string; parentLaneId: string } }
+  | { kind: "root"; args: { name: string; baseBranch: string } };
+
+export function resolveCreateLaneRequest(args: {
+  name: string;
+  createAsChild: boolean;
+  createParentLaneId: string;
+  createBaseBranch: string;
+}): CreateLaneRequest {
+  if (args.createAsChild) {
+    return {
+      kind: "child",
+      args: {
+        name: args.name,
+        parentLaneId: args.createParentLaneId,
+      },
+    };
+  }
+
+  return {
+    kind: "root",
+    args: {
+      name: args.name,
+      baseBranch: args.createBaseBranch,
+    },
+  };
+}
+
 /* ---- Component ---- */
 
 export function LanesPage() {
@@ -1075,7 +1104,7 @@ export function LanesPage() {
 
   const handleCreateSubmit = useCallback(async () => {
     const name = createLaneName.trim();
-    if (!name || createBusy || (createAsChild && !createParentLaneId)) return;
+    if (!name || createBusy || (createAsChild && !createParentLaneId) || (!createAsChild && !createBaseBranch)) return;
     if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
       setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
       return;
@@ -1087,14 +1116,15 @@ export function LanesPage() {
     createEnvInitLaneIdRef.current = null;
 
     try {
-      const lane = createAsChild && createParentLaneId
-        ? await window.ade.lanes.createChild({ name, parentLaneId: createParentLaneId })
-        : await (() => {
-            const primary = lanes.find((entry) => entry.laneType === "primary");
-            return primary
-              ? window.ade.lanes.create({ name, parentLaneId: primary.id })
-              : window.ade.lanes.create({ name });
-          })();
+      const request = resolveCreateLaneRequest({
+        name,
+        createAsChild,
+        createParentLaneId,
+        createBaseBranch,
+      });
+      const lane = request.kind === "child"
+        ? await window.ade.lanes.createChild(request.args)
+        : await window.ade.lanes.create(request.args);
 
       await refreshLanes();
       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);

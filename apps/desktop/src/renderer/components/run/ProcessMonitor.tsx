@@ -3,7 +3,8 @@ import { CaretUp, CaretDown, Terminal, X } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, LABEL_STYLE, inlineBadge, processStatusColor } from "../lanes/laneDesignTokens";
 import { formatDurationMs } from "../../lib/format";
 import { commandArrayToLine } from "../../lib/shell";
-import type { ProcessDefinition, ProcessEvent, ProcessRuntime, ProcessRuntimeStatus } from "../../../shared/types";
+import type { ProcessDefinition, ProcessEvent, ProcessRuntime } from "../../../shared/types";
+import { formatProcessStatus, hasInspectableProcessOutput, isActiveProcessStatus } from "./processUtils";
 
 type ProcessMonitorProps = {
   laneId: string | null;
@@ -20,26 +21,15 @@ function normalizeLog(raw: string): string {
   return raw.replace(/\u0000/g, "");
 }
 
-function isActiveStatus(status: ProcessRuntimeStatus): boolean {
-  return status === "running" || status === "starting" || status === "degraded" || status === "stopping";
-}
-
-function hasInspectableOutput(runtime: ProcessRuntime): boolean {
-  return runtime.status !== "stopped" || runtime.startedAt != null || runtime.lastEndedAt != null || runtime.lastExitCode != null;
-}
-
-function formatProcessStatus(runtime: ProcessRuntime): string {
-  if ((runtime.status === "crashed" || runtime.status === "exited") && runtime.lastExitCode != null) {
-    return `${runtime.status}:${runtime.lastExitCode}`;
-  }
-  return runtime.status;
-}
-
-function formatEndedAt(value: string | null): string {
+function formatEndedAt(
+  value: string | null,
+  locale: string | undefined = typeof navigator !== "undefined" ? navigator.language : undefined,
+  options: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" },
+): string {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return date.toLocaleTimeString(locale, options);
 }
 
 export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNames, onKill }: ProcessMonitorProps) {
@@ -54,10 +44,10 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
   const laneIdRef = React.useRef<string | null>(laneId);
   laneIdRef.current = laneId;
   const logRef = React.useRef<HTMLDivElement | null>(null);
-  const activeRuntimes = runtimes.filter((runtime) => isActiveStatus(runtime.status));
+  const activeRuntimes = runtimes.filter((runtime) => isActiveProcessStatus(runtime.status));
   const activeCount = activeRuntimes.length;
   const inspectableRuntimes = React.useMemo(
-    () => runtimes.filter((runtime) => hasInspectableOutput(runtime)),
+    () => runtimes.filter((runtime) => hasInspectableProcessOutput(runtime)),
     [runtimes],
   );
   const activeRuntime = inspectableRuntimes.find((runtime) => runtime.processId === activeProcessId) ?? null;
@@ -69,7 +59,7 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
     }
     if (activeProcessId && inspectableRuntimes.some((runtime) => runtime.processId === activeProcessId)) return;
     const preferred =
-      inspectableRuntimes.find((runtime) => isActiveStatus(runtime.status))
+      inspectableRuntimes.find((runtime) => isActiveProcessStatus(runtime.status))
       ?? inspectableRuntimes.find((runtime) => runtime.status === "crashed")
       ?? inspectableRuntimes[0]
       ?? null;
@@ -81,7 +71,10 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
       if (event.type !== "log") return;
       if (event.laneId !== laneIdRef.current) return;
       if (event.processId !== activeProcessIdRef.current) return;
-      setLogText((prev) => normalizeLog(`${prev}${event.chunk}`));
+      setLogText((prev) => {
+        const next = normalizeLog(`${prev}${event.chunk}`);
+        return next.length > LOG_TAIL_MAX_BYTES ? next.slice(-LOG_TAIL_MAX_BYTES) : next;
+      });
     });
     return () => {
       try {
@@ -134,7 +127,7 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
   const activeCwd = activeDefinition?.cwd?.trim()?.length ? activeDefinition.cwd : ".";
   const logPlaceholder = logLoading
     ? "Loading recent output..."
-    : activeRuntime && isActiveStatus(activeRuntime.status)
+    : activeRuntime && isActiveProcessStatus(activeRuntime.status)
       ? "Waiting for output..."
       : "(no output yet)";
 
@@ -324,7 +317,7 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
                 <button
                   type="button"
                   onClick={() => onKill(rt.processId)}
-                  disabled={!isActiveStatus(rt.status)}
+                  disabled={!isActiveProcessStatus(rt.status)}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -332,11 +325,11 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
                     width: 24,
                     height: 24,
                     background: "transparent",
-                    border: `1px solid ${isActiveStatus(rt.status) ? COLORS.danger + "30" : COLORS.border}`,
+                    border: `1px solid ${isActiveProcessStatus(rt.status) ? COLORS.danger + "30" : COLORS.border}`,
                     borderRadius: 0,
-                    color: isActiveStatus(rt.status) ? COLORS.danger : COLORS.textDim,
-                    cursor: isActiveStatus(rt.status) ? "pointer" : "default",
-                    opacity: isActiveStatus(rt.status) ? 1 : 0.4,
+                    color: isActiveProcessStatus(rt.status) ? COLORS.danger : COLORS.textDim,
+                    cursor: isActiveProcessStatus(rt.status) ? "pointer" : "default",
+                    opacity: isActiveProcessStatus(rt.status) ? 1 : 0.4,
                   }}
                   title="Kill process"
                 >
@@ -415,7 +408,7 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
                           {label}
                         </span>
-                        {!isActiveStatus(runtime.status) && (
+                        {!isActiveProcessStatus(runtime.status) && (
                           <span style={inlineBadge(processStatusColor(runtime.status), { fontSize: 8, padding: "1px 5px" })}>
                             {formatProcessStatus(runtime)}
                           </span>
@@ -458,17 +451,6 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
                           <span style={inlineBadge(processStatusColor(activeRuntime.status), { fontSize: 8, padding: "1px 5px" })}>
                             {formatProcessStatus(activeRuntime)}
                           </span>
-                          {activeRuntime.lastExitCode != null && !isActiveStatus(activeRuntime.status) ? (
-                            <span
-                              style={{
-                                fontFamily: MONO_FONT,
-                                fontSize: 10,
-                                color: COLORS.textMuted,
-                              }}
-                            >
-                              exit {activeRuntime.lastExitCode}
-                            </span>
-                          ) : null}
                           {activeRuntime.lastEndedAt ? (
                             <span
                               style={{
@@ -509,7 +491,7 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
                       <button
                         type="button"
                         onClick={() => onKill(activeRuntime.processId)}
-                        disabled={!isActiveStatus(activeRuntime.status)}
+                        disabled={!isActiveProcessStatus(activeRuntime.status)}
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
@@ -517,10 +499,10 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
                           width: 24,
                           height: 24,
                           background: COLORS.cardBg,
-                          border: `1px solid ${isActiveStatus(activeRuntime.status) ? COLORS.danger + "30" : COLORS.border}`,
-                          color: isActiveStatus(activeRuntime.status) ? COLORS.danger : COLORS.textDim,
-                          cursor: isActiveStatus(activeRuntime.status) ? "pointer" : "default",
-                          opacity: isActiveStatus(activeRuntime.status) ? 1 : 0.45,
+                          border: `1px solid ${isActiveProcessStatus(activeRuntime.status) ? COLORS.danger + "30" : COLORS.border}`,
+                          color: isActiveProcessStatus(activeRuntime.status) ? COLORS.danger : COLORS.textDim,
+                          cursor: isActiveProcessStatus(activeRuntime.status) ? "pointer" : "default",
+                          opacity: isActiveProcessStatus(activeRuntime.status) ? 1 : 0.45,
                         }}
                         title="Kill process"
                       >

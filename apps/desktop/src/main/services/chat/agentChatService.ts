@@ -3632,6 +3632,7 @@ export function createAgentChatService(args: {
     const primaryLaneId = await resolvePrimaryIdentityLane();
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
     const selectedLaneId = explicitLaneId || managed.selectedExecutionLaneId || primaryLaneId;
+    const previousExecutionLaneId = resolveManagedExecutionLaneId(managed);
     const primaryLane = lanes.find((lane) => lane.id === primaryLaneId) ?? null;
     const selectedLane = lanes.find((lane) => lane.id === selectedLaneId) ?? null;
     const itemId = randomUUID();
@@ -3723,6 +3724,9 @@ export function createAgentChatService(args: {
 
     managed.preferredExecutionLaneId = resolvedLaneId;
     managed.selectedExecutionLaneId = selectedLaneId || managed.selectedExecutionLaneId;
+    if (resolvedLaneId !== previousExecutionLaneId) {
+      await refreshHeadShaStartForManagedExecutionLane(managed);
+    }
     emitChatEvent(managed, {
       type: "tool_result",
       tool: "choose_execution_lane",
@@ -5006,6 +5010,7 @@ export function createAgentChatService(args: {
             error: error instanceof Error ? error.message : String(error),
           });
           runtime.sdkSessionId = null;
+          managed.lastLaneDirectiveKey = null;
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
           refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
           prewarmClaudeV2Session(managed);
@@ -7672,7 +7677,7 @@ export function createAgentChatService(args: {
 
     managedSessions.set(sessionId, managed);
 
-    const headStart = await computeHeadShaBestEffort(launchContext.laneWorktreePath).catch(() => null);
+    const headStart = await computeHeadShaBestEffort(laneId).catch(() => null);
     if (headStart) {
       sessionService.setHeadShaStart(sessionId, headStart);
     }
@@ -7894,7 +7899,7 @@ export function createAgentChatService(args: {
       resolvedAttachments,
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
-      laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
+      laneDirectiveKey: isLiteralSlashCommand(trimmed) ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
     };
   };
 
@@ -8875,6 +8880,7 @@ export function createAgentChatService(args: {
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
       if (previousProvider !== nextProvider || previousProvider === "codex") {
         delete managed.session.threadId;
+        managed.lastLaneDirectiveKey = null;
       }
       sessionService.updateMeta({
         sessionId,

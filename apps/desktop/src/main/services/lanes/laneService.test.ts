@@ -435,6 +435,86 @@ describe("laneService createFromUnstaged", () => {
   });
 });
 
+describe("laneService create", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  it("creates an unparented lane from the requested base branch", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-root-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-03-11T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        ["proj-create-root", repoRoot, "demo", "main", now, now],
+      );
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["lane-main", "proj-create-root", "Main", null, "primary", "main", "fix-rebase-and-new-lane-flow", repoRoot, null, 0, null, null, null, null, "active", now, null],
+      );
+
+      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "add") {
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+        if (args[0] === "rev-parse" && args[1] === "main") {
+          return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
+        }
+        if (args[0] === "push" && args[1] === "-u") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "status" && args[1] === "--porcelain=v1") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+          return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+        }
+        if (
+          args[0] === "rev-parse"
+          && args[1] === "--abbrev-ref"
+          && args[2] === "--symbolic-full-name"
+          && args[3] === "@{upstream}"
+        ) {
+          return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+          return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-create-root",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const lane = await service.create({ name: "Git actions fixes", baseBranch: "main" });
+
+      expect(lane.parentLaneId).toBeNull();
+      expect(lane.baseRef).toBe("main");
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("laneService rebaseStart", () => {
   beforeEach(() => {
     vi.mocked(getHeadSha).mockReset();

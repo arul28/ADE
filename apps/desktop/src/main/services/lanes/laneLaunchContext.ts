@@ -18,7 +18,11 @@ function ensureDirectoryExists(targetPath: string, message: string): string {
   if (!stat.isDirectory()) {
     throw new Error(message);
   }
-  return targetPath;
+  try {
+    return fs.realpathSync(targetPath);
+  } catch {
+    throw new Error(message);
+  }
 }
 
 export function resolveLaneLaunchContext(args: {

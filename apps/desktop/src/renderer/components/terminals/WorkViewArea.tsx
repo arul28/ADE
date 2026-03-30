@@ -114,14 +114,25 @@ export function WorkViewArea({
     ? sessionsById.get(activeItemId) ?? displaySessions[0] ?? null
     : null;
   const runningTerminalSessions = useMemo(
-    () =>
-      displaySessions.filter(
+    () => {
+      const running = displaySessions.filter(
         (session) =>
           session.status === "running"
           && Boolean(session.ptyId)
           && !isChatToolType(session.toolType),
-      ),
-    [displaySessions],
+      );
+      if (
+        activeSession
+        && activeSession.status === "running"
+        && Boolean(activeSession.ptyId)
+        && !isChatToolType(activeSession.toolType)
+        && !running.some((session) => session.id === activeSession.id)
+      ) {
+        running.push(activeSession);
+      }
+      return running;
+    },
+    [activeSession, displaySessions],
   );
 
   if (viewMode === "grid") {

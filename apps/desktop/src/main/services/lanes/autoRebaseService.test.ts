@@ -911,6 +911,15 @@ describe("autoRebaseService", () => {
       await Promise.resolve();
 
       expect(laneService.rebaseRollback).toHaveBeenCalledWith({ runId: "run-1" });
+      expect(db.setJson).toHaveBeenCalledWith(
+        "auto_rebase:status:child-1",
+        expect.objectContaining({
+          laneId: "child-1",
+          parentLaneId: "root",
+          parentHeadSha: "abc123",
+          state: "rebaseFailed",
+        }),
+      );
     });
 
     it("marks downstream lanes as rebasePending when an ancestor has conflicts", async () => {

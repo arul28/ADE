@@ -755,16 +755,38 @@ export function createPrService({
       successorParent = allLanes.find((lane) => lane.laneType === "primary" && !lane.archivedAt) ?? null;
     }
 
+    type AttentionStatus = {
+      laneId: string;
+      parentLaneId: string | null;
+      parentHeadSha: string | null;
+      state: "autoRebased" | "rebasePending" | "rebaseConflict" | "rebaseFailed";
+      conflictCount: number;
+      message?: string | null;
+    };
+    const recordAttentionStatusSafely = async (status: AttentionStatus, laneId: string): Promise<boolean> => {
+      try {
+        await autoRebaseService?.recordAttentionStatus(status);
+        return true;
+      } catch (error) {
+        logger.warn("prs.child_auto_rebase_attention_status_failed", {
+          landedLaneId: args.landedLaneId,
+          childLaneId: laneId,
+          error: getErrorMessage(error),
+        });
+        return false;
+      }
+    };
+
     if (!successorParent) {
       for (const child of directChildren) {
-        await autoRebaseService?.recordAttentionStatus({
+        await recordAttentionStatusSafely({
           laneId: child.id,
           parentLaneId: child.parentLaneId,
           parentHeadSha: null,
           state: "rebaseFailed",
           conflictCount: 0,
           message: `Auto-rebase failed after '${args.landedLaneName}' merged because ADE could not find a new parent lane. Open the Rebase tab to recover this lane.`,
-        });
+        }, child.id);
       }
       return {
         updatedLaneIds: [],
@@ -813,26 +835,32 @@ export function createPrService({
           });
           markHotRefresh([childPr.id]);
           if (retargetError) {
-            await autoRebaseService?.recordAttentionStatus({
+            const recorded = await recordAttentionStatusSafely({
               laneId: child.id,
               parentLaneId: successorParent.id,
               parentHeadSha: null,
               state: "rebaseFailed",
               conflictCount: 0,
               message: `Auto-rebase pushed this lane after '${args.landedLaneName}' merged, but ADE could not retarget the PR base to '${successorBaseBranch}': ${retargetError}. The merged parent lane was left in place so you can finish cleanup manually.`,
-            });
-            failedLaneIds.push(child.id);
+            }, child.id);
+            if (!recorded) {
+              failedLaneIds.push(child.id);
+            }
             continue;
           }
         }
-        await autoRebaseService?.recordAttentionStatus({
+        const recorded = await recordAttentionStatusSafely({
           laneId: child.id,
           parentLaneId: successorParent.id,
           parentHeadSha: null,
           state: "autoRebased",
           conflictCount: 0,
           message: `Rebased and pushed automatically after '${args.landedLaneName}' merged.`,
-        });
+        }, child.id);
+        if (!recorded) {
+          failedLaneIds.push(child.id);
+          continue;
+        }
         updatedLaneIds.push(child.id);
       } catch (error) {
         const childError = getErrorMessage(error);
@@ -859,7 +887,7 @@ export function createPrService({
             });
           }
         }
-        await autoRebaseService?.recordAttentionStatus({
+        await recordAttentionStatusSafely({
           laneId: child.id,
           parentLaneId: previousParentLaneId,
           parentHeadSha: null,
@@ -868,7 +896,7 @@ export function createPrService({
           message: rollbackError
             ? `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. Automatic rollback also failed: ${rollbackError}. Open the Rebase tab to recover this lane.`
             : `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. The lane was restored to its pre-rebase state. Open the Rebase tab to recover this lane.`,
-        });
+        }, child.id);
         failedLaneIds.push(child.id);
       }
     }
@@ -2115,7 +2143,7 @@ export function createPrService({
           return {
             updatedLaneIds: [],
             failedLaneIds: [],
-            blockCleanup: false,
+            blockCleanup: true,
           };
         });
         childAutoRebaseBlockedCleanup = childAdvanceResult.blockCleanup;

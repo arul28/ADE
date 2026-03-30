@@ -2,9 +2,10 @@ import React from "react";
 import { Play, Stop, DotsThreeVertical } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, inlineBadge, processStatusColor } from "../lanes/laneDesignTokens";
 import { formatDurationMs } from "../../lib/format";
-import type { ProcessDefinition, ProcessRuntime, ProcessRuntimeStatus } from "../../../shared/types";
+import type { ProcessDefinition, ProcessRuntime } from "../../../shared/types";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { commandArrayToLine } from "../../lib/shell";
+import { formatProcessStatus, isActiveProcessStatus } from "./processUtils";
 
 type CommandCardProps = {
   definition: ProcessDefinition;
@@ -17,19 +18,6 @@ type CommandCardProps = {
   stacks?: { id: string }[];
 };
 
-function isActive(status: ProcessRuntimeStatus | undefined): boolean {
-  return status === "running" || status === "starting" || status === "degraded" || status === "stopping";
-}
-
-function statusLabel(runtime: ProcessRuntime | null): string | null {
-  const status = runtime?.status;
-  if (!status || status === "stopped") return null;
-  if ((status === "crashed" || status === "exited") && runtime?.lastExitCode != null) {
-    return `${status}:${runtime.lastExitCode}`;
-  }
-  return status;
-}
-
 export function CommandCard({
   definition,
   runtime,
@@ -41,8 +29,8 @@ export function CommandCard({
   stacks,
 }: CommandCardProps) {
   const status = runtime?.status;
-  const running = isActive(status);
-  const statusText = statusLabel(runtime);
+  const running = status ? isActiveProcessStatus(status) : false;
+  const statusText = runtime && status && status !== "stopped" ? formatProcessStatus(runtime) : null;
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
 

@@ -97,6 +97,18 @@ export function createRebaseSuggestionService(args: {
     return result.exitCode === 0 ? Math.max(0, Number(result.stdout.trim()) || 0) : 0;
   };
 
+  const resolvePrimaryParentHeadSha = async (parent: LaneSummary): Promise<string | null> => {
+    const parentBranch = parent.branchRef.trim();
+    if (!parentBranch) return null;
+    await fetchRemoteTrackingBranch({
+      projectRoot,
+      targetBranch: parentBranch,
+    }).catch(() => {});
+    const remoteHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
+    if (remoteHeadSha) return remoteHeadSha;
+    return getHeadSha(parent.worktreePath);
+  };
+
   const resolveSuggestionBase = async (
     lane: LaneSummary,
     laneById: Map<string, LaneSummary>,
@@ -323,14 +335,18 @@ export function createRebaseSuggestionService(args: {
     reason: string;
   }): Promise<void> => {
     const parentId = args.laneId.trim();
-    const parentHeadSha = (args.postHeadSha ?? "").trim();
-    if (!parentId || !parentHeadSha) return;
+    if (!parentId) return;
 
     // Lightweight: only consider direct children; rebase runs can recurse.
     // Skip lanes that have a queue override — their base is the queue target,
     // not the direct parent, so writing direct-parent ids here would cause
     // listSuggestions() to see a base identity change and reset dismissals.
     const lanes = await laneService.list({ includeArchived: false });
+    const parent = lanes.find((lane) => lane.id === parentId) ?? null;
+    const resolvedParentHeadSha = parent?.laneType === "primary"
+      ? await resolvePrimaryParentHeadSha(parent)
+      : (args.postHeadSha ?? "").trim();
+    if (!resolvedParentHeadSha) return;
     const directChildren = lanes.filter((lane) => lane.parentLaneId === parentId && lane.status.behind > 0);
 
     if (directChildren.length === 0) return;
@@ -349,11 +365,11 @@ export function createRebaseSuggestionService(args: {
       const next: StoredSuggestionState = {
         laneId: child.id,
         parentLaneId: parentId,
-        parentHeadSha,
+        parentHeadSha: resolvedParentHeadSha,
         behindCount: Math.max(0, Math.floor(child.status.behind)),
-        lastSuggestedAt: existing?.parentHeadSha === parentHeadSha ? existing.lastSuggestedAt : ts,
+        lastSuggestedAt: existing?.parentHeadSha === resolvedParentHeadSha ? existing.lastSuggestedAt : ts,
         deferredUntil: existing?.deferredUntil ?? null,
-        dismissedAt: existing?.parentHeadSha === parentHeadSha ? existing.dismissedAt ?? null : null
+        dismissedAt: existing?.parentHeadSha === resolvedParentHeadSha ? existing.dismissedAt ?? null : null
       };
       saveState(next);
     }

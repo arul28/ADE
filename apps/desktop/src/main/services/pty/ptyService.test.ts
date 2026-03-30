@@ -9,8 +9,11 @@ import type { IPty } from "node-pty";
 
 const mocks = vi.hoisted(() => {
   const existsSyncResults = new Map<string, boolean>();
+  const realpathOverrides = new Map<string, string>();
+  const resolveRealpath = (p: string) => realpathOverrides.get(p) ?? path.resolve(p);
   return {
     existsSyncResults,
+    realpathOverrides,
     mkdirSync: vi.fn(),
     existsSync: vi.fn((p: string) => existsSyncResults.get(p) ?? true),
     lstatSync: vi.fn((p: string) => {
@@ -22,8 +25,8 @@ const mocks = vi.hoisted(() => {
       return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
     }),
     realpathSync: Object.assign(
-      vi.fn((p: string) => path.resolve(p)),
-      { native: vi.fn((p: string) => path.resolve(p)) },
+      vi.fn((p: string) => resolveRealpath(p)),
+      { native: vi.fn((p: string) => resolveRealpath(p)) },
     ),
     statSync: vi.fn((p: string) => {
       if ((existsSyncResults.get(p) ?? true) === false) {
@@ -238,6 +241,7 @@ describe("ptyService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.existsSyncResults.clear();
+    mocks.realpathOverrides.clear();
     mocks.existsSyncResults.set("/tmp/test-worktree", true);
     let counter = 0;
     mocks.randomUUID.mockImplementation(() => `uuid-${++counter}`);
@@ -314,6 +318,21 @@ describe("ptyService", () => {
         laneId: "lane-1",
         cwd: "/tmp/outside",
         title: "Escaping terminal",
+        cols: 80,
+        rows: 24,
+      })).rejects.toThrow(/escapes lane/i);
+      expect(loadPty).not.toHaveBeenCalled();
+    });
+
+    it("rejects a cwd whose realpath hops outside the lane worktree", async () => {
+      const childPath = "/tmp/test-worktree/hop-child";
+      mocks.existsSyncResults.set(childPath, true);
+      mocks.realpathOverrides.set(childPath, "/private/tmp/hop-child");
+      const { service, loadPty } = createHarness();
+      await expect(service.create({
+        laneId: "lane-1",
+        cwd: childPath,
+        title: "Realpath hop",
         cols: 80,
         rows: 24,
       })).rejects.toThrow(/escapes lane/i);

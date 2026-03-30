@@ -242,16 +242,27 @@ function createMockLaneService() {
   };
   fs.mkdirSync(laneRoots["lane-2"], { recursive: true });
   const lanes = [
-    { id: "lane-1", name: "Primary", laneType: "primary", worktreePath: laneRoots["lane-1"] },
-    { id: "lane-2", name: "Selected", laneType: "feature", worktreePath: laneRoots["lane-2"] },
+    { id: "lane-1", name: "Primary", laneType: "primary", branchRef: "feature/primary", worktreePath: laneRoots["lane-1"] },
+    { id: "lane-2", name: "Selected", laneType: "feature", branchRef: "feature/selected", worktreePath: laneRoots["lane-2"] },
   ];
   return {
-    getLaneBaseAndBranch: vi.fn((laneId: string) => ({
-      baseRef: "main",
-      branchRef: laneId === "lane-1" ? "feature/primary" : "feature/selected",
-      worktreePath: laneRoots[laneId] ?? tmpRoot,
-      laneType: laneId === "lane-1" ? "primary" : "feature",
-    })),
+    getLaneBaseAndBranch: vi.fn((laneId: string) => {
+      const lane = lanes.find((entry) => entry.id === laneId);
+      if (lane) {
+        return {
+          baseRef: "main",
+          branchRef: lane.branchRef,
+          worktreePath: lane.worktreePath,
+          laneType: lane.laneType,
+        };
+      }
+      return {
+        baseRef: "main",
+        branchRef: "feature/selected",
+        worktreePath: tmpRoot,
+        laneType: "feature",
+      };
+    }),
     list: vi.fn(async () => lanes),
     ensurePrimaryLane: vi.fn(async () => {}),
     create: vi.fn(async ({ name, description, parentLaneId }: { name: string; description?: string; parentLaneId?: string }) => {
@@ -260,6 +271,7 @@ function createMockLaneService() {
         name,
         description: description ?? null,
         laneType: "feature",
+        branchRef: `feature/generated-lane-${lanes.length + 1}`,
         worktreePath: path.join(tmpRoot, `generated-lane-${lanes.length + 1}`),
         parentLaneId: parentLaneId ?? "lane-1",
       };
@@ -1042,7 +1054,9 @@ describe("createAgentChatService", () => {
     });
 
     it("roots Codex MCP launches in the selected lane worktree", async () => {
-      const laneRoot = path.join(tmpRoot, "lane-2");
+      const laneRootPath = path.join(tmpRoot, "lane-2");
+      fs.mkdirSync(laneRootPath, { recursive: true });
+      const laneRoot = fs.realpathSync(laneRootPath);
       vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
       const { service } = createService();
@@ -1083,7 +1097,9 @@ describe("createAgentChatService", () => {
       vi.mocked(createWorkflowTools).mockClear();
       vi.mocked(buildCodingAgentSystemPrompt).mockClear();
 
-      const selectedLaneRoot = path.join(tmpRoot, "lane-2");
+      const selectedLaneRootPath = path.join(tmpRoot, "lane-2");
+      fs.mkdirSync(selectedLaneRootPath, { recursive: true });
+      const selectedLaneRoot = fs.realpathSync(selectedLaneRootPath);
       const { service } = createService();
       const session = await service.ensureIdentitySession({
         identityKey: "cto",
