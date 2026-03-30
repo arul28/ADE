@@ -584,4 +584,72 @@ describe("AgentChatPane submit recovery", () => {
       expect(onSessionCreated).toHaveBeenCalledWith("session-2");
     });
   });
+
+  it("shows 'New chat' in the header when no session is selected", async () => {
+    installAdeMocks({ sessions: [] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceNewSession
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("New chat")).toBeTruthy();
+  });
+
+  it("shows the session title in the header when the session has one", async () => {
+    const session = buildSession("session-1", {
+      title: "Fix login bug",
+    });
+    installAdeMocks({ sessions: [session] });
+    renderPane(session);
+
+    expect(await screen.findByText("Fix login bug")).toBeTruthy();
+  });
+
+  it("renders the lane navigation button when laneLabel is provided", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks({ sessions: [session] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          laneLabel="feature/auth"
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+        />
+      </MemoryRouter>,
+    );
+
+    const laneButton = await screen.findByTitle("Go to lane: feature/auth");
+    expect(laneButton).toBeTruthy();
+    expect(laneButton.textContent).toContain("feature/auth");
+  });
+
+  it("does not render the lane navigation button when laneId is null", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks({ sessions: [session] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={null}
+          laneLabel="feature/auth"
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+        />
+      </MemoryRouter>,
+    );
+
+    // Wait for the pane to fully render (renders "Select a lane" placeholder when laneId is null)
+    await waitFor(() => {
+      expect(screen.queryByTitle(/Go to lane:/)).toBeNull();
+    });
+  });
 });

@@ -37,7 +37,7 @@ function SessionSurface({
 }) {
   const isChat = isChatToolType(session.toolType);
   if (isChat) {
-    return <AgentChatPane laneId={session.laneId} lockSessionId={session.id} onSessionCreated={onOpenChatSession} />;
+    return <AgentChatPane laneId={session.laneId} laneLabel={session.laneName} lockSessionId={session.id} onSessionCreated={onOpenChatSession} />;
   }
   if (isRunningPtySession(session)) {
     return (
