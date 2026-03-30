@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import type { ComputerUseArtifactView, ComputerUseOwnerSnapshot, ComputerUsePolicy } from "../../../shared/types";
+import type { ComputerUseArtifactView, ComputerUseOwnerSnapshot } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
@@ -32,7 +32,10 @@ function openInSystemPlayer(uri: string) {
   if (/^https?:\/\//i.test(uri)) {
     void window.ade.app.openExternal(uri);
   } else {
-    void window.ade.app.revealPath(uri);
+    const fsPath = normalizeToFsPath(uri);
+    window.ade.app.openPath(fsPath).catch((err: unknown) => {
+      console.error("[ChatComputerUsePanel] Failed to open local path:", fsPath, err);
+    });
   }
 }
 
@@ -93,9 +96,7 @@ export function ChatComputerUsePanel({
   snapshot,
   onRefresh,
 }: {
-  laneId: string | null;
   sessionId: string;
-  policy: ComputerUsePolicy;
   snapshot: ComputerUseOwnerSnapshot | null;
   onRefresh: () => void | Promise<void>;
 }) {

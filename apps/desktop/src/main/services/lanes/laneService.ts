@@ -1281,7 +1281,7 @@ export function createLaneService({
       }
     },
 
-    async importBranch(args: { branchRef: string; name?: string; description?: string; parentLaneId?: string | null }): Promise<LaneSummary> {
+    async importBranch(args: { branchRef: string; name?: string; description?: string; parentLaneId?: string | null; baseBranch?: string }): Promise<LaneSummary> {
       const rawRef = (args.branchRef ?? "").trim();
       if (!rawRef) throw new Error("branchRef is required");
       if (rawRef.includes("\0")) throw new Error("Invalid branchRef");
@@ -1398,15 +1398,24 @@ export function createLaneService({
           parentLaneId = explicitParentLaneId;
         }
         if (!parentLaneId) {
+          // Only auto-assign Primary as parent when the imported branch's base
+          // matches Primary's branch — otherwise the lane is independent and
+          // should rebase directly against its baseRef (e.g. main).
           const primaryRow = getActivePrimaryLane();
-          if (primaryRow?.id) parentLaneId = primaryRow.id;
+          if (primaryRow?.id) {
+            const primary = getLaneRow(primaryRow.id);
+            const resolvedBase = args.baseBranch?.trim() || defaultBaseRef;
+            if (primary && normalizeBranchName(primary.branch_ref) === normalizeBranchName(resolvedBase)) {
+              parentLaneId = primaryRow.id;
+            }
+          }
         }
 
         const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
         if (parentLaneId && !parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
         if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
 
-        const baseRef = parent?.branch_ref ?? defaultBaseRef;
+        const baseRef = args.baseBranch?.trim() || defaultBaseRef;
 
         db.run(
           `

@@ -560,6 +560,7 @@ declare global {
         getProject: () => Promise<ProjectInfo | null>;
         openExternal: (url: string) => Promise<void>;
         revealPath: (path: string) => Promise<void>;
+        openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
         openPathInEditor: (args: {
           rootPath: string;

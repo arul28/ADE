@@ -556,6 +556,7 @@ contextBridge.exposeInMainWorld("ade", {
     getProject: async (): Promise<ProjectInfo | null> => ipcRenderer.invoke(IPC.appGetProject),
     openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url }),
     revealPath: async (path: string): Promise<void> => ipcRenderer.invoke(IPC.appRevealPath, { path }),
+    openPath: async (path: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenPath, { path }),
     writeClipboardText: async (text: string): Promise<void> => ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
     openPathInEditor: async (args: {
       rootPath: string;

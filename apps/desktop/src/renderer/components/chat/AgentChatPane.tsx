@@ -2081,9 +2081,7 @@ export function AgentChatPane({
                   </div>
                   <div className="max-h-[48vh] overflow-auto px-4 pb-4">
                     <ChatComputerUsePanel
-                      laneId={laneId}
                       sessionId={selectedSessionId}
-                      policy={computerUsePolicy}
                       snapshot={computerUseSnapshot}
                       onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
                     />

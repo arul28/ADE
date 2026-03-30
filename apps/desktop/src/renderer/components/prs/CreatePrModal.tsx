@@ -1423,7 +1423,10 @@ export function CreatePrModal({
                         />
                         <select
                           value={integrationBaseBranch}
-                          onChange={(e) => setIntegrationBaseBranch(e.target.value)}
+                          onChange={(e) => {
+                            setIntegrationBaseBranch(e.target.value);
+                            setProposal(null);
+                          }}
                           style={selectStyle}
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}

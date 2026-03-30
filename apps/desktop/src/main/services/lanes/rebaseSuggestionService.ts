@@ -131,34 +131,50 @@ export function createRebaseSuggestionService(args: {
       };
     }
 
-    if (!lane.parentLaneId) return null;
-    const parent = laneById.get(lane.parentLaneId);
-    if (!parent) return null;
-    let parentHeadSha: string | null;
-    if (parent.laneType === "primary") {
-      const parentBranch = parent.branchRef.trim();
-      if (!parentBranch) return null;
-      if (primaryParentHeadByBranch.has(parentBranch)) {
-        parentHeadSha = primaryParentHeadByBranch.get(parentBranch) ?? null;
-      } else {
-        await fetchRemoteTrackingBranch({
-          projectRoot,
-          targetBranch: parentBranch,
-        }).catch(() => {});
-        parentHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
-        if (!parentHeadSha) {
+    if (lane.parentLaneId) {
+      const parent = laneById.get(lane.parentLaneId);
+      if (parent) {
+        let parentHeadSha: string | null;
+        if (parent.laneType === "primary") {
+          const parentBranch = parent.branchRef.trim();
+          if (!parentBranch) return null;
+          if (primaryParentHeadByBranch.has(parentBranch)) {
+            parentHeadSha = primaryParentHeadByBranch.get(parentBranch) ?? null;
+          } else {
+            await fetchRemoteTrackingBranch({
+              projectRoot,
+              targetBranch: parentBranch,
+            }).catch(() => {});
+            parentHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
+            if (!parentHeadSha) {
+              parentHeadSha = await getHeadSha(parent.worktreePath);
+            }
+            primaryParentHeadByBranch.set(parentBranch, parentHeadSha);
+          }
+        } else {
           parentHeadSha = await getHeadSha(parent.worktreePath);
         }
-        primaryParentHeadByBranch.set(parentBranch, parentHeadSha);
+        if (!parentHeadSha) return null;
+        return {
+          parentLaneId: lane.parentLaneId,
+          parentHeadSha,
+          baseLabel: parent.name ?? null,
+          groupContext: null,
+        };
       }
-    } else {
-      parentHeadSha = await getHeadSha(parent.worktreePath);
     }
-    if (!parentHeadSha) return null;
+
+    // No parent lane — fall back to baseRef (e.g. "main") for parentless imported lanes.
+    const baseRef = lane.baseRef?.trim();
+    if (!baseRef) return null;
+    if (lane.laneType === "primary") return null;
+    await fetchRemoteTrackingBranch({ projectRoot, targetBranch: baseRef }).catch(() => {});
+    const baseHeadSha = await readRefHeadSha(`origin/${baseRef}`) ?? await readRefHeadSha(baseRef);
+    if (!baseHeadSha) return null;
     return {
-      parentLaneId: lane.parentLaneId,
-      parentHeadSha,
-      baseLabel: parent.name ?? null,
+      parentLaneId: `base:${baseRef}`,
+      parentHeadSha: baseHeadSha,
+      baseLabel: baseRef,
       groupContext: null,
     };
   };

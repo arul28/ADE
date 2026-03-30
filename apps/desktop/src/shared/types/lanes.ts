@@ -127,6 +127,7 @@ export type ImportBranchLaneArgs = {
   name?: string;
   description?: string;
   parentLaneId?: string | null;
+  baseBranch?: string;
 };
 
 export type AttachLaneArgs = {

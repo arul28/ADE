@@ -14,8 +14,9 @@ const MODE_META: Record<CreateLaneMode, { icon: typeof GitBranch; label: string 
   child:    { icon: StackSimple,  label: "Child lane" },
 };
 
-function submitLabel(busy: boolean | undefined, mode: CreateLaneMode, baseBranch: string): string {
+function submitLabel(busy: boolean | undefined, mode: CreateLaneMode, baseBranch: string, laneCreated: boolean | undefined): string {
   if (busy) return "Setting up lane\u2026";
+  if (laneCreated) return "Retry environment setup";
   if (mode === "child") return "Create child lane";
   if (mode === "existing") return "Import as lane";
   return `Create from ${baseBranch || "primary"}`;
@@ -40,6 +41,7 @@ export function CreateLaneDialog({
   busy,
   error,
   envInitProgress,
+  laneCreated,
   templates,
   selectedTemplateId,
   setSelectedTemplateId,
@@ -63,6 +65,8 @@ export function CreateLaneDialog({
   busy?: boolean;
   error?: string | null;
   envInitProgress?: LaneEnvInitProgress | null;
+  /** When true, the lane has already been created and the CTA only retries env setup. */
+  laneCreated?: boolean;
   templates: LaneTemplate[];
   selectedTemplateId: string;
   setSelectedTemplateId: (id: string) => void;
@@ -72,11 +76,15 @@ export function CreateLaneDialog({
   const allBranches = createBranches;
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? null;
 
-  const isSubmitDisabled = busy
-    || !createLaneName.trim()
-    || (createMode === "child" && !createParentLaneId)
-    || (createMode === "primary" && !createBaseBranch)
-    || (createMode === "existing" && !createImportBranch);
+  // When the lane already exists, the CTA only retries env setup — no form
+  // validation needed beyond not being busy.
+  const isSubmitDisabled = laneCreated
+    ? !!busy
+    : (busy
+      || !createLaneName.trim()
+      || (createMode === "child" && !createParentLaneId)
+      || (createMode === "primary" && !createBaseBranch)
+      || (createMode === "existing" && !createImportBranch));
 
   return (
     <LaneDialogShell
@@ -98,7 +106,7 @@ export function CreateLaneDialog({
               placeholder="e.g. feature/auth-refresh"
               className={INPUT_CLASS_NAME}
               autoFocus
-              disabled={busy}
+              disabled={busy || laneCreated}
             />
           </label>
         </section>
@@ -117,7 +125,8 @@ export function CreateLaneDialog({
                 <button
                   key={mode}
                   type="button"
-                  disabled={busy}
+                  aria-pressed={active}
+                  disabled={busy || laneCreated}
                   onClick={() => {
                     setCreateMode(mode);
                     if (mode !== "child") setCreateParentLaneId("");
@@ -144,7 +153,8 @@ export function CreateLaneDialog({
                     value={createBaseBranch}
                     onChange={(e) => setCreateBaseBranch(e.target.value)}
                     className={SELECT_CLASS_NAME + " !mt-0"}
-                    disabled={busy}
+                    disabled={busy || laneCreated}
+                    aria-label="Base branch"
                   >
                     {localBranches.map((b) => (
                       <option key={b.name} value={b.name}>
@@ -172,7 +182,8 @@ export function CreateLaneDialog({
                     value={createImportBranch}
                     onChange={(e) => setCreateImportBranch(e.target.value)}
                     className={SELECT_CLASS_NAME + " !mt-0"}
-                    disabled={busy}
+                    disabled={busy || laneCreated}
+                    aria-label="Import branch"
                   >
                     <option value="">Select a branch\u2026</option>
                     {allBranches.map((b) => (
@@ -200,7 +211,8 @@ export function CreateLaneDialog({
                   value={createParentLaneId}
                   onChange={(e) => setCreateParentLaneId(e.target.value)}
                   className={SELECT_CLASS_NAME + " !mt-0"}
-                  disabled={busy}
+                  disabled={busy || laneCreated}
+                  aria-label="Parent lane"
                 >
                   <option value="">Select parent lane\u2026</option>
                   {lanes.map((lane) => (
@@ -227,7 +239,7 @@ export function CreateLaneDialog({
               <button
                 type="button"
                 className="text-[10px] font-medium text-muted-fg/60 transition-colors hover:text-accent"
-                disabled={busy}
+                disabled={busy || laneCreated}
                 onClick={() => { onOpenChange(false); onNavigateToTemplates(); }}
               >
                 {templates.length > 0 ? "Manage" : "Create template"}
@@ -240,7 +252,8 @@ export function CreateLaneDialog({
                 value={selectedTemplateId}
                 onChange={(e) => setSelectedTemplateId(e.target.value)}
                 className={SELECT_CLASS_NAME}
-                disabled={busy}
+                disabled={busy || laneCreated}
+                aria-label="Template"
               >
                 <option value="">None</option>
                 {templates.map((t) => (
@@ -282,7 +295,7 @@ export function CreateLaneDialog({
             Cancel
           </Button>
           <Button variant="primary" disabled={isSubmitDisabled} onClick={onSubmit}>
-            {submitLabel(busy, createMode, createBaseBranch)}
+            {submitLabel(busy, createMode, createBaseBranch, laneCreated)}
           </Button>
         </div>
 

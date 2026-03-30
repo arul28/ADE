@@ -706,6 +706,26 @@ export function LaneGitActionsPane({
     await refreshChanges();
   };
 
+  const discardFile = (path: string) => {
+    if (!laneId) return;
+    const ok = window.confirm(`Discard all changes to ${path}? This cannot be undone.`);
+    if (!ok) return;
+    void runAction("discard file", async () => {
+      await window.ade.git.discardFile({ laneId, path });
+    });
+  };
+
+  const discardAll = () => {
+    if (!laneId) return;
+    const ok = window.confirm(`Discard ALL unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})? This cannot be undone.`);
+    if (!ok) return;
+    void runAction("discard all", async () => {
+      for (const file of changes.unstaged) {
+        await window.ade.git.discardFile({ laneId, path: file.path });
+      }
+    });
+  };
+
   const stageAll = () => {
     if (!laneId) return;
     void runAction("stage all", async () => {
@@ -958,6 +978,32 @@ export function LaneGitActionsPane({
           >
             PARTIAL
           </span>
+        ) : null}
+        {mode === "unstaged" ? (
+          <button
+            type="button"
+            className="shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity flex items-center justify-center"
+            style={{
+              width: 20,
+              height: 20,
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              color: COLORS.textDim,
+            }}
+            aria-label={`Discard changes to ${file.path}`}
+            onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.danger; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+            onFocus={(e) => { e.currentTarget.style.color = COLORS.danger; }}
+            onBlur={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+            onClick={(event) => {
+              event.stopPropagation();
+              void discardFile(file.path);
+            }}
+            title="Discard changes to this file. This cannot be undone."
+          >
+            <Trash size={12} />
+          </button>
         ) : null}
       </div>
     );
@@ -1552,13 +1598,26 @@ export function LaneGitActionsPane({
                   {changedFileCount}
                 </span>
                 {changes.unstaged.length > 0 ? (
-                  <button
-                    type="button"
-                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                    onClick={stageAll}
-                  >
-                    STAGE ALL
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      onClick={stageAll}
+                      disabled={busyAction != null}
+                      title={busyAction != null ? "Action in progress" : "Stage all unstaged changes"}
+                    >
+                      STAGE ALL
+                    </button>
+                    <button
+                      type="button"
+                      style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      onClick={discardAll}
+                      disabled={busyAction != null}
+                      title="Discard all unstaged changes. This cannot be undone."
+                    >
+                      DISCARD ALL
+                    </button>
+                  </>
                 ) : null}
                 {changes.staged.length > 0 ? (
                   <button
