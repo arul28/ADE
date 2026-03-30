@@ -90,7 +90,7 @@ export function CommitTimeline({
         const rows = el.querySelectorAll("button");
         rows[selectedIdx]?.scrollIntoView({ block: "center" });
       } else {
-        el.scrollTop = 0;
+        el.scrollTop = el.scrollHeight;
       }
       didInitialScrollRef.current = true;
     }
