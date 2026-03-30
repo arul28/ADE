@@ -218,7 +218,7 @@ export function LinearSection() {
       return;
     }
     const cto = window.ade?.cto;
-    const openExternal = window.ade.app?.openExternal;
+    const openExternal = window.ade?.app?.openExternal;
     if (!cto || validatingRef.current || oauthStartingRef.current) return;
     if (!openExternal) {
       setOauthSessionIdState(null);
@@ -464,9 +464,10 @@ export function LinearSection() {
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(event) => {
-                    if (!window.ade.app?.openExternal) return;
+                    const openExternal = window.ade?.app?.openExternal;
+                    if (!openExternal) return;
                     event.preventDefault();
-                    void window.ade.app.openExternal(LINEAR_API_SETTINGS_URL);
+                    void openExternal(LINEAR_API_SETTINGS_URL);
                   }}
                   style={{ color: COLORS.textMuted }}
                 >

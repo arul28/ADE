@@ -400,6 +400,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
         await disposeExtractorSafely(nextExtractor, "memory.embedding.dispose_failed_after_smoke_test");
         throw error;
       }
+      // Defensive guard in case a future async refactor makes isCurrentLoadAttempt stale after assigning nextExtractor, so disposeExtractorSafely still cleans up before createStaleLoadError.
       if (!isCurrentLoadAttempt(attemptId)) {
         if (extractor === nextExtractor) {
           extractor = null;
