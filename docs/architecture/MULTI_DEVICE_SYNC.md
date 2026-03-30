@@ -278,7 +278,7 @@ Rule for future workstreams:
 - **State-only operations** (create lane metadata, update settings): write locally, cr-sqlite syncs.
 - **Execution operations** (create worktree, run terminal command, create PR): send command to host via WebSocket. Host executes, state changes sync back.
 
-The remote command service (`syncRemoteCommandService`) registers named actions that controllers can invoke. Agent chat commands include `chat.create`, `chat.send`, `chat.interrupt`, `chat.steer`, `chat.approve`, `chat.respondToInput`, `chat.resume`, `chat.updateSession`, `chat.dispose`, and `chat.models`. All chat commands are viewer-allowed and queueable, enabling full remote chat session control from companion devices.
+The remote command service (`syncRemoteCommandService`) registers named actions that controllers can invoke. Agent chat commands include `chat.create`, `chat.send`, `chat.interrupt`, `chat.steer`, `chat.cancelSteer`, `chat.editSteer`, `chat.approve`, `chat.respondToInput`, `chat.resume`, `chat.updateSession`, `chat.dispose`, and `chat.models`. All chat commands are viewer-allowed and queueable, enabling full remote chat session control from companion devices.
 
 ---
 

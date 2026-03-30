@@ -178,6 +178,7 @@ The `discardFile` operation checks whether the file is untracked (via `git statu
 | `stashApply` | `git stash apply <ref>` | Apply stash without removing it |
 | `stashPop` | `git stash pop <ref>` | Apply and remove stash |
 | `stashDrop` | `git stash drop <ref>` | Remove stash without applying |
+| `stashClear` | `git stash clear` | Remove all stash entries |
 
 #### Sync Operations
 
@@ -330,7 +331,7 @@ Live orchestrator/MCP context exports do not wait for those compatibility refres
 - Lane status computation (dirty, ahead, behind)
 - File operations: stage, unstage, discard, restore staged
 - Commit operations: commit, amend, revert, cherry-pick
-- Stash operations: push, list, apply, pop, drop
+- Stash operations: push, list, apply, pop, drop, clear
 - Sync operations: fetch, merge sync, rebase sync
 - Push with automatic upstream setup and force-with-lease option
 - Recent commits listing with parsed metadata

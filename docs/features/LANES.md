@@ -143,7 +143,7 @@ The center pane is the main working area. The LanesPage uses `PaneTilingLayout` 
 
 **Sub-panes** within the center area (via PaneTilingLayout):
 - **Diff pane** (`LaneDiffPane`): Git diff viewer with Monaco side-by-side diffs, per-file stage/unstage/discard, commit diff viewing
-- **Git actions pane** (`LaneGitActionsPane`): Commit, stash, fetch, sync (merge/rebase), push operations with recent commits list, rebase button for stacked lanes
+- **Git actions pane** (`LaneGitActionsPane`): Commit, stash, fetch, sync (merge/rebase), push operations with recent commits list, rebase button for stacked lanes. The Pull button flashes and shows a behind-count badge when the lane is behind its upstream. Stash buttons use user-friendly labels (Save Changes, Restore, Copy to Worktree, Delete) with inline explanations. The Save Changes button is disabled when there are no working tree changes. A Clear All button (with numeric confirmation) appears when stashes exist.
 - **Terminals pane** (`LaneTerminalsPanel`): Embedded terminal sessions with tab/tiling views, quick-launch profiles, session delta cards
 - **Work pane** (`LaneWorkPane`): Embedded terminal sessions and agent chat view (terminal/chat toggle)
 - **Stack pane** (`LaneStackPane`): Stack chain visualization and management
@@ -228,7 +228,7 @@ Each section shows a file list with change type indicators:
 - Amend checkbox (future)
 
 **Advanced git controls**:
-- **Stash**: Push (with optional message), Pop, Apply, Drop, List stashes
+- **Stash**: Save Changes (push with optional message), Restore (pop), Copy to Worktree (apply), Delete (drop), Clear All (with numeric confirmation), List stashes
 - **Fetch**: Fetch from remote (all refs or specific)
 - **Sync**: Merge or Rebase with upstream/base ref
 - **Push**: Push to remote, with force-with-lease option
@@ -269,7 +269,7 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 |---------|---------------|
 | `laneService` | CRUD operations for lanes. Creates/removes worktrees via git. Computes lane status by aggregating dirty state, ahead/behind, and other signals. Manages lane metadata in the database. Supports primary, worktree, and attached lane types. Provides rebase (recursive rebase with remote tracking branch resolution for primary parents, dirty-worktree guard), reparent, stack chain, appearance management, and `createFromUnstaged` (stash-based unstaged change rescue to a new child lane with automatic rollback on failure). |
 | `rebaseSuggestionService` | Monitors stacked lanes for parent-advanced state. Generates rebase suggestions with dismiss/defer lifecycle. Emits real-time suggestion events to the renderer. |
-| `gitService` | All git operations: stage, unstage, discard, commit, stash, fetch, sync (merge/rebase), push, conflict state detection (merge/rebase in-progress, continue, abort). Operates on a specified worktree path. Returns structured results with success/failure and output. |
+| `gitService` | All git operations: stage, unstage, discard, commit, stash (push, list, apply, pop, drop, clear), fetch, sync (merge/rebase), push, conflict state detection (merge/rebase in-progress, continue, abort). Operates on a specified worktree path. Returns structured results with success/failure and output. |
 | `diffService` | Computes working tree diffs (unstaged changes) and index diffs (staged changes). Per-file diff content for the Monaco viewer. Handles binary file detection and large file truncation. |
 | `operationService` | Records all git operations with before/after SHA transitions. Provides an audit trail for every action taken in a lane. Used by the History tab. |
 | `laneProxyService` | Per-lane hostname reverse proxy. Routes HTTP traffic by Host header to the correct lane's dev server. Manages proxy lifecycle, route registration, and preview URL generation. |
@@ -330,6 +330,7 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 | `ade.git.stashApply` | `(args: { worktreePath: string, index?: number }) => GitActionResult` | Apply a stash without removing it |
 | `ade.git.stashPop` | `(args: { worktreePath: string, index?: number }) => GitActionResult` | Apply and remove a stash |
 | `ade.git.stashDrop` | `(args: { worktreePath: string, index?: number }) => GitActionResult` | Remove a stash entry |
+| `ade.git.stashClear` | `(args: { laneId: string }) => GitActionResult` | Remove all stash entries |
 | `ade.git.fetch` | `(args: { worktreePath: string, remote?: string }) => GitActionResult` | Fetch from remote |
 | `ade.git.sync` | `(args: { worktreePath: string, strategy: 'merge' \| 'rebase', ref?: string }) => GitActionResult` | Merge or rebase with upstream |
 | `ade.git.push` | `(args: { worktreePath: string, forceWithLease?: boolean }) => GitActionResult` | Push to remote |

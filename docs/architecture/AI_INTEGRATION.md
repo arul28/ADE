@@ -1482,6 +1482,8 @@ interface AgentChatService {
   createSession(laneId: string, provider: "codex" | "claude" | "unified", model: string, modelId: string, opts?: CreateSessionOpts): Promise<ChatSession>;
   sendMessage(sessionId: string, text: string, attachments?: FileRef[]): AsyncIterable<ChatEvent>;
   steer(sessionId: string, text: string): Promise<void>;
+  cancelSteer(sessionId: string): Promise<void>;
+  editSteer(sessionId: string, text: string): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
   resumeSession(sessionId: string): Promise<ChatSession>;
   listSessions(laneId?: string): Promise<ChatSessionSummary[]>;
@@ -1576,6 +1578,8 @@ send({ method: "initialized", params: {} });
 | `createSession()` | `thread/start` | Params: `model`, `cwd` (lane worktree), `approvalPolicy`, `sandbox` |
 | `sendMessage()` | `turn/start` | Input array: `[{ type: "text", text }, ...attachments]` |
 | `steer()` | `turn/steer` | Appends to in-flight turn; cannot change model/sandbox |
+| `cancelSteer()` | N/A | Cancel a pending steer before it is delivered |
+| `editSteer()` | N/A | Replace pending steer text before it is delivered |
 | `interrupt()` | `turn/interrupt` | Turn completes with `status: "interrupted"` |
 | `resumeSession()` | `thread/resume` | Params: `threadId`, optional `personality` |
 | `listSessions()` | `thread/list` | Filter by `cwd` to scope to lane |

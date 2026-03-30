@@ -289,7 +289,7 @@ Records every significant operation (git commands, pack updates, etc.) with timi
 Known `kind` values:
 - `git_stage`, `git_unstage`, `git_discard`, `git_restore_staged`
 - `git_commit`, `git_commit_amend`, `git_revert`, `git_cherry_pick`
-- `git_stash_push`, `git_stash_apply`, `git_stash_pop`, `git_stash_drop`
+- `git_stash_push`, `git_stash_apply`, `git_stash_pop`, `git_stash_drop`, `git_stash_clear`
 - `git_fetch`, `git_sync_merge`, `git_sync_rebase`
 - `git_push`, `git_push_force_with_lease`
 - `pack_update_lane`, `pack_update_project`

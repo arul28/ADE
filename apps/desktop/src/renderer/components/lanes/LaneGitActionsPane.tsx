@@ -365,6 +365,7 @@ export function LaneGitActionsPane({
   const hasStaged = stagedCount > 0;
   const hasUnstaged = changes.unstaged.length > 0;
   const responsiveMode = getResponsiveMode(paneWidth);
+  const maxVisibleStashes = responsiveMode === "wide" ? 2 : 3;
   const actionGridColumns =
     responsiveMode === "wide" ? "repeat(3, minmax(0, 1fr))" : responsiveMode === "medium" ? "repeat(2, minmax(0, 1fr))" : "1fr";
 
@@ -888,6 +889,7 @@ export function LaneGitActionsPane({
   }, [forcePushSuggested, lane, laneId, syncStatus]);
 
   const divergedSync = Boolean(syncStatus?.diverged);
+  const behindCount = syncStatus?.behind ?? 0;
   const headerDotColor = getLaneHeaderDotColor(lane);
   const pushButtonTitle = syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
@@ -1275,7 +1277,7 @@ export function LaneGitActionsPane({
             </div>
             <button
               type="button"
-              className={(syncStatus?.behind ?? 0) > 0 ? "pull-btn-flash" : undefined}
+              className={behindCount > 0 ? "pull-btn-flash" : undefined}
               style={{
                 ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
                 ...(nextActionHint?.action === "pull" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
@@ -1286,7 +1288,7 @@ export function LaneGitActionsPane({
             >
               <ArrowDown size={12} weight="bold" style={{ marginRight: 4 }} />
               PULL
-              {(syncStatus?.behind ?? 0) > 0 && (
+              {behindCount > 0 && (
                 <span
                   style={{
                     marginLeft: 5,
@@ -1302,7 +1304,7 @@ export function LaneGitActionsPane({
                     display: "inline-block",
                   }}
                 >
-                  {syncStatus!.behind}
+                  {behindCount}
                 </span>
               )}
             </button>
@@ -1652,7 +1654,7 @@ export function LaneGitActionsPane({
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {stashes.slice(0, responsiveMode === "wide" ? 2 : 3).map((stash) => (
+                  {stashes.slice(0, maxVisibleStashes).map((stash) => (
                     <div
                       key={stash.ref}
                       style={{
@@ -1722,9 +1724,9 @@ export function LaneGitActionsPane({
                       </div>
                     </div>
                   ))}
-                  {stashes.length > (responsiveMode === "wide" ? 2 : 3) ? (
+                  {stashes.length > maxVisibleStashes ? (
                     <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                      +{stashes.length - (responsiveMode === "wide" ? 2 : 3)} more stash entr{stashes.length - (responsiveMode === "wide" ? 2 : 3) === 1 ? "y" : "ies"}.
+                      +{stashes.length - maxVisibleStashes} more stash entr{stashes.length - maxVisibleStashes === 1 ? "y" : "ies"}.
                     </div>
                   ) : null}
                 </div>

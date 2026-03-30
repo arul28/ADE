@@ -255,12 +255,11 @@ export function createGithubService({
     }
 
     if (!response.ok) {
-      const message =
-        (data && typeof data === "object" && !Array.isArray(data) ? asString((data as any).message) : "") ||
-        `GitHub API request failed (HTTP ${response.status})`;
+      const body = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : null;
+      const message = (body ? asString(body.message) : "") || `GitHub API request failed (HTTP ${response.status})`;
       let detail = "";
-      if (data && typeof data === "object" && !Array.isArray(data) && Array.isArray((data as any).errors)) {
-        const errorMessages = ((data as any).errors as any[])
+      if (body && Array.isArray(body.errors)) {
+        const errorMessages = (body.errors as any[])
           .map((e) => (typeof e === "object" && e && typeof e.message === "string" ? e.message : null))
           .filter(Boolean);
         if (errorMessages.length > 0) {
