@@ -239,6 +239,18 @@ export function createPtyService({
     return ai?.sessionIntelligence;
   };
 
+  const isTitleGenerationEnabled = (): boolean => {
+    const si = getSessionIntelligence();
+    const ai = projectConfigService?.get().effective.ai;
+    return si?.titles?.enabled ?? (ai?.chat as any)?.autoTitleEnabled ?? true;
+  };
+
+  const resolveTitleModelId = (): string | undefined => {
+    const si = getSessionIntelligence();
+    const raw = si?.titles?.modelId;
+    return typeof raw === "string" && raw.trim().length ? raw.trim() : undefined;
+  };
+
   /** Only orchestrated worker sessions auto-close after the wrapped CLI exits back to shell. */
   const TOOL_TYPES_WITH_AUTO_CLOSE = new Set<TerminalToolType>([
     "claude-orchestrated",
@@ -364,6 +376,46 @@ export function createPtyService({
         const text = aiSummary.text.trim();
         if (text.length) {
           sessionService.setSummary(sessionId, text);
+        }
+
+        // Refresh title on complete if enabled
+        // Note: aiIntegrationService availability and non-guest mode were already
+        // checked above (early return at the top of this block).
+        const refreshOnComplete = getSessionIntelligence()?.titles?.refreshOnComplete
+          ?? (projectConfigService?.get().effective.ai?.chat as any)?.autoTitleRefreshOnComplete
+          ?? true;
+        if (refreshOnComplete && isTitleGenerationEnabled()) {
+          try {
+            const titlePrompt = [
+              "Generate a concise final title for this completed terminal session.",
+              "Return only plain text, max 80 characters, no punctuation at the end.",
+              "",
+              `Session type: ${session.toolType ?? "terminal"}`,
+              `Initial title: ${session.title}`,
+              session.goal ? `Current goal: ${session.goal}` : null,
+              `Exit code: ${session.exitCode ?? "unknown"}`,
+              "",
+              "Terminal transcript tail:",
+              transcript.slice(-2000),
+            ].filter(Boolean).join("\n");
+
+            const titleModelId = resolveTitleModelId();
+            const titleResult = await aiIntegrationService.summarizeTerminal({
+              cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
+              prompt: titlePrompt,
+              timeoutMs: 8_000,
+              ...(titleModelId ? { model: titleModelId } : {}),
+            });
+            const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
+            if (finalTitle) {
+              sessionService.updateMeta({ sessionId, title: finalTitle });
+            }
+          } catch (err) {
+            logger.warn("pty.session_title_refresh_failed", {
+              sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
         }
       })
       .catch(() => {
@@ -741,7 +793,7 @@ export function createPtyService({
         // Accumulate initial output for session title generation
         if (!titleBufferFull) {
           titleOutputBuffer += data;
-          if (titleOutputBuffer.length >= 500) {
+          if (titleOutputBuffer.length >= 800) {
             titleBufferFull = true;
           }
         }
@@ -770,14 +822,13 @@ export function createPtyService({
         }
       }
 
-      // Fire-and-forget: after 4s, attempt AI title generation for non-shell sessions
-      if (aiIntegrationService && aiIntegrationService.getMode() === "subscription") {
+      // Fire-and-forget: after 6s, attempt AI title generation for non-shell sessions
+      if (aiIntegrationService && aiIntegrationService.getMode() !== "guest") {
         const capturedAi = aiIntegrationService;
         setTimeout(() => {
           if (entry.disposed) return;
 
-          const si = getSessionIntelligence();
-          if (si?.titles?.enabled === false) return;
+          if (!isTitleGenerationEnabled()) return;
 
           const strippedOutput = stripAnsi(titleOutputBuffer).trim();
           if (strippedOutput.length < 10) return;
@@ -793,13 +844,10 @@ export function createPtyService({
             "Return only plain text, max 80 characters, no punctuation at the end.",
             "",
             "Initial output:",
-            strippedOutput.slice(0, 500)
+            strippedOutput.slice(0, 800)
           ].join("\n");
 
-          const titleModelId = typeof si?.titles?.modelId === "string" && si.titles.modelId.trim().length
-            ? si.titles.modelId.trim()
-            : undefined;
-
+          const titleModelId = resolveTitleModelId();
           capturedAi
             .summarizeTerminal({
               cwd: entry.boundCwd || entry.laneWorktreePath,
@@ -810,7 +858,7 @@ export function createPtyService({
             .then((result) => {
               const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (title) {
-                sessionService.updateMeta({ sessionId, goal: title });
+                sessionService.updateMeta({ sessionId, title });
               }
             })
             .catch((err) => {
@@ -819,7 +867,7 @@ export function createPtyService({
                 error: err instanceof Error ? err.message : String(err)
               });
             });
-        }, 4000);
+        }, 6000);
       }
 
       logger.info("pty.create", { ptyId, sessionId, laneId, cwd, shell: selectedShell?.file ?? "unknown" });

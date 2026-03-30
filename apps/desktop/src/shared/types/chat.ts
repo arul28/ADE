@@ -623,6 +623,7 @@ export type AgentChatDisposeArgs = {
 export type AgentChatUpdateSessionArgs = {
   sessionId: string;
   title?: string | null;
+  manuallyNamed?: boolean;
   modelId?: ModelId;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;

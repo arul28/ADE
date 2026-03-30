@@ -123,6 +123,7 @@ export function TerminalsPage() {
             onOpenChatSession={handleOpenChatSession}
             onLaunchPtySession={work.launchPtySession}
             closingPtyIds={work.closingPtyIds}
+            onContextMenu={handleContextMenu}
           />
         ),
       },
@@ -203,6 +204,11 @@ export function TerminalsPage() {
         onCopyResumeCommand={(cmd) => navigator.clipboard.writeText(cmd).catch(() => {})}
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
+        onRename={(sessionId, newTitle) => {
+          window.ade.agentChat.updateSession({ sessionId, title: newTitle, manuallyNamed: true })
+            .then(() => work.refresh({ showLoading: false }))
+            .catch(() => {});
+        }}
       />
 
       <SessionInfoPopover

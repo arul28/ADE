@@ -566,6 +566,7 @@ type ManagedChatSession = {
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
+  manuallyNamed: boolean;
   summaryInFlight: boolean;
   activeAssistantMessageId: string | null;
   lastActivitySignature: string | null;
@@ -2844,6 +2845,7 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     const config = resolveChatConfig();
     if (!config.autoTitleEnabled) return;
+    if (managed.manuallyNamed) return;
     if (managed.autoTitleInFlight) return;
     if (args.stage === "initial" && managed.autoTitleStage !== "none") return;
     if (args.stage === "final") {
@@ -4121,6 +4123,7 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
+      manuallyNamed: false,
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
       continuitySummaryUpdatedAt: persisted?.continuitySummaryUpdatedAt ?? null,
@@ -7456,6 +7459,7 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
+      manuallyNamed: false,
       summaryInFlight: false,
       continuitySummary: null,
       continuitySummaryUpdatedAt: null,
@@ -7763,6 +7767,7 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
+      manuallyNamed: false,
       summaryInFlight: false,
       continuitySummary: null,
       continuitySummaryUpdatedAt: null,
@@ -8948,6 +8953,7 @@ export function createAgentChatService(args: {
   const updateSession = async ({
     sessionId,
     title,
+    manuallyNamed,
     modelId,
     reasoningEffort,
     interactionMode,
@@ -9161,6 +9167,13 @@ export function createAgentChatService(args: {
         sessionId,
         title: normalizedTitle.length ? normalizedTitle : defaultChatSessionTitle(managed.session.provider),
       });
+      if (manuallyNamed === true) {
+        managed.manuallyNamed = true;
+      }
+    }
+    // Allow resetting manuallyNamed independently when no title change is provided
+    if (manuallyNamed !== undefined && title === undefined) {
+      managed.manuallyNamed = manuallyNamed;
     }
 
     persistChatState(managed);

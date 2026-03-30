@@ -465,7 +465,7 @@ describe("ptyService", () => {
         });
 
         mockPty._emitter.emit("data", "generated enough output for a better title");
-        await vi.advanceTimersByTimeAsync(4000);
+        await vi.advanceTimersByTimeAsync(6000);
 
         expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
           expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
