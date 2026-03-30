@@ -1,5 +1,4 @@
 import { app, BrowserWindow, nativeImage, shell } from "electron";
-import { execFileSync } from "node:child_process";
 import path from "node:path";
 type NodePtyType = typeof import("node-pty");
 import { registerIpc } from "./services/ipc/registerIpc";
@@ -29,6 +28,7 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
+import { augmentProcessPathWithShellAndKnownCliDirs } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService } from "./services/chat/agentChatService";
 import { createGithubService } from "./services/github/githubService";
 import { createPrService } from "./services/prs/prService";
@@ -113,38 +113,13 @@ import type { Logger } from "./services/logging/logger";
  * the AI SDK can locate the CLI.
  */
 function fixElectronShellPath(): void {
-  if (process.platform !== "darwin" && process.platform !== "linux") return;
-
-  const currentPath = process.env.PATH ?? "";
-  const hasUserLocalBin = currentPath.includes(".local/bin");
-  const hasCommonCliBin = currentPath.includes("/usr/local/bin") || currentPath.includes("/opt/homebrew/bin");
-  // Already rich — likely launched from terminal or already fixed.
-  if (hasUserLocalBin && hasCommonCliBin) return;
-
-  try {
-    const loginShell = process.env.SHELL || "/bin/zsh";
-    // Use execFileSync so SHELL is treated as a path, not interpolated shell text.
-    const resolved = execFileSync(loginShell, ["-lc", 'printf "%s" "$PATH"'], {
-      encoding: "utf-8",
-      timeout: 5_000,
-    }).trim();
-
-    if (resolved && resolved.length > currentPath.length) {
-      process.env.PATH = resolved;
-    }
-  } catch {
-    // Shell resolution failed — manually append common paths as fallback.
-    const extras = [
-      "/usr/local/bin",
-      "/opt/homebrew/bin",
-      "/opt/homebrew/sbin",
-      `${process.env.HOME}/.local/bin`,
-      `${process.env.HOME}/.nvm/current/bin`,
-    ].filter((p) => !currentPath.includes(p));
-
-    if (extras.length) {
-      process.env.PATH = `${currentPath}:${extras.join(":")}`;
-    }
+  const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
+    env: process.env,
+    includeInteractiveShell: true,
+    timeoutMs: 1_500,
+  });
+  if (nextPath) {
+    process.env.PATH = nextPath;
   }
 }
 

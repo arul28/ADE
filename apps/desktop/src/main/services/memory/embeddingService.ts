@@ -8,6 +8,13 @@ import { getErrorMessage } from "../shared/utils";
 export const DEFAULT_EMBEDDING_TASK = "feature-extraction" as const;
 export const DEFAULT_EMBEDDING_MODEL_ID = "Xenova/all-MiniLM-L6-v2";
 export const EXPECTED_EMBEDDING_DIMENSIONS = 384;
+const EMBEDDING_SMOKE_TEST_INPUT = "ADE embedding verification probe";
+const REQUIRED_MODEL_FILES = [
+  "config.json",
+  "tokenizer.json",
+  "tokenizer_config.json",
+  path.join("onnx", "model.onnx"),
+] as const;
 
 type EmbeddingProgressEvent = {
   status?: string;
@@ -37,14 +44,17 @@ type TransformersRuntime = {
   pipeline: (
     task: typeof DEFAULT_EMBEDDING_TASK,
     model: string,
-    options?: { progress_callback?: (event: EmbeddingProgressEvent) => void },
+    options?: { progress_callback?: (event: EmbeddingProgressEvent) => void; local_files_only?: boolean },
   ) => Promise<EmbeddingExtractor>;
 };
 
 export type EmbeddingServiceStatus = {
   modelId: string;
   cacheDir: string;
+  installPath: string;
+  installState: "missing" | "partial" | "installed";
   state: "idle" | "loading" | "ready" | "unavailable";
+  activity: "idle" | "loading-local" | "downloading" | "ready" | "error";
   progress: number | null;
   loaded: number | null;
   total: number | null;
@@ -73,6 +83,77 @@ export class EmbeddingUnavailableError extends Error {
 function resolveCacheDir(cacheDir?: string): string {
   if (cacheDir) return path.resolve(cacheDir);
   return path.resolve(path.join(app.getPath("userData"), "transformers-cache"));
+}
+
+function resolveInstallPath(cacheDir: string, modelId: string): string {
+  const resolvedCacheDir = path.resolve(cacheDir);
+  const segments = modelId.split(/[\\/]/);
+  const safeSegments: string[] = [];
+
+  for (const segment of segments) {
+    if (!segment || segment === "." || segment === ".." || path.isAbsolute(segment)) {
+      throw new Error(`Invalid embedding model ID segment: ${segment || "(empty)"}`);
+    }
+    safeSegments.push(segment);
+  }
+
+  const installPath = path.resolve(resolvedCacheDir, ...safeSegments);
+  const cacheDirPrefix = resolvedCacheDir.endsWith(path.sep)
+    ? resolvedCacheDir
+    : `${resolvedCacheDir}${path.sep}`;
+  if (installPath !== resolvedCacheDir && !installPath.startsWith(cacheDirPrefix)) {
+    throw new Error(`Embedding model install path escaped the cache dir: ${modelId}`);
+  }
+  return installPath;
+}
+
+function inspectInstallPath(installPath: string): {
+  installState: EmbeddingServiceStatus["installState"];
+} {
+  if (!fs.existsSync(installPath)) {
+    return { installState: "missing" };
+  }
+
+  const presentRequiredFiles = REQUIRED_MODEL_FILES.filter((relativePath) =>
+    fs.existsSync(path.join(installPath, relativePath)),
+  );
+
+  if (presentRequiredFiles.length === REQUIRED_MODEL_FILES.length) {
+    return { installState: "installed" };
+  }
+
+  return { installState: "partial" };
+}
+
+function deriveReportedActivity(args: {
+  state: EmbeddingServiceStatus["state"];
+  activity: EmbeddingServiceStatus["activity"];
+  installState: EmbeddingServiceStatus["installState"];
+}): EmbeddingServiceStatus["activity"] {
+  if (args.state === "ready") return "ready";
+  if (args.state === "unavailable") return "error";
+  if (args.state !== "loading") return "idle";
+  if (args.installState === "installed") return "loading-local";
+  if (args.activity === "loading-local" || args.activity === "downloading") return args.activity;
+  return "downloading";
+}
+
+function normalizeLoadError(args: {
+  message: string;
+  installState: EmbeddingServiceStatus["installState"];
+  localFilesOnly: boolean;
+}): string {
+  const message = args.message.trim();
+  if ((args.localFilesOnly || args.installState === "installed") && /protobuf parsing failed/i.test(message)) {
+    return "The installed local model files are corrupted. Download the model again to repair the cache.";
+  }
+  if (
+    (args.localFilesOnly || args.installState === "installed")
+    && (/expected 384 embedding/i.test(message) || /embedding output/i.test(message))
+  ) {
+    return "The installed local model files are incompatible or corrupted. Download the model again to repair the cache.";
+  }
+  return message;
 }
 
 function cloneVector(vector: Float32Array): Float32Array {
@@ -113,6 +194,17 @@ function validateVector(vector: Float32Array, dims?: readonly number[]): Float32
   return vector;
 }
 
+async function runExtractorSmokeTest(activeExtractor: EmbeddingExtractor): Promise<void> {
+  const output = await activeExtractor(EMBEDDING_SMOKE_TEST_INPUT, {
+    pooling: "mean",
+    normalize: true,
+  });
+  validateVector(
+    toFloat32Array((output as EmbeddingTensorLike)?.data ?? (output as ArrayLike<number>)),
+    (output as EmbeddingTensorLike)?.dims,
+  );
+}
+
 async function loadTransformersRuntime(): Promise<TransformersRuntime> {
   return await import("@huggingface/transformers") as unknown as TransformersRuntime;
 }
@@ -127,6 +219,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   const logger = opts.logger;
   const modelId = opts.modelId ?? DEFAULT_EMBEDDING_MODEL_ID;
   const cacheDir = resolveCacheDir(opts.cacheDir);
+  const installPath = resolveInstallPath(cacheDir, modelId);
   const loadRuntime = opts.loadRuntime ?? loadTransformersRuntime;
 
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -138,16 +231,31 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   let extractorPromise: Promise<EmbeddingExtractor> | null = null;
   let lastError: string | null = null;
   let state: EmbeddingServiceStatus["state"] = "idle";
+  let activity: EmbeddingServiceStatus["activity"] = "idle";
   let progress: number | null = null;
   let loaded: number | null = null;
   let total: number | null = null;
   let file: string | null = null;
+  let cachedInstall = inspectInstallPath(installPath);
+  let loadAttemptId = 0;
+
+  function refreshCachedInstall() {
+    cachedInstall = inspectInstallPath(installPath);
+    return cachedInstall;
+  }
 
   function getStatus(): EmbeddingServiceStatus {
     return {
       modelId,
       cacheDir,
+      installPath,
+      installState: cachedInstall.installState,
       state,
+      activity: deriveReportedActivity({
+        state,
+        activity,
+        installState: cachedInstall.installState,
+      }),
       progress,
       loaded,
       total,
@@ -175,7 +283,21 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     return typeof value === "number" && Number.isFinite(value) ? value : current;
   }
 
-  function handleProgress(event: EmbeddingProgressEvent) {
+  function isCurrentLoadAttempt(attemptId: number): boolean {
+    return attemptId === loadAttemptId;
+  }
+
+  function handleProgress(event: EmbeddingProgressEvent, attemptId: number) {
+    if (!isCurrentLoadAttempt(attemptId)) {
+      return;
+    }
+    // Transformers.js may emit late file progress events even after the model
+    // session creation has already failed. Do not let those stale events revive
+    // the service back into a loading state.
+    if (state === "unavailable" || activity === "error") {
+      return;
+    }
+
     progress = finiteOrKeep(event.progress, progress);
     loaded = finiteOrKeep(event.loaded, loaded);
     total = finiteOrKeep(event.total, total);
@@ -189,11 +311,19 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     emitStatus();
   }
 
-  async function ensureExtractor(forceRetry = false): Promise<EmbeddingExtractor> {
+  async function ensureExtractor(opts: {
+    forceRetry?: boolean;
+    localFilesOnly?: boolean;
+    installInspection?: ReturnType<typeof inspectInstallPath>;
+  } = {}): Promise<EmbeddingExtractor> {
+    const forceRetry = opts.forceRetry === true;
+    const localFilesOnly = opts.localFilesOnly === true;
     if (extractor) return extractor;
     if (extractorPromise) return extractorPromise;
     if (forceRetry) {
+      loadAttemptId += 1;
       state = "idle";
+      activity = "idle";
       lastError = null;
       progress = null;
       loaded = null;
@@ -204,7 +334,13 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
       throw new EmbeddingUnavailableError(lastError);
     }
 
+    if (!forceRetry) {
+      loadAttemptId += 1;
+    }
+    const attemptId = loadAttemptId;
+    const install = opts.installInspection ?? refreshCachedInstall();
     state = "loading";
+    activity = localFilesOnly || install.installState === "installed" ? "loading-local" : "downloading";
     progress = 0;
     loaded = null;
     total = null;
@@ -217,15 +353,49 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
       const runtime = await loadRuntime();
       runtime.env.cacheDir = cacheDir;
       runtime.env.allowLocalModels = true;
-      runtime.env.allowRemoteModels = true;
+      runtime.env.allowRemoteModels = !localFilesOnly;
       runtime.env.useFSCache = true;
 
-      const nextExtractor = await runtime.pipeline(DEFAULT_EMBEDDING_TASK, modelId, {
-        progress_callback: handleProgress,
-      });
+      let nextExtractor: EmbeddingExtractor | null = null;
+      try {
+        const loadedExtractor = await runtime.pipeline(
+          DEFAULT_EMBEDDING_TASK,
+          localFilesOnly ? installPath : modelId,
+          {
+          progress_callback: (event) => handleProgress(event, attemptId),
+          local_files_only: localFilesOnly,
+          },
+        );
+        nextExtractor = loadedExtractor;
 
-      extractor = nextExtractor;
+        await runExtractorSmokeTest(loadedExtractor);
+        cachedInstall = localFilesOnly ? install : refreshCachedInstall();
+        if (!isCurrentLoadAttempt(attemptId)) {
+          if (loadedExtractor.dispose) {
+            await loadedExtractor.dispose();
+          }
+          return loadedExtractor;
+        }
+        extractor = loadedExtractor;
+      } catch (error) {
+        if (nextExtractor?.dispose) {
+          try {
+            await nextExtractor.dispose();
+          } catch (disposeError) {
+            logger.warn("memory.embedding.dispose_failed_after_smoke_test", {
+              modelId,
+              cacheDir,
+              error: getErrorMessage(disposeError),
+            });
+          }
+        }
+        throw error;
+      }
+      if (!isCurrentLoadAttempt(attemptId)) {
+        return nextExtractor;
+      }
       state = "ready";
+      activity = "ready";
       progress = 100;
       emitStatus();
 
@@ -238,10 +408,19 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
 
       return nextExtractor;
     })().catch((error) => {
+      if (!isCurrentLoadAttempt(attemptId)) {
+        throw error;
+      }
       extractorPromise = null;
       extractor = null;
       state = "unavailable";
-      lastError = getErrorMessage(error);
+      activity = "error";
+      const freshInstall = refreshCachedInstall();
+      lastError = normalizeLoadError({
+        message: getErrorMessage(error),
+        installState: freshInstall.installState,
+        localFilesOnly,
+      });
       progress = null;
       loaded = null;
       total = null;
@@ -285,16 +464,25 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   }
 
   async function dispose() {
+    loadAttemptId += 1;
     const activeExtractor = extractor;
     extractor = null;
     extractorPromise = null;
+    state = "idle";
+    activity = "idle";
+    lastError = null;
+    progress = null;
+    loaded = null;
+    total = null;
+    file = null;
+    emitStatus();
     if (activeExtractor?.dispose) {
       await activeExtractor.dispose();
     }
   }
 
-  async function preload(opts: { forceRetry?: boolean } = {}): Promise<void> {
-    await ensureExtractor(opts.forceRetry === true);
+  async function preload(opts: { forceRetry?: boolean; localFilesOnly?: boolean } = {}): Promise<void> {
+    await ensureExtractor({ forceRetry: opts.forceRetry === true, localFilesOnly: opts.localFilesOnly === true });
   }
 
   /**
@@ -305,12 +493,18 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   async function probeCache(): Promise<void> {
     if (state === "ready" || state === "loading") return;
     try {
-      // The HuggingFace transformers cache stores model files in a subdirectory
-      // If the cache dir has files, attempt a (fast, local-only) load
-      const entries = fs.readdirSync(cacheDir);
-      if (entries.length === 0) return;
-      logger.info("memory.embedding.probe_cache", { modelId, cacheDir, entries: entries.length });
-      await ensureExtractor();
+      const install = refreshCachedInstall();
+      if (install.installState !== "installed") {
+        logger.info("memory.embedding.probe_cache_skipped", {
+          modelId,
+          cacheDir,
+          installPath,
+          installState: install.installState,
+        });
+        return;
+      }
+      logger.info("memory.embedding.probe_cache", { modelId, cacheDir, installPath });
+      await ensureExtractor({ localFilesOnly: true, installInspection: install });
     } catch (error) {
       // Probe is best-effort — don't block startup
       logger.warn("memory.embedding.probe_cache_failed", {

@@ -153,10 +153,16 @@ export type MemoryHealthScopeStats = {
 export type MemorySearchMode = "lexical" | "hybrid";
 
 export type MemoryEmbeddingModelState = "idle" | "loading" | "ready" | "unavailable";
+export type MemoryEmbeddingInstallState = "missing" | "partial" | "installed";
+export type MemoryEmbeddingModelActivity = "idle" | "loading-local" | "downloading" | "ready" | "error";
 
 export type MemoryEmbeddingModelStatus = {
   modelId: string;
   state: MemoryEmbeddingModelState;
+  activity: MemoryEmbeddingModelActivity;
+  installState: MemoryEmbeddingInstallState;
+  cacheDir: string | null;
+  installPath: string | null;
   progress: number | null;
   loaded: number | null;
   total: number | null;

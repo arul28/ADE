@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createWorkerAdapterRuntimeService } from "./workerAdapterRuntimeService";
 import type { AgentIdentity } from "../../../shared/types";
@@ -107,7 +108,7 @@ describe("workerAdapterRuntimeService", () => {
       prompt: "fix this",
     });
 
-    expect(capture.command).toBe("codex");
+    expect(path.basename(capture.command)).toBe("codex");
     expect(capture.args).toEqual(["--model", "gpt-5.3-codex", "--json"]);
     expect(result.ok).toBe(true);
     expect(result.effectiveSurface).toBe("process");

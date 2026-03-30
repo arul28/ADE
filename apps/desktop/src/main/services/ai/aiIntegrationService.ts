@@ -121,6 +121,18 @@ type RuntimeTaskDefaults = {
   timeoutMs: number;
 };
 
+const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
+  narratives: true,
+  conflict_proposals: true,
+  commit_messages: false,
+  pr_descriptions: true,
+  terminal_summaries: true,
+  memory_consolidation: true,
+  mission_planning: true,
+  orchestrator: true,
+  initial_context: true,
+};
+
 const DEFAULT_CLAUDE_TASK_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
 const DEFAULT_CODEX_TASK_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
 
@@ -461,10 +473,7 @@ export function createAiIntegrationService(args: {
     const aiConfig = extractAiConfig(snapshot);
     const features = isRecord(aiConfig.features) ? aiConfig.features : {};
     const value = features[feature];
-    if (value == null) {
-      return feature === "commit_messages" ? false : true;
-    }
-    return Boolean(value);
+    return value == null ? DEFAULT_AI_FEATURE_FLAGS[feature] : Boolean(value);
   };
 
   const getDailyBudgetLimit = (feature: AiFeatureKey): number | null => {

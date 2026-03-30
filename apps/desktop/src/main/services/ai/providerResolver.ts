@@ -10,6 +10,7 @@ import {
 } from "../../../shared/modelRegistry";
 import type { DetectedAuth } from "./authDetector";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
+import { resolveCodexExecutable } from "./codexExecutable";
 import { wrapWithMiddleware, type WrapMiddlewareOpts } from "./middleware";
 import { resolveViaAdeProviderRegistry } from "./adeProviderRegistry";
 export { buildProviderOptions } from "./providerOptions";
@@ -238,6 +239,9 @@ function buildCliDefaultSettings(
   }
   if (provider === "claude" && settings.pathToClaudeCodeExecutable == null) {
     settings.pathToClaudeCodeExecutable = resolveClaudeCodeExecutable({ auth }).path;
+  }
+  if (provider === "codex" && settings.codexPath == null) {
+    settings.codexPath = resolveCodexExecutable({ auth }).path;
   }
   return settings;
 }

@@ -5,6 +5,7 @@ import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
 import type { GitHubRepoRef, GitHubStatus } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 
 import { nowIso, asString } from "../shared/utils";
 
@@ -176,10 +177,7 @@ export function createGithubService({
       }
     });
 
-    const scopes = (response.headers.get("x-oauth-scopes") ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const scopes = parseGitHubScopeHeaders(response.headers);
 
     const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
