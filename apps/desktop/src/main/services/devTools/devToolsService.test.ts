@@ -12,7 +12,7 @@ const {
 }));
 
 vi.mock("../shared/utils", async () => {
-  const actual = await vi.importActual("../shared/utils");
+  const actual = await vi.importActual<typeof import("../shared/utils")>("../shared/utils");
   return {
     ...actual,
     spawnAsync: spawnAsyncMock,

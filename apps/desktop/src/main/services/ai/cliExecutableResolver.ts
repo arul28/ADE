@@ -113,10 +113,27 @@ function isExecutableFile(candidatePath: string): boolean {
   }
 }
 
-function resolveFromDirs(command: string, dirs: Iterable<string>): string | null {
+function resolveFromDirs(
+  command: string,
+  dirs: Iterable<string>,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const pathext = process.platform === "win32"
+    ? uniqueNonEmpty((env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";"))
+    : [];
+  const commandHasExtension = path.extname(command).length > 0;
+
   for (const dir of dirs) {
-    const candidatePath = path.join(dir, command);
-    if (isExecutableFile(candidatePath)) return candidatePath;
+    const candidatePaths = [path.join(dir, command)];
+    if (process.platform === "win32" && !commandHasExtension) {
+      for (const ext of pathext) {
+        candidatePaths.push(path.join(dir, `${command}${ext}`));
+      }
+    }
+
+    for (const candidatePath of candidatePaths) {
+      if (isExecutableFile(candidatePath)) return candidatePath;
+    }
   }
   return null;
 }
@@ -145,6 +162,7 @@ function readShellPath(
   shellPath: string,
   shellFlag: "-lc" | "-ic",
   timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
 ): string | null {
   try {
     const raw = execFileSync(
@@ -152,6 +170,7 @@ function readShellPath(
       [shellFlag, `printf '${PATH_MARKER_START}%s${PATH_MARKER_END}' "$PATH"`],
       {
         encoding: "utf-8",
+        env,
         timeout: timeoutMs,
       },
     );
@@ -177,9 +196,9 @@ export function augmentProcessPathWithShellAndKnownCliDirs(args?: {
   const env = args?.env ?? process.env;
   const shellPath = env.SHELL?.trim() || "/bin/sh";
   const timeoutMs = args?.timeoutMs ?? 1_000;
-  const loginPath = readShellPath(shellPath, "-lc", timeoutMs);
+  const loginPath = readShellPath(shellPath, "-lc", timeoutMs, env);
   const interactivePath = args?.includeInteractiveShell
-    ? readShellPath(shellPath, "-ic", timeoutMs)
+    ? readShellPath(shellPath, "-ic", timeoutMs, env)
     : null;
 
   return augmentPathWithKnownCliDirs(
@@ -192,12 +211,12 @@ export function resolveExecutableFromKnownLocations(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedExecutable | null {
-  const fromPath = resolveFromDirs(command, splitPathEntries(env.PATH));
+  const fromPath = resolveFromDirs(command, splitPathEntries(env.PATH), env);
   if (fromPath) {
     return { path: fromPath, source: "path" };
   }
 
-  const fromKnownDirs = resolveFromDirs(command, getKnownBinDirs(command, env));
+  const fromKnownDirs = resolveFromDirs(command, getKnownBinDirs(command, env), env);
   if (fromKnownDirs) {
     return { path: fromKnownDirs, source: "known-dir" };
   }

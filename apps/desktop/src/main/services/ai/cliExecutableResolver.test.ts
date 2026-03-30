@@ -7,16 +7,26 @@ import {
   resolveExecutableFromKnownLocations,
 } from "./cliExecutableResolver";
 
+const originalPlatform = process.platform;
+
 function makeExecutable(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, "#!/bin/sh\nexit 0\n", "utf8");
   fs.chmodSync(filePath, 0o755);
 }
 
+function setPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    value,
+    configurable: true,
+  });
+}
+
 describe("cliExecutableResolver", () => {
   let tempRoot: string | null = null;
 
   afterEach(() => {
+    setPlatform(originalPlatform);
     if (tempRoot) {
       fs.rmSync(tempRoot, { recursive: true, force: true });
       tempRoot = null;
@@ -65,5 +75,24 @@ describe("cliExecutableResolver", () => {
     const entries = nextPath.split(path.delimiter);
     expect(entries).toContain("/usr/local/bin");
     expect(entries).toContain("/opt/homebrew/bin");
+  });
+
+  it("resolves Windows executables using PATHEXT suffixes", () => {
+    setPlatform("win32");
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-path-"));
+    const binDir = path.join(tempRoot, "bin");
+    const executablePath = path.join(binDir, "codex.CMD");
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(executablePath, "@echo off\r\n", "utf8");
+
+    const env = {
+      PATH: binDir,
+      PATHEXT: ".EXE;.CMD;.BAT",
+    };
+
+    expect(resolveExecutableFromKnownLocations("codex", env)).toEqual({
+      path: executablePath,
+      source: "path",
+    });
   });
 });

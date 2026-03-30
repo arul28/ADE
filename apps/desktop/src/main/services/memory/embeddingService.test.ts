@@ -382,4 +382,147 @@ describe("embeddingService", () => {
       error: "Protobuf parsing failed",
     }));
   });
+
+  it("ignores stale progress callbacks from an earlier load attempt after forceRetry", async () => {
+    const logger = createLogger();
+    let firstProgress: ProgressCallback | null = null;
+    let secondProgress: ProgressCallback | null = null;
+    let releaseSecondAttempt: (() => void) | null = null;
+    let resolveSecondStarted: (() => void) | null = null;
+    const secondStarted = new Promise<void>((resolve) => {
+      resolveSecondStarted = resolve;
+    });
+    const extractor = Object.assign(
+      vi.fn(async (text: string) => ({ data: buildVector(text), dims: [1, EXPECTED_EMBEDDING_DIMENSIONS] })),
+      { dispose: vi.fn(async () => {}) },
+    );
+    const loadRuntime = vi
+      .fn()
+      .mockResolvedValueOnce({
+        env: {
+          cacheDir: "",
+          allowRemoteModels: true,
+          allowLocalModels: true,
+          useFSCache: true,
+        },
+        pipeline: vi.fn(async (_task, _model, options) => {
+          firstProgress = options?.progress_callback ?? null;
+          throw new Error("first attempt failed");
+        }),
+      })
+      .mockResolvedValueOnce({
+        env: {
+          cacheDir: "",
+          allowRemoteModels: true,
+          allowLocalModels: true,
+          useFSCache: true,
+        },
+        pipeline: vi.fn(async (_task, _model, options) => {
+          secondProgress = options?.progress_callback ?? null;
+          resolveSecondStarted?.();
+          await new Promise<void>((resolve) => {
+            releaseSecondAttempt = resolve;
+          });
+          return extractor;
+        }),
+      });
+
+    const service = createEmbeddingService({
+      logger,
+      cacheDir: createTempCacheDir(),
+      loadRuntime,
+    });
+
+    await expect(service.preload({ forceRetry: true })).rejects.toThrow("first attempt failed");
+
+    const secondAttempt = service.preload({ forceRetry: true });
+    await secondStarted;
+
+    expect(service.getStatus()).toEqual(expect.objectContaining({
+      state: "loading",
+      activity: "downloading",
+      progress: 0,
+      file: null,
+    }));
+
+    expect(firstProgress).toBeTypeOf("function");
+    const staleProgress = firstProgress as unknown as ProgressCallback;
+    staleProgress({ file: "stale-tokenizer.json", progress: 97, loaded: 97, total: 100 });
+    expect(service.getStatus()).toEqual(expect.objectContaining({
+      state: "loading",
+      activity: "downloading",
+      progress: 0,
+      file: null,
+    }));
+
+    expect(secondProgress).toBeTypeOf("function");
+    const currentProgress = secondProgress as unknown as ProgressCallback;
+    currentProgress({ file: "current-tokenizer.json", progress: 12, loaded: 12, total: 100 });
+    expect(service.getStatus()).toEqual(expect.objectContaining({
+      state: "loading",
+      activity: "downloading",
+      progress: 12,
+      file: "current-tokenizer.json",
+    }));
+
+    expect(releaseSecondAttempt).toBeTypeOf("function");
+    releaseSecondAttempt!();
+    await secondAttempt;
+  });
+
+  it("re-checks the install state after a failed download before normalizing the error", async () => {
+    const logger = createLogger();
+    const cacheDir = createTempCacheDir();
+
+    const service = createEmbeddingService({
+      logger,
+      cacheDir,
+      loadRuntime: async () => ({
+        env: {
+          cacheDir: "",
+          allowRemoteModels: true,
+          allowLocalModels: true,
+          useFSCache: true,
+        },
+        pipeline: vi.fn(async () => {
+          writeInstalledModel(cacheDir);
+          return Object.assign(
+            vi.fn(async () => ({
+              data: new Float32Array(EXPECTED_EMBEDDING_DIMENSIONS - 1),
+              dims: [1, EXPECTED_EMBEDDING_DIMENSIONS - 1],
+            })),
+            {
+              dispose: vi.fn(async () => {}),
+            },
+          );
+        }),
+      }),
+    });
+
+    await expect(service.preload({ forceRetry: true })).rejects.toThrow(
+      "The installed local model files are incompatible or corrupted. Download the model again to repair the cache.",
+    );
+
+    expect(service.getStatus()).toEqual(expect.objectContaining({
+      state: "unavailable",
+      error: "The installed local model files are incompatible or corrupted. Download the model again to repair the cache.",
+    }));
+  });
+
+  it("rejects model IDs that escape the cache directory", () => {
+    expect(() => createEmbeddingService({
+      logger: createLogger(),
+      cacheDir: createTempCacheDir(),
+      modelId: "../outside",
+      loadRuntime: async () => ({
+        env: {
+          cacheDir: "",
+          allowRemoteModels: true,
+          allowLocalModels: true,
+          useFSCache: true,
+        },
+        pipeline: vi.fn(),
+      }),
+    })).toThrow("Invalid embedding model ID segment: ..");
+  });
 });

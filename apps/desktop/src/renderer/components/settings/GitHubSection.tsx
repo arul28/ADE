@@ -1,9 +1,8 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import type { GitHubStatus } from "../../../shared/types";
 import { GithubLogo, CheckCircle, Warning, ArrowsClockwise, ShieldCheck, LinkBreak, Key, Shield, GitPullRequest, Eye, GitBranch, UsersThree } from "@phosphor-icons/react";
+import { getGitHubTokenAccessState, REQUIRED_GITHUB_CLASSIC_SCOPES } from "../../../shared/githubScopes";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
-
-const REQUIRED_SCOPES = ["repo", "workflow", "read:org"];
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -50,7 +49,12 @@ export function GitHubSection() {
       .then((status) => {
         setGithubStatus(status);
         setGithubTokenDraft("");
-        setSaveNotice("GitHub token saved and verified.");
+        const accessState = getGitHubTokenAccessState(status.scopes ?? []);
+        setSaveNotice(
+          accessState.hasRequiredAccess
+            ? "GitHub token saved and verified."
+            : "GitHub token saved. Additional GitHub permissions are still required.",
+        );
       })
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setGithubBusy(false));
@@ -80,9 +84,12 @@ export function GitHubSection() {
       .finally(() => setGithubBusy(false));
   };
 
-  const isConnected = githubStatus?.tokenStored && githubStatus?.userLogin;
-  const missingScopes = REQUIRED_SCOPES.filter((scope) => !(githubStatus?.scopes ?? []).includes(scope));
-  const hasMissingScopes = isConnected && missingScopes.length > 0;
+  const isConnected = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
+  const accessState = getGitHubTokenAccessState(githubStatus?.scopes ?? []);
+  const hasFullAccess = isConnected && accessState.hasRequiredAccess;
+  const hasMissingScopes = isConnected && !accessState.hasRequiredAccess;
+  const statusColor = hasFullAccess ? COLORS.success : isConnected ? COLORS.warning : COLORS.textMuted;
+  const statusLabel = hasFullAccess ? "CONNECTED" : isConnected ? "LIMITED ACCESS" : "NOT CONNECTED";
 
   const sectionGap: CSSProperties = {
     display: "flex",
@@ -157,18 +164,18 @@ export function GitHubSection() {
       {actionError ? <div style={errorStyle}>{actionError}</div> : null}
 
       <div style={cardStyle({
-        borderColor: isConnected ? `${COLORS.success}30` : undefined,
+        borderColor: hasFullAccess ? `${COLORS.success}30` : isConnected ? `${COLORS.warning}30` : undefined,
       })}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <GithubLogo size={28} weight="fill" style={{ color: isConnected ? COLORS.textPrimary : COLORS.textMuted }} />
+            <GithubLogo size={28} weight="fill" style={{ color: statusColor }} />
             <span style={{ fontSize: 16, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
               GitHub connection
             </span>
           </div>
           {githubStatus ? (
-            <span style={inlineBadge(isConnected ? COLORS.success : COLORS.textMuted)}>
-              {isConnected ? "CONNECTED" : "NOT CONNECTED"}
+            <span style={inlineBadge(statusColor)}>
+              {statusLabel}
             </span>
           ) : null}
         </div>
@@ -187,20 +194,20 @@ export function GitHubSection() {
             >
               <div>
                 <div style={LABEL_STYLE}>USER</div>
-            <div style={{ marginTop: 4, fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
-                  {githubStatus.userLogin}
+                <div style={{ marginTop: 4, fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
+                  {githubStatus?.userLogin ?? "Unknown"}
                 </div>
               </div>
               <div>
                 <div style={LABEL_STYLE}>REPOSITORY</div>
                 <div style={{ marginTop: 4, fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
-                  {githubStatus.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "N/A"}
+                  {githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "N/A"}
                 </div>
               </div>
               <div>
                 <div style={LABEL_STYLE}>TOKEN SCOPE</div>
                 <div style={{ marginTop: 4, fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
-                  {githubStatus.storageScope === "app" ? "App-wide" : "Project"}
+                  {githubStatus?.storageScope === "app" ? "App-wide" : "Project"}
                 </div>
               </div>
             </div>
@@ -208,8 +215,8 @@ export function GitHubSection() {
             <div>
               <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>TOKEN SCOPES</div>
               <div style={{ display: "grid", gap: 6 }}>
-                {REQUIRED_SCOPES.map((scope) => {
-                  const present = (githubStatus?.scopes ?? []).includes(scope);
+                {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => {
+                  const present = accessState.requirements[scope].present;
                   return (
                     <div key={scope} style={scopeRowStyle(present)}>
                       {present ? <CheckCircle size={14} weight="fill" /> : <Warning size={14} weight="fill" />}
@@ -222,7 +229,9 @@ export function GitHubSection() {
 
             {hasMissingScopes ? (
               <div style={errorStyle}>
-                Missing required scopes: {missingScopes.join(", ")}. Regenerate the token with the required permissions.
+                Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
+                {" "}
+                Regenerate the token with the required permissions.
               </div>
             ) : null}
 
@@ -261,7 +270,7 @@ export function GitHubSection() {
                 </div>
                 <div style={{ ...LABEL_STYLE, marginBottom: 6, letterSpacing: "0.05em" }}>REQUIRED SCOPES</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {REQUIRED_SCOPES.map((scope) => (
+                  {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => (
                     <span key={scope} style={{
                       display: "inline-block",
                       fontSize: 10,

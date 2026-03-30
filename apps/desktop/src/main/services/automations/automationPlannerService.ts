@@ -30,7 +30,7 @@ import type { Logger } from "../logging/logger";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
-import { resolvePathWithinRoot } from "../shared/utils";
+import { getErrorMessage, resolvePathWithinRoot } from "../shared/utils";
 
 function resolveAutomationCwdBase(
   projectRoot: string,
@@ -331,6 +331,7 @@ async function runCodexExec(args: {
   cwd: string;
   prompt: string;
   schema: Record<string, unknown>;
+  logger: Logger;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   askForApproval: "untrusted" | "on-failure" | "on-request" | "never";
   webSearch: boolean;
@@ -370,7 +371,19 @@ async function runCodexExec(args: {
 
   cliArgs.push(args.prompt);
 
-  const codexExecutable = resolveCodexExecutable().path;
+  let codexExecutable: string;
+  try {
+    codexExecutable = resolveCodexExecutable().path;
+    if (!codexExecutable) {
+      throw new Error("Codex executable path was empty.");
+    }
+  } catch (error) {
+    args.logger.error("automations.planner.codex_executable_resolution_failed", {
+      cwd: args.cwd,
+      error: getErrorMessage(error),
+    });
+    throw error;
+  }
   const quoteIfNeeded = (value: string) => (/\s/.test(value) ? JSON.stringify(value) : value);
   const commandPreview = [quoteIfNeeded(codexExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
@@ -935,6 +948,7 @@ export function createAutomationPlannerService({
             cwd: projectRoot,
             prompt,
             schema,
+            logger,
             sandbox: cfg.sandbox,
             askForApproval: cfg.askForApproval,
             webSearch: cfg.webSearch,

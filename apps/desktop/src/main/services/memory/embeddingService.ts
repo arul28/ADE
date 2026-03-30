@@ -86,7 +86,25 @@ function resolveCacheDir(cacheDir?: string): string {
 }
 
 function resolveInstallPath(cacheDir: string, modelId: string): string {
-  return path.join(cacheDir, ...modelId.split("/").filter(Boolean));
+  const resolvedCacheDir = path.resolve(cacheDir);
+  const segments = modelId.split(/[\\/]/);
+  const safeSegments: string[] = [];
+
+  for (const segment of segments) {
+    if (!segment || segment === "." || segment === ".." || path.isAbsolute(segment)) {
+      throw new Error(`Invalid embedding model ID segment: ${segment || "(empty)"}`);
+    }
+    safeSegments.push(segment);
+  }
+
+  const installPath = path.resolve(resolvedCacheDir, ...safeSegments);
+  const cacheDirPrefix = resolvedCacheDir.endsWith(path.sep)
+    ? resolvedCacheDir
+    : `${resolvedCacheDir}${path.sep}`;
+  if (installPath !== resolvedCacheDir && !installPath.startsWith(cacheDirPrefix)) {
+    throw new Error(`Embedding model install path escaped the cache dir: ${modelId}`);
+  }
+  return installPath;
 }
 
 function inspectInstallPath(installPath: string): {
@@ -218,6 +236,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   let loaded: number | null = null;
   let total: number | null = null;
   let file: string | null = null;
+  let loadAttemptId = 0;
 
   function getStatus(): EmbeddingServiceStatus {
     const install = inspectInstallPath(installPath);
@@ -259,7 +278,14 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     return typeof value === "number" && Number.isFinite(value) ? value : current;
   }
 
-  function handleProgress(event: EmbeddingProgressEvent) {
+  function isCurrentLoadAttempt(attemptId: number): boolean {
+    return attemptId === loadAttemptId;
+  }
+
+  function handleProgress(event: EmbeddingProgressEvent, attemptId: number) {
+    if (!isCurrentLoadAttempt(attemptId)) {
+      return;
+    }
     // Transformers.js may emit late file progress events even after the model
     // session creation has already failed. Do not let those stale events revive
     // the service back into a loading state.
@@ -286,6 +312,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     if (extractor) return extractor;
     if (extractorPromise) return extractorPromise;
     if (forceRetry) {
+      loadAttemptId += 1;
       state = "idle";
       activity = "idle";
       lastError = null;
@@ -298,6 +325,10 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
       throw new EmbeddingUnavailableError(lastError);
     }
 
+    if (!forceRetry) {
+      loadAttemptId += 1;
+    }
+    const attemptId = loadAttemptId;
     const install = inspectInstallPath(installPath);
     state = "loading";
     activity = localFilesOnly || install.installState === "installed" ? "loading-local" : "downloading";
@@ -319,12 +350,18 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
       let nextExtractor: EmbeddingExtractor | null = null;
       try {
         const loadedExtractor = await runtime.pipeline(DEFAULT_EMBEDDING_TASK, modelId, {
-          progress_callback: handleProgress,
+          progress_callback: (event) => handleProgress(event, attemptId),
           local_files_only: localFilesOnly,
         });
         nextExtractor = loadedExtractor;
 
         await runExtractorSmokeTest(loadedExtractor);
+        if (!isCurrentLoadAttempt(attemptId)) {
+          if (loadedExtractor.dispose) {
+            await loadedExtractor.dispose();
+          }
+          return loadedExtractor;
+        }
         extractor = loadedExtractor;
       } catch (error) {
         if (nextExtractor?.dispose) {
@@ -340,6 +377,9 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
         }
         throw error;
       }
+      if (!isCurrentLoadAttempt(attemptId)) {
+        return nextExtractor;
+      }
       state = "ready";
       activity = "ready";
       progress = 100;
@@ -354,13 +394,17 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
 
       return nextExtractor;
     })().catch((error) => {
+      if (!isCurrentLoadAttempt(attemptId)) {
+        throw error;
+      }
       extractorPromise = null;
       extractor = null;
       state = "unavailable";
       activity = "error";
+      const freshInstall = inspectInstallPath(installPath);
       lastError = normalizeLoadError({
         message: getErrorMessage(error),
-        installState: install.installState,
+        installState: freshInstall.installState,
         localFilesOnly,
       });
       progress = null;

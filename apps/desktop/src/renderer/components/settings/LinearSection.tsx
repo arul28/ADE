@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowsLeftRight,
   ArrowsClockwise,
@@ -7,7 +7,6 @@ import {
   CircleNotch,
   Key,
   Lightning,
-  Link as LinkIcon,
   Plugs,
   XCircle,
 } from "@phosphor-icons/react";
@@ -25,6 +24,24 @@ export function LinearSection() {
   const [oauthStarting, setOauthStarting] = useState(false);
   const [oauthSessionId, setOauthSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const validatingRef = useRef(false);
+  const oauthStartingRef = useRef(false);
+  const oauthSessionIdRef = useRef<string | null>(null);
+
+  const setValidatingState = useCallback((value: boolean) => {
+    validatingRef.current = value;
+    setValidating(value);
+  }, []);
+
+  const setOauthStartingState = useCallback((value: boolean) => {
+    oauthStartingRef.current = value;
+    setOauthStarting(value);
+  }, []);
+
+  const setOauthSessionIdState = useCallback((value: string | null) => {
+    oauthSessionIdRef.current = value;
+    setOauthSessionId(value);
+  }, []);
 
   const isConnected = Boolean(connection?.connected);
   const authModeLabel = useMemo(() => {
@@ -63,10 +80,11 @@ export function LinearSection() {
   /* ── OAuth polling ── */
   useEffect(() => {
     if (!oauthSessionId) return;
+    const activeSessionId = oauthSessionId;
     const cto = window.ade?.cto;
     if (!cto) {
-      setOauthSessionId(null);
-      setOauthStarting(false);
+      setOauthSessionIdState(null);
+      setOauthStartingState(false);
       setError("Linear integration is unavailable in this environment.");
       return;
     }
@@ -77,11 +95,11 @@ export function LinearSection() {
 
     const poll = async () => {
       try {
-        const session = await cto.getLinearOAuthSession({ sessionId: oauthSessionId });
-        if (!active) return;
+        const session = await cto.getLinearOAuthSession({ sessionId: activeSessionId });
+        if (!active || oauthSessionIdRef.current !== activeSessionId) return;
         if (session.status === "completed") {
-          setOauthSessionId(null);
-          setOauthStarting(false);
+          setOauthSessionIdState(null);
+          setOauthStartingState(false);
           setConnection(session.connection ?? null);
           setError(null);
           if (session.connection?.connected) void loadProjects();
@@ -89,23 +107,23 @@ export function LinearSection() {
           return;
         }
         if (session.status === "failed" || session.status === "expired") {
-          setOauthSessionId(null);
-          setOauthStarting(false);
+          setOauthSessionIdState(null);
+          setOauthStartingState(false);
           setError(session.error ?? "OAuth failed.");
         }
       } catch (err) {
-        if (!active) return;
-        setOauthSessionId(null);
-        setOauthStarting(false);
+        if (!active || oauthSessionIdRef.current !== activeSessionId) return;
+        setOauthSessionIdState(null);
+        setOauthStartingState(false);
         setError(err instanceof Error ? err.message : "OAuth failed.");
       }
     };
     void poll();
     timer = window.setInterval(() => void poll(), 1500);
     timeout = window.setTimeout(() => {
-      if (!active) return;
-      setOauthSessionId(null);
-      setOauthStarting(false);
+      if (!active || oauthSessionIdRef.current !== activeSessionId) return;
+      setOauthSessionIdState(null);
+      setOauthStartingState(false);
       setError("OAuth timed out. Please try again.");
     }, 5 * 60 * 1000);
     return () => {
@@ -113,40 +131,64 @@ export function LinearSection() {
       if (timer != null) clearInterval(timer);
       if (timeout != null) clearTimeout(timeout);
     };
-  }, [loadProjects, loadStatus, oauthSessionId]);
+  }, [loadProjects, loadStatus, oauthSessionId, setOauthSessionIdState, setOauthStartingState]);
 
   /* ── Handlers ── */
   const handleValidate = useCallback(async () => {
-    if (!window.ade?.cto || !tokenInput.trim()) return;
-    setValidating(true);
+    const submittedToken = tokenInput.trim();
+    if (
+      !window.ade?.cto
+      || !submittedToken
+      || validatingRef.current
+      || oauthStartingRef.current
+      || oauthSessionIdRef.current
+    ) {
+      return;
+    }
+    setValidatingState(true);
     setError(null);
     try {
-      const status = await window.ade.cto.setLinearToken({ token: tokenInput.trim() });
+      const status = await window.ade.cto.setLinearToken({ token: submittedToken });
+      if (!validatingRef.current || oauthStartingRef.current || oauthSessionIdRef.current) return;
       setConnection(status);
-      if (status.connected) void loadProjects();
-      else setError(status.message ?? "Token validation failed.");
+      if (status.connected) {
+        void loadProjects();
+        setTokenInput("");
+      } else {
+        setError(status.message ?? "Token validation failed.");
+      }
     } catch (err) {
+      if (!validatingRef.current || oauthStartingRef.current || oauthSessionIdRef.current) return;
       setError(err instanceof Error ? err.message : "Validation failed.");
     } finally {
-      setValidating(false);
+      if (validatingRef.current) {
+        setValidatingState(false);
+      }
     }
-  }, [loadProjects, tokenInput]);
+  }, [loadProjects, setValidatingState, tokenInput]);
 
   const handleStartOAuth = useCallback(async () => {
-    if (!window.ade?.cto) return;
-    setOauthStarting(true);
+    if (oauthSessionIdRef.current) {
+      setOauthSessionIdState(null);
+      setOauthStartingState(false);
+      return;
+    }
+    if (!window.ade?.cto || validatingRef.current || oauthStartingRef.current) return;
+    setOauthStartingState(true);
     setError(null);
     try {
       const session = await window.ade.cto.startLinearOAuth();
-      setOauthSessionId(session.sessionId);
       if (window.ade.app?.openExternal) {
         await window.ade.app.openExternal(session.authUrl);
       }
+      if (!oauthStartingRef.current || validatingRef.current) return;
+      setOauthSessionIdState(session.sessionId);
     } catch (err) {
-      setOauthStarting(false);
+      if (!oauthStartingRef.current) return;
+      setOauthStartingState(false);
       setError(err instanceof Error ? err.message : "Unable to start OAuth.");
     }
-  }, []);
+  }, [setOauthSessionIdState, setOauthStartingState]);
 
   const handleDisconnect = useCallback(async () => {
     if (!window.ade?.cto) return;
@@ -156,13 +198,14 @@ export function LinearSection() {
       setProjects([]);
       setTokenInput("");
       setError(null);
-      setOauthSessionId(null);
+      setOauthSessionIdState(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to disconnect Linear.");
     } finally {
-      setOauthStarting(false);
+      setValidatingState(false);
+      setOauthStartingState(false);
     }
-  }, []);
+  }, [setOauthSessionIdState, setOauthStartingState, setValidatingState]);
 
   /* ── Feature preview cards ── */
   const features = [
@@ -287,7 +330,7 @@ export function LinearSection() {
                 size="md"
                 variant="primary"
                 onClick={() => void handleStartOAuth()}
-                disabled={oauthStarting || connection?.oauthAvailable === false}
+                disabled={oauthStarting || validating || connection?.oauthAvailable === false}
                 style={{
                   background: LINEAR_BRAND,
                   width: "100%",
@@ -341,7 +384,12 @@ export function LinearSection() {
                   placeholder="lin_api_..."
                   value={tokenInput}
                   onChange={(e) => setTokenInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") void handleValidate(); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !validating && !oauthStarting && !oauthSessionId && tokenInput.trim()) {
+                      e.preventDefault();
+                      void handleValidate();
+                    }
+                  }}
                   style={{
                     flex: 1, height: 36, borderRadius: 8,
                     background: "rgba(255,255,255,0.03)",
@@ -357,7 +405,7 @@ export function LinearSection() {
                   size="md"
                   variant="outline"
                   onClick={() => void handleValidate()}
-                  disabled={validating || !tokenInput.trim()}
+                  disabled={validating || oauthStarting || oauthSessionId !== null || !tokenInput.trim()}
                 >
                   {validating ? <CircleNotch size={12} className="animate-spin" /> : "Connect"}
                 </Button>

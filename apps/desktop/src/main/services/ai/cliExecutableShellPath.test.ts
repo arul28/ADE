@@ -62,5 +62,17 @@ describe("augmentProcessPathWithShellAndKnownCliDirs", () => {
     expect(entries).toContain("/Users/test/.npm-global/bin");
     expect(env.PATH).toBe("/usr/bin:/bin");
     expect(nextPath).not.toBe(env.PATH);
+    expect(execFileSyncMock).toHaveBeenNthCalledWith(
+      1,
+      "/bin/zsh",
+      expect.any(Array),
+      expect.objectContaining({ env }),
+    );
+    expect(execFileSyncMock).toHaveBeenNthCalledWith(
+      2,
+      "/bin/zsh",
+      expect.any(Array),
+      expect.objectContaining({ env }),
+    );
   });
 });
