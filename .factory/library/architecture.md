@@ -1,67 +1,71 @@
 # Architecture
 
-Architectural decisions, patterns discovered, and design principles.
+Architectural decisions, patterns discovered, and conventions.
 
-**What belongs here:** Architectural patterns, data flow, component organization, design decisions.
+**What belongs here:** Architectural patterns, component relationships, design decisions.
 
 ---
 
-## iOS App Architecture
+## iOS App Structure
 
-### Pattern: MVVM-like with Shared Service
-- `SyncService` is the shared `@MainActor ObservableObject` injected via `.environmentObject()`
-- Views own local `@State` for UI concerns
-- Views call into `SyncService` for remote operations and data fetching
-- Data flow: `SyncService` → `DatabaseService` (SQLite) → `localStateRevision` increment → SwiftUI reactivity via `.task(id: syncService.localStateRevision)`
-
-### File Structure
 ```
-ADE/
+apps/ios/ADE/
 ├── App/
-│   ├── ADEApp.swift              # App entry point, UIKit theme config
-│   └── ContentView.swift         # Root TabView, Settings tab, design system components
-├── Views/
-│   ├── LanesTabView.swift        # ~3,706 lines - complete
-│   ├── FilesTabView.swift        # ~500 lines - baseline
-│   ├── WorkTabView.swift         # ~300 lines - baseline
-│   └── PRsTabView.swift          # ~500 lines - baseline
+│   ├── ADEApp.swift          # @main entry, scene setup
+│   └── ContentView.swift     # TabView with 5 tabs: Lanes, Files, Work, PRs, Settings
 ├── Models/
-│   └── RemoteModels.swift        # ~700 lines - all domain models
+│   └── RemoteModels.swift    # All data models for WebSocket communication
 ├── Services/
-│   ├── Database.swift            # ~1,949 lines - SQLite + cr-sqlite sync
-│   ├── KeychainService.swift     # ~50 lines - token persistence
-│   └── SyncService.swift         # ~1,781 lines - WebSocket + Bonjour + RPC
-└── Resources/
-    └── DatabaseBootstrap.sql     # ~2,260 lines - full schema
+│   ├── SyncService.swift     # WebSocket client, all API calls to desktop
+│   ├── Database.swift        # CRSQLite local database
+│   └── KeychainService.swift # Secure credential storage
+├── Views/
+│   ├── Components/
+│   │   ├── ADEDesignSystem.swift   # Glass morphism, semantic colors, motion system
+│   │   └── FilesCodeSupport.swift  # Syntax highlighting (13 languages), language detection
+│   ├── Files/
+│   │   ├── FilesTabView.swift              # Root tab: workspace picker, navigation shell
+│   │   ├── FileTreeView.swift              # Directory screen, tree rows, breadcrumbs
+│   │   ├── FileTreeViewModel.swift         # Tree state, expand/collapse, child loading
+│   │   ├── FileOperationsHelper.swift      # Shared types, path helpers, validation
+│   │   ├── FileSearchView.swift            # Search sheet UI, result rows
+│   │   ├── FileSearchViewModel.swift       # Debounced quick-open and text search
+│   │   ├── FileViewerView.swift            # File editor/viewer screen
+│   │   ├── FileViewerViewModel.swift       # Load, save, diff, find/replace state
+│   │   ├── FileViewerChromeViews.swift     # Header, mode control, info sheet
+│   │   ├── FileViewerCodeEditorView.swift  # UITextView code editor with gutter
+│   │   ├── FileViewerHelpers.swift         # Pure functions: line numbers, find/replace
+│   │   └── FileViewerRenderingViews.swift  # Binary preview, syntax view, diff, image
+│   ├── LanesTabView.swift
+│   ├── PRsTabView.swift
+│   └── WorkTabView.swift
+├── Resources/
+│   └── DatabaseBootstrap.sql
+├── Assets.xcassets
+└── Info.plist
 ```
 
-### Database
-- Direct SQLite3 C API (no ORM)
-- cr-sqlite change tracking with custom triggers (insert/update/delete)
-- Bidirectional changeset sync via WebSocket
-- Site ID management (persistent 128-bit random)
-- Full bootstrap SQL schema (~2,260 lines) mirroring desktop
+## Communication Architecture
 
-### Networking
-- Raw `URLSessionWebSocketTask` — no third-party dependencies
-- JSON envelopes with optional gzip compression (>4KB)
-- Heartbeat ping/pong protocol
-- Auto-reconnect with exponential backoff
-- Bonjour (`NetServiceBrowser`) for LAN discovery
-- Connection-scoped async work in `SyncService` must be tied to the active socket/session: store long-lived tasks so `disconnect()` and host switching can cancel them, and ignore stale send/receive callbacks unless they still belong to the current `socket`
+The iOS app communicates with the desktop over WebSocket using a typed envelope protocol:
 
-### Command Routing
-- State-only operations: write locally → cr-sqlite syncs to host
-- Execution operations: send command via WebSocket → host executes → state syncs back
-- Offline command queue: persisted to UserDefaults, flushed on reconnect
+1. **file_request / file_response** — File operations (listTree, readFile, writeText, createFile, createDirectory, rename, deletePath, quickOpen, searchText)
+2. **command / command_ack / command_result** — Git operations and atomic writes
 
-### Key Model Types (RemoteModels.swift)
-- `RemoteLane`, `RemoteLaneDetail`, `LaneStateSnapshot`
-- `RemoteTerminalSession`, `SessionHistoryEntry`
-- `PullRequestRow`, `PullRequestSnapshot`, `PRDetailPayload`
-- `RemoteFileNode`, `RemoteSearchResult`
-- `ChatMessage`, `ToolCallResult`
+All API calls go through `SyncService.swift` methods. Workers must NOT create new API calls — only use existing methods.
 
-### Adding New Swift Files
-New .swift files MUST be added to the Xcode project by editing `ADE.xcodeproj/project.pbxproj`.
-Both `PBXFileReference` and `PBXSourcesBuildPhase` sections need entries.
+## Key Data Models (RemoteModels.swift)
+
+- `FileTreeNode` — { name, path, type, hasChildren, children, changeStatus, size }
+- `SyncFileBlob` — { path, size, mimeType, encoding, isBinary, content, languageId }
+- `FilesWorkspace` — { id, kind, laneId, name, rootPath, isReadOnlyByDefault }
+- `FilesQuickOpenItem` — { path, score }
+- `FilesSearchTextMatch` — { path, line, column, preview }
+
+## Design System (ADEDesignSystem.swift)
+
+- iOS 26 liquid glass effects via `.glassEffect()` modifiers
+- Semantic color tokens: `adeAccent`, `adeSecondaryText`, `adeBackground`, etc.
+- Motion system with spring animations
+- Glass card component for grouped content
+- Workers should use these tokens, not hard-coded colors

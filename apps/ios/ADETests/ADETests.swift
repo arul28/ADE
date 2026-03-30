@@ -1407,6 +1407,86 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(formattedFileSize(1_572_864), "1.5 MB")
   }
 
+  func testFilesNameValidationRejectsInvalidAndDuplicateNames() {
+    let existingNodes = [
+      FileTreeNode(name: "Config", path: "Config", type: "directory", hasChildren: nil, children: nil, changeStatus: nil, size: nil),
+      FileTreeNode(name: "README.md", path: "README.md", type: "file", hasChildren: nil, children: nil, changeStatus: nil, size: 16),
+    ]
+
+    XCTAssertEqual(filesNameValidationError(for: "", existingNodes: existingNodes), "Name cannot be empty.")
+    XCTAssertEqual(filesNameValidationError(for: ".", existingNodes: existingNodes), "That name is reserved.")
+    XCTAssertEqual(filesNameValidationError(for: "bad/name", existingNodes: existingNodes), "Use a single file or folder name here.")
+    XCTAssertEqual(filesNameValidationError(for: "bad\0name", existingNodes: existingNodes), "Use a single file or folder name here.")
+    XCTAssertEqual(filesNameValidationError(for: "config", existingNodes: existingNodes), "Config already exists in this folder.")
+    XCTAssertNil(filesNameValidationError(for: "NewFile.swift", existingNodes: existingNodes))
+  }
+
+  func testVisibleFilesTreeRowsExpandsChildrenInPlace() {
+    let rootNodes = [
+      FileTreeNode(name: "Sources", path: "Sources", type: "directory", hasChildren: true, children: nil, changeStatus: nil, size: nil),
+      FileTreeNode(name: "README.md", path: "README.md", type: "file", hasChildren: nil, children: nil, changeStatus: nil, size: 42),
+    ]
+    let childNodes = [
+      FileTreeNode(name: "App.swift", path: "Sources/App.swift", type: "file", hasChildren: nil, children: nil, changeStatus: nil, size: 128),
+    ]
+
+    let rows = visibleFilesTreeRows(
+      nodes: rootNodes,
+      expandedPaths: ["Sources"],
+      loadingPaths: [],
+      childNodesByPath: ["Sources": childNodes],
+      showHidden: true
+    )
+
+    XCTAssertEqual(rows.map(\.id), ["Sources", "Sources/App.swift", "README.md"])
+    XCTAssertEqual(rows[1].depth, 1)
+  }
+
+  func testBinaryFilePathDetectsCommonBinaryExtensions() {
+    XCTAssertTrue(isBinaryFilePath("build/tool.bin"))
+    XCTAssertTrue(isBinaryFilePath("Frameworks/libsqlite3.dylib"))
+    XCTAssertFalse(isBinaryFilePath("Sources/App.swift"))
+  }
+
+  func testFilesBreadcrumbItemsIncludesCurrentFileOnlyWhenRequested() {
+    let fileBreadcrumbs = filesBreadcrumbItems(
+      relativePath: "Sources/Views/FileTreeView.swift",
+      includeCurrentFile: true
+    )
+    XCTAssertEqual(fileBreadcrumbs.map(\.label), ["Sources", "Views", "FileTreeView.swift"])
+    XCTAssertEqual(fileBreadcrumbs.map(\.path), ["Sources", "Sources/Views", "Sources/Views/FileTreeView.swift"])
+    XCTAssertEqual(fileBreadcrumbs.map(\.isDirectory), [true, true, false])
+
+    let directoryBreadcrumbs = filesBreadcrumbItems(
+      relativePath: "Sources/Views",
+      includeCurrentFile: false
+    )
+    XCTAssertEqual(directoryBreadcrumbs.map(\.isDirectory), [true, true])
+  }
+
+  func testFileViewerHelpersComputeLineNumbersAndFindReplaceMatches() {
+    let text = "alpha\nbeta\nbeta"
+
+    XCTAssertEqual(fileViewerLineCount(for: text), 3)
+    XCTAssertEqual(fileViewerLineNumbersText(for: text), "1\n2\n3")
+
+    let matches = fileViewerFindMatches(in: text, query: "beta")
+    XCTAssertEqual(matches.count, 2)
+    XCTAssertEqual(fileViewerMatchIndex(containing: matches[1], in: matches), 1)
+
+    let replacedCurrent = fileViewerReplaceCurrentMatch(
+      in: text,
+      query: "beta",
+      replacement: "gamma",
+      matchIndex: 1
+    )
+    XCTAssertEqual(replacedCurrent?.text, "alpha\nbeta\ngamma")
+    XCTAssertEqual(replacedCurrent?.selection, NSRange(location: 11, length: 5))
+
+    let replacedAll = fileViewerReplaceAllMatches(in: text, query: "beta", replacement: "gamma")
+    XCTAssertEqual(replacedAll, "alpha\ngamma\ngamma")
+  }
+
   func testAgentChatTranscriptResponseDecodesEntries() throws {
     let payload: [String: Any] = [
       "sessionId": "chat-1",
