@@ -311,6 +311,26 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     emitStatus();
   }
 
+  function createStaleLoadError(): Error {
+    return new Error("Embedding extractor load became stale.");
+  }
+
+  async function disposeExtractorSafely(
+    candidate: EmbeddingExtractor | null,
+    logEvent: "memory.embedding.dispose_failed_after_smoke_test" | "memory.embedding.dispose_failed_after_stale_load",
+  ) {
+    if (!candidate?.dispose) return;
+    try {
+      await candidate.dispose();
+    } catch (disposeError) {
+      logger.warn(logEvent, {
+        modelId,
+        cacheDir,
+        error: getErrorMessage(disposeError),
+      });
+    }
+  }
+
   async function ensureExtractor(opts: {
     forceRetry?: boolean;
     localFilesOnly?: boolean;
@@ -371,28 +391,21 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
         await runExtractorSmokeTest(loadedExtractor);
         cachedInstall = localFilesOnly ? install : refreshCachedInstall();
         if (!isCurrentLoadAttempt(attemptId)) {
-          if (loadedExtractor.dispose) {
-            await loadedExtractor.dispose();
-          }
-          return loadedExtractor;
+          await disposeExtractorSafely(loadedExtractor, "memory.embedding.dispose_failed_after_stale_load");
+          nextExtractor = null;
+          throw createStaleLoadError();
         }
         extractor = loadedExtractor;
       } catch (error) {
-        if (nextExtractor?.dispose) {
-          try {
-            await nextExtractor.dispose();
-          } catch (disposeError) {
-            logger.warn("memory.embedding.dispose_failed_after_smoke_test", {
-              modelId,
-              cacheDir,
-              error: getErrorMessage(disposeError),
-            });
-          }
-        }
+        await disposeExtractorSafely(nextExtractor, "memory.embedding.dispose_failed_after_smoke_test");
         throw error;
       }
       if (!isCurrentLoadAttempt(attemptId)) {
-        return nextExtractor;
+        if (extractor === nextExtractor) {
+          extractor = null;
+        }
+        await disposeExtractorSafely(nextExtractor, "memory.embedding.dispose_failed_after_stale_load");
+        throw createStaleLoadError();
       }
       state = "ready";
       activity = "ready";

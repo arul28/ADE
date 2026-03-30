@@ -374,10 +374,11 @@ async function runCodexExec(args: {
 
   let codexExecutable: string;
   try {
-    codexExecutable = resolveCodexExecutable().path;
-    if (!codexExecutable) {
-      throw new Error("Codex executable path was empty.");
+    const resolvedCodexExecutable = resolveCodexExecutable();
+    if (!resolvedCodexExecutable) {
+      throw new Error("Codex executable could not be resolved.");
     }
+    codexExecutable = resolvedCodexExecutable.path;
   } catch (error) {
     args.logger.error("automations.planner.codex_executable_resolution_failed", {
       cwd: args.cwd,

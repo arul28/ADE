@@ -33,6 +33,14 @@ export function LinearSection() {
   const validatingRef = useRef(false);
   const oauthStartingRef = useRef(false);
   const oauthSessionIdRef = useRef<string | null>(null);
+  const requestEpochRef = useRef(0);
+
+  const invalidateLoadRequests = useCallback(() => {
+    requestEpochRef.current += 1;
+    return requestEpochRef.current;
+  }, []);
+
+  const isCurrentLoadRequest = useCallback((requestId: number) => requestEpochRef.current === requestId, []);
 
   const setValidatingState = useCallback((value: boolean) => {
     validatingRef.current = value;
@@ -45,9 +53,12 @@ export function LinearSection() {
   }, []);
 
   const setOauthSessionIdState = useCallback((value: string | null) => {
+    if (oauthSessionIdRef.current !== value) {
+      invalidateLoadRequests();
+    }
     oauthSessionIdRef.current = value;
     setOauthSessionId(value);
-  }, []);
+  }, [invalidateLoadRequests]);
 
   const isConnected = Boolean(connection?.connected);
   const authModeLabel = useMemo(() => {
@@ -56,27 +67,39 @@ export function LinearSection() {
   }, [connection?.authMode]);
 
   /* ── Load helpers ── */
-  const loadProjects = useCallback(async () => {
+  const loadProjects = useCallback(async (requestIdArg?: number) => {
     if (!window.ade?.cto) return;
+    const requestId = requestIdArg ?? invalidateLoadRequests();
     try {
-      setProjects(await window.ade.cto.getLinearProjects());
+      const nextProjects = await window.ade.cto.getLinearProjects();
+      if (!isCurrentLoadRequest(requestId)) return;
+      setProjects(nextProjects);
     } catch {
+      if (!isCurrentLoadRequest(requestId)) return;
       setProjects([]);
     }
-  }, []);
+  }, [invalidateLoadRequests, isCurrentLoadRequest]);
 
   const loadStatus = useCallback(async () => {
     if (!window.ade?.cto) return;
+    const requestId = invalidateLoadRequests();
     try {
       const status = await window.ade.cto.getLinearConnectionStatus();
+      if (!isCurrentLoadRequest(requestId)) return;
       setConnection(status);
-      if (status.connected) void loadProjects();
-      else setProjects([]);
+      if (status.connected) {
+        if (isCurrentLoadRequest(requestId)) {
+          void loadProjects(requestId);
+        }
+      } else {
+        setProjects([]);
+      }
     } catch {
+      if (!isCurrentLoadRequest(requestId)) return;
       setConnection(null);
       setProjects([]);
     }
-  }, [loadProjects]);
+  }, [invalidateLoadRequests, isCurrentLoadRequest, loadProjects]);
 
   /* ── Initial load ── */
   useEffect(() => {
@@ -151,27 +174,42 @@ export function LinearSection() {
     ) {
       return;
     }
+    const requestId = invalidateLoadRequests();
     setValidatingState(true);
     setError(null);
     try {
       const status = await window.ade.cto.setLinearToken({ token: submittedToken });
-      if (!validatingRef.current || oauthStartingRef.current || oauthSessionIdRef.current) return;
+      if (
+        !validatingRef.current
+        || oauthStartingRef.current
+        || oauthSessionIdRef.current
+        || !isCurrentLoadRequest(requestId)
+      ) {
+        return;
+      }
       setConnection(status);
       if (status.connected) {
-        void loadProjects();
+        void loadProjects(requestId);
         setTokenInput("");
       } else {
         setError(status.message ?? "Token validation failed.");
       }
     } catch (err) {
-      if (!validatingRef.current || oauthStartingRef.current || oauthSessionIdRef.current) return;
+      if (
+        !validatingRef.current
+        || oauthStartingRef.current
+        || oauthSessionIdRef.current
+        || !isCurrentLoadRequest(requestId)
+      ) {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Validation failed.");
     } finally {
       if (validatingRef.current) {
         setValidatingState(false);
       }
     }
-  }, [loadProjects, setValidatingState, tokenInput]);
+  }, [invalidateLoadRequests, isCurrentLoadRequest, loadProjects, setValidatingState, tokenInput]);
 
   const handleStartOAuth = useCallback(async () => {
     if (oauthSessionIdRef.current) {
@@ -179,14 +217,22 @@ export function LinearSection() {
       setOauthStartingState(false);
       return;
     }
-    if (!window.ade?.cto || validatingRef.current || oauthStartingRef.current) return;
+    const cto = window.ade?.cto;
+    const openExternal = window.ade.app?.openExternal;
+    if (!cto || validatingRef.current || oauthStartingRef.current) return;
+    if (!openExternal) {
+      setOauthSessionIdState(null);
+      setOauthStartingState(false);
+      setError("Browser sign-in is not available in this ADE build.");
+      return;
+    }
+    invalidateLoadRequests();
     setOauthStartingState(true);
     setError(null);
     try {
-      const session = await window.ade.cto.startLinearOAuth();
-      if (window.ade.app?.openExternal) {
-        await window.ade.app.openExternal(session.authUrl);
-      }
+      const session = await cto.startLinearOAuth();
+      if (!oauthStartingRef.current || validatingRef.current) return;
+      await openExternal(session.authUrl);
       if (!oauthStartingRef.current || validatingRef.current) return;
       setOauthSessionIdState(session.sessionId);
     } catch (err) {
@@ -194,10 +240,11 @@ export function LinearSection() {
       setOauthStartingState(false);
       setError(err instanceof Error ? err.message : "Unable to start OAuth.");
     }
-  }, [setOauthSessionIdState, setOauthStartingState]);
+  }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState]);
 
   const handleDisconnect = useCallback(async () => {
     if (!window.ade?.cto) return;
+    invalidateLoadRequests();
     try {
       const status = await window.ade.cto.clearLinearToken();
       setConnection(status);
@@ -211,7 +258,7 @@ export function LinearSection() {
       setValidatingState(false);
       setOauthStartingState(false);
     }
-  }, [setOauthSessionIdState, setOauthStartingState, setValidatingState]);
+  }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState, setValidatingState]);
 
   return (
     <div style={{ display: "flex", maxWidth: 780, flexDirection: "column", gap: 20 }}>
@@ -380,6 +427,7 @@ export function LinearSection() {
               <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
                 <input
                   type="password"
+                  aria-label="Linear API key"
                   placeholder="lin_api_..."
                   value={tokenInput}
                   onChange={(e) => setTokenInput(e.target.value)}

@@ -472,7 +472,7 @@ describe("embeddingService", () => {
     await secondAttempt;
   });
 
-  it("keeps the service idle when an in-flight load finishes after dispose", async () => {
+  it("rejects an in-flight load that finishes after dispose and keeps the service idle", async () => {
     const logger = createLogger();
     let releasePipeline: (() => void) | null = null;
     let resolvePipelineStarted: (() => void) | null = null;
@@ -517,7 +517,7 @@ describe("embeddingService", () => {
 
     expect(releasePipeline).toBeTypeOf("function");
     releasePipeline!();
-    await preloadPromise;
+    await expect(preloadPromise).rejects.toThrow("Embedding extractor load became stale.");
 
     expect(extractor.dispose).toHaveBeenCalledTimes(1);
     expect(service.isAvailable()).toBe(false);
