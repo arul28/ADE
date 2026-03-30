@@ -35,6 +35,8 @@ import {
 type PtyEntry = {
   pty: IPty;
   laneId: string;
+  laneWorktreePath: string;
+  boundCwd: string;
   sessionId: string;
   tracked: boolean;
   transcriptPath: string;
@@ -302,7 +304,18 @@ export function createPtyService({
     return sha.length ? sha : null;
   };
 
-  const summarizeSessionBestEffort = (sessionId: string): void => {
+  const summarizeSessionBestEffort = (
+    sessionId: string,
+    context?: { laneWorktreePath?: string | null; boundCwd?: string | null },
+  ): void => {
+    const entryContext = Array.from(ptys.values()).find((entry) => entry.sessionId === sessionId) ?? null;
+    const summaryCwd = (
+      context?.boundCwd
+      ?? context?.laneWorktreePath
+      ?? entryContext?.boundCwd
+      ?? entryContext?.laneWorktreePath
+      ?? ""
+    ).trim();
     Promise.resolve()
       .then(async () => {
         const session = sessionService.get(sessionId);
@@ -326,7 +339,6 @@ export function createPtyService({
         if (si?.summaries?.enabled === false) return;
         if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
 
-        const lane = laneService.getLaneBaseAndBranch(session.laneId);
         const prompt = [
           "You are ADE's terminal summary assistant.",
           "Rewrite this terminal session into a concise 1-3 sentence summary with outcome and next action.",
@@ -344,7 +356,7 @@ export function createPtyService({
           : undefined;
 
         const aiSummary = await aiIntegrationService.summarizeTerminal({
-          cwd: lane.worktreePath,
+          cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
           prompt,
           ...(summaryModelId ? { model: summaryModelId } : {}),
         });
@@ -391,13 +403,15 @@ export function createPtyService({
     } catch {
       // ignore callback failures
     }
-    summarizeSessionBestEffort(entry.sessionId);
+    summarizeSessionBestEffort(entry.sessionId, {
+      laneWorktreePath: entry.laneWorktreePath,
+      boundCwd: entry.boundCwd,
+    });
 
     // Best-effort head SHA at end; never block exit.
     Promise.resolve()
       .then(async () => {
-        const { worktreePath } = laneService.getLaneBaseAndBranch(entry.laneId);
-        const sha = await computeHeadShaBestEffort(worktreePath);
+        const sha = await computeHeadShaBestEffort(entry.boundCwd || entry.laneWorktreePath);
         if (sha) sessionService.setHeadShaEnd(entry.sessionId, sha);
       })
       .catch(() => {})
@@ -555,7 +569,7 @@ export function createPtyService({
       // Best-effort head SHA at start; do not block terminal creation.
       Promise.resolve()
         .then(async () => {
-          const sha = await computeHeadShaBestEffort(worktreePath);
+          const sha = await computeHeadShaBestEffort(cwd || worktreePath);
           if (sha) sessionService.setHeadShaStart(sessionId, sha);
         })
         .catch(() => {});
@@ -629,7 +643,10 @@ export function createPtyService({
         clearIdleTimer(sessionId);
         setRuntimeState(sessionId, "exited", { touch: false });
         runtimeStates.delete(sessionId);
-        summarizeSessionBestEffort(sessionId);
+        summarizeSessionBestEffort(sessionId, {
+          laneWorktreePath: worktreePath,
+          boundCwd: cwd,
+        });
         broadcastExit({ ptyId, sessionId, exitCode: null });
         throw err;
       }
@@ -637,6 +654,8 @@ export function createPtyService({
       const entry: PtyEntry = {
         pty,
         laneId,
+        laneWorktreePath: worktreePath,
+        boundCwd: cwd,
         sessionId,
         tracked,
         transcriptPath,
@@ -768,7 +787,6 @@ export function createPtyService({
           const toolType = session.toolType;
           if (!toolType || toolType === "shell") return;
 
-          const lane = laneService.getLaneBaseAndBranch(laneId);
           const prompt = [
             "Generate a concise terminal session title.",
             "Return only plain text, max 80 characters, no punctuation at the end.",
@@ -783,7 +801,7 @@ export function createPtyService({
 
           capturedAi
             .summarizeTerminal({
-              cwd: lane.worktreePath,
+              cwd: entry.boundCwd || entry.laneWorktreePath,
               prompt,
               timeoutMs: 8_000,
               ...(titleModelId ? { model: titleModelId } : {}),
@@ -910,7 +928,10 @@ export function createPtyService({
       } catch {
         // ignore callback failures
       }
-      summarizeSessionBestEffort(entry.sessionId);
+      summarizeSessionBestEffort(entry.sessionId, {
+        laneWorktreePath: entry.laneWorktreePath,
+        boundCwd: entry.boundCwd,
+      });
       broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);
 

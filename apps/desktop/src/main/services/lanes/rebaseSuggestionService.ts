@@ -100,6 +100,7 @@ export function createRebaseSuggestionService(args: {
   const resolveSuggestionBase = async (
     lane: LaneSummary,
     laneById: Map<string, LaneSummary>,
+    primaryParentHeadByBranch: Map<string, string | null>,
   ): Promise<{ parentLaneId: string; parentHeadSha: string; baseLabel: string | null; groupContext: string | null } | null> => {
     const queueOverride = await resolveQueueRebaseOverride({
       db,
@@ -125,13 +126,18 @@ export function createRebaseSuggestionService(args: {
     if (parent.laneType === "primary") {
       const parentBranch = parent.branchRef.trim();
       if (!parentBranch) return null;
-      await fetchRemoteTrackingBranch({
-        projectRoot,
-        targetBranch: parentBranch,
-      }).catch(() => {});
-      parentHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
-      if (!parentHeadSha) {
-        parentHeadSha = await getHeadSha(parent.worktreePath);
+      if (primaryParentHeadByBranch.has(parentBranch)) {
+        parentHeadSha = primaryParentHeadByBranch.get(parentBranch) ?? null;
+      } else {
+        await fetchRemoteTrackingBranch({
+          projectRoot,
+          targetBranch: parentBranch,
+        }).catch(() => {});
+        parentHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
+        if (!parentHeadSha) {
+          parentHeadSha = await getHeadSha(parent.worktreePath);
+        }
+        primaryParentHeadByBranch.set(parentBranch, parentHeadSha);
       }
     } else {
       parentHeadSha = await getHeadSha(parent.worktreePath);
@@ -154,13 +160,14 @@ export function createRebaseSuggestionService(args: {
 
     const lanes = await laneService.list({ includeArchived: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const primaryParentHeadByBranch = new Map<string, string | null>();
     const prLaneIds = getPrLaneIds();
 
     const out: RebaseSuggestion[] = [];
     const nowMs = Date.now();
 
     for (const lane of lanes) {
-      const base = await resolveSuggestionBase(lane, laneById);
+      const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
       if (!base) continue;
       const behindCount = await readBehindCount({
         laneWorktreePath: lane.worktreePath,
@@ -254,7 +261,8 @@ export function createRebaseSuggestionService(args: {
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
     const laneById = new Map(lanes.map((entry) => [entry.id, entry] as const));
-    const base = await resolveSuggestionBase(lane, laneById);
+    const primaryParentHeadByBranch = new Map<string, string | null>();
+    const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to dismiss.");
 
     const existing = loadState(laneId);
@@ -286,7 +294,8 @@ export function createRebaseSuggestionService(args: {
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
     const laneById = new Map(lanes.map((entry) => [entry.id, entry] as const));
-    const base = await resolveSuggestionBase(lane, laneById);
+    const primaryParentHeadByBranch = new Map<string, string | null>();
+    const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to defer.");
 
     const existing = loadState(laneId);

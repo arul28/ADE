@@ -6,6 +6,7 @@ import { listSessionsCached } from "../../lib/sessionListCache";
 import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
 import { isChatToolType, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
+import { defaultTrackedCliStartupCommand, withCodexNoAltScreen } from "./cliLaunch";
 
 const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
@@ -549,7 +550,9 @@ export function useWorkSessions() {
           title: session.goal?.trim() || session.title || "Terminal",
           tracked: session.tracked,
           toolType,
-          startupCommand: command,
+          startupCommand: toolType === "codex" || toolType === "codex-orchestrated"
+            ? withCodexNoAltScreen(command)
+            : command,
         });
         selectLane(session.laneId);
         focusSession(started.sessionId);
@@ -600,7 +603,11 @@ export function useWorkSessions() {
         shell: "shell" as const,
       };
       const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
-      const commandMap = { claude: "claude", codex: "codex", shell: "" };
+      const commandMap = {
+        claude: defaultTrackedCliStartupCommand("claude"),
+        codex: defaultTrackedCliStartupCommand("codex"),
+        shell: "",
+      };
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,

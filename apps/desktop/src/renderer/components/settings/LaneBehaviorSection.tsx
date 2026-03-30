@@ -78,7 +78,11 @@ export function LaneBehaviorSection() {
           </div>
           <button
             type="button"
-            onClick={() => setAutoRebaseDraft((current) => !current)}
+            onClick={() => {
+              if (busy) return;
+              setAutoRebaseDraft((current) => !current);
+            }}
+            disabled={busy}
             style={{
               position: "relative",
               width: 48,
@@ -86,7 +90,8 @@ export function LaneBehaviorSection() {
               border: "none",
               padding: 0,
               background: autoRebaseDraft ? COLORS.accent : COLORS.border,
-              cursor: "pointer",
+              cursor: busy ? "not-allowed" : "pointer",
+              opacity: busy ? 0.65 : 1,
             }}
           >
             <span

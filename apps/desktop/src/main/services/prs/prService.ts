@@ -741,6 +741,7 @@ export function createPrService({
     }
 
     const allLanes = await laneService.list({ includeArchived: true });
+    const allLanesById = new Map(allLanes.map((lane) => [lane.id, lane] as const));
     const landedLane = allLanes.find((lane) => lane.id === args.landedLaneId) ?? null;
     const directChildren = await laneService.getChildren(args.landedLaneId);
     if (directChildren.length === 0) {
@@ -748,7 +749,7 @@ export function createPrService({
     }
 
     let successorParent = landedLane?.parentLaneId
-      ? allLanes.find((lane) => lane.id === landedLane.parentLaneId) ?? null
+      ? allLanesById.get(landedLane.parentLaneId) ?? null
       : null;
     if (!successorParent || successorParent.archivedAt) {
       successorParent = allLanes.find((lane) => lane.laneType === "primary" && !lane.archivedAt) ?? null;
@@ -793,11 +794,12 @@ export function createPrService({
           laneId: child.id,
           newParentLaneId: successorParent.id,
         });
-        const refreshedChild = (await laneService.list({ includeArchived: true })).find((lane) => lane.id === child.id) ?? {
-          ...child,
+        const refreshedChild = {
+          ...(allLanesById.get(child.id) ?? child),
           parentLaneId: successorParent.id,
           baseRef: successorParent.branchRef,
         };
+        allLanesById.set(child.id, refreshedChild);
         await pushRebasedLane(refreshedChild);
         if (childPr && childPr.base_branch !== successorBaseBranch) {
           const retargetError = await retargetBase(childPr.id, successorBaseBranch).catch((error) => {
@@ -842,6 +844,11 @@ export function createPrService({
               previousParentLaneId,
               previousBaseRef,
               preHeadSha: reparentResult.preHeadSha,
+            });
+            allLanesById.set(child.id, {
+              ...(allLanesById.get(child.id) ?? child),
+              parentLaneId: previousParentLaneId,
+              baseRef: previousBaseRef,
             });
           } catch (restoreError) {
             rollbackError = getErrorMessage(restoreError);

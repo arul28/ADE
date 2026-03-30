@@ -2984,6 +2984,13 @@ export function createAgentChatService(args: {
     ?? trimLine(managed.selectedExecutionLaneId)
     ?? managed.session.laneId;
 
+  const refreshHeadShaStartForManagedExecutionLane = async (managed: ManagedChatSession): Promise<void> => {
+    const headStart = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
+    if (headStart) {
+      sessionService.setHeadShaStart(managed.session.id, headStart);
+    }
+  };
+
   const resolveManagedExecutionContext = (
     managed: ManagedChatSession,
     args: { purpose: string; requestedCwd?: string | null },
@@ -4049,10 +4056,6 @@ export function createAgentChatService(args: {
       onDispatched?: () => void;
     },
   ): void => {
-    if (args.laneDirectiveKey && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
-      managed.lastLaneDirectiveKey = args.laneDirectiveKey;
-      persistChatState(managed);
-    }
     emitChatEvent(managed, {
       type: "user_message",
       text: args.text,
@@ -4060,6 +4063,15 @@ export function createAgentChatService(args: {
       ...(args.turnId ? { turnId: args.turnId } : {}),
     });
     args.onDispatched?.();
+  };
+
+  const persistDeliveredLaneDirectiveKey = (
+    managed: ManagedChatSession,
+    laneDirectiveKey?: string | null,
+  ): void => {
+    if (!laneDirectiveKey || managed.lastLaneDirectiveKey === laneDirectiveKey) return;
+    managed.lastLaneDirectiveKey = laneDirectiveKey;
+    persistChatState(managed);
   };
 
   const sendCodexMessage = async (
@@ -4105,6 +4117,7 @@ export function createAgentChatService(args: {
         threadId: managed.session.threadId,
         target: "uncommittedChanges",
       });
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
       if (reviewTurnId) {
         runtime.activeTurnId = reviewTurnId;
@@ -4170,6 +4183,7 @@ export function createAgentChatService(args: {
       input,
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {})
     });
+    persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
     const turnId = typeof result?.turn?.id === "string" ? result.turn.id : null;
     if (turnId) {
@@ -4422,6 +4436,7 @@ export function createAgentChatService(args: {
 
       // V2 pattern: send() then stream() per turn. Session stays alive between turns.
       await runtime.v2Session.send(messageToSend);
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
       // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
       // The renderer will show the turn as "started" (from the status event above) which is sufficient.
@@ -4920,7 +4935,15 @@ export function createAgentChatService(args: {
       if (!managed.closed && runtime.pendingSteers.length) {
         const steerText = runtime.pendingSteers.shift() ?? "";
         if (steerText.trim().length) {
-          await runClaudeTurn(managed, { promptText: steerText, displayText: steerText, attachments: [] });
+          const preparedSteer = prepareSendMessage({
+            sessionId: managed.session.id,
+            text: steerText,
+            displayText: steerText,
+            attachments: [],
+          });
+          if (preparedSteer) {
+            await executePreparedSendMessage(preparedSteer);
+          }
         }
       }
     } catch (error) {
@@ -5571,6 +5594,7 @@ export function createAgentChatService(args: {
       }
 
       // ── Shared turn completion ──
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       clearTimeout(turnTimeout);
       if (assistantText.trim().length) {
         runtime.messages.push({ role: "assistant", content: assistantText });
@@ -5609,7 +5633,15 @@ export function createAgentChatService(args: {
       if (!managed.closed && runtime.pendingSteers.length) {
         const steerText = runtime.pendingSteers.shift() ?? "";
         if (steerText.trim().length) {
-          await runTurn(managed, { promptText: steerText, displayText: steerText, attachments: [] });
+          const preparedSteer = prepareSendMessage({
+            sessionId: managed.session.id,
+            text: steerText,
+            displayText: steerText,
+            attachments: [],
+          });
+          if (preparedSteer) {
+            await executePreparedSendMessage(preparedSteer);
+          }
         }
       }
     } catch (error) {
@@ -7640,7 +7672,7 @@ export function createAgentChatService(args: {
 
     managedSessions.set(sessionId, managed);
 
-    const headStart = await computeHeadShaBestEffort(laneId).catch(() => null);
+    const headStart = await computeHeadShaBestEffort(launchContext.laneWorktreePath).catch(() => null);
     if (headStart) {
       sessionService.setHeadShaStart(sessionId, headStart);
     }
@@ -7862,7 +7894,7 @@ export function createAgentChatService(args: {
       resolvedAttachments,
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
-      laneDirectiveKey,
+      laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
     };
   };
 
@@ -8134,7 +8166,14 @@ export function createAgentChatService(args: {
         persistChatState(managed);
         return;
       }
-      await runTurn(managed, { promptText: trimmed, displayText: trimmed, attachments: [] });
+      const preparedSteer = prepareSendMessage({
+        sessionId,
+        text: trimmed,
+        displayText: trimmed,
+        attachments: [],
+      });
+      if (!preparedSteer) return;
+      await executePreparedSendMessage(preparedSteer);
       return;
     }
 
@@ -8192,7 +8231,14 @@ export function createAgentChatService(args: {
       return;
     }
 
-    await runClaudeTurn(managed, { promptText: trimmed, displayText: trimmed, attachments: [] });
+    const preparedSteer = prepareSendMessage({
+      sessionId,
+      text: trimmed,
+      displayText: trimmed,
+      attachments: [],
+    });
+    if (!preparedSteer) return;
+    await executePreparedSendMessage(preparedSteer);
   };
 
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
@@ -8480,6 +8526,7 @@ export function createAgentChatService(args: {
       normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
       managed.selectedExecutionLaneId = selectedExecutionLaneId ?? managed.selectedExecutionLaneId;
       refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
+      await refreshHeadShaStartForManagedExecutionLane(managed);
       persistChatState(managed);
       await retireLegacySessions();
 
@@ -8546,6 +8593,7 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(created.id);
     managed.selectedExecutionLaneId = selectedExecutionLaneId;
     refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
+    await refreshHeadShaStartForManagedExecutionLane(managed);
     persistChatState(managed);
     await retireLegacySessions();
     return managed.session;

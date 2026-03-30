@@ -18,7 +18,16 @@ type CommandCardProps = {
 };
 
 function isActive(status: ProcessRuntimeStatus | undefined): boolean {
-  return status === "running" || status === "starting" || status === "stopping";
+  return status === "running" || status === "starting" || status === "degraded" || status === "stopping";
+}
+
+function statusLabel(runtime: ProcessRuntime | null): string | null {
+  const status = runtime?.status;
+  if (!status || status === "stopped") return null;
+  if ((status === "crashed" || status === "exited") && runtime?.lastExitCode != null) {
+    return `${status}:${runtime.lastExitCode}`;
+  }
+  return status;
 }
 
 export function CommandCard({
@@ -33,6 +42,7 @@ export function CommandCard({
 }: CommandCardProps) {
   const status = runtime?.status;
   const running = isActive(status);
+  const statusText = statusLabel(runtime);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
 
@@ -45,7 +55,10 @@ export function CommandCard({
       style={{
         background: COLORS.cardBg,
         border: `1px solid ${COLORS.border}`,
-        borderLeft: running ? `3px solid ${COLORS.success}` : `1px solid ${COLORS.border}`,
+        borderLeft:
+          statusText && status
+            ? `3px solid ${processStatusColor(status)}`
+            : `1px solid ${COLORS.border}`,
         borderRadius: 0,
         padding: "14px 16px",
         display: "flex",
@@ -90,9 +103,9 @@ export function CommandCard({
         </div>
 
         {/* Status badge (when running) */}
-        {running && status && (
-          <span style={inlineBadge(COLORS.success, { fontSize: 9, padding: "1px 6px" })}>
-            {status}
+        {statusText && status && (
+          <span style={inlineBadge(processStatusColor(status), { fontSize: 9, padding: "1px 6px" })}>
+            {statusText}
           </span>
         )}
 

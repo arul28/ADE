@@ -65,7 +65,6 @@ type CachedRuntime = {
 const HYDRATE_TAIL_BYTES = 240_000;
 const MAX_PENDING_HYDRATION_BYTES = 400_000;
 const MAX_FRAME_WRITE_BYTES = 450_000;
-const LIVE_RUNTIME_KEEPALIVE_MS = 90_000;
 const EXITED_RUNTIME_KEEPALIVE_MS = 8_000;
 
 const runtimeCache = new Map<string, CachedRuntime>();
@@ -866,8 +865,10 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
       }
 
       runtime.refs = Math.max(0, runtime.refs - 1);
-      if (runtime.refs === 0) {
-        scheduleRuntimeDispose(runtime, runtime.exitCode == null ? LIVE_RUNTIME_KEEPALIVE_MS : EXITED_RUNTIME_KEEPALIVE_MS);
+      // Keep live runtimes parked until the PTY exits. Restoring a full-screen
+      // TUI from transcript tail is brittle, especially once transcript capture truncates.
+      if (runtime.refs === 0 && runtime.exitCode != null) {
+        scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
       }
     };
   }, [ptyId, sessionId]);

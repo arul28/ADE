@@ -989,7 +989,15 @@ export function LanesPage() {
   };
 
   const openAutoRebaseSettings = useCallback(() => { navigate("/settings?tab=lane-templates"); }, [navigate]);
-  const openRebaseDetails = useCallback(() => { navigate("/prs?tab=rebase"); }, [navigate]);
+  const openRebaseDetails = useCallback((laneId?: string | null) => {
+    const trimmedLaneId = typeof laneId === "string" ? laneId.trim() : "";
+    if (trimmedLaneId.length) {
+      const search = new URLSearchParams({ tab: "rebase", laneId: trimmedLaneId });
+      navigate(`/prs?${search.toString()}`);
+      return;
+    }
+    navigate("/prs?tab=rebase");
+  }, [navigate]);
 
   const openRebaseConflictResolver = useCallback((laneId: string, parentLaneId: string | null) => {
     const search = new URLSearchParams({ tab: "rebase", laneId });

@@ -8,6 +8,31 @@ import type { AutoRebaseEventPayload, AutoRebaseLaneState, AutoRebaseLaneStatus,
 import { isRecord, nowIso } from "../shared/utils";
 
 type StoredStatus = AutoRebaseLaneStatus;
+type ListStatusesOptions = {
+  includeAll?: boolean;
+};
+type AttentionStatusInput = {
+  laneId: string;
+  parentLaneId: string | null;
+  parentHeadSha: string | null;
+  state: AutoRebaseLaneState;
+  conflictCount: number;
+  message?: string | null;
+};
+
+export type AutoRebaseService = {
+  listStatuses: (options?: ListStatusesOptions) => Promise<AutoRebaseLaneStatus[]>;
+  onHeadChanged: (args: {
+    laneId: string;
+    preHeadSha: string | null;
+    postHeadSha: string | null;
+    reason: string;
+  }) => Promise<void>;
+  emit: (options?: ListStatusesOptions) => Promise<void>;
+  refreshActiveRebaseNeeds: (reason?: string) => Promise<void>;
+  recordAttentionStatus: (status: AttentionStatusInput) => Promise<void>;
+  dispose: () => void;
+};
 
 const KEY_PREFIX = "auto_rebase:status:";
 const AUTO_REBASED_TTL_MS = 15 * 60_000;
@@ -53,13 +78,19 @@ function byCreatedAtAsc(a: LaneSummary, b: LaneSummary): number {
   return a.name.localeCompare(b.name);
 }
 
-function resolveRootLaneId(laneId: string, laneById: Map<string, LaneSummary>): string {
+function resolveAffectedChainLaneId(
+  laneId: string,
+  laneById: Map<string, LaneSummary>,
+  affectedLaneIds: Set<string>,
+): string {
   let current = laneId;
   const visited = new Set<string>();
   while (!visited.has(current)) {
     visited.add(current);
     const lane = laneById.get(current);
-    if (!lane?.parentLaneId) return current;
+    if (!lane?.parentLaneId || !affectedLaneIds.has(lane.parentLaneId)) {
+      return current;
+    }
     current = lane.parentLaneId;
   }
   return laneId;
@@ -72,7 +103,7 @@ export function createAutoRebaseService(args: {
   conflictService: ReturnType<typeof createConflictService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   onEvent?: (event: AutoRebaseEventPayload) => void;
-}) {
+}): AutoRebaseService {
   const {
     db,
     logger,
@@ -89,7 +120,8 @@ export function createAutoRebaseService(args: {
     reason: string;
   };
   const queueByRoot = new Map<string, RootQueue>();
-  let sweepInFlight = false;
+  let disposed = false;
+  let sweepPromise: Promise<void> | null = null;
   let lastSweepAtMs = 0;
 
   const isEnabled = (): boolean => {
@@ -110,14 +142,7 @@ export function createAutoRebaseService(args: {
     db.setJson(keyForLane(laneId), null);
   };
 
-  const setStatus = (status: {
-    laneId: string;
-    parentLaneId: string | null;
-    parentHeadSha: string | null;
-    state: AutoRebaseLaneState;
-    conflictCount: number;
-    message?: string | null;
-  }): void => {
+  const setStatus = (status: AttentionStatusInput): void => {
     saveStatus({
       laneId: status.laneId,
       parentLaneId: status.parentLaneId,
@@ -129,7 +154,7 @@ export function createAutoRebaseService(args: {
     });
   };
 
-  const listStatuses = async (): Promise<AutoRebaseLaneStatus[]> => {
+  const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
     void maybeSweepRoots("listStatuses");
     const lanes = await laneService.list({ includeArchived: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
@@ -154,7 +179,7 @@ export function createAutoRebaseService(args: {
           clearStatus(lane.id);
           continue;
         }
-      } else if (lane.status.behind <= 0) {
+      } else if (!options?.includeAll && lane.status.behind <= 0) {
         clearStatus(lane.id);
         continue;
       } else if (status.parentLaneId && !laneById.has(status.parentLaneId)) {
@@ -174,10 +199,10 @@ export function createAutoRebaseService(args: {
     return out;
   };
 
-  const emit = async (): Promise<void> => {
-    if (!onEvent) return;
+  const emit = async (options?: ListStatusesOptions): Promise<void> => {
+    if (disposed || !onEvent) return;
     try {
-      const statuses = await listStatuses();
+      const statuses = await listStatuses(options);
       onEvent({
         type: "auto-rebase-updated",
         computedAt: nowIso(),
@@ -192,12 +217,13 @@ export function createAutoRebaseService(args: {
     if (needs.length === 0) return;
     const lanes = await laneService.list({ includeArchived: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const affectedLaneIds = new Set(needs.map((need) => need.laneId));
     const rootLaneIds = new Set<string>();
 
     for (const need of needs) {
       const lane = laneById.get(need.laneId);
       if (!lane?.parentLaneId) continue;
-      rootLaneIds.add(resolveRootLaneId(lane.id, laneById));
+      rootLaneIds.add(resolveAffectedChainLaneId(lane.id, laneById, affectedLaneIds));
     }
 
     for (const rootLaneId of rootLaneIds) {
@@ -206,21 +232,31 @@ export function createAutoRebaseService(args: {
   };
 
   const maybeSweepRoots = async (reason: string, options?: { force?: boolean }): Promise<void> => {
-    if (!isEnabled()) return;
+    if (disposed || !isEnabled()) return;
+    if (options?.force && sweepPromise) {
+      await sweepPromise.catch(() => {});
+    }
+    if (sweepPromise) return;
     const now = Date.now();
-    if (sweepInFlight) return;
     if (!options?.force && now - lastSweepAtMs < SWEEP_DEBOUNCE_MS) return;
 
-    sweepInFlight = true;
-    lastSweepAtMs = now;
-    try {
-      const needs = await conflictService.scanRebaseNeeds();
-      await queueRootsFromNeeds(needs, reason);
-    } catch (error) {
-      logger.warn("autoRebase.sweep_failed", { reason, error: String(error) });
-    } finally {
-      sweepInFlight = false;
-    }
+    let currentSweep: Promise<void>;
+    currentSweep = (async () => {
+      lastSweepAtMs = now;
+      try {
+        const needs = await conflictService.scanRebaseNeeds();
+        if (disposed) return;
+        await queueRootsFromNeeds(needs, reason);
+      } catch (error) {
+        logger.warn("autoRebase.sweep_failed", { reason, error: String(error) });
+      }
+    })().finally(() => {
+      if (sweepPromise === currentSweep) {
+        sweepPromise = null;
+      }
+    });
+    sweepPromise = currentSweep;
+    await currentSweep;
   };
 
   const refreshActiveRebaseNeeds = async (reason = "external_refresh"): Promise<void> => {
@@ -228,16 +264,9 @@ export function createAutoRebaseService(args: {
     await emit();
   };
 
-  const recordAttentionStatus = async (status: {
-    laneId: string;
-    parentLaneId: string | null;
-    parentHeadSha: string | null;
-    state: AutoRebaseLaneState;
-    conflictCount: number;
-    message?: string | null;
-  }): Promise<void> => {
+  const recordAttentionStatus = async (status: AttentionStatusInput): Promise<void> => {
     setStatus(status);
-    await emit();
+    await emit({ includeAll: true });
   };
 
   const collectDescendantsDepthFirst = (rootLaneId: string, lanes: LaneSummary[]): string[] => {
@@ -264,12 +293,14 @@ export function createAutoRebaseService(args: {
   };
 
   const processRoot = async (rootLaneId: string, reason: string): Promise<void> => {
-    if (!isEnabled()) return;
+    if (disposed || !isEnabled()) return;
 
     let lanes = await laneService.list({ includeArchived: false });
     const rootLane = lanes.find((lane) => lane.id === rootLaneId) ?? null;
     if (!rootLane) return;
-    const cascadeOrder = collectDescendantsDepthFirst(rootLaneId, lanes);
+    const cascadeOrder = rootLane.parentLaneId
+      ? [rootLaneId, ...collectDescendantsDepthFirst(rootLaneId, lanes)]
+      : collectDescendantsDepthFirst(rootLaneId, lanes);
     if (cascadeOrder.length === 0) return;
 
     let blocked = false;
@@ -316,12 +347,17 @@ export function createAutoRebaseService(args: {
         continue;
       }
 
+      let lookupFailed = false;
       const need = await conflictService.getRebaseNeed(lane.id).catch((error) => {
+        lookupFailed = true;
         logger.warn("autoRebase.need_lookup_failed", { laneId: lane.id, error: String(error) });
         return null;
       });
 
       if (!need) {
+        if (lookupFailed) {
+          continue;
+        }
         const existing = loadStatus(lane.id);
         if (existing?.state !== "autoRebased") {
           clearStatus(lane.id);
@@ -414,6 +450,7 @@ export function createAutoRebaseService(args: {
   };
 
   const runRootQueue = async (rootLaneId: string): Promise<void> => {
+    if (disposed) return;
     const state = queueByRoot.get(rootLaneId);
     if (!state || state.running) return;
     state.running = true;
@@ -435,6 +472,7 @@ export function createAutoRebaseService(args: {
   };
 
   const queueRoot = (args: { rootLaneId: string; reason: string }): void => {
+    if (disposed) return;
     const rootLaneId = args.rootLaneId.trim();
     if (!rootLaneId) return;
 
@@ -446,6 +484,7 @@ export function createAutoRebaseService(args: {
     }
     existing.timer = setTimeout(() => {
       existing.timer = null;
+      if (disposed) return;
       void runRootQueue(rootLaneId);
     }, RUN_DEBOUNCE_MS);
     queueByRoot.set(rootLaneId, existing);
@@ -457,6 +496,7 @@ export function createAutoRebaseService(args: {
     postHeadSha: string | null;
     reason: string;
   }): Promise<void> => {
+    if (disposed) return;
     const laneId = args.laneId.trim();
     if (!laneId) return;
     if (args.reason.startsWith("auto_rebase") || args.reason === "rebase_abort" || args.reason === "rebase_rollback") return;
@@ -464,11 +504,24 @@ export function createAutoRebaseService(args: {
     queueRoot({ rootLaneId: laneId, reason: args.reason });
   };
 
+  const dispose = (): void => {
+    disposed = true;
+    for (const state of queueByRoot.values()) {
+      if (state.timer) {
+        clearTimeout(state.timer);
+      }
+      state.timer = null;
+      state.pending = false;
+    }
+    queueByRoot.clear();
+  };
+
   return {
     listStatuses,
     onHeadChanged,
     emit,
     refreshActiveRebaseNeeds,
-    recordAttentionStatus
+    recordAttentionStatus,
+    dispose
   };
 }

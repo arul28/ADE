@@ -25,7 +25,7 @@ export function LaneRebaseBanner({
   rebaseSuggestionError: string | null;
   onRebaseNowLocal: (laneId: string) => void;
   onRebaseAndPush: (laneId: string) => void;
-  onViewRebaseDetails: () => void;
+  onViewRebaseDetails: (laneId?: string | null) => void;
   onDismissRebase: (laneId: string) => void;
   onDeferRebase: (laneId: string, minutes: number) => void;
   onOpenAutoRebaseSettings: () => void;
@@ -102,7 +102,7 @@ export function LaneRebaseBanner({
                       type="button"
                       style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
                       disabled={Boolean(rebaseBusyLaneId)}
-                      onClick={onViewRebaseDetails}
+                      onClick={() => onViewRebaseDetails(s.laneId)}
                     >
                       Details
                     </button>
@@ -202,7 +202,7 @@ export function LaneRebaseBanner({
                       <button
                         type="button"
                         style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                        onClick={onViewRebaseDetails}
+                        onClick={() => onViewRebaseDetails(status.laneId)}
                       >
                         OPEN REBASE TAB
                       </button>
@@ -219,7 +219,7 @@ export function LaneRebaseBanner({
                     <button
                       type="button"
                       style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      onClick={onViewRebaseDetails}
+                      onClick={() => onViewRebaseDetails(status.laneId)}
                     >
                       View rebase details
                     </button>

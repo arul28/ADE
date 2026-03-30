@@ -54,10 +54,13 @@ export function resolveLaneLaunchContext(args: {
   let resolvedCwd: string;
   try {
     resolvedCwd = resolvePathWithinRoot(laneRoot, requestedTarget);
-  } catch {
-    throw new Error(
-      `Requested cwd '${requestedCwd}' escapes lane '${laneId}'. ADE only launches work inside the selected lane worktree '${laneRoot}'.`,
-    );
+  } catch (error) {
+    if (error instanceof Error && error.message === "Path escapes root") {
+      throw new Error(
+        `Requested cwd '${requestedCwd}' escapes lane '${laneId}'. ADE only launches work inside the selected lane worktree '${laneRoot}'.`,
+      );
+    }
+    throw error;
   }
 
   ensureDirectoryExists(

@@ -544,6 +544,35 @@ describe("autoRebaseService", () => {
 
       expect(laneService.list).not.toHaveBeenCalled();
     });
+
+    it("clears queued timers when disposed before the debounce fires", async () => {
+      vi.useFakeTimers();
+      try {
+        const service = createService();
+        laneList = [
+          makeLane("root"),
+          makeLane("child-1", {
+            parentLaneId: "root",
+            status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+          }),
+        ];
+
+        await service.onHeadChanged({
+          laneId: "root",
+          preHeadSha: "aaa",
+          postHeadSha: "bbb",
+          reason: "user_commit",
+        });
+        service.dispose();
+
+        await vi.advanceTimersByTimeAsync(1500);
+
+        expect(laneService.list).not.toHaveBeenCalled();
+        expect(conflictService.getRebaseNeed).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -618,6 +647,57 @@ describe("autoRebaseService", () => {
         ]),
       });
     });
+
+    it("emits a freshly recorded attention status even before the lane is behind", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      });
+      laneList = [root, child];
+      conflictService.scanRebaseNeeds.mockResolvedValue([]);
+
+      await service.recordAttentionStatus({
+        laneId: "child-1",
+        parentLaneId: "root",
+        parentHeadSha: "parent-sha",
+        state: "rebasePending",
+        conflictCount: 0,
+        message: "Pending: review required before behind counts refresh.",
+      });
+
+      expect(events[events.length - 1]).toMatchObject({
+        type: "auto-rebase-updated",
+        statuses: expect.arrayContaining([
+          expect.objectContaining({
+            laneId: "child-1",
+            state: "rebasePending",
+          }),
+        ]),
+      });
+    });
+
+    it("reruns a forced refresh after an in-flight sweep completes", async () => {
+      const service = createService();
+      const firstSweepControl: { resolve?: (needs: RebaseNeed[]) => void } = {};
+      const firstSweep = new Promise<RebaseNeed[]>((resolve) => {
+        firstSweepControl.resolve = resolve;
+      });
+      conflictService.scanRebaseNeeds
+        .mockImplementationOnce(async () => await firstSweep)
+        .mockImplementationOnce(async () => []);
+
+      const firstRefresh = service.refreshActiveRebaseNeeds("first");
+      await Promise.resolve();
+      const secondRefresh = service.refreshActiveRebaseNeeds("second");
+      expect(firstSweepControl.resolve).toBeTypeOf("function");
+      firstSweepControl.resolve!([]);
+
+      await Promise.all([firstRefresh, secondRefresh]);
+
+      expect(conflictService.scanRebaseNeeds).toHaveBeenCalledTimes(2);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -653,6 +733,82 @@ describe("autoRebaseService", () => {
 
       // No rebase should have been attempted
       expect(laneService.rebaseStart).not.toHaveBeenCalled();
+    });
+
+    it("keeps sibling auto-rebase chains independent during a sweep", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const childA = makeLane("child-a", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      const childB = makeLane("child-b", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T02:00:00.000Z",
+      });
+      laneList = [root, childA, childB];
+      rebaseNeedOverrides.set("child-a", {
+        behindBy: 1,
+        conflictPredicted: true,
+        conflictingFiles: ["conflict.txt"],
+      });
+      rebaseNeedOverrides.set("child-b", {
+        behindBy: 1,
+        conflictPredicted: false,
+        conflictingFiles: [],
+      });
+
+      await service.refreshActiveRebaseNeeds("merge_completed");
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(laneService.rebaseStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "child-b",
+          reason: "auto_rebase",
+        }),
+      );
+      expect(laneService.rebasePush).toHaveBeenCalledWith({ runId: "run-1", laneIds: ["child-b"] });
+      expect(db.getJson("auto_rebase:status:child-a")).toMatchObject({
+        laneId: "child-a",
+        state: "rebaseConflict",
+      });
+    });
+
+    it("preserves the current status when rebase-need lookup fails", async () => {
+      const service = createService();
+      laneList = [
+        makeLane("root"),
+        makeLane("child-1", {
+          parentLaneId: "root",
+          status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        }),
+      ];
+      db.setJson("auto_rebase:status:child-1", {
+        laneId: "child-1",
+        parentLaneId: "root",
+        parentHeadSha: "parent-sha",
+        state: "rebasePending",
+        updatedAt: "2026-03-25T12:00:00.000Z",
+        conflictCount: 0,
+        message: "Pending before lookup failure.",
+      });
+      conflictService.getRebaseNeed.mockRejectedValueOnce(new Error("lookup failed"));
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "user_commit",
+      });
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(db.getJson("auto_rebase:status:child-1")).toMatchObject({
+        laneId: "child-1",
+        state: "rebasePending",
+        message: "Pending before lookup failure.",
+      });
     });
 
     it("skips root lane with no descendants", async () => {

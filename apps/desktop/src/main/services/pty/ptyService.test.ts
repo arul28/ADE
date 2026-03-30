@@ -154,7 +154,12 @@ function createMockPty(): IPty & { _emitter: EventEmitter } {
   } as any;
 }
 
-function createHarness() {
+function createHarness(overrides: {
+  aiIntegrationService?: {
+    getMode: ReturnType<typeof vi.fn>;
+    summarizeTerminal: ReturnType<typeof vi.fn>;
+  } | null;
+} = {}) {
   const mockPty = createMockPty();
   const broadcastData = vi.fn();
   const broadcastExit = vi.fn();
@@ -202,6 +207,7 @@ function createHarness() {
     transcriptsDir: "/tmp/transcripts",
     laneService: laneService as any,
     sessionService: sessionService as any,
+    ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
     logger: logger as any,
     broadcastData,
     broadcastExit,
@@ -314,6 +320,19 @@ describe("ptyService", () => {
       expect(loadPty).not.toHaveBeenCalled();
     });
 
+    it("preserves non-escape cwd errors instead of rewriting them as lane escapes", async () => {
+      mocks.existsSyncResults.set("/tmp/test-worktree/missing", false);
+      const { service, loadPty } = createHarness();
+      await expect(service.create({
+        laneId: "lane-1",
+        cwd: "/tmp/test-worktree/missing",
+        title: "Missing cwd",
+        cols: 80,
+        rows: 24,
+      })).rejects.toThrow(/path does not exist/i);
+      expect(loadPty).not.toHaveBeenCalled();
+    });
+
     it("clamps very small dimensions to minimum values", async () => {
       const { service, loadPty } = createHarness();
       await service.create({
@@ -398,6 +417,41 @@ describe("ptyService", () => {
       expect(sessionService.create).toHaveBeenCalledWith(
         expect.objectContaining({ toolType: null }),
       );
+    });
+
+    it("uses the bound cwd for AI title generation even if the lane mapping changes later", async () => {
+      vi.useFakeTimers();
+      try {
+        mocks.existsSyncResults.set("/tmp/test-worktree/subdir", true);
+        const aiIntegrationService = {
+          getMode: vi.fn(() => "subscription"),
+          summarizeTerminal: vi.fn(async () => ({ text: "Bound title" })),
+        };
+        const { service, mockPty, laneService } = createHarness({ aiIntegrationService });
+        await service.create({
+          laneId: "lane-1",
+          cwd: "/tmp/test-worktree/subdir",
+          title: "Claude session",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+        });
+
+        laneService.getLaneBaseAndBranch.mockReturnValue({
+          worktreePath: "/tmp/other-worktree",
+          baseRef: "origin/main",
+          branchRef: "feature/moved",
+        });
+
+        mockPty._emitter.emit("data", "generated enough output for a better title");
+        await vi.advanceTimersByTimeAsync(4000);
+
+        expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+          expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -517,6 +571,37 @@ describe("ptyService", () => {
         expect.objectContaining({ sessionId: "orphan-session", exitCode: null }),
       );
       expect(logger.warn).toHaveBeenCalledWith("pty.dispose_orphaned", expect.any(Object));
+    });
+
+    it("uses the bound cwd for AI summaries after exit even if the lane mapping changes later", async () => {
+      mocks.existsSyncResults.set("/tmp/test-worktree/subdir", true);
+      const aiIntegrationService = {
+        getMode: vi.fn(() => "subscription"),
+        summarizeTerminal: vi.fn(async () => ({ text: "Bound summary" })),
+      };
+      const { service, mockPty, laneService } = createHarness({ aiIntegrationService });
+      await service.create({
+        laneId: "lane-1",
+        cwd: "/tmp/test-worktree/subdir",
+        title: "Summary session",
+        cols: 80,
+        rows: 24,
+      });
+
+      laneService.getLaneBaseAndBranch.mockReturnValue({
+        worktreePath: "/tmp/other-worktree",
+        baseRef: "origin/main",
+        branchRef: "feature/moved",
+      });
+
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      await vi.waitFor(() => {
+        expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
+      });
+
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
+      );
     });
 
     it("silently ignores dispose for completely unknown pty/session", () => {

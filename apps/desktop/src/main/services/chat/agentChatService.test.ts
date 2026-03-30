@@ -214,6 +214,7 @@ import * as providerResolver from "../ai/providerResolver";
 import { createUniversalToolSet } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
+import { runGit } from "../git/git";
 import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
@@ -1159,6 +1160,89 @@ describe("createAgentChatService", () => {
       expect(secondUserContent).toContain("lane 'lane-1'");
       expect(secondUserContent).toContain(tmpRoot);
     });
+
+    it("rebinds queued unified steers after an identity session switches execution lanes", async () => {
+      const streamCalls: Array<Record<string, unknown>> = [];
+      const firstTurnControl: { release?: () => void } = {};
+      let streamCallCount = 0;
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        streamCalls.push(args);
+        streamCallCount += 1;
+        if (streamCallCount === 1) {
+          return {
+            fullStream: (async function* () {
+              await new Promise<void>((resolve) => {
+                firstTurnControl.release = resolve;
+              });
+              yield { type: "finish", usage: {} };
+            })(),
+          } as any;
+        }
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+
+      const { service } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Handle the current lane task first.",
+      });
+      await Promise.resolve();
+
+      await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+      await service.steer({
+        sessionId: session.id,
+        text: "Continue in the newly selected lane.",
+      });
+
+      expect(firstTurnControl.release).toBeTypeOf("function");
+      firstTurnControl.release!();
+      await firstTurn;
+      for (let attempt = 0; attempt < 20 && streamCalls.length < 2; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(streamCalls).toHaveLength(2);
+
+      const secondMessages = Array.isArray(streamCalls[1]?.messages)
+        ? (streamCalls[1]!.messages as Array<{ role: string; content: unknown }>)
+        : [];
+      const secondUserContent = String(secondMessages.at(-1)?.content ?? "");
+
+      expect(secondUserContent).toContain("lane 'lane-1'");
+      expect(secondUserContent).toContain(tmpRoot);
+    });
+
+    it("does not persist the lane directive key when a unified turn fails before completion", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          throw new Error("stream failed");
+        })(),
+      }) as any);
+
+      const { service } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Inspect the bug from the selected lane.",
+      });
+
+      expect(readPersistedChatState(session.id).lastLaneDirectiveKey).toBeUndefined();
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -1264,6 +1348,22 @@ describe("createAgentChatService", () => {
 
       expect(reused.id).toBe(canonical.id);
       expect(reused.laneId).toBe("lane-1");
+    });
+
+    it("records headShaStart for the selected execution lane instead of the canonical host lane", async () => {
+      vi.mocked(runGit).mockImplementation(async (_args, opts) => ({
+        stdout: String(opts?.cwd ?? "").includes(path.join(tmpRoot, "lane-2")) ? "lane-2-sha\n" : "lane-1-sha\n",
+        stderr: "",
+        exitCode: 0,
+      }));
+
+      const { service, sessionService } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-2-sha");
     });
   });
 

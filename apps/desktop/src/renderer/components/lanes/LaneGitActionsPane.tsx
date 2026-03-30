@@ -313,7 +313,7 @@ export function LaneGitActionsPane({
   onOpenSettings: () => void;
   onRebaseNowLocal?: (laneId: string) => Promise<void> | void;
   onRebaseAndPush?: (laneId: string) => Promise<void> | void;
-  onViewRebaseDetails?: () => void;
+  onViewRebaseDetails?: (laneId?: string | null) => void;
   onResolveRebaseConflict?: (laneId: string, parentLaneId: string | null) => void;
   onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
@@ -1433,7 +1433,7 @@ export function LaneGitActionsPane({
                   title="View rebase details"
                   detail="See detailed rebase history, including conflicts and timing."
                   disabled={!laneId || busyAction != null}
-                  onClick={() => onViewRebaseDetails?.()}
+                  onClick={() => onViewRebaseDetails?.(laneId)}
                 />
               ) : null}
               <ActionButton

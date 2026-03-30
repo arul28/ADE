@@ -12,6 +12,7 @@ import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { buildTrackedCliStartupCommand, type CliProvider } from "./cliLaunch";
 import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 
 type WorkStartSurfaceProps = {
@@ -26,37 +27,6 @@ type WorkStartSurfaceProps = {
     tracked?: boolean;
   }) => Promise<unknown>;
 };
-
-type CliProvider = "claude" | "codex";
-
-function buildCliStartupCommand(args: {
-  provider: CliProvider;
-  permissionMode: AgentChatPermissionMode;
-}): string {
-  if (args.provider === "claude") {
-    const parts = ["claude"];
-    if (args.permissionMode === "full-auto") {
-      parts.push("--dangerously-skip-permissions");
-    } else if (args.permissionMode === "edit") {
-      parts.push("--permission-mode", "acceptEdits");
-    } else if (args.permissionMode === "default") {
-      parts.push("--permission-mode", "default");
-    } else {
-      parts.push("--permission-mode", "plan");
-    }
-    return parts.join(" ");
-  }
-
-  const parts = ["codex"];
-  if (args.permissionMode === "full-auto") {
-    parts.push("--full-auto");
-  } else if (args.permissionMode !== "config-toml") {
-    const approvalPolicy = args.permissionMode === "edit" ? "on-failure" : "untrusted";
-    const sandboxMode = args.permissionMode === "edit" ? "workspace-write" : "read-only";
-    parts.push("-c", `approval_policy=${approvalPolicy}`, "-c", `sandbox_mode=${sandboxMode}`);
-  }
-  return parts.join(" ");
-}
 
 function LaunchModeHero({
   kind,
@@ -195,7 +165,7 @@ export function WorkStartSurface({
         laneId: selectedLaneId,
         profile: cliProvider,
         title: cliProvider === "claude" ? "Claude CLI" : "Codex CLI",
-        startupCommand: buildCliStartupCommand({
+        startupCommand: buildTrackedCliStartupCommand({
           provider: cliProvider,
           permissionMode: cliPermissionMode,
         }),

@@ -2331,6 +2331,11 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
+      ctx.autoRebaseService?.dispose();
+    } catch {
+      // ignore
+    }
+    try {
       ctx.automationIngressService?.dispose();
     } catch {
       // ignore

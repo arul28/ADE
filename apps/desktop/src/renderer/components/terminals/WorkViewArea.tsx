@@ -113,6 +113,16 @@ export function WorkViewArea({
   const activeSession = activeItemId
     ? sessionsById.get(activeItemId) ?? displaySessions[0] ?? null
     : null;
+  const runningTerminalSessions = useMemo(
+    () =>
+      displaySessions.filter(
+        (session) =>
+          session.status === "running"
+          && Boolean(session.ptyId)
+          && !isChatToolType(session.toolType),
+      ),
+    [displaySessions],
+  );
 
   if (viewMode === "grid") {
     return (
@@ -346,9 +356,33 @@ export function WorkViewArea({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1" style={{ background: THEME_CARD }}>
+      <div className="relative min-h-0 flex-1" style={{ background: THEME_CARD }}>
+        {runningTerminalSessions.length > 0 ? (
+          <div className="absolute inset-0">
+            {runningTerminalSessions.map((session) =>
+              session.ptyId ? (
+                <TerminalView
+                  key={session.id}
+                  ptyId={session.ptyId}
+                  sessionId={session.id}
+                  isActive={activeSession?.id === session.id}
+                  // Keep live PTY-backed TUIs mounted across session-tab switches so
+                  // full-screen apps like Codex/Claude do not need transcript rehydration.
+                  className={`absolute inset-0 h-full w-full ${
+                    activeSession?.id === session.id ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+                  }`}
+                />
+              ) : null,
+            )}
+          </div>
+        ) : null}
+
         {activeSession ? (
-          <SessionSurface session={activeSession} isActive onOpenChatSession={onOpenChatSession} />
+          activeSession.status === "running" && activeSession.ptyId && !isChatToolType(activeSession.toolType) ? null : (
+            <div className="absolute inset-0">
+              <SessionSurface session={activeSession} isActive onOpenChatSession={onOpenChatSession} />
+            </div>
+          )
         ) : (
           <WorkStartSurface
             draftKind={draftKind}

@@ -5,6 +5,7 @@ import { listSessionsCached } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { isRunOwnedSession } from "../../lib/sessions";
+import { defaultTrackedCliStartupCommand } from "../terminals/cliLaunch";
 
 const EMPTY_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
@@ -387,7 +388,11 @@ export function useLaneWorkSessions(laneId: string | null) {
       startupCommand?: string;
     }) => {
       const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" } as const;
-      const commandMap = { claude: "claude", codex: "codex", shell: "" } as const;
+      const commandMap = {
+        claude: defaultTrackedCliStartupCommand("claude"),
+        codex: defaultTrackedCliStartupCommand("codex"),
+        shell: "",
+      } as const;
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,
