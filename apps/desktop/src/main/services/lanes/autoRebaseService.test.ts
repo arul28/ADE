@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 import { createAutoRebaseService } from "./autoRebaseService";
-import type { AutoRebaseEventPayload, AutoRebaseLaneStatus, LaneSummary } from "../../../shared/types";
+import type { AutoRebaseEventPayload, AutoRebaseLaneStatus, LaneSummary, RebaseNeed } from "../../../shared/types";
 
 vi.mock("../git/git", () => ({
   getHeadSha: vi.fn().mockResolvedValue("abc123"),
@@ -69,10 +69,26 @@ function makeLane(id: string, overrides: Partial<LaneSummary> = {}): LaneSummary
   };
 }
 
+function makeRebaseNeed(lane: LaneSummary, overrides: Partial<RebaseNeed> = {}): RebaseNeed {
+  return {
+    laneId: lane.id,
+    laneName: overrides.laneName ?? lane.name,
+    baseBranch: overrides.baseBranch ?? "main",
+    behindBy: overrides.behindBy ?? Math.max(1, lane.status.behind),
+    conflictPredicted: overrides.conflictPredicted ?? false,
+    conflictingFiles: overrides.conflictingFiles ?? [],
+    prId: overrides.prId ?? null,
+    groupContext: overrides.groupContext ?? null,
+    dismissedAt: overrides.dismissedAt ?? null,
+    deferredUntil: overrides.deferredUntil ?? null,
+  };
+}
+
 describe("autoRebaseService", () => {
   let db: ReturnType<typeof createDb>;
   let events: AutoRebaseEventPayload[];
   let laneList: LaneSummary[];
+  let rebaseNeedOverrides: Map<string, Partial<RebaseNeed> | null>;
   let laneService: any;
   let conflictService: any;
   let projectConfigService: any;
@@ -82,12 +98,31 @@ describe("autoRebaseService", () => {
     db = createDb();
     events = [];
     laneList = [];
+    rebaseNeedOverrides = new Map();
+
+    const resolveNeed = (laneId: string): RebaseNeed | null => {
+      const lane = laneList.find((entry) => entry.id === laneId);
+      if (!lane || !lane.parentLaneId) return null;
+
+      const override = rebaseNeedOverrides.get(laneId);
+      if (override === null) return null;
+      if (override) return makeRebaseNeed(lane, override);
+      if (lane.status.behind <= 0) return null;
+      return makeRebaseNeed(lane);
+    };
+
     laneService = {
       list: vi.fn(async () => laneList),
-      rebaseStart: vi.fn(async () => ({ run: { error: null } })),
+      rebaseStart: vi.fn(async () => ({ runId: "run-1", run: { error: null } })),
+      rebasePush: vi.fn(async ({ laneIds }: { laneIds: string[] }) => ({
+        pushedLaneIds: [...laneIds],
+        lanes: laneIds.map((laneId) => ({ laneId, pushed: true })),
+      })),
+      rebaseRollback: vi.fn(async () => ({ runId: "run-1" })),
     };
     conflictService = {
-      simulateMerge: vi.fn(async () => ({ outcome: "clean", conflictingFiles: [] })),
+      getRebaseNeed: vi.fn(async (laneId: string) => resolveNeed(laneId)),
+      scanRebaseNeeds: vi.fn(async () => laneList.map((lane) => resolveNeed(lane.id)).filter((need): need is RebaseNeed => need !== null)),
     };
     projectConfigService = {
       getEffective: vi.fn(() => ({ git: { autoRebaseOnHeadChange: true } })),
@@ -512,6 +547,80 @@ describe("autoRebaseService", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // refreshActiveRebaseNeeds / recordAttentionStatus
+  // ---------------------------------------------------------------------------
+
+  describe("refreshActiveRebaseNeeds", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("scans active lanes and queues auto-rebase work without a head change", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-1", { behindBy: 3, conflictPredicted: false, conflictingFiles: [] });
+
+      await service.refreshActiveRebaseNeeds("merge_completed");
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(conflictService.scanRebaseNeeds).toHaveBeenCalled();
+      expect(laneService.rebaseStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "child-1",
+          reason: "auto_rebase",
+        }),
+      );
+      expect(laneService.rebasePush).toHaveBeenCalledWith({ runId: "run-1", laneIds: ["child-1"] });
+    });
+
+    it("persists an attention status and emits the updated status stream", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      conflictService.scanRebaseNeeds.mockResolvedValue([]);
+
+      await service.recordAttentionStatus({
+        laneId: "child-1",
+        parentLaneId: "root",
+        parentHeadSha: "parent-sha",
+        state: "rebasePending",
+        conflictCount: 0,
+        message: "Pending: merge-triggered rebase review needed.",
+      });
+
+      expect(db.getJson("auto_rebase:status:child-1")).toMatchObject({
+        laneId: "child-1",
+        state: "rebasePending",
+        message: "Pending: merge-triggered rebase review needed.",
+      });
+      expect(events[events.length - 1]).toMatchObject({
+        type: "auto-rebase-updated",
+        statuses: expect.arrayContaining([
+          expect.objectContaining({
+            laneId: "child-1",
+            state: "rebasePending",
+          }),
+        ]),
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // processRoot — cascade behavior (tested indirectly via onHeadChanged + timers)
   //
   // processRoot is the core cascade logic. It is not directly exported, but is
@@ -562,15 +671,16 @@ describe("autoRebaseService", () => {
       expect(laneService.rebaseStart).not.toHaveBeenCalled();
     });
 
-    it("triggers rebase for child lane that is behind", async () => {
+    it("triggers rebase for child lane when the real rebase-need path reports one", async () => {
       const service = createService();
       const root = makeLane("root");
       const child = makeLane("child-1", {
         parentLaneId: "root",
-        status: { dirty: false, ahead: 1, behind: 3, remoteBehind: 0, rebaseInProgress: false },
+        status: { dirty: false, ahead: 1, behind: 0, remoteBehind: 0, rebaseInProgress: false },
         createdAt: "2026-03-10T01:00:00.000Z",
       });
       laneList = [root, child];
+      rebaseNeedOverrides.set("child-1", { behindBy: 4, conflictPredicted: false, conflictingFiles: [] });
 
       await service.onHeadChanged({
         laneId: "root",
@@ -592,6 +702,61 @@ describe("autoRebaseService", () => {
       );
     });
 
+    it("auto-pushes a successful automatic rebase and marks the lane autoRebased", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-1", { behindBy: 2, conflictPredicted: false, conflictingFiles: [] });
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "user_commit",
+      });
+
+      await vi.advanceTimersByTimeAsync(1500);
+      await Promise.resolve();
+
+      expect(laneService.rebaseStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "child-1",
+          reason: "auto_rebase",
+        }),
+      );
+      expect(laneService.rebasePush).toHaveBeenCalledWith({ runId: "run-1", laneIds: ["child-1"] });
+    });
+
+    it("rolls back a successful rebase when auto-push fails and leaves the lane pending", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-1", { behindBy: 2, conflictPredicted: false, conflictingFiles: [] });
+      laneService.rebasePush.mockRejectedValueOnce(new Error("remote rejected push"));
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "user_commit",
+      });
+
+      await vi.advanceTimersByTimeAsync(1500);
+      await Promise.resolve();
+
+      expect(laneService.rebaseRollback).toHaveBeenCalledWith({ runId: "run-1" });
+    });
+
     it("marks downstream lanes as rebasePending when an ancestor has conflicts", async () => {
       const service = createService();
       const root = makeLane("root");
@@ -606,12 +771,7 @@ describe("autoRebaseService", () => {
         createdAt: "2026-03-10T02:00:00.000Z",
       });
       laneList = [root, child, grandchild];
-
-      // Simulate merge conflict on child-1
-      conflictService.simulateMerge.mockResolvedValue({
-        outcome: "conflict",
-        conflictingFiles: ["file.ts"],
-      });
+      rebaseNeedOverrides.set("child-1", { behindBy: 1, conflictPredicted: true, conflictingFiles: ["file.ts"] });
 
       await service.onHeadChanged({
         laneId: "root",
@@ -651,10 +811,15 @@ describe("autoRebaseService", () => {
       let callCount = 0;
       laneService.list.mockImplementation(async () => {
         callCount++;
-        if (callCount <= 1) return [root, child, child2];
+        if (callCount <= 1) {
+          laneList = [root, child, child2];
+          return laneList;
+        }
         // child-1 disappeared during processing
-        return [root, child2];
+        laneList = [root, child2];
+        return laneList;
       });
+      rebaseNeedOverrides.set("child-2", { behindBy: 1, conflictPredicted: false, conflictingFiles: [] });
 
       await service.onHeadChanged({
         laneId: "root",

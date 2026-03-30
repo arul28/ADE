@@ -89,6 +89,7 @@ import type {
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
+import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
@@ -586,6 +587,7 @@ export function createPrService({
   aiIntegrationService,
   projectConfigService,
   conflictService,
+  autoRebaseService,
   rebaseSuggestionService,
   openExternal,
   onHotRefreshChanged,
@@ -600,6 +602,7 @@ export function createPrService({
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   conflictService?: ReturnType<typeof createConflictService>;
+  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   openExternal: (url: string) => Promise<void>;
   onHotRefreshChanged?: () => void;
@@ -688,6 +691,186 @@ export function createPrService({
       nextDelay = nextDelay == null ? delay : Math.min(nextDelay, delay);
     }
     return nextDelay;
+  };
+
+  const isAutoRebaseEnabled = (): boolean => {
+    try {
+      return Boolean(projectConfigService.getEffective()?.git?.autoRebaseOnHeadChange);
+    } catch {
+      return false;
+    }
+  };
+
+  const pushRebasedLane = async (lane: LaneSummary): Promise<void> => {
+    const headBranch = branchNameFromRef(lane.branchRef);
+    const upstreamCheck = await runGit(
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      { cwd: lane.worktreePath, timeoutMs: 10_000 }
+    );
+    if (upstreamCheck.exitCode === 0) {
+      await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+      return;
+    }
+    await runGitOrThrow(["push", "-u", "origin", headBranch], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+  };
+
+  const restoreAutoRebaseChildLane = async (args: {
+    lane: LaneSummary;
+    previousParentLaneId: string | null;
+    previousBaseRef: string;
+    preHeadSha: string;
+  }): Promise<void> => {
+    await runGitOrThrow(["reset", "--hard", args.preHeadSha], { cwd: args.lane.worktreePath, timeoutMs: 90_000 });
+    db.run(
+      "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
+      [args.previousParentLaneId, args.previousBaseRef, args.lane.id, projectId]
+    );
+    laneService.invalidateCache?.();
+  };
+
+  const advanceChildLanesAfterLand = async (args: {
+    landedLaneId: string;
+    landedLaneName: string;
+  }): Promise<{
+    updatedLaneIds: string[];
+    failedLaneIds: string[];
+    blockCleanup: boolean;
+  }> => {
+    if (!isAutoRebaseEnabled()) {
+      return { updatedLaneIds: [], failedLaneIds: [], blockCleanup: false };
+    }
+
+    const allLanes = await laneService.list({ includeArchived: true });
+    const landedLane = allLanes.find((lane) => lane.id === args.landedLaneId) ?? null;
+    const directChildren = await laneService.getChildren(args.landedLaneId);
+    if (directChildren.length === 0) {
+      return { updatedLaneIds: [], failedLaneIds: [], blockCleanup: false };
+    }
+
+    let successorParent = landedLane?.parentLaneId
+      ? allLanes.find((lane) => lane.id === landedLane.parentLaneId) ?? null
+      : null;
+    if (!successorParent || successorParent.archivedAt) {
+      successorParent = allLanes.find((lane) => lane.laneType === "primary" && !lane.archivedAt) ?? null;
+    }
+
+    if (!successorParent) {
+      for (const child of directChildren) {
+        await autoRebaseService?.recordAttentionStatus({
+          laneId: child.id,
+          parentLaneId: child.parentLaneId,
+          parentHeadSha: null,
+          state: "rebaseFailed",
+          conflictCount: 0,
+          message: `Auto-rebase failed after '${args.landedLaneName}' merged because ADE could not find a new parent lane. Open the Rebase tab to recover this lane.`,
+        });
+      }
+      return {
+        updatedLaneIds: [],
+        failedLaneIds: directChildren.map((lane) => lane.id),
+        blockCleanup: true,
+      };
+    }
+
+    const successorBaseBranch = branchNameFromRef(successorParent.branchRef);
+    const updatedLaneIds: string[] = [];
+    const failedLaneIds: string[] = [];
+
+    for (const child of directChildren) {
+      const previousParentLaneId = child.parentLaneId;
+      const previousBaseRef = child.baseRef;
+      const childPr = getRowForLane(child.id);
+
+      let reparentResult:
+        | {
+            preHeadSha: string | null;
+            newParentLaneId: string;
+          }
+        | null = null;
+
+      try {
+        reparentResult = await laneService.reparent({
+          laneId: child.id,
+          newParentLaneId: successorParent.id,
+        });
+        const refreshedChild = (await laneService.list({ includeArchived: true })).find((lane) => lane.id === child.id) ?? {
+          ...child,
+          parentLaneId: successorParent.id,
+          baseRef: successorParent.branchRef,
+        };
+        await pushRebasedLane(refreshedChild);
+        if (childPr && childPr.base_branch !== successorBaseBranch) {
+          const retargetError = await retargetBase(childPr.id, successorBaseBranch).catch((error) => {
+            logger.warn("prs.child_auto_rebase_retarget_failed", {
+              landedLaneId: args.landedLaneId,
+              childLaneId: child.id,
+              prId: childPr.id,
+              error: getErrorMessage(error),
+            });
+            return getErrorMessage(error);
+          });
+          markHotRefresh([childPr.id]);
+          if (retargetError) {
+            await autoRebaseService?.recordAttentionStatus({
+              laneId: child.id,
+              parentLaneId: successorParent.id,
+              parentHeadSha: null,
+              state: "rebaseFailed",
+              conflictCount: 0,
+              message: `Auto-rebase pushed this lane after '${args.landedLaneName}' merged, but ADE could not retarget the PR base to '${successorBaseBranch}': ${retargetError}. The merged parent lane was left in place so you can finish cleanup manually.`,
+            });
+            failedLaneIds.push(child.id);
+            continue;
+          }
+        }
+        await autoRebaseService?.recordAttentionStatus({
+          laneId: child.id,
+          parentLaneId: successorParent.id,
+          parentHeadSha: null,
+          state: "autoRebased",
+          conflictCount: 0,
+          message: `Rebased and pushed automatically after '${args.landedLaneName}' merged.`,
+        });
+        updatedLaneIds.push(child.id);
+      } catch (error) {
+        const childError = getErrorMessage(error);
+        let rollbackError: string | null = null;
+        if (reparentResult?.preHeadSha) {
+          try {
+            await restoreAutoRebaseChildLane({
+              lane: child,
+              previousParentLaneId,
+              previousBaseRef,
+              preHeadSha: reparentResult.preHeadSha,
+            });
+          } catch (restoreError) {
+            rollbackError = getErrorMessage(restoreError);
+            logger.warn("prs.child_auto_rebase_restore_failed", {
+              landedLaneId: args.landedLaneId,
+              childLaneId: child.id,
+              error: rollbackError,
+            });
+          }
+        }
+        await autoRebaseService?.recordAttentionStatus({
+          laneId: child.id,
+          parentLaneId: previousParentLaneId,
+          parentHeadSha: null,
+          state: "rebaseFailed",
+          conflictCount: 0,
+          message: rollbackError
+            ? `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. Automatic rollback also failed: ${rollbackError}. Open the Rebase tab to recover this lane.`
+            : `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. The lane was restored to its pre-rebase state. Open the Rebase tab to recover this lane.`,
+        });
+        failedLaneIds.push(child.id);
+      }
+    }
+
+    return {
+      updatedLaneIds,
+      failedLaneIds,
+      blockCleanup: failedLaneIds.length > 0,
+    };
   };
 
   const upsertSnapshotRow = (args: {
@@ -1884,32 +2067,14 @@ export function createPrService({
       const headBranch = row.head_branch;
       let branchDeleted = false;
       let laneArchived = false;
+      let childAutoRebaseBlockedCleanup = false;
 
       try {
-        try {
-          await githubService.apiRequest({
-            method: "DELETE",
-            path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
-          });
-          branchDeleted = true;
-        } catch (error) {
-          logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: getErrorMessage(error) });
-        }
-
         // Remove PR from any group membership before archiving (lane archive blocks if still in a group)
         try {
           db.run("delete from pr_group_members where pr_id = ?", [row.id]);
         } catch (groupErr) {
           logger.warn("prs.group_membership_cleanup_failed", { prId: row.id, error: getErrorMessage(groupErr) });
-        }
-
-        if (args.archiveLane) {
-          try {
-            await laneService.archive({ laneId: row.lane_id });
-            laneArchived = true;
-          } catch (archiveErr) {
-            logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: getErrorMessage(archiveErr) });
-          }
         }
 
         await fetchRemoteTrackingBranch({
@@ -1931,10 +2096,61 @@ export function createPrService({
           });
         }
 
+        const childAdvanceResult = await advanceChildLanesAfterLand({
+          landedLaneId: row.lane_id,
+          landedLaneName: row.title?.trim() || row.head_branch,
+        }).catch((error) => {
+          logger.warn("prs.child_auto_rebase_failed", {
+            prId: row.id,
+            laneId: row.lane_id,
+            error: getErrorMessage(error),
+          });
+          return {
+            updatedLaneIds: [],
+            failedLaneIds: [],
+            blockCleanup: false,
+          };
+        });
+        childAutoRebaseBlockedCleanup = childAdvanceResult.blockCleanup;
+
+        if (!childAutoRebaseBlockedCleanup) {
+          try {
+            await githubService.apiRequest({
+              method: "DELETE",
+              path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
+            });
+            branchDeleted = true;
+          } catch (error) {
+            logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: getErrorMessage(error) });
+          }
+
+          if (args.archiveLane) {
+            try {
+              await laneService.archive({ laneId: row.lane_id });
+              laneArchived = true;
+            } catch (archiveErr) {
+              logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: getErrorMessage(archiveErr) });
+            }
+          }
+        } else {
+          logger.warn("prs.post_merge_cleanup_blocked", {
+            prId: row.id,
+            laneId: row.lane_id,
+            failedLaneIds: childAdvanceResult.failedLaneIds,
+          });
+        }
+
         operationService.finish({
           operationId: op.operationId,
           status: "succeeded",
-          metadataPatch: { mergeCommitSha, branchDeleted, laneArchived }
+          metadataPatch: {
+            mergeCommitSha,
+            branchDeleted,
+            laneArchived,
+            childAutoRebaseBlockedCleanup,
+            autoRebasedChildLaneIds: childAdvanceResult.updatedLaneIds,
+            failedAutoRebaseChildLaneIds: childAdvanceResult.failedLaneIds,
+          }
         });
 
         markHotRefresh([row.id]);
@@ -1947,6 +2163,12 @@ export function createPrService({
         });
         await rebaseSuggestionService?.refresh().catch((error) => {
           logger.warn("prs.refresh_rebase_suggestions_failed", {
+            prId: row.id,
+            error: getErrorMessage(error),
+          });
+        });
+        await autoRebaseService?.refreshActiveRebaseNeeds("merge_completed").catch((error) => {
+          logger.warn("prs.refresh_auto_rebase_failed", {
             prId: row.id,
             error: getErrorMessage(error),
           });
@@ -1964,7 +2186,13 @@ export function createPrService({
           operationService.finish({
             operationId: op.operationId,
             status: "succeeded",
-            metadataPatch: { mergeCommitSha, branchDeleted, laneArchived, cleanupError: cleanupMsg }
+            metadataPatch: {
+              mergeCommitSha,
+              branchDeleted,
+              laneArchived,
+              childAutoRebaseBlockedCleanup,
+              cleanupError: cleanupMsg,
+            }
           });
         } catch { /* already finished or double-finish -- ignore */ }
       }

@@ -278,7 +278,7 @@ export type RebaseSuggestionsEventPayload = {
   suggestions: RebaseSuggestion[];
 };
 
-export type AutoRebaseLaneState = "autoRebased" | "rebasePending" | "rebaseConflict";
+export type AutoRebaseLaneState = "autoRebased" | "rebasePending" | "rebaseConflict" | "rebaseFailed";
 
 export type AutoRebaseLaneStatus = {
   laneId: string;

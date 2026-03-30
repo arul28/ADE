@@ -644,7 +644,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
         memoryBriefing: args.memoryBriefing,
       });
       const provider = resolveProviderGroupForModel(descriptor);
-      const model = descriptor.isCliWrapped ? descriptor.shortId : descriptor.id;
+      const model = descriptor.isCliWrapped ? descriptor.sdkModelId : descriptor.id;
       const reasoningEffort =
         typeof args.step.metadata?.reasoningEffort === "string" && args.step.metadata.reasoningEffort.trim().length > 0
           ? args.step.metadata.reasoningEffort.trim()

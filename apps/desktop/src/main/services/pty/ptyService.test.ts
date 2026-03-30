@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import type { IPty } from "node-pty";
 
 // ---------------------------------------------------------------------------
@@ -12,7 +13,26 @@ const mocks = vi.hoisted(() => {
     existsSyncResults,
     mkdirSync: vi.fn(),
     existsSync: vi.fn((p: string) => existsSyncResults.get(p) ?? true),
-    statSync: vi.fn(() => ({ size: 0 })),
+    lstatSync: vi.fn((p: string) => {
+      if ((existsSyncResults.get(p) ?? true) === false) {
+        const error = new Error(`ENOENT: no such file or directory, lstat '${p}'`) as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
+    }),
+    realpathSync: Object.assign(
+      vi.fn((p: string) => path.resolve(p)),
+      { native: vi.fn((p: string) => path.resolve(p)) },
+    ),
+    statSync: vi.fn((p: string) => {
+      if ((existsSyncResults.get(p) ?? true) === false) {
+        const error = new Error(`ENOENT: no such file or directory, stat '${p}'`) as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return { size: 0, isDirectory: () => true };
+    }),
     createWriteStream: vi.fn(() => ({
       write: vi.fn(),
       end: vi.fn(),
@@ -44,6 +64,8 @@ const mocks = vi.hoisted(() => {
 vi.mock("node:fs", () => ({
   default: {
     existsSync: mocks.existsSync,
+    lstatSync: mocks.lstatSync,
+    realpathSync: mocks.realpathSync,
     mkdirSync: mocks.mkdirSync,
     statSync: mocks.statSync,
     createWriteStream: mocks.createWriteStream,
@@ -51,6 +73,8 @@ vi.mock("node:fs", () => ({
     writeFileSync: mocks.writeFileSync,
   },
   existsSync: mocks.existsSync,
+  lstatSync: mocks.lstatSync,
+  realpathSync: mocks.realpathSync,
   mkdirSync: mocks.mkdirSync,
   statSync: mocks.statSync,
   createWriteStream: mocks.createWriteStream,
@@ -247,25 +271,47 @@ describe("ptyService", () => {
       );
     });
 
-    it("uses projectRoot as fallback cwd when worktree does not exist", async () => {
+    it("rejects terminal launches when the lane worktree does not exist", async () => {
       mocks.existsSyncResults.set("/tmp/test-worktree", false);
-      const { service, logger, loadPty } = createHarness();
+      const { service, loadPty } = createHarness();
+      await expect(service.create({
+        laneId: "lane-1",
+        title: "Missing worktree",
+        cols: 80,
+        rows: 24,
+      })).rejects.toThrow(/worktree is unavailable/i);
+      expect(loadPty).not.toHaveBeenCalled();
+    });
+
+    it("uses an explicit cwd when it stays inside the selected lane worktree", async () => {
+      mocks.existsSyncResults.set("/tmp/test-worktree/subdir", true);
+      const { service, loadPty } = createHarness();
       await service.create({
         laneId: "lane-1",
-        title: "Fallback cwd",
+        cwd: "/tmp/test-worktree/subdir",
+        title: "Subdir terminal",
         cols: 80,
         rows: 24,
       });
-      expect(logger.warn).toHaveBeenCalledWith(
-        "pty.cwd_missing_fallback",
-        expect.objectContaining({ fallbackCwd: "/tmp/test-project" }),
-      );
       const spawnCall = loadPty.mock.results[0].value.spawn;
       expect(spawnCall).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Array),
-        expect.objectContaining({ cwd: "/tmp/test-project" }),
+        expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
       );
+    });
+
+    it("rejects an explicit cwd outside the selected lane worktree", async () => {
+      mocks.existsSyncResults.set("/tmp/outside", true);
+      const { service, loadPty } = createHarness();
+      await expect(service.create({
+        laneId: "lane-1",
+        cwd: "/tmp/outside",
+        title: "Escaping terminal",
+        cols: 80,
+        rows: 24,
+      })).rejects.toThrow(/escapes lane/i);
+      expect(loadPty).not.toHaveBeenCalled();
     });
 
     it("clamps very small dimensions to minimum values", async () => {

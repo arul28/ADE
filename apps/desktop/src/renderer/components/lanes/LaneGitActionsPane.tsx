@@ -122,20 +122,22 @@ function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
     return {
       color: COLORS.success,
       label: "AUTO REBASED",
-      fallbackMessage: "Lane was rebased automatically."
+      fallbackMessage: "Lane was rebased and pushed automatically."
     };
   }
-  if (state === "rebaseConflict") {
+  if (state === "rebaseConflict" || state === "rebaseFailed") {
     return {
       color: COLORS.danger,
-      label: "AUTO REBASE BLOCKED",
-      fallbackMessage: "Conflicts are expected. Resolve manually, then publish."
+      label: "AUTO-REBASE FAILED",
+      fallbackMessage: state === "rebaseConflict"
+        ? "ADE predicted conflicts for this lane and stopped before rewriting or pushing it."
+        : "ADE tried to auto-rebase this lane, restored the previous state, and stopped before pushing changes."
     };
   }
   return {
     color: COLORS.warning,
-    label: "AUTO REBASE PENDING",
-    fallbackMessage: "Waiting for manual rebase."
+    label: "AUTO-REBASE PENDING",
+    fallbackMessage: "ADE will auto-rebase and auto-push this lane when its parent advances."
   };
 }
 
@@ -1117,6 +1119,22 @@ export function LaneGitActionsPane({
 
       {autoRebaseStatus ? (() => {
         const bannerConfig = getAutoRebaseBannerConfig(autoRebaseStatus.state);
+        const isAutoRebaseFailure = autoRebaseStatus.state === "rebaseConflict" || autoRebaseStatus.state === "rebaseFailed";
+        const bannerMessage = isAutoRebaseFailure
+          ? autoRebaseStatus.message
+            ? `Auto-rebase failed. ${autoRebaseStatus.message}`
+            : bannerConfig.fallbackMessage
+          : autoRebaseStatus.message ?? bannerConfig.fallbackMessage;
+        const openRebaseTab = () => {
+          if (!laneId) return;
+          if (autoRebaseStatus.state === "rebaseConflict" && onResolveRebaseConflict) {
+            onResolveRebaseConflict(laneId, rebaseConflictParentLaneId);
+            return;
+          }
+          const search = new URLSearchParams({ tab: "rebase", laneId });
+          if (rebaseConflictParentLaneId) search.set("parentLaneId", rebaseConflictParentLaneId);
+          navigate(`/prs?${search.toString()}`);
+        };
         return (
           <div
             className="shrink-0 flex flex-wrap items-center gap-3"
@@ -1133,19 +1151,17 @@ export function LaneGitActionsPane({
               {bannerConfig.label}
             </span>
             <span className="truncate" style={{ color: COLORS.textMuted, letterSpacing: "0.5px", flex: 1, minWidth: 220 }}>
-              {autoRebaseStatus.message ?? bannerConfig.fallbackMessage}
+              {bannerMessage}
             </span>
             {autoRebaseStatus.state !== "autoRebased" ? (
-              autoRebaseStatus.state === "rebaseConflict" ? (
+              isAutoRebaseFailure ? (
                 <button
                   type="button"
                   style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
                   disabled={!laneId || busyAction != null}
-                  onClick={() => {
-                    if (laneId) onResolveRebaseConflict?.(laneId, rebaseConflictParentLaneId);
-                  }}
+                  onClick={openRebaseTab}
                 >
-                  RESOLVE IN CONFLICTS
+                  OPEN REBASE TAB
                 </button>
               ) : (
                 <button
@@ -1474,7 +1490,7 @@ export function LaneGitActionsPane({
                 }}
               >
                 <span style={{ flex: 1, minWidth: 220 }}>
-                  Auto-rebase is off. Enable it in Settings {" > "} Lane Templates if you want child lanes rebased automatically when their parent advances.
+                  Auto-rebase is off. Enable it in Settings {" > "} Lane Templates if you want child lanes to auto-rebase and auto-push when their parent advances.
                 </span>
                 <button
                   type="button"

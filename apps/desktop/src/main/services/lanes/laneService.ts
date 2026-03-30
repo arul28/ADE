@@ -1809,8 +1809,8 @@ export function createLaneService({
       const previousBaseRef = lane.base_ref;
       const newBaseRef = newParent.branch_ref;
       const preHeadSha = await getHeadSha(lane.worktree_path);
-      const newParentHead = await getHeadSha(newParent.worktree_path);
-      if (!newParentHead) throw new Error(`Unable to resolve parent HEAD for lane ${newParent.name}`);
+      const newParentTarget = await resolveParentRebaseTarget({ projectRoot, parent: newParent });
+      const newParentHead = newParentTarget.headSha;
 
       const operation = operationService?.start({
         laneId: lane.id,

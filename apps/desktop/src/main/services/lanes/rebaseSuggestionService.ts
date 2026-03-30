@@ -3,7 +3,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
 import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload } from "../../../shared/types";
-import { fetchQueueTargetTrackingBranches, resolveQueueRebaseOverride } from "../shared/queueRebase";
+import { fetchQueueTargetTrackingBranches, fetchRemoteTrackingBranch, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { isRecord, nowIso } from "../shared/utils";
 
 type StoredSuggestionState = {
@@ -121,7 +121,21 @@ export function createRebaseSuggestionService(args: {
     if (!lane.parentLaneId) return null;
     const parent = laneById.get(lane.parentLaneId);
     if (!parent) return null;
-    const parentHeadSha = await getHeadSha(parent.worktreePath);
+    let parentHeadSha: string | null;
+    if (parent.laneType === "primary") {
+      const parentBranch = parent.branchRef.trim();
+      if (!parentBranch) return null;
+      await fetchRemoteTrackingBranch({
+        projectRoot,
+        targetBranch: parentBranch,
+      }).catch(() => {});
+      parentHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
+      if (!parentHeadSha) {
+        parentHeadSha = await getHeadSha(parent.worktreePath);
+      }
+    } else {
+      parentHeadSha = await getHeadSha(parent.worktreePath);
+    }
     if (!parentHeadSha) return null;
     return {
       parentLaneId: lane.parentLaneId,

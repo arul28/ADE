@@ -1,11 +1,13 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, primaryButton } from "../lanes/laneDesignTokens";
+import { useNavigate } from "react-router-dom";
+import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 export function LaneBehaviorSection() {
+  const navigate = useNavigate();
   const [autoRebaseDraft, setAutoRebaseDraft] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -44,7 +46,7 @@ export function LaneBehaviorSection() {
         },
       });
       await refresh();
-      setNotice("Lane behavior saved.");
+      setNotice("Auto-rebase settings saved.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
@@ -70,8 +72,8 @@ export function LaneBehaviorSection() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>Auto-rebase child lanes</div>
-            <div style={{ marginTop: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-              When enabled, ADE rebases dependent lanes after a parent advances. This keeps stacks aligned without manual cleanup.
+            <div style={{ marginTop: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6, maxWidth: 760 }}>
+              When enabled, ADE can auto-rebase and auto-push clean child lanes as their parent advances. If a lane cannot be rebased cleanly, ADE stops, restores the lane, and surfaces a warning banner that links to the Rebase tab for AI or manual follow-up.
             </div>
           </div>
           <button
@@ -104,25 +106,69 @@ export function LaneBehaviorSection() {
         <div
           style={{
             marginBottom: 16,
-            display: "inline-flex",
-            alignItems: "center",
-            padding: "4px 8px",
-            fontSize: 10,
-            fontWeight: 700,
-            fontFamily: MONO_FONT,
-            textTransform: "uppercase",
-            letterSpacing: "1px",
-            color: autoRebaseDraft ? COLORS.success : COLORS.textMuted,
-            background: autoRebaseDraft ? `${COLORS.success}18` : `${COLORS.textDim}18`,
-            border: autoRebaseDraft ? `1px solid ${COLORS.success}30` : `1px solid ${COLORS.textDim}30`,
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gap: 8,
           }}
         >
-          {autoRebaseDraft ? "Enabled" : "Disabled"}
+          {[
+            {
+              label: "Auto-rebase",
+              detail: autoRebaseDraft ? "Rebases and pushes clean child lanes automatically" : "Disabled until you switch it on",
+              active: autoRebaseDraft,
+            },
+            {
+              label: "Conflict handling",
+              detail: "Stops, restores the lane, and shows the warning banner",
+              active: autoRebaseDraft,
+            },
+            {
+              label: "Follow-up",
+              detail: "Open the Rebase tab for AI or manual retry",
+              active: autoRebaseDraft,
+            },
+          ].map((item) => (
+            <div
+              key={item.label}
+              style={{
+                padding: "8px 10px",
+                border: item.active ? `1px solid ${COLORS.accent}24` : `1px solid ${COLORS.border}`,
+                background: item.active ? `${COLORS.accent}08` : COLORS.recessedBg,
+                minWidth: 0,
+              }}
+            >
+              <div style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "0.8px", color: item.active ? COLORS.textPrimary : COLORS.textMuted }}>
+                {item.label}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 11, color: COLORS.textMuted, lineHeight: 1.45 }}>
+                {item.detail}
+              </div>
+            </div>
+          ))}
         </div>
 
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <button type="button" style={primaryButton()} disabled={busy} onClick={() => void saveAutoRebaseSettings()}>
-            {busy ? "Saving..." : "Save lane behavior"}
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            style={{
+              ...primaryButton(),
+              minWidth: 180,
+            }}
+            disabled={busy}
+            onClick={() => void saveAutoRebaseSettings()}
+          >
+            {busy ? "Saving..." : "Save auto-rebase"}
+          </button>
+          <button
+            type="button"
+            style={{
+              ...outlineButton({ height: 32 }),
+              minWidth: 180,
+            }}
+            disabled={busy}
+            onClick={() => navigate("/prs?tab=rebase")}
+          >
+            Open Rebase tab
           </button>
         </div>
       </div>

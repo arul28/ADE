@@ -180,7 +180,7 @@ export function RunPage() {
   const [networkDrawerOpen, setNetworkDrawerOpen] = useState(false);
   const runtimeRefreshTimerRef = useRef<number | null>(null);
 
-  const effectiveLaneId = runLaneId ?? selectedLaneId ?? lanes[0]?.id ?? null;
+  const effectiveLaneId = runLaneId ?? selectedLaneId ?? null;
   const effectiveLaneIdRef = useRef(effectiveLaneId);
   effectiveLaneIdRef.current = effectiveLaneId;
   const selectedLane = useMemo(

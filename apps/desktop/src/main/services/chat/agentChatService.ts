@@ -32,6 +32,7 @@ import {
 } from "./chatTextBatching";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
+import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createFileService } from "../files/fileService";
@@ -189,6 +190,7 @@ type PersistedChatState = {
   continuitySummaryUpdatedAt?: string | null;
   preferredExecutionLaneId?: string | null;
   selectedExecutionLaneId?: string | null;
+  lastLaneDirectiveKey?: string | null;
   updatedAt: string;
 };
 
@@ -497,6 +499,7 @@ type ManagedChatSession = {
   continuitySummaryInFlight: boolean;
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
+  lastLaneDirectiveKey: string | null;
   localPendingInputs: Map<string, {
     request: PendingInputRequest;
     resolve: (response: {
@@ -559,6 +562,7 @@ type PreparedSendMessage = {
   resolvedAttachments: ResolvedAgentChatFileRef[];
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
+  laneDirectiveKey?: string | null;
   onDispatched?: () => void;
 };
 
@@ -1046,6 +1050,24 @@ function buildClaudeInteractionModeDirective(
     "You are in plan mode for this turn.",
     "Stay inspect-only: analyze the request, outline the implementation, surface risks, and do not make edits or run commands.",
   ].join("\n");
+}
+
+function buildLaneWorktreeDirective(args: { laneId: string; laneWorktreePath: string }): string | null {
+  const laneId = args.laneId.trim();
+  const laneWorktreePath = args.laneWorktreePath.trim();
+  if (!laneId.length || !laneWorktreePath.length) return null;
+  return [
+    "[ADE launch directive]",
+    `ADE launched this session in lane '${laneId}' at worktree '${laneWorktreePath}'.`,
+    "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
+  ].join("\n");
+}
+
+function buildLaneDirectiveKey(args: { laneId: string; laneWorktreePath: string }): string | null {
+  const laneId = args.laneId.trim();
+  const laneWorktreePath = args.laneWorktreePath.trim();
+  if (!laneId.length || !laneWorktreePath.length) return null;
+  return `${laneId}:${laneWorktreePath}`;
 }
 
 function composeLaunchDirectives(baseText: string, directives: Array<string | null | undefined>): string {
@@ -2043,6 +2065,7 @@ export function createAgentChatService(args: {
   });
 
   const buildAdeMcpServers = (
+    workspaceRoot: string,
     provider: "claude" | "codex",
     defaultRole: "agent" | "cto",
     ownerId?: string | null,
@@ -2050,7 +2073,7 @@ export function createAgentChatService(args: {
     computerUsePolicy?: ComputerUsePolicy | null,
   ): Record<string, Record<string, unknown>> => {
     const launch = resolveAdeMcpServerLaunch({
-      workspaceRoot: projectRoot,
+      workspaceRoot,
       runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole,
       ownerId: ownerId ?? undefined,
@@ -2067,12 +2090,13 @@ export function createAgentChatService(args: {
   };
 
   const summarizeAdeMcpLaunch = (args: {
+    workspaceRoot: string;
     defaultRole: "agent" | "cto" | "external";
     ownerId?: string | null;
     computerUsePolicy?: ComputerUsePolicy | null;
   }) => {
     const { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath } = resolveAdeMcpServerLaunch({
-      workspaceRoot: projectRoot,
+      workspaceRoot: args.workspaceRoot,
       runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole: args.defaultRole,
       ownerId: args.ownerId ?? undefined,
@@ -2085,6 +2109,7 @@ export function createAgentChatService(args: {
   const tryDiagnosticMcpLaunch = (managed: ManagedChatSession): ReturnType<typeof summarizeAdeMcpLaunch> | undefined => {
     try {
       return summarizeAdeMcpLaunch({
+        workspaceRoot: managed.laneWorktreePath,
         defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
         ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
         computerUsePolicy: managed.session.computerUse,
@@ -2934,12 +2959,67 @@ export function createAgentChatService(args: {
   };
 
   const computeHeadShaBestEffort = async (laneId: string): Promise<string | null> => {
-    const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-    const cwd = fs.existsSync(worktreePath) ? worktreePath : projectRoot;
+    let cwd: string;
+    try {
+      ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
+        laneService,
+        laneId,
+        purpose: "inspect lane git state",
+      }));
+    } catch (error) {
+      logger.warn("agent_chat.head_sha_skipped_invalid_worktree", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
     const res = await runGit(["rev-parse", "HEAD"], { cwd, timeoutMs: 8_000 });
     if (res.exitCode !== 0) return null;
     const sha = res.stdout.trim();
     return sha.length ? sha : null;
+  };
+
+  const resolveManagedExecutionLaneId = (managed: ManagedChatSession): string =>
+    trimLine(managed.preferredExecutionLaneId)
+    ?? trimLine(managed.selectedExecutionLaneId)
+    ?? managed.session.laneId;
+
+  const resolveManagedExecutionContext = (
+    managed: ManagedChatSession,
+    args: { purpose: string; requestedCwd?: string | null },
+  ): LaneLaunchContext & { laneId: string; laneDirectiveKey: string | null } => {
+    const laneId = resolveManagedExecutionLaneId(managed);
+    const launchContext = resolveLaneLaunchContext({
+      laneService,
+      laneId,
+      purpose: args.purpose,
+      requestedCwd: args.requestedCwd,
+    });
+    return {
+      ...launchContext,
+      laneId,
+      laneDirectiveKey: buildLaneDirectiveKey({
+        laneId,
+        laneWorktreePath: launchContext.laneWorktreePath,
+      }),
+    };
+  };
+
+  const refreshManagedLaneLaunchContext = (
+    managed: ManagedChatSession,
+    args: { purpose?: string; requestedCwd?: string | null } = {},
+  ): LaneLaunchContext & { laneId: string; laneDirectiveKey: string | null } => {
+    const launchContext = resolveManagedExecutionContext(managed, {
+      purpose: args.purpose ?? "continue this chat",
+      requestedCwd: args.requestedCwd,
+    });
+    const laneWorktreeChanged = managed.laneWorktreePath !== launchContext.laneWorktreePath;
+    managed.laneWorktreePath = launchContext.laneWorktreePath;
+    if (laneWorktreeChanged && (managed.runtime?.kind === "claude" || managed.runtime?.kind === "codex")) {
+      teardownRuntime(managed);
+      refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
+    }
+    return launchContext;
   };
 
   const resolvePrimaryIdentityLane = async (): Promise<string> => {
@@ -2997,6 +3077,7 @@ export function createAgentChatService(args: {
       ...(managed.continuitySummaryUpdatedAt ? { continuitySummaryUpdatedAt: managed.continuitySummaryUpdatedAt } : {}),
       ...(managed.preferredExecutionLaneId ? { preferredExecutionLaneId: managed.preferredExecutionLaneId } : {}),
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
+      ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
       updatedAt: nowIso()
     };
 
@@ -3108,6 +3189,9 @@ export function createAgentChatService(args: {
           : {}),
         ...(typeof record.selectedExecutionLaneId === "string" && record.selectedExecutionLaneId.trim().length
           ? { selectedExecutionLaneId: record.selectedExecutionLaneId.trim() }
+          : {}),
+        ...(typeof record.lastLaneDirectiveKey === "string" && record.lastLaneDirectiveKey.trim().length
+          ? { lastLaneDirectiveKey: record.lastLaneDirectiveKey.trim() }
           : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
@@ -3847,7 +3931,7 @@ export function createAgentChatService(args: {
       });
     }
 
-    const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
+    const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
     if (endSha) {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
     }
@@ -3933,6 +4017,7 @@ export function createAgentChatService(args: {
       continuitySummaryInFlight: false,
       preferredExecutionLaneId: persisted?.preferredExecutionLaneId ?? null,
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
+      lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -3960,9 +4045,14 @@ export function createAgentChatService(args: {
       text: string;
       attachments: AgentChatFileRef[];
       turnId?: string;
+      laneDirectiveKey?: string | null;
       onDispatched?: () => void;
     },
   ): void => {
+    if (args.laneDirectiveKey && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
+      managed.lastLaneDirectiveKey = args.laneDirectiveKey;
+      persistChatState(managed);
+    }
     emitChatEvent(managed, {
       type: "user_message",
       text: args.text,
@@ -3979,6 +4069,7 @@ export function createAgentChatService(args: {
       displayText?: string;
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      laneDirectiveKey?: string | null;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -4007,6 +4098,7 @@ export function createAgentChatService(args: {
       emitPreparedUserMessage(managed, {
         text: displayText,
         attachments,
+        laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
       });
       const reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
@@ -4061,6 +4153,7 @@ export function createAgentChatService(args: {
     emitPreparedUserMessage(managed, {
       text: displayText,
       attachments,
+      laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
     });
     if (autoMemoryNotice) {
@@ -4185,6 +4278,7 @@ export function createAgentChatService(args: {
       displayText?: string;
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      laneDirectiveKey?: string | null;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -4215,6 +4309,7 @@ export function createAgentChatService(args: {
       text: displayText,
       attachments,
       turnId,
+      laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
@@ -4814,7 +4909,7 @@ export function createAgentChatService(args: {
         });
       }
 
-      const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
+      const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
       if (endSha) {
         sessionService.setHeadShaEnd(managed.session.id, endSha);
       }
@@ -4907,6 +5002,7 @@ export function createAgentChatService(args: {
       displayText?: string;
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      laneDirectiveKey?: string | null;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -4940,6 +5036,7 @@ export function createAgentChatService(args: {
       text: displayText,
       attachments,
       turnId,
+      laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
@@ -5039,6 +5136,7 @@ export function createAgentChatService(args: {
         };
       });
       const lightweight = isLightweightSession(managed.session);
+      const executionLaneId = resolveManagedExecutionLaneId(managed);
       const tools = lightweight
         ? {}
         : createUniversalToolSet(managed.laneWorktreePath, {
@@ -5211,7 +5309,7 @@ export function createAgentChatService(args: {
             });
           },
           sessionId: managed.session.id,
-          laneId: managed.session.laneId,
+          laneId: executionLaneId,
         });
         Object.assign(tools, workflowTools);
 
@@ -5225,7 +5323,7 @@ export function createAgentChatService(args: {
         if (managed.session.identityKey === "cto") {
           Object.assign(tools, createCtoOperatorTools({
             currentSessionId: managed.session.id,
-            defaultLaneId: managed.session.laneId,
+            defaultLaneId: executionLaneId,
             defaultModelId: managed.session.modelId ?? null,
             defaultReasoningEffort: managed.session.reasoningEffort ?? null,
             resolveExecutionLane: async ({ requestedLaneId, purpose, freshLaneName, freshLaneDescription }) =>
@@ -5500,7 +5598,7 @@ export function createAgentChatService(args: {
         });
       }
 
-      const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
+      const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
       if (endSha) {
         sessionService.setHeadShaEnd(managed.session.id, endSha);
       }
@@ -6167,7 +6265,7 @@ export function createAgentChatService(args: {
         ...(usage ? { usage } : {}),
       });
 
-      const endSha = await computeHeadShaBestEffort(managed.session.laneId).catch(() => null);
+      const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
       if (endSha) {
         sessionService.setHeadShaEnd(managed.session.id, endSha);
       }
@@ -6805,6 +6903,7 @@ export function createAgentChatService(args: {
     const mcpServers = isLightweightSession(managed.session)
       ? {}
       : buildAdeMcpServers(
+          managed.laneWorktreePath,
           "codex",
           managed.session.identityKey === "cto" ? "cto" : "agent",
           resolveWorkerIdentityAgentId(managed.session.identityKey),
@@ -6894,6 +6993,10 @@ export function createAgentChatService(args: {
         type: "preset",
         preset: "claude_code",
         append: [
+          "## ADE Workspace",
+          `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
+          "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
+          "",
           "## ADE Memory",
           "You have access to ADE's persistent project memory via MCP tools (memory_search, memory_add, memory_pin).",
           "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls.",
@@ -6904,6 +7007,7 @@ export function createAgentChatService(args: {
       };
       opts.settingSources = ["user", "project", "local"];
       opts.mcpServers = buildAdeMcpServers(
+        managed.laneWorktreePath,
         "claude",
         managed.session.identityKey === "cto" ? "cto" : "agent",
         resolveWorkerIdentityAgentId(managed.session.identityKey),
@@ -7135,8 +7239,13 @@ export function createAgentChatService(args: {
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
     if (managed.runtime?.kind === "claude") return managed.runtime;
     const persisted = readPersistedState(managed.session.id);
-    // Old persisted state may have `messages` but no `sdkSessionId` — start fresh
-    const sdkSessionId = persisted?.sdkSessionId ?? null;
+    const currentLaneDirectiveKey = buildLaneDirectiveKey({
+      laneId: resolveManagedExecutionLaneId(managed),
+      laneWorktreePath: managed.laneWorktreePath,
+    });
+    const sdkSessionId = currentLaneDirectiveKey != null && persisted?.lastLaneDirectiveKey === currentLaneDirectiveKey
+      ? persisted?.sdkSessionId ?? null
+      : null;
     const runtime: ClaudeRuntime = {
       kind: "claude",
       sdkSessionId,
@@ -7194,6 +7303,7 @@ export function createAgentChatService(args: {
       continuitySummaryInFlight: false,
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
+      lastLaneDirectiveKey: null,
       activeAssistantMessageId: null,
       previewTextBuffer: null,
       bufferedText: null,
@@ -7343,7 +7453,11 @@ export function createAgentChatService(args: {
     automationRunId,
     computerUse,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
-    const lane = laneService.getLaneBaseAndBranch(laneId);
+    const launchContext = resolveLaneLaunchContext({
+      laneService,
+      laneId,
+      purpose: "start this chat",
+    });
     const sessionId = randomUUID();
     const startedAt = nowIso();
     const transcriptPath = path.join(transcriptsDir, `${sessionId}.chat.jsonl`);
@@ -7478,7 +7592,7 @@ export function createAgentChatService(args: {
       transcriptBytesWritten: fileSizeOrZero(transcriptPath),
       transcriptLimitReached: false,
       metadataPath,
-      laneWorktreePath: lane.worktreePath,
+      laneWorktreePath: launchContext.laneWorktreePath,
       runtime: null,
       preview: null,
       closed: false,
@@ -7494,6 +7608,7 @@ export function createAgentChatService(args: {
       continuitySummaryInFlight: false,
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
+      lastLaneDirectiveKey: null,
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -7654,6 +7769,7 @@ export function createAgentChatService(args: {
     const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
 
     const managed = ensureManagedSession(sessionId);
+    const executionContext = refreshManagedLaneLaunchContext(managed);
     const publicAttachments = attachments.map((attachment) => ({
       ...attachment,
       path: attachment.path.trim(),
@@ -7713,9 +7829,17 @@ export function createAgentChatService(args: {
       managed.session.interactionMode = interactionMode ?? managed.session.interactionMode ?? "default";
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     }
+    const laneDirectiveKey = executionContext.laneDirectiveKey;
+    const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
     const promptText = isLiteralSlashCommand(trimmed)
       ? trimmed
       : composeLaunchDirectives(trimmed, [
+          shouldInjectLaneDirective
+            ? buildLaneWorktreeDirective({
+                laneId: executionContext.laneId,
+                laneWorktreePath: executionContext.laneWorktreePath,
+              })
+            : null,
           buildExecutionModeDirective(executionMode, managed.session.provider),
           buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           buildComputerUseDirective(
@@ -7738,6 +7862,7 @@ export function createAgentChatService(args: {
       resolvedAttachments,
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
+      laneDirectiveKey,
     };
   };
 
@@ -7812,6 +7937,7 @@ export function createAgentChatService(args: {
       attachments,
       resolvedAttachments,
       reasoningEffort,
+      laneDirectiveKey,
       onDispatched,
     } = prepared;
 
@@ -7826,7 +7952,14 @@ export function createAgentChatService(args: {
       if (reasoningEffort) {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
       }
-      await runTurn(managed, { promptText, displayText: visibleText, attachments, resolvedAttachments, onDispatched });
+      await runTurn(managed, {
+        promptText,
+        displayText: visibleText,
+        attachments,
+        resolvedAttachments,
+        laneDirectiveKey,
+        onDispatched,
+      });
       return;
     }
 
@@ -7893,7 +8026,14 @@ export function createAgentChatService(args: {
         }
       }
 
-      await sendCodexMessage(managed, { promptText, displayText: visibleText, attachments, resolvedAttachments, onDispatched });
+      await sendCodexMessage(managed, {
+        promptText,
+        displayText: visibleText,
+        attachments,
+        resolvedAttachments,
+        laneDirectiveKey,
+        onDispatched,
+      });
       return;
     }
 
@@ -7903,7 +8043,14 @@ export function createAgentChatService(args: {
     }
 
     ensureClaudeSessionRuntime(managed);
-    await runClaudeTurn(managed, { promptText, displayText: visibleText, attachments, resolvedAttachments, onDispatched });
+    await runClaudeTurn(managed, {
+      promptText,
+      displayText: visibleText,
+      attachments,
+      resolvedAttachments,
+      laneDirectiveKey,
+      onDispatched,
+    });
   };
 
   const sendMessage = async (
@@ -8098,6 +8245,7 @@ export function createAgentChatService(args: {
 
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
     const managed = ensureManagedSession(sessionId);
+    refreshManagedLaneLaunchContext(managed, { purpose: "resume this chat" });
     const persisted = readPersistedState(sessionId);
     managed.session.capabilityMode = managed.session.capabilityMode ?? inferCapabilityMode(managed.session.provider);
     refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
@@ -8848,6 +8996,7 @@ export function createAgentChatService(args: {
   }): Promise<void> => {
     const managed = managedSessions.get(sessionId);
     if (!managed) return;
+    refreshManagedLaneLaunchContext(managed, { purpose: "warm this chat" });
 
     const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
     if (!descriptor) return;

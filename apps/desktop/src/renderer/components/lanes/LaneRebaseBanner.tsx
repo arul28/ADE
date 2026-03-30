@@ -179,6 +179,8 @@ export function LaneRebaseBanner({
                       <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }} className="truncate">{lane.name}</span>
                       {status.state === "rebaseConflict" ? (
                         <span style={inlineBadge(COLORS.danger, { fontSize: 9 })}>CONFLICT</span>
+                      ) : status.state === "rebaseFailed" ? (
+                        <span style={inlineBadge(COLORS.danger, { fontSize: 9 })}>FAILED</span>
                       ) : (
                         <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>PENDING</span>
                       )}
@@ -195,6 +197,14 @@ export function LaneRebaseBanner({
                         onClick={() => onOpenRebaseConflictResolver(status.laneId, status.parentLaneId ?? lane.parentLaneId ?? null)}
                       >
                         RESOLVE IN CONFLICTS
+                      </button>
+                    ) : status.state === "rebaseFailed" ? (
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        onClick={onViewRebaseDetails}
+                      >
+                        OPEN REBASE TAB
                       </button>
                     ) : (
                       <button

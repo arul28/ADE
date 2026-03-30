@@ -5,6 +5,7 @@ import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
+import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -500,11 +501,13 @@ export function createPtyService({
   return {
     async create(args: PtyCreateArgs): Promise<PtyCreateResult> {
       const { laneId, title } = args;
-      const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-      const cwd = fs.existsSync(worktreePath) ? worktreePath : projectRoot;
-      if (cwd !== worktreePath) {
-        logger.warn("pty.cwd_missing_fallback", { laneId, missingCwd: worktreePath, fallbackCwd: cwd });
-      }
+      const launchContext = resolveLaneLaunchContext({
+        laneService,
+        laneId,
+        requestedCwd: args.cwd,
+        purpose: "start a terminal session",
+      });
+      const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
 
       const ptyId = randomUUID();

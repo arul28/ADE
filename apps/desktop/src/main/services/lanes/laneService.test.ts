@@ -943,3 +943,68 @@ describe("laneService rebaseStart", () => {
     expect(revParseVerifyCalls[0]).toBe("origin/main");
   });
 });
+
+describe("laneService reparent", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  it("uses the primary lane's remote tracking ref when reparenting under primary", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-primary-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-reparent-primary", repoRoot });
+
+    let childHeadReads = 0;
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/child")) {
+        childHeadReads += 1;
+        return childHeadReads === 1 ? "sha-child-pre" : "sha-child-post";
+      }
+      return "sha-unused";
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (
+        args[0] === "rev-parse"
+        && args[1] === "--abbrev-ref"
+        && args[2] === "--symbolic-full-name"
+        && args[3] === "@{upstream}"
+      ) {
+        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "rebase") {
+        expect(args[1]).toBe("sha-origin-main");
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-reparent-primary",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.reparent({ laneId: "lane-child", newParentLaneId: "lane-main" });
+
+    expect(result.previousParentLaneId).toBe("lane-parent");
+    expect(result.newParentLaneId).toBe("lane-main");
+    expect(result.preHeadSha).toBe("sha-child-pre");
+    expect(result.postHeadSha).toBe("sha-child-post");
+    expect(runGitOrThrow).toHaveBeenCalledWith(
+      ["rebase", "sha-origin-main"],
+      expect.objectContaining({ cwd: path.join(repoRoot, "child") }),
+    );
+  });
+});

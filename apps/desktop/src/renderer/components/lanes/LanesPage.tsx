@@ -1642,6 +1642,14 @@ export function LanesPage() {
                   PENDING
                 </span>
               ) : null}
+              {autoRebaseStatus?.state === "rebaseFailed" ? (
+                <span
+                  style={inlineBadge(COLORS.danger, { fontSize: 9 })}
+                  title={autoRebaseStatus.message ?? "Auto-rebase failed and the lane needs manual follow-up."}
+                >
+                  FAILED
+                </span>
+              ) : null}
               {autoRebaseStatus?.state === "rebaseConflict" ? (
                 <span
                   style={inlineBadge(COLORS.danger, { fontSize: 9 })}
