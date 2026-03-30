@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-24
+> Last updated: 2026-03-30
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -1521,6 +1521,8 @@ type ChatEvent =
   | { type: "approval_request"; itemId: string; kind: "command" | "file_change"; description: string; detail: unknown }
   | { type: "system_notice"; noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error"; message: string; detail?: string | AgentChatNoticeDetail }
   | { type: "status"; turnStatus: "started" | "completed" | "interrupted" | "failed"; error?: string }
+  | { type: "subagent_started"; taskId: string; description: string; turnId?: string }
+  | { type: "subagent_result"; taskId: string; status: "completed" | "stopped" | "failed"; summary: string; turnId?: string }
   | { type: "error"; message: string; errorInfo?: string }
   | { type: "done"; turnId: string };
 
@@ -1580,7 +1582,7 @@ send({ method: "initialized", params: {} });
 | `steer()` | `turn/steer` | Appends to in-flight turn; cannot change model/sandbox |
 | `cancelSteer()` | N/A | Cancel a pending steer before it is delivered |
 | `editSteer()` | N/A | Replace pending steer text before it is delivered |
-| `interrupt()` | `turn/interrupt` | Turn completes with `status: "interrupted"` |
+| `interrupt()` | `turn/interrupt` | Turn completes with `status: "interrupted"`. Idempotent — second call is a no-op. Claude/unified runtimes emit `subagent_result` "stopped" for active subagents. |
 | `resumeSession()` | `thread/resume` | Params: `threadId`, optional `personality` |
 | `listSessions()` | `thread/list` | Filter by `cwd` to scope to lane |
 | `approveToolUse()` | Response to `requestApproval` | Payload: `accept`/`acceptForSession`/`decline`/`cancel` |
