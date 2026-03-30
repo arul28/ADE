@@ -684,7 +684,8 @@ export function CreatePrModal({
         setResults([pr]);
         setNumericStep(3);
       } else if (mode === "queue") {
-        const baseBranch = (queueTargetBranch || branchNameFromRef(primaryLane?.branchRef ?? "main")).trim();
+        const trimmedQueueTargetBranch = (queueTargetBranch ?? "").trim();
+        const baseBranch = (trimmedQueueTargetBranch || branchNameFromRef(primaryLane?.branchRef ?? "main")).trim();
         const result = await runWithDirtyWorktreeConfirmation({
           confirmMessage: "Continue and create the queue PRs anyway?",
           run: async (allowDirtyWorktree) => await window.ade.prs.createQueue({

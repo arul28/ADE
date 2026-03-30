@@ -7536,7 +7536,9 @@ export function createAgentChatService(args: {
         // ignore
       }
       try {
-        runtime?.process.kill();
+        if (runtime) {
+          terminateChildProcessTree(runtime.process, null);
+        }
       } catch {
         // ignore
       }

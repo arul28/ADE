@@ -360,15 +360,13 @@ export function WorkViewArea({
 
       <div className="relative min-h-0 flex-1" style={{ background: THEME_CARD }}>
         {activeRunningTerminalSession ? (
-          <div className="absolute inset-0">
-            <TerminalView
-              key={activeRunningTerminalSession.id}
-              ptyId={activeRunningTerminalSession.ptyId}
-              sessionId={activeRunningTerminalSession.id}
-              isActive
-              className="absolute inset-0 h-full w-full"
-            />
-          </div>
+          <TerminalView
+            key={activeRunningTerminalSession.id}
+            ptyId={activeRunningTerminalSession.ptyId}
+            sessionId={activeRunningTerminalSession.id}
+            isActive
+            className="absolute inset-0 h-full w-full"
+          />
         ) : null}
 
         {activeSession ? (

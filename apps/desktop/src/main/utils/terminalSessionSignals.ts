@@ -2,7 +2,7 @@ import type { TerminalRuntimeState, TerminalToolType } from "../../shared/types"
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
 const RESUME_BACKTICK_REGEX = /`((?:claude|codex)\s+(?:(?:--resume|-r|resume)\b)[^`\r\n]*)`/gi;
-const RESUME_PLAIN_REGEX = /\b((?:claude|codex)\s+(?:(?:--resume|-r|resume)\b)[^\r\n]*)/gi;
+const RESUME_PLAIN_REGEX = /\b((?:claude|codex)\s+(?:(?:--resume|-r|resume)\b)[^\r\n]*?(?=\s+(?:claude|codex)\s|$))/gi;
 
 function normalizeCommand(raw: string): string {
   return raw

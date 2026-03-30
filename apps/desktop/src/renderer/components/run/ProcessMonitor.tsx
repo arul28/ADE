@@ -97,6 +97,7 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
     setPauseAutoscroll(false);
     setLogError(null);
     setLogLoading(true);
+    setLogText("");
     window.ade.processes
       .getLogTail({ laneId, processId, maxBytes: LOG_TAIL_MAX_BYTES })
       .then((log) => {

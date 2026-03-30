@@ -609,7 +609,10 @@ describe("autoRebaseService", () => {
       laneList = [root, child];
       rebaseNeedOverrides.set("child-1", { behindBy: 3, conflictPredicted: false, conflictingFiles: [] });
       conflictService.scanRebaseNeeds.mockResolvedValue(
-        laneList.map((lane) => makeRebaseNeed(lane, rebaseNeedOverrides.get(lane.id) ?? undefined)).filter((n) => n.behindBy > 0),
+        laneList
+          .filter((lane) => lane.parentLaneId)
+          .map((lane) => makeRebaseNeed(lane, rebaseNeedOverrides.get(lane.id) ?? undefined))
+          .filter((n) => n.behindBy > 0),
       );
 
       await service.refreshActiveRebaseNeeds("merge_completed");
@@ -896,7 +899,9 @@ describe("autoRebaseService", () => {
       });
 
       await vi.advanceTimersByTimeAsync(1500);
-      await Promise.resolve();
+      await vi.waitFor(() => {
+        expect(laneService.rebasePush).toHaveBeenCalled();
+      });
 
       expect(laneService.rebaseStart).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -905,6 +910,11 @@ describe("autoRebaseService", () => {
         }),
       );
       expect(laneService.rebasePush).toHaveBeenCalledWith({ runId: "run-1", laneIds: ["child-1"] });
+
+      expect(db.setJson).toHaveBeenCalledWith(
+        "auto_rebase:status:child-1",
+        expect.objectContaining({ laneId: "child-1", state: "autoRebased" }),
+      );
     });
 
     it("rolls back a successful rebase when auto-push fails and leaves the lane pending", async () => {

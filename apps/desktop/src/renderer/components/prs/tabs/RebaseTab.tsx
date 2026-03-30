@@ -150,7 +150,7 @@ export function RebaseTab({
     [isPrTargetNeed, selectedNeed],
   );
 
-  const activeRunNeedKeyRef = React.useRef<string | null>(null);
+  const activeRunKeyRef = React.useRef<string | null>(null);
 
   // Auto-default scope based on children
   React.useEffect(() => {
@@ -188,7 +188,7 @@ export function RebaseTab({
 
   React.useEffect(() => {
     activeRunIdRef.current = activeRun?.runId ?? null;
-    activeRunNeedKeyRef.current = activeRun
+    activeRunKeyRef.current = activeRun
       ? rebaseRunKey({ laneId: activeRun.rootLaneId, baseBranch: activeRun.baseBranch })
       : null;
   }, [activeRun]);
@@ -204,11 +204,11 @@ export function RebaseTab({
         setActiveRun((prev) => {
           if (prev?.runId) {
             if (event.run.runId !== prev.runId) return prev;
-            activeRunNeedKeyRef.current = incomingRunKey;
+            activeRunKeyRef.current = incomingRunKey;
             return event.run;
           }
           if (!selectedNeedRunKey || incomingRunKey !== selectedNeedRunKey) return prev;
-          activeRunNeedKeyRef.current = incomingRunKey;
+          activeRunKeyRef.current = incomingRunKey;
           return event.run;
         });
         if (event.run.state !== "running") {
@@ -330,7 +330,7 @@ export function RebaseTab({
         actor: "user",
         ...(selectedNeedIsPrTarget ? { baseBranchOverride: selectedNeed.baseBranch } : {}),
       });
-      activeRunNeedKeyRef.current = requestedNeedRunKey;
+      activeRunKeyRef.current = requestedNeedRunKey;
       setActiveRun(started.run);
       setRunLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Started run ${started.runId}`].slice(-80));
       const pushable = started.run.lanes.filter((lane) => lane.status === "succeeded").map((lane) => lane.laneId);
@@ -355,7 +355,7 @@ export function RebaseTab({
   const activeRunMatchesSelectedNeed = Boolean(
     activeRun
       && selectedNeedRunKey
-      && activeRunNeedKeyRef.current === selectedNeedRunKey,
+      && activeRunKeyRef.current === selectedNeedRunKey,
   );
   const activeRunForSelectedNeed = activeRunMatchesSelectedNeed ? activeRun : null;
   const selectedRunIsActive = activeRunMatchesSelectedNeed && activeRun?.state === "running";
@@ -529,15 +529,6 @@ export function RebaseTab({
   }, [lanes, selectedNeed]);
 
   const shouldRenderDriftPanel = !selectedNeedIsPrTarget || Boolean(driftSourceLaneId);
-
-  // Compute file overlap between drift commits and the lane's own files
-  const driftTouchedFiles = React.useMemo(() => {
-    const files = new Set<string>();
-    for (const fileList of Object.values(commitFilesMap)) {
-      for (const f of fileList) files.add(f);
-    }
-    return files;
-  }, [commitFilesMap]);
 
   const paneConfigs: Record<string, PaneConfig> = React.useMemo(
     () => ({
@@ -1486,7 +1477,6 @@ export function RebaseTab({
       driftCommitsExpanded,
       commitFilesMap,
       expandedCommitSha,
-      driftTouchedFiles,
       onSelectItem,
       resolverPermissionMode,
       onRefresh,

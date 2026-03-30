@@ -225,7 +225,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (args.toolType !== undefined && !updated.resumeCommand) {
         const fallback = defaultResumeCommandForTool(updated.toolType);
         if (fallback) {
-          db.run("update terminal_sessions set resume_command = ? where id = ? and resume_command is null", [fallback, sessionId]);
+          db.run("update terminal_sessions set resume_command = ? where id = ?", [fallback, sessionId]);
           const withResume = this.get(sessionId);
           return withResume ?? updated;
         }
