@@ -76,7 +76,7 @@ export async function buildProviderConnections(
       return `${providerLabel} CLI is installed but no login was detected. Run: ${loginHint}`;
     }
     if (!flags.runtimeDetected) {
-      return `Local credentials exist but the ${providerLabel} CLI is not on ADE's PATH.`;
+      return `Local credentials exist but ADE could not find the ${providerLabel} CLI. ADE checks the app PATH, login-shell PATH, interactive-shell PATH, and common install directories. If ${providerLabel} is installed elsewhere, add that bin directory to your shell PATH and refresh.`;
     }
     if (extraBlocker) return extraBlocker;
     return null;

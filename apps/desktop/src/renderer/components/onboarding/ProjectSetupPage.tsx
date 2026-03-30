@@ -1,11 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { CheckCircle, Circle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { ContextRefreshEvents, ContextStatus } from "../../../shared/types";
 import { Button } from "../ui/Button";
-import { AiSettingsSection } from "../settings/AiSettingsSection";
+import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { LinearSection } from "../settings/LinearSection";
+import { ProvidersSection } from "../settings/ProvidersSection";
 import { DevToolsSection } from "./DevToolsSection";
 import { EmbeddingsSection } from "./EmbeddingsSection";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
@@ -15,45 +16,50 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { publishOnboardingStatusUpdated } from "../../lib/onboardingStatusEvents";
 import { listActionableContextDocs } from "../context/contextShared";
 
-type SetupStep = "tools" | "ai" | "github" | "embeddings" | "linear" | "context";
+type SetupStep = "tools" | "ai" | "helpers" | "github" | "embeddings" | "linear" | "context";
 
-const STEP_ORDER: SetupStep[] = ["tools", "ai", "github", "embeddings", "linear", "context"];
+const STEP_ORDER: SetupStep[] = ["tools", "ai", "helpers", "github", "embeddings", "linear", "context"];
 
 const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
   tools: {
     title: "Dev tools",
-    subtitle: "Check for git and GitHub CLI.",
+    subtitle: "Verify git and GitHub CLI are ready",
   },
   ai: {
-    title: "AI setup",
-    subtitle: "Connect a provider and choose defaults.",
+    title: "AI connections",
+    subtitle: "Connect your AI providers",
+  },
+  helpers: {
+    title: "Background helpers",
+    subtitle: "Optional AI-powered automations",
   },
   github: {
     title: "GitHub",
-    subtitle: "Add a token for PRs, reviews, and repo actions.",
+    subtitle: "Enable PR and code review workflows",
   },
   embeddings: {
-    title: "Smart search",
-    subtitle: "Optional local embedding model for semantic memory search.",
+    title: "Semantic search",
+    subtitle: "Local vector model for smart memory search",
   },
   linear: {
     title: "Linear",
-    subtitle: "Optional. Connect for issue links and CTO routing.",
+    subtitle: "Issue tracking and CTO workflow routing",
   },
   context: {
     title: "Context docs",
-    subtitle: "Generate PRD and architecture docs from your repo.",
+    subtitle: "Auto-generate PRD and architecture docs",
   },
 };
 
 /* Step header — short title on top, subtitle below */
 const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
-  tools: { heading: "Dev tools check", sub: "ADE needs git installed. GitHub CLI is recommended for PR workflows." },
-  ai: { heading: "Connect AI", sub: "Choose a provider and model defaults for this project." },
-  github: { heading: "Connect GitHub", sub: "Add a personal access token (classic or fine-grained) so lane PRs and reviews work." },
-  embeddings: { heading: "Local embedding model", sub: "Download all-MiniLM-L6-v2 (~31 MB) to enable semantic memory search. Runs entirely on your machine." },
-  linear: { heading: "Connect Linear", sub: "Optional — connect for issue routing and CTO workflows." },
-  context: { heading: "Generate context docs", sub: "Pick a model and triggers, then kick off generation." },
+  tools: { heading: "Developer Tools", sub: "ADE needs git for version control. GitHub CLI unlocks PR creation, review requests, and CI checks." },
+  ai: { heading: "Connect AI Providers", sub: "Link your AI accounts so ADE can power chat, code generation, and background automations." },
+  helpers: { heading: "Background Helpers", sub: "These lightweight AI automations run in the background while you work. All are optional and can be changed anytime in Settings." },
+  github: { heading: "GitHub Integration", sub: "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." },
+  embeddings: { heading: "Semantic Search", sub: "A small local model that enables meaning-based memory search instead of just keyword matching." },
+  linear: { heading: "Linear Integration", sub: "Connect your Linear workspace to route issues, sync statuses, and enable CTO workflows." },
+  context: { heading: "Context Documents", sub: "Generate a PRD and architecture overview from your codebase. These help ADE understand your project deeply." },
 };
 
 const EVENT_TOGGLES: { key: keyof ContextRefreshEvents; label: string; help: string }[] = [
@@ -66,7 +72,7 @@ const EVENT_TOGGLES: { key: keyof ContextRefreshEvents; label: string; help: str
   { key: "onLaneCreate", label: "Lane create", help: "When a new lane is created" },
 ];
 
-const DEFAULT_EVENTS: ContextRefreshEvents = { onPrCreate: true, onMissionStart: true };
+const DEFAULT_EVENTS: ContextRefreshEvents = {};
 
 function isContextGenerationActive(status: ContextStatus["generation"] | null | undefined): boolean {
   return status?.state === "pending" || status?.state === "running";
@@ -136,7 +142,8 @@ export function ProjectSetupPage() {
       .then((next) => {
         if (!cancelled) setStatus(next);
       })
-      .catch(() => {
+      .catch((error) => {
+        console.error("ProjectSetupPage: failed to load onboarding status", error);
         if (!cancelled) setStatus({ completedAt: null, dismissedAt: null });
       });
 
@@ -145,7 +152,9 @@ export function ProjectSetupPage() {
       .then((aiStatus) => {
         if (!cancelled) setAvailableModelIds(deriveConfiguredModelIds(aiStatus));
       })
-      .catch(() => {});
+      .catch((error) => {
+        console.error("ProjectSetupPage: failed to load AI status", error);
+      });
 
     // Load saved context doc prefs
     window.ade.context?.getPrefs?.()
@@ -159,7 +168,10 @@ export function ProjectSetupPage() {
         }
         setPrefsLoaded(true);
       })
-      .catch(() => { setPrefsLoaded(true); });
+      .catch((error) => {
+        console.error("ProjectSetupPage: failed to load context doc prefs", error);
+        setPrefsLoaded(true);
+      });
 
     return () => { cancelled = true; };
   }, []);
@@ -169,7 +181,8 @@ export function ProjectSetupPage() {
     try {
       const next = await window.ade.context.getStatus();
       setContextStatus(next);
-    } catch {
+    } catch (error) {
+      console.error("ProjectSetupPage: failed to refresh context status", error);
       setContextStatus(null);
     } finally {
       setContextLoading(false);
@@ -184,8 +197,6 @@ export function ProjectSetupPage() {
   useEffect(() => {
     return window.ade.context?.onStatusChanged?.(setContextStatus) ?? (() => {});
   }, []);
-
-  const progressLabel = useMemo(() => `${stepIndex + 1} / ${STEP_ORDER.length}`, [stepIndex]);
 
   const handleNext = async () => {
     if (isLastStep) {
@@ -238,7 +249,9 @@ export function ProjectSetupPage() {
         modelId: contextModelId,
         reasoningEffort: contextReasoningEffort,
         events: contextEvents,
-      }).catch(() => {});
+      }).catch((error) => {
+        console.error("ProjectSetupPage: failed to launch context docs generation", error);
+      });
 
       setContextLaunchNotice("Generation started in the background. You can finish setup now.");
       window.setTimeout(() => { void reloadContextStatus(); }, 800);
@@ -258,7 +271,9 @@ export function ProjectSetupPage() {
         modelId: contextModelId,
         reasoningEffort: contextReasoningEffort,
         events: contextEvents,
-      }).catch(() => {});
+      })?.catch((error) => {
+        console.error("ProjectSetupPage: failed to auto-save context doc prefs", error);
+      });
     }, 400);
     return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
   }, [prefsLoaded, contextModelId, contextReasoningEffort, contextEvents]);
@@ -267,7 +282,8 @@ export function ProjectSetupPage() {
 
   const stepContent = (() => {
     if (step === "tools") return <DevToolsSection onStatusChange={setGitInstalled} />;
-    if (step === "ai") return <AiSettingsSection forceProviderRefreshOnMount />;
+    if (step === "ai") return <ProvidersSection forceRefreshOnMount />;
+    if (step === "helpers") return <AiFeaturesSection />;
     if (step === "github") return <GitHubSection />;
     if (step === "embeddings") return <EmbeddingsSection />;
     if (step === "linear") return <LinearSection />;
@@ -395,88 +411,114 @@ export function ProjectSetupPage() {
             alignSelf: "start",
             position: "sticky",
             top: 0,
-            padding: 20,
             background: "rgba(18, 17, 24, 0.88)",
             border: `1px solid ${COLORS.border}`,
             borderRadius: 16,
             backdropFilter: "blur(20px)",
+            overflow: "hidden",
           }}
         >
-          <div style={{ fontSize: 10, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.accent, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-            Project setup
-          </div>
-          <div style={{ marginTop: 10, fontSize: 20, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-            {project?.displayName ?? "Current project"}
-          </div>
-          <div style={{ marginTop: 8, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-            Quick setup for the essentials. Everything here is editable later in Settings.
-          </div>
+          {/* Gradient accent bar */}
           <div
             style={{
-              marginTop: 16,
-              display: "inline-flex",
-              alignItems: "center",
-              padding: "4px 10px",
-              fontSize: 10,
-              fontWeight: 600,
-              fontFamily: SANS_FONT,
-              letterSpacing: "0.04em",
-              color: COLORS.textMuted,
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 8,
+              height: 3,
+              background: `linear-gradient(90deg, ${COLORS.accent}, ${COLORS.accent}60, transparent)`,
             }}
-          >
-            Step {progressLabel}
-          </div>
+          />
 
-          <div style={{ marginTop: 20, display: "grid", gap: 6 }}>
-            {STEP_ORDER.map((stepId, index) => {
-              const active = stepId === step;
-              const complete = index < stepIndex || (stepId === "context" && Boolean(status?.completedAt));
-              return (
-                <button
-                  key={stepId}
-                  type="button"
-                  onClick={() => setStep(stepId)}
+          <div style={{ padding: 20 }}>
+            <div style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.accent, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Setup
+            </div>
+            <div style={{ marginTop: 10, fontSize: 20, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+              {project?.displayName ?? "Current project"}
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
+              Get ADE configured for your project. You can always change these in Settings later.
+            </div>
+
+            {/* Progress indicator */}
+            <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1, height: 4, borderRadius: 2, background: COLORS.border, overflow: "hidden" }}>
+                <div
                   style={{
-                    display: "flex",
-                    width: "100%",
-                    alignItems: "flex-start",
-                    gap: 10,
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    border: `1px solid ${active ? `${COLORS.accent}30` : COLORS.border}`,
-                    background: active ? `${COLORS.accent}10` : "transparent",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    transition: "all 0.15s ease",
+                    height: "100%",
+                    width: `${((stepIndex + 1) / STEP_ORDER.length) * 100}%`,
+                    borderRadius: 2,
+                    background: `linear-gradient(90deg, ${COLORS.accent}, ${COLORS.accent}CC)`,
+                    transition: "width 0.3s ease",
                   }}
-                >
-                  {complete ? (
-                    <CheckCircle size={16} color={COLORS.success} weight="fill" style={{ flexShrink: 0, marginTop: 2 }} />
-                  ) : (
-                    <Circle size={16} color={active ? COLORS.accent : COLORS.textDim} weight={active ? "fill" : "regular"} style={{ flexShrink: 0, marginTop: 2 }} />
-                  )}
-                  <span>
-                    <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: active ? COLORS.textPrimary : COLORS.textMuted }}>
-                      {STEP_META[stepId].title}
-                    </div>
-                    <div style={{ marginTop: 3, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.5 }}>
-                      {STEP_META[stepId].subtitle}
-                    </div>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+                />
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textMuted, whiteSpace: "nowrap" }}>
+                {stepIndex + 1} of {STEP_ORDER.length}
+              </div>
+            </div>
 
-          <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-            <Button size="sm" variant="ghost" onClick={() => navigate("/settings?tab=general")}>
-              Settings
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => navigate("/project")}>
-              Back to app
-            </Button>
+            {/* Step list with vertical connecting line */}
+            <div style={{ marginTop: 20, position: "relative" }}>
+              {/* Vertical connecting line */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: 19,
+                  top: 24,
+                  bottom: 24,
+                  width: 1,
+                  background: COLORS.border,
+                  zIndex: 0,
+                }}
+              />
+
+              <div style={{ display: "grid", gap: 4, position: "relative", zIndex: 1 }}>
+                {STEP_ORDER.map((stepId, index) => {
+                  const active = stepId === step;
+                  const complete = index < stepIndex || (stepId === "context" && Boolean(status?.completedAt));
+                  return (
+                    <button
+                      key={stepId}
+                      type="button"
+                      onClick={() => setStep(stepId)}
+                      style={{
+                        display: "flex",
+                        width: "100%",
+                        alignItems: "flex-start",
+                        gap: 10,
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: `1px solid ${active ? `${COLORS.accent}30` : "transparent"}`,
+                        background: active ? `${COLORS.accent}10` : "transparent",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        transition: "all 0.15s ease",
+                        ...(active ? { boxShadow: `0 0 12px ${COLORS.accent}15` } : {}),
+                      }}
+                    >
+                      <div style={{ flexShrink: 0, marginTop: 2, position: "relative" }}>
+                        {complete ? (
+                          <CheckCircle size={18} color={COLORS.success} weight="fill" />
+                        ) : (
+                          <Circle
+                            size={18}
+                            color={active ? COLORS.accent : COLORS.textDim}
+                            weight={active ? "fill" : "regular"}
+                            style={active ? { filter: `drop-shadow(0 0 4px ${COLORS.accent}60)` } : {}}
+                          />
+                        )}
+                      </div>
+                      <span>
+                        <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: active ? COLORS.textPrimary : COLORS.textMuted }}>
+                          {STEP_META[stepId].title}
+                        </div>
+                        <div style={{ marginTop: 2, fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.5 }}>
+                          {STEP_META[stepId].subtitle}
+                        </div>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </aside>
 
@@ -492,43 +534,43 @@ export function ProjectSetupPage() {
           }}
         >
           {/* Header */}
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 24 }}>
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                {header.heading}
-              </div>
-              <div style={{ marginTop: 4, fontSize: 13, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                {header.sub}
-              </div>
+          <div style={{ marginBottom: 24 }}>
+            <div
+              style={{
+                height: 2,
+                borderRadius: 1,
+                background: `linear-gradient(90deg, ${COLORS.accent}80, ${COLORS.accent}20, transparent)`,
+                marginBottom: 16,
+              }}
+            />
+            <div style={{ fontSize: 22, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+              {header.heading}
             </div>
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => void handleSkip()}>
-              Skip setup
-            </Button>
+            <div style={{ marginTop: 4, fontSize: 13, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
+              {header.sub}
+            </div>
           </div>
 
           {/* Step content */}
           <div style={{ minWidth: 0 }}>{stepContent}</div>
 
           {/* Footer */}
-          <div style={{ marginTop: 24, display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ marginTop: 24, display: "flex", alignItems: "center", gap: 12 }}>
+            <Button size="md" variant="ghost" disabled={busy} onClick={() => void handleSkip()}>
+              Skip setup
+            </Button>
             <Button size="md" variant="outline" disabled={busy || stepIndex === 0} onClick={handleBack}>
               Back
             </Button>
-            <div style={{ display: "flex", gap: 10 }}>
-              {!isLastStep ? (
-                <Button size="md" variant="outline" disabled={busy} onClick={() => setStep("context")}>
-                  Skip ahead
-                </Button>
-              ) : null}
-              <Button
-                size="md"
-                variant="primary"
-                disabled={busy || (step === "tools" && gitInstalled !== true) || (isLastStep && gitInstalled === false)}
-                onClick={() => void handleNext()}
-              >
-                {busy ? "Saving..." : isLastStep ? "Finish setup" : "Continue"}
-              </Button>
-            </div>
+            <div style={{ flex: 1 }} />
+            <Button
+              size="md"
+              variant="primary"
+              disabled={busy || (step === "tools" && gitInstalled !== true) || (isLastStep && gitInstalled !== true)}
+              onClick={() => void handleNext()}
+            >
+              {busy ? "Saving..." : isLastStep ? "Finish setup" : "Continue"}
+            </Button>
           </div>
         </section>
       </div>

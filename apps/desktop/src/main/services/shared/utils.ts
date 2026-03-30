@@ -113,7 +113,10 @@ export async function whichCommand(command: string): Promise<string | null> {
       const line = firstLine(res.stdout ?? "");
       return line.length ? line : null;
     }
-    const res = await spawnAsync("sh", ["-lc", 'command -v "$1" 2>/dev/null || true', "--", command]);
+    // Always use a POSIX shell here so user-configured shells cannot change the
+    // semantics of the `command -v` lookup.
+    const lookupShell = "/bin/sh";
+    const res = await spawnAsync(lookupShell, ["-lc", 'command -v "$1" 2>/dev/null || true', "--", command]);
     const line = firstLine(res.stdout ?? "");
     return line.length ? line : null;
   } catch {
@@ -621,6 +624,10 @@ export function matchesGlob(pattern: string | null | undefined, value: string | 
 
 export function normalizeSet(values: string[] | undefined): Set<string> {
   return new Set((values ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean));
+}
+
+export function quoteIfNeeded(value: string): string {
+  return /\s/.test(value) ? JSON.stringify(value) : value;
 }
 
 // ── Template rendering helpers ──────────────────────────────────────

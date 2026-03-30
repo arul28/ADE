@@ -5,6 +5,7 @@ import type {
   WorkerContinuationHandle,
   WorkerRuntimeSurface,
 } from "../../../shared/types";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createAgentChatService } from "../chat/agentChatService";
 
 type WorkerAdapterRuntimeServiceArgs = {
@@ -346,7 +347,7 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
     }
 
     if (adapterType === "claude-local" || adapterType === "codex-local") {
-      const binary = adapterType === "claude-local" ? "claude" : "codex";
+      const binary = adapterType === "claude-local" ? "claude" : resolveCodexExecutable().path;
       const model = typeof config.model === "string" && config.model.trim().length
         ? config.model.trim()
         : typeof config.modelId === "string" && config.modelId.trim().length

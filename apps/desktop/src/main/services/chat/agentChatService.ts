@@ -39,6 +39,7 @@ import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { fileSizeOrZero, isEnoentError, nowIso, readFileWithinRootSecure, resolvePathWithinRoot } from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import {
@@ -6571,7 +6572,21 @@ export function createAgentChatService(args: {
       path: process.env.PATH ?? "",
       ...(adeMcpLaunch ? { adeMcpLaunch } : {}),
     });
-    const proc = spawn("codex", ["app-server"], {
+    let codexExecutable: string;
+    try {
+      codexExecutable = resolveCodexExecutable().path;
+      if (!codexExecutable) {
+        throw new Error("Codex executable path was empty.");
+      }
+    } catch (error) {
+      logger.error("Failed to resolve Codex executable for spawn in agentChatService (resolveCodexExecutable)", {
+        sessionId: managed.session.id,
+        cwd: managed.laneWorktreePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    const proc = spawn(codexExecutable, ["app-server"], {
       cwd: managed.laneWorktreePath,
       stdio: ["pipe", "pipe", "pipe"]
     });

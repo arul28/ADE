@@ -125,7 +125,19 @@ function createEmptyHealthStats(): MemoryHealthStats {
       cacheHits: 0,
       cacheMisses: 0,
       cacheHitRate: 0,
-      model: { modelId: "Xenova/all-MiniLM-L6-v2", state: "idle", progress: null, loaded: null, total: null, file: null, error: null },
+      model: {
+        modelId: "Xenova/all-MiniLM-L6-v2",
+        state: "idle",
+        activity: "idle",
+        installState: "missing",
+        cacheDir: null,
+        installPath: null,
+        progress: null,
+        loaded: null,
+        total: null,
+        file: null,
+        error: null,
+      },
     },
   };
 }
@@ -323,6 +335,16 @@ function matchesFilters(e: MemoryEntry, scope: ScopeFilter, cat: string, status:
 
 function embeddingsReady(stats: MemoryHealthStats): boolean {
   return stats.embeddings.model.state === "ready";
+}
+
+function getEmbeddingVisualState(model: MemoryHealthStats["embeddings"]["model"]) {
+  if (model.state === "ready") return "ready" as const;
+  if (model.state === "loading" && (model.activity === "loading-local" || model.installState === "installed")) return "loading-local" as const;
+  if (model.state === "loading") return "downloading" as const;
+  if (model.state === "unavailable") return "error" as const;
+  if (model.installState === "installed") return "installed" as const;
+  if (model.installState === "partial") return "partial" as const;
+  return "missing" as const;
 }
 
 function shouldPollEmbeddings(stats: MemoryHealthStats): boolean {
@@ -620,6 +642,7 @@ export function MemoryHealthTab() {
   const candidateEntries = searchInput.trim().length > 0 ? [] : visibleCandidateEntries.filter((e) => matchesFilters(e, scopeFilter, categoryFilter, "pending"));
 
   const embReady = embeddingsReady(stats);
+  const modelVisualState = getEmbeddingVisualState(stats.embeddings.model);
   const _embProgress = pct(stats.embeddings.entriesEmbedded, Math.max(stats.embeddings.entriesTotal, 1));
   const modelDownloadPct = (() => {
     const { progress, loaded, total } = stats.embeddings.model;
@@ -627,7 +650,22 @@ export function MemoryHealthTab() {
     if (typeof loaded === "number" && typeof total === "number" && total > 0) return pct(loaded, total);
     return 0;
   })();
-  const showDownload = stats.embeddings.model.state !== "loading" && stats.embeddings.model.state !== "ready";
+  const showDownload = modelVisualState !== "downloading" && modelVisualState !== "loading-local" && modelVisualState !== "ready";
+  const installPath = stats.embeddings.model.installPath ?? stats.embeddings.model.cacheDir ?? null;
+  const installPathLabel = modelVisualState === "ready"
+    ? "Verified at"
+    : stats.embeddings.model.installState === "installed"
+      ? "Found on disk at"
+      : stats.embeddings.model.installState === "partial"
+      ? "Partial download at"
+      : "Installs to";
+  const modelActionLabel =
+    stats.embeddings.model.installState === "partial"
+    || (stats.embeddings.model.state === "unavailable" && stats.embeddings.model.installState === "installed")
+      ? "Repair Model"
+      : stats.embeddings.model.installState === "installed"
+        ? "Verify Model"
+      : "Download Model";
 
   /* ═══════════════════════════════════════════════════════════════════════
      Data loading
@@ -999,21 +1037,46 @@ export function MemoryHealthTab() {
             <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <div>
                 <div style={{ fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>
-                  {embReady ? "Smart search is active" : stats.embeddings.model.state === "loading" ? "Downloading model..." : "Smart search not enabled"}
+                  {embReady
+                    ? "Smart search is active"
+                    : modelVisualState === "loading-local"
+                      ? "Loading installed model..."
+                      : modelVisualState === "installed"
+                        ? "Model found on disk"
+                        : modelVisualState === "downloading"
+                          ? "Downloading model..."
+                          : modelVisualState === "partial"
+                            ? "Model download needs repair"
+                            : "Smart search not enabled"}
                 </div>
                 <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 4 }}>
                   {embReady
                     ? `${fmtNum(stats.embeddings.entriesEmbedded)} of ${fmtNum(stats.embeddings.entriesTotal)} memories indexed`
-                    : "Download the model to enable meaning-based search"}
+                    : modelVisualState === "loading-local"
+                      ? "ADE found the installed model on this machine and is loading it from local cache"
+                      : modelVisualState === "installed"
+                        ? "ADE found model files on this machine; smart search turns active only after a local verification succeeds"
+                        : modelVisualState === "partial"
+                          ? "ADE found a partial model download; repair it to finish enabling smart search"
+                          : "Download the model to enable meaning-based search"}
                 </div>
               </div>
               {showDownload ? (
                 <button type="button" onClick={() => void handleDownloadModel()} style={primaryButton({ height: 30, padding: "0 12px", fontSize: 10 })}>
-                  Download Model
+                  {modelActionLabel}
                 </button>
               ) : null}
             </div>
-            {stats.embeddings.model.state === "loading" ? (
+            {installPath ? (
+              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, wordBreak: "break-all" }}>
+                {installPathLabel}: {installPath}
+              </div>
+            ) : null}
+            {modelVisualState === "loading-local" ? (
+              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+                Loading the cached model locally. No new download is required. This usually finishes in a few seconds.
+              </div>
+            ) : modelVisualState === "downloading" ? (
               <>
                 <ProgressBar value={modelDownloadPct} max={100} color={COLORS.info} label="Model download" />
                 <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>{modelDownloadPct}%</div>

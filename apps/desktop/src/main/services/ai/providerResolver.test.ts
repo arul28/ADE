@@ -25,6 +25,13 @@ vi.mock("./claudeCodeExecutable", () => ({
   }),
 }));
 
+vi.mock("./codexExecutable", () => ({
+  resolveCodexExecutable: () => ({
+    path: "/mock/bin/codex",
+    source: "auth",
+  }),
+}));
+
 describe("providerResolver codex CLI", () => {
   beforeEach(() => {
     createCodexCliMock.mockReset();
@@ -66,6 +73,7 @@ describe("providerResolver codex CLI", () => {
       expect.objectContaining({
         defaultSettings: expect.objectContaining({
           cwd: "/tmp/worktree",
+          codexPath: "/mock/bin/codex",
           mcpServers: {
             ade: {
               transport: "stdio",

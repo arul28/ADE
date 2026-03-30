@@ -2,10 +2,11 @@
 // Auth Detector — discovers available authentication methods
 // ---------------------------------------------------------------------------
 
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { spawnAsync } from "../shared/utils";
+import {
+  augmentProcessPathWithShellAndKnownCliDirs,
+  resolveExecutableFromKnownLocations,
+} from "./cliExecutableResolver";
 
 type CliName = "claude" | "codex";
 
@@ -99,26 +100,12 @@ function hasPattern(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
-const HOME_DIR = os.homedir();
-
-const COMMON_BIN_DIRS = [
-  "/opt/homebrew/bin",
-  "/opt/homebrew/sbin",
-  "/usr/local/bin",
-  "/usr/local/sbin",
-  "/usr/bin",
-  "/bin",
-  `${HOME_DIR}/.local/bin`,
-  `${HOME_DIR}/.nvm/current/bin`,
-].filter(Boolean);
-
 function getLookupShell(): string {
   return process.env.SHELL || "/bin/zsh";
 }
 
 function findExplicitCommandPath(command: string): string | null {
-  const match = COMMON_BIN_DIRS.find((dir) => fs.existsSync(path.join(dir, command)));
-  return match ? path.join(match, command) : null;
+  return resolveExecutableFromKnownLocations(command)?.path ?? null;
 }
 
 async function commandExists(command: string): Promise<boolean> {
@@ -174,24 +161,13 @@ async function commandPath(command: string): Promise<string> {
 }
 
 async function refreshProcessPathFromShell(): Promise<void> {
-  if (process.platform !== "darwin" && process.platform !== "linux") return;
-  const currentPath = process.env.PATH ?? "";
-  const loginShell = process.env.SHELL || "/bin/zsh";
-
-  try {
-    const resolved = await spawnAsync(loginShell, ["-lc", "printf '%s' \"$PATH\""], { timeout: 5_000 });
-    const nextPath = resolved.stdout.trim();
-    if (resolved.status === 0 && nextPath.length > 0) {
-      process.env.PATH = nextPath;
-      return;
-    }
-  } catch {
-    // Fall through to best-effort path augmentation below.
-  }
-
-  const extras = COMMON_BIN_DIRS.filter((entry) => !currentPath.includes(entry));
-  if (extras.length > 0) {
-    process.env.PATH = currentPath.length > 0 ? `${currentPath}:${extras.join(":")}` : extras.join(":");
+  const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
+    env: process.env,
+    includeInteractiveShell: true,
+    timeoutMs: 2_000,
+  });
+  if (nextPath) {
+    process.env.PATH = nextPath;
   }
 }
 

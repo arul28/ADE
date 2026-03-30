@@ -311,6 +311,8 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  MemoryHealthScope,
+  MemoryHealthStats,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -757,7 +759,6 @@ function toRecentProjectSummary(entry: { rootPath: string; displayName: string; 
 
 type MemoryScope = "user" | "project" | "lane" | "mission";
 type UnifiedMemoryScope = "project" | "agent" | "mission";
-type MemoryHealthScope = "project" | "agent" | "mission";
 
 type MemoryHealthCountRow = {
   scope: string | null;
@@ -814,8 +815,6 @@ function normalizeUnifiedMemoryScope(rawScope: unknown): UnifiedMemoryScope | un
   if (trimmed === "mission" || trimmed === "lane") return "mission";
   return undefined;
 }
-
-
 function normalizeMemoryHealthScope(rawScope: unknown): MemoryHealthScope | null {
   const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
   if (trimmed === "project") return "project";
@@ -824,7 +823,23 @@ function normalizeMemoryHealthScope(rawScope: unknown): MemoryHealthScope | null
   return null;
 }
 
-function createEmptyMemoryHealthStats() {
+type MemoryHealthModelStatus = MemoryHealthStats["embeddings"]["model"];
+
+function createEmptyMemoryHealthStats(): MemoryHealthStats {
+  const model: MemoryHealthModelStatus = {
+    modelId: "Xenova/all-MiniLM-L6-v2",
+    state: "idle",
+    activity: "idle",
+    installState: "missing",
+    cacheDir: null,
+    installPath: null,
+    progress: null,
+    loaded: null,
+    total: null,
+    file: null,
+    error: null,
+  };
+
   return {
     scopes: MEMORY_HEALTH_SCOPES.map((scope) => ({
       scope,
@@ -849,73 +864,8 @@ function createEmptyMemoryHealthStats() {
       cacheHits: 0,
       cacheMisses: 0,
       cacheHitRate: 0,
-      model: {
-        modelId: "Xenova/all-MiniLM-L6-v2",
-        state: "idle" as const,
-        progress: null,
-        loaded: null,
-        total: null,
-        file: null,
-        error: null,
-      },
+      model,
     },
-  } as {
-    scopes: Array<{
-      scope: MemoryHealthScope;
-      current: number;
-      max: number;
-      counts: {
-        tier1: number;
-        tier2: number;
-        tier3: number;
-        archived: number;
-      };
-    }>;
-    lastSweep: {
-      sweepId: string;
-      projectId: string;
-      reason: "manual" | "startup";
-      startedAt: string;
-      completedAt: string;
-      entriesDecayed: number;
-      entriesDemoted: number;
-      entriesPromoted: number;
-      entriesArchived: number;
-      entriesOrphaned: number;
-      durationMs: number;
-    } | null;
-    lastConsolidation: {
-      consolidationId: string;
-      projectId: string;
-      reason: "manual" | "auto";
-      startedAt: string;
-      completedAt: string;
-      clustersFound: number;
-      entriesMerged: number;
-      entriesCreated: number;
-      tokensUsed: number;
-      durationMs: number;
-    } | null;
-    embeddings: {
-      entriesEmbedded: number;
-      entriesTotal: number;
-      queueDepth: number;
-      processing: boolean;
-      lastBatchProcessedAt: string | null;
-      cacheEntries: number;
-      cacheHits: number;
-      cacheMisses: number;
-      cacheHitRate: number;
-      model: {
-        modelId: string;
-        state: "idle" | "loading" | "ready" | "unavailable";
-        progress: number | null;
-        loaded: number | null;
-        total: number | null;
-        file: string | null;
-        error: string | null;
-      };
-    };
   };
 }
 
@@ -991,6 +941,10 @@ function getMemoryHealthStats(ctx: AppContext) {
     model: {
       modelId: embeddingStatus?.modelId ?? "Xenova/all-MiniLM-L6-v2",
       state: embeddingStatus?.state ?? "idle",
+      activity: embeddingStatus?.activity ?? "idle",
+      installState: embeddingStatus?.installState ?? "missing",
+      cacheDir: embeddingStatus?.cacheDir ?? null,
+      installPath: embeddingStatus?.installPath ?? null,
       progress: embeddingStatus?.progress ?? null,
       loaded: embeddingStatus?.loaded ?? null,
       total: embeddingStatus?.total ?? null,
@@ -5451,7 +5405,9 @@ export function registerIpc({
     if (!ctx.embeddingService?.preload) {
       throw new Error("Embedding service is not available.");
     }
-    void ctx.embeddingService.preload({ forceRetry: true }).catch(() => {
+    const embeddingStatus = ctx.embeddingService.getStatus();
+    const localFilesOnly = embeddingStatus.installState === "installed" && embeddingStatus.state !== "unavailable";
+    void ctx.embeddingService.preload({ forceRetry: true, localFilesOnly }).catch(() => {
       // Health polling will pick up the unavailable state; the click itself should remain responsive.
     });
     return getMemoryHealthStats(ctx);
