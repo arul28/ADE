@@ -5538,6 +5538,7 @@ export function createAgentChatService(args: {
       // ── Stream processing loop ──
       const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
       for await (const part of stream.fullStream as AsyncIterable<any>) {
+        if (runtime.interrupted) break;
         if (!part || typeof part !== "object") continue;
         markFirstStreamEvent(String(part.type ?? "unknown"));
 
@@ -8360,6 +8361,7 @@ export function createAgentChatService(args: {
 
     // Unified runtime interrupt — auto-decline pending approvals to prevent orphans
     if (managed.runtime?.kind === "unified") {
+      if (managed.runtime.interrupted) return;
       managed.runtime.interrupted = true;
       managed.runtime.abortController?.abort();
       for (const [itemId, approval] of managed.runtime.pendingApprovals) {
@@ -8380,6 +8382,8 @@ export function createAgentChatService(args: {
     }
 
     const runtime = ensureClaudeSessionRuntime(managed);
+    // Idempotency guard: skip if already interrupted (e.g. rapid cancel clicks)
+    if (runtime.interrupted) return;
     logger.info("agent_chat.turn_interrupt_requested", {
       sessionId,
       provider: "claude",
@@ -8387,13 +8391,28 @@ export function createAgentChatService(args: {
       busy: runtime.busy,
       warmupInFlight: Boolean(runtime.v2WarmupDone),
     });
+    // Set interrupted before closing the session so the streaming loop sees it
+    // and breaks cleanly rather than throwing from a closed session.
     runtime.interrupted = true;
     cancelClaudeWarmup(managed, runtime, "interrupt");
     runtime.activeQuery?.interrupt().catch(() => {});
-    // Close the V2 session on interrupt — it will be recreated on the next turn
+    // Close the V2 session — it will be recreated on the next turn.
     try { runtime.v2Session?.close(); } catch { /* ignore */ }
     runtime.v2Session = null;
     runtime.v2StreamGen = null;
+
+    // Emit subagent_result "stopped" for every active subagent so the UI
+    // properly transitions them from "running" → "stopped" (matching Claude Code CLI behaviour).
+    const turnId = runtime.activeTurnId ?? undefined;
+    for (const { taskId } of runtime.activeSubagents.values()) {
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId,
+        status: "stopped",
+        summary: "Interrupted by user",
+        turnId,
+      });
+    }
     runtime.activeSubagents.clear();
     logger.info("agent_chat.turn_interrupt_completed", {
       sessionId,
