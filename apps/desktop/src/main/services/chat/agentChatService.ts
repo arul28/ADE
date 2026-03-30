@@ -13,7 +13,7 @@ import {
   type ModelMessage,
   type UserContent,
 } from "ai";
-import { query as claudeQuery, unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
+import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 import type { Query as ClaudeSDKQuery, SDKMessage, SDKUserMessage, Options as ClaudeSDKOptions, PermissionResult as ClaudePermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
 type ClaudeV2Session = {
@@ -39,7 +39,7 @@ import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
-import { nowIso, fileSizeOrZero } from "../shared/utils";
+import { nowIso, fileSizeOrZero, resolvePathWithinRoot } from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import {
   createDefaultComputerUsePolicy,
@@ -70,6 +70,8 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
+  AgentChatSlashCommand,
+  AgentChatSlashCommandsArgs,
   AgentChatSubagentListArgs,
   AgentChatSubagentSnapshot,
   AgentChatSurface,
@@ -81,6 +83,7 @@ import type {
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
   ComputerUsePolicy,
+  ThinkingLevel,
   TerminalSessionStatus,
   TerminalToolType,
   CtoCapabilityMode,
@@ -102,7 +105,7 @@ import { createUniversalToolSet, type PermissionMode } from "../ai/tools/univers
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools } from "../ai/tools/ctoOperatorTools";
-import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
+import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   getProviderRuntimeHealth,
@@ -119,6 +122,8 @@ import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearDispatcherService } from "../cto/linearDispatcherService";
+import type { LinearClient } from "../cto/linearClient";
+import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createProofObserver } from "../computerUse/proofObserver";
@@ -138,12 +143,6 @@ type JsonRpcEnvelope = {
     message?: string;
     data?: unknown;
   };
-};
-
-type ClaudeToolPermissionResult = {
-  behavior: "allow" | "deny";
-  message?: string;
-  interrupt?: boolean;
 };
 
 type PersistedClaudeMessage = {
@@ -240,7 +239,7 @@ type CodexRuntime = {
 type ClaudeRuntime = {
   kind: "claude";
   sdkSessionId: string | null;
-  activeQuery: import("@anthropic-ai/claude-agent-sdk").Query | null;
+  activeQuery: ClaudeSDKQuery | null;
   v2Session: ClaudeV2Session | null;
   /** Single stream generator kept alive across turns (never closed by for-await). */
   v2StreamGen: AsyncGenerator<any, void> | null;
@@ -316,22 +315,25 @@ function codexNotificationDedupKey(payload: JsonRpcEnvelope): string | null {
   const method = typeof payload.method === "string" ? payload.method : "";
   const params = asRecord(payload.params) ?? {};
 
-  if (method === "item/started" || method === "codex/event/item_started") {
-    const itemId = readCodexNotificationItemId(params);
-    return itemId ? `item_started:${itemId}` : null;
+  switch (method) {
+    case "item/started":
+    case "codex/event/item_started": {
+      const itemId = readCodexNotificationItemId(params);
+      return itemId ? `item_started:${itemId}` : null;
+    }
+    case "item/completed":
+    case "codex/event/item_completed": {
+      const itemId = readCodexNotificationItemId(params);
+      return itemId ? `item_completed:${itemId}` : null;
+    }
+    case "turn/aborted":
+    case "codex/event/turn_aborted": {
+      const turnId = extractCodexTurnId(params);
+      return turnId ? `turn_aborted:${turnId}` : null;
+    }
+    default:
+      return null;
   }
-
-  if (method === "item/completed" || method === "codex/event/item_completed") {
-    const itemId = readCodexNotificationItemId(params);
-    return itemId ? `item_completed:${itemId}` : null;
-  }
-
-  if (method === "turn/aborted" || method === "codex/event/turn_aborted") {
-    const turnId = extractCodexTurnId(params);
-    return turnId ? `turn_aborted:${turnId}` : null;
-  }
-
-  return null;
 }
 
 function shouldSkipDuplicateCodexNotification(runtime: CodexRuntime, payload: JsonRpcEnvelope): boolean {
@@ -942,6 +944,7 @@ function buildStreamingUserContent(
     attachments: AgentChatFileRef[];
     runtimeKind: "claude" | "unified";
     modelDescriptor?: ModelDescriptor;
+    baseDir?: string;
   },
 ): UserContent {
   if (!args.attachments.length) {
@@ -953,7 +956,9 @@ function buildStreamingUserContent(
   ];
 
   for (const attachment of args.attachments) {
-    const resolvedPath = path.resolve(attachment.path);
+    const resolvedPath = args.baseDir
+      ? path.resolve(args.baseDir, attachment.path)
+      : path.resolve(attachment.path);
     if (!fs.existsSync(resolvedPath)) {
       parts.push({ type: "text", text: `\nAttachment missing: ${attachment.path}` });
       continue;
@@ -1541,7 +1546,7 @@ function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
   return provider === "codex" || provider === "claude" ? "full_mcp" : "fallback";
 }
 
-function guardedIdentityPermissionModeForProvider(provider: AgentChatProvider): AgentChatSession["permissionMode"] {
+function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
   return "plan";
 }
 
@@ -1579,10 +1584,13 @@ export function createAgentChatService(args: {
   getMissionService?: () => ReturnType<typeof createMissionService> | null;
   getAiOrchestratorService?: () => ReturnType<typeof createAiOrchestratorService> | null;
   getLinearDispatcherService?: () => ReturnType<typeof createLinearDispatcherService> | null;
-  linearClient?: import("../cto/linearClient").LinearClient | null;
-  linearCredentials?: import("../cto/linearCredentialService").LinearCredentialService | null;
+  linearClient?: LinearClient | null;
+  linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
+  getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
+  ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
+  getAutomationService?: () => { list: () => any[]; triggerManually: (args: any) => Promise<any>; listRuns: (args?: any) => any[] } | null;
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -1611,6 +1619,9 @@ export function createAgentChatService(args: {
     linearCredentials: linearCredentialsRef,
     prService,
     processService,
+    getTestService,
+    ptyService,
+    getAutomationService,
     computerUseArtifactBrokerService,
     laneService,
     sessionService,
@@ -4064,9 +4075,9 @@ export function createAgentChatService(args: {
 
   // ── Helpers for unified turn logic ──
 
-  const mapReasoningEffortToThinking = (effort: string | null | undefined): import("../../../shared/types").ThinkingLevel | null => {
+  const mapReasoningEffortToThinking = (effort: string | null | undefined): ThinkingLevel | null => {
     if (!effort) return null;
-    const map: Record<string, import("../../../shared/types").ThinkingLevel> = {
+    const map: Record<string, ThinkingLevel> = {
       none: "none",
       minimal: "minimal",
       low: "low",
@@ -4269,7 +4280,9 @@ export function createAgentChatService(args: {
 
       // Build the message — plain string for text-only, or SDKUserMessage with
       // image content blocks (streaming input format per SDK docs).
-      const messageToSend = buildClaudeV2Message(basePromptText, attachments);
+      const messageToSend = buildClaudeV2Message(basePromptText, attachments, {
+        baseDir: managed.laneWorktreePath,
+      });
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
       if (typeof runtime.v2Session.setPermissionMode === "function") {
@@ -4981,6 +4994,7 @@ export function createAgentChatService(args: {
             attachments,
             runtimeKind: "unified",
             modelDescriptor: runtime.modelDescriptor,
+            baseDir: managed.laneWorktreePath,
           }),
         };
       });
@@ -5191,6 +5205,9 @@ export function createAgentChatService(args: {
             prService: prService ?? null,
             fileService: fileService ?? null,
             processService: processService ?? null,
+            testService: getTestService?.() ?? null,
+            ptyService: ptyService ?? null,
+            automationService: getAutomationService?.() ?? null,
             issueTracker: linearIssueTracker ?? null,
             listChats: listSessions,
             getChatStatus: getSessionSummary,
@@ -7583,6 +7600,24 @@ export function createAgentChatService(args: {
     const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
 
     const managed = ensureManagedSession(sessionId);
+    for (const attachment of attachments) {
+      const rawPath = attachment.path.trim();
+      if (!rawPath.length) {
+        throw new Error("Attachment path is required.");
+      }
+      const isAbsolute = path.isAbsolute(rawPath);
+      const root = isAbsolute ? projectRoot : managed.laneWorktreePath;
+      const candidate = isAbsolute ? rawPath : path.resolve(managed.laneWorktreePath, rawPath);
+      try {
+        resolvePathWithinRoot(root, candidate, { allowMissing: true });
+      } catch {
+        throw new Error(
+          isAbsolute
+            ? `Attachment path must stay within the project root: ${rawPath}`
+            : `Attachment path must stay within the active lane: ${rawPath}`,
+        );
+      }
+    }
     const allowClaudeLoginCommand = managed.session.provider === "claude" && slashCommand === "/login";
     const claudeRuntimeHealth = managed.session.provider === "claude"
       ? getProviderRuntimeHealth("claude")
@@ -8778,13 +8813,13 @@ export function createAgentChatService(args: {
     return deriveSessionCapabilities(managed);
   };
 
-  const getSlashCommands = ({ sessionId }: import("../../../shared/types").AgentChatSlashCommandsArgs): import("../../../shared/types").AgentChatSlashCommand[] => {
+  const getSlashCommands = ({ sessionId }: AgentChatSlashCommandsArgs): AgentChatSlashCommand[] => {
     const managed = managedSessions.get(sessionId);
     if (!managed) return [];
     const provider = managed.session.provider;
 
     // Local commands available to all providers
-    const localCommands: import("../../../shared/types").AgentChatSlashCommand[] = [
+    const localCommands: AgentChatSlashCommand[] = [
       { name: "/clear", description: "Clear chat history", source: "local" },
     ];
     if (provider === "claude") {
@@ -8798,21 +8833,21 @@ export function createAgentChatService(args: {
     // Claude SDK commands
     if (provider === "claude" && managed.runtime?.kind === "claude") {
       const rt = managed.runtime;
-      const sdkCmds: import("../../../shared/types").AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+      const sdkCmds: AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
       // Merge: SDK commands first, then local commands that don't conflict
-      const sdkNames = new Set(sdkCmds.map((c: import("../../../shared/types").AgentChatSlashCommand) => c.name));
+      const sdkNames = new Set(sdkCmds.map((c: AgentChatSlashCommand) => c.name));
       return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
     }
 
     // Codex SDK commands
     if (provider === "codex" && managed.runtime?.kind === "codex") {
       const rt = managed.runtime;
-      const sdkCmds: import("../../../shared/types").AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+      const sdkCmds: AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
@@ -8822,7 +8857,7 @@ export function createAgentChatService(args: {
       if (!sdkCmds.some((c) => c.name === "/review")) {
         sdkCmds.push({ name: "/review", description: "Review uncommitted changes", source: "sdk" as const });
       }
-      const sdkNames = new Set(sdkCmds.map((c: import("../../../shared/types").AgentChatSlashCommand) => c.name));
+      const sdkNames = new Set(sdkCmds.map((c: AgentChatSlashCommand) => c.name));
       return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
     }
 

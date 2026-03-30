@@ -15,7 +15,6 @@ import type {
   FilesWorkspace,
   PtyDataEvent,
   PtyExitEvent,
-  SyncChatEventPayload,
   SyncBrainStatusPayload,
   SyncChangesetBatchPayload,
   SyncCommandPayload,
@@ -52,7 +51,7 @@ import type { createPrService } from "../prs/prService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../state/kvDb";
-import { hasNullByte, isWithinDir, normalizeRelative, nowIso, toOptionalString } from "../shared/utils";
+import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, toOptionalString } from "../shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore } from "./syncPairingStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
@@ -527,8 +526,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatTranscriptOffsets.set(sessionId, nextOffset);
         }
         for (const event of events) {
-          const chatEventPayload: SyncChatEventPayload = event;
-          send(peer.ws, "chat_event", chatEventPayload);
+          send(peer.ws, "chat_event", event);
         }
       }
     }
@@ -574,13 +572,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const absolute = path.isAbsolute(candidate)
       ? candidate
       : path.resolve(args.projectRoot, candidate);
-    if (!isWithinDir(layout.artifactsDir, absolute)) {
+    let resolvedArtifactPath: string;
+    try {
+      resolvedArtifactPath = resolvePathWithinRoot(layout.artifactsDir, absolute);
+    } catch {
       throw new Error("Artifact path must resolve within .ade/artifacts.");
     }
-    if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) {
+    if (!fs.existsSync(resolvedArtifactPath) || !fs.statSync(resolvedArtifactPath).isFile()) {
       throw new Error("Artifact file does not exist.");
     }
-    return absolute;
+    return resolvedArtifactPath;
   }
 
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {

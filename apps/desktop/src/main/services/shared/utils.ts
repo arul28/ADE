@@ -149,6 +149,48 @@ export function isWithinDir(root: string, candidate: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+function realpathExisting(filePath: string): string {
+  return typeof fs.realpathSync.native === "function"
+    ? fs.realpathSync.native(filePath)
+    : fs.realpathSync(filePath);
+}
+
+function resolveRealPathAllowMissing(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  const missingSegments: string[] = [];
+  let cursor = resolved;
+
+  while (!fs.existsSync(cursor)) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) {
+      throw new Error(`Path does not exist: ${filePath}`);
+    }
+    missingSegments.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+
+  return path.resolve(realpathExisting(cursor), ...missingSegments);
+}
+
+/**
+ * Resolve `candidate` against the real filesystem layout and ensure it stays
+ * inside `root`, even when symlinks are involved.
+ */
+export function resolvePathWithinRoot(
+  root: string,
+  candidate: string,
+  opts: { allowMissing?: boolean } = {},
+): string {
+  const rootReal = realpathExisting(path.resolve(root));
+  const candidateReal = opts.allowMissing
+    ? resolveRealPathAllowMissing(candidate)
+    : realpathExisting(path.resolve(candidate));
+  if (!isWithinDir(rootReal, candidateReal)) {
+    throw new Error("Path escapes root");
+  }
+  return candidateReal;
+}
+
 // ── String helpers ──────────────────────────────────────────────────
 
 /** Return trimmed string or null if empty/non-string. */

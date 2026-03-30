@@ -1,5 +1,5 @@
 import { app, BrowserWindow, nativeImage, shell } from "electron";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 type NodePtyType = typeof import("node-pty");
 import { registerIpc } from "./services/ipc/registerIpc";
@@ -123,8 +123,8 @@ function fixElectronShellPath(): void {
 
   try {
     const loginShell = process.env.SHELL || "/bin/zsh";
-    // Use login (-l) shell to source profile, printf to avoid trailing newline.
-    const resolved = execSync(`${loginShell} -lc 'printf "%s" "$PATH"'`, {
+    // Use execFileSync so SHELL is treated as a path, not interpolated shell text.
+    const resolved = execFileSync(loginShell, ["-lc", 'printf "%s" "$PATH"'], {
       encoding: "utf-8",
       timeout: 5_000,
     }).trim();
@@ -570,6 +570,7 @@ app.whenReady().then(async () => {
     let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
     let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null = null;
+    let testServiceRef: ReturnType<typeof createTestService> | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
 
@@ -1253,6 +1254,9 @@ app.whenReady().then(async () => {
       linearCredentials: linearCredentialService,
       prService,
       processService,
+      getTestService: () => testServiceRef,
+      ptyService,
+      getAutomationService: () => automationService,
       episodicSummaryService,
       laneService,
       sessionService,
@@ -1331,6 +1335,7 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.testsEvent, ev);
       }
     });
+    testServiceRef = testService;
 
     automationService = createAutomationService({
       db,

@@ -287,21 +287,19 @@ function tokenizeCommand(command: string): string[] {
 
 function looksLikePathToken(value: string): boolean {
   return (
-    value.startsWith("/") ||
-    value.startsWith("./") ||
-    value.startsWith("../") ||
-    value.startsWith("~") ||
     value.startsWith(".") ||
+    value.startsWith("~") ||
     value.includes("/")
   );
 }
+
+const COMMAND_SEPARATORS = new Set(["|", "||", "&&", ";", "&"]);
 
 function splitCommandSegments(tokens: string[]): string[][] {
   const segments: string[][] = [];
   let current: string[] = [];
   for (const token of tokens) {
-    const normalized = normalizePathToken(token);
-    if (normalized === "|" || normalized === "||" || normalized === "&&" || normalized === ";" || normalized === "&") {
+    if (COMMAND_SEPARATORS.has(normalizePathToken(token))) {
       if (current.length > 0) segments.push(current);
       current = [];
       continue;
@@ -381,8 +379,6 @@ function collectPathReferences(command: string, cwd: string): PathReference[] {
       case "chown":
       case "patch":
       case "truncate":
-        pathOperands.forEach((value) => addPath(value, "write"));
-        return;
       case "tee":
         pathOperands.forEach((value) => addPath(value, "write"));
         return;
@@ -442,17 +438,17 @@ export function checkWorkerSandbox(
   const commandMutates = bashCommandLikelyMutates(command);
 
   // 2. Validate file paths against allowedPaths (absolute + relative)
-  const rootResolved = path.resolve(projectRoot);
+  const rootResolved = canonicalizePathForContainment(projectRoot);
   const pathRefs = collectPathReferences(command, projectRoot);
   for (const entry of pathRefs) {
     const p = entry.raw;
-    const resolved = entry.resolved;
+    const resolved = canonicalizePathForContainment(entry.resolved);
     const isSystemExecutablePath = resolved.startsWith("/usr/bin/") || resolved.startsWith("/usr/local/bin/");
     if (resolved === "/dev/null") continue;
     if (isSystemExecutablePath && (entry.access === "read" || (!commandMutates && entry.access !== "write"))) continue;
 
     const withinAllowed = config.allowedPaths.some((allowed) => {
-      const allowedAbs = path.resolve(projectRoot, allowed);
+      const allowedAbs = canonicalizePathForContainment(path.resolve(projectRoot, allowed));
       return isWithinDir(allowedAbs, resolved);
     });
     if (!withinAllowed && !isWithinDir(rootResolved, resolved)) {

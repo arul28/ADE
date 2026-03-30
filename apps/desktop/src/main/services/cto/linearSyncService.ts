@@ -515,6 +515,7 @@ export function createLinearSyncService(args: {
       input.note,
       policy,
       input.employeeOverride,
+      input.laneId,
     );
     if (!run) return null;
     if (run.status !== "completed" && run.status !== "failed" && run.status !== "cancelled") {

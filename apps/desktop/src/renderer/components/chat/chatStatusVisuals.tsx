@@ -33,14 +33,14 @@ export function ChatStatusGlyph({
   size?: number;
   className?: string;
 }) {
-  if (status === "completed") {
-    return <CheckCircle size={size} weight="bold" className={cn("text-emerald-400", className)} />;
+  switch (status) {
+    case "completed":
+      return <CheckCircle size={size} weight="bold" className={cn("text-emerald-400", className)} />;
+    case "failed":
+      return <XCircle size={size} weight="bold" className={cn("text-red-400", className)} />;
+    case "waiting":
+      return <SpinnerGap size={size} weight="bold" className={cn("animate-spin text-amber-400", className)} />;
+    case "working":
+      return <SpinnerGap size={size} weight="bold" className={cn("animate-spin text-emerald-400", className)} />;
   }
-  if (status === "failed") {
-    return <XCircle size={size} weight="bold" className={cn("text-red-400", className)} />;
-  }
-  if (status === "waiting") {
-    return <SpinnerGap size={size} weight="bold" className={cn("animate-spin text-amber-400", className)} />;
-  }
-  return <SpinnerGap size={size} weight="bold" className={cn("animate-spin text-emerald-400", className)} />;
 }

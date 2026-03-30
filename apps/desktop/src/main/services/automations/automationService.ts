@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import cron from "node-cron";
 import chokidar, { type FSWatcher } from "chokidar";
@@ -41,8 +42,8 @@ import type { createProceduralLearningService } from "../memory/proceduralLearni
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/unifiedOrchestratorAdapter";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
-import { escapeRegExp, globToRegExp, isRecord, isWithinDir, matchesGlob, normalizeSet, nowIso, safeJsonParse } from "../shared/utils";
-import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
+import { escapeRegExp, globToRegExp, isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
+import { getDefaultModelDescriptor, getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 
 type CronTask = {
   stop: () => void;
@@ -455,7 +456,10 @@ function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
       createArtifact: rule.outputs?.createArtifact ?? true,
       ...(rule.outputs?.notificationChannel ? { notificationChannel: rule.outputs.notificationChannel } : {}),
     },
-    verification: { verifyBeforePublish: false, mode: "intervention" },
+    verification: {
+      verifyBeforePublish: rule.verification?.verifyBeforePublish === true,
+      mode: rule.verification?.mode ?? "intervention",
+    },
     billingCode: rule.billingCode?.trim() || `auto:${rule.id}`,
     execution: normalizedExecution,
     legacy: {
@@ -1421,13 +1425,23 @@ export function createAutomationService({
       const laneId = trigger.laneId ?? null;
       const baseCwd = laneId ? laneService.getLaneWorktreePath(laneId) : projectRoot;
       const configuredCwd = (action.cwd ?? "").trim();
-      const cwd = configuredCwd.length
+      const cwdCandidate = configuredCwd.length
         ? path.isAbsolute(configuredCwd)
           ? configuredCwd
           : path.resolve(baseCwd, configuredCwd)
         : baseCwd;
-      if (!isWithinDir(baseCwd, cwd)) {
+      let cwd: string;
+      try {
+        cwd = resolvePathWithinRoot(baseCwd, cwdCandidate, { allowMissing: true });
+      } catch {
         throw new Error("Unsafe cwd: must stay inside the lane worktree or project root.");
+      }
+      try {
+        if (!fs.statSync(cwd).isDirectory()) {
+          throw new Error("Configured cwd is not a directory.");
+        }
+      } catch {
+        throw new Error(`Configured cwd does not exist: ${configuredCwd || cwd}`);
       }
       const { output, exitCode } = await runCommand({ command, cwd, timeoutMs: action.timeoutMs ?? 5 * 60_000 });
       if (exitCode !== 0) return { status: "failed", output: output.length ? output : `Command exited with code ${exitCode}` };
@@ -1586,6 +1600,15 @@ export function createAutomationService({
       throw new Error("No lane is available for this automation run.");
     }
 
+    const budgetCheck = budgetCapServiceRef?.checkBudget(
+      AUTOMATION_SCOPE as Parameters<NonNullable<typeof budgetCapServiceRef>["checkBudget"]>[0],
+      args.rule.id,
+      "any",
+    );
+    if (budgetCheck && !budgetCheck.allowed) {
+      throw new Error(budgetCheck.reason ?? "Budget cap blocked automation run.");
+    }
+
     const briefing = await buildBriefing(args.rule, args.trigger);
     const linkedProcedureIds = briefing?.usedProcedureIds ?? [];
     const confidence = computeConfidence(args.rule, linkedProcedureIds.length);
@@ -1605,6 +1628,20 @@ export function createAutomationService({
 
     const actionId = insertAction(run.id, 0, "agent-session");
     const modelId = args.rule.modelConfig?.orchestratorModel?.modelId ?? DEFAULT_AUTOMATION_CHAT_MODEL_ID;
+    const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("unified");
+    if (!modelDescriptor) {
+      throw new Error(`Unknown model '${modelId}'.`);
+    }
+    const providerGroup = resolveProviderGroupForModel(modelDescriptor);
+    const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: false });
+    const verificationRequired = requiresPublishGate(args.rule);
+    const permissionMode = verificationRequired
+      ? "plan"
+      : providerGroup === "claude"
+        ? permissionConfig.providers?.claude ?? "edit"
+        : providerGroup === "codex"
+          ? permissionConfig.providers?.codex ?? "edit"
+          : permissionConfig.providers?.unified ?? "edit";
     const reasoningEffort = args.rule.execution?.session?.reasoningEffort ?? args.rule.modelConfig?.orchestratorModel?.thinkingLevel ?? null;
     const timeoutMs = Math.max(
       15_000,
@@ -1621,7 +1658,10 @@ export function createAutomationService({
         modelId,
         sessionProfile: "workflow",
         reasoningEffort,
-        unifiedPermissionMode: "full-auto",
+        permissionMode,
+        ...(providerGroup === "codex" && !verificationRequired && permissionConfig.providers?.codexSandbox
+          ? { codexSandbox: permissionConfig.providers.codexSandbox }
+          : {}),
         surface: "automation",
         automationId: args.rule.id,
         automationRunId: run.id,
@@ -1654,7 +1694,7 @@ export function createAutomationService({
         queue_status: deriveQueueStatus({
           current: "pending-review",
           runStatus: "succeeded",
-          verificationRequired: false,
+          verificationRequired,
           mode: args.rule.mode,
           summary: result.outputText,
         }),
@@ -1677,7 +1717,7 @@ export function createAutomationService({
         queue_status: deriveQueueStatus({
           current: "pending-review",
           runStatus: "failed",
-          verificationRequired: false,
+          verificationRequired,
           mode: args.rule.mode,
           summary: message,
         }),

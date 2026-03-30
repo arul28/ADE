@@ -29,7 +29,25 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
-import { isWithinDir } from "../shared/utils";
+import { resolvePathWithinRoot } from "../shared/utils";
+
+function validateAutomationCwd(projectRoot: string, cwdRaw: string): string | null {
+  const candidate = path.isAbsolute(cwdRaw) ? cwdRaw : path.resolve(projectRoot, cwdRaw);
+  let resolved: string;
+  try {
+    resolved = resolvePathWithinRoot(projectRoot, candidate, { allowMissing: true });
+  } catch {
+    return "cwd must stay within the project root.";
+  }
+  try {
+    if (!fs.statSync(resolved).isDirectory()) {
+      return "cwd must point to an existing directory within the project root.";
+    }
+  } catch {
+    return "cwd must point to an existing directory within the project root.";
+  }
+  return null;
+}
 
 function slugify(input: string): string {
   const s = input
@@ -642,28 +660,15 @@ function normalizeDraft(args: {
 
       const cwdRaw = safeTrim(action?.cwd);
       if (cwdRaw) {
-        if (path.isAbsolute(cwdRaw)) {
-          if (!isWithinDir(args.projectRoot, cwdRaw)) {
-            issues.push({
-              level: "error",
-              path: `actions[${idx}].cwd`,
-              message: "Absolute cwd must be within the project root."
-            });
-          } else {
-            next.cwd = cwdRaw;
-          }
+        const cwdIssue = validateAutomationCwd(args.projectRoot, cwdRaw);
+        if (cwdIssue) {
+          issues.push({
+            level: "error",
+            path: `actions[${idx}].cwd`,
+            message: cwdIssue
+          });
         } else {
-          // Require relative cwd to stay within the project root (runtime also enforces lane/base cwd bounds).
-          const resolved = path.resolve(args.projectRoot, cwdRaw);
-          if (!isWithinDir(args.projectRoot, resolved)) {
-            issues.push({
-              level: "error",
-              path: `actions[${idx}].cwd`,
-              message: "cwd must not escape the project root."
-            });
-          } else {
-            next.cwd = cwdRaw;
-          }
+          next.cwd = cwdRaw;
         }
       }
 

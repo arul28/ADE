@@ -17,7 +17,24 @@ import type {
 } from "../../../shared/types";
 
 import type { Logger } from "../logging/logger";
-import { isWithinDir } from "../shared/utils";
+import { resolvePathWithinRoot } from "../shared/utils";
+
+/** Resolve a relative path against `root` and throw if it escapes.  Logs a warning on escape. */
+function resolveCheckedPath(
+  root: string,
+  relative: string,
+  logger: Logger,
+  logTag: string,
+  logContext: Record<string, string>,
+  opts: { allowMissing?: boolean } = {},
+): string {
+  try {
+    return resolvePathWithinRoot(root, path.resolve(root, relative), opts);
+  } catch {
+    logger.warn(logTag, logContext);
+    throw new Error("Path escapes allowed directory");
+  }
+}
 
 function cloneDockerConfig(config: LaneDockerConfig): LaneDockerConfig {
   return config.services
@@ -173,13 +190,8 @@ export function createLaneEnvironmentService({
     laneVars: Record<string, string>
   ): Promise<void> {
     for (const file of envFiles) {
-      const sourcePath = path.resolve(projectRoot, file.source);
-      const destPath = path.resolve(worktreePath, file.dest);
-
-      if (!isWithinDir(worktreePath, destPath)) {
-        logger.warn("lane_env_init.env_file_path_escape", { dest: file.dest, worktreePath });
-        throw new Error("Path escapes allowed directory");
-      }
+      const sourcePath = resolveCheckedPath(projectRoot, file.source, logger, "lane_env_init.env_file_source_escape", { source: file.source, projectRoot }, { allowMissing: true });
+      const destPath = resolveCheckedPath(worktreePath, file.dest, logger, "lane_env_init.env_file_path_escape", { dest: file.dest, worktreePath }, { allowMissing: true });
 
       // Ensure destination directory exists
       const destDir = path.dirname(destPath);
@@ -215,7 +227,7 @@ export function createLaneEnvironmentService({
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath ?? "" });
       return { exitCode: 0, stderr: "" };
     }
-    const composePath = path.resolve(projectRoot, docker.composePath);
+    const composePath = resolveCheckedPath(projectRoot, docker.composePath, logger, "lane_env_init.docker_compose_escape", { path: docker.composePath, projectRoot }, { allowMissing: true });
     if (!fs.existsSync(composePath)) {
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath });
       return { exitCode: 0, stderr: "" };
@@ -251,7 +263,7 @@ export function createLaneEnvironmentService({
         logger.warn("lane_env_init.dependency_command_not_allowed", { command: baseCommand });
         continue;
       }
-      const cwd = dep.cwd ? path.resolve(worktreePath, dep.cwd) : worktreePath;
+      const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });
       const result = await execCommand(dep.command, cwd);
       if (result.exitCode !== 0) {
         failures.push(`${dep.command.join(" ")}: ${result.stderr.slice(0, 500)}`);
@@ -270,17 +282,8 @@ export function createLaneEnvironmentService({
     mountPoints: LaneMountPointConfig[]
   ): void {
     for (const mp of mountPoints) {
-      const sourcePath = path.resolve(adeDir, mp.source);
-      const destPath = path.resolve(worktreePath, mp.dest);
-
-      if (!isWithinDir(adeDir, sourcePath)) {
-        logger.warn("lane_env_init.mount_source_path_escape", { source: mp.source, adeDir });
-        throw new Error("Path escapes allowed directory");
-      }
-      if (!isWithinDir(worktreePath, destPath)) {
-        logger.warn("lane_env_init.mount_dest_path_escape", { dest: mp.dest, worktreePath });
-        throw new Error("Path escapes allowed directory");
-      }
+      const sourcePath = resolveCheckedPath(adeDir, mp.source, logger, "lane_env_init.mount_source_path_escape", { source: mp.source, adeDir }, { allowMissing: true });
+      const destPath = resolveCheckedPath(worktreePath, mp.dest, logger, "lane_env_init.mount_dest_path_escape", { dest: mp.dest, worktreePath }, { allowMissing: true });
 
       const destDir = path.dirname(destPath);
       if (!fs.existsSync(destDir)) {
@@ -303,14 +306,9 @@ export function createLaneEnvironmentService({
     copyPaths: LaneCopyPathConfig[]
   ): void {
     for (const cp of copyPaths) {
-      const sourcePath = path.resolve(projectRoot, cp.source);
+      const sourcePath = resolveCheckedPath(projectRoot, cp.source, logger, "lane_env_init.copy_source_path_escape", { source: cp.source, projectRoot }, { allowMissing: true });
       const dest = cp.dest ?? cp.source;
-      const destPath = path.resolve(worktreePath, dest);
-
-      if (!isWithinDir(worktreePath, destPath)) {
-        logger.warn("lane_env_init.copy_dest_path_escape", { dest, worktreePath });
-        throw new Error("Path escapes allowed directory");
-      }
+      const destPath = resolveCheckedPath(worktreePath, dest, logger, "lane_env_init.copy_dest_path_escape", { dest, worktreePath }, { allowMissing: true });
 
       if (!fs.existsSync(sourcePath)) {
         logger.warn("lane_env_init.copy_path_missing", { source: cp.source });
@@ -495,7 +493,14 @@ export function createLaneEnvironmentService({
         return;
       }
       const projectName = buildDockerProjectName(lane.id, config.docker.projectPrefix);
-      const composePath = path.resolve(projectRoot, config.docker.composePath);
+      let composePath: string;
+      try {
+        composePath = resolvePathWithinRoot(projectRoot, path.resolve(projectRoot, config.docker.composePath), { allowMissing: true });
+      } catch {
+        logger.warn("lane_env_cleanup.docker_compose_escape", { laneId: lane.id, path: config.docker.composePath, projectRoot });
+        progressMap.delete(lane.id);
+        return;
+      }
       if (!fs.existsSync(composePath)) {
         logger.warn("lane_env_cleanup.docker_compose_missing", { laneId: lane.id, path: config.docker.composePath });
         progressMap.delete(lane.id);

@@ -63,6 +63,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     const modelIdentityRef = useRef<string | null>(null);
     const [ready, setReady] = useState(false);
     const [failed, setFailed] = useState(false);
+    const monacoTheme = theme === "light" ? "vs" : "vs-dark";
 
     useImperativeHandle(ref, () => ({
       getModifiedValue: () => diffEditorRef.current?.getModel()?.modified.getValue() ?? null
@@ -85,7 +86,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
             fontSize: 13,
             lineHeight: 18,
             scrollBeyondLastLine: false,
-            theme: theme === "light" ? "vs" : "vs-dark"
+            theme: monacoTheme
           });
 
           diffEditorRef.current = editor;
@@ -150,7 +151,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       loadMonaco()
         .then((monaco) => {
           if (cancelled) return;
-          monaco.editor.setTheme(theme === "light" ? "vs" : "vs-dark");
+          monaco.editor.setTheme(monacoTheme);
         })
         .catch(() => {
           if (!cancelled) setFailed(true);
@@ -158,7 +159,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       return () => {
         cancelled = true;
       };
-    }, [theme]);
+    }, [monacoTheme]);
 
     return (
       <div className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}>

@@ -570,6 +570,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       },
     });
     const sanitizedOutput = redactSecrets(runtimeResult.outputText);
+    const outputPreview = clipText(sanitizedOutput, 600);
     updateRunFields(run.id, {
       status: runStatus,
       finished_at: finishedAt,
@@ -581,7 +582,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
         ok: runtimeResult.ok,
         statusCode: runtimeResult.statusCode ?? null,
         heartbeatOk,
-        outputPreview: clipText(sanitizedOutput, 600),
+        outputPreview,
         provider: runtimeResult.provider ?? null,
         sessionId: runtimeResult.sessionId ?? null,
       }),
@@ -598,7 +599,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
           runtimeResult.effectiveSurface !== "process" && runtimeResult.effectiveSurface !== "openclaw_webhook"
             ? `Resumed via ${runtimeResult.effectiveSurface}.`
             : "",
-          heartbeatOk ? "No action required." : clipText(sanitizedOutput, 600) || "No output.",
+          heartbeatOk ? "No action required." : outputPreview || "No output.",
         ]
           .filter((entry) => entry.length > 0)
           .join(" "),
@@ -620,7 +621,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       summary: clipText(
         [
           runtimeResult.ok ? "Worker run completed." : "Worker run failed.",
-          heartbeatOk ? "No action required." : clipText(sanitizedOutput, 600) || "No output.",
+          heartbeatOk ? "No action required." : outputPreview || "No output.",
         ].join(" "),
         360
       ),

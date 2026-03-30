@@ -84,6 +84,20 @@ describe("buildClaudeV2Message", () => {
     expect(Buffer.from(source.data as string, "base64").toString()).toBe("fake-image-bytes");
   });
 
+  it("resolves relative image attachments against the provided base directory", () => {
+    writeFakeImage("relative-photo.png");
+    const attachments: AgentChatFileRef[] = [
+      { path: "relative-photo.png", type: "image" },
+    ];
+
+    const result = buildClaudeV2Message("Describe this image", attachments, { baseDir: tmpDir });
+    const msg = result as SDKUserMessagePartial;
+    const imgBlock = msg.message.content[1] as Record<string, unknown>;
+    const source = imgBlock.source as Record<string, unknown>;
+
+    expect(Buffer.from(source.data as string, "base64").toString()).toBe("fake-image-bytes");
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // 4. Missing image file -> text fallback
   // ─────────────────────────────────────────────────────────────────────────

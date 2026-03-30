@@ -4279,6 +4279,50 @@ describe("coordinatorTools file path containment", () => {
     });
   });
 
+  it("read_file rejects symlinked files that point outside the workspace", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-read-symlink-root-"));
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-read-symlink-outside-"));
+    const outsideFile = path.join(outsideRoot, "secret.txt");
+    fs.writeFileSync(outsideFile, "leak", "utf-8");
+    fs.symlinkSync(outsideFile, path.join(projectRoot, "linked-secret.txt"));
+    const { tools } = createCoordinatorHarness({
+      graph: { run: { metadata: {} }, steps: [], attempts: [] },
+      projectRoot,
+    });
+
+    const result = await (tools.read_file as any).execute({
+      filePath: "linked-secret.txt",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "Path is outside mission workspace root",
+    });
+  });
+
+  it("search_files skips symlinked files that point outside the workspace", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-symlink-root-"));
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-symlink-outside-"));
+    const outsideFile = path.join(outsideRoot, "secret.txt");
+    fs.writeFileSync(outsideFile, "leak me", "utf-8");
+    fs.symlinkSync(outsideFile, path.join(projectRoot, "linked-secret.txt"));
+    const { tools } = createCoordinatorHarness({
+      graph: { run: { metadata: {} }, steps: [], attempts: [] },
+      projectRoot,
+    });
+
+    const result = await (tools.search_files as any).execute({
+      pattern: "leak me",
+      searchType: "content",
+      maxResults: 10,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      total: 0,
+    });
+  });
+
   it("read_step_output sanitizes traversal-like keys and reads only project-scoped output", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-step-output-root-"));
     const maliciousKey = "../../sensitive";

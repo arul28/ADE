@@ -217,4 +217,57 @@ describe("processService start logging", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("rejects process cwd values that escape the lane workspace", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-cwd-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const logsDir = path.join(tmpDir, "logs");
+    const projectId = "proj-cwd";
+    const logger = createLogger();
+
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-cwd", projectId, "Lane Cwd", null, "worktree", "main", "feature/cwd", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "escape-proc", command: ["echo", "hello"], cwd: ".." },
+    ]);
+
+    const service = createProcessService({
+      db,
+      projectId,
+      processLogsDir: logsDir,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-cwd")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      await expect(service.start({ laneId: "lane-cwd", processId: "escape-proc" })).rejects.toThrow(
+        /cwd escapes lane workspace/,
+      );
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

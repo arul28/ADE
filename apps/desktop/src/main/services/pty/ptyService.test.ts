@@ -439,6 +439,22 @@ describe("ptyService", () => {
       expect(() => service.dispose({ ptyId })).not.toThrow();
     });
 
+    it("removes per-session MCP config artifacts when a tool session is manually closed", async () => {
+      const { service } = createHarness();
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "Claude session",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude",
+      });
+
+      service.dispose({ ptyId });
+
+      expect(mocks.unlinkSync).toHaveBeenCalledWith("/tmp/test-project/.ade/mcp-configs/terminal-uuid-2.json");
+    });
+
     it("handles orphaned sessions (PTY not in map but session exists)", async () => {
       const { service, sessionService, broadcastExit, logger } = createHarness();
       sessionService.get.mockReturnValue({

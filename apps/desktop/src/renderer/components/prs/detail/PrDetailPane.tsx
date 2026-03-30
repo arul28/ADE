@@ -2,6 +2,7 @@ import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import {
   GitBranch, GitMerge, GitCommit, GithubLogo, CheckCircle, XCircle, Circle,
   CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code, ClockCounterClockwise,
@@ -42,7 +43,7 @@ function MarkdownBody({ markdown }: { markdown: string }) {
     <div style={{ fontSize: 13, lineHeight: 1.7, color: COLORS.textSecondary, fontFamily: SANS_FONT, wordBreak: "break-word", overflowWrap: "break-word" }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeRaw]}
+        rehypePlugins={[rehypeRaw, rehypeSanitize]}
         components={{
           p: ({ children }) => <p style={{ margin: "0 0 10px", whiteSpace: "pre-wrap", fontFamily: SANS_FONT }}>{children}</p>,
           ul: ({ children }) => <ul style={{ margin: "0 0 10px", paddingLeft: 20 }}>{children}</ul>,

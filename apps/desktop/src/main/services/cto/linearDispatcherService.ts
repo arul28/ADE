@@ -13,6 +13,7 @@ import type {
   LinearWorkflowRunDetail,
   LinearWorkflowRun,
   LinearWorkflowRunEvent,
+  LinearSyncResolutionAction,
   LinearWorkflowRunStatus,
   LinearWorkflowRunStep,
   LinearWorkflowStep,
@@ -597,19 +598,14 @@ export function createLinearDispatcherService(args: {
     const selector = target.workerSelector;
     const workers = listWorkers();
     if (!selector || selector.mode === "none") return null;
-    if (selector.mode === "id") {
-      const match = workers.find((entry) => entry.id === selector.value);
-      return match ? toResolvedWorker({ id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType, name: match.name }) : null;
+    let match: typeof workers[number] | undefined;
+    switch (selector.mode) {
+      case "id": match = workers.find((entry) => entry.id === selector.value); break;
+      case "slug": match = workers.find((entry) => entry.slug === selector.value); break;
+      case "capability": match = workers.find((entry) => entry.capabilities.includes(selector.value)); break;
+      default: return null;
     }
-    if (selector.mode === "slug") {
-      const match = workers.find((entry) => entry.slug === selector.value);
-      return match ? toResolvedWorker({ id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType, name: match.name }) : null;
-    }
-    if (selector.mode === "capability") {
-      const match = workers.find((entry) => entry.capabilities.includes(selector.value));
-      return match ? toResolvedWorker({ id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType, name: match.name }) : null;
-    }
-    return null;
+    return match ? toResolvedWorker({ id: match.id, slug: match.slug, adapterType: match.adapterType as AdapterType, name: match.name }) : null;
   };
 
   const resolveWorkerFromAssignee = (issue: NormalizedLinearIssue): ResolvedWorkerTarget | null => {
@@ -748,6 +744,17 @@ export function createLinearDispatcherService(args: {
     const preferred = lanes.find((entry) => entry.laneType === "primary") ?? lanes[0];
     if (!preferred) throw new Error("No lane available for employee session launch.");
     return preferred;
+  };
+
+  const resolveOperatorLane = async (laneId: string): Promise<string> => {
+    const trimmed = laneId.trim();
+    if (!trimmed) throw new Error("Choose an execution lane before resuming this workflow.");
+    const lanes = await args.laneService.list({ includeArchived: false, includeStatus: false });
+    const lane = lanes.find((entry) => entry.id === trimmed) ?? null;
+    if (!lane) {
+      throw new Error(`Execution lane not found: ${trimmed}`);
+    }
+    return lane.id;
   };
 
   const buildDelegationPrompt = (
@@ -2341,10 +2348,11 @@ export function createLinearDispatcherService(args: {
 
   const resolveRunAction = async (
     queueItemId: string,
-    action: "approve" | "reject" | "retry" | "complete",
+    action: LinearSyncResolutionAction,
     note: string | undefined,
     policy: LinearWorkflowConfig,
     employeeOverride?: string,
+    laneId?: string,
   ): Promise<LinearWorkflowRun | null> => {
     const row = getRunRow(queueItemId);
     const run = row ? toRun(row) : null;
@@ -2360,6 +2368,7 @@ export function createLinearDispatcherService(args: {
       ? buildReviewContext(workflow, currentStep)
       : null;
     const trimmedOverride = employeeOverride?.trim();
+    const trimmedLaneId = laneId?.trim();
     const resolvedOverride = trimmedOverride?.length ? resolveOverrideWorker(policy, trimmedOverride) : null;
     if (trimmedOverride !== undefined) {
       if (
@@ -2376,8 +2385,65 @@ export function createLinearDispatcherService(args: {
         employeeOverride: trimmedOverride && trimmedOverride.length ? trimmedOverride : null,
       });
     }
+    if (trimmedLaneId !== undefined) {
+      if (!activeTarget || activeTarget.type === "mission" || activeTarget.type === "review_gate") {
+        throw new Error("This workflow target does not use an execution lane.");
+      }
+      const resolvedLaneId = await resolveOperatorLane(trimmedLaneId);
+      if (run.executionLaneId !== resolvedLaneId) {
+        updateRun(run.id, { executionLaneId: resolvedLaneId });
+        updateExecutionState(run.id, {
+          waitingFor: null,
+          stalledReason: null,
+        });
+        appendEvent(run.id, "run.lane_selected", "queued", `Operator selected execution lane ${resolvedLaneId}.`, {
+          laneId: resolvedLaneId,
+        });
+      }
+    }
 
-    if (action === "complete") {
+    if (action === "resume") {
+      if (run.status !== "awaiting_delegation" && run.status !== "awaiting_lane_choice") {
+        throw new Error("This workflow run is not paused for operator routing.");
+      }
+      const resolvedExecutionLaneId = getRunRow(run.id)?.execution_lane_id ?? null;
+      if (run.status === "awaiting_lane_choice" && !resolvedExecutionLaneId) {
+        throw new Error("Choose an execution lane before resuming this workflow.");
+      }
+      const launchTargetStepRow =
+        currentStepRow?.type === "launch_target"
+          ? currentStepRow
+          : getStepRows(run.id).find((entry) => entry.type === "launch_target") ?? null;
+      if (launchTargetStepRow) {
+        updateStep(launchTargetStepRow.id, {
+          status: "pending",
+          startedAt: null,
+          completedAt: null,
+          payload: null,
+        });
+      }
+      updateRun(run.id, {
+        status: "queued",
+        retryAfter: null,
+        currentStepIndex: 0,
+        currentStepId: null,
+        latestReviewNote: note ?? run.latestReviewNote,
+        linkedMissionId: null,
+        linkedSessionId: null,
+        linkedWorkerRunId: null,
+      });
+      updateExecutionState(run.id, {
+        activeStageIndex: 0,
+        activeTargetType: null,
+        downstreamPending: false,
+        waitingFor: null,
+        stalledReason: null,
+      });
+      appendEvent(run.id, "run.resumed", "queued", note ?? "Queued with operator routing input.", {
+        employeeOverride: trimmedOverride && trimmedOverride.length ? trimmedOverride : null,
+        laneId: resolvedExecutionLaneId,
+      });
+    } else if (action === "complete") {
       if (!workflow || !currentStep || !currentStepRow || currentStep.type !== "wait_for_target_status" || currentTargetStatus !== "explicit_completion") {
         throw new Error("This workflow run is not waiting on an explicit ADE completion signal.");
       }

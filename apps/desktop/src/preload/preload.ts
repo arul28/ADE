@@ -82,6 +82,7 @@ import type {
   CtoListOpenclawMessagesResult,
   CtoSendOpenclawMessageArgs,
   LinearConnectionStatus,
+  CtoSetLinearOAuthClientArgs,
   LinearIngressEventRecord,
   LinearIngressStatus,
   CtoSetLinearTokenArgs,
@@ -106,6 +107,8 @@ import type {
   ExternalConnectionAuthStatus,
   ExternalConnectionOAuthSessionResult,
   ExternalConnectionOAuthSessionStartResult,
+  ExternalMcpEventPayload,
+  ExternalMcpManagedAuthConfig,
   ExternalMcpServerConfig,
   ExternalMcpServerSnapshot,
   ExternalMcpUsageEvent,
@@ -115,6 +118,7 @@ import type {
   ConflictExternalResolverRunSummary,
   ConflictProposal,
   ConflictProposalPreview,
+  ContextDocPrefs,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
   ContextOpenDocArgs,
@@ -188,8 +192,6 @@ import type {
   PrFile,
   PrActionRun,
   PrActivityEvent,
-  PrLabel,
-  PrUser,
   AddPrCommentArgs,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
@@ -230,9 +232,17 @@ import type {
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSlashCommand,
+  AgentChatSlashCommandsArgs,
+  AgentChatFileSearchArgs,
+  AgentChatFileSearchResult,
   AgentChatSession,
+  AgentChatSessionCapabilities,
+  AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatSubagentSnapshot,
+  AgentChatSubagentListArgs,
   AgentChatUpdateSessionArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -250,24 +260,6 @@ import type {
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
-  PackEvent,
-  PackExport,
-  PackHeadVersion,
-  PackSummary,
-  PackDeltaDigestArgs,
-  PackDeltaDigestV1,
-  PackVersion,
-  PackVersionSummary,
-  Checkpoint,
-  GetLaneExportArgs,
-  GetProjectExportArgs,
-  GetConflictExportArgs,
-  GetFeatureExportArgs,
-  GetPlanExportArgs,
-  GetMissionExportArgs,
-  GetMissionPackArgs,
-  RefreshMissionPackArgs,
-  ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -422,6 +414,8 @@ import type {
   ImportPhaseProfileArgs,
   MissionPhaseConfiguration,
   MissionDashboardSnapshot,
+  GetFullMissionViewArgs,
+  FullMissionViewResult,
   MissionPreflightRequest,
   MissionPreflightResult,
   GetMissionRunViewArgs,
@@ -639,8 +633,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.externalMcpGetUsageEvents, args),
     listAuthRecords: async (): Promise<ExternalConnectionAuthRecord[]> =>
       ipcRenderer.invoke(IPC.externalMcpListAuthRecords),
-    onEvent: (cb: (event: import("../shared/types").ExternalMcpEventPayload) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: import("../shared/types").ExternalMcpEventPayload) => cb(payload);
+    onEvent: (cb: (event: ExternalMcpEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ExternalMcpEventPayload) => cb(payload);
       ipcRenderer.on(IPC.externalMcpEvent, listener);
       return () => ipcRenderer.removeListener(IPC.externalMcpEvent, listener);
     },
@@ -658,7 +652,7 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.externalMcpSaveAuthRecord, { record }),
     removeAuthRecord: async (authId: string): Promise<ExternalConnectionAuthRecord[]> =>
       ipcRenderer.invoke(IPC.externalMcpRemoveAuthRecord, { authId }),
-    getAuthStatus: async (binding?: import("../shared/types").ExternalMcpManagedAuthConfig | null): Promise<ExternalConnectionAuthStatus> =>
+    getAuthStatus: async (binding?: ExternalMcpManagedAuthConfig | null): Promise<ExternalConnectionAuthStatus> =>
       ipcRenderer.invoke(IPC.externalMcpGetAuthStatus, { binding: binding ?? null }),
     startOAuthSession: async (authId: string): Promise<ExternalConnectionOAuthSessionStartResult> =>
       ipcRenderer.invoke(IPC.externalMcpStartOAuthSession, { authId }),
@@ -771,7 +765,7 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.missionsGetPhaseConfiguration, { missionId }),
     getDashboard: async (): Promise<MissionDashboardSnapshot> =>
       ipcRenderer.invoke(IPC.missionsGetDashboard),
-    getFullMissionView: async (args: import("../shared/types").GetFullMissionViewArgs): Promise<import("../shared/types").FullMissionViewResult> =>
+    getFullMissionView: async (args: GetFullMissionViewArgs): Promise<FullMissionViewResult> =>
       ipcRenderer.invoke(IPC.missionsGetFullMissionView, args),
     preflight: async (args: MissionPreflightRequest): Promise<MissionPreflightResult> =>
       ipcRenderer.invoke(IPC.missionsPreflight, args),
@@ -1147,13 +1141,13 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.agentChatEvent, listener);
       return () => ipcRenderer.removeListener(IPC.agentChatEvent, listener);
     },
-    slashCommands: async (args: import("../shared/types").AgentChatSlashCommandsArgs): Promise<import("../shared/types").AgentChatSlashCommand[]> =>
+    slashCommands: async (args: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> =>
       ipcRenderer.invoke(IPC.agentChatSlashCommands, args),
-    fileSearch: async (args: import("../shared/types").AgentChatFileSearchArgs): Promise<import("../shared/types").AgentChatFileSearchResult[]> =>
+    fileSearch: async (args: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> =>
       ipcRenderer.invoke(IPC.agentChatFileSearch, args),
-    listSubagents: async (args: import("../shared/types").AgentChatSubagentListArgs): Promise<import("../shared/types").AgentChatSubagentSnapshot[]> =>
+    listSubagents: async (args: AgentChatSubagentListArgs): Promise<AgentChatSubagentSnapshot[]> =>
       ipcRenderer.invoke(IPC.agentChatListSubagents, args),
-    getSessionCapabilities: async (args: import("../shared/types").AgentChatSessionCapabilitiesArgs): Promise<import("../shared/types").AgentChatSessionCapabilities> =>
+    getSessionCapabilities: async (args: AgentChatSessionCapabilitiesArgs): Promise<AgentChatSessionCapabilities> =>
       ipcRenderer.invoke(IPC.agentChatGetSessionCapabilities, args),
     saveTempAttachment: async (args: { data: string; filename: string }): Promise<{ path: string }> =>
       ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
@@ -1312,8 +1306,8 @@ contextBridge.exposeInMainWorld("ade", {
     generateDocs: async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
       ipcRenderer.invoke(IPC.contextGenerateDocs, args),
     openDoc: async (args: ContextOpenDocArgs): Promise<void> => ipcRenderer.invoke(IPC.contextOpenDoc, args),
-    getPrefs: async (): Promise<import("../shared/types").ContextDocPrefs> => ipcRenderer.invoke(IPC.contextGetPrefs),
-    savePrefs: async (prefs: import("../shared/types").ContextDocPrefs): Promise<import("../shared/types").ContextDocPrefs> =>
+    getPrefs: async (): Promise<ContextDocPrefs> => ipcRenderer.invoke(IPC.contextGetPrefs),
+    savePrefs: async (prefs: ContextDocPrefs): Promise<ContextDocPrefs> =>
       ipcRenderer.invoke(IPC.contextSavePrefs, prefs),
     onStatusChanged: (cb: (status: ContextStatus) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ContextStatus) => cb(payload);
@@ -1719,7 +1713,7 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoPreviewSystemPrompt, args),
     getLinearProjects: async (): Promise<CtoLinearProject[]> =>
       ipcRenderer.invoke(IPC.ctoGetLinearProjects),
-    setLinearOAuthClient: async (args: import("../shared/types").CtoSetLinearOAuthClientArgs): Promise<LinearConnectionStatus> =>
+    setLinearOAuthClient: async (args: CtoSetLinearOAuthClientArgs): Promise<LinearConnectionStatus> =>
       ipcRenderer.invoke(IPC.ctoSetLinearOAuthClient, args),
     clearLinearOAuthClient: async (): Promise<LinearConnectionStatus> =>
       ipcRenderer.invoke(IPC.ctoClearLinearOAuthClient),

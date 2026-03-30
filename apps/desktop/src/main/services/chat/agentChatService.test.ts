@@ -1836,6 +1836,27 @@ describe("createAgentChatService", () => {
       expect(toolResults).toHaveLength(1);
     });
 
+    it("rejects attachments outside the project root before dispatch", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const outsidePath = path.join(process.cwd(), `.ade-agent-chat-outside-${Date.now()}.txt`);
+      fs.writeFileSync(outsidePath, "secret", "utf8");
+      try {
+        await expect(service.sendMessage({
+          sessionId: session.id,
+          text: "Review this file",
+          attachments: [{ path: outsidePath, type: "file" }],
+        })).rejects.toThrow(/project root/);
+      } finally {
+        fs.rmSync(outsidePath, { force: true });
+      }
+    });
+
     it("prefers the canonical turn-scoped Codex text stream when item-scoped deltas also arrive", async () => {
       const textEvents: Array<{ text: string; itemId?: string; turnId?: string }> = [];
       const { service } = createService({

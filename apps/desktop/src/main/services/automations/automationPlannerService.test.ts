@@ -1,14 +1,18 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createAutomationPlannerService } from "./automationPlannerService";
 import type { AutomationRuleDraft } from "../../../shared/types";
 
-function createPlannerForTests(args: { suites: Array<{ id: string; name: string }> }) {
+function createPlannerForTests(args: { suites: Array<{ id: string; name: string }>; projectRoot?: string }) {
   const logger = {
     debug: () => {},
     info: () => {},
     warn: () => {},
     error: () => {}
   } as any;
+  const projectRoot = args.projectRoot ?? "/tmp";
 
   let snapshot = {
     shared: {},
@@ -48,7 +52,7 @@ function createPlannerForTests(args: { suites: Array<{ id: string; name: string 
   return {
     planner: createAutomationPlannerService({
       logger,
-      projectRoot: "/tmp",
+      projectRoot,
       projectConfigService,
       laneService,
       automationService
@@ -57,7 +61,7 @@ function createPlannerForTests(args: { suites: Array<{ id: string; name: string 
   };
 }
 
-function getPlanner(args: { suites: Array<{ id: string; name: string }> }) {
+function getPlanner(args: { suites: Array<{ id: string; name: string }>; projectRoot?: string }) {
   const harness = createPlannerForTests(args);
   return harness;
 }
@@ -91,6 +95,57 @@ describe("automationPlannerService.validateDraft", () => {
 
     const withConfirm = planner.validateDraft({ draft, confirmations: ["confirm.run-command"] });
     expect(withConfirm.ok).toBe(true);
+  });
+
+  it("rejects run-command cwd values that resolve through symlinks outside the project root", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-root-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-outside-"));
+    const linkPath = path.join(projectRoot, "linked-outside");
+    fs.symlinkSync(outsideDir, linkPath);
+
+    try {
+      const { planner } = getPlanner({ suites: [], projectRoot });
+      const draft = createDraft({
+        name: "Escape",
+        actions: [{ type: "run-command", command: "echo hello", cwd: "linked-outside" }]
+      });
+
+      const result = planner.validateDraft({ draft, confirmations: ["confirm.run-command"] });
+      expect(result.ok).toBe(false);
+      expect(result.issues.some((issue) => issue.path === "actions[0].cwd")).toBe(true);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects run-command cwd values that escape through symlinks", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-root-"));
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-outside-"));
+    const linkedPath = path.join(projectRoot, "outside-link");
+    fs.symlinkSync(outsideRoot, linkedPath);
+
+    try {
+      const { planner } = getPlanner({ suites: [], projectRoot });
+      const draft = createDraft({
+        name: "Symlink escape",
+        actions: [{ type: "run-command", command: "pwd", cwd: "outside-link" }]
+      });
+
+      const result = planner.validateDraft({ draft, confirmations: ["confirm.run-command"] });
+      expect(result.ok).toBe(false);
+      expect(result.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: "actions[0].cwd",
+            message: expect.stringContaining("project root"),
+          }),
+        ]),
+      );
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
   });
 
   it("validates schedule cron", () => {

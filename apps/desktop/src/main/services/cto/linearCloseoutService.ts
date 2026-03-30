@@ -208,30 +208,33 @@ export function createLinearCloseoutService(args: {
     if (comment?.trim()) {
       await args.issueTracker.createComment(input.issue.id, comment.trim());
     }
+    const outboundStatus = input.outcome === "cancelled" ? "canceled" as const : input.outcome;
+    const outboundTemplateValues = {
+      ...templateValues,
+      pr: {
+        ...(templateValues.pr as Record<string, unknown>),
+        links: closeoutArtifacts.prLinks,
+      },
+    };
+
     if (input.workflow.target.type === "mission" && input.run.linkedMissionId) {
       await args.outboundService.publishMissionCloseout({
         issue: input.issue,
         missionId: input.run.linkedMissionId,
-        status: input.outcome === "cancelled" ? "canceled" : input.outcome,
+        status: outboundStatus,
         summary: input.summary,
         prLinks: closeoutArtifacts.prLinks,
         artifactPaths: closeoutArtifacts.artifactPaths,
         artifactMode: closeout?.artifactMode ?? "links",
         commentTemplate: closeout?.commentTemplate ?? null,
-        templateValues: {
-          ...templateValues,
-          pr: {
-            ...(templateValues.pr as Record<string, unknown>),
-            links: closeoutArtifacts.prLinks,
-          },
-        },
+        templateValues: outboundTemplateValues,
       });
       return;
     }
 
     await args.outboundService.publishWorkflowCloseout({
       issue: input.issue,
-      status: input.outcome === "cancelled" ? "canceled" : input.outcome,
+      status: outboundStatus,
       summary: input.summary,
       targetLabel: input.workflow.target.type.replace(/_/g, " "),
       targetId:
@@ -245,13 +248,7 @@ export function createLinearCloseoutService(args: {
       artifactPaths: closeoutArtifacts.artifactPaths,
       artifactMode: closeout?.artifactMode ?? "links",
       commentTemplate: closeout?.commentTemplate ?? null,
-      templateValues: {
-        ...templateValues,
-        pr: {
-          ...(templateValues.pr as Record<string, unknown>),
-          links: closeoutArtifacts.prLinks,
-        },
-      },
+      templateValues: outboundTemplateValues,
     });
   };
 

@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   isRecord,
@@ -14,6 +17,7 @@ import {
   parseDiffNameOnly,
   safeJsonParse,
   isWithinDir,
+  resolvePathWithinRoot,
   toOptionalString,
   normalizeRelative,
   normalizeBranchName,
@@ -215,6 +219,44 @@ describe("isWithinDir", () => {
   it("returns false when candidate is outside root", () => {
     expect(isWithinDir("/project", "/other/file.ts")).toBe(false);
     expect(isWithinDir("/project/src", "/project/file.ts")).toBe(false);
+  });
+});
+
+describe("resolvePathWithinRoot", () => {
+  it("rejects symlink escapes for existing paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
+    const linkPath = path.join(root, "linked-outside");
+    try {
+      fs.symlinkSync(outsideDir, linkPath);
+      expect(() => resolvePathWithinRoot(root, path.join(linkPath, "secret.txt"), { allowMissing: true })).toThrow(
+        /Path escapes root/,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolvePathWithinRoot", () => {
+  it("allows a normal child path when intermediate segments do not exist yet", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const target = path.join(root, "nested", "new-file.txt");
+    const resolved = resolvePathWithinRoot(root, target, { allowMissing: true });
+    expect(path.basename(resolved)).toBe("new-file.txt");
+    expect(resolved.endsWith(`${path.sep}nested${path.sep}new-file.txt`)).toBe(true);
+  });
+
+  it("rejects symlink escapes that point outside the root", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
+    const linkPath = path.join(tempRoot, "linked");
+    const outsideFile = path.join(outsideDir, "secret.txt");
+    fs.writeFileSync(outsideFile, "secret", "utf8");
+    fs.symlinkSync(outsideDir, linkPath);
+
+    expect(() => resolvePathWithinRoot(tempRoot, path.join(linkPath, "secret.txt"))).toThrow("Path escapes root");
   });
 });
 

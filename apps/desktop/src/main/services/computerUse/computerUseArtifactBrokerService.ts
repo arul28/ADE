@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type {
   ComputerUseArtifactIngestionRequest,
@@ -33,8 +34,8 @@ import type { createExternalMcpService } from "../externalMcp/externalMcpService
 import {
   fileExists,
   isRecord,
-  isWithinDir,
   nowIso,
+  resolvePathWithinRoot,
   safeJsonParse,
   toOptionalString,
   writeTextAtomic,
@@ -73,6 +74,20 @@ type StoredLinkRow = {
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
+}
+
+function isAllowedExternalArtifactSource(
+  absolutePath: string,
+  roots: string[],
+): boolean {
+  return roots.some((root) => {
+    try {
+      resolvePathWithinRoot(root, absolutePath);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function dedupeOwners(owners: ComputerUseArtifactOwner[]): ComputerUseArtifactOwner[] {
@@ -136,6 +151,12 @@ export function createComputerUseArtifactBrokerService(args: {
 }) {
   const { db, projectId, projectRoot, missionService, orchestratorService, externalMcpService, logger, onEvent } = args;
   const layout = resolveAdeLayout(projectRoot);
+  const allowedImportRoots = Array.from(new Set([
+    layout.artifactsDir,
+    layout.tmpDir,
+    os.tmpdir(),
+    path.join(os.homedir(), ".agent-browser"),
+  ]));
 
   const emit = (payload: ComputerUseEventPayload): void => {
     try {
@@ -166,12 +187,18 @@ export function createComputerUseArtifactBrokerService(args: {
     if (pathLike) {
       const absolutePath = path.isAbsolute(pathLike) ? pathLike : path.resolve(projectRoot, pathLike);
       if (fileExists(absolutePath)) {
-        if (isWithinDir(layout.artifactsDir, absolutePath)) {
+        try {
+          const existingArtifactPath = resolvePathWithinRoot(layout.artifactsDir, absolutePath);
           return {
-            uri: toProjectArtifactUri(projectRoot, absolutePath),
+            uri: toProjectArtifactUri(projectRoot, existingArtifactPath),
             storageKind: "file",
             mimeType: toOptionalString(input.mimeType),
           };
+        } catch {
+          // Fall through to external import handling.
+        }
+        if (!isAllowedExternalArtifactSource(absolutePath, allowedImportRoots)) {
+          throw new Error(`Artifact path is outside allowed import roots: ${absolutePath}`);
         }
         const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
         const targetPath = createComputerUseArtifactPath(projectRoot, title, extension);

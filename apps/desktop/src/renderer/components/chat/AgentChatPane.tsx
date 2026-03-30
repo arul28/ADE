@@ -104,15 +104,10 @@ function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
 
   for (const envelope of events) {
     const event = envelope.event;
-
     if (event.type === "status") {
       turnActive = event.turnStatus === "started";
-      continue;
-    }
-
-    if (event.type === "done") {
+    } else if (event.type === "done") {
       turnActive = false;
-      continue;
     }
   }
 

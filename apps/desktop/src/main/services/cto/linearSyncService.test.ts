@@ -519,7 +519,52 @@ describe("linearSyncService", () => {
     });
 
     await service.resolveQueueItem({ queueItemId: "run-1", action: "retry", employeeOverride: "agent:worker-1" });
-    expect(resolveRunAction).toHaveBeenCalledWith("run-1", "retry", undefined, policy, "agent:worker-1");
+    expect(resolveRunAction).toHaveBeenCalledWith("run-1", "retry", undefined, policy, "agent:worker-1", undefined);
+    db.close();
+  });
+
+  it("forwards laneId through queue resolution resumes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-lane-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const resolveRunAction = vi.fn(async () => ({ id: "run-1", status: "queued" }));
+
+    const service = createLinearSyncService({
+      db,
+      projectId: "project-1",
+      flowPolicyService: { getPolicy: () => policy } as any,
+      routingService: {
+        routeIssue: vi.fn(async () => ({
+          workflowId: null,
+          workflowName: null,
+          workflow: null,
+          target: null,
+          reason: "No match",
+          candidates: [],
+          nextStepsPreview: [],
+        })),
+      } as any,
+      intakeService: {
+        fetchCandidates: vi.fn(async () => []),
+        persistSnapshot: vi.fn(() => {}),
+      } as any,
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+      } as any,
+      dispatcherService: {
+        hasActiveRuns: vi.fn(() => false),
+        findActiveRunForIssue: vi.fn(() => null),
+        createRun: vi.fn(),
+        advanceRun: vi.fn(async () => null),
+        listActiveRuns: vi.fn(() => []),
+        listQueue: vi.fn(() => [{ id: "run-1", laneId: "lane-2" }]),
+        resolveRunAction,
+        getRunDetail: vi.fn(async () => null),
+      } as any,
+      autoStart: false,
+    });
+
+    await service.resolveQueueItem({ queueItemId: "run-1", action: "resume", laneId: "lane-2" });
+    expect(resolveRunAction).toHaveBeenCalledWith("run-1", "resume", undefined, policy, undefined, "lane-2");
     db.close();
   });
 });

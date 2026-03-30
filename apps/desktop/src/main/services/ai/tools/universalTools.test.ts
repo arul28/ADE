@@ -115,6 +115,24 @@ describe("checkWorkerSandbox", () => {
     expect(result.reason).toContain("Path outside sandbox");
   });
 
+  it("rejects symlinked paths that resolve outside the sandbox root", () => {
+    const cwd = makeTmpDir("ade-sandbox-symlink-root-");
+    const outsideDir = makeTmpDir("ade-sandbox-symlink-outside-");
+    const linkedDir = path.join(cwd, "linked-outside");
+    const outsideFile = path.join(outsideDir, "secret.txt");
+    fs.writeFileSync(outsideFile, "secret\n", "utf-8");
+    fs.symlinkSync(outsideDir, linkedDir, "dir");
+
+    const result = checkWorkerSandbox(
+      `cat ${path.join(linkedDir, "secret.txt")}`,
+      sandboxWith({ allowedPaths: ["./"] }),
+      cwd,
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
   it("detects redirect target paths for write-like commands", () => {
     const cwd = "/tmp/project";
     const config = sandboxWith({
@@ -145,6 +163,18 @@ describe("checkWorkerSandbox", () => {
     const result = checkWorkerSandbox("cp my-secrets .env", config, "/tmp/project");
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("protected file pattern");
+  });
+
+  it("blocks symlinked paths that escape the sandbox root", () => {
+    const projectRoot = makeTmpDir("ade-sandbox-root-");
+    const outsideDir = makeTmpDir("ade-sandbox-outside-");
+    const linkPath = path.join(projectRoot, "linked-outside");
+    fs.symlinkSync(outsideDir, linkPath);
+    fs.writeFileSync(path.join(outsideDir, "secret.txt"), "secret", "utf8");
+
+    const result = checkWorkerSandbox("cat linked-outside/secret.txt", DEFAULT_WORKER_SANDBOX_CONFIG, projectRoot);
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
   });
 });
 

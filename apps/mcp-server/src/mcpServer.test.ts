@@ -434,7 +434,7 @@ function createRuntime() {
       getDashboard: vi.fn(() => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: null, lastSuccessAt: null, lastError: null, queue: { queued: 1, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
       runSyncNow: vi.fn(async () => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: "2026-03-17T19:11:00.000Z", lastSuccessAt: "2026-03-17T19:11:00.000Z", lastError: null, queue: { queued: 0, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
       listQueue: vi.fn(() => [{ id: "run-queued", status: "queued" }]),
-      resolveQueueItem: vi.fn(async ({ queueItemId, action, employeeOverride }: { queueItemId: string; action: string; employeeOverride?: string }) => ({ id: queueItemId, status: action, employeeOverride: employeeOverride ?? null })),
+      resolveQueueItem: vi.fn(async ({ queueItemId, action, employeeOverride, laneId }: { queueItemId: string; action: string; employeeOverride?: string; laneId?: string }) => ({ id: queueItemId, status: action, employeeOverride: employeeOverride ?? null, laneId: laneId ?? null })),
       getRunDetail: vi.fn(async ({ runId }: { runId: string }) => ({ run: { id: runId, status: "queued" }, issue: { id: "issue-1" } })),
     } as any,
     linearIngressService: {
@@ -657,12 +657,29 @@ function createRuntime() {
 }
 
 async function initialize(handler: ReturnType<typeof createMcpRequestHandler>, identity?: Record<string, unknown>) {
-  await handler({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: identity ? { identity } : {}
-  });
+  const requestedRole = typeof identity?.role === "string" ? identity.role : null;
+  const validRole = requestedRole === "cto"
+    || requestedRole === "orchestrator"
+    || requestedRole === "agent"
+    || requestedRole === "external"
+    || requestedRole === "evaluator";
+  const previousRole = process.env.ADE_DEFAULT_ROLE;
+  const shouldInjectRole = previousRole == null && validRole;
+  if (shouldInjectRole && requestedRole) {
+    process.env.ADE_DEFAULT_ROLE = requestedRole;
+  }
+  try {
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: identity ? { identity } : {}
+    });
+  } finally {
+    if (shouldInjectRole) {
+      delete process.env.ADE_DEFAULT_ROLE;
+    }
+  }
 }
 
 async function callTool(
@@ -682,6 +699,35 @@ async function callTool(
 }
 
 describe("mcpServer", () => {
+  it("treats requested privileged roles as external without trusted env identity", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    delete process.env.ADE_DEFAULT_ROLE;
+    try {
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          identity: {
+            callerId: "rogue-client",
+            role: "orchestrator",
+          },
+        },
+      });
+      const result = (await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" })) as any;
+
+      const names = (result.tools ?? []).map((tool: any) => tool.name);
+      expect(names).not.toContain("spawn_worker");
+      expect(names).not.toContain("read_mission_status");
+      expect(names).not.toContain("get_cto_state");
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+    }
+  });
+
   it("lists the full tool surface including coordinator orchestration tools for orchestrator callers", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
@@ -870,29 +916,32 @@ describe("mcpServer", () => {
     );
   });
 
-  it("forwards employeeOverride when resolving a Linear sync queue item", async () => {
+  it("forwards employeeOverride and laneId when resuming a Linear sync queue item", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
 
     await initialize(handler, { callerId: "cto-1", role: "cto" });
     const result = await callTool(handler, "resolveLinearSyncQueueItem", {
       queueItemId: "run-queued",
-      action: "approve",
+      action: "resume",
       employeeOverride: "agent:worker-1",
+      laneId: "lane-2",
     });
 
     expect((runtime.linearSyncService as any).resolveQueueItem).toHaveBeenCalledWith(
       expect.objectContaining({
         queueItemId: "run-queued",
-        action: "approve",
+        action: "resume",
         employeeOverride: "agent:worker-1",
+        laneId: "lane-2",
       }),
     );
     expect(result.structuredContent).toEqual(
       expect.objectContaining({
         id: "run-queued",
-        status: "approve",
+        status: "resume",
         employeeOverride: "agent:worker-1",
+        laneId: "lane-2",
       }),
     );
   });
@@ -941,6 +990,28 @@ describe("mcpServer", () => {
         ]),
       }),
     );
+  });
+
+  it("rejects computer-use manifests outside the project root", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const outsideManifest = path.join(path.dirname(fixture.runtime.projectRoot), `ade-artifacts-${Date.now()}.json`);
+    fs.writeFileSync(outsideManifest, JSON.stringify([{ kind: "screenshot", path: "/tmp/shot.png" }]), "utf8");
+
+    try {
+      await initialize(handler, { callerId: "chat-session-1", role: "agent" });
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "external_cli",
+        backendName: "agent-browser",
+        manifestPath: `../${path.basename(outsideManifest)}`,
+      });
+
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("project root");
+      expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(outsideManifest, { force: true });
+    }
   });
 
   it("includes ADE-managed external MCP tools in tool discovery and preserves structured tool results", async () => {
@@ -1324,16 +1395,22 @@ describe("mcpServer", () => {
   it("does not advertise resources to orchestrator callers", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "orchestrator";
+    try {
+      const response = await handler({
+        jsonrpc: "2.0",
+        id: 99,
+        method: "initialize",
+        params: { identity: { callerId: "coord-1", role: "orchestrator" } }
+      }) as any;
 
-    const response = await handler({
-      jsonrpc: "2.0",
-      id: 99,
-      method: "initialize",
-      params: { identity: { callerId: "coord-1", role: "orchestrator" } }
-    }) as any;
-
-    expect(response.capabilities?.tools).toBeTruthy();
-    expect(response.capabilities?.resources).toBeUndefined();
+      expect(response.capabilities?.tools).toBeTruthy();
+      expect(response.capabilities?.resources).toBeUndefined();
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+    }
   });
 
   it("routes reflection_add and uses initialize identity fallback", async () => {

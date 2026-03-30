@@ -47,6 +47,21 @@ export interface CtoOperatorToolDeps {
   prService?: ReturnType<typeof createPrService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
+  testService?: {
+    listSuites: () => any[];
+    run: (args: { laneId: string; suiteId: string }) => Promise<any>;
+    stop: (args: { runId: string }) => void;
+    listRuns: (args?: { laneId?: string; suiteId?: string; limit?: number }) => any[];
+    getLogTail: (args: { runId: string; maxBytes?: number }) => string;
+  } | null;
+  ptyService?: {
+    create: (args: { laneId: string; title?: string; cols?: number; rows?: number; tracked?: boolean; startupCommand?: string }) => Promise<{ ptyId: string; sessionId: string }>;
+  } | null;
+  automationService?: {
+    list: () => any[];
+    triggerManually: (args: { id: string; dryRun?: boolean }) => Promise<any>;
+    listRuns: (args?: any) => any[];
+  } | null;
   issueTracker?: IssueTracker | null;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
@@ -1309,8 +1324,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       runId: z.string(),
       action: z.enum(["approve", "reject", "retry", "complete"]),
       note: z.string().optional(),
+      laneId: z.string().optional(),
     }),
-    execute: async ({ runId, action, note }) => {
+    execute: async ({ runId, action, note, laneId }) => {
       if (!deps.linearDispatcherService || !deps.flowPolicyService) {
         return { success: false, error: "Linear workflow services are not available." };
       }
@@ -1320,6 +1336,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           action,
           note?.trim() || undefined,
           deps.flowPolicyService.getPolicy(),
+          undefined,
+          laneId?.trim() || undefined,
         );
         if (!run) return { success: false, error: `Workflow run not found: ${runId}` };
         return { success: true, run };
@@ -1481,6 +1499,398 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // PR Creation & Management
+  // ---------------------------------------------------------------------------
+
+  tools.createPrFromLane = tool({
+    description: "Create a pull request from an ADE lane against its parent branch.",
+    inputSchema: z.object({
+      laneId: z.string().trim().min(1),
+      title: z.string().trim().min(1),
+      body: z.string().optional(),
+      draft: z.boolean().optional().default(false),
+    }),
+    execute: async ({ laneId, title, body, draft }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        const pr = await deps.prService.createFromLane({ laneId, title, body: body ?? "", draft });
+        return { success: true, pr };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.landPullRequest = tool({
+    description: "Land (merge) an ADE-managed pull request.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      method: z.enum(["merge", "squash", "rebase"]).optional().default("squash"),
+      archiveLane: z.boolean().optional().default(true),
+    }),
+    execute: async ({ prId, method, archiveLane }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        const result = await deps.prService.land({ prId, method, archiveLane });
+        return result;
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.closePullRequest = tool({
+    description: "Close an ADE-managed pull request without merging.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+    }),
+    execute: async ({ prId }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        await deps.prService.closePr({ prId });
+        return { success: true, prId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.requestPrReviewers = tool({
+    description: "Request reviewers on an ADE-managed pull request.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      reviewers: z.array(z.string().trim().min(1)).min(1),
+    }),
+    execute: async ({ prId, reviewers }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        await deps.prService.requestReviewers({ prId, reviewers });
+        return { success: true, prId, reviewers };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Lane Management
+  // ---------------------------------------------------------------------------
+
+  tools.deleteLane = tool({
+    description: "Delete an ADE lane and its associated worktree.",
+    inputSchema: z.object({
+      laneId: z.string().trim().min(1),
+    }),
+    execute: async ({ laneId }) => {
+      try {
+        await deps.laneService.delete({ laneId });
+        return { success: true, laneId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Worker Management
+  // ---------------------------------------------------------------------------
+
+  tools.removeWorker = tool({
+    description: "Remove a worker agent from the CTO org.",
+    inputSchema: z.object({
+      agentId: z.string().trim().min(1),
+    }),
+    execute: async ({ agentId }) => {
+      if (!deps.workerAgentService) return { success: false, error: "Worker service is not available." };
+      try {
+        deps.workerAgentService.removeAgent(agentId);
+        return { success: true, agentId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.updateWorker = tool({
+    description: "Update a worker agent configuration.",
+    inputSchema: z.object({
+      agentId: z.string().trim().min(1),
+      name: z.string().optional(),
+      role: z.enum(["engineer", "qa", "designer", "devops", "researcher", "general"]).optional(),
+      title: z.string().nullable().optional(),
+      reportsTo: z.string().nullable().optional(),
+      capabilities: z.array(z.string()).optional(),
+      modelId: z.string().nullable().optional(),
+      budgetMonthlyCents: z.number().int().nonnegative().optional(),
+    }),
+    execute: async ({ agentId, name, role, title, reportsTo, capabilities, modelId, budgetMonthlyCents }) => {
+      if (!deps.workerAgentService) return { success: false, error: "Worker service is not available." };
+      const existing = deps.workerAgentService.getAgent(agentId);
+      if (!existing) return { success: false, error: `Worker not found: ${agentId}` };
+      try {
+        const worker = deps.workerAgentService.saveAgent({
+          id: agentId,
+          name: name ?? existing.name,
+          role: role ?? existing.role,
+          ...(title !== undefined ? { title: title ?? undefined } : {}),
+          ...(reportsTo !== undefined ? { reportsTo } : {}),
+          ...(capabilities ? { capabilities } : {}),
+          adapterType: existing.adapterType,
+          adapterConfig: modelId !== undefined ? { ...existing.adapterConfig, modelId: modelId ?? undefined } : existing.adapterConfig,
+          ...(budgetMonthlyCents !== undefined ? { budgetMonthlyCents } : {}),
+        });
+        return { success: true, worker };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test Management
+  // ---------------------------------------------------------------------------
+
+  tools.listTestSuites = tool({
+    description: "List available test suites that can be run in ADE.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      if (!deps.testService) return { success: false, error: "Test service is not available." };
+      const suites = deps.testService.listSuites();
+      return { success: true, count: suites.length, suites };
+    },
+  });
+
+  tools.runTests = tool({
+    description: "Run a test suite in a specific ADE lane.",
+    inputSchema: z.object({
+      laneId: z.string().trim().min(1),
+      suiteId: z.string().trim().min(1),
+    }),
+    execute: async ({ laneId, suiteId }) => {
+      if (!deps.testService) return { success: false, error: "Test service is not available." };
+      try {
+        const run = await deps.testService.run({ laneId, suiteId });
+        return { success: true, run };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.stopTestRun = tool({
+    description: "Stop a running test execution.",
+    inputSchema: z.object({
+      runId: z.string().trim().min(1),
+    }),
+    execute: async ({ runId }) => {
+      if (!deps.testService) return { success: false, error: "Test service is not available." };
+      try {
+        deps.testService.stop({ runId });
+        return { success: true, runId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.listTestRuns = tool({
+    description: "List recent test runs, optionally filtered by lane or suite.",
+    inputSchema: z.object({
+      laneId: z.string().optional(),
+      suiteId: z.string().optional(),
+      limit: z.number().int().positive().max(100).optional().default(20),
+    }),
+    execute: async ({ laneId, suiteId, limit }) => {
+      if (!deps.testService) return { success: false, error: "Test service is not available." };
+      const runs = deps.testService.listRuns({
+        ...(laneId?.trim() ? { laneId: laneId.trim() } : {}),
+        ...(suiteId?.trim() ? { suiteId: suiteId.trim() } : {}),
+        limit,
+      });
+      return { success: true, count: runs.length, runs };
+    },
+  });
+
+  tools.getTestLog = tool({
+    description: "Read the tail of a test run log.",
+    inputSchema: z.object({
+      runId: z.string().trim().min(1),
+      maxBytes: z.number().int().positive().max(500_000).optional().default(40_000),
+    }),
+    execute: async ({ runId, maxBytes }) => {
+      if (!deps.testService) return { success: false, error: "Test service is not available." };
+      try {
+        const content = deps.testService.getLogTail({ runId, maxBytes });
+        return { success: true, runId, content };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Terminal Management
+  // ---------------------------------------------------------------------------
+
+  tools.createTerminal = tool({
+    description: "Create a new terminal session in an ADE lane.",
+    inputSchema: z.object({
+      laneId: z.string().trim().min(1),
+      title: z.string().optional(),
+      startupCommand: z.string().optional(),
+    }),
+    execute: async ({ laneId, title, startupCommand }) => {
+      if (!deps.ptyService) return { success: false, error: "Terminal service is not available." };
+      try {
+        const result = await deps.ptyService.create({
+          laneId,
+          ...(title?.trim() ? { title: title.trim() } : {}),
+          ...(startupCommand?.trim() ? { startupCommand: startupCommand.trim() } : {}),
+          tracked: true,
+        });
+        return { success: true, ...result };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Linear Issue Discovery
+  // ---------------------------------------------------------------------------
+
+  tools.listLinearIssues = tool({
+    description: "Search Linear issues by project slug and state.",
+    inputSchema: z.object({
+      projectSlugs: z.array(z.string()).optional(),
+      stateTypes: z.array(z.string()).optional(),
+      limit: z.number().int().positive().max(100).optional().default(25),
+    }),
+    execute: async ({ projectSlugs, stateTypes, limit }) => {
+      if (!deps.issueTracker) return { success: false, error: "Linear issue tracker is not available." };
+      try {
+        const issues = await deps.issueTracker.fetchCandidateIssues({
+          projectSlugs: projectSlugs ?? [],
+          stateTypes: stateTypes ?? ["started", "unstarted"],
+        });
+        const limited = issues.slice(0, limit);
+        return {
+          success: true,
+          count: limited.length,
+          totalAvailable: issues.length,
+          issues: limited.map((issue) => ({
+            id: issue.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            stateName: issue.stateName,
+            priorityLabel: issue.priorityLabel,
+            assigneeName: issue.assigneeName,
+            labels: issue.labels,
+            projectSlug: issue.projectSlug,
+            url: issue.url,
+          })),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.getLinearIssue = tool({
+    description: "Fetch a single Linear issue by ID or identifier.",
+    inputSchema: z.object({
+      issueId: z.string().trim().min(1),
+    }),
+    execute: async ({ issueId }) => {
+      if (!deps.issueTracker) return { success: false, error: "Linear issue tracker is not available." };
+      try {
+        const issue = await deps.issueTracker.fetchIssueById(issueId);
+        if (!issue) return { success: false, error: `Issue not found: ${issueId}` };
+        return { success: true, issue: buildIssueBrief(issue), raw: issue };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.updateLinearIssueAssignee = tool({
+    description: "Assign or unassign a Linear issue.",
+    inputSchema: z.object({
+      issueId: z.string().trim().min(1),
+      assigneeId: z.string().nullable(),
+    }),
+    execute: async ({ issueId, assigneeId }) => {
+      if (!deps.issueTracker) return { success: false, error: "Linear issue tracker is not available." };
+      try {
+        await deps.issueTracker.updateIssueAssignee(issueId, assigneeId);
+        return { success: true, issueId, assigneeId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.addLinearIssueLabel = tool({
+    description: "Add a label to a Linear issue.",
+    inputSchema: z.object({
+      issueId: z.string().trim().min(1),
+      label: z.string().trim().min(1),
+    }),
+    execute: async ({ issueId, label }) => {
+      if (!deps.issueTracker) return { success: false, error: "Linear issue tracker is not available." };
+      try {
+        await deps.issueTracker.addLabel(issueId, label);
+        return { success: true, issueId, label };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Automation Management
+  // ---------------------------------------------------------------------------
+
+  tools.listAutomations = tool({
+    description: "List automation rules configured in ADE.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      if (!deps.automationService) return { success: false, error: "Automation service is not available." };
+      const rules = deps.automationService.list();
+      return { success: true, count: rules.length, rules };
+    },
+  });
+
+  tools.triggerAutomation = tool({
+    description: "Manually trigger an ADE automation rule.",
+    inputSchema: z.object({
+      automationId: z.string().trim().min(1),
+      dryRun: z.boolean().optional().default(false),
+    }),
+    execute: async ({ automationId, dryRun }) => {
+      if (!deps.automationService) return { success: false, error: "Automation service is not available." };
+      try {
+        const run = await deps.automationService.triggerManually({ id: automationId, dryRun });
+        return { success: true, run };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.listAutomationRuns = tool({
+    description: "List recent automation run history.",
+    inputSchema: z.object({
+      limit: z.number().int().positive().max(100).optional().default(20),
+    }),
+    execute: async ({ limit }) => {
+      if (!deps.automationService) return { success: false, error: "Automation service is not available." };
+      const runs = deps.automationService.listRuns({ limit });
+      return { success: true, count: runs.length, runs };
     },
   });
 

@@ -24,7 +24,7 @@ import type {
 } from "../../../shared/types";
 import type { createLaneService } from "../lanes/laneService";
 import { runGit } from "../git/git";
-import { hasNullByte, isWithinDir, normalizeRelative } from "../shared/utils";
+import { hasNullByte, isWithinDir, normalizeRelative, resolvePathWithinRoot } from "../shared/utils";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 
@@ -122,10 +122,17 @@ async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; time
   });
 }
 
-function ensureSafePath(rootPath: string, relPath: string): { absPath: string; normalizedRel: string } {
+function ensureSafePath(
+  rootPath: string,
+  relPath: string,
+  opts: { allowMissing?: boolean } = {},
+): { absPath: string; normalizedRel: string } {
   const normalizedRel = normalizeRelative(relPath);
-  const absPath = path.normalize(path.join(rootPath, normalizedRel));
-  if (!isWithinDir(rootPath, absPath)) {
+  const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
+  let absPath: string;
+  try {
+    absPath = resolvePathWithinRoot(rootPath, joinedPath, { allowMissing: opts.allowMissing });
+  } catch {
     throw new Error("Refusing to access path outside workspace");
   }
   if (containsDotGit(absPath)) {
@@ -401,7 +408,7 @@ export function createFileService({
   return {
     writeTextAtomic({ laneId, relPath, text }: { laneId: string; relPath: string; text: string }): void {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-      const { absPath } = ensureSafePath(worktreePath, relPath);
+      const { absPath } = ensureSafePath(worktreePath, relPath, { allowMissing: true });
       writeTextAtomicAbs(absPath, text);
       invalidateGitStatusCache(worktreePath);
       if (onLaneWorktreeMutation) {
@@ -455,7 +462,7 @@ export function createFileService({
 
     writeWorkspaceText(args: FilesWriteTextArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path, { allowMissing: true });
       writeTextAtomicAbs(absPath, args.text);
       invalidateGitStatusCache(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
@@ -473,7 +480,7 @@ export function createFileService({
 
     createFile(args: FilesCreateFileArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path, { allowMissing: true });
       fs.mkdirSync(path.dirname(absPath), { recursive: true });
       if (!fs.existsSync(absPath)) {
         fs.writeFileSync(absPath, args.content ?? "", "utf8");
@@ -491,7 +498,7 @@ export function createFileService({
 
     createDirectory(args: FilesCreateDirectoryArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      const { absPath } = ensureSafePath(workspace.rootPath, args.path);
+      const { absPath } = ensureSafePath(workspace.rootPath, args.path, { allowMissing: true });
       fs.mkdirSync(absPath, { recursive: true });
       invalidateGitStatusCache(workspace.rootPath);
       indexService.invalidateWorkspace(args.workspaceId);
@@ -501,7 +508,7 @@ export function createFileService({
     rename(args: FilesRenameArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath: oldAbs, normalizedRel: oldRel } = ensureSafePath(workspace.rootPath, args.oldPath);
-      const { absPath: newAbs, normalizedRel: newRel } = ensureSafePath(workspace.rootPath, args.newPath);
+      const { absPath: newAbs, normalizedRel: newRel } = ensureSafePath(workspace.rootPath, args.newPath, { allowMissing: true });
       fs.mkdirSync(path.dirname(newAbs), { recursive: true });
       fs.renameSync(oldAbs, newAbs);
       invalidateGitStatusCache(workspace.rootPath);

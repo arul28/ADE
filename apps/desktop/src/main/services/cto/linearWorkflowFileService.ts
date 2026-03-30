@@ -43,16 +43,13 @@ function slugify(value: string): string {
 
 function normalizeIntake(input: unknown): LinearWorkflowIntake {
   const source = isRecord(input) ? input : {};
+  const projectSlugs = ensureStringArray(source.projectSlugs);
+  const activeStateTypes = ensureStringArray(source.activeStateTypes);
+  const terminalStateTypes = ensureStringArray(source.terminalStateTypes);
   return {
-    ...(ensureStringArray(source.projectSlugs).length
-      ? { projectSlugs: ensureStringArray(source.projectSlugs) }
-      : {}),
-    ...(ensureStringArray(source.activeStateTypes).length
-      ? { activeStateTypes: ensureStringArray(source.activeStateTypes) }
-      : { activeStateTypes: [...DEFAULT_ACTIVE_STATE_TYPES] }),
-    ...(ensureStringArray(source.terminalStateTypes).length
-      ? { terminalStateTypes: ensureStringArray(source.terminalStateTypes) }
-      : { terminalStateTypes: [...DEFAULT_TERMINAL_STATE_TYPES] }),
+    ...(projectSlugs.length ? { projectSlugs } : {}),
+    activeStateTypes: activeStateTypes.length ? activeStateTypes : [...DEFAULT_ACTIVE_STATE_TYPES],
+    terminalStateTypes: terminalStateTypes.length ? terminalStateTypes : [...DEFAULT_TERMINAL_STATE_TYPES],
   };
 }
 

@@ -93,51 +93,57 @@ function normalizePolicy(input?: LinearWorkflowConfig | null): LinearWorkflowCon
         teamKeys: uniqueStrings(triggers.teamKeys),
         priority: uniqueStrings(triggers.priority) as LinearWorkflowDefinition["triggers"]["priority"],
         stateTransitions: (triggers.stateTransitions ?? [])
-          .map((transition) => ({
-            ...(uniqueStrings(transition?.from).length ? { from: uniqueStrings(transition.from) } : {}),
-            ...(uniqueStrings(transition?.to).length ? { to: uniqueStrings(transition.to) } : {}),
-          }))
+          .map((transition) => {
+            const from = uniqueStrings(transition?.from);
+            const to = uniqueStrings(transition?.to);
+            return {
+              ...(from.length ? { from } : {}),
+              ...(to.length ? { to } : {}),
+            };
+          })
           .filter((transition) => (transition.to?.length ?? 0) > 0),
         owner: uniqueStrings(triggers.owner),
         creator: uniqueStrings(triggers.creator),
         metadataTags: uniqueStrings(triggers.metadataTags),
       },
       ...(entry.routing
-        ? {
-            routing: {
-              ...(uniqueStrings(entry.routing.metadataTags).length
-                ? { metadataTags: uniqueStrings(entry.routing.metadataTags) }
-                : {}),
-              ...(entry.routing.watchOnly === true ? { watchOnly: true } : {}),
-            },
-          }
+        ? (() => {
+            const routeTags = uniqueStrings(entry.routing.metadataTags);
+            return {
+              routing: {
+                ...(routeTags.length ? { metadataTags: routeTags } : {}),
+                ...(entry.routing.watchOnly === true ? { watchOnly: true } : {}),
+              },
+            };
+          })()
         : {}),
       steps: (entry.steps ?? []).map((step, index) => ({
         ...step,
         id: step.id?.trim() || `step-${index + 1}`,
       })),
       ...(entry.closeout
-        ? {
-            closeout: {
-              ...entry.closeout,
-              ...(uniqueStrings(entry.closeout.applyLabels).length
-                ? { applyLabels: uniqueStrings(entry.closeout.applyLabels) }
-                : {}),
-              ...(uniqueStrings(entry.closeout.labels).length
-                ? { labels: uniqueStrings(entry.closeout.labels) }
-                : {}),
-            },
-          }
+        ? (() => {
+            const applyLabels = uniqueStrings(entry.closeout.applyLabels);
+            const labels = uniqueStrings(entry.closeout.labels);
+            return {
+              closeout: {
+                ...entry.closeout,
+                ...(applyLabels.length ? { applyLabels } : {}),
+                ...(labels.length ? { labels } : {}),
+              },
+            };
+          })()
         : {}),
       ...(entry.humanReview
-        ? {
-            humanReview: {
-              ...entry.humanReview,
-              ...(uniqueStrings(entry.humanReview.reviewers).length
-                ? { reviewers: uniqueStrings(entry.humanReview.reviewers) }
-                : {}),
-            },
-          }
+        ? (() => {
+            const reviewers = uniqueStrings(entry.humanReview.reviewers);
+            return {
+              humanReview: {
+                ...entry.humanReview,
+                ...(reviewers.length ? { reviewers } : {}),
+              },
+            };
+          })()
         : {}),
       ...(entry.retry
         ? {

@@ -75,6 +75,7 @@ export type SDKUserMessagePartial = {
 export function buildClaudeV2Message(
   promptText: string,
   attachments: AgentChatFileRef[],
+  options: { baseDir?: string } = {},
 ): string | SDKUserMessagePartial {
   const imageAttachments = attachments.filter((a) => a.type === "image");
   if (!imageAttachments.length) {
@@ -97,7 +98,9 @@ export function buildClaudeV2Message(
     }
 
     try {
-      const resolvedPath = path.resolve(attachment.path);
+      const resolvedPath = options.baseDir
+        ? path.resolve(options.baseDir, attachment.path)
+        : path.resolve(attachment.path);
       const mediaType = inferAttachmentMediaType(attachment);
       if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
         content.push({ type: "text", text: `\n[Image attached (${mediaType}): ${attachment.path}]` });

@@ -65,7 +65,7 @@ import type {
 import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
-import { isRecord } from "../shared/utils";
+import { isRecord, resolvePathWithinRoot } from "../shared/utils";
 
 const TRUSTED_SHARED_HASH_KEY = "project_config:trusted_shared_hash";
 const VERSION = 1;
@@ -82,6 +82,15 @@ const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
   "mission",
   "external-mcp",
 ];
+
+function isPathWithinProjectRoot(projectRoot: string, candidate: string, opts: { allowMissing?: boolean } = {}): boolean {
+  try {
+    resolvePathWithinRoot(projectRoot, candidate, opts);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
@@ -2179,6 +2188,8 @@ function validateEffectiveConfig(
     const absCwd = path.isAbsolute(proc.cwd) ? proc.cwd : path.join(projectRoot, proc.cwd);
     if (proc.cwd && !isDirectory(absCwd)) {
       issues.push({ path: `${p}.cwd`, message: `cwd does not exist: ${proc.cwd}` });
+    } else if (proc.cwd && !isPathWithinProjectRoot(projectRoot, absCwd)) {
+      issues.push({ path: `${p}.cwd`, message: `cwd must stay within the project root: ${proc.cwd}` });
     }
 
     if (proc.readiness.type === "port") {
@@ -2252,6 +2263,8 @@ function validateEffectiveConfig(
     const absCwd = path.isAbsolute(suite.cwd) ? suite.cwd : path.join(projectRoot, suite.cwd);
     if (suite.cwd && !isDirectory(absCwd)) {
       issues.push({ path: `${p}.cwd`, message: `cwd does not exist: ${suite.cwd}` });
+    } else if (suite.cwd && !isPathWithinProjectRoot(projectRoot, absCwd)) {
+      issues.push({ path: `${p}.cwd`, message: `cwd must stay within the project root: ${suite.cwd}` });
     }
 
     if (suite.timeoutMs != null && (!Number.isFinite(suite.timeoutMs) || suite.timeoutMs <= 0)) {
@@ -2279,6 +2292,8 @@ function validateEffectiveConfig(
       const absCwd = path.isAbsolute(overrideCwd) ? overrideCwd : path.join(projectRoot, overrideCwd);
       if (!isDirectory(absCwd)) {
         issues.push({ path: `${p}.overrides.cwd`, message: `cwd override does not exist: ${overrideCwd}` });
+      } else if (!isPathWithinProjectRoot(projectRoot, absCwd)) {
+        issues.push({ path: `${p}.overrides.cwd`, message: `cwd override must stay within the project root: ${overrideCwd}` });
       }
     }
     for (const processId of policy.overrides.processIds ?? []) {

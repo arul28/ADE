@@ -144,6 +144,18 @@ function getTextIdentity(event: Extract<AgentChatEvent, { type: "text" }>): stri
   return messageId?.length ? messageId : null;
 }
 
+function turnAndItemMatch(
+  a: { turnId?: string; itemId?: string },
+  b: { turnId?: string; itemId?: string },
+): boolean {
+  const aTurnId = a.turnId ?? null;
+  const bTurnId = b.turnId ?? null;
+  if (!aTurnId || !bTurnId || aTurnId !== bTurnId) return false;
+  const aItemId = a.itemId ?? null;
+  const bItemId = b.itemId ?? null;
+  return !aItemId || !bItemId || aItemId === bItemId;
+}
+
 function shouldMergeTextRows(
   previous: Extract<AgentChatEvent, { type: "text" }>,
   next: Extract<AgentChatEvent, { type: "text" }>,
@@ -155,25 +167,12 @@ function shouldMergeTextRows(
     if (previousIdentity && nextIdentity) {
       return previousIdentity === nextIdentity;
     }
-    const previousTurnId = previous.turnId ?? null;
-    const nextTurnId = next.turnId ?? null;
-    if (previousTurnId && nextTurnId && previousTurnId === nextTurnId) {
-      const previousItemId = previous.itemId ?? null;
-      const nextItemId = next.itemId ?? null;
-      return !previousItemId || !nextItemId || previousItemId === nextItemId;
-    }
-    return false;
+    return turnAndItemMatch(previous, next);
   }
 
-  const previousTurnId = previous.turnId ?? null;
-  const nextTurnId = next.turnId ?? null;
-  if (previousTurnId && nextTurnId && previousTurnId === nextTurnId) {
-    const previousItemId = previous.itemId ?? null;
-    const nextItemId = next.itemId ?? null;
-    return !previousItemId || !nextItemId || previousItemId === nextItemId;
-  }
+  if (turnAndItemMatch(previous, next)) return true;
 
-  return !previousTurnId && !nextTurnId && !previous.itemId && !next.itemId;
+  return !previous.turnId && !next.turnId && !previous.itemId && !next.itemId;
 }
 
 function buildCollapseKey(

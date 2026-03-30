@@ -44,7 +44,7 @@ import {
   TERMINAL_STEP_STATUSES,
 } from "./orchestratorContext";
 import { readMissionStateDocument, updateMissionStateDocument } from "./missionStateDoc";
-import { isWithinDir } from "../shared/utils";
+import { resolvePathWithinRoot } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { registerTeamMember } from "./teamRuntimeState";
 import type { createMemoryService } from "../memory/memoryService";
@@ -675,6 +675,13 @@ export function createCoordinatorToolSet(deps: {
     : null;
   const resolvedProjectRoot = path.resolve(projectRoot);
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const resolveWorkspacePath = (candidatePath: string): string | null => {
+    try {
+      return resolvePathWithinRoot(resolvedWorkspaceRoot, candidatePath);
+    } catch {
+      return null;
+    }
+  };
 
   const normalizeLaneId = (value: string | null | undefined): string | null => {
     if (typeof value !== "string") return null;
@@ -6030,9 +6037,8 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         if (planningReadBlockReason) {
           return { ok: false, error: planningReadBlockReason };
         }
-        const fullPath = path.resolve(resolvedWorkspaceRoot, filePath);
-        // Security: ensure path is within mission workspace root
-        if (!isWithinDir(resolvedWorkspaceRoot, fullPath)) {
+        const fullPath = resolveWorkspacePath(path.resolve(resolvedWorkspaceRoot, filePath));
+        if (!fullPath) {
           return { ok: false, error: "Path is outside mission workspace root" };
         }
         let stat: fs.Stats;
@@ -6074,8 +6080,8 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     execute: async ({ stepKey }) => {
       try {
         const sanitized = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const filePath = path.resolve(resolvedWorkspaceRoot, `.ade/step-output-${sanitized}.md`);
-        if (!isWithinDir(resolvedWorkspaceRoot, filePath)) {
+        const filePath = resolveWorkspacePath(path.resolve(resolvedWorkspaceRoot, `.ade/step-output-${sanitized}.md`));
+        if (!filePath) {
           return { ok: false, error: "Path is outside mission workspace root" };
         }
         let content: string;
@@ -6118,9 +6124,11 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
               for (const entry of entries) {
                 if (results.length >= limit) break;
                 if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-                const rel = path.relative(workspaceRoot, path.join(dir, entry.name));
+                const fullPath = resolveWorkspacePath(path.join(dir, entry.name));
+                if (!fullPath) continue;
+                const rel = path.relative(resolvedWorkspaceRoot, fullPath);
                 if (entry.isDirectory()) {
-                  walkDir(path.join(dir, entry.name), depth + 1);
+                  walkDir(fullPath, depth + 1);
                 } else if (new RegExp(pattern.replace(/\*/g, ".*")).test(entry.name)) {
                   results.push(rel);
                 }
@@ -6129,7 +6137,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
               // Skip unreadable dirs
             }
           };
-          walkDir(workspaceRoot);
+          walkDir(resolvedWorkspaceRoot);
           return { ok: true, searchType, pattern, results, total: results.length };
         }
         // Content search using a simple line-by-line grep
@@ -6142,7 +6150,8 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
             for (const entry of entries) {
               if (results.length >= limit) break;
               if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "dist") continue;
-              const fullPath = path.join(dir, entry.name);
+              const fullPath = resolveWorkspacePath(path.join(dir, entry.name));
+              if (!fullPath) continue;
               if (entry.isDirectory()) {
                 walkDir(fullPath, depth + 1);
               } else {
@@ -6154,7 +6163,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
                   for (let i = 0; i < lines.length && results.length < limit; i++) {
                     if (regex.test(lines[i]!)) {
                       results.push({
-                        file: path.relative(workspaceRoot, fullPath),
+                        file: path.relative(resolvedWorkspaceRoot, fullPath),
                         line: i + 1,
                         text: lines[i]!.slice(0, 200),
                       });
@@ -6169,7 +6178,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
             // Skip unreadable dirs
           }
         };
-        walkDir(workspaceRoot);
+        walkDir(resolvedWorkspaceRoot);
         return { ok: true, searchType, pattern, results, total: results.length };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -6188,7 +6197,8 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         const keyFiles = ["package.json", "tsconfig.json", "README.md", "CLAUDE.md"];
         const docs: Record<string, string> = {};
         for (const f of keyFiles) {
-          const fp = path.resolve(workspaceRoot, f);
+          const fp = resolveWorkspacePath(path.resolve(resolvedWorkspaceRoot, f));
+          if (!fp) continue;
           try {
             const content = fs.readFileSync(fp, "utf-8");
             docs[f] = content.slice(0, 4_000);
