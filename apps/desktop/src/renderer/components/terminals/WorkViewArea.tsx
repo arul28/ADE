@@ -128,6 +128,13 @@ export function WorkViewArea({
     : null;
   const activeRunningTerminalSession = isRunningPtySession(activeSession) ? activeSession : null;
 
+  function handleContextMenu(session: TerminalSessionSummary, e: React.MouseEvent): void {
+    if (onContextMenu) {
+      e.preventDefault();
+      onContextMenu(session, e);
+    }
+  }
+
   if (viewMode === "grid") {
     return (
       <div className="flex h-full flex-col">
@@ -173,13 +180,10 @@ export function WorkViewArea({
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-auto p-2">
-            <div className={`grid gap-2 ${
-              displaySessions.length === 1
-                ? "grid-cols-1"
-                : displaySessions.length === 2
-                  ? "grid-cols-1 xl:grid-cols-2"
-                  : "grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3"
-            }`}>
+            <div className="grid gap-2" style={{
+              gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 360px), 1fr))",
+              gridAutoRows: "minmax(240px, 33vh)",
+            }}>
               {displaySessions.map((session) => {
                 const isActive = activeSession?.id === session.id;
                 const dot = sessionStatusDot(session);
@@ -191,13 +195,14 @@ export function WorkViewArea({
                   <div
                     key={session.id}
                     className="flex min-h-[260px] flex-col overflow-hidden"
-                    onContextMenu={(e) => { if (onContextMenu) { e.preventDefault(); onContextMenu(session, e); } }}
+                    onContextMenu={(e) => handleContextMenu(session, e)}
                     style={{
                       border: isActive
                         ? "1px solid rgba(255,255,255, 0.08)"
                         : "1px solid rgba(255,255,255, 0.04)",
                       background: "transparent",
                       borderRadius: 10,
+                      minHeight: 0,
                     }}
                   >
                     <div
@@ -264,7 +269,7 @@ export function WorkViewArea({
                         <X size={11} />
                       </button>
                     </div>
-                    <div className="min-h-0 flex-1">
+                    <div className="min-h-0 flex-1 overflow-auto">
                       <SessionSurface session={session} isActive={isActive} onOpenChatSession={onOpenChatSession} />
                     </div>
                   </div>
@@ -320,7 +325,7 @@ export function WorkViewArea({
                   opacity: isActive ? 1 : 0.5,
                 }}
                 onClick={() => onSelectItem(session.id)}
-                onContextMenu={(e) => { if (onContextMenu) { e.preventDefault(); onContextMenu(session, e); } }}
+                onContextMenu={(e) => handleContextMenu(session, e)}
               >
                 <ToolLogo toolType={session.toolType} size={10} />
                 <span className="max-w-[120px] truncate">
