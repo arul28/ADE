@@ -176,6 +176,9 @@ export type SyncStatusEventPayload = {
 export type SyncFeatureFlags = {
   fileAccess: true;
   terminalStreaming: true;
+  chatStreaming: {
+    enabled: true;
+  };
   bootstrapAuth: true;
   pairingAuth: {
     enabled: true;

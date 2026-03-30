@@ -180,6 +180,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
   const maintenanceIntervalMs = Math.max(5_000, Math.floor(args.maintenanceIntervalMs ?? 30_000));
   const timers = new Map<string, TimerEntry>();
   const inFlightAgents = new Set<string>();
+  const trackedDispatches = new Set<Promise<void>>();
   let maintenanceTimer: NodeJS.Timeout | null = null;
   let disposed = false;
 
@@ -188,6 +189,34 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       args.logger?.debug(`worker_heartbeat.${event}`, payload);
     } catch {
       // best effort logging
+    }
+  };
+
+  const logDispatchFailure = (event: string, payload: Record<string, unknown>) => {
+    try {
+      args.logger?.warn(`worker_heartbeat.${event}`, payload);
+    } catch {
+      // best effort logging
+    }
+  };
+
+  const trackDispatchPromise = (promise: Promise<void>, agentId: string): Promise<void> => {
+    const tracked = promise.catch((error) => {
+      logDispatchFailure("dispatch_next_failed", {
+        agentId,
+        error: getErrorMessage(error),
+      });
+    });
+    trackedDispatches.add(tracked);
+    tracked.finally(() => {
+      trackedDispatches.delete(tracked);
+    });
+    return tracked;
+  };
+
+  const drainTrackedDispatches = async (): Promise<void> => {
+    while (trackedDispatches.size > 0) {
+      await Promise.allSettled([...trackedDispatches]);
     }
   };
 
@@ -460,6 +489,11 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     args.workerAgentService.setAgentHeartbeatAt(agentId, nowIso());
   };
 
+  const scheduleDispatchNext = (agentId: string): void => {
+    if (disposed) return;
+    trackDispatchPromise(dispatchNext(agentId), agentId);
+  };
+
   const runWakeup = async (agent: AgentIdentity, run: WorkerRunRow): Promise<void> => {
     const startedAt = nowIso();
     args.workerAgentService.setAgentStatus(agent.id, "running");
@@ -707,7 +741,9 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     } finally {
       inFlightAgents.delete(agentId);
       finalizeAgentAfterRun(agentId);
-      setTimeout(() => { void dispatchNext(agentId); }, 0);
+      if (findNextPendingRun(agentId)) {
+        scheduleDispatchNext(agentId);
+      }
     }
   };
 
@@ -737,6 +773,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     for (const agentId of deferredAgentIds) {
       await dispatchNext(agentId);
     }
+    await drainTrackedDispatches();
   };
 
   const syncFromConfig = (): void => {
@@ -872,7 +909,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     return args.workerAgentService.listSessionLogs(agentId, limit);
   };
 
-  const dispose = (): void => {
+  const dispose = async (): Promise<void> => {
     disposed = true;
     if (maintenanceTimer) {
       clearInterval(maintenanceTimer);
@@ -883,6 +920,11 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     }
     timers.clear();
     inFlightAgents.clear();
+    try {
+      await drainTrackedDispatches();
+    } catch (error) {
+      logDispatchFailure("drain_failed", { error: getErrorMessage(error) });
+    }
   };
 
   const start = (): void => {
@@ -894,7 +936,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
         syncFromConfig();
         const deferredAgentIds = listDeferredAgentIds();
         for (const agentId of deferredAgentIds) {
-          void dispatchNext(agentId);
+          scheduleDispatchNext(agentId);
         }
       }, maintenanceIntervalMs);
     }

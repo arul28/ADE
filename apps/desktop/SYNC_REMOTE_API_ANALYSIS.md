@@ -2,9 +2,9 @@
 
 ## 1. All Existing Remote Commands
 
-The desktop exposes remote commands via `syncRemoteCommandService.ts`. Each command is routed through a WebSocket-based sync protocol. Commands are registered with a policy (`{ viewerAllowed, queueable? }`).
+The desktop exposes remote commands via `syncRemoteCommandService.ts`. Each command is routed through a WebSocket-based sync protocol. Commands are registered with a policy (`{ viewerAllowed, queueable? }`). Chat event streaming uses separate sync envelopes (`chat_subscribe`, `chat_unsubscribe`, `chat_event`) and is gated by `hello_ok.features.chatStreaming.enabled`.
 
-### Chat Commands (6 total)
+### Chat Commands (13 total)
 | Command | Parameters | Response | Policy |
 |---------|-----------|----------|--------|
 | `chat.listSessions` | `{ laneId?: string, includeAutomation?: boolean }` | `AgentChatSessionSummary[]` | viewerAllowed |
@@ -12,9 +12,16 @@ The desktop exposes remote commands via `syncRemoteCommandService.ts`. Each comm
 | `chat.getTranscript` | `{ sessionId: string, limit?: number, maxChars?: number }` | Transcript entries | viewerAllowed |
 | `chat.create` | `{ laneId: string, provider?: string, model?: string, modelId?: string, reasoningEffort?: string }` | `AgentChatSession` | viewerAllowed, queueable |
 | `chat.send` | `{ sessionId: string, text: string }` | `{ ok: true }` | viewerAllowed, queueable |
+| `chat.interrupt` | `{ sessionId: string }` | `{ ok: true }` | viewerAllowed |
+| `chat.steer` | `{ sessionId: string, text: string }` | `{ ok: true }` | viewerAllowed |
+| `chat.approve` | `{ sessionId: string, itemId: string, decision: string, responseText?: string }` | `{ ok: true }` | viewerAllowed |
+| `chat.respondToInput` | `{ sessionId: string, itemId: string, decision?: string, answers?: object, responseText?: string }` | `{ ok: true }` | viewerAllowed |
+| `chat.resume` | `{ sessionId: string }` | `AgentChatSession` | viewerAllowed, queueable |
+| `chat.updateSession` | `{ sessionId: string, title?, modelId?, reasoningEffort?, permissionMode?, ... }` | `AgentChatSession` | viewerAllowed, queueable |
+| `chat.dispose` | `{ sessionId: string }` | `{ ok: true }` | viewerAllowed, queueable |
 | `chat.models` | `{ provider?: string }` | `AgentChatModelInfo[]` | viewerAllowed |
 
-### Lane Commands (28 total)
+### Lane Commands (29 total)
 | Command | Policy |
 |---------|--------|
 | `lanes.list` | viewerAllowed |
@@ -54,7 +61,7 @@ The desktop exposes remote commands via `syncRemoteCommandService.ts`. Each comm
 | `work.runQuickCommand` | `{ laneId, title, startupCommand?, cols?, rows?, toolType?, tracked? }` | viewerAllowed, queueable |
 | `work.closeSession` | `{ sessionId: string }` | viewerAllowed, queueable |
 
-### Git Commands (24 total)
+### Git Commands (30 total)
 `git.getChanges`, `git.getFile`, `git.stageFile`, `git.stageAll`, `git.unstageFile`, `git.unstageAll`, `git.discardFile`, `git.restoreStagedFile`, `git.commit`, `git.generateCommitMessage`, `git.listRecentCommits`, `git.listCommitFiles`, `git.getCommitMessage`, `git.revertCommit`, `git.cherryPickCommit`, `git.stashPush`, `git.stashList`, `git.stashApply`, `git.stashPop`, `git.stashDrop`, `git.fetch`, `git.pull`, `git.getSyncStatus`, `git.sync`, `git.push`, `git.getConflictState`, `git.rebaseContinue`, `git.rebaseAbort`, `git.listBranches`, `git.checkoutBranch`
 
 ### File Commands (1)
@@ -63,24 +70,29 @@ The desktop exposes remote commands via `syncRemoteCommandService.ts`. Each comm
 ### Conflict Commands (3)
 `conflicts.getLaneStatus`, `conflicts.listOverlaps`, `conflicts.getBatchAssessment`
 
-### PR Commands (10)
+### PR Commands (13)
 `prs.list`, `prs.refresh`, `prs.getDetail`, `prs.getStatus`, `prs.getChecks`, `prs.getReviews`, `prs.getComments`, `prs.getFiles`, `prs.createFromLane`, `prs.land`, `prs.close`, `prs.reopen`, `prs.requestReviewers`
 
-**Total: ~75 registered remote commands**
+**Total: 92 registered remote commands**
 
 ---
 
 ## 2. Streaming/Event Push Mechanism
 
-### Current State: **NO chat event streaming to sync peers**
+### Current State: chat event streaming is available to sync peers
 
 The desktop has two separate event delivery systems:
 
 1. **IPC Events (Electron renderer only)**: Chat events flow via `onEvent` callback → `emitProjectEvent(projectRoot, IPC.agentChatEvent, event)` which sends `AgentChatEventEnvelope` objects to the Electron renderer process.
 
-2. **Sync WebSocket (mobile/external peers)**: Only terminal PTY data and PTY exit events are pushed to sync peers. The sync host has `handlePtyData()` and `handlePtyExit()` methods that broadcast to subscribers. **There is no equivalent `handleChatEvent()` method.**
+2. **Sync WebSocket (mobile/external peers)**: The sync host subscribes to `agentChatService` events and broadcasts matching `chat_event` envelopes to peers that sent `chat_subscribe { sessionId }`. `chat_unsubscribe { sessionId }` stops delivery. There is no `chat_snapshot` envelope in the current implementation.
 
-### How Terminal Streaming Works (reference for chat streaming design)
+### How Sync Streaming Works
+- Peer sends `chat_subscribe { sessionId }`
+- Desktop starts pushing `chat_event` envelopes for that session to the subscribed peer
+- Peer sends `chat_unsubscribe { sessionId }` to stop
+
+### How Terminal Streaming Works
 - Peer sends `terminal_subscribe { sessionId, maxBytes? }` → receives `terminal_snapshot` with current transcript
 - Desktop pushes `terminal_data` events as PTY data arrives
 - Desktop pushes `terminal_exit` when PTY exits
@@ -99,21 +111,12 @@ The following `agentChatService` public methods have **NO remote command equival
 
 | Missing Command | agentChatService Method | Priority | Description |
 |----------------|------------------------|----------|-------------|
-| `chat.steer` | `steer({ sessionId, text })` | **Critical** | Send follow-up message while turn is active |
-| `chat.interrupt` | `interrupt({ sessionId })` | **Critical** | Cancel the current active turn |
-| `chat.respondToInput` | `respondToInput({ sessionId, itemId, decision?, answers?, responseText? })` | **Critical** | Respond to pending input requests (approvals, questions) |
-| `chat.approve` | `approveToolUse({ sessionId, itemId, decision, responseText? })` | **Critical** | Approve/decline tool use requests |
-| `chat.resume` | `resumeSession({ sessionId })` | **High** | Resume an ended session |
-| `chat.updateSession` | `updateSession({ sessionId, title?, modelId?, reasoningEffort?, permissionMode?, ... })` | **High** | Update session settings |
-| `chat.dispose` | `dispose({ sessionId })` | **High** | Clean up and close a session |
 | `chat.handoff` | `handoffSession({ sourceSessionId, targetModelId })` | Medium | Switch model mid-session |
 | `chat.getCapabilities` | `getSessionCapabilities({ sessionId })` | Medium | Get session capabilities |
 | `chat.listSubagents` | `listSubagents({ sessionId })` | Medium | List active subagents |
 | `chat.slashCommands` | `getSlashCommands({ sessionId })` | Low | Get available slash commands |
 | `chat.fileSearch` | `codexFuzzyFileSearch({ sessionId, query })` | Low | Search for files to attach |
 | `chat.warmupModel` | `warmupModel({ sessionId, modelId })` | Low | Pre-warm a model before use |
-| **`chat.subscribe`** | N/A (new) | **Critical** | Subscribe to real-time chat events for a session |
-| **`chat.unsubscribe`** | N/A (new) | **Critical** | Unsubscribe from chat events |
 
 ---
 
@@ -229,8 +232,8 @@ Runtime-specific states:
 1. Client opens WebSocket to `ws://<host>:8787`
 2. Client sends `hello` or `pairing_request` envelope
 3. Desktop validates auth (bootstrap token or paired device credentials)
-4. Desktop sends `hello_ok` with features list (including all supported command actions)
-5. Authenticated peer can send commands, subscribe to terminals, etc.
+4. Desktop sends `hello_ok` with features list (including `chatStreaming` and all supported command actions)
+5. Authenticated peer can send commands, subscribe to terminals, and, when `chatStreaming.enabled` is true, subscribe to chat events.
 
 ### Envelope Format
 ```typescript
@@ -274,49 +277,39 @@ Desktop → command_result { commandId, ok, result?, error? }
 
 ### Critical (required for basic mobile chat)
 
-1. **Add `chat.subscribe` / `chat.unsubscribe` commands**: Mirror the `terminal_subscribe`/`terminal_unsubscribe` pattern. When a peer subscribes to a chat session:
-   - Send a `chat_snapshot` with the last N events (from transcript)
-   - Stream all subsequent `AgentChatEventEnvelope` objects to subscribed peers
-   - Add a `handleChatEvent()` method to `syncHostService` (like `handlePtyData()`)
-   - Wire it in `main.ts` so the `onEvent` callback also calls `syncService.handleChatEvent()`
+1. **Chat streaming is already wired through sync envelopes**: `chat_subscribe` and `chat_unsubscribe` gate `chat_event` pushes, and the capability should be checked via `hello_ok.features.chatStreaming.enabled` before subscribing.
 
-2. **Add missing chat commands** to `syncRemoteCommandService`:
-   - `chat.steer` → `agentChatService.steer()`
-   - `chat.interrupt` → `agentChatService.interrupt()`
-   - `chat.respondToInput` → `agentChatService.respondToInput()`
-   - `chat.approve` → `agentChatService.approveToolUse()`
-   - `chat.resume` → `agentChatService.resumeSession()`
-   - `chat.dispose` → `agentChatService.dispose()`
-   - `chat.updateSession` → `agentChatService.updateSession()`
-
-3. **Update `SyncRemoteCommandAction` type** in `shared/types/sync.ts` to include new command names.
+2. **Remaining chat commands for mobile**:
+   - `chat.handoff` → `agentChatService.handoffSession()`
+   - `chat.getCapabilities` → `agentChatService.getSessionCapabilities()`
+   - `chat.listSubagents` → `agentChatService.listSubagents()`
+   - `chat.slashCommands` → `agentChatService.getSlashCommands()`
+   - `chat.fileSearch` → `agentChatService.codexFuzzyFileSearch()`
+   - `chat.warmupModel` → `agentChatService.warmupModel()`
 
 ### High Priority
 
-4. **Add `chat.handoff` command**: For model switching from mobile.
-5. **Add `chat.getCapabilities` command**: So mobile knows what actions are available.
-6. **Add `chat.listSubagents` command**: For monitoring subagent work.
+3. **Consider whether mobile needs the remaining read-only commands immediately**: `chat.getCapabilities`, `chat.listSubagents`, and `chat.slashCommands` are the most likely next additions.
 
 ### Nice to Have
 
-7. **Add `chat.slashCommands` command**: Mobile could surface slash commands.
-8. **Consider connection-level rate limiting**: Currently there's no protection against command flooding from peers.
+4. **Consider connection-level rate limiting**: Currently there's no protection against command flooding from peers.
 
 ### What Mobile Can Do with Existing APIs
 
-With the 6 existing chat commands, mobile can already:
+With the 13 existing chat commands, mobile can already:
 - ✅ List chat sessions per lane
 - ✅ Get session summaries
 - ✅ Read chat transcripts (polling)
 - ✅ Create new chat sessions
 - ✅ Send initial messages
+- ✅ Interrupt, steer, approve, and answer input requests in real time
+- ✅ Resume, update, and dispose chat sessions
 - ✅ List available models
-- ❌ Cannot receive real-time chat events (no streaming)
-- ❌ Cannot interrupt/steer active turns
-- ❌ Cannot approve tool use or respond to questions
-- ❌ Cannot resume ended sessions
-- ❌ Cannot update session settings
+- ✅ Receive real-time chat events after `chat_subscribe`
+- ❌ Cannot hand off sessions to a different model
+- ❌ Cannot query capabilities, subagents, slash commands, file search, or model warmup
 
 ### Implementation Approach
 
-The most impactful single change is adding **chat event streaming** via a new `chat_subscribe`/`chat_event` envelope pair. This unblocks the entire real-time chat experience on mobile. The additional command registrations are straightforward — they just wire existing service methods through the existing command dispatch pattern.
+The most impactful single change is adding **chat event streaming** via `chat_subscribe`/`chat_event` envelopes and gating it behind `hello_ok.features.chatStreaming.enabled`. The additional command registrations are straightforward - they just wire existing service methods through the existing command dispatch pattern.

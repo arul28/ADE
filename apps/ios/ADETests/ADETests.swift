@@ -258,6 +258,10 @@ final class ADETests: XCTestCase {
 
     try await service.subscribeToChatEvents(sessionId: "session-1")
     try await service.subscribeToChatEvents(sessionId: "session-2")
+    let subscriptionRevision = service.localStateRevision
+
+    try await service.subscribeToChatEvents(sessionId: "session-1")
+    XCTAssertEqual(service.localStateRevision, subscriptionRevision)
 
     XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1", "session-2"]))
     XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["sessionId"] as? String }.sorted(), ["session-1", "session-2"])
@@ -269,11 +273,16 @@ final class ADETests: XCTestCase {
 
     try await service.unsubscribeFromChatEvents(sessionId: "session-1")
     XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-2"]))
+
+    let unsubscribedRevision = service.localStateRevision
+    try await service.unsubscribeFromChatEvents(sessionId: "session-1")
+    XCTAssertEqual(service.localStateRevision, unsubscribedRevision)
   }
 
   @MainActor
   func testChatEventHistoryStoresDecodedEnvelopes() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let globalRevision = service.localStateRevision
     let envelope = AgentChatEventEnvelope(
       sessionId: "session-1",
       timestamp: "2026-03-17T00:00:00.000Z",
@@ -295,6 +304,8 @@ final class ADETests: XCTestCase {
     service.recordChatEventEnvelope(envelope)
 
     XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [envelope])
+    XCTAssertEqual(service.localStateRevision, globalRevision)
+    XCTAssertEqual(service.chatEventRevision(for: "session-1"), 1)
   }
 
   func testChatCommandRequestPayloadsEncodeExpectedShapes() throws {

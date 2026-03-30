@@ -800,6 +800,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         features: {
           fileAccess: true,
           terminalStreaming: true,
+          chatStreaming: {
+            enabled: true,
+          },
           bootstrapAuth: true,
           pairingAuth: {
             enabled: true,
@@ -963,6 +966,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return [...peers]
         .map((peer) => toSyncPeerConnectionState(peer, dbVersion))
         .filter((peer): peer is SyncPeerConnectionState => peer != null);
+    },
+
+    getChatSubscriptionSnapshot(): Array<{ deviceId: string; subscribedChatSessionIds: string[] }> {
+      return [...peers]
+        .map((peer) => {
+          if (!peer.metadata) return null;
+          return {
+            deviceId: peer.metadata.deviceId,
+            subscribedChatSessionIds: [...peer.subscribedChatSessionIds].sort(),
+          };
+        })
+        .filter((peer): peer is { deviceId: string; subscribedChatSessionIds: string[] } => peer != null);
     },
 
     getBrainStatusSnapshot(): SyncBrainStatusPayload {

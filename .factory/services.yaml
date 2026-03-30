@@ -1,8 +1,8 @@
 commands:
-  ios-build: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' build 2>&1 | tail -10
-  ios-test: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' test 2>&1 | tail -40
+  ios-build: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 16' build 2>&1 | tail -10
+  ios-test: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 16' test 2>&1 | tail -40
   desktop-typecheck: cd apps/desktop && npx tsc -p tsconfig.json --noEmit
   desktop-test-sync: cd apps/desktop && npx vitest run src/main/services/sync
   desktop-test-all: cd apps/desktop && npx vitest run
-  desktop-lint: cd apps/desktop && npx eslint src/ --ext .ts,.tsx
+  desktop-lint: cd apps/desktop && npm run lint
   install: cd apps/desktop && npm install

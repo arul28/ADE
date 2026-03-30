@@ -1672,11 +1672,13 @@ app.whenReady().then(async () => {
       orchestratorService,
       prService,
       computerUseArtifactBrokerService,
+      logger,
     });
     logger.info("project.init_stage", { projectRoot, stage: "linear_dispatcher_init" });
     const linearDispatcherService = createLinearDispatcherService({
       db,
       projectId,
+      logger,
       issueTracker: linearIssueTracker,
       workerAgentService,
       workerHeartbeatService,
@@ -2380,7 +2382,7 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.workerHeartbeatService?.dispose();
+      await ctx.workerHeartbeatService?.dispose();
     } catch {
       // ignore
     }

@@ -315,7 +315,7 @@ export function generateWorkflowSummary(workflow: LinearWorkflowDefinition): str
   let sentence = parts[0];
   for (let i = 1; i < parts.length; i++) {
     if (i === parts.length - 1) {
-      sentence += ", and " + parts[i];
+      sentence += parts.length === 2 ? " and " + parts[i] : ", and " + parts[i];
     } else {
       sentence += ", " + parts[i];
     }

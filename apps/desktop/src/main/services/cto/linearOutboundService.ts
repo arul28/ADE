@@ -277,6 +277,16 @@ export function createLinearOutboundService(args: {
     const rawEntries = uniqueStrings(params.artifactPaths.map((entry) => entry.trim()).filter((entry) => entry.length > 0));
     if (!rawEntries.length) return [];
     const uploaded: string[] = [];
+    let projectRootReal: string;
+    try {
+      projectRootReal = fs.realpathSync(args.projectRoot);
+    } catch (error) {
+      args.logger?.warn("linear_outbound.project_root_resolution_failed", {
+        projectRoot: args.projectRoot,
+        error: getErrorMessage(error),
+      });
+      return [];
+    }
 
     for (const entry of rawEntries) {
       if (/^(https?|file):\/\//i.test(entry)) {
@@ -285,30 +295,46 @@ export function createLinearOutboundService(args: {
       }
 
       const artifactPath = path.resolve(args.projectRoot, entry);
+      let artifactPathReal: string;
+      try {
+        artifactPathReal = fs.realpathSync(artifactPath);
+      } catch {
+        continue;
+      }
+      const relativePath = path.relative(projectRootReal, artifactPathReal);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        args.logger?.warn("linear_outbound.artifact_path_outside_project_root", {
+          issueId: params.issueId,
+          artifactPath: entry,
+          resolvedPath: artifactPathReal,
+          projectRoot: projectRootReal,
+        });
+        continue;
+      }
       let stat: fs.Stats;
       try {
-        stat = fs.statSync(artifactPath);
+        stat = fs.statSync(artifactPathReal);
       } catch {
         continue;
       }
       if (!stat.isFile()) continue;
 
       if (params.mode === "links") {
-        uploaded.push(`file://${artifactPath}`);
+        uploaded.push(`file://${artifactPathReal}`);
         continue;
       }
 
       try {
         const uploadedAttachment = await args.issueTracker.uploadAttachment({
           issueId: params.issueId,
-          filePath: artifactPath,
-          title: path.basename(artifactPath),
+          filePath: artifactPathReal,
+          title: path.basename(artifactPathReal),
         });
         uploaded.push(uploadedAttachment.url);
       } catch (error) {
         args.logger?.warn("linear_sync.attachment_upload_failed", {
           issueId: params.issueId,
-          artifactPath,
+          artifactPath: artifactPathReal,
           error: getErrorMessage(error),
         });
       }
