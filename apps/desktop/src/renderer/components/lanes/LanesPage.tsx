@@ -108,7 +108,6 @@ export function resolveCreateLaneRequest(args: {
       args: {
         branchRef: args.createImportBranch,
         name: args.name,
-        baseBranch: args.createBaseBranch,
       },
     };
   }

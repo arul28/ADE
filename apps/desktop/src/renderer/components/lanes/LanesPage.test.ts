@@ -44,7 +44,7 @@ describe("resolveCreateLaneRequest", () => {
         name: "git actions fixes",
         createMode: "existing",
         createParentLaneId: "",
-        createBaseBranch: "",
+        createBaseBranch: "release-10",
         createImportBranch: "origin/ade/git-actions-fixes-5144fe89",
       }),
     ).toEqual({
