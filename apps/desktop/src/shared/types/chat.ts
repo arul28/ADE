@@ -544,6 +544,7 @@ export type AgentChatCreateArgs = {
   automationId?: string | null;
   automationRunId?: string | null;
   computerUse?: ComputerUsePolicy | null;
+  requestedCwd?: string;
 };
 
 export type AgentChatHandoffArgs = {

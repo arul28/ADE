@@ -7306,6 +7306,13 @@ export function createAgentChatService(args: {
           return;
         }
 
+        // Apply permission mode before the first interaction so the session
+        // starts with the correct approval behaviour selected in the rebase tab.
+        const initialPermissionMode = resolveClaudeTurnPermissionMode(managed);
+        if (typeof runtime.v2Session.setPermissionMode === "function") {
+          await runtime.v2Session.setPermissionMode(initialPermissionMode);
+        }
+
         await runtime.v2Session.send("System initialization check. Respond with only the word READY.");
         for await (const msg of runtime.v2Session.stream()) {
           if (runtime.v2WarmupCancelled) break;
@@ -7617,11 +7624,13 @@ export function createAgentChatService(args: {
     automationId,
     automationRunId,
     computerUse,
+    requestedCwd,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
       laneService,
       laneId,
       purpose: "start this chat",
+      requestedCwd,
     });
     const sessionId = randomUUID();
     const startedAt = nowIso();
@@ -8118,6 +8127,14 @@ export function createAgentChatService(args: {
       if (reasoningEffort) {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
       }
+      // Re-sync permission mode so mid-session changes take effect on this turn.
+      if (managed.runtime?.kind === "unified") {
+        const chatConfig = resolveChatConfig();
+        managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
+          managed.session,
+          chatConfig.unifiedPermissionMode,
+        );
+      }
       await runTurn(managed, {
         promptText,
         displayText: visibleText,
@@ -8136,6 +8153,20 @@ export function createAgentChatService(args: {
         managed.session.reasoningEffort = nextReasoningEffort;
       } else if (!managed.session.reasoningEffort) {
         managed.session.reasoningEffort = DEFAULT_REASONING_EFFORT;
+      }
+
+      // Re-sync codex approval policy so mid-session changes take effect on this turn.
+      if (runtime.threadResumed) {
+        const prevApproval = managed.session.codexApprovalPolicy;
+        const prevSandbox = managed.session.codexSandbox;
+        resolveCodexThreadParams(managed);
+        if (
+          managed.session.codexApprovalPolicy !== prevApproval
+          || managed.session.codexSandbox !== prevSandbox
+        ) {
+          // Policy drifted — force a re-resume so the codex server picks up the new settings.
+          runtime.threadResumed = false;
+        }
       }
 
       if (!runtime.threadResumed) {
@@ -8492,6 +8523,11 @@ export function createAgentChatService(args: {
           await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
         }
       }
+      // Re-sync codex approval policy from persisted/config settings
+      managed.session.codexApprovalPolicy = persisted?.codexApprovalPolicy ?? managed.session.codexApprovalPolicy;
+      managed.session.codexSandbox = persisted?.codexSandbox ?? managed.session.codexSandbox;
+      managed.session.codexConfigSource = persisted?.codexConfigSource ?? managed.session.codexConfigSource;
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     } else if (managed.runtime?.kind === "unified" || (managed.session.modelId && !providerResolver.isModelCliWrapped(managed.session.modelId))) {
       // Unified runtime resume — re-resolve the model
       const result = await startUnifiedSession(managed);
@@ -8514,11 +8550,21 @@ export function createAgentChatService(args: {
         }
         // Fallthrough to Claude — SDK manages history via sdkSessionId
         ensureClaudeSessionRuntime(managed);
+        // Re-sync permission mode from persisted/config settings
+        const fallbackPermMode = resolveClaudeTurnPermissionMode(managed);
+        if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && typeof managed.runtime.v2Session.setPermissionMode === "function") {
+          await managed.runtime.v2Session.setPermissionMode(fallbackPermMode);
+        }
         sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
       }
     } else {
       // Claude — SDK manages history via sdkSessionId
       ensureClaudeSessionRuntime(managed);
+      // Re-sync permission mode from persisted/config settings
+      const claudePermMode = resolveClaudeTurnPermissionMode(managed);
+      if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && typeof managed.runtime.v2Session.setPermissionMode === "function") {
+        await managed.runtime.v2Session.setPermissionMode(claudePermMode);
+      }
       sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
     }
 

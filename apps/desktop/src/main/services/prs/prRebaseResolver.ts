@@ -144,6 +144,7 @@ export async function launchRebaseResolutionChat(
     unifiedPermissionMode: mapPermissionMode(args.permissionMode) as import("../../../shared/types").AgentChatUnifiedPermissionMode,
     surface: "work",
     sessionProfile: "workflow",
+    requestedCwd: lane.worktreePath,
   });
 
   deps.sessionService.updateMeta({ sessionId: session.id, title });
