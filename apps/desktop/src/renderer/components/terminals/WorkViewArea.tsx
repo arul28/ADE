@@ -15,6 +15,17 @@ const THEME_BORDER = "var(--color-border)";
 const THEME_FG = "var(--color-fg)";
 const THEME_MUTED = "var(--color-muted-fg)";
 
+function isRunningPtySession(
+  session: TerminalSessionSummary | null | undefined,
+): session is TerminalSessionSummary & { ptyId: string } {
+  return Boolean(
+    session
+    && session.status === "running"
+    && session.ptyId
+    && !isChatToolType(session.toolType),
+  );
+}
+
 function SessionSurface({
   session,
   isActive,
@@ -28,7 +39,7 @@ function SessionSurface({
   if (isChat) {
     return <AgentChatPane laneId={session.laneId} lockSessionId={session.id} onSessionCreated={onOpenChatSession} />;
   }
-  if (session.status === "running" && session.ptyId) {
+  if (isRunningPtySession(session)) {
     return (
       <TerminalView
         key={session.id}
@@ -113,27 +124,7 @@ export function WorkViewArea({
   const activeSession = activeItemId
     ? sessionsById.get(activeItemId) ?? displaySessions[0] ?? null
     : null;
-  const runningTerminalSessions = useMemo(
-    () => {
-      const running = displaySessions.filter(
-        (session) =>
-          session.status === "running"
-          && Boolean(session.ptyId)
-          && !isChatToolType(session.toolType),
-      );
-      if (
-        activeSession
-        && activeSession.status === "running"
-        && Boolean(activeSession.ptyId)
-        && !isChatToolType(activeSession.toolType)
-        && !running.some((session) => session.id === activeSession.id)
-      ) {
-        running.push(activeSession);
-      }
-      return running;
-    },
-    [activeSession, displaySessions],
-  );
+  const activeRunningTerminalSession = isRunningPtySession(activeSession) ? activeSession : null;
 
   if (viewMode === "grid") {
     return (
@@ -368,28 +359,20 @@ export function WorkViewArea({
       </div>
 
       <div className="relative min-h-0 flex-1" style={{ background: THEME_CARD }}>
-        {runningTerminalSessions.length > 0 ? (
+        {activeRunningTerminalSession ? (
           <div className="absolute inset-0">
-            {runningTerminalSessions.map((session) =>
-              session.ptyId ? (
-                <TerminalView
-                  key={session.id}
-                  ptyId={session.ptyId}
-                  sessionId={session.id}
-                  isActive={activeSession?.id === session.id}
-                  // Keep live PTY-backed TUIs mounted across session-tab switches so
-                  // full-screen apps like Codex/Claude do not need transcript rehydration.
-                  className={`absolute inset-0 h-full w-full ${
-                    activeSession?.id === session.id ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
-                  }`}
-                />
-              ) : null,
-            )}
+            <TerminalView
+              key={activeRunningTerminalSession.id}
+              ptyId={activeRunningTerminalSession.ptyId}
+              sessionId={activeRunningTerminalSession.id}
+              isActive
+              className="absolute inset-0 h-full w-full"
+            />
           </div>
         ) : null}
 
         {activeSession ? (
-          activeSession.status === "running" && activeSession.ptyId && !isChatToolType(activeSession.toolType) ? null : (
+          activeRunningTerminalSession ? null : (
             <div className="absolute inset-0">
               <SessionSurface session={activeSession} isActive onOpenChatSession={onOpenChatSession} />
             </div>

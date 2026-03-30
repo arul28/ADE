@@ -1295,12 +1295,13 @@ describe("conflictService conflict context integrity", () => {
       git(repoRoot, ["checkout", "-b", "feature/root-lane"]);
 
       git(remoteWorkRoot, ["clone", remoteRoot, "."]);
+      git(remoteWorkRoot, ["checkout", "-B", "main", "origin/main"]);
       git(remoteWorkRoot, ["config", "user.email", "ade@test.local"]);
       git(remoteWorkRoot, ["config", "user.name", "ADE Test"]);
       fs.writeFileSync(path.join(remoteWorkRoot, "base.txt"), "new base commit\n", "utf8");
       git(remoteWorkRoot, ["add", "base.txt"]);
       git(remoteWorkRoot, ["commit", "-m", "base advance"]);
-      git(remoteWorkRoot, ["push", "origin", "main"]);
+      git(remoteWorkRoot, ["push", "origin", "HEAD:main"]);
 
       git(repoRoot, ["fetch", "origin"]);
 

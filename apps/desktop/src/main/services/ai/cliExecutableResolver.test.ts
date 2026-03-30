@@ -26,6 +26,7 @@ describe("cliExecutableResolver", () => {
   let tempRoot: string | null = null;
 
   afterEach(() => {
+    vi.restoreAllMocks();
     setPlatform(originalPlatform);
     if (tempRoot) {
       fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -44,13 +45,15 @@ describe("cliExecutableResolver", () => {
     // Hide system-installed codex so it doesn't win the known-dirs race.
     const realStatSync = fs.statSync;
     vi.spyOn(fs, "statSync").mockImplementation(((p: fs.PathLike, opts?: any) => {
-      const s = String(p);
-      if (s.endsWith("/codex") && !s.startsWith(tempRoot!)) {
+      const normalizedCandidate = path.normalize(String(p));
+      const normalizedTempRoot = path.normalize(tempRoot!);
+      const candidateBase = path.parse(normalizedCandidate).name.toLowerCase();
+      if (candidateBase === "codex" && !normalizedCandidate.startsWith(normalizedTempRoot)) {
         const err: NodeJS.ErrnoException = new Error("ENOENT");
         err.code = "ENOENT";
         throw err;
       }
-      return realStatSync(s, opts);
+      return realStatSync(normalizedCandidate, opts);
     }) as typeof fs.statSync);
 
     const env = {
@@ -62,8 +65,6 @@ describe("cliExecutableResolver", () => {
       path: path.join(prefixDir, "bin", "codex"),
       source: "known-dir",
     });
-
-    vi.restoreAllMocks();
   });
 
   it("augments PATH with npm-global bins discovered from ~/.npmrc", () => {

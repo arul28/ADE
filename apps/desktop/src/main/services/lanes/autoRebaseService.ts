@@ -7,7 +7,9 @@ import type { createLaneService } from "./laneService";
 import type { AutoRebaseEventPayload, AutoRebaseLaneState, AutoRebaseLaneStatus, LaneSummary, RebaseNeed } from "../../../shared/types";
 import { isRecord, nowIso } from "../shared/utils";
 
-type StoredStatus = AutoRebaseLaneStatus;
+type StoredStatus = AutoRebaseLaneStatus & {
+  source?: "auto" | "manual";
+};
 type ListStatusesOptions = {
   includeAll?: boolean;
 };
@@ -18,6 +20,7 @@ type AttentionStatusInput = {
   state: AutoRebaseLaneState;
   conflictCount: number;
   message?: string | null;
+  source?: "auto" | "manual";
 };
 
 export type AutoRebaseService = {
@@ -67,7 +70,8 @@ function sanitizeStoredStatus(value: unknown): StoredStatus | null {
     state,
     updatedAt,
     conflictCount,
-    message: messageRaw
+    message: messageRaw,
+    source: value.source === "manual" ? "manual" : "auto"
   };
 }
 
@@ -150,7 +154,8 @@ export function createAutoRebaseService(args: {
       state: status.state,
       updatedAt: nowIso(),
       conflictCount: Math.max(0, Math.floor(status.conflictCount)),
-      message: status.message ?? null
+      message: status.message ?? null,
+      source: status.source ?? "auto"
     });
   };
 
@@ -169,6 +174,7 @@ export function createAutoRebaseService(args: {
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
     void maybeSweepRoots("listStatuses");
     const lanes = await laneService.list({ includeArchived: false });
+    if (disposed) return [];
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const nowMs = Date.now();
 
@@ -176,11 +182,6 @@ export function createAutoRebaseService(args: {
     for (const lane of lanes) {
       const status = loadStatus(lane.id);
       if (!status) continue;
-      if (!lane.parentLaneId) {
-        clearStatus(lane.id);
-        continue;
-      }
-
       if (status.state === "autoRebased") {
         const updatedAtMs = Date.parse(status.updatedAt);
         if (!Number.isFinite(updatedAtMs)) {
@@ -191,7 +192,7 @@ export function createAutoRebaseService(args: {
           clearStatus(lane.id);
           continue;
         }
-      } else if (!options?.includeAll && lane.status.behind <= 0) {
+      } else if (!options?.includeAll && lane.status.behind <= 0 && status.source !== "manual") {
         clearStatus(lane.id);
         continue;
       } else if (status.parentLaneId && !laneById.has(status.parentLaneId)) {
@@ -228,14 +229,17 @@ export function createAutoRebaseService(args: {
   const queueRootsFromNeeds = async (needs: RebaseNeed[], reason: string): Promise<void> => {
     if (needs.length === 0) return;
     const lanes = await laneService.list({ includeArchived: false });
+    if (disposed) return;
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const affectedLaneIds = new Set(needs.map((need) => need.laneId));
     const rootLaneIds = new Set<string>();
 
     for (const need of needs) {
       const lane = laneById.get(need.laneId);
-      if (!lane?.parentLaneId) continue;
-      rootLaneIds.add(resolveAffectedChainLaneId(lane.id, laneById, affectedLaneIds));
+      if (!lane) continue;
+      rootLaneIds.add(lane.parentLaneId
+        ? resolveAffectedChainLaneId(lane.id, laneById, affectedLaneIds)
+        : lane.id);
     }
 
     for (const rootLaneId of rootLaneIds) {
@@ -247,6 +251,7 @@ export function createAutoRebaseService(args: {
     if (disposed || !isEnabled()) return;
     if (options?.force && sweepPromise) {
       await sweepPromise.catch(() => {});
+      if (disposed) return;
     }
     if (sweepPromise) return;
     const now = Date.now();
@@ -259,6 +264,7 @@ export function createAutoRebaseService(args: {
         const needs = await conflictService.scanRebaseNeeds();
         if (disposed) return;
         await queueRootsFromNeeds(needs, reason);
+        if (disposed) return;
       } catch (error) {
         logger.warn("autoRebase.sweep_failed", { reason, error: String(error) });
       }
@@ -269,15 +275,18 @@ export function createAutoRebaseService(args: {
     });
     sweepPromise = currentSweep;
     await currentSweep;
+    if (disposed) return;
   };
 
   const refreshActiveRebaseNeeds = async (reason = "external_refresh"): Promise<void> => {
     await maybeSweepRoots(reason, { force: true });
+    if (disposed) return;
     await emit();
   };
 
   const recordAttentionStatus = async (status: AttentionStatusInput): Promise<void> => {
     setStatus(status);
+    if (disposed) return;
     await emit({ includeAll: true });
   };
 
@@ -308,29 +317,53 @@ export function createAutoRebaseService(args: {
     if (disposed || !isEnabled()) return;
 
     let lanes = await laneService.list({ includeArchived: false });
+    if (disposed) return;
     const rootLane = lanes.find((lane) => lane.id === rootLaneId) ?? null;
     if (!rootLane) return;
-    const cascadeOrder = rootLane.parentLaneId
-      ? [rootLaneId, ...collectDescendantsDepthFirst(rootLaneId, lanes)]
-      : collectDescendantsDepthFirst(rootLaneId, lanes);
+    const cascadeOrder = [rootLaneId, ...collectDescendantsDepthFirst(rootLaneId, lanes)];
     if (cascadeOrder.length === 0) return;
 
     let blocked = false;
     let blockedLaneId: string | null = null;
+    let blockedByLookupFailure = false;
     for (const laneId of cascadeOrder) {
       lanes = await laneService.list({ includeArchived: false });
+      if (disposed) return;
       const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
       const lane = laneById.get(laneId);
       if (!lane) {
         logger.info("autoRebase.lane_not_found", { laneId });
         continue;
       }
-      if (!lane.parentLaneId) {
-        logger.debug("autoRebase.no_parent", { laneId });
-        continue;
+
+      let parentHeadSha: string | null = null;
+      let targetLabel = lane.name;
+      let baseBranchOverride: string | undefined;
+      let parent: LaneSummary | null = null;
+      if (lane.parentLaneId) {
+        parent = laneById.get(lane.parentLaneId) ?? null;
+        if (!parent) {
+          setStatus({
+            laneId: lane.id,
+            parentLaneId: lane.parentLaneId,
+            parentHeadSha: null,
+            state: "rebasePending",
+            conflictCount: 0,
+            message: "Pending: parent lane is unavailable. Open the Rebase tab to review the lane."
+          });
+          blocked = true;
+          blockedLaneId = lane.id;
+          continue;
+        }
+        parentHeadSha = await safeGetHeadSha(parent.worktreePath);
+        if (disposed) return;
+        targetLabel = parent.name;
       }
 
       if (blocked) {
+        if (blockedByLookupFailure) {
+          continue;
+        }
         setStatus({
           laneId: lane.id,
           parentLaneId: lane.parentLaneId,
@@ -344,36 +377,23 @@ export function createAutoRebaseService(args: {
         continue;
       }
 
-      const parent = laneById.get(lane.parentLaneId);
-      if (!parent) {
-        setStatus({
-          laneId: lane.id,
-          parentLaneId: lane.parentLaneId,
-          parentHeadSha: null,
-          state: "rebasePending",
-          conflictCount: 0,
-          message: "Pending: parent lane is unavailable. Open the Rebase tab to review the lane."
-        });
-        blocked = true;
-        blockedLaneId = lane.id;
-        continue;
-      }
-
-      const parentHeadSha = await safeGetHeadSha(parent.worktreePath);
-
       let lookupFailed = false;
       const need = await conflictService.getRebaseNeed(lane.id).catch((error) => {
         lookupFailed = true;
         logger.warn("autoRebase.need_lookup_failed", { laneId: lane.id, error: String(error) });
         return null;
       });
+      if (disposed) return;
 
       if (!need) {
         if (lookupFailed) {
+          blocked = true;
+          blockedByLookupFailure = true;
+          blockedLaneId = lane.id;
           continue;
         }
         const existing = loadStatus(lane.id);
-        if (existing?.state !== "autoRebased") {
+        if (existing?.source !== "manual" && existing?.state !== "autoRebased") {
           clearStatus(lane.id);
         }
         continue;
@@ -393,13 +413,20 @@ export function createAutoRebaseService(args: {
         continue;
       }
 
+      if (!lane.parentLaneId) {
+        baseBranchOverride = need.baseBranch;
+        targetLabel = need.baseBranch || lane.baseRef || lane.branchRef || lane.name;
+      }
+
       const rebaseRun = await laneService.rebaseStart({
         laneId: lane.id,
         scope: "lane_only",
         pushMode: "none",
         actor: "system",
-        reason: "auto_rebase"
+        reason: "auto_rebase",
+        ...(baseBranchOverride ? { baseBranchOverride } : {})
       });
+      if (disposed) return;
       if (rebaseRun.run.error) {
         blocked = true;
         blockedLaneId = lane.id;
@@ -420,6 +447,7 @@ export function createAutoRebaseService(args: {
       let pushSucceeded = false;
       try {
         const pushedRun = await laneService.rebasePush({ runId: rebaseRun.runId, laneIds: [lane.id] });
+        if (disposed) return;
         const pushedLaneIds = pushedRun.pushedLaneIds ?? [];
         const pushedLane = pushedRun.lanes.find((entry) => entry.laneId === lane.id);
         if (!pushedLaneIds.includes(lane.id) || pushedLane?.pushed !== true) {
@@ -433,13 +461,16 @@ export function createAutoRebaseService(args: {
           parentHeadSha,
           state: "autoRebased",
           conflictCount: 0,
-          message: `Rebased and pushed automatically after '${parent.name}' advanced.`
+          message: lane.parentLaneId
+            ? `Rebased and pushed automatically after '${targetLabel}' advanced.`
+            : `Rebased and pushed automatically onto '${targetLabel}'.`
         });
       } catch (error) {
         let rollbackError: string | null = null;
         if (!pushSucceeded) {
           try {
             await laneService.rebaseRollback({ runId: rebaseRun.runId });
+            if (disposed) return;
           } catch (rollbackFailure) {
             rollbackError = rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure);
             logger.warn("autoRebase.rollback_failed", {
@@ -477,14 +508,17 @@ export function createAutoRebaseService(args: {
       while (state.pending) {
         state.pending = false;
         await processRoot(rootLaneId, state.reason);
+        if (disposed) return;
         await emit({ includeAll: true });
+        if (disposed) return;
       }
     } catch (error) {
       logger.warn("autoRebase.run_failed", { rootLaneId, error: String(error) });
+      if (disposed) return;
       await emit({ includeAll: true });
     } finally {
       state.running = false;
-      if (state.pending) {
+      if (state.pending && !disposed) {
         void runRootQueue(rootLaneId);
       }
     }

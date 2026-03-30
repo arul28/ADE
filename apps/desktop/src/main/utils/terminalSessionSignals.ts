@@ -19,10 +19,17 @@ function toolFromCommand(raw: string): TerminalToolType | null {
   return null;
 }
 
+function canonicalizePreferredTool(preferredTool: TerminalToolType | null | undefined): TerminalToolType | null | undefined {
+  if (preferredTool === "claude-orchestrated") return "claude";
+  if (preferredTool === "codex-orchestrated") return "codex";
+  return preferredTool;
+}
+
 function prefersTool(raw: string, preferredTool: TerminalToolType | null | undefined): boolean {
-  if (!preferredTool || (preferredTool !== "claude" && preferredTool !== "codex")) return true;
+  const canonicalPreferredTool = canonicalizePreferredTool(preferredTool);
+  if (!canonicalPreferredTool || (canonicalPreferredTool !== "claude" && canonicalPreferredTool !== "codex")) return true;
   const cmdTool = toolFromCommand(raw);
-  return cmdTool === preferredTool;
+  return cmdTool === canonicalPreferredTool;
 }
 
 export function normalizeResumeCommand(

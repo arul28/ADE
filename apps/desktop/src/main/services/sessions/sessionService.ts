@@ -172,6 +172,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     updateMeta(args: UpdateSessionMetaArgs): TerminalSessionSummary | null {
       const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) return null;
+      const currentSession = this.get(sessionId);
 
       const sets: string[] = [];
       const params: (string | number | null)[] = [];
@@ -201,9 +202,12 @@ export function createSessionService({ db }: { db: AdeDb }) {
       }
 
       if (args.resumeCommand !== undefined) {
+        const preferredToolType = args.toolType !== undefined
+          ? normalizeToolType(args.toolType)
+          : currentSession?.toolType ?? null;
         const next = normalizeResumeCommand(
           args.resumeCommand,
-          args.toolType === undefined ? undefined : normalizeToolType(args.toolType),
+          preferredToolType,
         );
         sets.push("resume_command = ?");
         params.push(next);
@@ -309,7 +313,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     setResumeCommand(sessionId: string, resumeCommand: string | null): void {
-      const next = normalizeResumeCommand(resumeCommand);
+      const currentSession = this.get(sessionId);
+      const next = normalizeResumeCommand(resumeCommand, currentSession?.toolType ?? null);
       db.run("update terminal_sessions set resume_command = ? where id = ?", [next, sessionId]);
     },
 

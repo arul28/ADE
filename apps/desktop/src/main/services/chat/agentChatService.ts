@@ -3866,6 +3866,7 @@ export function createAgentChatService(args: {
       managed.runtime.pendingApprovals.clear();
       managed.runtime = null;
     }
+    clearLaneDirectiveKey(managed);
   };
 
   const maybeGenerateSessionSummary = async (
@@ -4170,6 +4171,11 @@ export function createAgentChatService(args: {
   ): void => {
     if (!laneDirectiveKey || managed.lastLaneDirectiveKey === laneDirectiveKey) return;
     managed.lastLaneDirectiveKey = laneDirectiveKey;
+    persistChatState(managed);
+  };
+
+  const clearLaneDirectiveKey = (managed: ManagedChatSession): void => {
+    managed.lastLaneDirectiveKey = null;
     persistChatState(managed);
   };
 
@@ -5105,7 +5111,7 @@ export function createAgentChatService(args: {
             error: error instanceof Error ? error.message : String(error),
           });
           runtime.sdkSessionId = null;
-          managed.lastLaneDirectiveKey = null;
+          clearLaneDirectiveKey(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
           refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
           prewarmClaudeV2Session(managed);
@@ -8971,7 +8977,6 @@ export function createAgentChatService(args: {
 
       if (managed.runtime && modelChanged) {
         teardownRuntime(managed);
-        managed.lastLaneDirectiveKey = null;
         refreshReconstructionContext(managed, { includeConversationTail: true });
       }
 
@@ -8982,7 +8987,7 @@ export function createAgentChatService(args: {
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
       if (previousProvider !== nextProvider || previousProvider === "codex") {
         delete managed.session.threadId;
-        managed.lastLaneDirectiveKey = null;
+        clearLaneDirectiveKey(managed);
       }
       sessionService.updateMeta({
         sessionId,

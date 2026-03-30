@@ -4331,6 +4331,8 @@ export function createConflictService({
           timeoutMs: 60_000
         });
 
+        const existingNeed = needs.find((need) => need.laneId === lane.id) ?? null;
+
         needs.push({
           laneId: lane.id,
           laneName: lane.name,
@@ -4339,9 +4341,9 @@ export function createConflictService({
           conflictPredicted: merge.conflicts.length > 0,
           conflictingFiles: merge.conflicts.map((conflict) => conflict.path),
           prId: String(row.id),
-          groupContext: null,
-          dismissedAt: null,
-          deferredUntil: null,
+          groupContext: existingNeed?.groupContext ?? null,
+          dismissedAt: existingNeed?.dismissedAt ?? rebaseDismissed.get(lane.id) ?? null,
+          deferredUntil: existingNeed?.deferredUntil ?? rebaseDeferred.get(lane.id) ?? null,
         });
       } catch (err) {
         logger.warn(`scanRebaseNeeds: failed PR target scan for lane ${lane.id}`, { error: err });
@@ -4419,7 +4421,7 @@ export function createConflictService({
       };
     } catch (err) {
       logger.warn(`getRebaseNeed: failed for lane ${laneId}`, { error: err });
-      throw err;
+      return null;
     }
   };
 
@@ -4512,11 +4514,18 @@ export function createConflictService({
         projectRoot,
         laneId: lane.id,
       });
-      const { comparisonRef: rebaseTarget } = resolveLaneRebaseTarget({
+      const { comparisonRef, fallbackRef } = resolveLaneRebaseTarget({
         lane,
         lanesById,
         queueOverride,
       });
+      let rebaseTarget = comparisonRef;
+      if (fallbackRef) {
+        const comparisonRefExists = await readHeadSha(projectRoot, comparisonRef).catch(() => "");
+        if (!comparisonRefExists) {
+          rebaseTarget = fallbackRef;
+        }
+      }
       const rebaseRes = await runGit(
         ["rebase", rebaseTarget],
         { cwd: lane.worktreePath, timeoutMs: 120_000 }

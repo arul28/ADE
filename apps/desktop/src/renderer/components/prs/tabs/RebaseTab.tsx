@@ -32,6 +32,10 @@ function rebaseNeedKey(need: RebaseNeed): string {
   return `${need.laneId}:${need.prId ?? "base"}:${need.baseBranch}`;
 }
 
+function rebaseRunKey(args: { laneId: string; baseBranch?: string | null }): string {
+  return `${args.laneId}:${branchNameFromRef(args.baseBranch)}`;
+}
+
 /* ── inline style constants ── */
 const S = {
   mainBg: "#0F0D14",
@@ -127,10 +131,13 @@ export function RebaseTab({
 
   const selectedNeed = React.useMemo(() => {
     if (!selectedItemId) return null;
-    return rebaseNeeds.find((need) => rebaseNeedKey(need) === selectedItemId)
-      ?? rebaseNeeds.find((need) => need.laneId === selectedItemId)
-      ?? null;
+    return rebaseNeeds.find((need) => rebaseNeedKey(need) === selectedItemId) ?? null;
   }, [rebaseNeeds, selectedItemId]);
+
+  const selectedNeedRunKey = React.useMemo(
+    () => (selectedNeed ? rebaseRunKey({ laneId: selectedNeed.laneId, baseBranch: selectedNeed.baseBranch }) : null),
+    [selectedNeed],
+  );
 
   const selectedLane = React.useMemo(
     () => (selectedNeed ? laneById.get(selectedNeed.laneId) ?? null : null),
@@ -142,6 +149,8 @@ export function RebaseTab({
     () => (selectedNeed ? isPrTargetNeed(selectedNeed) : false),
     [isPrTargetNeed, selectedNeed],
   );
+
+  const activeRunNeedKeyRef = React.useRef<string | null>(null);
 
   // Auto-default scope based on children
   React.useEffect(() => {
@@ -168,7 +177,7 @@ export function RebaseTab({
   // Auto-select first item in highest-urgency group
   React.useEffect(() => {
     if (rebaseNeeds.length === 0 && selectedItemId === null) return;
-    if (selectedItemId && rebaseNeeds.some((need) => rebaseNeedKey(need) === selectedItemId || need.laneId === selectedItemId)) return;
+    if (selectedItemId && rebaseNeeds.some((need) => rebaseNeedKey(need) === selectedItemId)) return;
     const first = grouped.lane_base[0] ?? grouped.pr_target[0];
     onSelectItem(first ? rebaseNeedKey(first) : null);
   }, [rebaseNeeds, selectedItemId, grouped, onSelectItem]);
@@ -179,17 +188,27 @@ export function RebaseTab({
 
   React.useEffect(() => {
     activeRunIdRef.current = activeRun?.runId ?? null;
+    activeRunNeedKeyRef.current = activeRun
+      ? rebaseRunKey({ laneId: activeRun.rootLaneId, baseBranch: activeRun.baseBranch })
+      : null;
   }, [activeRun]);
 
   // Subscribe to rebase events
   React.useEffect(() => {
     const unsubscribe = window.ade.lanes.rebaseSubscribe((event) => {
       if (event.type === "rebase-run-updated") {
+        const incomingRunKey = rebaseRunKey({
+          laneId: event.run.rootLaneId,
+          baseBranch: event.run.baseBranch,
+        });
         setActiveRun((prev) => {
           if (prev?.runId) {
-            return event.run.runId === prev.runId ? event.run : prev;
+            if (event.run.runId !== prev.runId) return prev;
+            activeRunNeedKeyRef.current = incomingRunKey;
+            return event.run;
           }
-          if (!selectedNeed || event.run.rootLaneId !== selectedNeed.laneId) return prev;
+          if (!selectedNeedRunKey || incomingRunKey !== selectedNeedRunKey) return prev;
+          activeRunNeedKeyRef.current = incomingRunKey;
           return event.run;
         });
         if (event.run.state !== "running") {
@@ -206,9 +225,19 @@ export function RebaseTab({
       }
     });
     return unsubscribe;
-  }, [refreshRebaseNeeds, selectedNeed]);
+  }, [refreshRebaseNeeds, selectedNeedRunKey]);
 
   // Fetch drift commits when selected need changes
+  const driftSourceLaneId = React.useMemo(() => {
+    if (!selectedNeed || selectedNeed.behindBy === 0) return null;
+    if (selectedNeedIsPrTarget) {
+      const baseBranch = branchNameFromRef(selectedNeed.baseBranch);
+      if (!baseBranch) return null;
+      return lanes.find((lane) => branchNameFromRef(lane.branchRef) === baseBranch)?.id ?? null;
+    }
+    return selectedLane?.parentLaneId ? (laneById.get(selectedLane.parentLaneId)?.id ?? null) : null;
+  }, [laneById, lanes, selectedLane?.parentLaneId, selectedNeed, selectedNeedIsPrTarget]);
+
   React.useEffect(() => {
     if (!selectedNeed || selectedNeed.behindBy === 0) {
       setDriftCommits([]);
@@ -217,15 +246,23 @@ export function RebaseTab({
       return;
     }
 
-    const parentLane = selectedLane?.parentLaneId ? laneById.get(selectedLane.parentLaneId) : null;
-    if (!parentLane) {
+    if (selectedNeedIsPrTarget && !driftSourceLaneId) {
       setDriftCommits([]);
+      setCommitFilesMap({});
+      setExpandedCommitSha(null);
+      return;
+    }
+
+    if (!driftSourceLaneId) {
+      setDriftCommits([]);
+      setCommitFilesMap({});
+      setExpandedCommitSha(null);
       return;
     }
 
     let cancelled = false;
     setDriftCommitsLoading(true);
-    window.ade.git.listRecentCommits({ laneId: parentLane.id, limit: selectedNeed.behindBy })
+    window.ade.git.listRecentCommits({ laneId: driftSourceLaneId, limit: selectedNeed.behindBy })
       .then((commits) => {
         if (!cancelled) setDriftCommits(commits);
       })
@@ -237,10 +274,10 @@ export function RebaseTab({
       });
 
     return () => { cancelled = true; };
-  }, [selectedNeed?.laneId, selectedNeed?.behindBy, selectedLane?.parentLaneId, laneById]);
+  }, [driftSourceLaneId, selectedNeed?.behindBy, selectedNeed?.laneId, selectedNeedIsPrTarget]);
 
   // Load files for expanded commit
-  const parentLaneId = selectedLane?.parentLaneId ? (laneById.get(selectedLane.parentLaneId)?.id ?? null) : null;
+  const parentLaneId = driftSourceLaneId;
   React.useEffect(() => {
     if (!expandedCommitSha || commitFilesMap[expandedCommitSha] || !parentLaneId) return;
     window.ade.git.listCommitFiles({ laneId: parentLaneId, commitSha: expandedCommitSha })
@@ -255,6 +292,7 @@ export function RebaseTab({
   const handleRebase = async (aiAssisted: boolean, pushMode: "none" | "review_then_push" = "none") => {
     if (!selectedNeed) return;
     setRebaseError(null);
+    const requestedNeedRunKey = selectedNeedRunKey;
 
     if (selectedNeedIsPrTarget && selectedLane?.parentLaneId) {
       setRebaseError("PR-target rebases are only supported for lanes that are already detached from a parent lane.");
@@ -292,6 +330,7 @@ export function RebaseTab({
         actor: "user",
         ...(selectedNeedIsPrTarget ? { baseBranchOverride: selectedNeed.baseBranch } : {}),
       });
+      activeRunNeedKeyRef.current = requestedNeedRunKey;
       setActiveRun(started.run);
       setRunLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Started run ${started.runId}`].slice(-80));
       const pushable = started.run.lanes.filter((lane) => lane.status === "succeeded").map((lane) => lane.laneId);
@@ -313,13 +352,20 @@ export function RebaseTab({
       setRebaseBusy(false);
     }
   };
-  const selectedRunIsActive = activeRun?.state === "running";
+  const activeRunMatchesSelectedNeed = Boolean(
+    activeRun
+      && selectedNeedRunKey
+      && activeRunNeedKeyRef.current === selectedNeedRunKey,
+  );
+  const activeRunForSelectedNeed = activeRunMatchesSelectedNeed ? activeRun : null;
+  const selectedRunIsActive = activeRunMatchesSelectedNeed && activeRun?.state === "running";
   const selectedRunLane = React.useMemo(
-    () => (selectedNeed ? activeRun?.lanes.find((lane) => lane.laneId === selectedNeed.laneId) ?? null : null),
-    [activeRun, selectedNeed],
+    () => (activeRunMatchesSelectedNeed && selectedNeed ? activeRun?.lanes.find((lane) => lane.laneId === selectedNeed.laneId) ?? null : null),
+    [activeRun, activeRunMatchesSelectedNeed, selectedNeed],
   );
   const selectedNeedResolvedByRun = Boolean(
     selectedRunLane
+      && activeRunMatchesSelectedNeed
       && activeRun?.state === "completed"
       && (selectedRunLane.status === "succeeded" || selectedRunLane.status === "skipped"),
   );
@@ -477,12 +523,12 @@ export function RebaseTab({
 
   const resolverTargetLaneId = React.useMemo(() => {
     if (!selectedNeed) return null;
-    return lanes.find((l) => {
-      const ref = l.branchRef.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
-      const base = selectedNeed.baseBranch.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
-      return ref === base;
-    })?.id ?? null;
+    const baseBranch = branchNameFromRef(selectedNeed.baseBranch);
+    if (!baseBranch) return null;
+    return lanes.find((lane) => branchNameFromRef(lane.branchRef) === baseBranch)?.id ?? null;
   }, [lanes, selectedNeed]);
+
+  const shouldRenderDriftPanel = !selectedNeedIsPrTarget || Boolean(driftSourceLaneId);
 
   // Compute file overlap between drift commits and the lane's own files
   const driftTouchedFiles = React.useMemo(() => {
@@ -626,326 +672,330 @@ export function RebaseTab({
               </div>
             ) : null}
 
-            {/* ── Drift Analysis Card ── */}
-            <div
-              style={{
-                backgroundColor: S.cardBg,
-                border: `1px solid ${S.borderDefault}`,
-                padding: 20,
-              }}
-            >
-              <div
-                className="font-mono font-bold uppercase"
-                style={{
-                  fontSize: 10,
-                  letterSpacing: "1px",
-                  color: S.textSecondary,
-                  marginBottom: 14,
-                }}
-              >
-                DRIFT ANALYSIS
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
-                {/* Behind By */}
-                <div style={{ backgroundColor: S.headerBg, padding: 12 }}>
+            {shouldRenderDriftPanel ? (
+              <>
+                {/* ── Drift Analysis Card ── */}
+                <div
+                  style={{
+                    backgroundColor: S.cardBg,
+                    border: `1px solid ${S.borderDefault}`,
+                    padding: 20,
+                  }}
+                >
                   <div
                     className="font-mono font-bold uppercase"
-                    style={{ fontSize: 10, letterSpacing: "1px", color: S.textMuted, marginBottom: 6 }}
-                  >
-                    BEHIND BY
-                  </div>
-                  <div
-                    className="font-mono font-bold"
-                    style={{
-                      fontSize: 20,
-                      color: selectedNeed.behindBy > 5 ? S.warning : selectedNeed.behindBy > 0 ? S.info : S.success,
-                    }}
-                  >
-                    {selectedNeed.behindBy}
-                    <span
-                      className="font-mono"
-                      style={{ fontSize: 11, color: S.textMuted, marginLeft: 4, fontWeight: 400 }}
-                    >
-                      commit{selectedNeed.behindBy !== 1 ? "s" : ""}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Conflict Status */}
-                <div style={{ backgroundColor: S.headerBg, padding: 12 }}>
-                  <div
-                    className="font-mono font-bold uppercase"
-                    style={{ fontSize: 10, letterSpacing: "1px", color: S.textMuted, marginBottom: 6 }}
-                  >
-                    CONFLICTS
-                  </div>
-                  <div
-                    className="font-mono font-bold uppercase"
-                    style={{
-                      fontSize: 14,
-                      color: selectedNeed.conflictPredicted ? S.error : S.success,
-                    }}
-                  >
-                    {selectedNeed.conflictPredicted ? "PREDICTED" : "NONE"}
-                  </div>
-                </div>
-
-                {/* Overlapping Files */}
-                <div style={{ backgroundColor: S.headerBg, padding: 12 }}>
-                  <div
-                    className="font-mono font-bold uppercase"
-                    style={{ fontSize: 10, letterSpacing: "1px", color: S.textMuted, marginBottom: 6 }}
-                  >
-                    FILE OVERLAPS
-                  </div>
-                  <div
-                    className="font-mono font-bold"
-                    style={{
-                      fontSize: 14,
-                      color: selectedNeed.conflictingFiles.length > 0 ? S.warning : S.success,
-                    }}
-                  >
-                    {selectedNeed.conflictingFiles.length > 0
-                      ? `${selectedNeed.conflictingFiles.length} file${selectedNeed.conflictingFiles.length !== 1 ? "s" : ""}`
-                      : "CLEAN"}
-                  </div>
-                </div>
-
-                {/* Rebase Risk */}
-                <div style={{ backgroundColor: S.headerBg, padding: 12 }}>
-                  <div
-                    className="font-mono font-bold uppercase"
-                    style={{ fontSize: 10, letterSpacing: "1px", color: S.textMuted, marginBottom: 6 }}
-                  >
-                    RISK LEVEL
-                  </div>
-                  <div
-                    className="font-mono font-bold uppercase"
-                    style={{
-                      fontSize: 14,
-                      color: selectedNeed.conflictPredicted
-                        ? S.error
-                        : selectedNeed.conflictingFiles.length > 0
-                          ? S.warning
-                          : S.success,
-                    }}
-                  >
-                    {selectedNeed.conflictPredicted
-                      ? "HIGH"
-                      : selectedNeed.conflictingFiles.length > 0
-                        ? "MEDIUM"
-                        : "LOW"}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* ── New Commits on Base ── */}
-            <div
-              style={{
-                backgroundColor: S.cardBg,
-                border: `1px solid ${S.borderDefault}`,
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => setDriftCommitsExpanded((v) => !v)}
-                className="flex w-full items-center justify-between"
-                style={{
-                  padding: "14px 20px",
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                }}
-              >
-                <div className="flex items-center gap-2">
-                  <GitCommit size={14} style={{ color: S.info }} />
-                  <span
-                    className="font-mono font-bold uppercase"
-                    style={{ fontSize: 10, letterSpacing: "1px", color: S.textSecondary }}
-                  >
-                    NEW COMMITS ON {selectedNeed.baseBranch.toUpperCase()}
-                  </span>
-                  <span
-                    className="font-mono font-bold"
                     style={{
                       fontSize: 10,
-                      color: S.info,
-                      backgroundColor: "#3B82F618",
-                      border: "1px solid #3B82F630",
-                      padding: "1px 6px",
+                      letterSpacing: "1px",
+                      color: S.textSecondary,
+                      marginBottom: 14,
                     }}
                   >
-                    {selectedNeed.behindBy}
-                  </span>
-                </div>
-                {driftCommitsExpanded
-                  ? <CaretDown size={12} style={{ color: S.textMuted }} />
-                  : <CaretRight size={12} style={{ color: S.textMuted }} />}
-              </button>
+                    DRIFT ANALYSIS
+                  </div>
 
-              {driftCommitsExpanded && (
-                <div style={{ borderTop: `1px solid ${S.borderDefault}` }}>
-                  {driftCommitsLoading ? (
-                    <div style={{ padding: "12px 20px", fontSize: 11, color: S.textMuted }} className="font-mono">
-                      Loading commits...
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+                    {/* Behind By */}
+                    <div style={{ backgroundColor: S.headerBg, padding: 12 }}>
+                      <div
+                        className="font-mono font-bold uppercase"
+                        style={{ fontSize: 10, letterSpacing: "1px", color: S.textMuted, marginBottom: 6 }}
+                      >
+                        BEHIND BY
+                      </div>
+                      <div
+                        className="font-mono font-bold"
+                        style={{
+                          fontSize: 20,
+                          color: selectedNeed.behindBy > 5 ? S.warning : selectedNeed.behindBy > 0 ? S.info : S.success,
+                        }}
+                      >
+                        {selectedNeed.behindBy}
+                        <span
+                          className="font-mono"
+                          style={{ fontSize: 11, color: S.textMuted, marginLeft: 4, fontWeight: 400 }}
+                        >
+                          commit{selectedNeed.behindBy !== 1 ? "s" : ""}
+                        </span>
+                      </div>
                     </div>
-                  ) : driftCommits.length === 0 ? (
-                    <div style={{ padding: "12px 20px", fontSize: 11, color: S.textMuted }} className="font-mono">
-                      No commit details available. The parent lane may not be tracked locally.
+
+                    {/* Conflict Status */}
+                    <div style={{ backgroundColor: S.headerBg, padding: 12 }}>
+                      <div
+                        className="font-mono font-bold uppercase"
+                        style={{ fontSize: 10, letterSpacing: "1px", color: S.textMuted, marginBottom: 6 }}
+                      >
+                        CONFLICTS
+                      </div>
+                      <div
+                        className="font-mono font-bold uppercase"
+                        style={{
+                          fontSize: 14,
+                          color: selectedNeed.conflictPredicted ? S.error : S.success,
+                        }}
+                      >
+                        {selectedNeed.conflictPredicted ? "PREDICTED" : "NONE"}
+                      </div>
                     </div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column" }}>
-                      {driftCommits.map((commit) => {
-                        const isExpanded = expandedCommitSha === commit.sha;
-                        const files = commitFilesMap[commit.sha];
-                        const overlappingFiles = files
-                          ? files.filter((f) => selectedNeed.conflictingFiles.includes(f))
-                          : [];
-                        return (
-                          <div key={commit.sha}>
-                            <button
-                              type="button"
-                              onClick={() => setExpandedCommitSha(isExpanded ? null : commit.sha)}
-                              className="flex w-full items-center gap-3 text-left"
-                              style={{
-                                padding: "8px 20px",
-                                background: "none",
-                                border: "none",
-                                borderBottom: `1px solid ${S.borderDefault}`,
-                                cursor: "pointer",
-                              }}
-                              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#13101A66"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                            >
-                              <span
-                                className="font-mono font-bold"
-                                style={{ fontSize: 10, color: S.accent, flexShrink: 0 }}
-                              >
-                                {commit.shortSha}
-                              </span>
-                              <span
-                                className="truncate"
-                                style={{ fontSize: 12, color: S.textPrimary, flex: 1, fontFamily: "var(--font-sans)" }}
-                              >
-                                {commit.subject}
-                              </span>
-                              <span
-                                className="font-mono"
-                                style={{ fontSize: 10, color: S.textMuted, flexShrink: 0 }}
-                              >
-                                {commit.authorName}
-                              </span>
-                              <span
-                                className="font-mono"
-                                style={{ fontSize: 10, color: S.textDisabled, flexShrink: 0 }}
-                              >
-                                {formatTimeAgo(commit.authoredAt)}
-                              </span>
-                              {isExpanded
-                                ? <CaretDown size={10} style={{ color: S.textMuted, flexShrink: 0 }} />
-                                : <CaretRight size={10} style={{ color: S.textMuted, flexShrink: 0 }} />}
-                            </button>
-                            {isExpanded && (
-                              <div style={{ padding: "8px 20px 8px 48px", borderBottom: `1px solid ${S.borderDefault}`, background: S.headerBg }}>
-                                {!files ? (
-                                  <div className="font-mono" style={{ fontSize: 10, color: S.textMuted }}>Loading files...</div>
-                                ) : files.length === 0 ? (
-                                  <div className="font-mono" style={{ fontSize: 10, color: S.textMuted }}>No files changed</div>
-                                ) : (
-                                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                                    {files.map((f) => {
-                                      const isOverlap = selectedNeed.conflictingFiles.includes(f);
-                                      return (
-                                        <div key={f} className="flex items-center gap-2 font-mono" style={{ fontSize: 10 }}>
-                                          <FileText size={10} style={{ color: isOverlap ? S.warning : S.textMuted, flexShrink: 0 }} />
-                                          <span style={{ color: isOverlap ? S.warning : S.textSecondary }}>
-                                            {f}
-                                          </span>
-                                          {isOverlap && (
-                                            <span style={{ fontSize: 9, color: S.warning, backgroundColor: "#F59E0B18", padding: "0 4px" }}>
-                                              OVERLAP
-                                            </span>
-                                          )}
-                                        </div>
-                                      );
-                                    })}
-                                    {overlappingFiles.length > 0 && (
-                                      <div className="font-mono" style={{ fontSize: 10, color: S.warning, marginTop: 4 }}>
-                                        {overlappingFiles.length} file{overlappingFiles.length !== 1 ? "s" : ""} overlap with your branch
+
+                    {/* Overlapping Files */}
+                    <div style={{ backgroundColor: S.headerBg, padding: 12 }}>
+                      <div
+                        className="font-mono font-bold uppercase"
+                        style={{ fontSize: 10, letterSpacing: "1px", color: S.textMuted, marginBottom: 6 }}
+                      >
+                        FILE OVERLAPS
+                      </div>
+                      <div
+                        className="font-mono font-bold"
+                        style={{
+                          fontSize: 14,
+                          color: selectedNeed.conflictingFiles.length > 0 ? S.warning : S.success,
+                        }}
+                      >
+                        {selectedNeed.conflictingFiles.length > 0
+                          ? `${selectedNeed.conflictingFiles.length} file${selectedNeed.conflictingFiles.length !== 1 ? "s" : ""}`
+                          : "CLEAN"}
+                      </div>
+                    </div>
+
+                    {/* Rebase Risk */}
+                    <div style={{ backgroundColor: S.headerBg, padding: 12 }}>
+                      <div
+                        className="font-mono font-bold uppercase"
+                        style={{ fontSize: 10, letterSpacing: "1px", color: S.textMuted, marginBottom: 6 }}
+                      >
+                        RISK LEVEL
+                      </div>
+                      <div
+                        className="font-mono font-bold uppercase"
+                        style={{
+                          fontSize: 14,
+                          color: selectedNeed.conflictPredicted
+                            ? S.error
+                            : selectedNeed.conflictingFiles.length > 0
+                              ? S.warning
+                              : S.success,
+                        }}
+                      >
+                        {selectedNeed.conflictPredicted
+                          ? "HIGH"
+                          : selectedNeed.conflictingFiles.length > 0
+                            ? "MEDIUM"
+                            : "LOW"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── New Commits on Base ── */}
+                <div
+                  style={{
+                    backgroundColor: S.cardBg,
+                    border: `1px solid ${S.borderDefault}`,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setDriftCommitsExpanded((v) => !v)}
+                    className="flex w-full items-center justify-between"
+                    style={{
+                      padding: "14px 20px",
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <GitCommit size={14} style={{ color: S.info }} />
+                      <span
+                        className="font-mono font-bold uppercase"
+                        style={{ fontSize: 10, letterSpacing: "1px", color: S.textSecondary }}
+                      >
+                        NEW COMMITS ON {selectedNeed.baseBranch.toUpperCase()}
+                      </span>
+                      <span
+                        className="font-mono font-bold"
+                        style={{
+                          fontSize: 10,
+                          color: S.info,
+                          backgroundColor: "#3B82F618",
+                          border: "1px solid #3B82F630",
+                          padding: "1px 6px",
+                        }}
+                      >
+                        {selectedNeed.behindBy}
+                      </span>
+                    </div>
+                    {driftCommitsExpanded
+                      ? <CaretDown size={12} style={{ color: S.textMuted }} />
+                      : <CaretRight size={12} style={{ color: S.textMuted }} />}
+                  </button>
+
+                  {driftCommitsExpanded && (
+                    <div style={{ borderTop: `1px solid ${S.borderDefault}` }}>
+                      {driftCommitsLoading ? (
+                        <div style={{ padding: "12px 20px", fontSize: 11, color: S.textMuted }} className="font-mono">
+                          Loading commits...
+                        </div>
+                      ) : driftCommits.length === 0 ? (
+                        <div style={{ padding: "12px 20px", fontSize: 11, color: S.textMuted }} className="font-mono">
+                          No commit details available. The parent lane may not be tracked locally.
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          {driftCommits.map((commit) => {
+                            const isExpanded = expandedCommitSha === commit.sha;
+                            const files = commitFilesMap[commit.sha];
+                            const overlappingFiles = files
+                              ? files.filter((f) => selectedNeed.conflictingFiles.includes(f))
+                              : [];
+                            return (
+                              <div key={commit.sha}>
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedCommitSha(isExpanded ? null : commit.sha)}
+                                  className="flex w-full items-center gap-3 text-left"
+                                  style={{
+                                    padding: "8px 20px",
+                                    background: "none",
+                                    border: "none",
+                                    borderBottom: `1px solid ${S.borderDefault}`,
+                                    cursor: "pointer",
+                                  }}
+                                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#13101A66"; }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                                >
+                                  <span
+                                    className="font-mono font-bold"
+                                    style={{ fontSize: 10, color: S.accent, flexShrink: 0 }}
+                                  >
+                                    {commit.shortSha}
+                                  </span>
+                                  <span
+                                    className="truncate"
+                                    style={{ fontSize: 12, color: S.textPrimary, flex: 1, fontFamily: "var(--font-sans)" }}
+                                  >
+                                    {commit.subject}
+                                  </span>
+                                  <span
+                                    className="font-mono"
+                                    style={{ fontSize: 10, color: S.textMuted, flexShrink: 0 }}
+                                  >
+                                    {commit.authorName}
+                                  </span>
+                                  <span
+                                    className="font-mono"
+                                    style={{ fontSize: 10, color: S.textDisabled, flexShrink: 0 }}
+                                  >
+                                    {formatTimeAgo(commit.authoredAt)}
+                                  </span>
+                                  {isExpanded
+                                    ? <CaretDown size={10} style={{ color: S.textMuted, flexShrink: 0 }} />
+                                    : <CaretRight size={10} style={{ color: S.textMuted, flexShrink: 0 }} />}
+                                </button>
+                                {isExpanded && (
+                                  <div style={{ padding: "8px 20px 8px 48px", borderBottom: `1px solid ${S.borderDefault}`, background: S.headerBg }}>
+                                    {!files ? (
+                                      <div className="font-mono" style={{ fontSize: 10, color: S.textMuted }}>Loading files...</div>
+                                    ) : files.length === 0 ? (
+                                      <div className="font-mono" style={{ fontSize: 10, color: S.textMuted }}>No files changed</div>
+                                    ) : (
+                                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                                        {files.map((f) => {
+                                          const isOverlap = selectedNeed.conflictingFiles.includes(f);
+                                          return (
+                                            <div key={f} className="flex items-center gap-2 font-mono" style={{ fontSize: 10 }}>
+                                              <FileText size={10} style={{ color: isOverlap ? S.warning : S.textMuted, flexShrink: 0 }} />
+                                              <span style={{ color: isOverlap ? S.warning : S.textSecondary }}>
+                                                {f}
+                                              </span>
+                                              {isOverlap && (
+                                                <span style={{ fontSize: 9, color: S.warning, backgroundColor: "#F59E0B18", padding: "0 4px" }}>
+                                                  OVERLAP
+                                                </span>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
+                                        {overlappingFiles.length > 0 && (
+                                          <div className="font-mono" style={{ fontSize: 10, color: S.warning, marginTop: 4 }}>
+                                            {overlappingFiles.length} file{overlappingFiles.length !== 1 ? "s" : ""} overlap with your branch
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                   </div>
                                 )}
                               </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
 
-            {/* ── File Overlap Analysis ── */}
-            <div
-              style={{
-                backgroundColor: S.cardBg,
-                border: `1px solid ${S.borderDefault}`,
-                padding: 20,
-              }}
-            >
-              <div
-                className="font-mono font-bold uppercase"
-                style={{
-                  fontSize: 10,
-                  letterSpacing: "1px",
-                  color: S.textSecondary,
-                  marginBottom: 12,
-                }}
-              >
-                FILE OVERLAP ANALYSIS
-              </div>
-
-              {selectedNeed.conflictingFiles.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <div className="font-mono" style={{ fontSize: 11, color: S.warning, marginBottom: 4 }}>
-                    {selectedNeed.conflictingFiles.length} file{selectedNeed.conflictingFiles.length !== 1 ? "s" : ""} modified in both your branch and {selectedNeed.baseBranch}
+                {/* ── File Overlap Analysis ── */}
+                <div
+                  style={{
+                    backgroundColor: S.cardBg,
+                    border: `1px solid ${S.borderDefault}`,
+                    padding: 20,
+                  }}
+                >
+                  <div
+                    className="font-mono font-bold uppercase"
+                    style={{
+                      fontSize: 10,
+                      letterSpacing: "1px",
+                      color: S.textSecondary,
+                      marginBottom: 12,
+                    }}
+                  >
+                    FILE OVERLAP ANALYSIS
                   </div>
-                  {selectedNeed.conflictingFiles.map((f) => (
-                    <div
-                      key={f}
-                      className="font-mono flex items-center gap-2"
-                      style={{
-                        backgroundColor: "#F59E0B0A",
-                        border: "1px solid #F59E0B20",
-                        padding: "8px 12px",
-                        fontSize: 11,
-                        color: "#F5D08B",
-                      }}
-                    >
-                      <Warning size={12} weight="fill" style={{ color: S.warning, flexShrink: 0 }} />
-                      <span style={{ flex: 1, minWidth: 0 }}>{f}</span>
-                      <ArrowRight size={10} style={{ color: S.textMuted }} />
-                      <span style={{ fontSize: 10, color: S.textMuted }}>both modified</span>
+
+                  {selectedNeed.conflictingFiles.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div className="font-mono" style={{ fontSize: 11, color: S.warning, marginBottom: 4 }}>
+                        {selectedNeed.conflictingFiles.length} file{selectedNeed.conflictingFiles.length !== 1 ? "s" : ""} modified in both your branch and {selectedNeed.baseBranch}
+                      </div>
+                      {selectedNeed.conflictingFiles.map((f) => (
+                        <div
+                          key={f}
+                          className="font-mono flex items-center gap-2"
+                          style={{
+                            backgroundColor: "#F59E0B0A",
+                            border: "1px solid #F59E0B20",
+                            padding: "8px 12px",
+                            fontSize: 11,
+                            color: "#F5D08B",
+                          }}
+                        >
+                          <Warning size={12} weight="fill" style={{ color: S.warning, flexShrink: 0 }} />
+                          <span style={{ flex: 1, minWidth: 0 }}>{f}</span>
+                          <ArrowRight size={10} style={{ color: S.textMuted }} />
+                          <span style={{ fontSize: 10, color: S.textMuted }}>both modified</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  ) : (
+                    <div className="flex items-center gap-2" style={{
+                      backgroundColor: "#22C55E08",
+                      border: "1px solid #22C55E20",
+                      padding: "10px 14px",
+                    }}>
+                      <CheckCircle size={14} weight="fill" style={{ color: S.success, flexShrink: 0 }} />
+                      <span className="font-mono" style={{ fontSize: 11, color: "#86EFAC" }}>
+                        No file overlaps detected — clean rebase expected
+                      </span>
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="flex items-center gap-2" style={{
-                  backgroundColor: "#22C55E08",
-                  border: "1px solid #22C55E20",
-                  padding: "10px 14px",
-                }}>
-                  <CheckCircle size={14} weight="fill" style={{ color: S.success, flexShrink: 0 }} />
-                  <span className="font-mono" style={{ fontSize: 11, color: "#86EFAC" }}>
-                    No file overlaps detected — clean rebase expected
-                  </span>
-                </div>
-              )}
-            </div>
+              </>
+            ) : null}
 
             {/* ── Rebase Actions ── */}
             <div
@@ -1144,9 +1194,10 @@ export function RebaseTab({
               )}
 
               {/* Active run status */}
-              {activeRun ? (() => {
-                const isFailed = activeRun.state === "failed";
-                const conflictLane = activeRun.lanes.find((l) => l.status === "conflict");
+              {activeRunForSelectedNeed ? (() => {
+                const run = activeRunForSelectedNeed;
+                const isFailed = run.state === "failed";
+                const conflictLane = run.lanes.find((l) => l.status === "conflict");
                 const conflictFiles = conflictLane?.conflictingFiles ?? [];
 
                 return (
@@ -1237,7 +1288,7 @@ export function RebaseTab({
                               className="font-mono font-bold uppercase"
                               style={{ fontSize: 10, letterSpacing: "1px", color: S.textSecondary }}
                             >
-                              {activeRun.state === "running" ? "REBASING" : activeRun.state === "completed" ? "REBASE COMPLETE" : "REBASE RUN"}
+                              {run.state === "running" ? "REBASING" : run.state === "completed" ? "REBASE COMPLETE" : "REBASE RUN"}
                             </div>
                             <span
                               className="font-mono font-bold uppercase"
@@ -1245,29 +1296,29 @@ export function RebaseTab({
                                 fontSize: 9,
                                 letterSpacing: "1px",
                                 padding: "2px 6px",
-                                color: activeRun.state === "completed" ? S.success
-                                  : activeRun.state === "running" ? S.info
+                                color: run.state === "completed" ? S.success
+                                  : run.state === "running" ? S.info
                                   : S.textMuted,
-                                backgroundColor: activeRun.state === "completed" ? "#22C55E18"
-                                  : activeRun.state === "running" ? "#3B82F618"
+                                backgroundColor: run.state === "completed" ? "#22C55E18"
+                                  : run.state === "running" ? "#3B82F618"
                                   : "transparent",
                                 border: `1px solid ${
-                                  activeRun.state === "completed" ? "#22C55E30"
-                                  : activeRun.state === "running" ? "#3B82F630"
+                                  run.state === "completed" ? "#22C55E30"
+                                  : run.state === "running" ? "#3B82F630"
                                   : S.borderSubtle
                                 }`,
                               }}
                             >
-                              {activeRun.state.toUpperCase()}
+                              {run.state.toUpperCase()}
                             </span>
                           </div>
                           <div className="flex items-center gap-2">
-                            {activeRun.state === "running" && (
+                            {run.state === "running" && (
                               <Button size="sm" variant="outline" disabled={rebaseBusy} onClick={() => void handleAbortRun()} style={{ borderRadius: 0, borderColor: S.borderSubtle }}>
                                 <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>ABORT</span>
                               </Button>
                             )}
-                            {activeRun.canRollback && (
+                            {run.canRollback && (
                               <Button size="sm" variant="outline" disabled={rebaseBusy} onClick={() => void handleRollbackRun()} style={{ borderRadius: 0, borderColor: S.borderSubtle }}>
                                 <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>ROLLBACK</span>
                               </Button>
@@ -1282,7 +1333,7 @@ export function RebaseTab({
 
                         {/* Lane statuses */}
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {activeRun.lanes.map((lane) => {
+                          {run.lanes.map((lane) => {
                             const statusColor = lane.status === "succeeded"
                               ? S.success
                               : lane.status === "running"
@@ -1292,7 +1343,7 @@ export function RebaseTab({
                                   : lane.status === "blocked"
                                     ? S.warning
                                     : S.textMuted;
-                            const pushable = lane.status === "succeeded" && !activeRun.pushedLaneIds.includes(lane.laneId);
+                            const pushable = lane.status === "succeeded" && !run.pushedLaneIds.includes(lane.laneId);
                             return (
                               <div
                                 key={lane.laneId}

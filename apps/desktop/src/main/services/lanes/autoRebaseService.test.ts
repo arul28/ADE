@@ -233,15 +233,18 @@ describe("autoRebaseService", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Lanes without parent are skipped
+  // Lanes without parent remain eligible for status display
   // ---------------------------------------------------------------------------
 
   describe("listStatuses — lanes without parent", () => {
-    it("clears status for a lane that has no parentLaneId", async () => {
+    it("keeps status for a lane that has no parentLaneId", async () => {
       const service = createService();
 
       // Lane with no parent
-      laneList = [makeLane("lane-orphan", { parentLaneId: null })];
+      laneList = [makeLane("lane-orphan", {
+        parentLaneId: null,
+        status: { dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false },
+      })];
 
       db.setJson("auto_rebase:status:lane-orphan", {
         laneId: "lane-orphan",
@@ -254,8 +257,15 @@ describe("autoRebaseService", () => {
       });
 
       const statuses = await service.listStatuses();
-      expect(statuses).toHaveLength(0);
-      expect(db.getJson("auto_rebase:status:lane-orphan")).toBeNull();
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]).toMatchObject({
+        laneId: "lane-orphan",
+        state: "rebasePending",
+      });
+      expect(db.getJson("auto_rebase:status:lane-orphan")).toMatchObject({
+        laneId: "lane-orphan",
+        state: "rebasePending",
+      });
     });
   });
 
@@ -801,7 +811,9 @@ describe("autoRebaseService", () => {
         conflictCount: 0,
         message: "Pending before lookup failure.",
       });
-      conflictService.getRebaseNeed.mockRejectedValueOnce(new Error("lookup failed"));
+      conflictService.getRebaseNeed
+        .mockImplementationOnce(async () => null)
+        .mockRejectedValueOnce(new Error("lookup failed"));
 
       await service.onHeadChanged({
         laneId: "root",

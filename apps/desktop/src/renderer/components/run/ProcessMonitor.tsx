@@ -94,7 +94,6 @@ export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNa
     }
     let cancelled = false;
     const processId = activeRuntime.processId;
-    activeProcessIdRef.current = processId;
     setPauseAutoscroll(false);
     setLogError(null);
     setLogLoading(true);

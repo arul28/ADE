@@ -1146,7 +1146,7 @@ function OverviewTab(props: OverviewTabProps) {
   const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(mergeMethod);
   const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
   const laneForPr = React.useMemo(
-    () => lanes.find((lane) => lane.id === pr.laneId) ?? null,
+    () => lanes.find((lane) => lane.id === pr.laneId && !lane.archivedAt) ?? null,
     [lanes, pr.laneId],
   );
 
@@ -1207,7 +1207,7 @@ function OverviewTab(props: OverviewTabProps) {
       <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
 
         {/* ---- Lane cleanup banner (shown when PR is merged/closed and lane still exists) ---- */}
-        <PrLaneCleanupBanner pr={pr} lane={lanes.find((lane) => lane.id === pr.laneId) ?? null} actionBusy={actionBusy} onNavigate={props.onNavigate} />
+        <PrLaneCleanupBanner pr={pr} lane={laneForPr} actionBusy={actionBusy} onNavigate={props.onNavigate} />
 
         {/* ---- Merge Status Bar ---- */}
         <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0 }}>

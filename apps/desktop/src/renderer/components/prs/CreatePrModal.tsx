@@ -474,6 +474,7 @@ export function CreatePrModal({
   const [normalTitle, setNormalTitle] = React.useState("");
   const [normalDraft, setNormalDraft] = React.useState(false);
   const [normalBaseBranch, setNormalBaseBranch] = React.useState("");
+  const normalBaseBranchDefaultRef = React.useRef("");
 
   // Queue PRs
   const [queueLaneIds, setQueueLaneIds] = React.useState<string[]>([]);
@@ -538,6 +539,7 @@ export function CreatePrModal({
       setMergeMethod("squash");
       setNormalLaneId("");
       setNormalBaseBranch("");
+      normalBaseBranchDefaultRef.current = "";
       setNormalTitle("");
       setNormalDraft(false);
       setQueueLaneIds([]);
@@ -615,16 +617,24 @@ export function CreatePrModal({
   React.useEffect(() => {
     if (!open) return;
     if (!selectedNormalLane) {
+      normalBaseBranchDefaultRef.current = "";
       setNormalBaseBranch("");
       return;
     }
-    setNormalBaseBranch(
-      resolveDefaultBaseBranchForLane({
-        lane: selectedNormalLane,
-        lanes,
-        primaryBranchRef: primaryLane?.branchRef ?? null,
-      }),
-    );
+    const nextDefault = resolveDefaultBaseBranchForLane({
+      lane: selectedNormalLane,
+      lanes,
+      primaryBranchRef: primaryLane?.branchRef ?? null,
+    });
+    setNormalBaseBranch((current) => {
+      const trimmedCurrent = current.trim();
+      const previousDefault = normalBaseBranchDefaultRef.current;
+      if (trimmedCurrent.length === 0 || trimmedCurrent === previousDefault) {
+        normalBaseBranchDefaultRef.current = nextDefault;
+        return nextDefault;
+      }
+      return current;
+    });
   }, [open, selectedNormalLane, lanes, primaryLane?.branchRef]);
 
   const handleSimulate = async () => {
@@ -633,7 +643,8 @@ export function CreatePrModal({
     setExecError(null);
     setProposal(null);
     try {
-      const baseBranch = (integrationBaseBranch || branchNameFromRef(primaryLane?.branchRef ?? "main")).trim();
+      const trimmedIntegrationBaseBranch = integrationBaseBranch.trim();
+      const baseBranch = trimmedIntegrationBaseBranch || branchNameFromRef(primaryLane?.branchRef ?? "main");
       const result = await window.ade.prs.simulateIntegration({
         sourceLaneIds: integrationSources,
         baseBranch,

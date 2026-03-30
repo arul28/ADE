@@ -38,6 +38,16 @@ describe("resolveDefaultBaseBranch", () => {
     ).toBe("release-9");
   });
 
+  it("falls back to lane.baseRef when parentLaneId is set but parentLane is missing", () => {
+    expect(
+      resolveDefaultBaseBranch({
+        lane: makeLane({ parentLaneId: "some-id", baseRef: "release-9" }),
+        parentLane: null,
+        primaryBranchRef: "main",
+      }),
+    ).toBe("release-9");
+  });
+
   it("uses the parent branch for child lanes", () => {
     expect(
       resolveDefaultBaseBranch({

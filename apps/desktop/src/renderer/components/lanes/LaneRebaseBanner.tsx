@@ -219,9 +219,9 @@ export function LaneRebaseBanner({
                     <button
                       type="button"
                       style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      onClick={() => onViewRebaseDetails(status.laneId)}
+                      onClick={() => (status.state === "rebaseFailed" ? onRebaseNowLocal(status.laneId) : onViewRebaseDetails(status.laneId))}
                     >
-                      View rebase details
+                      {status.state === "rebaseFailed" ? "REBASE NOW" : "VIEW REBASE DETAILS"}
                     </button>
                   </div>
                 </div>

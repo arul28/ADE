@@ -1478,6 +1478,9 @@ export function createLaneService({
 
       const target = getLaneRow(args.laneId);
       if (!target) throw new Error(`Lane not found: ${args.laneId}`);
+      if (persistBaseBranch && target.parent_lane_id) {
+        throw new Error("Cannot persist a base branch override for a parented lane.");
+      }
 
       const runId = randomUUID();
       const startedAt = new Date().toISOString();
