@@ -1275,6 +1275,7 @@ export function LaneGitActionsPane({
             </div>
             <button
               type="button"
+              className={(syncStatus?.behind ?? 0) > 0 ? "pull-btn-flash" : undefined}
               style={{
                 ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
                 ...(nextActionHint?.action === "pull" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
@@ -1285,6 +1286,25 @@ export function LaneGitActionsPane({
             >
               <ArrowDown size={12} weight="bold" style={{ marginRight: 4 }} />
               PULL
+              {(syncStatus?.behind ?? 0) > 0 && (
+                <span
+                  style={{
+                    marginLeft: 5,
+                    background: COLORS.accent,
+                    color: "#fff",
+                    borderRadius: 8,
+                    padding: "1px 5px",
+                    fontSize: 9,
+                    fontWeight: 700,
+                    lineHeight: "14px",
+                    minWidth: 16,
+                    textAlign: "center" as const,
+                    display: "inline-block",
+                  }}
+                >
+                  {syncStatus!.behind}
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -1579,93 +1599,127 @@ export function LaneGitActionsPane({
                     {stashes.length === 0 ? "None saved" : `${stashes.length} saved`}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => {
-                    if (!laneId) return;
-                    void runAction("stash push", async () => {
-                      const msg = await requestTextInput({
-                        title: "Stash message",
-                        placeholder: "Optional note",
-                        confirmLabel: "Save stash",
+                <div className="flex flex-wrap items-center gap-2">
+                  {stashes.length > 0 && (
+                    <button
+                      type="button"
+                      style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      disabled={!laneId || busyAction != null}
+                      title="Permanently delete all stash entries"
+                      onClick={() => {
+                        if (!laneId) return;
+                        void runAction("stash clear", async () => {
+                          const confirmation = await requestTextInput({
+                            title: "Clear all stashes?",
+                            message: `This will permanently delete ${stashes.length} stash${stashes.length === 1 ? "" : "es"}. Type "${stashes.length}" to confirm.`,
+                            placeholder: `Type ${stashes.length} to confirm`,
+                            confirmLabel: "Delete all",
+                            validate: (v) => v.trim() === String(stashes.length) ? null : "Type the number to confirm",
+                          });
+                          if (confirmation == null) throw new Error("__ade_cancelled__");
+                          await window.ade.git.stashClear({ laneId });
+                        });
+                      }}
+                    >
+                      CLEAR ALL
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                    disabled={!laneId || busyAction != null || (!hasStaged && !hasUnstaged)}
+                    title={!hasStaged && !hasUnstaged ? "No changes to save" : "Save current changes without committing"}
+                    onClick={() => {
+                      if (!laneId) return;
+                      void runAction("stash push", async () => {
+                        const msg = await requestTextInput({
+                          title: "Stash message",
+                          placeholder: "Optional note",
+                          confirmLabel: "Save stash",
+                        });
+                        if (msg == null) throw new Error("__ade_cancelled__");
+                        await window.ade.git.stashPush({ laneId, message: msg || undefined });
                       });
-                      if (msg == null) throw new Error("__ade_cancelled__");
-                      await window.ade.git.stashPush({ laneId, message: msg || undefined });
-                    });
-                  }}
-                >
-                  STASH NOW
-                </button>
+                    }}
+                  >
+                    SAVE CHANGES
+                  </button>
+                </div>
               </div>
               {stashes.length === 0 ? (
                 <div style={{ fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                  Use stash when you want to clear the worktree without committing. Hover the buttons for the git details.
+                  Save your in-progress changes without committing. You can restore them later.
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {stashes.slice(0, responsiveMode === "wide" ? 2 : 3).map((stash) => (
                     <div
                       key={stash.ref}
-                      className="flex flex-wrap items-center gap-2"
                       style={{
                         padding: "6px 8px",
                         border: `1px solid ${COLORS.border}`,
                         background: COLORS.pageBg,
                         minWidth: 0,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
                       }}
                     >
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div className="truncate" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
-                          {stash.subject || stash.ref}
+                      <div className="flex flex-wrap items-center gap-2" style={{ minWidth: 0 }}>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div className="truncate" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
+                            {stash.subject || stash.ref}
+                          </div>
+                          <div className="truncate" style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                            {stash.ref} · {formatRelativeTime(stash.createdAt)}
+                          </div>
                         </div>
-                        <div className="truncate" style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                          {stash.ref} · {formatRelativeTime(stash.createdAt)}
-                        </div>
+                        <button
+                          type="button"
+                          style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
+                          disabled={!laneId || busyAction != null}
+                          title="Restores changes and removes this stash entry"
+                          onClick={() => {
+                            if (!laneId) return;
+                            void runAction("stash pop", async () => {
+                              await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
+                            });
+                          }}
+                        >
+                          RESTORE
+                        </button>
+                        <button
+                          type="button"
+                          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                          disabled={!laneId || busyAction != null}
+                          title="Restores changes but keeps the stash entry saved"
+                          onClick={() => {
+                            if (!laneId) return;
+                            void runAction("stash apply", async () => {
+                              await window.ade.git.stashApply({ laneId, stashRef: stash.ref });
+                            });
+                          }}
+                        >
+                          COPY TO WORKTREE
+                        </button>
+                        <button
+                          type="button"
+                          style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                          disabled={!laneId || busyAction != null}
+                          title="Permanently deletes this stash entry without restoring"
+                          onClick={() => {
+                            if (!laneId) return;
+                            void runAction("stash drop", async () => {
+                              await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
+                            });
+                          }}
+                        >
+                          DELETE
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                        disabled={!laneId || busyAction != null}
-                        title="Apply keeps the stash saved and also restores it into your worktree."
-                        onClick={() => {
-                          if (!laneId) return;
-                          void runAction("stash apply", async () => {
-                            await window.ade.git.stashApply({ laneId, stashRef: stash.ref });
-                          });
-                        }}
-                      >
-                        APPLY
-                      </button>
-                      <button
-                        type="button"
-                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                        disabled={!laneId || busyAction != null}
-                        title="Pop restores the stash and removes it from the stash list."
-                        onClick={() => {
-                          if (!laneId) return;
-                          void runAction("stash pop", async () => {
-                            await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
-                          });
-                        }}
-                      >
-                        POP
-                      </button>
-                      <button
-                        type="button"
-                        style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                        disabled={!laneId || busyAction != null}
-                        title="Drop deletes this stash entry."
-                        onClick={() => {
-                          if (!laneId) return;
-                          void runAction("stash drop", async () => {
-                            await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
-                          });
-                        }}
-                      >
-                        DROP
-                      </button>
+                      <div style={{ fontSize: 9, color: COLORS.textDim, lineHeight: 1.4 }}>
+                        Restore removes entry. Copy to Worktree keeps it. Delete discards permanently.
+                      </div>
                     </div>
                   ))}
                   {stashes.length > (responsiveMode === "wide" ? 2 : 3) ? (

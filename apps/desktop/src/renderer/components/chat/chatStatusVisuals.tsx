@@ -39,7 +39,7 @@ export function ChatStatusGlyph({
     case "failed":
       return <XCircle size={size} weight="bold" className={cn("text-red-400", className)} />;
     case "waiting":
-      return <SpinnerGap size={size} weight="bold" className={cn("animate-spin text-amber-400", className)} />;
+      return <CheckCircle size={size} weight="bold" className={cn("text-amber-400", className)} />;
     case "working":
       return <SpinnerGap size={size} weight="bold" className={cn("animate-spin text-emerald-400", className)} />;
   }

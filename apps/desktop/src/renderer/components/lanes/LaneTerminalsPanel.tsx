@@ -22,7 +22,7 @@ const tabTrigger =
 
 function statusDotCls(indicator: ReturnType<typeof sessionIndicatorState>): string {
   if (indicator === "running-active") return "border-2 border-emerald-500 border-t-transparent bg-transparent";
-  if (indicator === "running-needs-attention") return "border-2 border-amber-400 border-t-transparent bg-transparent";
+  if (indicator === "running-needs-attention") return "bg-amber-400";
   return "bg-red-500";
 }
 
@@ -321,7 +321,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                 runtimeState: s.runtimeState
               });
               const dotClass = statusDotCls(indicator);
-              const dotSpin = !profileColor && indicator !== "ended";
+              const dotSpin = !profileColor && indicator === "running-active";
               return (
               <Tabs.Trigger key={s.id} className={cn(tabTrigger)} value={s.id}>
                 <span

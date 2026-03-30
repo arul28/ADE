@@ -82,6 +82,8 @@ import type {
   AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatCancelSteerArgs,
+  AgentChatEditSteerArgs,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
   AgentChatUpdateSessionArgs,
@@ -825,6 +827,8 @@ declare global {
         handoff: (args: AgentChatHandoffArgs) => Promise<AgentChatHandoffResult>;
         send: (args: AgentChatSendArgs) => Promise<void>;
         steer: (args: AgentChatSteerArgs) => Promise<void>;
+        cancelSteer: (args: AgentChatCancelSteerArgs) => Promise<void>;
+        editSteer: (args: AgentChatEditSteerArgs) => Promise<void>;
         interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
         resume: (args: AgentChatResumeArgs) => Promise<AgentChatSession>;
         approve: (args: AgentChatApproveArgs) => Promise<void>;
@@ -895,6 +899,7 @@ declare global {
         stashApply: (args: GitStashRefArgs) => Promise<GitActionResult>;
         stashPop: (args: GitStashRefArgs) => Promise<GitActionResult>;
         stashDrop: (args: GitStashRefArgs) => Promise<GitActionResult>;
+        stashClear: (args: { laneId: string }) => Promise<GitActionResult>;
         fetch: (args: { laneId: string }) => Promise<GitActionResult>;
         pull: (args: { laneId: string }) => Promise<GitActionResult>;
         getSyncStatus: (args: { laneId: string }) => Promise<GitUpstreamSyncStatus>;

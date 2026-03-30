@@ -241,6 +241,8 @@ import type {
   AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatCancelSteerArgs,
+  AgentChatEditSteerArgs,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
   AgentChatUpdateSessionArgs,
@@ -1120,6 +1122,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatSend, args),
     steer: async (args: AgentChatSteerArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatSteer, args),
+    cancelSteer: async (args: AgentChatCancelSteerArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatCancelSteer, args),
+    editSteer: async (args: AgentChatEditSteerArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatEditSteer, args),
     interrupt: async (args: AgentChatInterruptArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatInterrupt, args),
     resume: async (args: AgentChatResumeArgs): Promise<AgentChatSession> =>
@@ -1237,6 +1243,7 @@ contextBridge.exposeInMainWorld("ade", {
     stashApply: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashApply, args),
     stashPop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashPop, args),
     stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashDrop, args),
+    stashClear: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashClear, args),
     fetch: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitFetch, args),
     pull: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPull, args),
     getSyncStatus: async (args: { laneId: string }): Promise<GitUpstreamSyncStatus> =>

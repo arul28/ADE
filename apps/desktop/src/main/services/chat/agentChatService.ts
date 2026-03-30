@@ -8954,7 +8954,7 @@ export function createAgentChatService(args: {
       }
 
       const nextProvider: AgentChatProvider = resolveProviderGroupForModel(descriptor);
-      const nextModel = descriptor.isCliWrapped ? descriptor.shortId : descriptor.id;
+      const nextModel = descriptor.isCliWrapped ? descriptor.sdkModelId : descriptor.id;
       const previousModelId = managed.session.modelId
         ?? resolveModelIdFromStoredValue(managed.session.model, managed.session.provider)
         ?? managed.session.model;

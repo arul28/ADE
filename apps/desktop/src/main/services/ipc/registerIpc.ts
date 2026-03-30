@@ -177,6 +177,8 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSteerArgs,
+  AgentChatCancelSteerArgs,
+  AgentChatEditSteerArgs,
   AgentChatUnifiedPermissionMode,
   AgentChatUpdateSessionArgs,
   AgentChatSlashCommand,
@@ -3738,6 +3740,16 @@ export function registerIpc({
     await ctx.agentChatService.steer(arg);
   });
 
+  ipcMain.handle(IPC.agentChatCancelSteer, async (_event, arg: AgentChatCancelSteerArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.agentChatService.cancelSteer(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatEditSteer, async (_event, arg: AgentChatEditSteerArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.agentChatService.editSteer(arg);
+  });
+
   ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.interrupt(arg);
@@ -4094,6 +4106,11 @@ export function registerIpc({
   ipcMain.handle(IPC.gitStashDrop, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.stashDrop(arg);
+  });
+
+  ipcMain.handle(IPC.gitStashClear, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.stashClear(arg);
   });
 
   ipcMain.handle(IPC.gitFetch, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
