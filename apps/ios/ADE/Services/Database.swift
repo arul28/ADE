@@ -1386,6 +1386,39 @@ final class DatabaseService {
     )
   }
 
+  func fetchPullRequestSnapshotsById() -> [String: PullRequestSnapshot] {
+    let sql = """
+      select pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json
+        from pull_request_snapshots
+    """
+
+    let rows = query(sql) { statement in
+      (
+        prId: stringValue(statement, index: 0) ?? "",
+        detailJson: stringValue(statement, index: 1),
+        statusJson: stringValue(statement, index: 2),
+        checksJson: stringValue(statement, index: 3),
+        reviewsJson: stringValue(statement, index: 4),
+        commentsJson: stringValue(statement, index: 5),
+        filesJson: stringValue(statement, index: 6)
+      )
+    }
+
+    return Dictionary(uniqueKeysWithValues: rows.map { row in
+      (
+        row.prId,
+        PullRequestSnapshot(
+          detail: decodeJson(row.detailJson, as: PrDetail.self),
+          status: decodeJson(row.statusJson, as: PrStatus.self),
+          checks: decodeJson(row.checksJson, as: [PrCheck].self) ?? [],
+          reviews: decodeJson(row.reviewsJson, as: [PrReview].self) ?? [],
+          comments: decodeJson(row.commentsJson, as: [PrComment].self) ?? [],
+          files: decodeJson(row.filesJson, as: [PrFile].self) ?? []
+        )
+      )
+    })
+  }
+
   func executeSqlForTesting(_ sql: String) throws {
     try exec(sql)
     notifyDidChange()

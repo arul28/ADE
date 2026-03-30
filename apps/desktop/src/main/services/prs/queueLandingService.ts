@@ -356,7 +356,7 @@ export function createQueueLandingService({
     pending: ["landing", "rebasing", "skipped", "paused"],
     landing: ["landing", "landed", "failed", "paused"],
     rebasing: ["resolving", "pending", "failed", "paused"],
-    resolving: ["pending", "failed", "paused"],
+    resolving: ["landing", "pending", "failed", "paused"],
     landed: [],
     failed: [],
     skipped: [],

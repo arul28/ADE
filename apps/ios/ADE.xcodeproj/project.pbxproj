@@ -21,6 +21,16 @@
 		6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */ = {isa = PBXBuildFile; fileRef = 2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */; };
 		7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
+		8E13A8E4C1A745F5B1221001 /* PRsSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220001 /* PRsSupport.swift */; };
+		8E13A8E4C1A745F5B1221002 /* PRsCreateWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220002 /* PRsCreateWizardView.swift */; };
+		8E13A8E4C1A745F5B1221003 /* PRsDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220003 /* PRsDetailView.swift */; };
+		8E13A8E4C1A745F5B1221004 /* PRsWorkflowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220004 /* PRsWorkflowView.swift */; };
+		8E13A8E4C1A745F5B1221005 /* PRsRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220005 /* PRsRootView.swift */; };
+		8E13A8E4C1A745F5B1221006 /* PRsGitHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220006 /* PRsGitHubView.swift */; };
+		8E13A8E4C1A745F5B1221007 /* PRsDetailComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220007 /* PRsDetailComponents.swift */; };
+		8E13A8E4C1A745F5B1221008 /* PRsWorkflowDetails.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220008 /* PRsWorkflowDetails.swift */; };
+		8E13A8E4C1A745F5B1221009 /* PRsPresentationSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220009 /* PRsPresentationSupport.swift */; };
+		8E13A8E4C1A745F5B1221010 /* PRsDetailOverview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E13A8E4C1A745F5B1220010 /* PRsDetailOverview.swift */; };
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
 		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
@@ -47,6 +57,16 @@
 		4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesTabView.swift; path = ADE/Views/FilesTabView.swift; sourceTree = "<group>"; };
 		51942BAC0965C7D0CCE6E8B8 /* Database.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Database.swift; path = ADE/Services/Database.swift; sourceTree = "<group>"; };
 		5EE4D463D21266B62B422D11 /* PRsTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsTabView.swift; path = ADE/Views/PRsTabView.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220001 /* PRsSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsSupport.swift; path = ADE/Views/PRs/PRsSupport.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220002 /* PRsCreateWizardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsCreateWizardView.swift; path = ADE/Views/PRs/PRsCreateWizardView.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220003 /* PRsDetailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsDetailView.swift; path = ADE/Views/PRs/PRsDetailView.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220004 /* PRsWorkflowView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsWorkflowView.swift; path = ADE/Views/PRs/PRsWorkflowView.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220005 /* PRsRootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsRootView.swift; path = ADE/Views/PRs/PRsRootView.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220006 /* PRsGitHubView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsGitHubView.swift; path = ADE/Views/PRs/PRsGitHubView.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220007 /* PRsDetailComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsDetailComponents.swift; path = ADE/Views/PRs/PRsDetailComponents.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220008 /* PRsWorkflowDetails.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsWorkflowDetails.swift; path = ADE/Views/PRs/PRsWorkflowDetails.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220009 /* PRsPresentationSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsPresentationSupport.swift; path = ADE/Views/PRs/PRsPresentationSupport.swift; sourceTree = "<group>"; };
+		8E13A8E4C1A745F5B1220010 /* PRsDetailOverview.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsDetailOverview.swift; path = ADE/Views/PRs/PRsDetailOverview.swift; sourceTree = "<group>"; };
 		66B5024B0A05F3D9754101F1 /* SyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncService.swift; path = ADE/Services/SyncService.swift; sourceTree = "<group>"; };
 		73B17472FAC08845853BC6B4 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = ADE/App/ContentView.swift; sourceTree = "<group>"; };
 		8943C47805A871A4E4A4BF68 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = ADE/Assets.xcassets; sourceTree = "<group>"; };
@@ -94,9 +114,27 @@
 				4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */,
 				9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */,
 				5EE4D463D21266B62B422D11 /* PRsTabView.swift */,
+				8E13A8E4C1A745F5B1222001 /* PRs */,
 				0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */,
 			);
 			name = Views;
+			sourceTree = "<group>";
+		};
+		8E13A8E4C1A745F5B1222001 /* PRs */ = {
+			isa = PBXGroup;
+			children = (
+				8E13A8E4C1A745F5B1220001 /* PRsSupport.swift */,
+				8E13A8E4C1A745F5B1220002 /* PRsCreateWizardView.swift */,
+				8E13A8E4C1A745F5B1220003 /* PRsDetailView.swift */,
+				8E13A8E4C1A745F5B1220004 /* PRsWorkflowView.swift */,
+				8E13A8E4C1A745F5B1220005 /* PRsRootView.swift */,
+				8E13A8E4C1A745F5B1220006 /* PRsGitHubView.swift */,
+				8E13A8E4C1A745F5B1220007 /* PRsDetailComponents.swift */,
+				8E13A8E4C1A745F5B1220008 /* PRsWorkflowDetails.swift */,
+				8E13A8E4C1A745F5B1220009 /* PRsPresentationSupport.swift */,
+				8E13A8E4C1A745F5B1220010 /* PRsDetailOverview.swift */,
+			);
+			name = PRs;
 			sourceTree = "<group>";
 		};
 		10899CEEC539910EA438B7D9 /* Services */ = {
@@ -301,6 +339,16 @@
 				6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */,
 				E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */,
 				889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */,
+				8E13A8E4C1A745F5B1221001 /* PRsSupport.swift in Sources */,
+				8E13A8E4C1A745F5B1221002 /* PRsCreateWizardView.swift in Sources */,
+				8E13A8E4C1A745F5B1221003 /* PRsDetailView.swift in Sources */,
+				8E13A8E4C1A745F5B1221004 /* PRsWorkflowView.swift in Sources */,
+				8E13A8E4C1A745F5B1221005 /* PRsRootView.swift in Sources */,
+				8E13A8E4C1A745F5B1221006 /* PRsGitHubView.swift in Sources */,
+				8E13A8E4C1A745F5B1221007 /* PRsDetailComponents.swift in Sources */,
+				8E13A8E4C1A745F5B1221008 /* PRsWorkflowDetails.swift in Sources */,
+				8E13A8E4C1A745F5B1221009 /* PRsPresentationSupport.swift in Sources */,
+				8E13A8E4C1A745F5B1221010 /* PRsDetailOverview.swift in Sources */,
 				56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

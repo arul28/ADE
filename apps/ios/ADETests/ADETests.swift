@@ -1822,6 +1822,318 @@ final class ADETests: XCTestCase {
     """)
   }
 
+  func testPullRequestFilterMatchesTitleAuthorBranchAndNumber() {
+    let items = [
+      makePullRequestItem(id: "pr-1", title: "Refactor login flow", state: "open", headBranch: "feature/login", githubPrNumber: 42),
+      makePullRequestItem(id: "pr-2", title: "Adjust dashboard copy", state: "open", headBranch: "feature/dashboard", githubPrNumber: 77),
+    ]
+    let contexts = [
+      "pr-1": PullRequestSearchContext(authorLogin: "alice"),
+      "pr-2": PullRequestSearchContext(authorLogin: "bob"),
+    ]
+
+    XCTAssertEqual(filterPullRequestListItems(items, query: " alice ", state: .all, contexts: contexts).map(\.id), ["pr-1"])
+    XCTAssertEqual(filterPullRequestListItems(items, query: "FEATURE/LOGIN", state: .all, contexts: contexts).map(\.id), ["pr-1"])
+    XCTAssertEqual(filterPullRequestListItems(items, query: "#77", state: .all, contexts: contexts).map(\.id), ["pr-2"])
+    XCTAssertEqual(filterPullRequestListItems(items, query: "dashboard", state: .all, contexts: contexts).map(\.id), ["pr-2"])
+  }
+
+  func testPullRequestFilterRespectsSelectedStateFilter() {
+    let items = [
+      makePullRequestItem(id: "open", title: "Open", state: "open"),
+      makePullRequestItem(id: "draft", title: "Draft", state: "draft"),
+      makePullRequestItem(id: "merged", title: "Merged", state: "merged"),
+      makePullRequestItem(id: "closed", title: "Closed", state: "closed"),
+    ]
+
+    XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .all).count, 4)
+    XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .open).map(\.id), ["open"])
+    XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .draft).map(\.id), ["draft"])
+    XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .merged).map(\.id), ["merged"])
+    XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .closed).map(\.id), ["closed"])
+  }
+
+  func testPullRequestFilterReturnsAllItemsForBlankQuery() {
+    let items = [
+      makePullRequestItem(id: "a", title: "Alpha", state: "open"),
+      makePullRequestItem(id: "b", title: "Beta", state: "open"),
+    ]
+
+    XCTAssertEqual(filterPullRequestListItems(items, query: "   ", state: .open).map(\.id), ["a", "b"])
+  }
+
+  func testPullRequestSortByUpdatedDatePutsNewestFirst() {
+    let items = [
+      makePullRequestItem(id: "older", title: "Older", updatedAt: "2026-03-17T00:00:00.000Z"),
+      makePullRequestItem(id: "newer", title: "Newer", updatedAt: "2026-03-18T00:00:00.000Z"),
+    ]
+
+    XCTAssertEqual(sortPullRequestListItems(items, option: .updated).map(\.id), ["newer", "older"])
+  }
+
+  func testPullRequestSortByCreatedDatePutsNewestFirst() {
+    let items = [
+      makePullRequestItem(id: "older", title: "Older", createdAt: "2026-03-17T00:00:00.000Z"),
+      makePullRequestItem(id: "newer", title: "Newer", createdAt: "2026-03-18T00:00:00.000Z"),
+    ]
+
+    XCTAssertEqual(sortPullRequestListItems(items, option: .created).map(\.id), ["newer", "older"])
+  }
+
+  func testPullRequestSortByTitleUsesAlphabeticalOrder() {
+    let items = [
+      makePullRequestItem(id: "zeta", title: "Zeta"),
+      makePullRequestItem(id: "alpha", title: "Alpha"),
+    ]
+
+    XCTAssertEqual(sortPullRequestListItems(items, option: .title).map(\.id), ["alpha", "zeta"])
+  }
+
+  func testPullRequestStateCountsIncludeEveryVisibleBucket() {
+    let items = [
+      makePullRequestItem(id: "open", title: "Open", state: "open"),
+      makePullRequestItem(id: "draft", title: "Draft", state: "draft"),
+      makePullRequestItem(id: "merged", title: "Merged", state: "merged"),
+      makePullRequestItem(id: "closed", title: "Closed", state: "closed"),
+    ]
+
+    let counts = pullRequestStateCounts(items)
+
+    XCTAssertEqual(counts[.all], 4)
+    XCTAssertEqual(counts[.open], 1)
+    XCTAssertEqual(counts[.draft], 1)
+    XCTAssertEqual(counts[.merged], 1)
+    XCTAssertEqual(counts[.closed], 1)
+  }
+
+  func testGitHubSurfacePartitionsRepoAndUnmappedPullRequests() {
+    let items = [
+      makePullRequestItem(id: "mapped", title: "Mapped", laneId: "lane-1", laneName: "Lane 1"),
+      makePullRequestItem(id: "unmapped", title: "Unmapped", laneId: "", laneName: nil),
+    ]
+
+    let sections = partitionGitHubPullRequests(items)
+
+    XCTAssertEqual(sections.repoPullRequests.map(\.id), ["mapped"])
+    XCTAssertEqual(sections.externalPullRequests.map(\.id), ["unmapped"])
+  }
+
+  func testWorkflowPartitionKeepsIntegrationQueueAndRebaseSeparate() {
+    let integrations = [makeIntegrationProposal(id: "integration-active", workflowDisplayState: "active")]
+    let queues = [makeQueueState(id: "queue-active", state: "running")]
+    let snapshots = [makeLaneSnapshot(laneId: "lane-1", behindCount: 3)]
+    let rebaseItems = buildRebaseWorkflowItems(from: snapshots)
+
+    let collections = partitionWorkflowCollections(
+      integrations: integrations,
+      queues: queues,
+      rebaseItems: rebaseItems,
+      laneSnapshots: snapshots,
+      view: .active
+    )
+
+    XCTAssertEqual(collections.integrations.map(\.proposalId), ["integration-active"])
+    XCTAssertEqual(collections.queues.map(\.queueId), ["queue-active"])
+    XCTAssertEqual(collections.rebaseItems.map(\.laneId), ["lane-1"])
+  }
+
+  func testWorkflowPartitionSeparatesActiveFromHistory() {
+    let integrations = [
+      makeIntegrationProposal(id: "integration-active", workflowDisplayState: "active"),
+      makeIntegrationProposal(id: "integration-history", workflowDisplayState: "history"),
+    ]
+    let queues = [
+      makeQueueState(id: "queue-active", state: "running"),
+      makeQueueState(id: "queue-history", state: "completed"),
+    ]
+    let snapshots = [
+      makeLaneSnapshot(laneId: "lane-active", behindCount: 2),
+      makeLaneSnapshot(laneId: "lane-history", behindCount: 0, dismissedAt: "2026-03-17T00:00:00.000Z"),
+    ]
+    let rebaseItems = buildRebaseWorkflowItems(from: snapshots)
+
+    let active = partitionWorkflowCollections(
+      integrations: integrations,
+      queues: queues,
+      rebaseItems: rebaseItems,
+      laneSnapshots: snapshots,
+      view: .active,
+      now: Date(timeIntervalSince1970: 0)
+    )
+    let history = partitionWorkflowCollections(
+      integrations: integrations,
+      queues: queues,
+      rebaseItems: rebaseItems,
+      laneSnapshots: snapshots,
+      view: .history,
+      now: Date(timeIntervalSince1970: 0)
+    )
+
+    XCTAssertEqual(active.integrations.map(\.proposalId), ["integration-active"])
+    XCTAssertEqual(active.queues.map(\.queueId), ["queue-active"])
+    XCTAssertEqual(active.rebaseItems.map(\.laneId), ["lane-active"])
+
+    XCTAssertEqual(history.integrations.map(\.proposalId), ["integration-history"])
+    XCTAssertEqual(history.queues.map(\.queueId), ["queue-history"])
+    XCTAssertEqual(history.rebaseItems.map(\.laneId), ["lane-history"])
+  }
+
+  func testDefaultGitHubStateFilterIsOpen() {
+    let defaultFilter = PrListStateFilter(rawValue: PrListStateFilter.open.rawValue) ?? .all
+    XCTAssertEqual(defaultFilter, .open)
+  }
+
+  private func makePullRequestItem(
+    id: String,
+    title: String,
+    state: String = "open",
+    laneId: String = "lane-1",
+    laneName: String? = "Lane 1",
+    headBranch: String = "feature/test",
+    githubPrNumber: Int = 1,
+    createdAt: String = "2026-03-17T00:00:00.000Z",
+    updatedAt: String = "2026-03-17T00:00:00.000Z"
+  ) -> PullRequestListItem {
+    PullRequestListItem(
+      id: id,
+      laneId: laneId,
+      laneName: laneName,
+      projectId: "project-1",
+      repoOwner: "openai",
+      repoName: "ade",
+      githubPrNumber: githubPrNumber,
+      githubUrl: "https://github.com/openai/ade/pull/\(githubPrNumber)",
+      title: title,
+      state: state,
+      baseBranch: "main",
+      headBranch: headBranch,
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      additions: 3,
+      deletions: 1,
+      lastSyncedAt: nil,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      adeKind: "single",
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil
+    )
+  }
+
+  private func makeIntegrationProposal(id: String, workflowDisplayState: String) -> IntegrationProposal {
+    IntegrationProposal(
+      proposalId: id,
+      sourceLaneIds: ["lane-1"],
+      baseBranch: "main",
+      pairwiseResults: [],
+      laneSummaries: [],
+      steps: [],
+      overallOutcome: "clean",
+      createdAt: "2026-03-17T00:00:00.000Z",
+      title: id,
+      body: nil,
+      draft: false,
+      integrationLaneName: nil,
+      status: "proposed",
+      integrationLaneId: nil,
+      linkedGroupId: nil,
+      linkedPrId: nil,
+      workflowDisplayState: workflowDisplayState,
+      cleanupState: "none",
+      closedAt: nil,
+      mergedAt: nil,
+      completedAt: nil,
+      cleanupDeclinedAt: nil,
+      cleanupCompletedAt: nil,
+      resolutionState: nil
+    )
+  }
+
+  private func makeQueueState(id: String, state: String) -> QueueLandingState {
+    QueueLandingState(
+      queueId: id,
+      groupId: "group-\(id)",
+      groupName: id,
+      targetBranch: "main",
+      state: state,
+      entries: [],
+      currentPosition: 0,
+      activePrId: nil,
+      activeResolverRunId: nil,
+      lastError: nil,
+      waitReason: nil,
+      config: QueueAutomationConfig(
+        method: "squash",
+        archiveLane: false,
+        autoResolve: false,
+        ciGating: false,
+        resolverProvider: nil,
+        resolverModel: nil,
+        reasoningEffort: nil,
+        permissionMode: nil,
+        confidenceThreshold: nil,
+        originSurface: nil,
+        originMissionId: nil,
+        originRunId: nil,
+        originLabel: nil
+      ),
+      startedAt: "2026-03-17T00:00:00.000Z",
+      completedAt: nil,
+      updatedAt: "2026-03-17T00:00:00.000Z"
+    )
+  }
+
+  private func makeLaneSnapshot(
+    laneId: String,
+    behindCount: Int,
+    dismissedAt: String? = nil
+  ) -> LaneListSnapshot {
+    LaneListSnapshot(
+      lane: LaneSummary(
+        id: laneId,
+        name: laneId,
+        description: nil,
+        laneType: "feature",
+        baseRef: "main",
+        branchRef: "feature/\(laneId)",
+        worktreePath: "/tmp/\(laneId)",
+        attachedRootPath: nil,
+        parentLaneId: nil,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: nil,
+        isEditProtected: false,
+        status: LaneStatus(dirty: false, ahead: 0, behind: behindCount, remoteBehind: 0, rebaseInProgress: false),
+        color: nil,
+        icon: nil,
+        tags: [],
+        folder: nil,
+        createdAt: "2026-03-17T00:00:00.000Z",
+        archivedAt: nil
+      ),
+      runtime: LaneRuntimeSummary(bucket: "running", runningCount: 0, awaitingInputCount: 0, endedCount: 0, sessionCount: 0),
+      rebaseSuggestion: RebaseSuggestion(
+        laneId: laneId,
+        parentLaneId: "parent-\(laneId)",
+        parentHeadSha: "abc123",
+        behindCount: behindCount,
+        lastSuggestedAt: "2026-03-17T00:00:00.000Z",
+        deferredUntil: nil,
+        dismissedAt: dismissedAt,
+        hasPr: true
+      ),
+      autoRebaseStatus: nil,
+      conflictStatus: nil,
+      stateSnapshot: nil,
+      adoptableAttached: false
+    )
+  }
+
   private func packedDesktopTextPrimaryKey(_ value: String) -> SyncScalarValue {
     .bytes(SyncScalarBytes(type: "bytes", base64: packedDesktopTextPrimaryKeyData(value).base64EncodedString()))
   }

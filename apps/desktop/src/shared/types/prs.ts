@@ -987,6 +987,17 @@ export type AddPrCommentArgs = {
   inReplyToCommentId?: string;
 };
 
+export type UpdatePrCommentArgs = {
+  prId: string;
+  commentId: string;
+  body: string;
+};
+
+export type DeletePrCommentArgs = {
+  prId: string;
+  commentId: string;
+};
+
 export type UpdatePrTitleArgs = {
   prId: string;
   title: string;
@@ -1000,6 +1011,11 @@ export type UpdatePrBodyArgs = {
 export type SetPrLabelsArgs = {
   prId: string;
   labels: string[];
+};
+
+export type SetPrAssigneesArgs = {
+  prId: string;
+  assignees: string[];
 };
 
 export type RequestPrReviewersArgs = {

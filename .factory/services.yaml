@@ -1,5 +1,3 @@
 commands:
-  build: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build build
-  test: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build test
-  typecheck: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build build
-  lint: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build analyze
+  build: xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO -quiet 2>&1
+  test: xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -quiet 2>&1

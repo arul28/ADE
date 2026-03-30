@@ -693,6 +693,7 @@ struct PrCheck: Codable, Identifiable, Equatable {
 struct PrReview: Codable, Identifiable, Equatable {
   var id: String { "\(reviewer)-\(submittedAt ?? "pending")" }
   var reviewer: String
+  var reviewerAvatarUrl: String?
   var state: String
   var body: String?
   var submittedAt: String?
@@ -701,6 +702,7 @@ struct PrReview: Codable, Identifiable, Equatable {
 struct PrComment: Codable, Identifiable, Equatable {
   var id: String
   var author: String
+  var authorAvatarUrl: String?
   var body: String?
   var source: String
   var url: String?
@@ -708,6 +710,48 @@ struct PrComment: Codable, Identifiable, Equatable {
   var line: Int?
   var createdAt: String?
   var updatedAt: String?
+}
+
+struct PrActionStep: Codable, Identifiable, Equatable {
+  var id: String { "\(number):\(name)" }
+  var name: String
+  var status: String
+  var conclusion: String?
+  var number: Int
+  var startedAt: String?
+  var completedAt: String?
+}
+
+struct PrActionJob: Codable, Identifiable, Equatable {
+  var id: Int
+  var name: String
+  var status: String
+  var conclusion: String?
+  var startedAt: String?
+  var completedAt: String?
+  var steps: [PrActionStep]
+}
+
+struct PrActionRun: Codable, Identifiable, Equatable {
+  var id: Int
+  var name: String
+  var status: String
+  var conclusion: String?
+  var headSha: String
+  var htmlUrl: String
+  var createdAt: String
+  var updatedAt: String
+  var jobs: [PrActionJob]
+}
+
+struct PrActivityEvent: Codable, Identifiable, Equatable {
+  var id: String
+  var type: String
+  var author: String
+  var avatarUrl: String?
+  var body: String?
+  var timestamp: String
+  var metadata: [String: RemoteJSONValue]
 }
 
 struct PrFile: Codable, Identifiable, Equatable {

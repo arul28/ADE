@@ -23,7 +23,7 @@ export function canAppendBufferedAssistantText(
     if (bufferedTurnId && eventTurnId && bufferedTurnId === eventTurnId) {
       const bufferedItemId = buffered.itemId ?? null;
       const eventItemId = event.itemId ?? null;
-      return !bufferedItemId || !eventItemId || bufferedItemId === eventItemId;
+      return (!bufferedItemId && !eventItemId) || bufferedItemId === eventItemId;
     }
     return false;
   }

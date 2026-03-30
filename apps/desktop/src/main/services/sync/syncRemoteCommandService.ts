@@ -4,15 +4,25 @@ import type {
   AgentChatListArgs,
   AgentChatProvider,
   AgentChatSendArgs,
+  AddPrCommentArgs,
+  DeletePrCommentArgs,
   ApplyLaneTemplateArgs,
   ArchiveLaneArgs,
   AttachLaneArgs,
+  CommitIntegrationArgs,
   ClosePrArgs,
   CreateChildLaneArgs,
+  CreateIntegrationLaneForProposalArgs,
+  CreateIntegrationPrArgs,
   CreateLaneArgs,
   CreateLaneFromUnstagedArgs,
   CreatePrFromLaneArgs,
+  CreateQueuePrsArgs,
+  DeleteIntegrationProposalArgs,
   DeleteLaneArgs,
+  DeletePrArgs,
+  DismissIntegrationCleanupArgs,
+  DraftPrDescriptionArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GitBatchFileActionArgs,
@@ -28,6 +38,7 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitSyncArgs,
+  LandQueueNextArgs,
   LandPrArgs,
   LaneEnvInitConfig,
   LaneEnvInitProgress,
@@ -37,18 +48,29 @@ import type {
   LaneStateSnapshotSummary,
   ListLanesArgs,
   ListSessionsArgs,
+  LinkPrToLaneArgs,
   RebasePushArgs,
+  RecheckIntegrationStepArgs,
   RebaseStartArgs,
   RenameLaneArgs,
+  ReorderQueuePrsArgs,
   ReopenPrArgs,
   ReparentLaneArgs,
   RequestPrReviewersArgs,
+  RerunPrChecksArgs,
+  SetPrAssigneesArgs,
+  SetPrLabelsArgs,
+  SimulateIntegrationArgs,
+  SubmitPrReviewArgs,
   SyncCommandPayload,
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
   SyncRunQuickCommandArgs,
   TerminalToolType,
+  UpdatePrBodyArgs,
+  UpdatePrCommentArgs,
+  UpdatePrTitleArgs,
   UpdateLaneAppearanceArgs,
   WriteTextAtomicArgs,
 } from "../../../shared/types";
@@ -513,6 +535,208 @@ function parseRequestReviewersArgs(value: Record<string, unknown>): RequestPrRev
   const reviewers = asStringArray(value.reviewers);
   if (reviewers.length === 0) throw new Error("prs.requestReviewers requires at least one reviewer.");
   return { prId, reviewers };
+}
+
+function parseUpdatePrTitleArgs(value: Record<string, unknown>): UpdatePrTitleArgs {
+  return {
+    prId: requirePrId(value, "prs.updateTitle"),
+    title: requireString(value.title, "prs.updateTitle requires title."),
+  };
+}
+
+function parseUpdatePrBodyArgs(value: Record<string, unknown>): UpdatePrBodyArgs {
+  return {
+    prId: requirePrId(value, "prs.updateBody"),
+    body: typeof value.body === "string" ? value.body : "",
+  };
+}
+
+function parseSetPrLabelsArgs(value: Record<string, unknown>): SetPrLabelsArgs {
+  return {
+    prId: requirePrId(value, "prs.setLabels"),
+    labels: asStringArray(value.labels),
+  };
+}
+
+function parseSetPrAssigneesArgs(value: Record<string, unknown>): SetPrAssigneesArgs {
+  return {
+    prId: requirePrId(value, "prs.setAssignees"),
+    assignees: asStringArray(value.assignees),
+  };
+}
+
+function parseSubmitPrReviewArgs(value: Record<string, unknown>): SubmitPrReviewArgs {
+  const prId = requirePrId(value, "prs.submitReview");
+  const event = asTrimmedString(value.event) as SubmitPrReviewArgs["event"];
+  if (!event || !["APPROVE", "REQUEST_CHANGES", "COMMENT"].includes(event)) {
+    throw new Error("prs.submitReview requires event to be APPROVE, REQUEST_CHANGES, or COMMENT.");
+  }
+  return {
+    prId,
+    event,
+    ...(typeof value.body === "string" ? { body: value.body } : {}),
+  };
+}
+
+function parseRerunPrChecksArgs(value: Record<string, unknown>): RerunPrChecksArgs {
+  return {
+    prId: requirePrId(value, "prs.rerunChecks"),
+    ...(Array.isArray(value.checkRunIds)
+      ? {
+          checkRunIds: value.checkRunIds
+            .filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
+            .map((entry) => Math.trunc(entry)),
+        }
+      : {}),
+  };
+}
+
+function parseAddPrCommentArgs(value: Record<string, unknown>): AddPrCommentArgs {
+  return {
+    prId: requirePrId(value, "prs.addComment"),
+    body: requireString(value.body, "prs.addComment requires body."),
+    ...(asTrimmedString(value.inReplyToCommentId)
+      ? { inReplyToCommentId: asTrimmedString(value.inReplyToCommentId)! }
+      : {}),
+  };
+}
+
+function parseUpdatePrCommentArgs(value: Record<string, unknown>): UpdatePrCommentArgs {
+  return {
+    prId: requirePrId(value, "prs.updateComment"),
+    commentId: requireString(value.commentId, "prs.updateComment requires commentId."),
+    body: requireString(value.body, "prs.updateComment requires body."),
+  };
+}
+
+function parseDeletePrCommentArgs(value: Record<string, unknown>): DeletePrCommentArgs {
+  return {
+    prId: requirePrId(value, "prs.deleteComment"),
+    commentId: requireString(value.commentId, "prs.deleteComment requires commentId."),
+  };
+}
+
+function parseLinkPrToLaneArgs(value: Record<string, unknown>): LinkPrToLaneArgs {
+  return {
+    laneId: requireString(value.laneId, "prs.linkToLane requires laneId."),
+    prUrlOrNumber: requireString(value.prUrlOrNumber, "prs.linkToLane requires prUrlOrNumber."),
+  };
+}
+
+function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDescriptionArgs {
+  return {
+    laneId: requireString(value.laneId, "prs.draftDescription requires laneId."),
+    ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
+    ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
+  };
+}
+
+function parseCreateQueuePrsArgs(value: Record<string, unknown>): CreateQueuePrsArgs {
+  const laneIds = asStringArray(value.laneIds);
+  if (laneIds.length === 0) throw new Error("prs.createQueue requires at least one laneId.");
+  return {
+    laneIds,
+    targetBranch: requireString(value.targetBranch, "prs.createQueue requires targetBranch."),
+    ...(asTrimmedString(value.queueName) ? { queueName: asTrimmedString(value.queueName)! } : {}),
+    ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
+    ...(typeof value.autoRebase === "boolean" ? { autoRebase: value.autoRebase } : {}),
+    ...(typeof value.ciGating === "boolean" ? { ciGating: value.ciGating } : {}),
+    ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
+  };
+}
+
+function parseCreateIntegrationPrArgs(value: Record<string, unknown>): CreateIntegrationPrArgs {
+  const sourceLaneIds = asStringArray(value.sourceLaneIds);
+  if (sourceLaneIds.length < 2) throw new Error("prs.createIntegration requires at least two sourceLaneIds.");
+  return {
+    sourceLaneIds,
+    integrationLaneName: requireString(value.integrationLaneName, "prs.createIntegration requires integrationLaneName."),
+    baseBranch: requireString(value.baseBranch, "prs.createIntegration requires baseBranch."),
+    title: requireString(value.title, "prs.createIntegration requires title."),
+    ...(typeof value.body === "string" ? { body: value.body } : {}),
+    ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
+    ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
+  };
+}
+
+function parseSimulateIntegrationArgs(value: Record<string, unknown>): SimulateIntegrationArgs {
+  const sourceLaneIds = asStringArray(value.sourceLaneIds);
+  if (sourceLaneIds.length < 2) throw new Error("prs.simulateIntegration requires at least two sourceLaneIds.");
+  return {
+    sourceLaneIds,
+    baseBranch: requireString(value.baseBranch, "prs.simulateIntegration requires baseBranch."),
+    ...(typeof value.persist === "boolean" ? { persist: value.persist } : {}),
+  };
+}
+
+function parseCommitIntegrationArgs(value: Record<string, unknown>): CommitIntegrationArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.commitIntegration requires proposalId."),
+    integrationLaneName: requireString(value.integrationLaneName, "prs.commitIntegration requires integrationLaneName."),
+    title: requireString(value.title, "prs.commitIntegration requires title."),
+    ...(typeof value.body === "string" ? { body: value.body } : {}),
+    ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
+    ...(typeof value.pauseOnConflict === "boolean" ? { pauseOnConflict: value.pauseOnConflict } : {}),
+    ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
+  };
+}
+
+function parseDeleteIntegrationProposalArgs(value: Record<string, unknown>): DeleteIntegrationProposalArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.deleteProposal requires proposalId."),
+    ...(typeof value.deleteIntegrationLane === "boolean" ? { deleteIntegrationLane: value.deleteIntegrationLane } : {}),
+  };
+}
+
+function parseDismissIntegrationCleanupArgs(value: Record<string, unknown>): DismissIntegrationCleanupArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.dismissIntegrationCleanup requires proposalId."),
+  };
+}
+
+function parseCreateIntegrationLaneForProposalArgs(value: Record<string, unknown>): CreateIntegrationLaneForProposalArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.createIntegrationLaneForProposal requires proposalId."),
+  };
+}
+
+function parseRecheckIntegrationStepArgs(value: Record<string, unknown>): RecheckIntegrationStepArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.recheckIntegrationStep requires proposalId."),
+    laneId: requireString(value.laneId, "prs.recheckIntegrationStep requires laneId."),
+  };
+}
+
+function parseDeletePrArgs(value: Record<string, unknown>): DeletePrArgs {
+  return {
+    prId: requirePrId(value, "prs.delete"),
+    ...(typeof value.closeOnGitHub === "boolean" ? { closeOnGitHub: value.closeOnGitHub } : {}),
+    ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
+  };
+}
+
+function parseLandQueueNextArgs(value: Record<string, unknown>): LandQueueNextArgs {
+  const groupId = requireString(value.groupId, "prs.landQueueNext requires groupId.");
+  const method = asTrimmedString(value.method) as LandQueueNextArgs["method"];
+  if (!method || !["merge", "squash", "rebase"].includes(method)) {
+    throw new Error("prs.landQueueNext requires method to be merge, squash, or rebase.");
+  }
+  return {
+    groupId,
+    method,
+    ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
+    ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
+    ...(typeof value.confidenceThreshold === "number" ? { confidenceThreshold: value.confidenceThreshold } : {}),
+  };
+}
+
+function parseReorderQueuePrsArgs(value: Record<string, unknown>): ReorderQueuePrsArgs {
+  const prIds = asStringArray(value.prIds);
+  if (prIds.length === 0) throw new Error("prs.reorderQueue requires prIds.");
+  return {
+    groupId: requireString(value.groupId, "prs.reorderQueue requires groupId."),
+    prIds,
+  };
 }
 
 function mergeLaneDockerConfig(
@@ -1028,7 +1252,11 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("prs.getReviews", { viewerAllowed: true }, async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")));
   register("prs.getComments", { viewerAllowed: true }, async (payload) => args.prService.getComments(requirePrId(payload, "prs.getComments")));
   register("prs.getFiles", { viewerAllowed: true }, async (payload) => args.prService.getFiles(requirePrId(payload, "prs.getFiles")));
+  register("prs.getActionRuns", { viewerAllowed: true }, async (payload) => args.prService.getActionRuns(requirePrId(payload, "prs.getActionRuns")));
+  register("prs.getActivity", { viewerAllowed: true }, async (payload) => args.prService.getActivity(requirePrId(payload, "prs.getActivity")));
   register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
+  register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
+  register("prs.draftDescription", { viewerAllowed: true }, async (payload) => args.prService.draftDescription(parseDraftPrDescriptionArgs(payload)));
   register("prs.land", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.land(parseLandPrArgs(payload)));
   register("prs.close", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.closePr(parseClosePrArgs(payload));
@@ -1040,6 +1268,50 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("prs.requestReviewers", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.requestReviewers(parseRequestReviewersArgs(payload));
+    return { ok: true };
+  });
+  register("prs.updateTitle", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.updateTitle(parseUpdatePrTitleArgs(payload));
+    return { ok: true };
+  });
+  register("prs.updateBody", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.updateBody(parseUpdatePrBodyArgs(payload));
+    return { ok: true };
+  });
+  register("prs.setLabels", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.setLabels(parseSetPrLabelsArgs(payload));
+    return { ok: true };
+  });
+  register("prs.setAssignees", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.setAssignees(parseSetPrAssigneesArgs(payload));
+    return { ok: true };
+  });
+  register("prs.submitReview", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.submitReview(parseSubmitPrReviewArgs(payload));
+    return { ok: true };
+  });
+  register("prs.rerunChecks", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.rerunChecks(parseRerunPrChecksArgs(payload));
+    return { ok: true };
+  });
+  register("prs.addComment", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.addComment(parseAddPrCommentArgs(payload)));
+  register("prs.updateComment", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.updateComment(parseUpdatePrCommentArgs(payload)));
+  register("prs.deleteComment", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.deleteComment(parseDeletePrCommentArgs(payload));
+    return { ok: true };
+  });
+  register("prs.createQueue", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createQueuePrs(parseCreateQueuePrsArgs(payload)));
+  register("prs.createIntegration", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createIntegrationPr(parseCreateIntegrationPrArgs(payload)));
+  register("prs.simulateIntegration", { viewerAllowed: true }, async (payload) => args.prService.simulateIntegration(parseSimulateIntegrationArgs(payload)));
+  register("prs.commitIntegration", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.commitIntegration(parseCommitIntegrationArgs(payload)));
+  register("prs.deleteProposal", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.deleteProposal(parseDeleteIntegrationProposalArgs(payload)));
+  register("prs.dismissIntegrationCleanup", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.dismissIntegrationCleanup(parseDismissIntegrationCleanupArgs(payload)));
+  register("prs.createIntegrationLaneForProposal", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createIntegrationLaneForProposal(parseCreateIntegrationLaneForProposalArgs(payload)));
+  register("prs.recheckIntegrationStep", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.recheckIntegrationStep(parseRecheckIntegrationStepArgs(payload)));
+  register("prs.delete", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.delete(parseDeletePrArgs(payload)));
+  register("prs.landQueueNext", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.landQueueNext(parseLandQueueNextArgs(payload)));
+  register("prs.reorderQueue", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.reorderQueuePrs(parseReorderQueuePrsArgs(payload));
     return { ok: true };
   });
 

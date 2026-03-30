@@ -61,9 +61,12 @@ import type {
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   AddPrCommentArgs,
+  UpdatePrCommentArgs,
+  DeletePrCommentArgs,
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
+  SetPrAssigneesArgs,
   RequestPrReviewersArgs,
   SubmitPrReviewArgs,
   ClosePrArgs,
@@ -1107,7 +1110,7 @@ export function createPrService({
     });
 
     return data.map((entry: any) => ({
-      id: `issue:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
+      id: `issue:${String(entry?.id ?? randomUUID())}`,
       author: asString(entry?.user?.login) || "unknown",
       authorAvatarUrl: asString(entry?.user?.avatar_url) || null,
       body: asString(entry?.body) || null,
@@ -1126,7 +1129,7 @@ export function createPrService({
     });
 
     return data.map((entry: any) => ({
-      id: `review:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
+      id: `review:${String(entry?.id ?? randomUUID())}`,
       author: asString(entry?.user?.login) || "unknown",
       authorAvatarUrl: asString(entry?.user?.avatar_url) || null,
       body: asString(entry?.body) || null,
@@ -1137,6 +1140,18 @@ export function createPrService({
       createdAt: asString(entry?.created_at) || null,
       updatedAt: asString(entry?.updated_at) || null
     }));
+  };
+
+  const parseCommentIdentifier = (commentId: string): { source: "issue" | "review"; apiId: number } => {
+    const [source, rawId] = commentId.split(":", 2);
+    const apiId = Number(rawId);
+    if ((source !== "issue" && source !== "review") || !Number.isFinite(apiId)) {
+      throw new Error(`Unsupported PR comment identifier: ${commentId}`);
+    }
+    return {
+      source,
+      apiId,
+    };
   };
 
   const fetchReviewThreads = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReviewThread[]> => {
@@ -4224,14 +4239,16 @@ export function createPrService({
       const repo = repoFromRow(row);
       const prNumber = Number(row.github_pr_number);
 
-      const [comments, reviews, checks, timelineEvents] = await Promise.all([
+      const [comments, reviews, checks, timelineEvents, githubStatus] = await Promise.all([
         getComments(prId).catch(() => [] as PrComment[]),
         getReviews(prId).catch(() => [] as PrReview[]),
         getChecks(prId).catch(() => [] as PrCheck[]),
         fetchAllPages<any>({
           path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/timeline`
-        }).catch(() => [] as any[])
+        }).catch(() => [] as any[]),
+        githubService.getStatus().catch(() => null),
       ]);
+      const viewerLogin = asString(githubStatus?.userLogin);
 
       const events: PrActivityEvent[] = [];
       const seenIds = new Set<string>();
@@ -4246,7 +4263,14 @@ export function createPrService({
           avatarUrl: c.authorAvatarUrl || null,
           body: c.body,
           timestamp: c.createdAt || "",
-          metadata: { source: c.source, path: c.path, line: c.line, url: c.url }
+          metadata: {
+            commentId: c.id,
+            source: c.source,
+            path: c.path,
+            line: c.line,
+            url: c.url,
+            viewerCanEdit: Boolean(viewerLogin) && c.author === viewerLogin,
+          }
         });
       }
 
@@ -4398,24 +4422,70 @@ export function createPrService({
     async addComment(args: AddPrCommentArgs): Promise<PrComment> {
       const row = requireRow(args.prId);
       const repo = repoFromRow(row);
+      const replyTarget = args.inReplyToCommentId ? parseCommentIdentifier(args.inReplyToCommentId) : null;
+      const path = replyTarget?.source === "review"
+        ? `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/comments/${replyTarget.apiId}/replies`
+        : `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/comments`;
       const { data } = await githubService.apiRequest<any>({
         method: "POST",
-        path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/comments`,
+        path,
         body: { body: args.body }
       });
+      await refreshOne(args.prId);
       const comment: PrComment = {
-        id: String(data?.id ?? ""),
+        id: `${replyTarget?.source === "review" ? "review" : "issue"}:${String(data?.id ?? "")}`,
         author: asString(data?.user?.login) || "",
         authorAvatarUrl: asString(data?.user?.avatar_url) || null,
         body: asString(data?.body) || null,
-        source: "issue",
+        source: replyTarget?.source === "review" ? "review" : "issue",
         url: asString(data?.html_url) || null,
-        path: null,
-        line: null,
+        path: replyTarget?.source === "review" ? asString(data?.path) || null : null,
+        line: replyTarget?.source === "review" && Number.isFinite(Number(data?.line)) ? Number(data?.line) : null,
         createdAt: asString(data?.created_at) || null,
         updatedAt: asString(data?.updated_at) || null
       };
       return comment;
+    },
+
+    async updateComment(args: UpdatePrCommentArgs): Promise<PrComment> {
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      const { source, apiId } = parseCommentIdentifier(args.commentId);
+      const path = source === "issue"
+        ? `/repos/${repo.owner}/${repo.name}/issues/comments/${apiId}`
+        : `/repos/${repo.owner}/${repo.name}/pulls/comments/${apiId}`;
+      const { data } = await githubService.apiRequest<any>({
+        method: "PATCH",
+        path,
+        body: { body: args.body }
+      });
+      await refreshOne(args.prId);
+      return {
+        id: `${source}:${String(data?.id ?? apiId)}`,
+        author: asString(data?.user?.login) || "",
+        authorAvatarUrl: asString(data?.user?.avatar_url) || null,
+        body: asString(data?.body) || null,
+        source,
+        url: asString(data?.html_url) || null,
+        path: source === "review" ? asString(data?.path) || null : null,
+        line: source === "review" && Number.isFinite(Number(data?.line)) ? Number(data?.line) : null,
+        createdAt: asString(data?.created_at) || null,
+        updatedAt: asString(data?.updated_at) || null
+      };
+    },
+
+    async deleteComment(args: DeletePrCommentArgs): Promise<void> {
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      const { source, apiId } = parseCommentIdentifier(args.commentId);
+      const path = source === "issue"
+        ? `/repos/${repo.owner}/${repo.name}/issues/comments/${apiId}`
+        : `/repos/${repo.owner}/${repo.name}/pulls/comments/${apiId}`;
+      await githubService.apiRequest({
+        method: "DELETE",
+        path,
+      });
+      await refreshOne(args.prId);
     },
 
     async replyToReviewThread(args: ReplyToPrReviewThreadArgs): Promise<PrReviewThreadComment> {
@@ -4529,6 +4599,17 @@ export function createPrService({
         method: "PUT",
         path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/labels`,
         body: { labels: args.labels }
+      });
+      await refreshOne(args.prId);
+    },
+
+    async setAssignees(args: SetPrAssigneesArgs): Promise<void> {
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      await githubService.apiRequest({
+        method: "PATCH",
+        path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}`,
+        body: { assignees: args.assignees }
       });
       await refreshOne(args.prId);
     },

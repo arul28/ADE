@@ -710,6 +710,18 @@ final class SyncService: ObservableObject {
     database.fetchPullRequestSnapshot(prId: prId)
   }
 
+  func fetchPullRequestSnapshotsById() async throws -> [String: PullRequestSnapshot] {
+    database.fetchPullRequestSnapshotsById()
+  }
+
+  func fetchPullRequestActionRuns(prId: String) async throws -> [PrActionRun] {
+    try await sendDecodableCommand(action: "prs.getActionRuns", args: ["prId": prId], as: [PrActionRun].self)
+  }
+
+  func fetchPullRequestActivity(prId: String) async throws -> [PrActivityEvent] {
+    try await sendDecodableCommand(action: "prs.getActivity", args: ["prId": prId], as: [PrActivityEvent].self)
+  }
+
   func status(for domain: SyncDomain) -> SyncDomainStatus {
     domainStatuses[domain] ?? .disconnected
   }
@@ -1173,6 +1185,92 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "prs.createFromLane", args: args)
   }
 
+  func createQueuePullRequests(
+    laneIds: [String],
+    targetBranch: String,
+    queueName: String? = nil,
+    draft: Bool = false,
+    autoRebase: Bool = true,
+    ciGating: Bool = true
+  ) async throws -> Any {
+    var args: [String: Any] = [
+      "laneIds": laneIds,
+      "targetBranch": targetBranch,
+      "draft": draft,
+      "autoRebase": autoRebase,
+      "ciGating": ciGating,
+    ]
+    if let queueName, !queueName.isEmpty {
+      args["queueName"] = queueName
+    }
+    return try await sendCommand(action: "prs.createQueue", args: args)
+  }
+
+  func createIntegrationPullRequest(
+    sourceLaneIds: [String],
+    integrationLaneName: String,
+    baseBranch: String,
+    title: String,
+    body: String,
+    draft: Bool = true
+  ) async throws -> Any {
+    try await sendCommand(action: "prs.createIntegration", args: [
+      "sourceLaneIds": sourceLaneIds,
+      "integrationLaneName": integrationLaneName,
+      "baseBranch": baseBranch,
+      "title": title,
+      "body": body,
+      "draft": draft,
+    ])
+  }
+
+  func simulateIntegration(sourceLaneIds: [String], baseBranch: String, persist: Bool = true) async throws -> IntegrationProposal {
+    try await sendDecodableCommand(
+      action: "prs.simulateIntegration",
+      args: [
+        "sourceLaneIds": sourceLaneIds,
+        "baseBranch": baseBranch,
+        "persist": persist,
+      ],
+      as: IntegrationProposal.self
+    )
+  }
+
+  func commitIntegration(
+    proposalId: String,
+    integrationLaneName: String,
+    title: String,
+    body: String?,
+    draft: Bool = true
+  ) async throws -> Any {
+    var args: [String: Any] = [
+      "proposalId": proposalId,
+      "integrationLaneName": integrationLaneName,
+      "title": title,
+      "draft": draft,
+    ]
+    if let body, !body.isEmpty {
+      args["body"] = body
+    }
+    return try await sendCommand(action: "prs.commitIntegration", args: args)
+  }
+
+  func createIntegrationLaneForProposal(proposalId: String) async throws -> Any {
+    try await sendCommand(action: "prs.createIntegrationLaneForProposal", args: ["proposalId": proposalId])
+  }
+
+  func recheckIntegrationStep(proposalId: String, laneId: String) async throws -> Any {
+    try await sendCommand(action: "prs.recheckIntegrationStep", args: ["proposalId": proposalId, "laneId": laneId])
+  }
+
+  func deleteIntegrationProposal(proposalId: String, deleteIntegrationLane: Bool = false) async throws -> Any {
+    try await sendCommand(action: "prs.deleteProposal", args: ["proposalId": proposalId, "deleteIntegrationLane": deleteIntegrationLane])
+  }
+
+  func dismissIntegrationCleanup(proposalId: String) async throws -> Any {
+    try await sendCommand(action: "prs.dismissIntegrationCleanup", args: ["proposalId": proposalId])
+  }
+
   func mergePullRequest(prId: String, method: String) async throws {
     _ = try await sendCommand(action: "prs.land", args: [
       "prId": prId,
@@ -1216,6 +1314,96 @@ final class SyncService: ObservableObject {
       args["inReplyToCommentId"] = inReplyToCommentId
     }
     _ = try await sendCommand(action: "prs.addComment", args: args)
+  }
+
+  func linkPullRequestToLane(laneId: String, prUrlOrNumber: String) async throws -> Any {
+    try await sendCommand(action: "prs.linkToLane", args: ["laneId": laneId, "prUrlOrNumber": prUrlOrNumber])
+  }
+
+  func deletePullRequest(prId: String, closeOnGitHub: Bool = false, archiveLane: Bool = false) async throws -> Any {
+    try await sendCommand(action: "prs.delete", args: ["prId": prId, "closeOnGitHub": closeOnGitHub, "archiveLane": archiveLane])
+  }
+
+  func landQueueNext(groupId: String, method: String, archiveLane: Bool = false, autoResolve: Bool = false) async throws -> Any {
+    try await sendCommand(
+      action: "prs.landQueueNext",
+      args: [
+        "groupId": groupId,
+        "method": method,
+        "archiveLane": archiveLane,
+        "autoResolve": autoResolve,
+      ]
+    )
+  }
+
+  func startQueueAutomation(groupId: String, method: String, archiveLane: Bool = false, autoResolve: Bool = false, ciGating: Bool = true) async throws -> Any {
+    try await sendCommand(
+      action: "prs.startQueueAutomation",
+      args: [
+        "groupId": groupId,
+        "method": method,
+        "archiveLane": archiveLane,
+        "autoResolve": autoResolve,
+        "ciGating": ciGating,
+      ]
+    )
+  }
+
+  func pauseQueueAutomation(queueId: String) async throws -> Any {
+    try await sendCommand(action: "prs.pauseQueueAutomation", args: ["queueId": queueId])
+  }
+
+  func resumeQueueAutomation(queueId: String, method: String = "squash", archiveLane: Bool = false, autoResolve: Bool = false, ciGating: Bool = true) async throws -> Any {
+    try await sendCommand(
+      action: "prs.resumeQueueAutomation",
+      args: [
+        "queueId": queueId,
+        "method": method,
+        "archiveLane": archiveLane,
+        "autoResolve": autoResolve,
+        "ciGating": ciGating,
+      ]
+    )
+  }
+
+  func cancelQueueAutomation(queueId: String) async throws -> Any {
+    try await sendCommand(action: "prs.cancelQueueAutomation", args: ["queueId": queueId])
+  }
+
+  func reorderQueue(groupId: String, prIds: [String]) async throws {
+    _ = try await sendCommand(action: "prs.reorderQueue", args: ["groupId": groupId, "prIds": prIds])
+  }
+
+  func updatePullRequestTitle(prId: String, title: String) async throws {
+    _ = try await sendCommand(action: "prs.updateTitle", args: ["prId": prId, "title": title])
+  }
+
+  func updatePullRequestBody(prId: String, body: String) async throws {
+    _ = try await sendCommand(action: "prs.updateBody", args: ["prId": prId, "body": body])
+  }
+
+  func setPullRequestLabels(prId: String, labels: [String]) async throws {
+    _ = try await sendCommand(action: "prs.setLabels", args: ["prId": prId, "labels": labels])
+  }
+
+  func setPullRequestAssignees(prId: String, assignees: [String]) async throws {
+    _ = try await sendCommand(action: "prs.setAssignees", args: ["prId": prId, "assignees": assignees])
+  }
+
+  func submitPullRequestReview(prId: String, event: String, body: String? = nil) async throws {
+    var args: [String: Any] = ["prId": prId, "event": event]
+    if let body, !body.isEmpty {
+      args["body"] = body
+    }
+    _ = try await sendCommand(action: "prs.submitReview", args: args)
+  }
+
+  func updatePullRequestComment(prId: String, commentId: String, body: String) async throws {
+    _ = try await sendCommand(action: "prs.updateComment", args: ["prId": prId, "commentId": commentId, "body": body])
+  }
+
+  func deletePullRequestComment(prId: String, commentId: String) async throws {
+    _ = try await sendCommand(action: "prs.deleteComment", args: ["prId": prId, "commentId": commentId])
   }
 
   private func saveProfile(_ profile: HostConnectionProfile?) {
