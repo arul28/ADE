@@ -30,9 +30,12 @@ function resolveCheckedPath(
 ): string {
   try {
     return resolvePathWithinRoot(root, path.resolve(root, relative), opts);
-  } catch {
-    logger.warn(logTag, logContext);
-    throw new Error("Path escapes allowed directory");
+  } catch (err) {
+    if (err instanceof Error && err.message === "Path escapes root") {
+      logger.warn(logTag, logContext);
+      throw new Error("Path escapes allowed directory");
+    }
+    throw err;
   }
 }
 

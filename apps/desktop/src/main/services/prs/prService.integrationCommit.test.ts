@@ -340,92 +340,97 @@ describe("prService.commitIntegration", () => {
     const db = await openKvDb(path.join(root, ".ade.db"), createLogger());
     const projectId = "proj-integration-symlink-preview";
 
-    const baseLane = makeLane("lane-main", "main", "refs/heads/main", root, {
-      laneType: "primary",
-    });
-    const conflictLane = makeLane("lane-conflict", "computer-use", "refs/heads/feature/computer-use", path.join(root, "conflict"));
+    try {
+      const baseLane = makeLane("lane-main", "main", "refs/heads/main", root, {
+        laneType: "primary",
+      });
+      const conflictLane = makeLane("lane-conflict", "computer-use", "refs/heads/feature/computer-use", path.join(root, "conflict"));
 
-    await seedProject(db, projectId, root);
-    await seedLane(db, projectId, baseLane);
-    await seedLane(db, projectId, conflictLane);
+      await seedProject(db, projectId, root);
+      await seedLane(db, projectId, baseLane);
+      await seedLane(db, projectId, conflictLane);
 
-    runGitOrThrowMock.mockImplementation(async (args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "main") return "base-sha";
-      if (args[0] === "rev-parse" && args[1] === "feature/computer-use") return "computer-sha";
-      return "";
-    });
+      runGitOrThrowMock.mockImplementation(async (args: string[]) => {
+        if (args[0] === "rev-parse" && args[1] === "main") return "base-sha";
+        if (args[0] === "rev-parse" && args[1] === "feature/computer-use") return "computer-sha";
+        return "";
+      });
 
-    runGitMergeTreeMock.mockResolvedValue({
-      exitCode: 0,
-      stdout: "",
-      stderr: "",
-      mergeBase: "base-sha",
-      branchA: "base-sha",
-      branchB: "computer-sha",
-      conflicts: [],
-      treeOid: null,
-      usedMergeBaseFlag: true,
-      usedWriteTree: true,
-    });
+      runGitMergeTreeMock.mockResolvedValue({
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        mergeBase: "base-sha",
+        branchA: "base-sha",
+        branchB: "computer-sha",
+        conflicts: [],
+        treeOid: null,
+        usedMergeBaseFlag: true,
+        usedWriteTree: true,
+      });
 
-    runGitMock.mockImplementation(async (args: string[], options?: { cwd?: string }) => {
-      if (args[0] === "rev-list" || args[0] === "diff") {
+      runGitMock.mockImplementation(async (args: string[], options?: { cwd?: string }) => {
+        if (args[0] === "rev-list" || args[0] === "diff") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--short" && args[2] === "computer-sha") {
+          return { exitCode: 0, stdout: "computer", stderr: "" };
+        }
+        if (args[0] === "merge" && args[1] === "--abort") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "worktree" && args[1] === "remove") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "merge") {
+          fs.writeFileSync(path.join(outsideDir, "secret.ts"), "<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs\n", "utf8");
+          fs.mkdirSync(options!.cwd!, { recursive: true });
+          fs.symlinkSync(outsideDir, path.join(options!.cwd!, "linked"));
+          return { exitCode: 1, stdout: "", stderr: "merge conflict" };
+        }
+        if (args[0] === "status" && options?.cwd?.includes(`${path.sep}worktree`)) {
+          return { exitCode: 0, stdout: "UU linked/secret.ts\n", stderr: "" };
+        }
         return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--short" && args[2] === "computer-sha") {
-        return { exitCode: 0, stdout: "computer", stderr: "" };
-      }
-      if (args[0] === "merge" && args[1] === "--abort") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "worktree" && args[1] === "remove") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "merge") {
-        fs.writeFileSync(path.join(outsideDir, "secret.ts"), "<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs\n", "utf8");
-        fs.mkdirSync(options!.cwd!, { recursive: true });
-        fs.symlinkSync(outsideDir, path.join(options!.cwd!, "linked"));
-        return { exitCode: 1, stdout: "", stderr: "merge conflict" };
-      }
-      if (args[0] === "status" && options?.cwd?.includes(`${path.sep}worktree`)) {
-        return { exitCode: 0, stdout: "UU linked/secret.ts\n", stderr: "" };
-      }
-      return { exitCode: 0, stdout: "", stderr: "" };
-    });
+      });
 
-    const { createPrService } = await createServiceModule();
-    const service = createPrService({
-      db,
-      logger: createLogger() as any,
-      projectId,
-      projectRoot: root,
-      laneService: {
-        list: async () => [baseLane, conflictLane],
-      } as any,
-      operationService: {} as any,
-      githubService: {
-        getRepoOrThrow: vi.fn(),
-        apiRequest: vi.fn(),
-      } as any,
-      aiIntegrationService: undefined,
-      projectConfigService: {
-        get: () => ({ effective: { providerMode: "guest" } }),
-      } as any,
-      conflictService: undefined,
-      openExternal: async () => {},
-    });
+      const { createPrService } = await createServiceModule();
+      const service = createPrService({
+        db,
+        logger: createLogger() as any,
+        projectId,
+        projectRoot: root,
+        laneService: {
+          list: async () => [baseLane, conflictLane],
+        } as any,
+        operationService: {} as any,
+        githubService: {
+          getRepoOrThrow: vi.fn(),
+          apiRequest: vi.fn(),
+        } as any,
+        aiIntegrationService: undefined,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" } }),
+        } as any,
+        conflictService: undefined,
+        openExternal: async () => {},
+      });
 
-    const proposal = await service.simulateIntegration({
-      sourceLaneIds: [conflictLane.id],
-      baseBranch: "main",
-    });
+      const proposal = await service.simulateIntegration({
+        sourceLaneIds: [conflictLane.id],
+        baseBranch: "main",
+      });
 
-    expect(proposal.steps[0]?.conflictingFiles[0]).toMatchObject({
-      path: "linked/secret.ts",
-      conflictType: null,
-      conflictMarkers: "",
-    });
-    db.close();
+      expect(proposal.steps[0]?.conflictingFiles[0]).toMatchObject({
+        path: "linked/secret.ts",
+        conflictType: null,
+        conflictMarkers: "",
+      });
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it("ignores symlinked conflict marker files that escape the integration lane during recheck", async () => {

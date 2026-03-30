@@ -353,8 +353,9 @@ describe("createSyncRemoteCommandService", () => {
 
   describe("execute — PR commands", () => {
     it("prs.list routes to prService.listAll", async () => {
-      await service.execute(makePayload("prs.list"));
+      const result = await service.execute(makePayload("prs.list"));
       expect(prService.listAll).toHaveBeenCalled();
+      expect(result).toEqual([]);
     });
 
     it("prs.getDetail requires prId", async () => {
@@ -363,8 +364,9 @@ describe("createSyncRemoteCommandService", () => {
     });
 
     it("prs.getDetail routes to prService.getDetail", async () => {
-      await service.execute(makePayload("prs.getDetail", { prId: "pr-42" }));
+      const result = await service.execute(makePayload("prs.getDetail", { prId: "pr-42" }));
       expect(prService.getDetail).toHaveBeenCalledWith("pr-42");
+      expect(result).toEqual({});
     });
 
     it("prs.createFromLane parses laneId + title + draft", async () => {
@@ -692,6 +694,48 @@ describe("createSyncRemoteCommandService", () => {
       }));
       expect(agentChatService.dispose).toHaveBeenCalledWith({ sessionId: "sess-1" });
       expect(result).toEqual({ ok: true });
+    });
+
+    it("chat.interrupt routes to agentChatService.interrupt", async () => {
+      const result = await service.execute(makePayload("chat.interrupt", {
+        sessionId: "sess-1",
+      }));
+      expect(agentChatService.interrupt).toHaveBeenCalledWith({ sessionId: "sess-1" });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("chat.interrupt throws when sessionId is missing", async () => {
+      await expect(service.execute(makePayload("chat.interrupt", {})))
+        .rejects.toThrow("chat.interrupt requires sessionId.");
+    });
+
+    it("chat.steer routes to agentChatService.steer", async () => {
+      const result = await service.execute(makePayload("chat.steer", {
+        sessionId: "sess-1",
+        text: "change direction",
+      }));
+      expect(agentChatService.steer).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        text: "change direction",
+      });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("chat.steer throws when text is missing", async () => {
+      await expect(service.execute(makePayload("chat.steer", { sessionId: "sess-1" })))
+        .rejects.toThrow("chat.steer requires text.");
+    });
+
+    it("chat.resume routes to agentChatService.resumeSession", async () => {
+      await service.execute(makePayload("chat.resume", {
+        sessionId: "sess-1",
+      }));
+      expect(agentChatService.resumeSession).toHaveBeenCalledWith({ sessionId: "sess-1" });
+    });
+
+    it("chat.resume throws when sessionId is missing", async () => {
+      await expect(service.execute(makePayload("chat.resume", {})))
+        .rejects.toThrow("chat.resume requires sessionId.");
     });
 
     it("chat.models returns available models for a provider", async () => {

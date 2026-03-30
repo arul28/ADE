@@ -242,21 +242,30 @@ describe("resolvePathWithinRoot", () => {
 describe("resolvePathWithinRoot", () => {
   it("allows a normal child path when intermediate segments do not exist yet", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
-    const target = path.join(root, "nested", "new-file.txt");
-    const resolved = resolvePathWithinRoot(root, target, { allowMissing: true });
-    expect(path.basename(resolved)).toBe("new-file.txt");
-    expect(resolved.endsWith(`${path.sep}nested${path.sep}new-file.txt`)).toBe(true);
+    try {
+      const target = path.join(root, "nested", "new-file.txt");
+      const resolved = resolvePathWithinRoot(root, target, { allowMissing: true });
+      expect(path.basename(resolved)).toBe("new-file.txt");
+      expect(resolved.endsWith(`${path.sep}nested${path.sep}new-file.txt`)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects symlink escapes that point outside the root", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
-    const linkPath = path.join(tempRoot, "linked");
-    const outsideFile = path.join(outsideDir, "secret.txt");
-    fs.writeFileSync(outsideFile, "secret", "utf8");
-    fs.symlinkSync(outsideDir, linkPath);
+    try {
+      const linkPath = path.join(tempRoot, "linked");
+      const outsideFile = path.join(outsideDir, "secret.txt");
+      fs.writeFileSync(outsideFile, "secret", "utf8");
+      fs.symlinkSync(outsideDir, linkPath, "dir");
 
-    expect(() => resolvePathWithinRoot(tempRoot, path.join(linkPath, "secret.txt"))).toThrow("Path escapes root");
+      expect(() => resolvePathWithinRoot(tempRoot, path.join(linkPath, "secret.txt"))).toThrow("Path escapes root");
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 });
 

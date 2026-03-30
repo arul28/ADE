@@ -376,8 +376,11 @@ describe("queueLandingService", () => {
     expect(resumed).not.toBeNull();
     expect(resumed!.state).toBe("landing");
 
-    // Give the loop time to run and exit.
-    await sleep(300);
+    // The landing loop runs asynchronously. When guardTransition rejects the
+    // failed→landing transition, the loop returns silently without updating DB
+    // state — there is no observable state change to poll for. Yield to the
+    // event loop so the async loop body executes, then verify the invariants.
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     const finalState = service2.getQueueState(paused.queueId);
     expect(finalState).not.toBeNull();
@@ -398,12 +401,17 @@ describe("queueLandingService", () => {
       ["group-cancel", projectId, "Queue Cancel", "main", "2026-03-09T00:00:00.000Z"],
     );
 
-    let cancelQueueId: string | null = null;
-    // land mock: first call delays long enough for external cancellation to happen
+    // Controllable deferred promises so the test drives timing explicitly
+    let resolveSlowLand!: () => void;
+    const slowLandStarted = new Promise<void>((resolve) => { resolveSlowLand = resolve; });
+    let releaseSlowLand!: () => void;
+    const slowLandGate = new Promise<void>((resolve) => { releaseSlowLand = resolve; });
+
     const land = vi.fn().mockImplementation(async ({ prId }: { prId: string }) => {
       if (prId === "pr-slow") {
-        // During this delay, the test will cancel the queue via direct DB update
-        await sleep(200);
+        // Signal that the slow land has started, then wait for the test to release
+        resolveSlowLand();
+        await slowLandGate;
         return {
           prId: "pr-slow",
           prNumber: 1,
@@ -454,20 +462,23 @@ describe("queueLandingService", () => {
     });
 
     const queueState = await service.startQueue({ groupId: "group-cancel", method: "squash" });
-    cancelQueueId = queueState.queueId;
+    const cancelQueueId = queueState.queueId;
 
-    // Wait just enough for land to be called (the first entry starts landing
-    // immediately), then cancel the queue externally via DB update before land resolves.
-    await sleep(50);
+    // Wait for the land mock to actually be entered before cancelling
+    await slowLandStarted;
     db.run(
       "update queue_landing_state set state = 'cancelled', completed_at = ? where id = ?",
       [new Date().toISOString(), cancelQueueId],
     );
 
-    // Wait for the landing loop to notice the cancellation and exit.
-    await sleep(500);
+    // Release the slow land so the loop can proceed and notice the cancellation
+    releaseSlowLand();
 
-    const finalState = service.getQueueStateByGroup("group-cancel");
+    // Poll until the service reflects the cancelled state
+    const finalState = await waitFor(
+      () => service.getQueueStateByGroup("group-cancel"),
+      (state) => state.state === "cancelled",
+    );
     expect(finalState).not.toBeNull();
     // The queue should be cancelled (as we set it externally).
     expect(finalState!.state).toBe("cancelled");

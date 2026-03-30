@@ -9,9 +9,14 @@ import type {
   AgentChatSessionSummary,
   AgentStatus,
   AgentUpsertInput,
+  AutomationRuleSummary,
+  AutomationRun,
+  AutomationRunListArgs,
   CtoTriggerAgentWakeupArgs,
   LinearWorkflowConfig,
   OperatorNavigationSuggestion,
+  TestRunSummary,
+  TestSuiteDefinition,
 } from "../../../../shared/types";
 import type { IssueTracker } from "../../cto/issueTracker";
 import type { createLinearDispatcherService } from "../../cto/linearDispatcherService";
@@ -48,19 +53,19 @@ export interface CtoOperatorToolDeps {
   fileService?: ReturnType<typeof createFileService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
   testService?: {
-    listSuites: () => any[];
-    run: (args: { laneId: string; suiteId: string }) => Promise<any>;
+    listSuites: () => TestSuiteDefinition[];
+    run: (args: { laneId: string; suiteId: string }) => Promise<TestRunSummary>;
     stop: (args: { runId: string }) => void;
-    listRuns: (args?: { laneId?: string; suiteId?: string; limit?: number }) => any[];
+    listRuns: (args?: { laneId?: string; suiteId?: string; limit?: number }) => TestRunSummary[];
     getLogTail: (args: { runId: string; maxBytes?: number }) => string;
   } | null;
   ptyService?: {
     create: (args: { laneId: string; title?: string; cols?: number; rows?: number; tracked?: boolean; startupCommand?: string }) => Promise<{ ptyId: string; sessionId: string }>;
   } | null;
   automationService?: {
-    list: () => any[];
-    triggerManually: (args: { id: string; dryRun?: boolean }) => Promise<any>;
-    listRuns: (args?: any) => any[];
+    list: () => AutomationRuleSummary[];
+    triggerManually: (args: { id: string; dryRun?: boolean }) => Promise<AutomationRun>;
+    listRuns: (args?: AutomationRunListArgs) => AutomationRun[];
   } | null;
   issueTracker?: IssueTracker | null;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean }) => Promise<AgentChatSessionSummary[]>;
@@ -1319,10 +1324,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.resolveLinearRunAction = tool({
-    description: "Approve, reject, retry, or explicitly complete a Linear workflow run from chat.",
+    description: "Approve, reject, retry, resume, or explicitly complete a Linear workflow run from chat.",
     inputSchema: z.object({
       runId: z.string(),
-      action: z.enum(["approve", "reject", "retry", "complete"]),
+      action: z.enum(["approve", "reject", "retry", "resume", "complete"]),
       note: z.string().optional(),
       laneId: z.string().optional(),
     }),

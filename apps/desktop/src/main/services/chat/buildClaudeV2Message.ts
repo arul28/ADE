@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentChatFileRef } from "../../../shared/types/chat";
+import { resolvePathWithinRoot } from "../shared/utils";
 
 /** MIME types the Anthropic API accepts for inline image content blocks. */
 export const ANTHROPIC_IMAGE_MEDIA_TYPES = new Set([
@@ -98,9 +99,14 @@ export function buildClaudeV2Message(
     }
 
     try {
-      const resolvedPath = options.baseDir
+      const rawResolved = options.baseDir
         ? path.resolve(options.baseDir, attachment.path)
         : path.resolve(attachment.path);
+      // Prevent path-traversal and symlink escapes: verify the resolved
+      // real path stays within baseDir (the lane/worktree root).
+      const resolvedPath = options.baseDir
+        ? resolvePathWithinRoot(options.baseDir, rawResolved, { allowMissing: false })
+        : rawResolved;
       const mediaType = inferAttachmentMediaType(attachment);
       if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
         content.push({ type: "text", text: `\n[Image attached (${mediaType}): ${attachment.path}]` });

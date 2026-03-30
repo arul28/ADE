@@ -227,9 +227,10 @@ export function OperationsSidebar({
               size="sm"
               className="!h-6 !px-2 !text-[11px]"
               onClick={onEnsureWebhook}
+              aria-label="Ensure webhook"
               data-testid="linear-ensure-webhook-btn"
             >
-              <Lightning size={11} />
+              <Lightning size={11} aria-hidden="true" />
             </Button>
           </div>
           <div className="space-y-2 text-xs">
@@ -418,12 +419,13 @@ export function OperationsSidebar({
                     style={{ background: "rgba(96,165,250,0.04)", border: "1px solid rgba(96,165,250,0.12)" }}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-xs font-semibold" style={{ color: "#60A5FA" }}>
+                      <label htmlFor="execution-lane-select" className="text-xs font-semibold" style={{ color: "#60A5FA" }}>
                         Execution lane
-                      </div>
+                      </label>
                       <Chip>required</Chip>
                     </div>
                     <select
+                      id="execution-lane-select"
                       className={cn(selectCls, "mt-2.5")}
                       value={selectedRunLaneId || "__unselected__"}
                       onChange={(e) =>

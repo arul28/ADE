@@ -1724,12 +1724,38 @@ export function registerIpc({
         throw new Error("Unsupported editor target.");
       }
       const rootPath = path.resolve(rootRaw);
+
+      // Validate the renderer-supplied root is a known workspace root
+      // (same pattern as appRevealPath).
+      const projectRoot = getCtx().project.rootPath;
+      const allowedRoots = [
+        projectRoot,
+        app.getPath("downloads"),
+        app.getPath("documents"),
+        app.getPath("temp"),
+      ];
+      const rootAllowed = allowedRoots.some((dir) => {
+        try {
+          resolvePathWithinRoot(dir, rootPath);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (!rootAllowed) {
+        throw new Error("rootPath is outside allowed directories.");
+      }
+
       let targetPath: string;
       try {
         const candidatePath = relRaw ? path.resolve(rootPath, relRaw) : rootPath;
         targetPath = resolvePathWithinRoot(rootPath, candidatePath, { allowMissing: true });
-      } catch {
-        throw new Error("relativePath escapes rootPath.");
+      } catch (resolveError: unknown) {
+        // Only translate containment errors; rethrow unexpected failures.
+        if (resolveError instanceof Error && resolveError.message === "Path escapes root") {
+          throw new Error("relativePath escapes rootPath.");
+        }
+        throw resolveError;
       }
 
       if (target === "finder") {

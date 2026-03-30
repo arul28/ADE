@@ -185,7 +185,9 @@ export function createComputerUseArtifactBrokerService(args: {
 
     const pathLike = toOptionalString(input.path) ?? (directUri && !isHttpUrl(directUri) ? directUri : null);
     if (pathLike) {
-      const absolutePath = path.isAbsolute(pathLike) ? pathLike : path.resolve(projectRoot, pathLike);
+      const absolutePath = path.isAbsolute(pathLike)
+        ? pathLike
+        : resolvePathWithinRoot(projectRoot, path.resolve(projectRoot, pathLike), { allowMissing: true });
       if (fileExists(absolutePath)) {
         try {
           const existingArtifactPath = resolvePathWithinRoot(layout.artifactsDir, absolutePath);

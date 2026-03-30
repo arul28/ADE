@@ -2036,11 +2036,13 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
   const validRole: SessionIdentity["role"] = envContext.role ?? "external";
-  const requestedComputerUsePolicy = normalizeComputerUsePolicy(identity.computerUsePolicy, createDefaultComputerUsePolicy());
-  const effectiveComputerUsePolicy = envContext.computerUsePolicy
-    ?? (validRole === "external"
-      ? createDefaultComputerUsePolicy({ allowLocalFallback: false })
-      : requestedComputerUsePolicy);
+  const requestedComputerUsePolicy = normalizeComputerUsePolicy(
+    identity.computerUsePolicy ?? envContext.computerUsePolicy,
+    createDefaultComputerUsePolicy(),
+  );
+  const effectiveComputerUsePolicy = validRole === "external"
+    ? createDefaultComputerUsePolicy({ allowLocalFallback: false })
+    : requestedComputerUsePolicy;
 
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.chatSessionId ?? envContext.attemptId ?? "unknown",

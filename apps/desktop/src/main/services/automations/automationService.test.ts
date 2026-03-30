@@ -48,14 +48,30 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
       id text primary key,
       project_id text not null,
       automation_id text not null,
+      chat_session_id text,
+      mission_id text,
+      worker_run_id text,
+      worker_agent_id text,
+      queue_item_id text,
+      ingress_event_id text,
       trigger_type text not null,
       started_at text not null,
       ended_at text,
       status text not null,
+      execution_kind text,
+      queue_status text,
+      executor_mode text,
       actions_completed integer not null,
       actions_total integer not null,
       error_message text,
-      trigger_metadata text
+      verification_required integer not null default 0,
+      spend_usd real not null default 0,
+      trigger_metadata text,
+      summary text,
+      confidence_json text,
+      billing_code text,
+      linked_procedure_ids_json text,
+      procedure_feedback_json text
     )
   `);
   raw.run(`

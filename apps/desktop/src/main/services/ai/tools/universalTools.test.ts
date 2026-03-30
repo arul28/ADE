@@ -169,7 +169,7 @@ describe("checkWorkerSandbox", () => {
     const projectRoot = makeTmpDir("ade-sandbox-root-");
     const outsideDir = makeTmpDir("ade-sandbox-outside-");
     const linkPath = path.join(projectRoot, "linked-outside");
-    fs.symlinkSync(outsideDir, linkPath);
+    fs.symlinkSync(outsideDir, linkPath, "dir");
     fs.writeFileSync(path.join(outsideDir, "secret.txt"), "secret", "utf8");
 
     const result = checkWorkerSandbox("cat linked-outside/secret.txt", DEFAULT_WORKER_SANDBOX_CONFIG, projectRoot);

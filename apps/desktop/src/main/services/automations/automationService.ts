@@ -933,8 +933,8 @@ export function createAutomationService({
       ...(rule.permissionConfig?.inProcess ? { inProcess: rule.permissionConfig.inProcess } : {}),
       ...(rule.permissionConfig?.externalMcp ? { externalMcp: rule.permissionConfig.externalMcp } : {}),
       providers: {
-        claude: providers?.claude ?? "edit",
-        codex: providers?.codex ?? "edit",
+        claude: rule.verification.mode === "dry-run" ? "plan" : (providers?.claude ?? "edit"),
+        codex: rule.verification.mode === "dry-run" ? "plan" : (providers?.codex ?? "edit"),
         unified: rule.verification.mode === "dry-run" ? "plan" : (providers?.unified ?? "edit"),
         codexSandbox: providers?.codexSandbox ?? "workspace-write",
         ...(providers?.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
@@ -1627,7 +1627,11 @@ export function createAutomationService({
         });
 
     const actionId = insertAction(run.id, 0, "agent-session");
-    const modelId = args.rule.modelConfig?.orchestratorModel?.modelId ?? DEFAULT_AUTOMATION_CHAT_MODEL_ID;
+    const callerModelId = args.rule.modelConfig?.orchestratorModel?.modelId;
+    const modelId = callerModelId ?? DEFAULT_AUTOMATION_CHAT_MODEL_ID;
+    if (callerModelId && !getModelById(callerModelId)) {
+      throw new Error(`Unknown model '${callerModelId}'.`);
+    }
     const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("unified");
     if (!modelDescriptor) {
       throw new Error(`Unknown model '${modelId}'.`);
@@ -1635,7 +1639,8 @@ export function createAutomationService({
     const providerGroup = resolveProviderGroupForModel(modelDescriptor);
     const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: false });
     const verificationRequired = requiresPublishGate(args.rule);
-    const permissionMode = verificationRequired
+    const dryRun = args.rule.verification.mode === "dry-run";
+    const permissionMode = verificationRequired || dryRun
       ? "plan"
       : providerGroup === "claude"
         ? permissionConfig.providers?.claude ?? "edit"

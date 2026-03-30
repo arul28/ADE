@@ -6117,9 +6117,13 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         if (searchType === "filename") {
           // Simple recursive file listing with glob matching
           const results: string[] = [];
+          const visited = new Set<string>();
           const walkDir = (dir: string, depth = 0) => {
             if (depth > 6 || results.length >= limit) return;
             try {
+              const realDir = fs.realpathSync(dir);
+              if (visited.has(realDir)) return;
+              visited.add(realDir);
               const entries = fs.readdirSync(dir, { withFileTypes: true });
               for (const entry of entries) {
                 if (results.length >= limit) break;
@@ -6127,10 +6131,14 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
                 const fullPath = resolveWorkspacePath(path.join(dir, entry.name));
                 if (!fullPath) continue;
                 const rel = path.relative(resolvedWorkspaceRoot, fullPath);
-                if (entry.isDirectory()) {
-                  walkDir(fullPath, depth + 1);
-                } else if (new RegExp(pattern.replace(/\*/g, ".*")).test(entry.name)) {
-                  results.push(rel);
+                try {
+                  if (fs.statSync(fullPath).isDirectory()) {
+                    walkDir(fullPath, depth + 1);
+                  } else if (new RegExp(pattern.replace(/\*/g, ".*")).test(entry.name)) {
+                    results.push(rel);
+                  }
+                } catch {
+                  // Skip entries whose stat fails (broken symlinks, etc.)
                 }
               }
             } catch {
@@ -6143,20 +6151,24 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         // Content search using a simple line-by-line grep
         const results: Array<{ file: string; line: number; text: string }> = [];
         const regex = new RegExp(pattern, "i");
+        const visited = new Set<string>();
         const walkDir = (dir: string, depth = 0) => {
           if (depth > 6 || results.length >= limit) return;
           try {
+            const realDir = fs.realpathSync(dir);
+            if (visited.has(realDir)) return;
+            visited.add(realDir);
             const entries = fs.readdirSync(dir, { withFileTypes: true });
             for (const entry of entries) {
               if (results.length >= limit) break;
               if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "dist") continue;
               const fullPath = resolveWorkspacePath(path.join(dir, entry.name));
               if (!fullPath) continue;
-              if (entry.isDirectory()) {
-                walkDir(fullPath, depth + 1);
-              } else {
-                try {
-                  const stat = fs.statSync(fullPath);
+              try {
+                const stat = fs.statSync(fullPath);
+                if (stat.isDirectory()) {
+                  walkDir(fullPath, depth + 1);
+                } else {
                   if (stat.size > 500_000) continue; // Skip large files
                   const content = fs.readFileSync(fullPath, "utf-8");
                   const lines = content.split("\n");
@@ -6169,9 +6181,9 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
                       });
                     }
                   }
-                } catch {
-                  // Skip unreadable files
                 }
+              } catch {
+                // Skip entries whose stat/read fails (broken symlinks, etc.)
               }
             }
           } catch {

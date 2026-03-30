@@ -78,6 +78,44 @@ function normalizePolicy(input?: LinearWorkflowConfig | null): LinearWorkflowCon
     .map<LinearWorkflowDefinition>((entry) => {
       const target = entry.target ?? ({} as LinearWorkflowDefinition["target"]);
       const triggers = entry.triggers ?? ({} as LinearWorkflowDefinition["triggers"]);
+
+      const routeTags = entry.routing ? uniqueStrings(entry.routing.metadataTags) : [];
+      const routing = entry.routing
+        ? {
+            routing: {
+              ...(routeTags.length ? { metadataTags: routeTags } : {}),
+              ...(entry.routing.watchOnly === true ? { watchOnly: true } : {}),
+            },
+          }
+        : {};
+
+      const closeoutApplyLabels = entry.closeout ? uniqueStrings(entry.closeout.applyLabels) : [];
+      const closeoutLabels = entry.closeout ? uniqueStrings(entry.closeout.labels) : [];
+      const closeout = entry.closeout
+        ? {
+            closeout: {
+              ...entry.closeout,
+              ...(closeoutApplyLabels.length ? { applyLabels: closeoutApplyLabels } : {}),
+              ...(closeoutLabels.length ? { labels: closeoutLabels } : {}),
+            },
+          }
+        : {};
+
+      const reviewers = entry.humanReview ? uniqueStrings(entry.humanReview.reviewers) : [];
+      const humanReview = entry.humanReview
+        ? {
+            humanReview: {
+              ...entry.humanReview,
+              ...(reviewers.length ? { reviewers } : {}),
+            },
+          }
+        : {};
+
+      const steps = (entry.steps ?? []).map((step, index) => ({
+        ...step,
+        id: step.id?.trim() || `step-${index + 1}`,
+      }));
+
       return {
       ...entry,
       id: entry.id?.trim() || "",
@@ -106,45 +144,10 @@ function normalizePolicy(input?: LinearWorkflowConfig | null): LinearWorkflowCon
         creator: uniqueStrings(triggers.creator),
         metadataTags: uniqueStrings(triggers.metadataTags),
       },
-      ...(entry.routing
-        ? (() => {
-            const routeTags = uniqueStrings(entry.routing.metadataTags);
-            return {
-              routing: {
-                ...(routeTags.length ? { metadataTags: routeTags } : {}),
-                ...(entry.routing.watchOnly === true ? { watchOnly: true } : {}),
-              },
-            };
-          })()
-        : {}),
-      steps: (entry.steps ?? []).map((step, index) => ({
-        ...step,
-        id: step.id?.trim() || `step-${index + 1}`,
-      })),
-      ...(entry.closeout
-        ? (() => {
-            const applyLabels = uniqueStrings(entry.closeout.applyLabels);
-            const labels = uniqueStrings(entry.closeout.labels);
-            return {
-              closeout: {
-                ...entry.closeout,
-                ...(applyLabels.length ? { applyLabels } : {}),
-                ...(labels.length ? { labels } : {}),
-              },
-            };
-          })()
-        : {}),
-      ...(entry.humanReview
-        ? (() => {
-            const reviewers = uniqueStrings(entry.humanReview.reviewers);
-            return {
-              humanReview: {
-                ...entry.humanReview,
-                ...(reviewers.length ? { reviewers } : {}),
-              },
-            };
-          })()
-        : {}),
+      ...routing,
+      steps,
+      ...closeout,
+      ...humanReview,
       ...(entry.retry
         ? {
             retry: {

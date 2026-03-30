@@ -825,7 +825,7 @@ describe("createCtoOperatorTools", () => {
   // ── Linear workflow tools ───────────────────────────────────────
 
   describe("Linear workflow tools", () => {
-    it.each(["approve", "reject", "retry", "complete"] as const)(
+    it.each(["approve", "reject", "retry", "resume", "complete"] as const)(
       "resolves Linear run actions for %s",
       async (action) => {
         const deps = buildDeps({

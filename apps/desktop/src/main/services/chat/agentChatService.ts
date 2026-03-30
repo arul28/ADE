@@ -7609,7 +7609,8 @@ export function createAgentChatService(args: {
       const root = isAbsolute ? projectRoot : managed.laneWorktreePath;
       const candidate = isAbsolute ? rawPath : path.resolve(managed.laneWorktreePath, rawPath);
       try {
-        resolvePathWithinRoot(root, candidate, { allowMissing: true });
+        const safePath = resolvePathWithinRoot(root, candidate, { allowMissing: true });
+        attachment.path = safePath;
       } catch {
         throw new Error(
           isAbsolute

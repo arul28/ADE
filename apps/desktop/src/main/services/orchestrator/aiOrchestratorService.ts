@@ -2092,6 +2092,7 @@ export function createAiOrchestratorService(args: {
               turnId: failure.turnId,
               modelId,
               error: failure.message,
+              coordinatorFailureHandled: true,
             },
           });
           endCoordinatorAgentV2(runId);
@@ -10123,6 +10124,26 @@ Check all worker statuses and continue managing the mission from here. Read work
               });
               return;
             }
+
+            // Skip creating a generic coordinator_unavailable intervention if
+            // onCoordinatorRuntimeFailure already handled this failure and
+            // created a more specific intervention with full failure context.
+            const mission = missionService.get(missionId);
+            const alreadyHandledByRuntimeFailure = mission?.interventions.some((entry) => {
+              if (entry.status !== "open") return false;
+              const meta = isRecord(entry.metadata) ? entry.metadata : null;
+              return meta?.coordinatorFailureHandled === true && meta?.runId === runId;
+            }) ?? false;
+            if (alreadyHandledByRuntimeFailure) {
+              logger.info("ai_orchestrator.coordinator_unavailable_suppressed_runtime_failure", {
+                runId,
+                missionId,
+                eventType: event.type,
+                reason: event.reason,
+              });
+              return;
+            }
+
             pauseRunWithIntervention({
               runId,
               missionId,

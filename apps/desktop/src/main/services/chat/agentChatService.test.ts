@@ -1844,6 +1844,7 @@ describe("createAgentChatService", () => {
         model: "gpt-5.4",
       });
 
+      const turnsBefore = mockState.codexTurnCounter;
       const outsidePath = path.join(process.cwd(), `.ade-agent-chat-outside-${Date.now()}.txt`);
       fs.writeFileSync(outsidePath, "secret", "utf8");
       try {
@@ -1855,6 +1856,7 @@ describe("createAgentChatService", () => {
       } finally {
         fs.rmSync(outsidePath, { force: true });
       }
+      expect(mockState.codexTurnCounter).toBe(turnsBefore);
     });
 
     it("prefers the canonical turn-scoped Codex text stream when item-scoped deltas also arrive", async () => {

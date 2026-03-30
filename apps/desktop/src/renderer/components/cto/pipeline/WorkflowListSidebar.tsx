@@ -110,7 +110,7 @@ export function WorkflowListSidebar({
               <span className="text-[11px] font-semibold text-muted-fg/40 uppercase tracking-[0.12em]">Workflows</span>
               {workflows.length > 0 && (
                 <span
-                  className="inline-flex h-4.5 min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold tabular-nums"
+                  className="inline-flex h-[1.125rem] min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold tabular-nums"
                   style={{ background: "rgba(56,189,248,0.12)", color: "#38BDF8" }}
                 >
                   {workflows.length}
@@ -118,11 +118,11 @@ export function WorkflowListSidebar({
               )}
             </div>
             <div className="flex items-center gap-1.5">
-              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onSyncNow} disabled={loading} title="Sync now">
-                <Lightning size={11} />
+              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onSyncNow} disabled={loading} title="Sync now" aria-label="Sync now">
+                <Lightning size={11} aria-hidden="true" />
               </Button>
-              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onRefresh} title="Refresh">
-                <ArrowClockwise size={11} />
+              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onRefresh} title="Refresh" aria-label="Refresh">
+                <ArrowClockwise size={11} aria-hidden="true" />
               </Button>
             </div>
           </div>

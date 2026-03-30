@@ -528,7 +528,7 @@ export function createFileService({
 
     deletePath(args: FilesDeleteArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path, { allowMissing: true });
       if (isWorkspaceRootRelativePath(normalizedRel)) {
         throw new Error("Refusing to delete workspace root.");
       }
