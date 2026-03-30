@@ -96,7 +96,7 @@ export function WorkflowListSidebar({
             <Button variant="outline" size="sm" className="!text-[11px]" onClick={onNavigateSettings}>
               {connection?.connected ? "Manage in Settings" : "Connect in Settings"}
             </Button>
-            <Button variant="ghost" size="sm" className="!h-7 !text-[11px]" onClick={onRefresh}>
+            <Button variant="ghost" size="sm" className="!h-7 !text-[11px]" onClick={onRefresh} disabled={loading} aria-busy={loading}>
               <ArrowClockwise size={11} />
               Refresh
             </Button>
@@ -118,10 +118,10 @@ export function WorkflowListSidebar({
               )}
             </div>
             <div className="flex items-center gap-1.5">
-              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onSyncNow} disabled={loading} title="Sync now" aria-label="Sync now">
+              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onSyncNow} disabled={loading} title="Sync now" aria-label="Sync now" aria-busy={loading}>
                 <Lightning size={11} aria-hidden="true" />
               </Button>
-              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onRefresh} title="Refresh" aria-label="Refresh">
+              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onRefresh} disabled={loading} title="Refresh" aria-label="Refresh" aria-busy={loading}>
                 <ArrowClockwise size={11} aria-hidden="true" />
               </Button>
             </div>

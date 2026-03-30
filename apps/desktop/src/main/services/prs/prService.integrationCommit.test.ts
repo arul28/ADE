@@ -436,91 +436,97 @@ describe("prService.commitIntegration", () => {
   it("ignores symlinked conflict marker files that escape the integration lane during recheck", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pr-integration-symlink-recheck-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pr-integration-recheck-outside-"));
-    const db = await openKvDb(path.join(root, ".ade.db"), createLogger());
-    const projectId = "proj-integration-symlink-recheck";
-    const now = "2026-03-12T00:00:00.000Z";
+    let db: Awaited<ReturnType<typeof openKvDb>> | null = null;
+    try {
+      db = await openKvDb(path.join(root, ".ade.db"), createLogger());
+      const projectId = "proj-integration-symlink-recheck";
+      const now = "2026-03-12T00:00:00.000Z";
 
-    const baseLane = makeLane("lane-main", "main", "refs/heads/main", root, {
-      laneType: "primary",
-    });
-    const sourceLane = makeLane("lane-source", "source", "refs/heads/feature/source", path.join(root, "source"));
-    const integrationLane = makeLane("lane-int", "integration", "refs/heads/integration/test", path.join(root, "integration"));
+      const baseLane = makeLane("lane-main", "main", "refs/heads/main", root, {
+        laneType: "primary",
+      });
+      const sourceLane = makeLane("lane-source", "source", "refs/heads/feature/source", path.join(root, "source"));
+      const integrationLane = makeLane("lane-int", "integration", "refs/heads/integration/test", path.join(root, "integration"));
 
-    fs.mkdirSync(integrationLane.worktreePath, { recursive: true });
-    fs.writeFileSync(path.join(outsideDir, "secret.ts"), "<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs\n", "utf8");
-    fs.symlinkSync(outsideDir, path.join(integrationLane.worktreePath, "linked"));
+      fs.mkdirSync(integrationLane.worktreePath, { recursive: true });
+      fs.writeFileSync(path.join(outsideDir, "secret.ts"), "<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs\n", "utf8");
+      fs.symlinkSync(outsideDir, path.join(integrationLane.worktreePath, "linked"));
 
-    await seedProject(db, projectId, root);
-    await seedLane(db, projectId, baseLane);
-    await seedLane(db, projectId, sourceLane);
-    await seedLane(db, projectId, integrationLane);
+      await seedProject(db, projectId, root);
+      await seedLane(db, projectId, baseLane);
+      await seedLane(db, projectId, sourceLane);
+      await seedLane(db, projectId, integrationLane);
 
-    const proposalId = "proposal-symlink-recheck";
-    db.run(
-      `insert into integration_proposals(
-        id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json, lane_summaries_json, overall_outcome, created_at, status, integration_lane_id, resolution_state_json
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        proposalId,
+      const proposalId = "proposal-symlink-recheck";
+      db.run(
+        `insert into integration_proposals(
+          id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json, lane_summaries_json, overall_outcome, created_at, status, integration_lane_id, resolution_state_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          proposalId,
+          projectId,
+          JSON.stringify([sourceLane.id]),
+          "main",
+          JSON.stringify([
+            { laneId: sourceLane.id, laneName: sourceLane.name, position: 0, outcome: "conflict", conflictingFiles: [{ path: "linked/secret.ts" }], diffStat: { insertions: 0, deletions: 0, filesChanged: 1 } },
+          ]),
+          JSON.stringify([]),
+          JSON.stringify([]),
+          "conflict",
+          now,
+          "committed",
+          integrationLane.id,
+          JSON.stringify({
+            integrationLaneId: integrationLane.id,
+            stepResolutions: { [sourceLane.id]: "pending" },
+            activeWorkerStepId: null,
+            activeLaneId: null,
+            updatedAt: now,
+          }),
+        ],
+      );
+
+      runGitMock.mockImplementation(async (args: string[]) => {
+        if (args[0] === "status") {
+          return { exitCode: 0, stdout: " M linked/secret.ts\n", stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      });
+
+      const { createPrService } = await createServiceModule();
+      const service = createPrService({
+        db,
+        logger: createLogger() as any,
         projectId,
-        JSON.stringify([sourceLane.id]),
-        "main",
-        JSON.stringify([
-          { laneId: sourceLane.id, laneName: sourceLane.name, position: 0, outcome: "conflict", conflictingFiles: [{ path: "linked/secret.ts" }], diffStat: { insertions: 0, deletions: 0, filesChanged: 1 } },
-        ]),
-        JSON.stringify([]),
-        JSON.stringify([]),
-        "conflict",
-        now,
-        "committed",
-        integrationLane.id,
-        JSON.stringify({
-          integrationLaneId: integrationLane.id,
-          stepResolutions: { [sourceLane.id]: "pending" },
-          activeWorkerStepId: null,
-          activeLaneId: null,
-          updatedAt: now,
-        }),
-      ],
-    );
+        projectRoot: root,
+        laneService: {
+          list: async () => [baseLane, sourceLane, integrationLane],
+        } as any,
+        operationService: {} as any,
+        githubService: {
+          getRepoOrThrow: vi.fn(),
+          apiRequest: vi.fn(),
+        } as any,
+        aiIntegrationService: undefined,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" } }),
+        } as any,
+        conflictService: undefined,
+        openExternal: async () => {},
+      });
 
-    runGitMock.mockImplementation(async (args: string[]) => {
-      if (args[0] === "status") {
-        return { exitCode: 0, stdout: " M linked/secret.ts\n", stderr: "" };
-      }
-      return { exitCode: 0, stdout: "", stderr: "" };
-    });
+      const result = await service.recheckIntegrationStep({ proposalId, laneId: sourceLane.id });
 
-    const { createPrService } = await createServiceModule();
-    const service = createPrService({
-      db,
-      logger: createLogger() as any,
-      projectId,
-      projectRoot: root,
-      laneService: {
-        list: async () => [baseLane, sourceLane, integrationLane],
-      } as any,
-      operationService: {} as any,
-      githubService: {
-        getRepoOrThrow: vi.fn(),
-        apiRequest: vi.fn(),
-      } as any,
-      aiIntegrationService: undefined,
-      projectConfigService: {
-        get: () => ({ effective: { providerMode: "guest" } }),
-      } as any,
-      conflictService: undefined,
-      openExternal: async () => {},
-    });
-
-    const result = await service.recheckIntegrationStep({ proposalId, laneId: sourceLane.id });
-
-    expect(result).toMatchObject({
-      resolution: "resolved",
-      remainingConflictFiles: [],
-      allResolved: true,
-      message: null,
-    });
-    db.close();
+      expect(result).toMatchObject({
+        resolution: "resolved",
+        remainingConflictFiles: [],
+        allResolved: true,
+        message: null,
+      });
+    } finally {
+      db?.close();
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 });

@@ -4300,6 +4300,25 @@ describe("coordinatorTools file path containment", () => {
     });
   });
 
+  it("read_file preserves ENOENT for missing in-workspace files", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-read-missing-root-"));
+    try {
+      const { tools } = createCoordinatorHarness({
+        graph: { run: { metadata: {} }, steps: [], attempts: [] },
+        projectRoot,
+      });
+
+      const result = await (tools.read_file as any).execute({
+        filePath: "missing.txt",
+      });
+
+      expect(result.ok).toBe(false);
+      expect(String(result.error)).toContain("ENOENT");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("search_files skips symlinked files that point outside the workspace", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-symlink-root-"));
     const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-symlink-outside-"));
@@ -4321,6 +4340,68 @@ describe("coordinatorTools file path containment", () => {
       ok: true,
       total: 0,
     });
+  });
+
+  it("search_files matches filename globs against the full relative path", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-glob-root-"));
+    fs.mkdirSync(path.join(projectRoot, "src", "nested"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, "tests"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "src", "nested", "match.ts"), "export const value = 1;\n", "utf-8");
+    fs.writeFileSync(path.join(projectRoot, "tests", "match.ts"), "export const value = 2;\n", "utf-8");
+    fs.writeFileSync(path.join(projectRoot, "src", "match.js"), "export const value = 3;\n", "utf-8");
+
+    try {
+      const { tools } = createCoordinatorHarness({
+        graph: { run: { metadata: {} }, steps: [], attempts: [] },
+        projectRoot,
+      });
+
+      const result = await (tools.search_files as any).execute({
+        pattern: "src/**/*.ts",
+        searchType: "filename",
+        maxResults: 10,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        total: 1,
+        results: ["src/nested/match.ts"],
+      });
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("search_files treats unsafe content regex patterns as literals", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-regex-root-"));
+    fs.mkdirSync(path.join(projectRoot, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "docs", "notes.txt"), "literal (a+)+$ pattern\n", "utf-8");
+
+    try {
+      const { tools } = createCoordinatorHarness({
+        graph: { run: { metadata: {} }, steps: [], attempts: [] },
+        projectRoot,
+      });
+
+      const result = await (tools.search_files as any).execute({
+        pattern: "(a+)+$",
+        searchType: "content",
+        maxResults: 10,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        total: 1,
+      });
+      expect(result.results).toEqual([
+        expect.objectContaining({
+          file: "docs/notes.txt",
+          line: 1,
+        }),
+      ]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 
   it("read_step_output sanitizes traversal-like keys and reads only project-scoped output", async () => {

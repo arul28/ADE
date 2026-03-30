@@ -946,6 +946,22 @@ describe("mcpServer", () => {
     );
   });
 
+  it("rejects unsupported Linear sync queue actions", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const response = await callTool(handler, "resolveLinearSyncQueueItem", {
+      queueItemId: "run-queued",
+      action: "ship-it",
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "action must be one of: approve, reject, retry, complete, resume",
+    );
+    expect((runtime.linearSyncService as any).resolveQueueItem).not.toHaveBeenCalled();
+  });
+
   it("returns structured local computer-use capability state", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });

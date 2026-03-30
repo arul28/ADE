@@ -1859,6 +1859,38 @@ describe("createAgentChatService", () => {
       expect(mockState.codexTurnCounter).toBe(turnsBefore);
     });
 
+    it("keeps public attachment paths trimmed without exposing resolved filesystem paths", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      fs.writeFileSync(path.join(tmpRoot, "note.txt"), "hello", "utf8");
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const attachments = [{ path: " note.txt ", type: "file" as const }];
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Review this file",
+        attachments,
+      });
+
+      const userMessage = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: { type: "user_message"; attachments?: Array<{ path: string; type: "file" | "image" }> } } =>
+          event.event.type === "user_message",
+      );
+
+      expect(attachments[0]?.path).toBe(" note.txt ");
+      expect(userMessage.event.attachments).toEqual([{ path: "note.txt", type: "file" }]);
+    });
+
     it("prefers the canonical turn-scoped Codex text stream when item-scoped deltas also arrive", async () => {
       const textEvents: Array<{ text: string; itemId?: string; turnId?: string }> = [];
       const { service } = createService({

@@ -498,8 +498,12 @@ export function OperationsSidebar({
                         <Button
                           variant="primary"
                           size="sm"
-                          onClick={() => onActOnRun("resume")}
-                          disabled={queueActionLoading !== null}
+                          onClick={() => {
+                            if (queueActionLoading !== null) return;
+                            if (showLaneChoice && showDelegationOverride && !selectedRunLaneId) return;
+                            onActOnRun("resume");
+                          }}
+                          disabled={queueActionLoading !== null || (showLaneChoice && showDelegationOverride && !selectedRunLaneId)}
                         >
                           Continue
                         </Button>

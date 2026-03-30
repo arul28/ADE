@@ -40,6 +40,7 @@ import type { createAgentChatService } from "../chat/agentChatService";
 import type { createMemoryBriefingService } from "../memory/memoryBriefingService";
 import type { createProceduralLearningService } from "../memory/proceduralLearningService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
+import type { BudgetCapProvider } from "../../../shared/types/usage";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/unifiedOrchestratorAdapter";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
 import { escapeRegExp, globToRegExp, isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
@@ -1586,6 +1587,25 @@ export function createAutomationService({
     }
   };
 
+  const resolveAutomationModelDescriptor = (rule: AutomationRule) => {
+    const requestedModelId = rule.modelConfig?.orchestratorModel?.modelId;
+    if (requestedModelId && !getModelById(requestedModelId)) {
+      throw new Error(`Unknown model '${requestedModelId}'.`);
+    }
+    const modelId = requestedModelId ?? DEFAULT_AUTOMATION_CHAT_MODEL_ID;
+    const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("unified");
+    if (!modelDescriptor) {
+      throw new Error(`Unknown model '${modelId}'.`);
+    }
+    const providerGroup = resolveProviderGroupForModel(modelDescriptor);
+    return {
+      modelId,
+      modelDescriptor,
+      providerGroup,
+      budgetProvider: (providerGroup === "claude" || providerGroup === "codex" ? providerGroup : "any") as BudgetCapProvider,
+    };
+  };
+
   const dispatchAgentSessionRun = async (args: {
     rule: AutomationRule;
     trigger: TriggerContext;
@@ -1600,10 +1620,11 @@ export function createAutomationService({
       throw new Error("No lane is available for this automation run.");
     }
 
+    const { modelId, providerGroup, budgetProvider } = resolveAutomationModelDescriptor(args.rule);
     const budgetCheck = budgetCapServiceRef?.checkBudget(
       AUTOMATION_SCOPE as Parameters<NonNullable<typeof budgetCapServiceRef>["checkBudget"]>[0],
       args.rule.id,
-      "any",
+      budgetProvider,
     );
     if (budgetCheck && !budgetCheck.allowed) {
       throw new Error(budgetCheck.reason ?? "Budget cap blocked automation run.");
@@ -1627,16 +1648,6 @@ export function createAutomationService({
         });
 
     const actionId = insertAction(run.id, 0, "agent-session");
-    const callerModelId = args.rule.modelConfig?.orchestratorModel?.modelId;
-    const modelId = callerModelId ?? DEFAULT_AUTOMATION_CHAT_MODEL_ID;
-    if (callerModelId && !getModelById(callerModelId)) {
-      throw new Error(`Unknown model '${callerModelId}'.`);
-    }
-    const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("unified");
-    if (!modelDescriptor) {
-      throw new Error(`Unknown model '${modelId}'.`);
-    }
-    const providerGroup = resolveProviderGroupForModel(modelDescriptor);
     const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: false });
     const verificationRequired = requiresPublishGate(args.rule);
     const dryRun = args.rule.verification.mode === "dry-run";
@@ -1664,7 +1675,7 @@ export function createAutomationService({
         sessionProfile: "workflow",
         reasoningEffort,
         permissionMode,
-        ...(providerGroup === "codex" && !verificationRequired && permissionConfig.providers?.codexSandbox
+        ...(providerGroup === "codex" && !verificationRequired && !dryRun && permissionConfig.providers?.codexSandbox
           ? { codexSandbox: permissionConfig.providers.codexSandbox }
           : {}),
         surface: "automation",
@@ -1781,7 +1792,12 @@ export function createAutomationService({
     const confidence = computeConfidence(args.rule, linkedProcedureIds.length);
     const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: Boolean(args.publishPhase) });
     const budgetScope = AUTOMATION_SCOPE;
-    const budgetCheck = budgetCapServiceRef?.checkBudget(budgetScope as Parameters<NonNullable<typeof budgetCapServiceRef>["checkBudget"]>[0], args.rule.id, "any");
+    const { budgetProvider } = resolveAutomationModelDescriptor(args.rule);
+    const budgetCheck = budgetCapServiceRef?.checkBudget(
+      budgetScope as Parameters<NonNullable<typeof budgetCapServiceRef>["checkBudget"]>[0],
+      args.rule.id,
+      budgetProvider,
+    );
     if (budgetCheck && !budgetCheck.allowed) {
       throw new Error(budgetCheck.reason ?? "Budget cap blocked automation run.");
     }
@@ -1938,7 +1954,74 @@ export function createAutomationService({
     });
   };
 
-  const runRule = async (rule: AutomationRule, trigger: TriggerContext): Promise<AutomationRun> => {
+  const simulateDryRun = async (rule: AutomationRule, trigger: TriggerContext): Promise<AutomationRun> => {
+    const briefing = await buildBriefing(rule, trigger);
+    const linkedProcedureIds = briefing?.usedProcedureIds ?? [];
+    const confidence = computeConfidence(rule, linkedProcedureIds.length);
+    const summary = `${rule.prompt?.trim() || rule.name} (dry run)`;
+    const run = insertRun({
+      rule,
+      trigger,
+      status: "succeeded",
+      queueStatus: "completed-clean",
+      actionsTotal: 1,
+      confidence,
+      linkedProcedureIds,
+      summary,
+      ingressEventId: trigger.ingressEventId ?? null,
+    });
+    const actionId = insertAction(run.id, 0, "dry-run");
+    finishAction({
+      id: actionId,
+      status: "succeeded",
+      output: "Dry run completed. No automation side effects were executed.",
+    });
+    updateRun(run.id, {
+      ended_at: nowIso(),
+      status: "succeeded",
+      queue_status: "completed-clean",
+      actions_completed: 1,
+      error_message: null,
+      summary,
+      confidence_json: JSON.stringify(confidence),
+      linked_procedure_ids_json: JSON.stringify(linkedProcedureIds),
+    });
+    emit({ type: "runs-updated", automationId: rule.id, runId: run.id });
+    return toRun(loadRunRow(run.id) ?? {
+      id: run.id,
+      automation_id: rule.id,
+      chat_session_id: null,
+      mission_id: null,
+      worker_run_id: null,
+      worker_agent_id: null,
+      queue_item_id: null,
+      ingress_event_id: trigger.ingressEventId ?? null,
+      trigger_type: trigger.triggerType,
+      started_at: run.startedAt,
+      ended_at: nowIso(),
+      status: "succeeded",
+      execution_kind: resolveExecutionKind(rule),
+      queue_status: "completed-clean",
+      executor_mode: rule.executor.mode,
+      actions_completed: 1,
+      actions_total: 1,
+      error_message: null,
+      verification_required: 0,
+      spend_usd: 0,
+      trigger_metadata: JSON.stringify(buildTriggerMetadata(trigger)),
+      summary,
+      confidence_json: JSON.stringify(confidence),
+      billing_code: rule.billingCode,
+      linked_procedure_ids_json: JSON.stringify(linkedProcedureIds),
+      procedure_feedback_json: JSON.stringify([]),
+    });
+  };
+
+  const runRule = async (
+    rule: AutomationRule,
+    trigger: TriggerContext,
+    options: { dryRun?: boolean } = {},
+  ): Promise<AutomationRun> => {
     if (projectConfigService.get().trust.requiresSharedTrust) {
       throw new Error("Shared config is untrusted. Confirm trust to run automations.");
     }
@@ -1958,6 +2041,9 @@ export function createAutomationService({
     }
     inFlightByAutomationId.add(rule.id);
     try {
+      if (options.dryRun) {
+        return await simulateDryRun(rule, trigger);
+      }
       const executionKind = resolveExecutionKind(rule);
       if (executionKind === "agent-session") return await dispatchAgentSessionRun({ rule, trigger });
       if (executionKind === "built-in") return await runLegacyRule(rule, trigger);
@@ -2617,7 +2703,7 @@ export function createAutomationService({
         scheduledAt: nowIso(),
         reviewProfileOverride: args.reviewProfileOverride ?? null,
         verboseTrace: Boolean(args.verboseTrace),
-      });
+      }, { dryRun: Boolean(args.dryRun) });
     },
 
     getHistory(args: { id: string; limit?: number }): AutomationRun[] {

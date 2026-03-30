@@ -10113,6 +10113,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         if (event.reason !== "finalized") {
           const missionId = getMissionIdForRun(runId);
           if (missionId) {
+            let suppressGenericIntervention = false;
             const launchFailure = getRunLaunchFailureMetadata(runId);
             if (launchFailure && hasOpenMissionLaunchFailureIntervention({ missionId, runId })) {
               logger.info("ai_orchestrator.coordinator_unavailable_suppressed", {
@@ -10135,32 +10136,34 @@ Check all worker statuses and continue managing the mission from here. Read work
               return meta?.coordinatorFailureHandled === true && meta?.runId === runId;
             }) ?? false;
             if (alreadyHandledByRuntimeFailure) {
+              suppressGenericIntervention = true;
               logger.info("ai_orchestrator.coordinator_unavailable_suppressed_runtime_failure", {
                 runId,
                 missionId,
                 eventType: event.type,
                 reason: event.reason,
               });
-              return;
             }
 
-            pauseRunWithIntervention({
-              runId,
-              missionId,
-              stepId: event.stepId ?? null,
-              source: "transition_decision",
-              reasonCode: existingCoordinator ? "coordinator_recovery_failed" : "coordinator_unavailable",
-              title: existingCoordinator ? "Coordinator recovery failed" : "Coordinator unavailable",
-              body: existingCoordinator
-                ? "Coordinator agent terminated and could not be recovered. Mission paused to prevent non-autonomous fallback logic."
-                : "Coordinator agent is not available for this run. Mission paused to prevent non-autonomous fallback logic.",
-              requestedAction: "Resume after coordinator runtime is healthy, or restart the mission run.",
-              metadata: {
-                runtimeEventType: event.type,
-                runtimeEventReason: event.reason,
-                attemptId: event.attemptId ?? null
-              }
-            });
+            if (!suppressGenericIntervention) {
+              pauseRunWithIntervention({
+                runId,
+                missionId,
+                stepId: event.stepId ?? null,
+                source: "transition_decision",
+                reasonCode: existingCoordinator ? "coordinator_recovery_failed" : "coordinator_unavailable",
+                title: existingCoordinator ? "Coordinator recovery failed" : "Coordinator unavailable",
+                body: existingCoordinator
+                  ? "Coordinator agent terminated and could not be recovered. Mission paused to prevent non-autonomous fallback logic."
+                  : "Coordinator agent is not available for this run. Mission paused to prevent non-autonomous fallback logic.",
+                requestedAction: "Resume after coordinator runtime is healthy, or restart the mission run.",
+                metadata: {
+                  runtimeEventType: event.type,
+                  runtimeEventReason: event.reason,
+                  attemptId: event.attemptId ?? null
+                }
+              });
+            }
           }
         } else if (runStatus === "succeeded" || runStatus === "failed" || runStatus === "canceled") {
           resolveCoordinatorHealthInterventions({

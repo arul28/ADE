@@ -29,7 +29,7 @@ function resolveCheckedPath(
   opts: { allowMissing?: boolean } = {},
 ): string {
   try {
-    return resolvePathWithinRoot(root, path.resolve(root, relative), opts);
+    return resolvePathWithinRoot(root, relative, opts);
   } catch (err) {
     if (err instanceof Error && err.message === "Path escapes root") {
       logger.warn(logTag, logContext);
@@ -498,7 +498,7 @@ export function createLaneEnvironmentService({
       const projectName = buildDockerProjectName(lane.id, config.docker.projectPrefix);
       let composePath: string;
       try {
-        composePath = resolvePathWithinRoot(projectRoot, path.resolve(projectRoot, config.docker.composePath), { allowMissing: true });
+        composePath = resolvePathWithinRoot(projectRoot, config.docker.composePath, { allowMissing: true });
       } catch {
         logger.warn("lane_env_cleanup.docker_compose_escape", { laneId: lane.id, path: config.docker.composePath, projectRoot });
         progressMap.delete(lane.id);

@@ -263,7 +263,7 @@ function readConflictFilePreviewFromWorktree(worktreePath: string, filePath: str
   const root = path.resolve(worktreePath);
   let absPath: string;
   try {
-    absPath = resolvePathWithinRoot(root, path.resolve(root, filePath));
+    absPath = resolvePathWithinRoot(root, filePath);
   } catch {
     return { path: filePath, ...EMPTY_CONFLICT_EXCERPTS };
   }
@@ -2492,7 +2492,7 @@ export function createPrService({
       if (!filePath) continue;
       let absPath: string;
       try {
-        absPath = resolvePathWithinRoot(worktreeRoot, path.resolve(worktreeRoot, filePath));
+        absPath = resolvePathWithinRoot(worktreeRoot, filePath);
       } catch {
         continue;
       }

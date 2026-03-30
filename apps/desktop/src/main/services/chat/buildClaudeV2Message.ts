@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentChatFileRef } from "../../../shared/types/chat";
-import { resolvePathWithinRoot } from "../shared/utils";
+import { readFileWithinRootSecure } from "../shared/utils";
+
+type ResolvedAgentChatFileRef = AgentChatFileRef & {
+  _resolvedPath?: string;
+  _rootPath?: string;
+};
 
 /** MIME types the Anthropic API accepts for inline image content blocks. */
 export const ANTHROPIC_IMAGE_MEDIA_TYPES = new Set([
@@ -75,7 +80,7 @@ export type SDKUserMessagePartial = {
  */
 export function buildClaudeV2Message(
   promptText: string,
-  attachments: AgentChatFileRef[],
+  attachments: ResolvedAgentChatFileRef[],
   options: { baseDir?: string } = {},
 ): string | SDKUserMessagePartial {
   const imageAttachments = attachments.filter((a) => a.type === "image");
@@ -99,20 +104,16 @@ export function buildClaudeV2Message(
     }
 
     try {
-      const rawResolved = options.baseDir
-        ? path.resolve(options.baseDir, attachment.path)
-        : path.resolve(attachment.path);
-      // Prevent path-traversal and symlink escapes: verify the resolved
-      // real path stays within baseDir (the lane/worktree root).
-      const resolvedPath = options.baseDir
-        ? resolvePathWithinRoot(options.baseDir, rawResolved, { allowMissing: false })
-        : rawResolved;
       const mediaType = inferAttachmentMediaType(attachment);
       if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
         content.push({ type: "text", text: `\n[Image attached (${mediaType}): ${attachment.path}]` });
         continue;
       }
-      const data = fs.readFileSync(resolvedPath);
+      const secureRoot = attachment._rootPath ?? options.baseDir;
+      const resolvedPath = attachment._resolvedPath ?? attachment.path;
+      const data = secureRoot
+        ? readFileWithinRootSecure(secureRoot, resolvedPath)
+        : fs.readFileSync(resolvedPath);
       content.push({
         type: "image",
         source: { type: "base64", media_type: mediaType, data: data.toString("base64") },

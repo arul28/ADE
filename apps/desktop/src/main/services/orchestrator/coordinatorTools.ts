@@ -44,7 +44,7 @@ import {
   TERMINAL_STEP_STATUSES,
 } from "./orchestratorContext";
 import { readMissionStateDocument, updateMissionStateDocument } from "./missionStateDoc";
-import { resolvePathWithinRoot } from "../shared/utils";
+import { escapeRegExp, resolvePathWithinRoot } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { registerTeamMember } from "./teamRuntimeState";
 import type { createMemoryService } from "../memory/memoryService";
@@ -675,11 +675,62 @@ export function createCoordinatorToolSet(deps: {
     : null;
   const resolvedProjectRoot = path.resolve(projectRoot);
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
-  const resolveWorkspacePath = (candidatePath: string): string | null => {
+  const resolvedWorkspaceRootReal = fs.existsSync(resolvedWorkspaceRoot)
+    ? fs.realpathSync(resolvedWorkspaceRoot)
+    : resolvedWorkspaceRoot;
+  const resolveWorkspacePath = (candidatePath: string, allowMissing: boolean = false): string | null => {
     try {
-      return resolvePathWithinRoot(resolvedWorkspaceRoot, candidatePath);
+      return resolvePathWithinRoot(resolvedWorkspaceRoot, candidatePath, { allowMissing });
     } catch {
       return null;
+    }
+  };
+  const MAX_CONTENT_SEARCH_PATTERN_LENGTH = 200;
+  const filenamePatternToRegExp = (pattern: string): RegExp => {
+    const normalized = pattern.replace(/\\/g, "/").trim();
+    if (!normalized.length) return /^$/i;
+    let source = "^";
+    for (let index = 0; index < normalized.length; index += 1) {
+      const char = normalized[index]!;
+      if (char === "*") {
+        const next = normalized[index + 1];
+        if (next === "*") {
+          if (normalized[index + 2] === "/") {
+            source += "(?:.*/)?";
+            index += 2;
+          } else {
+            source += ".*";
+            index += 1;
+          }
+        } else {
+          source += "[^/]*";
+        }
+        continue;
+      }
+      source += escapeRegExp(char);
+    }
+    source += "$";
+    return new RegExp(source, "i");
+  };
+  const isUnsafeContentSearchPattern = (pattern: string): boolean => {
+    if (pattern.length > MAX_CONTENT_SEARCH_PATTERN_LENGTH) return true;
+    return /\\[1-9]/.test(pattern)
+      || /\(\?[:!=<]/.test(pattern)
+      || /\((?:[^()\\]|\\.)*[+*{](?:[^()\\]|\\.)*\)[+*{]/.test(pattern)
+      || /(?:^|[^\\])(?:\*|\+|\{[^}]+\})(?:\s*)(?:\*|\+|\{[^}]+\})/.test(pattern);
+  };
+  const compileContentSearchRegex = (pattern: string): RegExp => {
+    const normalized = pattern.trim();
+    if (!normalized.length) {
+      throw new Error("pattern is required");
+    }
+    if (isUnsafeContentSearchPattern(normalized)) {
+      return new RegExp(escapeRegExp(normalized), "i");
+    }
+    try {
+      return new RegExp(normalized, "i");
+    } catch {
+      return new RegExp(escapeRegExp(normalized), "i");
     }
   };
 
@@ -6037,16 +6088,11 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         if (planningReadBlockReason) {
           return { ok: false, error: planningReadBlockReason };
         }
-        const fullPath = resolveWorkspacePath(path.resolve(resolvedWorkspaceRoot, filePath));
+        const fullPath = resolveWorkspacePath(filePath, true);
         if (!fullPath) {
           return { ok: false, error: "Path is outside mission workspace root" };
         }
-        let stat: fs.Stats;
-        try {
-          stat = fs.statSync(fullPath);
-        } catch {
-          return { ok: false, error: `File not found: ${filePath}` };
-        }
+        const stat = fs.statSync(fullPath);
         if (stat.isDirectory()) {
           const entries = fs.readdirSync(fullPath).slice(0, 100);
           return { ok: true, type: "directory", entries };
@@ -6080,16 +6126,11 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     execute: async ({ stepKey }) => {
       try {
         const sanitized = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const filePath = resolveWorkspacePath(path.resolve(resolvedWorkspaceRoot, `.ade/step-output-${sanitized}.md`));
+        const filePath = resolveWorkspacePath(`.ade/step-output-${sanitized}.md`, true);
         if (!filePath) {
           return { ok: false, error: "Path is outside mission workspace root" };
         }
-        let content: string;
-        try {
-          content = fs.readFileSync(filePath, "utf-8");
-        } catch {
-          return { ok: false, error: `Step output file not found for step: ${stepKey}` };
-        }
+        const content = fs.readFileSync(filePath, "utf-8");
         return { ok: true, stepKey, content };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -6117,6 +6158,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         if (searchType === "filename") {
           // Simple recursive file listing with glob matching
           const results: string[] = [];
+          const filenameRegex = filenamePatternToRegExp(pattern);
           const visited = new Set<string>();
           const walkDir = (dir: string, depth = 0) => {
             if (depth > 6 || results.length >= limit) return;
@@ -6130,11 +6172,11 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
                 if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
                 const fullPath = resolveWorkspacePath(path.join(dir, entry.name));
                 if (!fullPath) continue;
-                const rel = path.relative(resolvedWorkspaceRoot, fullPath);
+                const rel = path.relative(resolvedWorkspaceRootReal, fullPath);
                 try {
                   if (fs.statSync(fullPath).isDirectory()) {
                     walkDir(fullPath, depth + 1);
-                  } else if (new RegExp(pattern.replace(/\*/g, ".*")).test(entry.name)) {
+                  } else if (filenameRegex.test(rel.replace(/\\/g, "/"))) {
                     results.push(rel);
                   }
                 } catch {
@@ -6150,7 +6192,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         }
         // Content search using a simple line-by-line grep
         const results: Array<{ file: string; line: number; text: string }> = [];
-        const regex = new RegExp(pattern, "i");
+        const regex = compileContentSearchRegex(pattern);
         const visited = new Set<string>();
         const walkDir = (dir: string, depth = 0) => {
           if (depth > 6 || results.length >= limit) return;
@@ -6175,7 +6217,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
                   for (let i = 0; i < lines.length && results.length < limit; i++) {
                     if (regex.test(lines[i]!)) {
                       results.push({
-                        file: path.relative(resolvedWorkspaceRoot, fullPath),
+                        file: path.relative(resolvedWorkspaceRootReal, fullPath),
                         line: i + 1,
                         text: lines[i]!.slice(0, 200),
                       });
@@ -6209,7 +6251,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         const keyFiles = ["package.json", "tsconfig.json", "README.md", "CLAUDE.md"];
         const docs: Record<string, string> = {};
         for (const f of keyFiles) {
-          const fp = resolveWorkspacePath(path.resolve(resolvedWorkspaceRoot, f));
+          const fp = resolveWorkspacePath(f, true);
           if (!fp) continue;
           try {
             const content = fs.readFileSync(fp, "utf-8");

@@ -820,6 +820,16 @@ describe("createSyncRemoteCommandService", () => {
       expect(ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-42", sessionId: "sess-1" });
       expect(result).toEqual({ ok: true });
     });
+
+    it("work.closeSession skips pty disposal when the session has no ptyId", async () => {
+      sessionService.get.mockReturnValue(null);
+      const result = await service.execute(makePayload("work.closeSession", {
+        sessionId: "sess-1",
+      }));
+      expect(sessionService.get).toHaveBeenCalledWith("sess-1");
+      expect(ptyService.dispose).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: true });
+    });
   });
 
   // ---------------------------------------------------------------

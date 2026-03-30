@@ -243,8 +243,19 @@ describe("resolvePathWithinRoot", () => {
   it("allows a normal child path when intermediate segments do not exist yet", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
     try {
-      const target = path.join(root, "nested", "new-file.txt");
+      const target = "nested/new-file.txt";
       const resolved = resolvePathWithinRoot(root, target, { allowMissing: true });
+      expect(path.basename(resolved)).toBe("new-file.txt");
+      expect(resolved.endsWith(`${path.sep}nested${path.sep}new-file.txt`)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves relative child paths against the provided root", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    try {
+      const resolved = resolvePathWithinRoot(root, "nested/new-file.txt", { allowMissing: true });
       expect(path.basename(resolved)).toBe("new-file.txt");
       expect(resolved.endsWith(`${path.sep}nested${path.sep}new-file.txt`)).toBe(true);
     } finally {
@@ -262,6 +273,18 @@ describe("resolvePathWithinRoot", () => {
       fs.symlinkSync(outsideDir, linkPath, "dir");
 
       expect(() => resolvePathWithinRoot(tempRoot, path.join(linkPath, "secret.txt"))).toThrow("Path escapes root");
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects relative symlink traversals hidden by .. segments", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
+    try {
+      fs.symlinkSync(outsideDir, path.join(tempRoot, "linked"), "dir");
+      expect(() => resolvePathWithinRoot(tempRoot, "linked/../secret.txt", { allowMissing: true })).toThrow("Path escapes root");
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
       fs.rmSync(outsideDir, { recursive: true, force: true });

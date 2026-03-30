@@ -2293,6 +2293,7 @@ export function registerIpc({
       laneId: arg?.laneId ?? null,
       reviewProfileOverride: arg?.reviewProfileOverride ?? null,
       verboseTrace: Boolean(arg?.verboseTrace),
+      dryRun: Boolean(arg?.dryRun),
     });
   });
 

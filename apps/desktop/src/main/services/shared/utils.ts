@@ -155,21 +155,60 @@ function realpathExisting(filePath: string): string {
     : fs.realpathSync(filePath);
 }
 
-function resolveRealPathAllowMissing(filePath: string): string {
-  const resolved = path.resolve(filePath);
-  const missingSegments: string[] = [];
-  let cursor = resolved;
+function candidateExpressionFromRoot(root: string, candidate: string): string {
+  const normalizedRoot = path.resolve(root);
+  if (path.isAbsolute(candidate)) return candidate;
+  if (!candidate.length) return normalizedRoot;
+  return normalizedRoot.endsWith(path.sep)
+    ? `${normalizedRoot}${candidate}`
+    : `${normalizedRoot}${path.sep}${candidate}`;
+}
 
-  while (!fs.existsSync(cursor)) {
-    const parent = path.dirname(cursor);
-    if (parent === cursor) {
-      throw new Error(`Path does not exist: ${filePath}`);
+function splitPathSegments(filePath: string): { root: string; segments: string[] } {
+  const parsed = path.parse(filePath);
+  const remainder = filePath.slice(parsed.root.length);
+  return {
+    root: parsed.root,
+    segments: remainder.split(/[\\/]+/).filter((segment) => segment.length > 0),
+  };
+}
+
+function pathEntryExists(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveCandidatePath(
+  root: string,
+  candidate: string,
+  opts: { allowMissing?: boolean } = {},
+): string {
+  const expression = candidateExpressionFromRoot(root, candidate);
+  const { root: candidateRoot, segments } = splitPathSegments(expression);
+  let cursor = candidateRoot;
+
+  for (const segment of segments) {
+    if (segment === "." || segment === "") continue;
+    if (segment === "..") {
+      cursor = path.dirname(cursor);
+      continue;
     }
-    missingSegments.unshift(path.basename(cursor));
-    cursor = parent;
+    const nextPath = path.join(cursor, segment);
+    if (pathEntryExists(nextPath)) {
+      cursor = realpathExisting(nextPath);
+      continue;
+    }
+    if (!opts.allowMissing) {
+      throw new Error(`Path does not exist: ${candidate}`);
+    }
+    cursor = nextPath;
   }
 
-  return path.resolve(realpathExisting(cursor), ...missingSegments);
+  return cursor;
 }
 
 /**
@@ -182,13 +221,51 @@ export function resolvePathWithinRoot(
   opts: { allowMissing?: boolean } = {},
 ): string {
   const rootReal = realpathExisting(path.resolve(root));
-  const candidateReal = opts.allowMissing
-    ? resolveRealPathAllowMissing(candidate)
-    : realpathExisting(path.resolve(candidate));
+  const candidateReal = resolveCandidatePath(root, candidate, opts);
   if (!isWithinDir(rootReal, candidateReal)) {
     throw new Error("Path escapes root");
   }
   return candidateReal;
+}
+
+function openReadOnlyNoFollow(filePath: string): number {
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number"
+    ? fs.constants.O_NOFOLLOW
+    : 0;
+  return fs.openSync(filePath, fs.constants.O_RDONLY | noFollowFlag);
+}
+
+/**
+ * Re-resolve and validate a file at open time, then read it through the file
+ * descriptor so callers do not rely on a previously checked path string.
+ */
+export function readFileWithinRootSecure(root: string, candidate: string): Buffer {
+  let expectedPath: string;
+  try {
+    expectedPath = resolvePathWithinRoot(root, candidate, { allowMissing: false });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Path does not exist:")) {
+      const missing = new Error(error.message) as NodeJS.ErrnoException;
+      missing.code = "ENOENT";
+      throw missing;
+    }
+    throw error;
+  }
+  const fd = openReadOnlyNoFollow(expectedPath);
+  try {
+    const openStat = fs.fstatSync(fd);
+    if (!openStat.isFile()) {
+      throw new Error("Path is not a regular file");
+    }
+    const currentPath = resolvePathWithinRoot(root, expectedPath, { allowMissing: false });
+    const currentStat = fs.statSync(currentPath);
+    if (openStat.dev !== currentStat.dev || openStat.ino !== currentStat.ino) {
+      throw new Error("Path changed during open");
+    }
+    return fs.readFileSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // ── String helpers ──────────────────────────────────────────────────

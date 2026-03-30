@@ -1046,7 +1046,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "resolveLinearRunAction",
-    description: "Approve, reject, retry, or explicitly complete a Linear workflow run.",
+    description: "Approve, reject, retry, resume, or explicitly complete a Linear workflow run.",
     inputSchema: {
       type: "object",
       required: ["runId", "action"],
@@ -3160,9 +3160,16 @@ async function runTool(args: {
     }
 
     if (name === "resolveLinearSyncQueueItem") {
+      const action = assertNonEmptyString(toolArgs.action, "action");
+      if (!new Set(["approve", "reject", "retry", "complete", "resume"]).has(action)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "action must be one of: approve, reject, retry, complete, resume",
+        );
+      }
       return await requireLinearSyncService(runtime).resolveQueueItem({
         queueItemId: assertNonEmptyString(toolArgs.queueItemId, "queueItemId"),
-        action: assertNonEmptyString(toolArgs.action, "action") as "approve" | "reject" | "retry" | "complete" | "resume",
+        action: action as "approve" | "reject" | "retry" | "complete" | "resume",
         note: asOptionalTrimmedString(toolArgs.note) ?? undefined,
         employeeOverride: asOptionalTrimmedString(toolArgs.employeeOverride) ?? undefined,
         laneId: asOptionalTrimmedString(toolArgs.laneId) ?? undefined,

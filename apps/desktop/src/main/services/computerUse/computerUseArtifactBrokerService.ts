@@ -187,7 +187,7 @@ export function createComputerUseArtifactBrokerService(args: {
     if (pathLike) {
       const absolutePath = path.isAbsolute(pathLike)
         ? pathLike
-        : resolvePathWithinRoot(projectRoot, path.resolve(projectRoot, pathLike), { allowMissing: true });
+        : resolvePathWithinRoot(projectRoot, pathLike, { allowMissing: true });
       if (fileExists(absolutePath)) {
         try {
           const existingArtifactPath = resolvePathWithinRoot(layout.artifactsDir, absolutePath);
