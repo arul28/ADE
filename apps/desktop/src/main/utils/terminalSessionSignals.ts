@@ -1,8 +1,8 @@
 import type { TerminalRuntimeState, TerminalToolType } from "../../shared/types";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
-const RESUME_BACKTICK_REGEX = /`((?:claude|codex)\s+(?:resume|--resume\b)[^`\r\n]*)`/gi;
-const RESUME_PLAIN_REGEX = /\b((?:claude|codex)\s+(?:resume|--resume\b)[^\r\n]*)/gi;
+const RESUME_BACKTICK_REGEX = /`((?:claude|codex)\s+(?:(?:--resume|-r|resume)\b)[^`\r\n]*)`/gi;
+const RESUME_PLAIN_REGEX = /\b((?:claude|codex)\s+(?:(?:--resume|-r|resume)\b)[^\r\n]*?(?=\s+(?:claude|codex)\s|$))/gi;
 
 function normalizeCommand(raw: string): string {
   return raw
@@ -19,14 +19,38 @@ function toolFromCommand(raw: string): TerminalToolType | null {
   return null;
 }
 
+function canonicalizePreferredTool(preferredTool: TerminalToolType | null | undefined): TerminalToolType | null | undefined {
+  if (preferredTool === "claude-orchestrated") return "claude";
+  if (preferredTool === "codex-orchestrated") return "codex";
+  return preferredTool;
+}
+
 function prefersTool(raw: string, preferredTool: TerminalToolType | null | undefined): boolean {
-  if (!preferredTool || (preferredTool !== "claude" && preferredTool !== "codex")) return true;
+  const canonicalPreferredTool = canonicalizePreferredTool(preferredTool);
+  if (!canonicalPreferredTool || (canonicalPreferredTool !== "claude" && canonicalPreferredTool !== "codex")) return true;
   const cmdTool = toolFromCommand(raw);
-  return cmdTool === preferredTool;
+  return cmdTool === canonicalPreferredTool;
+}
+
+export function normalizeResumeCommand(
+  raw: string | null | undefined,
+  preferredTool?: TerminalToolType | null,
+): string | null {
+  const normalized = normalizeCommand(raw ?? "");
+  if (!normalized) return null;
+  if (!prefersTool(normalized, preferredTool)) return null;
+
+  if (/^claude\s+/i.test(normalized)) {
+    return normalized
+      .replace(/^claude\s+resume\b/i, "claude --resume")
+      .replace(/^claude\s+-r\b/i, "claude --resume");
+  }
+
+  return normalized;
 }
 
 export function defaultResumeCommandForTool(toolType: TerminalToolType | null | undefined): string | null {
-  if (toolType === "claude" || toolType === "claude-orchestrated") return "claude resume";
+  if (toolType === "claude" || toolType === "claude-orchestrated") return "claude --resume";
   if (toolType === "codex" || toolType === "codex-orchestrated") return "codex resume";
   return null;
 }
@@ -38,17 +62,17 @@ export function extractResumeCommandFromOutput(
   if (!text.trim()) return null;
 
   const fromBackticks = Array.from(text.matchAll(RESUME_BACKTICK_REGEX))
-    .map((m) => normalizeCommand(m[1] ?? ""))
+    .map((m) => normalizeResumeCommand(m[1] ?? "", preferredTool))
     .filter(Boolean);
   for (const candidate of fromBackticks) {
-    if (prefersTool(candidate, preferredTool)) return candidate;
+    return candidate;
   }
 
   const fromPlain = Array.from(text.matchAll(RESUME_PLAIN_REGEX))
-    .map((m) => normalizeCommand(m[1] ?? ""))
+    .map((m) => normalizeResumeCommand(m[1] ?? "", preferredTool))
     .filter(Boolean);
   for (const candidate of fromPlain) {
-    if (prefersTool(candidate, preferredTool)) return candidate;
+    return candidate;
   }
 
   return null;

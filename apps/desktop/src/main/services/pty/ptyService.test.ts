@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import type { IPty } from "node-pty";
 
 // ---------------------------------------------------------------------------
@@ -8,11 +9,32 @@ import type { IPty } from "node-pty";
 
 const mocks = vi.hoisted(() => {
   const existsSyncResults = new Map<string, boolean>();
+  const realpathOverrides = new Map<string, string>();
   return {
     existsSyncResults,
+    realpathOverrides,
     mkdirSync: vi.fn(),
     existsSync: vi.fn((p: string) => existsSyncResults.get(p) ?? true),
-    statSync: vi.fn(() => ({ size: 0 })),
+    lstatSync: vi.fn((p: string) => {
+      if ((existsSyncResults.get(p) ?? true) === false) {
+        const error = new Error(`ENOENT: no such file or directory, lstat '${p}'`) as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
+    }),
+    realpathSync: Object.assign(
+      vi.fn((p: string) => p),
+      { native: vi.fn((p: string) => p) },
+    ),
+    statSync: vi.fn((p: string) => {
+      if ((existsSyncResults.get(p) ?? true) === false) {
+        const error = new Error(`ENOENT: no such file or directory, stat '${p}'`) as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return { size: 0, isDirectory: () => true };
+    }),
     createWriteStream: vi.fn(() => ({
       write: vi.fn(),
       end: vi.fn(),
@@ -44,6 +66,8 @@ const mocks = vi.hoisted(() => {
 vi.mock("node:fs", () => ({
   default: {
     existsSync: mocks.existsSync,
+    lstatSync: mocks.lstatSync,
+    realpathSync: mocks.realpathSync,
     mkdirSync: mocks.mkdirSync,
     statSync: mocks.statSync,
     createWriteStream: mocks.createWriteStream,
@@ -51,6 +75,8 @@ vi.mock("node:fs", () => ({
     writeFileSync: mocks.writeFileSync,
   },
   existsSync: mocks.existsSync,
+  lstatSync: mocks.lstatSync,
+  realpathSync: mocks.realpathSync,
   mkdirSync: mocks.mkdirSync,
   statSync: mocks.statSync,
   createWriteStream: mocks.createWriteStream,
@@ -130,7 +156,12 @@ function createMockPty(): IPty & { _emitter: EventEmitter } {
   } as any;
 }
 
-function createHarness() {
+function createHarness(overrides: {
+  aiIntegrationService?: {
+    getMode: ReturnType<typeof vi.fn>;
+    summarizeTerminal: ReturnType<typeof vi.fn>;
+  } | null;
+} = {}) {
   const mockPty = createMockPty();
   const broadcastData = vi.fn();
   const broadcastExit = vi.fn();
@@ -178,6 +209,7 @@ function createHarness() {
     transcriptsDir: "/tmp/transcripts",
     laneService: laneService as any,
     sessionService: sessionService as any,
+    ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
     logger: logger as any,
     broadcastData,
     broadcastExit,
@@ -208,6 +240,10 @@ describe("ptyService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.existsSyncResults.clear();
+    mocks.realpathOverrides.clear();
+    const resolveRealpath = (p: string) => mocks.realpathOverrides.get(p) ?? path.resolve(p);
+    mocks.realpathSync.mockImplementation((p: string) => resolveRealpath(p));
+    mocks.realpathSync.native.mockImplementation((p: string) => resolveRealpath(p));
     mocks.existsSyncResults.set("/tmp/test-worktree", true);
     let counter = 0;
     mocks.randomUUID.mockImplementation(() => `uuid-${++counter}`);
@@ -247,25 +283,75 @@ describe("ptyService", () => {
       );
     });
 
-    it("uses projectRoot as fallback cwd when worktree does not exist", async () => {
+    it("rejects terminal launches when the lane worktree does not exist", async () => {
       mocks.existsSyncResults.set("/tmp/test-worktree", false);
-      const { service, logger, loadPty } = createHarness();
+      const { service, loadPty } = createHarness();
+      await expect(service.create({
+        laneId: "lane-1",
+        title: "Missing worktree",
+        cols: 80,
+        rows: 24,
+      })).rejects.toThrow(/worktree is unavailable/i);
+      expect(loadPty).not.toHaveBeenCalled();
+    });
+
+    it("uses an explicit cwd when it stays inside the selected lane worktree", async () => {
+      mocks.existsSyncResults.set("/tmp/test-worktree/subdir", true);
+      const { service, loadPty } = createHarness();
       await service.create({
         laneId: "lane-1",
-        title: "Fallback cwd",
+        cwd: "/tmp/test-worktree/subdir",
+        title: "Subdir terminal",
         cols: 80,
         rows: 24,
       });
-      expect(logger.warn).toHaveBeenCalledWith(
-        "pty.cwd_missing_fallback",
-        expect.objectContaining({ fallbackCwd: "/tmp/test-project" }),
-      );
       const spawnCall = loadPty.mock.results[0].value.spawn;
       expect(spawnCall).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Array),
-        expect.objectContaining({ cwd: "/tmp/test-project" }),
+        expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
       );
+    });
+
+    it("rejects an explicit cwd outside the selected lane worktree", async () => {
+      mocks.existsSyncResults.set("/tmp/outside", true);
+      const { service, loadPty } = createHarness();
+      await expect(service.create({
+        laneId: "lane-1",
+        cwd: "/tmp/outside",
+        title: "Escaping terminal",
+        cols: 80,
+        rows: 24,
+      })).rejects.toThrow(/escapes lane/i);
+      expect(loadPty).not.toHaveBeenCalled();
+    });
+
+    it("rejects a cwd whose realpath hops outside the lane worktree", async () => {
+      const childPath = "/tmp/test-worktree/hop-child";
+      mocks.existsSyncResults.set(childPath, true);
+      mocks.realpathOverrides.set(childPath, "/private/tmp/hop-child");
+      const { service, loadPty } = createHarness();
+      await expect(service.create({
+        laneId: "lane-1",
+        cwd: childPath,
+        title: "Realpath hop",
+        cols: 80,
+        rows: 24,
+      })).rejects.toThrow(/escapes lane/i);
+      expect(loadPty).not.toHaveBeenCalled();
+    });
+
+    it("preserves non-escape cwd errors instead of rewriting them as lane escapes", async () => {
+      mocks.existsSyncResults.set("/tmp/test-worktree/missing", false);
+      const { service, loadPty } = createHarness();
+      await expect(service.create({
+        laneId: "lane-1",
+        cwd: "/tmp/test-worktree/missing",
+        title: "Missing cwd",
+        cols: 80,
+        rows: 24,
+      })).rejects.toThrow(/path does not exist/i);
+      expect(loadPty).not.toHaveBeenCalled();
     });
 
     it("clamps very small dimensions to minimum values", async () => {
@@ -352,6 +438,41 @@ describe("ptyService", () => {
       expect(sessionService.create).toHaveBeenCalledWith(
         expect.objectContaining({ toolType: null }),
       );
+    });
+
+    it("uses the bound cwd for AI title generation even if the lane mapping changes later", async () => {
+      vi.useFakeTimers();
+      try {
+        mocks.existsSyncResults.set("/tmp/test-worktree/subdir", true);
+        const aiIntegrationService = {
+          getMode: vi.fn(() => "subscription"),
+          summarizeTerminal: vi.fn(async () => ({ text: "Bound title" })),
+        };
+        const { service, mockPty, laneService } = createHarness({ aiIntegrationService });
+        await service.create({
+          laneId: "lane-1",
+          cwd: "/tmp/test-worktree/subdir",
+          title: "Claude session",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+        });
+
+        laneService.getLaneBaseAndBranch.mockReturnValue({
+          worktreePath: "/tmp/other-worktree",
+          baseRef: "origin/main",
+          branchRef: "feature/moved",
+        });
+
+        mockPty._emitter.emit("data", "generated enough output for a better title");
+        await vi.advanceTimersByTimeAsync(4000);
+
+        expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+          expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -473,6 +594,37 @@ describe("ptyService", () => {
       expect(logger.warn).toHaveBeenCalledWith("pty.dispose_orphaned", expect.any(Object));
     });
 
+    it("uses the bound cwd for AI summaries after exit even if the lane mapping changes later", async () => {
+      mocks.existsSyncResults.set("/tmp/test-worktree/subdir", true);
+      const aiIntegrationService = {
+        getMode: vi.fn(() => "subscription"),
+        summarizeTerminal: vi.fn(async () => ({ text: "Bound summary" })),
+      };
+      const { service, mockPty, laneService } = createHarness({ aiIntegrationService });
+      await service.create({
+        laneId: "lane-1",
+        cwd: "/tmp/test-worktree/subdir",
+        title: "Summary session",
+        cols: 80,
+        rows: 24,
+      });
+
+      laneService.getLaneBaseAndBranch.mockReturnValue({
+        worktreePath: "/tmp/other-worktree",
+        baseRef: "origin/main",
+        branchRef: "feature/moved",
+      });
+
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      await vi.waitFor(() => {
+        expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
+      });
+
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
+      );
+    });
+
     it("silently ignores dispose for completely unknown pty/session", () => {
       const { service } = createHarness();
       expect(() => service.dispose({ ptyId: "non-existent" })).not.toThrow();
@@ -523,6 +675,52 @@ describe("ptyService", () => {
       expect(sessionService.end).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId, exitCode: null, status: "completed" }),
       );
+    });
+
+    it("does not auto-close user-launched Claude sessions when they become waiting-input", async () => {
+      vi.useFakeTimers();
+      try {
+        mocks.runtimeStateFromOsc133Chunk.mockReturnValue("waiting-input");
+        const { service, mockPty } = createHarness();
+        await service.create({ laneId: "lane-1", title: "Claude", cols: 80, rows: 24, toolType: "claude" });
+
+        await vi.advanceTimersByTimeAsync(6000);
+        mockPty._emitter.emit("data", "\u001b]133;A\u0007");
+        await vi.advanceTimersByTimeAsync(2000);
+
+        expect(mockPty.kill).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("still auto-closes orchestrated worker sessions after the wrapped CLI exits", async () => {
+      vi.useFakeTimers();
+      try {
+        mocks.runtimeStateFromOsc133Chunk.mockReturnValue("waiting-input");
+        const { service, mockPty, logger } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Claude worker",
+          cols: 80,
+          rows: 24,
+          toolType: "claude-orchestrated",
+        });
+
+        await vi.advanceTimersByTimeAsync(6000);
+        mockPty._emitter.emit("data", "\u001b]133;A\u0007");
+        await vi.advanceTimersByTimeAsync(1499);
+        expect(mockPty.kill).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(mockPty.kill).toHaveBeenCalledTimes(1);
+        expect(logger.info).toHaveBeenCalledWith(
+          "pty.tool_exit_auto_close",
+          expect.objectContaining({ sessionId, toolType: "claude-orchestrated" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

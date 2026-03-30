@@ -223,6 +223,8 @@ export type RebaseRun = {
   error: string | null;
   pushedLaneIds: string[];
   canRollback: boolean;
+  rootBaseRefBefore?: string | null;
+  rootBaseRefAfter?: string | null;
 };
 
 export type RebaseStartArgs = {
@@ -231,6 +233,7 @@ export type RebaseStartArgs = {
   pushMode?: PushMode;
   actor?: string;
   reason?: string;
+  baseBranchOverride?: string | null;
 };
 
 export type RebaseStartResult = {
@@ -278,7 +281,7 @@ export type RebaseSuggestionsEventPayload = {
   suggestions: RebaseSuggestion[];
 };
 
-export type AutoRebaseLaneState = "autoRebased" | "rebasePending" | "rebaseConflict";
+export type AutoRebaseLaneState = "autoRebased" | "rebasePending" | "rebaseConflict" | "rebaseFailed";
 
 export type AutoRebaseLaneStatus = {
   laneId: string;

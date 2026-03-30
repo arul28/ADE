@@ -796,6 +796,7 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       projectConfigService,
       conflictService,
+      autoRebaseService,
       rebaseSuggestionService,
       onHotRefreshChanged: () => {
         prPollingServiceRef?.poke();
@@ -2326,6 +2327,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.prPollingService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.autoRebaseService?.dispose();
     } catch {
       // ignore
     }

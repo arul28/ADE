@@ -80,6 +80,35 @@ type RebasePushReviewState = {
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 
+type CreateLaneRequest =
+  | { kind: "child"; args: { name: string; parentLaneId: string } }
+  | { kind: "root"; args: { name: string; baseBranch: string } };
+
+export function resolveCreateLaneRequest(args: {
+  name: string;
+  createAsChild: boolean;
+  createParentLaneId: string;
+  createBaseBranch: string;
+}): CreateLaneRequest {
+  if (args.createAsChild) {
+    return {
+      kind: "child",
+      args: {
+        name: args.name,
+        parentLaneId: args.createParentLaneId,
+      },
+    };
+  }
+
+  return {
+    kind: "root",
+    args: {
+      name: args.name,
+      baseBranch: args.createBaseBranch,
+    },
+  };
+}
+
 /* ---- Component ---- */
 
 export function LanesPage() {
@@ -989,7 +1018,15 @@ export function LanesPage() {
   };
 
   const openAutoRebaseSettings = useCallback(() => { navigate("/settings?tab=lane-templates"); }, [navigate]);
-  const openRebaseDetails = useCallback(() => { navigate("/prs?tab=rebase"); }, [navigate]);
+  const openRebaseDetails = useCallback((laneId?: string | null) => {
+    const trimmedLaneId = typeof laneId === "string" ? laneId.trim() : "";
+    if (trimmedLaneId.length) {
+      const search = new URLSearchParams({ tab: "rebase", laneId: trimmedLaneId });
+      navigate(`/prs?${search.toString()}`);
+      return;
+    }
+    navigate("/prs?tab=rebase");
+  }, [navigate]);
 
   const openRebaseConflictResolver = useCallback((laneId: string, parentLaneId: string | null) => {
     const search = new URLSearchParams({ tab: "rebase", laneId });
@@ -1067,7 +1104,7 @@ export function LanesPage() {
 
   const handleCreateSubmit = useCallback(async () => {
     const name = createLaneName.trim();
-    if (!name || createBusy || (createAsChild && !createParentLaneId)) return;
+    if (!name || createBusy || (createAsChild && !createParentLaneId) || (!createAsChild && !createBaseBranch)) return;
     if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
       setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
       return;
@@ -1079,14 +1116,15 @@ export function LanesPage() {
     createEnvInitLaneIdRef.current = null;
 
     try {
-      const lane = createAsChild && createParentLaneId
-        ? await window.ade.lanes.createChild({ name, parentLaneId: createParentLaneId })
-        : await (() => {
-            const primary = lanes.find((entry) => entry.laneType === "primary");
-            return primary
-              ? window.ade.lanes.create({ name, parentLaneId: primary.id })
-              : window.ade.lanes.create({ name });
-          })();
+      const request = resolveCreateLaneRequest({
+        name,
+        createAsChild,
+        createParentLaneId,
+        createBaseBranch,
+      });
+      const lane = request.kind === "child"
+        ? await window.ade.lanes.createChild(request.args)
+        : await window.ade.lanes.create(request.args);
 
       await refreshLanes();
       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
@@ -1640,6 +1678,14 @@ export function LanesPage() {
               {autoRebaseStatus?.state === "rebasePending" ? (
                 <span style={inlineBadge(COLORS.warning, { fontSize: 9 })} title={autoRebaseStatus.message ?? "Auto-rebase is pending manual action."}>
                   PENDING
+                </span>
+              ) : null}
+              {autoRebaseStatus?.state === "rebaseFailed" ? (
+                <span
+                  style={inlineBadge(COLORS.danger, { fontSize: 9 })}
+                  title={autoRebaseStatus.message ?? "Auto-rebase failed and the lane needs manual follow-up."}
+                >
+                  FAILED
                 </span>
               ) : null}
               {autoRebaseStatus?.state === "rebaseConflict" ? (

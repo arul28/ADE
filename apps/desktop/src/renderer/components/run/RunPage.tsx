@@ -178,9 +178,10 @@ export function RunPage() {
   const [editingProcess, setEditingProcess] = useState<{ id: string; values: AddCommandInitialValues } | null>(null);
   const [moveToStackProcessId, setMoveToStackProcessId] = useState<string | null>(null);
   const [networkDrawerOpen, setNetworkDrawerOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const runtimeRefreshTimerRef = useRef<number | null>(null);
 
-  const effectiveLaneId = runLaneId ?? selectedLaneId ?? lanes[0]?.id ?? null;
+  const effectiveLaneId = runLaneId ?? selectedLaneId ?? null;
   const effectiveLaneIdRef = useRef(effectiveLaneId);
   effectiveLaneIdRef.current = effectiveLaneId;
   const selectedLane = useMemo(
@@ -236,6 +237,10 @@ export function RunPage() {
   }, [refreshDefinitions, showWelcome]);
 
   useEffect(() => {
+    setActionError(null);
+  }, [effectiveLaneId]);
+
+  useEffect(() => {
     if (runtimeRefreshTimerRef.current != null) {
       window.clearTimeout(runtimeRefreshTimerRef.current);
       runtimeRefreshTimerRef.current = null;
@@ -261,7 +266,7 @@ export function RunPage() {
     const unsub = window.ade.processes.onEvent((ev: ProcessEvent) => {
       if (ev.type === "runtime") {
         const currentLaneId = effectiveLaneIdRef.current;
-        if (currentLaneId && ev.runtime.laneId !== currentLaneId) return;
+        if (!currentLaneId || ev.runtime.laneId !== currentLaneId) return;
         setRuntime((prev) => {
           const idx = prev.findIndex(
             (r) => r.processId === ev.runtime.processId && r.laneId === ev.runtime.laneId
@@ -279,10 +284,19 @@ export function RunPage() {
   }, []);
 
   // Derived
-  const stacks: StackButtonDefinition[] = config?.effective.stackButtons ?? [];
+  const stacks = useMemo<StackButtonDefinition[]>(
+    () => config?.effective.stackButtons ?? [],
+    [config?.effective.stackButtons],
+  );
   const processNames = useMemo(() => {
     const map: Record<string, string> = {};
     for (const d of definitions) map[d.id] = d.name;
+    return map;
+  }, [definitions]);
+
+  const processDefinitions = useMemo(() => {
+    const map: Record<string, ProcessDefinition> = {};
+    for (const definition of definitions) map[definition.id] = definition;
     return map;
   }, [definitions]);
 
@@ -305,37 +319,24 @@ export function RunPage() {
     async (processId: string) => {
       try {
         if (!effectiveLaneId) return;
-        const def = definitions.find((d) => d.id === processId);
-        if (!def) return;
-        // Start the managed process
+        setActionError(null);
         await window.ade.processes.start({ laneId: effectiveLaneId, processId });
-        // Also open a shell in the Work tab for manual inspection, but do not
-        // replay the managed process command there.
-        try {
-          await window.ade.pty.create({
-            laneId: effectiveLaneId,
-            cols: 120,
-            rows: 30,
-            title: `${def.name} inspector`,
-            tracked: true,
-            toolType: "run-shell",
-          });
-        } catch {
-          // Terminal creation is best-effort
-        }
       } catch (err) {
+        setActionError(err instanceof Error ? err.message : String(err));
         console.error("[RunPage] handleRun failed:", err);
       }
     },
-    [effectiveLaneId, definitions]
+    [effectiveLaneId]
   );
 
   const handleStop = useCallback(
     async (processId: string) => {
       try {
         if (!effectiveLaneId) return;
+        setActionError(null);
         await window.ade.processes.stop({ laneId: effectiveLaneId, processId });
       } catch (err) {
+        setActionError(err instanceof Error ? err.message : String(err));
         console.error("[RunPage] handleStop failed:", err);
       }
     },
@@ -346,8 +347,10 @@ export function RunPage() {
     async (processId: string) => {
       try {
         if (!effectiveLaneId) return;
+        setActionError(null);
         await window.ade.processes.kill({ laneId: effectiveLaneId, processId });
       } catch (err) {
+        setActionError(err instanceof Error ? err.message : String(err));
         console.error("[RunPage] handleKill failed:", err);
       }
     },
@@ -357,56 +360,29 @@ export function RunPage() {
   const handleStartAll = useCallback(async () => {
     try {
       if (!effectiveLaneId) return;
+      setActionError(null);
       if (selectedStackId) {
         await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId: selectedStackId });
       } else {
         await window.ade.processes.startAll({ laneId: effectiveLaneId });
       }
-      // Create inspector terminals for each process being started so the user
-      // gets a shell tab per process (matching the behavior of handleRun).
-      // Filter out processes that are already running to avoid spawning duplicate
-      // inspector tabs when "Start All" is used on a partially running selection.
-      const allTargetDefs = selectedStackId
-        ? (() => {
-            const stack = stacks.find((s) => s.id === selectedStackId);
-            if (!stack) return definitions;
-            const ids = new Set(stack.processIds);
-            return definitions.filter((d) => ids.has(d.id));
-          })()
-        : definitions;
-      const runningStatuses = new Set(["running", "starting"]);
-      const targetDefs = allTargetDefs.filter((d) => {
-        const rt = runtimeMap[d.id];
-        return !rt || !runningStatuses.has(rt.status);
-      });
-      for (const def of targetDefs) {
-        try {
-          await window.ade.pty.create({
-            laneId: effectiveLaneId,
-            cols: 120,
-            rows: 30,
-            title: `${def.name} inspector`,
-            tracked: true,
-            toolType: "run-shell",
-          });
-        } catch {
-          // Terminal creation is best-effort
-        }
-      }
     } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
       console.error("[RunPage] handleStartAll failed:", err);
     }
-  }, [effectiveLaneId, selectedStackId, definitions, stacks, runtimeMap]);
+  }, [effectiveLaneId, selectedStackId]);
 
   const handleStopAll = useCallback(async () => {
     try {
       if (!effectiveLaneId) return;
+      setActionError(null);
       if (selectedStackId) {
         await window.ade.processes.stopStack({ laneId: effectiveLaneId, stackId: selectedStackId });
       } else {
         await window.ade.processes.stopAll({ laneId: effectiveLaneId });
       }
     } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
       console.error("[RunPage] handleStopAll failed:", err);
     }
   }, [effectiveLaneId, selectedStackId]);
@@ -668,7 +644,7 @@ export function RunPage() {
           <span style={LABEL_STYLE}>Lane</span>
           <select
             value={effectiveLaneId ?? ""}
-            onChange={(e) => selectRunLane(e.target.value || null)}
+            onChange={(e) => selectRunLane(e.target.value.length ? e.target.value : null)}
             style={{
               height: 28,
               padding: "0 8px",
@@ -682,6 +658,9 @@ export function RunPage() {
               minWidth: 120,
             }}
           >
+            <option value="">
+              No lane selected
+            </option>
             {lanes.map((lane) => (
               <option key={lane.id} value={lane.id}>
                 {lane.name}
@@ -806,6 +785,24 @@ export function RunPage() {
             overflow: "hidden",
           }}
         >
+          {actionError ? (
+            <div
+              style={{
+                margin: "20px 20px 0",
+                padding: "10px 12px",
+                border: `1px solid ${COLORS.danger}40`,
+                borderLeft: `3px solid ${COLORS.danger}`,
+                background: `${COLORS.danger}12`,
+                color: COLORS.textPrimary,
+                fontFamily: MONO_FONT,
+                fontSize: 11,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {actionError}
+            </div>
+          ) : null}
+
           {/* Command cards grid */}
           <div
             style={{
@@ -922,6 +919,7 @@ export function RunPage() {
       <ProcessMonitor
         laneId={effectiveLaneId}
         runtimes={runtime}
+        processDefinitions={processDefinitions}
         processNames={processNames}
         onKill={handleKill}
       />

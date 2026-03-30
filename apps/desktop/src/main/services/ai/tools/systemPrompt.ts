@@ -50,6 +50,7 @@ export function buildCodingAgentSystemPrompt(args: {
 
   return [
     `You are ADE's software engineering agent working in ${args.cwd}.`,
+    "This session is bound to that worktree. Read, edit, and run commands only inside this path unless ADE explicitly relaunches you in a different lane.",
     "",
     "## Mission",
     describeMode(mode),

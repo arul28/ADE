@@ -8,9 +8,11 @@ import {
 } from "@phosphor-icons/react";
 import type { LaneSummary, AgentChatPermissionMode } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
+import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { buildTrackedCliStartupCommand, type CliProvider } from "./cliLaunch";
 import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 
 type WorkStartSurfaceProps = {
@@ -25,37 +27,6 @@ type WorkStartSurfaceProps = {
     tracked?: boolean;
   }) => Promise<unknown>;
 };
-
-type CliProvider = "claude" | "codex";
-
-function buildCliStartupCommand(args: {
-  provider: CliProvider;
-  permissionMode: AgentChatPermissionMode;
-}): string {
-  if (args.provider === "claude") {
-    const parts = ["claude"];
-    if (args.permissionMode === "full-auto") {
-      parts.push("--dangerously-skip-permissions");
-    } else if (args.permissionMode === "edit") {
-      parts.push("--permission-mode", "acceptEdits");
-    } else if (args.permissionMode === "default") {
-      parts.push("--permission-mode", "default");
-    } else {
-      parts.push("--permission-mode", "plan");
-    }
-    return parts.join(" ");
-  }
-
-  const parts = ["codex"];
-  if (args.permissionMode === "full-auto") {
-    parts.push("--full-auto");
-  } else if (args.permissionMode !== "config-toml") {
-    const approvalPolicy = args.permissionMode === "edit" ? "on-failure" : "untrusted";
-    const sandboxMode = args.permissionMode === "edit" ? "workspace-write" : "read-only";
-    parts.push("-c", `approval_policy=${approvalPolicy}`, "-c", `sandbox_mode=${sandboxMode}`);
-  }
-  return parts.join(" ");
-}
 
 function LaunchModeHero({
   kind,
@@ -144,7 +115,13 @@ export function WorkStartSurface({
   onOpenChatSession,
   onLaunchPtySession,
 }: WorkStartSurfaceProps) {
-  const [selectedLaneId, setSelectedLaneId] = useState<string>(lanes[0]?.id ?? "");
+  const globallySelectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const [selectedLaneId, setSelectedLaneId] = useState<string>(() => {
+    if (globallySelectedLaneId && lanes.some((lane) => lane.id === globallySelectedLaneId)) {
+      return globallySelectedLaneId;
+    }
+    return lanes[0]?.id ?? "";
+  });
   const [cliProvider, setCliProvider] = useState<CliProvider>("claude");
   const [cliPermissionMode, setCliPermissionMode] = useState<AgentChatPermissionMode>("default");
   const [launchBusy, setLaunchBusy] = useState(false);
@@ -158,9 +135,12 @@ export function WorkStartSurface({
       return;
     }
     if (!selectedLaneId || !lanes.some((lane) => lane.id === selectedLaneId)) {
-      setSelectedLaneId(lanes[0]!.id);
+      const fallbackLaneId = globallySelectedLaneId && lanes.some((lane) => lane.id === globallySelectedLaneId)
+        ? globallySelectedLaneId
+        : lanes[0]!.id;
+      setSelectedLaneId(fallbackLaneId);
     }
-  }, [lanes, selectedLaneId]);
+  }, [globallySelectedLaneId, lanes, selectedLaneId]);
 
   const cliPermissionOptions = useMemo(
     () => getPermissionOptions({
@@ -185,7 +165,7 @@ export function WorkStartSurface({
         laneId: selectedLaneId,
         profile: cliProvider,
         title: cliProvider === "claude" ? "Claude CLI" : "Codex CLI",
-        startupCommand: buildCliStartupCommand({
+        startupCommand: buildTrackedCliStartupCommand({
           provider: cliProvider,
           permissionMode: cliPermissionMode,
         }),

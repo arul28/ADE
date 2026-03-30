@@ -1,21 +1,14 @@
-/**
- * Tests for RebaseTab categorization and style helpers.
- *
- * The RebaseTab component has a categorize() function that determines
- * the urgency bucket for each RebaseNeed. We re-derive and test it.
- */
 import { describe, expect, it } from "vitest";
-import type { RebaseNeed } from "../../../../shared/types";
+import type { LaneSummary, RebaseNeed } from "../../../../shared/types";
+import { branchNameFromRef, resolveLaneBaseBranch } from "../shared/laneBranchTargets";
 
-type UrgencyCategory = "attention" | "clean" | "recent" | "upToDate";
-
-// Re-derive the categorize function from RebaseTab
-function categorize(need: RebaseNeed): UrgencyCategory {
-  if (need.dismissedAt) return "upToDate";
-  if (need.deferredUntil && new Date(need.deferredUntil) > new Date()) return "upToDate";
-  if (need.behindBy === 0) return "upToDate";
-  if (need.conflictPredicted) return "attention";
-  return "clean";
+function isPrTargetNeed(need: RebaseNeed, lane: LaneSummary): boolean {
+  const laneBaseBranch = branchNameFromRef(resolveLaneBaseBranch({
+    lane,
+    lanes: [lane],
+    primaryBranchRef: null,
+  }));
+  return Boolean(need.prId) && laneBaseBranch !== branchNameFromRef(need.baseBranch);
 }
 
 function makeNeed(overrides: Partial<RebaseNeed> = {}): RebaseNeed {
@@ -34,38 +27,41 @@ function makeNeed(overrides: Partial<RebaseNeed> = {}): RebaseNeed {
   };
 }
 
-describe("RebaseTab categorize", () => {
-  it("returns 'upToDate' when dismissed", () => {
-    expect(categorize(makeNeed({ dismissedAt: "2026-03-01T00:00:00.000Z" }))).toBe("upToDate");
+function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
+  return {
+    id: "lane-1",
+    name: "Feature Lane",
+    description: null,
+    laneType: "worktree",
+    baseRef: "release-9",
+    branchRef: "feature/lane",
+    worktreePath: "/tmp/lane",
+    parentLaneId: null,
+    childCount: 0,
+    stackDepth: 0,
+    parentStatus: null,
+    isEditProtected: false,
+    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+    color: null,
+    icon: null,
+    tags: [],
+    folder: null,
+    createdAt: "2026-03-30T00:00:00.000Z",
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+describe("RebaseTab grouping helpers", () => {
+  it("treats a linked PR on a different branch as a PR-target need", () => {
+    expect(isPrTargetNeed(makeNeed({ prId: "pr-1", baseBranch: "main" }), makeLane({ baseRef: "release-9" }))).toBe(true);
   });
 
-  it("returns 'upToDate' when deferred until future", () => {
-    const future = new Date(Date.now() + 3_600_000).toISOString();
-    expect(categorize(makeNeed({ deferredUntil: future }))).toBe("upToDate");
+  it("treats a matching linked PR as a lane-base need", () => {
+    expect(isPrTargetNeed(makeNeed({ prId: "pr-1", baseBranch: "release-9" }), makeLane({ baseRef: "release-9" }))).toBe(false);
   });
 
-  it("returns 'upToDate' when behindBy is 0", () => {
-    expect(categorize(makeNeed({ behindBy: 0 }))).toBe("upToDate");
-  });
-
-  it("returns 'attention' when conflict is predicted", () => {
-    expect(categorize(makeNeed({ conflictPredicted: true, behindBy: 5 }))).toBe("attention");
-  });
-
-  it("returns 'clean' when behind but no conflict", () => {
-    expect(categorize(makeNeed({ behindBy: 3, conflictPredicted: false }))).toBe("clean");
-  });
-
-  it("prioritizes dismissedAt over conflictPredicted", () => {
-    expect(categorize(makeNeed({
-      dismissedAt: "2026-03-01T00:00:00.000Z",
-      conflictPredicted: true,
-      behindBy: 5,
-    }))).toBe("upToDate");
-  });
-
-  it("does not treat past deferredUntil as upToDate", () => {
-    const past = new Date(Date.now() - 3_600_000).toISOString();
-    expect(categorize(makeNeed({ deferredUntil: past, behindBy: 2 }))).toBe("clean");
+  it("treats non-PR suggestions as lane-base needs", () => {
+    expect(isPrTargetNeed(makeNeed({ prId: null, baseBranch: "main" }), makeLane({ baseRef: "release-9" }))).toBe(false);
   });
 });

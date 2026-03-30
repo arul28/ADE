@@ -68,18 +68,36 @@ import { CreatePrModal, reorderQueueLaneIds } from "./CreatePrModal";
 describe("CreatePrModal queue workflow", () => {
   const originalAde = globalThis.window.ade;
   const createQueue = vi.fn();
+  const createFromLane = vi.fn();
 
   beforeEach(() => {
     createQueue.mockReset();
+    createFromLane.mockReset();
     createQueue.mockResolvedValue({
       groupId: "queue-group-1",
       prs: [],
       errors: [],
     });
+    createFromLane.mockResolvedValue({
+      id: "pr-1",
+      laneId: "lane-1",
+      provider: "github",
+      number: 1,
+      title: "Queue lane",
+      body: "",
+      state: "open",
+      url: "https://example.test/pr/1",
+      headBranch: "feature/queue-1",
+      baseBranch: "main",
+      mergeable: true,
+      draft: false,
+      updatedAt: "2026-03-23T12:30:00.000Z",
+    });
 
     globalThis.window.ade = {
       prs: {
         createQueue,
+        createFromLane,
       },
       git: {
         getSyncStatus: vi.fn().mockResolvedValue(null),
@@ -136,6 +154,64 @@ describe("CreatePrModal queue workflow", () => {
       expect.objectContaining({
         laneIds: ["lane-2", "lane-1"],
         targetBranch: "main",
+      }),
+    );
+  });
+
+  it("lets single-PR creation target a different branch than Primary's current branch", async () => {
+    const user = userEvent.setup();
+    render(<CreatePrModal open onOpenChange={vi.fn()} />);
+
+    await user.selectOptions(screen.getByRole("combobox"), "lane-1");
+    const targetBranchInput = screen.getByDisplayValue("main");
+    await user.clear(targetBranchInput);
+    await user.type(targetBranchInput, "release-9");
+
+    await user.click(screen.getByRole("button", { name: /next step/i }));
+    await user.click(screen.getByRole("button", { name: /create pr/i }));
+
+    await waitFor(() => expect(createFromLane).toHaveBeenCalledTimes(1));
+    expect(createFromLane).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        baseBranch: "release-9",
+      }),
+    );
+  });
+
+  it("warns when the PR target branch differs from the lane base branch", async () => {
+    const user = userEvent.setup();
+    render(<CreatePrModal open onOpenChange={vi.fn()} />);
+
+    await user.selectOptions(screen.getByRole("combobox"), "lane-1");
+    const targetBranchInput = screen.getByDisplayValue("main");
+    await user.clear(targetBranchInput);
+    await user.type(targetBranchInput, "release-9");
+
+    expect(screen.getByText("Lane Needs Attention")).toBeTruthy();
+    expect(screen.getByText(/targets release-9, but this lane currently tracks main/i)).toBeTruthy();
+    expect(screen.getByText(/use rebase or reparent instead of only retargeting the pr/i)).toBeTruthy();
+  });
+
+  it("lets queue creation target a different branch than Primary's current branch", async () => {
+    const user = userEvent.setup();
+    render(<CreatePrModal open onOpenChange={vi.fn()} />);
+
+    await user.click(screen.getAllByRole("button", { name: /queue workflow/i })[0]!);
+    await user.click(screen.getByRole("checkbox", { name: /01 queue lane/i }));
+
+    const targetBranchInput = screen.getByDisplayValue("main");
+    await user.clear(targetBranchInput);
+    await user.type(targetBranchInput, "release-9");
+
+    await user.click(screen.getByRole("button", { name: /next step/i }));
+    await user.click(screen.getByRole("button", { name: /create pr/i }));
+
+    await waitFor(() => expect(createQueue).toHaveBeenCalledTimes(1));
+    expect(createQueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneIds: ["lane-1"],
+        targetBranch: "release-9",
       }),
     );
   });

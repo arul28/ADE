@@ -25,6 +25,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
   const syncBadge = (() => {
     if (remoteDiverged) return { label: "Diverged", className: "text-red-300" };
     if (autoRebase?.state === "rebaseConflict") return { label: "Rebase conflict", className: "text-red-300" };
+    if (autoRebase?.state === "rebaseFailed") return { label: "Rebase failed", className: "text-red-300" };
     if (autoRebase?.state === "rebasePending") return { label: "Rebase pending", className: "text-amber-300" };
     if (remoteNeedsPublish) return { label: remoteSync?.hasUpstream === false ? "Publish lane" : "Needs push", className: "text-emerald-300" };
     if (remoteNeedsPull) return { label: "Needs pull", className: "text-sky-300" };

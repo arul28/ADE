@@ -113,6 +113,10 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   unstable_v2_resumeSession: vi.fn(),
 }));
 
+vi.mock("../ai/codexExecutable", () => ({
+  resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),
+}));
+
 vi.mock("../ai/providerResolver", () => ({
   normalizeCliMcpServers: vi.fn(() => ({})),
   isModelCliWrapped: vi.fn((modelId: string) => !String(modelId).endsWith("-api")),
@@ -209,9 +213,14 @@ import {
   buildComputerUseDirective,
   createAgentChatService,
 } from "./agentChatService";
+import { spawn } from "node:child_process";
 import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
 import { createUniversalToolSet } from "../ai/tools/universalTools";
+import { createWorkflowTools } from "../ai/tools/workflowTools";
+import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
+import { runGit } from "../git/git";
+import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import type { AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
@@ -232,17 +241,33 @@ function createLogger() {
 }
 
 function createMockLaneService() {
+  const laneRoots: Record<string, string> = {
+    "lane-1": tmpRoot,
+    "lane-2": path.join(tmpRoot, "lane-2"),
+  };
+  fs.mkdirSync(laneRoots["lane-2"], { recursive: true });
   const lanes = [
-    { id: "lane-1", name: "Primary", laneType: "primary", worktreePath: tmpRoot },
-    { id: "lane-2", name: "Selected", laneType: "feature", worktreePath: tmpRoot },
+    { id: "lane-1", name: "Primary", laneType: "primary", branchRef: "feature/primary", worktreePath: laneRoots["lane-1"] },
+    { id: "lane-2", name: "Selected", laneType: "feature", branchRef: "feature/selected", worktreePath: laneRoots["lane-2"] },
   ];
   return {
-    getLaneBaseAndBranch: vi.fn((_laneId: string) => ({
-      baseRef: "main",
-      branchRef: "feature/test",
-      worktreePath: tmpRoot,
-      laneType: "feature",
-    })),
+    getLaneBaseAndBranch: vi.fn((laneId: string) => {
+      const lane = lanes.find((entry) => entry.id === laneId);
+      if (lane) {
+        return {
+          baseRef: "main",
+          branchRef: lane.branchRef,
+          worktreePath: lane.worktreePath,
+          laneType: lane.laneType,
+        };
+      }
+      return {
+        baseRef: "main",
+        branchRef: "feature/selected",
+        worktreePath: tmpRoot,
+        laneType: "feature",
+      };
+    }),
     list: vi.fn(async () => lanes),
     ensurePrimaryLane: vi.fn(async () => {}),
     create: vi.fn(async ({ name, description, parentLaneId }: { name: string; description?: string; parentLaneId?: string }) => {
@@ -251,9 +276,11 @@ function createMockLaneService() {
         name,
         description: description ?? null,
         laneType: "feature",
-        worktreePath: tmpRoot,
+        branchRef: `feature/generated-lane-${lanes.length + 1}`,
+        worktreePath: path.join(tmpRoot, `generated-lane-${lanes.length + 1}`),
         parentLaneId: parentLaneId ?? "lane-1",
       };
+      fs.mkdirSync(lane.worktreePath, { recursive: true });
       lanes.push(lane);
       return lane;
     }),
@@ -735,6 +762,23 @@ describe("createAgentChatService", () => {
       expect(parsed.type).toBe("session_init");
       expect(parsed.sessionId).toBe(session.id);
     });
+
+    it("rejects chat creation when the selected lane worktree is unavailable", async () => {
+      const { service, laneService } = createService();
+      laneService.getLaneBaseAndBranch.mockReturnValue({
+        baseRef: "main",
+        branchRef: "feature/test",
+        worktreePath: path.join(tmpRoot, "missing-lane"),
+        laneType: "feature",
+      });
+
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      })).rejects.toThrow(/worktree is unavailable/i);
+    });
   });
 
   describe("handoffSession", () => {
@@ -970,6 +1014,258 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("lane launch directives", () => {
+    it("injects the selected lane worktree into the first unified user turn only", async () => {
+      const streamCalls: Array<Record<string, unknown>> = [];
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        streamCalls.push(args);
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "openai/gpt-5.4",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Inspect the repo and fix the launch bug.",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Now add tests.",
+      });
+
+      const firstMessages = Array.isArray(streamCalls[0]?.messages)
+        ? (streamCalls[0]!.messages as Array<{ role: string; content: unknown }>)
+        : [];
+      const secondMessages = Array.isArray(streamCalls[1]?.messages)
+        ? (streamCalls[1]!.messages as Array<{ role: string; content: unknown }>)
+        : [];
+      const firstUserContent = String(firstMessages.at(-1)?.content ?? "");
+      const secondUserContent = String(secondMessages.at(-1)?.content ?? "");
+
+      expect(firstUserContent).toContain("[ADE launch directive]");
+      expect(firstUserContent).toContain(tmpRoot);
+      expect(firstUserContent).toContain("only inside that worktree");
+      expect(secondUserContent).not.toContain("[ADE launch directive]");
+    });
+
+    it("roots Codex MCP launches in the selected lane worktree", async () => {
+      const laneRootPath = path.join(tmpRoot, "lane-2");
+      fs.mkdirSync(laneRootPath, { recursive: true });
+      const laneRoot = fs.realpathSync(laneRootPath);
+      vi.mocked(resolveAdeMcpServerLaunch).mockClear();
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Inspect the repo and fix the lane launch bug.",
+      });
+
+      await vi.waitFor(() => {
+        expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
+      });
+
+      const workspaceRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
+        .map(([args]) => (args as { workspaceRoot?: string }).workspaceRoot)
+        .filter((value): value is string => typeof value === "string");
+
+      expect(workspaceRoots.length).toBeGreaterThan(0);
+      expect(new Set(workspaceRoots)).toEqual(new Set([laneRoot]));
+    });
+
+    it("executes identity-hosted unified turns from the selected execution lane", async () => {
+      const streamCalls: Array<Record<string, unknown>> = [];
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        streamCalls.push(args);
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+      vi.mocked(createUniversalToolSet).mockClear();
+      vi.mocked(createWorkflowTools).mockClear();
+      vi.mocked(buildCodingAgentSystemPrompt).mockClear();
+
+      const selectedLaneRootPath = path.join(tmpRoot, "lane-2");
+      fs.mkdirSync(selectedLaneRootPath, { recursive: true });
+      const selectedLaneRoot = fs.realpathSync(selectedLaneRootPath);
+      const { service } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Fix the lane launch bug without leaving this lane.",
+      });
+
+      expect(vi.mocked(createUniversalToolSet)).toHaveBeenCalledWith(
+        selectedLaneRoot,
+        expect.any(Object),
+      );
+      expect(vi.mocked(createWorkflowTools)).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "lane-2" }),
+      );
+      expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: selectedLaneRoot }),
+      );
+
+      const firstMessages = Array.isArray(streamCalls[0]?.messages)
+        ? (streamCalls[0]!.messages as Array<{ role: string; content: unknown }>)
+        : [];
+      const firstUserContent = String(firstMessages.at(-1)?.content ?? "");
+      expect(firstUserContent).toContain("lane 'lane-2'");
+      expect(firstUserContent).toContain(selectedLaneRoot);
+    });
+
+    it("reinjects the lane binding when an identity session switches execution lanes", async () => {
+      const streamCalls: Array<Record<string, unknown>> = [];
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        streamCalls.push(args);
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+
+      const { service } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Handle the first selected lane task.",
+      });
+
+      await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Handle the second selected lane task.",
+      });
+
+      const firstMessages = Array.isArray(streamCalls[0]?.messages)
+        ? (streamCalls[0]!.messages as Array<{ role: string; content: unknown }>)
+        : [];
+      const secondMessages = Array.isArray(streamCalls[1]?.messages)
+        ? (streamCalls[1]!.messages as Array<{ role: string; content: unknown }>)
+        : [];
+      const firstUserContent = String(firstMessages.at(-1)?.content ?? "");
+      const secondUserContent = String(secondMessages.at(-1)?.content ?? "");
+
+      expect(firstUserContent).toContain("lane 'lane-2'");
+      expect(firstUserContent).toContain(path.join(tmpRoot, "lane-2"));
+      expect(secondUserContent).toContain("lane 'lane-1'");
+      expect(secondUserContent).toContain(tmpRoot);
+    });
+
+    it("rebinds queued unified steers after an identity session switches execution lanes", async () => {
+      const streamCalls: Array<Record<string, unknown>> = [];
+      const firstTurnControl: { release?: () => void } = {};
+      let streamCallCount = 0;
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        streamCalls.push(args);
+        streamCallCount += 1;
+        if (streamCallCount === 1) {
+          return {
+            fullStream: (async function* () {
+              await new Promise<void>((resolve) => {
+                firstTurnControl.release = resolve;
+              });
+              yield { type: "finish", usage: {} };
+            })(),
+          } as any;
+        }
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+
+      const { service } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Handle the current lane task first.",
+      });
+      await Promise.resolve();
+
+      await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+      await service.steer({
+        sessionId: session.id,
+        text: "Continue in the newly selected lane.",
+      });
+
+      expect(firstTurnControl.release).toBeTypeOf("function");
+      firstTurnControl.release!();
+      await firstTurn;
+      for (let attempt = 0; attempt < 20 && streamCalls.length < 2; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(streamCalls).toHaveLength(2);
+
+      const secondMessages = Array.isArray(streamCalls[1]?.messages)
+        ? (streamCalls[1]!.messages as Array<{ role: string; content: unknown }>)
+        : [];
+      const secondUserContent = String(secondMessages.at(-1)?.content ?? "");
+
+      expect(secondUserContent).toContain("lane 'lane-1'");
+      expect(secondUserContent).toContain(tmpRoot);
+    });
+
+    it("does not persist the lane directive key when a unified turn fails before completion", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          throw new Error("stream failed");
+        })(),
+      }) as any);
+
+      const { service } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Inspect the bug from the selected lane.",
+      });
+
+      expect(readPersistedChatState(session.id).lastLaneDirectiveKey).toBeUndefined();
+    });
+  });
+
   // --------------------------------------------------------------------------
   // listSessions
   // --------------------------------------------------------------------------
@@ -1073,6 +1369,22 @@ describe("createAgentChatService", () => {
 
       expect(reused.id).toBe(canonical.id);
       expect(reused.laneId).toBe("lane-1");
+    });
+
+    it("records headShaStart for the selected execution lane instead of the canonical host lane", async () => {
+      vi.mocked(runGit).mockImplementation(async (_args, opts) => ({
+        stdout: String(opts?.cwd ?? "").includes(path.join(tmpRoot, "lane-2")) ? "lane-2-sha\n" : "lane-1-sha\n",
+        stderr: "",
+        exitCode: 0,
+      }));
+
+      const { service, sessionService } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-2",
+      });
+
+      expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-2-sha");
     });
   });
 
@@ -1658,6 +1970,58 @@ describe("createAgentChatService", () => {
       expect(sessionService.end).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: session.id }),
       );
+    });
+
+    it("evicts disposed chats from the live managed session cache", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      expect(service.getSlashCommands({ sessionId: session.id })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "/clear" }),
+        ]),
+      );
+
+      await service.dispose({ sessionId: session.id });
+
+      expect(service.getSlashCommands({ sessionId: session.id })).toEqual([]);
+    });
+
+    it("terminates the Codex runtime process tree when disposing a live Codex chat", async () => {
+      const processKillSpy = vi.spyOn(process, "kill").mockImplementation(() => true as any);
+      vi.useFakeTimers();
+      try {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Inspect the repo",
+        });
+
+        await service.dispose({ sessionId: session.id });
+
+        expect(spawn).toHaveBeenCalledWith(
+          "codex",
+          ["app-server"],
+          expect.objectContaining({ detached: process.platform !== "win32" }),
+        );
+        expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGTERM");
+
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGKILL");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("throws when disposing an unknown session", async () => {

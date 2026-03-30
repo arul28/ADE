@@ -33,7 +33,7 @@ Every chat creates an `AgentChatSession`:
 - **identityKey** -- Optional. `"cto"` for the CTO agent, `"agent:<id>"`
   for named employees.
 - **executionMode** -- `focused | parallel | subagents | teams`.
-- **interactionMode** -- `default | plan`. When `plan`, the agent operates in a read-only planning mode where it proposes changes without executing them. Plan approval flows through a dedicated `plan_approval` pending input kind.
+- **interactionMode** -- `default | plan`. When `plan`, the agent operates in a read-only planning mode where it proposes changes without executing them. Plan approval flows through a dedicated `plan_approval` pending input kind. When the user approves a plan, the session automatically transitions from `plan` to `edit` permission mode so the agent can begin implementing the approved plan. In `bypassPermissions` or `full-auto` permission modes, plan approval is auto-granted without showing the approval UI since the user has opted out of all permission gates.
 
 Sessions persist their transcript and metadata to disk so they survive
 app restarts. The `AgentChatSessionSummary` exposes title, goal,
@@ -186,6 +186,10 @@ The renderer derives pending inputs from the event stream via `derivePendingInpu
 
 The `AgentQuestionModal` renders the first pending input with Accept / Accept for Session / Decline / Cancel buttons and optional freeform text. User responses are sent back via the `respondToInput` IPC channel (which accepts `AgentChatRespondToInputArgs` with structured `answers` and optional `decision`), or the legacy `approve` channel for backward compatibility.
 
+Plan approval requests carry the actual plan description text (extracted from the `ExitPlanMode` tool input) as the event description, so the UI can display meaningful content rather than a generic label. The message list renders plan approval cards in a scrollable container (max 288px) with pre-wrapped text to handle long multi-step plans.
+
+If a Claude approval is resolved more than once (e.g., due to a UI double-click, an interrupted turn, or stale state), the service logs a warning and returns silently instead of throwing. This prevents spurious errors from surfacing to the user when approvals have already been consumed.
+
 Codex `permissions` requests and Claude `structured_question` events both flow through the same pending input abstraction.
 
 ## Chat Transcript and Work Log
@@ -216,11 +220,29 @@ When a user switches model families mid-session (e.g., from Claude to Codex), th
 - **Run tab sidebar** -- Each lane can have one or more chat sessions.
   The `AgentChatPane` component renders the message list, composer, and
   approval modal. Users create sessions from the lane's chat panel.
+  When a new session is created, the pane awaits the `onSessionCreated`
+  callback and the session-list refresh before sending the first agent
+  turn. This ensures the parent surface has navigated to the chat tab
+  before the turn starts, preventing a blank "new chat" screen.
 - **CTO tab** -- The CTO's persistent chat session is embedded in the
   CTO surface. It uses the same `AgentChatPane` with a
   `persistent_identity` profile, giving it a distinct visual treatment.
 - **Mission threads** -- Mission-scoped views adapt chat events through
   `missionThreadEventAdapter` so they render in the mission feed format.
+
+### Chat Header
+
+The chat header title is derived from the active session. When a session
+is selected, the title is the session's own title (via
+`chatSessionTitle()`). When no session exists yet, the header shows
+"New chat". CTO and resolver surfaces override the title via
+`ChatSurfacePresentation`.
+
+When the chat pane is associated with a lane, the header displays a lane
+navigation button showing the lane's label with a branch icon. Clicking
+it selects the lane in the app store and navigates to the Lanes tab.
+The lane label is passed into `AgentChatPane` via the `laneLabel` prop
+from `TilingLayout` and `WorkViewArea`.
 
 The composer (`AgentChatComposer`) supports file/image attachments,
 model switching, reasoning-effort control, context-pack injection, and

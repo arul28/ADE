@@ -2,93 +2,134 @@ import React from "react";
 import { CaretUp, CaretDown, Terminal, X } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, LABEL_STYLE, inlineBadge, processStatusColor } from "../lanes/laneDesignTokens";
 import { formatDurationMs } from "../../lib/format";
-import { TerminalView } from "../terminals/TerminalView";
-import type { ProcessRuntime, TerminalSessionSummary } from "../../../shared/types";
-import { isRunOwnedSession } from "../../lib/sessions";
+import { commandArrayToLine } from "../../lib/shell";
+import type { ProcessDefinition, ProcessEvent, ProcessRuntime } from "../../../shared/types";
+import { formatProcessStatus, hasInspectableProcessOutput, isActiveProcessStatus } from "./processUtils";
 
 type ProcessMonitorProps = {
   laneId: string | null;
   runtimes: ProcessRuntime[];
+  processDefinitions: Record<string, ProcessDefinition>;
   processNames: Record<string, string>; // processId -> display name
   onKill: (processId: string) => void;
 };
 
 const GRID_COLUMNS = "1fr 80px 80px 80px 50px";
+const LOG_TAIL_MAX_BYTES = 220_000;
 
-export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: ProcessMonitorProps) {
+function normalizeLog(raw: string): string {
+  return raw.replace(/\u0000/g, "");
+}
+
+function formatEndedAt(
+  value: string | null,
+  locale: string | undefined = typeof navigator !== "undefined" ? navigator.language : undefined,
+  options: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" },
+): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString(locale, options);
+}
+
+export function ProcessMonitor({ laneId, runtimes, processDefinitions, processNames, onKill }: ProcessMonitorProps) {
   const [expanded, setExpanded] = React.useState(false);
-  const [sessions, setSessions] = React.useState<TerminalSessionSummary[]>([]);
-  const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
-  const sessionsRef = React.useRef(sessions);
-  sessionsRef.current = sessions;
-  const activeRuntimes = runtimes.filter((r) => r.status !== "stopped");
+  const [activeProcessId, setActiveProcessId] = React.useState<string | null>(null);
+  const [logText, setLogText] = React.useState("");
+  const [logLoading, setLogLoading] = React.useState(false);
+  const [logError, setLogError] = React.useState<string | null>(null);
+  const [pauseAutoscroll, setPauseAutoscroll] = React.useState(false);
+  const activeProcessIdRef = React.useRef<string | null>(null);
+  activeProcessIdRef.current = activeProcessId;
+  const laneIdRef = React.useRef<string | null>(laneId);
+  laneIdRef.current = laneId;
+  const logRef = React.useRef<HTMLDivElement | null>(null);
+  const activeRuntimes = runtimes.filter((runtime) => isActiveProcessStatus(runtime.status));
   const activeCount = activeRuntimes.length;
-  const activeSession = sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null;
+  const inspectableRuntimes = React.useMemo(
+    () => runtimes.filter((runtime) => hasInspectableProcessOutput(runtime)),
+    [runtimes],
+  );
+  const activeRuntime = inspectableRuntimes.find((runtime) => runtime.processId === activeProcessId) ?? null;
 
-  const refreshSessions = React.useCallback(async () => {
-    if (!laneId) {
-      setSessions([]);
+  React.useEffect(() => {
+    if (inspectableRuntimes.length === 0) {
+      setActiveProcessId(null);
       return;
     }
-    try {
-      const rows = await window.ade.sessions.list({ laneId, limit: 80 });
-      setSessions(
-        rows.filter((session) => isRunOwnedSession(session) && session.ptyId),
-      );
-    } catch {
-      // best effort
-    }
-  }, [laneId]);
+    if (activeProcessId && inspectableRuntimes.some((runtime) => runtime.processId === activeProcessId)) return;
+    const preferred =
+      inspectableRuntimes.find((runtime) => isActiveProcessStatus(runtime.status))
+      ?? inspectableRuntimes.find((runtime) => runtime.status === "crashed")
+      ?? inspectableRuntimes[0]
+      ?? null;
+    setActiveProcessId(preferred?.processId ?? null);
+  }, [activeProcessId, inspectableRuntimes]);
 
   React.useEffect(() => {
-    void refreshSessions();
-  }, [refreshSessions, runtimes.length]);
-
-  React.useEffect(() => {
-    if (sessions.length === 0) {
-      setActiveSessionId(null);
-      return;
-    }
-    if (sessions.some((session) => session.id === activeSessionId)) return;
-    setActiveSessionId(sessions[0]?.id ?? null);
-  }, [activeSessionId, sessions]);
-
-  React.useEffect(() => {
-    const unsubData = window.ade.pty.onData((event) => {
-      if (!sessionsRef.current.some((session) => session.id === event.sessionId)) {
-        void refreshSessions();
-        return;
-      }
-      setSessions((prev) =>
-        prev.map((session) =>
-          session.id === event.sessionId
-            ? { ...session, lastOutputPreview: event.data.slice(-240) }
-            : session,
-        ),
-      );
-    });
-    const unsubExit = window.ade.pty.onExit((event) => {
-      if (!sessionsRef.current.some((session) => session.id === event.sessionId)) return;
-      void refreshSessions();
+    const unsubscribe = window.ade.processes.onEvent((event: ProcessEvent) => {
+      if (event.type !== "log") return;
+      if (event.laneId !== laneIdRef.current) return;
+      if (event.processId !== activeProcessIdRef.current) return;
+      setLogText((prev) => {
+        const next = normalizeLog(`${prev}${event.chunk}`);
+        return next.length > LOG_TAIL_MAX_BYTES ? next.slice(-LOG_TAIL_MAX_BYTES) : next;
+      });
     });
     return () => {
       try {
-        unsubData();
-        unsubExit();
+        unsubscribe();
       } catch {
         // ignore
       }
     };
-  }, [refreshSessions]);
+  }, []);
 
-  const closeSession = React.useCallback(async (session: TerminalSessionSummary) => {
-    if (!session.ptyId) return;
-    try {
-      await window.ade.pty.dispose({ ptyId: session.ptyId, sessionId: session.id });
-    } finally {
-      await refreshSessions();
+  React.useEffect(() => {
+    if (!laneId || !activeRuntime) {
+      setLogText("");
+      setLogError(null);
+      setLogLoading(false);
+      return;
     }
-  }, [refreshSessions]);
+    let cancelled = false;
+    const processId = activeRuntime.processId;
+    setPauseAutoscroll(false);
+    setLogError(null);
+    setLogLoading(true);
+    setLogText("");
+    window.ade.processes
+      .getLogTail({ laneId, processId, maxBytes: LOG_TAIL_MAX_BYTES })
+      .then((log) => {
+        if (cancelled || activeProcessIdRef.current !== processId) return;
+        setLogText(normalizeLog(log));
+        setLogLoading(false);
+      })
+      .catch((error) => {
+        if (cancelled || activeProcessIdRef.current !== processId) return;
+        setLogText("");
+        setLogError(error instanceof Error ? error.message : String(error));
+        setLogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRuntime, laneId]);
+
+  React.useEffect(() => {
+    if (pauseAutoscroll) return;
+    if (!logRef.current) return;
+    logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [logText, pauseAutoscroll]);
+
+  const activeDefinition = activeRuntime ? processDefinitions[activeRuntime.processId] ?? null : null;
+  const activeCommand = activeDefinition ? commandArrayToLine(activeDefinition.command) : null;
+  const activeCwd = activeDefinition?.cwd?.trim()?.length ? activeDefinition.cwd : ".";
+  const logPlaceholder = logLoading
+    ? "Loading recent output..."
+    : activeRuntime && isActiveProcessStatus(activeRuntime.status)
+      ? "Waiting for output..."
+      : "(no output yet)";
 
   return (
     <div
@@ -162,7 +203,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                 +{activeRuntimes.length - 8}
               </span>
             )}
-            {sessions.length > 0 && (
+            {inspectableRuntimes.length > 0 && (
               <span
                 style={{
                   fontFamily: MONO_FONT,
@@ -175,7 +216,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                   borderRadius: 0,
                 }}
               >
-                {sessions.length} inspector tab{sessions.length === 1 ? "" : "s"}
+                {inspectableRuntimes.length} output tab{inspectableRuntimes.length === 1 ? "" : "s"}
               </span>
             )}
           </div>
@@ -250,7 +291,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                   {processNames[rt.processId] ?? rt.processId}
                 </span>
                 <span style={inlineBadge(processStatusColor(rt.status), { fontSize: 9, padding: "1px 6px" })}>
-                  {rt.status}
+                  {formatProcessStatus(rt)}
                 </span>
                 <span
                   style={{
@@ -276,7 +317,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                 <button
                   type="button"
                   onClick={() => onKill(rt.processId)}
-                  disabled={rt.status === "stopped"}
+                  disabled={!isActiveProcessStatus(rt.status)}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -284,11 +325,11 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                     width: 24,
                     height: 24,
                     background: "transparent",
-                    border: `1px solid ${rt.status === "stopped" ? COLORS.border : COLORS.danger + "30"}`,
+                    border: `1px solid ${isActiveProcessStatus(rt.status) ? COLORS.danger + "30" : COLORS.border}`,
                     borderRadius: 0,
-                    color: rt.status === "stopped" ? COLORS.textDim : COLORS.danger,
-                    cursor: rt.status === "stopped" ? "default" : "pointer",
-                    opacity: rt.status === "stopped" ? 0.4 : 1,
+                    color: isActiveProcessStatus(rt.status) ? COLORS.danger : COLORS.textDim,
+                    cursor: isActiveProcessStatus(rt.status) ? "pointer" : "default",
+                    opacity: isActiveProcessStatus(rt.status) ? 1 : 0.4,
                   }}
                   title="Kill process"
                 >
@@ -320,7 +361,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
               </div>
             </div>
 
-            {sessions.length === 0 ? (
+            {inspectableRuntimes.length === 0 ? (
               <div
                 style={{
                   padding: "10px 0 2px",
@@ -329,7 +370,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                   color: COLORS.textDim,
                 }}
               >
-                Start a command to open its inspector terminal here.
+                Start a command to see its stdout and stderr here.
               </div>
             ) : (
               <>
@@ -341,13 +382,14 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                     paddingBottom: 8,
                   }}
                 >
-                  {sessions.map((session) => {
-                    const isActive = session.id === activeSession?.id;
+                  {inspectableRuntimes.map((runtime) => {
+                    const isActive = runtime.processId === activeRuntime?.processId;
+                    const label = processNames[runtime.processId] ?? runtime.processId;
                     return (
                       <button
-                        key={session.id}
+                        key={runtime.processId}
                         type="button"
-                        onClick={() => setActiveSessionId(session.id)}
+                        onClick={() => setActiveProcessId(runtime.processId)}
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
@@ -364,11 +406,11 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                         }}
                       >
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {session.title}
+                          {label}
                         </span>
-                        {session.status !== "running" && (
-                          <span style={inlineBadge(processStatusColor("exited"), { fontSize: 8, padding: "1px 5px" })}>
-                            ended
+                        {!isActiveProcessStatus(runtime.status) && (
+                          <span style={inlineBadge(processStatusColor(runtime.status), { fontSize: 8, padding: "1px 5px" })}>
+                            {formatProcessStatus(runtime)}
                           </span>
                         )}
                       </button>
@@ -376,38 +418,142 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                   })}
                 </div>
 
-                {activeSession?.ptyId ? (
+                {activeRuntime ? (
                   <div
                     style={{
-                      height: 220,
                       border: `1px solid ${COLORS.border}`,
                       background: COLORS.pageBg,
-                      position: "relative",
                     }}
                   >
-                    <button
-                      type="button"
-                      onClick={() => void closeSession(activeSession)}
+                    <div
                       style={{
-                        position: "absolute",
-                        top: 8,
-                        right: 8,
-                        zIndex: 2,
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        width: 24,
-                        height: 24,
-                        background: COLORS.cardBg,
-                        border: `1px solid ${COLORS.border}`,
-                        color: COLORS.textMuted,
-                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "flex-start",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        padding: "10px 12px",
+                        borderBottom: `1px solid ${COLORS.border}`,
+                        background: COLORS.recessedBg,
                       }}
-                      title="Close inspector terminal"
                     >
-                      <X size={12} weight="bold" />
-                    </button>
-                    <TerminalView ptyId={activeSession.ptyId} sessionId={activeSession.id} className="h-full" />
+                      <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span
+                            style={{
+                              fontFamily: MONO_FONT,
+                              fontSize: 11,
+                              fontWeight: 700,
+                              color: COLORS.textPrimary,
+                            }}
+                          >
+                            {processNames[activeRuntime.processId] ?? activeRuntime.processId}
+                          </span>
+                          <span style={inlineBadge(processStatusColor(activeRuntime.status), { fontSize: 8, padding: "1px 5px" })}>
+                            {formatProcessStatus(activeRuntime)}
+                          </span>
+                          {activeRuntime.lastEndedAt ? (
+                            <span
+                              style={{
+                                fontFamily: MONO_FONT,
+                                fontSize: 10,
+                                color: COLORS.textDim,
+                              }}
+                            >
+                              ended {formatEndedAt(activeRuntime.lastEndedAt)}
+                            </span>
+                          ) : null}
+                        </div>
+                        {activeCommand ? (
+                          <div
+                            style={{
+                              fontFamily: MONO_FONT,
+                              fontSize: 10,
+                              color: COLORS.textSecondary,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                            title={activeCommand}
+                          >
+                            {activeCommand}
+                          </div>
+                        ) : null}
+                        <div
+                          style={{
+                            fontFamily: MONO_FONT,
+                            fontSize: 10,
+                            color: COLORS.textDim,
+                          }}
+                        >
+                          cwd {activeCwd}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onKill(activeRuntime.processId)}
+                        disabled={!isActiveProcessStatus(activeRuntime.status)}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 24,
+                          height: 24,
+                          background: COLORS.cardBg,
+                          border: `1px solid ${isActiveProcessStatus(activeRuntime.status) ? COLORS.danger + "30" : COLORS.border}`,
+                          color: isActiveProcessStatus(activeRuntime.status) ? COLORS.danger : COLORS.textDim,
+                          cursor: isActiveProcessStatus(activeRuntime.status) ? "pointer" : "default",
+                          opacity: isActiveProcessStatus(activeRuntime.status) ? 1 : 0.45,
+                        }}
+                        title="Kill process"
+                      >
+                        <X size={12} weight="bold" />
+                      </button>
+                    </div>
+
+                    {logError ? (
+                      <div
+                        style={{
+                          padding: "10px 12px 0",
+                          fontFamily: MONO_FONT,
+                          fontSize: 11,
+                          color: COLORS.danger,
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {logError}
+                      </div>
+                    ) : null}
+
+                    <div
+                      ref={logRef}
+                      onScroll={(event) => {
+                        const element = event.currentTarget;
+                        const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+                        setPauseAutoscroll(distanceFromBottom > 24);
+                      }}
+                      style={{
+                        height: 220,
+                        overflowY: "auto",
+                        overflowX: "hidden",
+                        padding: 12,
+                        border: `1px solid ${COLORS.border}`,
+                        borderWidth: "1px 0 0",
+                      }}
+                    >
+                      <pre
+                        style={{
+                          margin: 0,
+                          fontFamily: MONO_FONT,
+                          fontSize: 11,
+                          color: COLORS.textPrimary,
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {logText || logPlaceholder}
+                      </pre>
+                    </div>
                   </div>
                 ) : (
                   <div
@@ -418,7 +564,7 @@ export function ProcessMonitor({ laneId, runtimes, processNames, onKill }: Proce
                       color: COLORS.textDim,
                     }}
                   >
-                    This inspector terminal has ended.
+                    Select a process to inspect its output.
                   </div>
                 )}
               </>

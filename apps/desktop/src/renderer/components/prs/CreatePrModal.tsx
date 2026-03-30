@@ -9,9 +9,11 @@ import type {
   IntegrationProposalStep,
   CreateIntegrationPrResult,
   GitUpstreamSyncStatus,
+  LaneSummary,
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
+import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
 import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
 
 type CreateMode = "normal" | "queue" | "integration";
@@ -213,12 +215,22 @@ async function runWithDirtyWorktreeConfirmation<T>(args: {
 function buildLaneWarningSummaries(args: {
   selectedLaneIds: string[];
   lanes: Array<{ id: string; name: string }>;
+  allLanes: LaneSummary[];
   laneWarningItemsById: Record<string, string[]>;
+  targetBranch?: string;
+  primaryBranchRef?: string | null;
 }): LaneWarningSummary[] {
   return args.selectedLaneIds
     .map((laneId) => {
       const lane = args.lanes.find((entry) => entry.id === laneId);
-      const messages = args.laneWarningItemsById[laneId] ?? [];
+      const baseMessages = args.laneWarningItemsById[laneId] ?? [];
+      const targetDiffMessage = describePrTargetDiff({
+        lane: args.allLanes.find((entry) => entry.id === laneId) ?? null,
+        lanes: args.allLanes,
+        targetBranch: args.targetBranch ?? null,
+        primaryBranchRef: args.primaryBranchRef ?? null,
+      });
+      const messages = targetDiffMessage ? [...baseMessages, targetDiffMessage] : baseMessages;
       if (!lane || messages.length === 0) return null;
       return { laneId, laneName: lane.name, messages };
     })
@@ -236,6 +248,14 @@ function getCreateActionLabel(mode: CreateMode, busy: boolean): string {
     return mode === "integration" ? "SAVING..." : "CREATING...";
   }
   return mode === "integration" ? "SAVE PROPOSAL" : "CREATE PR";
+}
+
+function resolveDefaultBaseBranchForLane(args: {
+  lane: LaneSummary | null;
+  lanes: LaneSummary[];
+  primaryBranchRef?: string | null;
+}): string {
+  return resolveLaneBaseBranch(args);
 }
 
 export function reorderQueueLaneIds(queueLaneIds: string[], draggedLaneId: string, targetLaneId: string): string[] {
@@ -453,11 +473,14 @@ export function CreatePrModal({
   const [normalLaneId, setNormalLaneId] = React.useState<string>("");
   const [normalTitle, setNormalTitle] = React.useState("");
   const [normalDraft, setNormalDraft] = React.useState(false);
+  const [normalBaseBranch, setNormalBaseBranch] = React.useState("");
+  const normalBaseBranchDefaultRef = React.useRef("");
 
   // Queue PRs
   const [queueLaneIds, setQueueLaneIds] = React.useState<string[]>([]);
   const [queueDraft, setQueueDraft] = React.useState(false);
   const [queueDragLaneId, setQueueDragLaneId] = React.useState<string | null>(null);
+  const [queueTargetBranch, setQueueTargetBranch] = React.useState("");
 
   // Body & AI draft
   const [normalBody, setNormalBody] = React.useState("");
@@ -465,6 +488,7 @@ export function CreatePrModal({
 
   // Integration PR
   const [integrationSources, setIntegrationSources] = React.useState<string[]>([]);
+  const [integrationBaseBranch, setIntegrationBaseBranch] = React.useState("");
   const [integrationName, setIntegrationName] = React.useState("");
   const [integrationTitle, setIntegrationTitle] = React.useState("");
   const [integrationBody, setIntegrationBody] = React.useState("");
@@ -514,11 +538,14 @@ export function CreatePrModal({
       setNumericStep(1);
       setMergeMethod("squash");
       setNormalLaneId("");
+      setNormalBaseBranch("");
+      normalBaseBranchDefaultRef.current = "";
       setNormalTitle("");
       setNormalDraft(false);
       setQueueLaneIds([]);
       setQueueDraft(false);
       setQueueDragLaneId(null);
+      setQueueTargetBranch("");
       setBusy(false);
       setExecError(null);
       setResults(null);
@@ -526,6 +553,7 @@ export function CreatePrModal({
       setDrafting(false);
       setDraftError(null);
       setIntegrationSources([]);
+      setIntegrationBaseBranch("");
       setIntegrationName("");
       setIntegrationTitle("");
       setIntegrationBody("");
@@ -574,13 +602,49 @@ export function CreatePrModal({
     };
   }, [open, lanes]);
 
+  const selectedNormalLane = React.useMemo(
+    () => lanes.find((lane) => lane.id === normalLaneId) ?? null,
+    [lanes, normalLaneId],
+  );
+
+  React.useEffect(() => {
+    if (!open) return;
+    const primaryBranch = branchNameFromRef(primaryLane?.branchRef ?? "main");
+    setQueueTargetBranch((current) => current || primaryBranch);
+    setIntegrationBaseBranch((current) => current || primaryBranch);
+  }, [open, primaryLane?.branchRef]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    if (!selectedNormalLane) {
+      normalBaseBranchDefaultRef.current = "";
+      setNormalBaseBranch("");
+      return;
+    }
+    const nextDefault = resolveDefaultBaseBranchForLane({
+      lane: selectedNormalLane,
+      lanes,
+      primaryBranchRef: primaryLane?.branchRef ?? null,
+    });
+    setNormalBaseBranch((current) => {
+      const trimmedCurrent = current.trim();
+      const previousDefault = normalBaseBranchDefaultRef.current;
+      if (trimmedCurrent.length === 0 || trimmedCurrent === previousDefault) {
+        normalBaseBranchDefaultRef.current = nextDefault;
+        return nextDefault;
+      }
+      return current;
+    });
+  }, [open, selectedNormalLane, lanes, primaryLane?.branchRef]);
+
   const handleSimulate = async () => {
     if (integrationSources.length === 0) return;
     setSimulating(true);
     setExecError(null);
     setProposal(null);
     try {
-      const baseBranch = primaryLane?.branchRef ?? "main";
+      const trimmedIntegrationBaseBranch = integrationBaseBranch.trim();
+      const baseBranch = trimmedIntegrationBaseBranch || branchNameFromRef(primaryLane?.branchRef ?? "main");
       const result = await window.ade.prs.simulateIntegration({
         sourceLaneIds: integrationSources,
         baseBranch,
@@ -613,13 +677,15 @@ export function CreatePrModal({
             title: normalTitle || lane?.name || "PR",
             body: normalBody,
             draft: normalDraft,
+            ...(normalBaseBranch.trim() ? { baseBranch: normalBaseBranch.trim() } : {}),
             ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {})
           })
         });
         setResults([pr]);
         setNumericStep(3);
       } else if (mode === "queue") {
-        const baseBranch = primaryLane?.branchRef ?? "main";
+        const trimmedQueueTargetBranch = (queueTargetBranch ?? "").trim();
+        const baseBranch = (trimmedQueueTargetBranch || branchNameFromRef(primaryLane?.branchRef ?? "main")).trim();
         const result = await runWithDirtyWorktreeConfirmation({
           confirmMessage: "Continue and create the queue PRs anyway?",
           run: async (allowDirtyWorktree) => await window.ade.prs.createQueue({
@@ -726,10 +792,6 @@ export function CreatePrModal({
   };
 
   /* ── selected lane info for comparison section ──────────────────── */
-  const selectedNormalLane = React.useMemo(
-    () => lanes.find((l) => l.id === normalLaneId) ?? null,
-    [lanes, normalLaneId],
-  );
   const laneWarningItemsById = React.useMemo(() => {
     return Object.fromEntries(
       nonPrimaryLanes.map((lane) => [
@@ -740,24 +802,37 @@ export function CreatePrModal({
   }, [laneSyncStatusById, nonPrimaryLanes]);
   const selectedNormalWarnings = React.useMemo<LaneWarningSummary[]>(() => {
     if (!selectedNormalLane) return [];
-    const messages = laneWarningItemsById[selectedNormalLane.id] ?? [];
+    const baseMessages = laneWarningItemsById[selectedNormalLane.id] ?? [];
+    const targetDiffMessage = describePrTargetDiff({
+      lane: selectedNormalLane,
+      lanes,
+      targetBranch: normalBaseBranch,
+      primaryBranchRef: primaryLane?.branchRef ?? null,
+    });
+    const messages = targetDiffMessage ? [...baseMessages, targetDiffMessage] : baseMessages;
     if (!messages.length) return [];
     return [{ laneId: selectedNormalLane.id, laneName: selectedNormalLane.name, messages }];
-  }, [laneWarningItemsById, selectedNormalLane]);
+  }, [laneWarningItemsById, lanes, normalBaseBranch, primaryLane?.branchRef, selectedNormalLane]);
   const selectedQueueWarnings = React.useMemo<LaneWarningSummary[]>(() => {
     return buildLaneWarningSummaries({
       selectedLaneIds: queueLaneIds,
       lanes,
-      laneWarningItemsById
+      allLanes: nonPrimaryLanes,
+      laneWarningItemsById,
+      targetBranch: queueTargetBranch,
+      primaryBranchRef: primaryLane?.branchRef ?? null,
     });
-  }, [laneWarningItemsById, lanes, queueLaneIds]);
+  }, [laneWarningItemsById, lanes, nonPrimaryLanes, primaryLane?.branchRef, queueLaneIds, queueTargetBranch]);
   const selectedIntegrationWarnings = React.useMemo<LaneWarningSummary[]>(() => {
     return buildLaneWarningSummaries({
       selectedLaneIds: integrationSources,
       lanes,
-      laneWarningItemsById
+      allLanes: nonPrimaryLanes,
+      laneWarningItemsById,
+      targetBranch: integrationBaseBranch,
+      primaryBranchRef: primaryLane?.branchRef ?? null,
     });
-  }, [integrationSources, laneWarningItemsById, lanes]);
+  }, [integrationBaseBranch, integrationSources, laneWarningItemsById, lanes, nonPrimaryLanes, primaryLane?.branchRef]);
   const selectedNormalLoading = Boolean(normalLaneId) && laneSyncLoadingById[normalLaneId] === true;
   const selectedQueueLoading = queueLaneIds.some((laneId) => laneSyncLoadingById[laneId] === true);
   const selectedIntegrationLoading = integrationSources.some((laneId) => laneSyncLoadingById[laneId] === true);
@@ -982,16 +1057,25 @@ export function CreatePrModal({
 
                     <div>
                       <span style={labelStyle}>TARGET BRANCH</span>
-                      <div style={{
-                        ...inputStyle,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        color: C.textSecondary,
-                        cursor: "default",
-                      }}>
-                        <GitBranch size={14} weight="bold" style={{ color: C.textMuted }} />
-                        {primaryLane?.branchRef ?? "main"}
+                      <div style={{ position: "relative" }}>
+                        <GitBranch
+                          size={14}
+                          weight="bold"
+                          style={{
+                            position: "absolute",
+                            left: 12,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            color: C.textMuted,
+                            pointerEvents: "none",
+                          }}
+                        />
+                        <input
+                          value={normalBaseBranch}
+                          onChange={(e) => setNormalBaseBranch(e.target.value)}
+                          style={{ ...inputStyle, paddingLeft: 32 }}
+                          placeholder={branchNameFromRef(primaryLane?.branchRef ?? "main")}
+                        />
                       </div>
                     </div>
 
@@ -1235,12 +1319,59 @@ export function CreatePrModal({
                         {queueLaneIds.length} lane{queueLaneIds.length !== 1 ? "s" : ""} selected
                       </div>
                     )}
+                    <div style={{ marginTop: 12 }}>
+                      <span style={labelStyle}>TARGET BRANCH</span>
+                      <div style={{ position: "relative" }}>
+                        <GitBranch
+                          size={14}
+                          weight="bold"
+                          style={{
+                            position: "absolute",
+                            left: 12,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            color: C.textMuted,
+                            pointerEvents: "none",
+                          }}
+                        />
+                        <input
+                          value={queueTargetBranch}
+                          onChange={(e) => setQueueTargetBranch(e.target.value)}
+                          style={{ ...inputStyle, paddingLeft: 32 }}
+                          placeholder={branchNameFromRef(primaryLane?.branchRef ?? "main")}
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
 
                 {/* ── Integration mode: Source lanes + simulation ─── */}
                 {mode === "integration" && (
                   <>
+                    <div>
+                      <span style={labelStyle}>TARGET BRANCH</span>
+                      <div style={{ position: "relative" }}>
+                        <GitBranch
+                          size={14}
+                          weight="bold"
+                          style={{
+                            position: "absolute",
+                            left: 12,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            color: C.textMuted,
+                            pointerEvents: "none",
+                          }}
+                        />
+                        <input
+                          value={integrationBaseBranch}
+                          onChange={(e) => setIntegrationBaseBranch(e.target.value)}
+                          style={{ ...inputStyle, paddingLeft: 32 }}
+                          placeholder={branchNameFromRef(primaryLane?.branchRef ?? "main")}
+                        />
+                      </div>
+                    </div>
+
                     <div>
                       <span style={labelStyle}>SOURCE LANES TO INTEGRATE (SELECT 2+)</span>
                       <LaneCheckboxList

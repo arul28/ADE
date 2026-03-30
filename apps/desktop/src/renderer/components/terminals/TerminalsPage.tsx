@@ -197,7 +197,7 @@ export function TerminalsPage() {
       <SessionContextMenu
         menu={contextMenu}
         onClose={() => setContextMenu(null)}
-        onCloseSession={(ptyId) => work.closeSession(ptyId).catch(() => {})}
+        onCloseSession={({ ptyId, sessionId }) => work.closeSession(ptyId, sessionId).catch(() => {})}
         onEndChat={(id) => work.closeChatSession(id).catch(() => {})}
         onResume={(s) => work.resumeSession(s).catch(() => {})}
         onCopyResumeCommand={(cmd) => navigator.clipboard.writeText(cmd).catch(() => {})}
@@ -208,7 +208,7 @@ export function TerminalsPage() {
       <SessionInfoPopover
         popover={infoPopover}
         onClose={() => setInfoPopover(null)}
-        onCloseSession={(ptyId) => work.closeSession(ptyId).catch(() => {})}
+        onCloseSession={({ ptyId, sessionId }) => work.closeSession(ptyId, sessionId).catch(() => {})}
         onEndChat={(id) => work.closeChatSession(id).catch(() => {})}
         onResume={(s) => work.resumeSession(s).catch(() => {})}
         onGoToLane={handleGoToLane}

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   augmentPathWithKnownCliDirs,
   resolveExecutableFromKnownLocations,
@@ -26,6 +26,7 @@ describe("cliExecutableResolver", () => {
   let tempRoot: string | null = null;
 
   afterEach(() => {
+    vi.restoreAllMocks();
     setPlatform(originalPlatform);
     if (tempRoot) {
       fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -40,6 +41,20 @@ describe("cliExecutableResolver", () => {
     makeExecutable(path.join(prefixDir, "bin", "codex"));
     fs.mkdirSync(homeDir, { recursive: true });
     fs.writeFileSync(path.join(homeDir, ".npmrc"), "prefix=~/.npm-global\n", "utf8");
+
+    // Hide system-installed codex so it doesn't win the known-dirs race.
+    const realStatSync = fs.statSync;
+    vi.spyOn(fs, "statSync").mockImplementation(((p: fs.PathLike, opts?: any) => {
+      const normalizedCandidate = path.normalize(String(p));
+      const normalizedTempRoot = path.normalize(tempRoot!);
+      const candidateBase = path.parse(normalizedCandidate).name.toLowerCase();
+      if (candidateBase === "codex" && !normalizedCandidate.startsWith(normalizedTempRoot)) {
+        const err: NodeJS.ErrnoException = new Error("ENOENT");
+        err.code = "ENOENT";
+        throw err;
+      }
+      return realStatSync(normalizedCandidate, opts);
+    }) as typeof fs.statSync);
 
     const env = {
       HOME: homeDir,

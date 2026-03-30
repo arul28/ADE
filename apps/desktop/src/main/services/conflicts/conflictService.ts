@@ -76,7 +76,7 @@ import { extractFirstJsonObject } from "../ai/utils";
 import { safeSegment } from "../shared/packLegacyUtils";
 import { fetchQueueTargetTrackingBranches, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import type { QueueRebaseOverride } from "../shared/queueRebase";
-import { asString, isRecord, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
+import { asString, isRecord, normalizeBranchName, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
 
@@ -298,6 +298,15 @@ function resolveLaneRebaseTarget(args: {
       comparisonRef,
       fallbackRef: parentBranchRef,
       displayBaseBranch: parentBranchRef,
+    };
+  }
+
+  const baseBranchRef = args.lane.baseRef?.trim() ?? "";
+  if (baseBranchRef) {
+    return {
+      comparisonRef: `origin/${baseBranchRef}`,
+      fallbackRef: baseBranchRef,
+      displayBaseBranch: baseBranchRef,
     };
   }
 
@@ -4273,6 +4282,74 @@ export function createConflictService({
       }
     }
 
+    const openPrRows = db.all<{
+      id: string;
+      lane_id: string;
+      base_branch: string | null;
+    }>(
+      `
+        select id, lane_id, base_branch
+        from pull_requests
+        where project_id = ?
+          and state in ('open', 'draft')
+        order by updated_at desc, created_at desc
+      `,
+      [projectId],
+    );
+
+    const seenPrTargetNeeds = new Set<string>();
+    for (const row of openPrRows) {
+      const lane = lanesById.get(String(row.lane_id ?? "").trim());
+      if (!lane || lane.laneType === "primary" || lane.parentLaneId) continue;
+      const prBaseBranch = normalizeBranchName(String(row.base_branch ?? "").trim());
+      const laneBaseBranch = normalizeBranchName(String(lane.baseRef ?? "").trim());
+      if (!prBaseBranch || prBaseBranch === laneBaseBranch) continue;
+      const dedupeKey = `${lane.id}:${prBaseBranch}`;
+      if (seenPrTargetNeeds.has(dedupeKey)) continue;
+      seenPrTargetNeeds.add(dedupeKey);
+
+      try {
+        const remoteRef = `origin/${prBaseBranch}`;
+        const baseHead = await readHeadSha(projectRoot, remoteRef)
+          .catch(() => readHeadSha(projectRoot, prBaseBranch))
+          .catch(() => "");
+        if (!baseHead) continue;
+        const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
+        const behindRes = await runGit(
+          ["rev-list", "--count", `${laneHead}..${baseHead}`],
+          { cwd: projectRoot, timeoutMs: 15_000 }
+        );
+        const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
+        if (behindBy === 0) continue;
+
+        const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
+        const merge = await runGitMergeTree({
+          cwd: projectRoot,
+          mergeBase,
+          branchA: baseHead,
+          branchB: laneHead,
+          timeoutMs: 60_000
+        });
+
+        const existingNeed = needs.find((need) => need.laneId === lane.id) ?? null;
+
+        needs.push({
+          laneId: lane.id,
+          laneName: lane.name,
+          baseBranch: prBaseBranch,
+          behindBy,
+          conflictPredicted: merge.conflicts.length > 0,
+          conflictingFiles: merge.conflicts.map((conflict) => conflict.path),
+          prId: String(row.id),
+          groupContext: existingNeed?.groupContext ?? null,
+          dismissedAt: existingNeed?.dismissedAt ?? rebaseDismissed.get(lane.id) ?? null,
+          deferredUntil: existingNeed?.deferredUntil ?? rebaseDeferred.get(lane.id) ?? null,
+        });
+      } catch (err) {
+        logger.warn(`scanRebaseNeeds: failed PR target scan for lane ${lane.id}`, { error: err });
+      }
+    }
+
     // Emit rebase-needs-updated so renderer gets notified
     if (onEvent) {
       onEvent({ type: "rebase-needs-updated", needs, timestamp: new Date().toISOString() });
@@ -4437,11 +4514,18 @@ export function createConflictService({
         projectRoot,
         laneId: lane.id,
       });
-      const { comparisonRef: rebaseTarget } = resolveLaneRebaseTarget({
+      const { comparisonRef, fallbackRef } = resolveLaneRebaseTarget({
         lane,
         lanesById,
         queueOverride,
       });
+      let rebaseTarget = comparisonRef;
+      if (fallbackRef) {
+        const comparisonRefExists = await readHeadSha(projectRoot, comparisonRef).catch(() => "");
+        if (!comparisonRefExists) {
+          rebaseTarget = fallbackRef;
+        }
+      }
       const rebaseRes = await runGit(
         ["rebase", rebaseTarget],
         { cwd: lane.worktreePath, timeoutMs: 120_000 }

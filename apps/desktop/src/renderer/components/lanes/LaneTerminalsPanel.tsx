@@ -13,6 +13,7 @@ import { useNavigate } from "react-router-dom";
 import { sessionIndicatorState } from "../../lib/terminalAttention";
 import { isChatToolType, isRunOwnedSession, primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
 import { listSessionsCached } from "../../lib/sessionListCache";
+import { defaultTrackedCliStartupCommand } from "../terminals/cliLaunch";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { persistLaunchTracked, readLaunchTracked } from "../../lib/terminalLaunchPreferences";
 
@@ -202,7 +203,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
         : toolType === "claude"
           ? "Claude Code"
           : "Codex";
-      const startupCommand = toolType === "shell" ? undefined : toolType;
+      const startupCommand = toolType === "shell" ? undefined : defaultTrackedCliStartupCommand(toolType);
 
       window.ade.pty
         .create({

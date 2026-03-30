@@ -3,7 +3,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
 import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload } from "../../../shared/types";
-import { fetchQueueTargetTrackingBranches, resolveQueueRebaseOverride } from "../shared/queueRebase";
+import { fetchQueueTargetTrackingBranches, fetchRemoteTrackingBranch, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { isRecord, nowIso } from "../shared/utils";
 
 type StoredSuggestionState = {
@@ -97,9 +97,22 @@ export function createRebaseSuggestionService(args: {
     return result.exitCode === 0 ? Math.max(0, Number(result.stdout.trim()) || 0) : 0;
   };
 
+  const resolvePrimaryParentHeadSha = async (parent: LaneSummary): Promise<string | null> => {
+    const parentBranch = parent.branchRef.trim();
+    if (!parentBranch) return null;
+    await fetchRemoteTrackingBranch({
+      projectRoot,
+      targetBranch: parentBranch,
+    }).catch(() => {});
+    const remoteHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
+    if (remoteHeadSha) return remoteHeadSha;
+    return getHeadSha(parent.worktreePath);
+  };
+
   const resolveSuggestionBase = async (
     lane: LaneSummary,
     laneById: Map<string, LaneSummary>,
+    primaryParentHeadByBranch: Map<string, string | null>,
   ): Promise<{ parentLaneId: string; parentHeadSha: string; baseLabel: string | null; groupContext: string | null } | null> => {
     const queueOverride = await resolveQueueRebaseOverride({
       db,
@@ -121,7 +134,26 @@ export function createRebaseSuggestionService(args: {
     if (!lane.parentLaneId) return null;
     const parent = laneById.get(lane.parentLaneId);
     if (!parent) return null;
-    const parentHeadSha = await getHeadSha(parent.worktreePath);
+    let parentHeadSha: string | null;
+    if (parent.laneType === "primary") {
+      const parentBranch = parent.branchRef.trim();
+      if (!parentBranch) return null;
+      if (primaryParentHeadByBranch.has(parentBranch)) {
+        parentHeadSha = primaryParentHeadByBranch.get(parentBranch) ?? null;
+      } else {
+        await fetchRemoteTrackingBranch({
+          projectRoot,
+          targetBranch: parentBranch,
+        }).catch(() => {});
+        parentHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
+        if (!parentHeadSha) {
+          parentHeadSha = await getHeadSha(parent.worktreePath);
+        }
+        primaryParentHeadByBranch.set(parentBranch, parentHeadSha);
+      }
+    } else {
+      parentHeadSha = await getHeadSha(parent.worktreePath);
+    }
     if (!parentHeadSha) return null;
     return {
       parentLaneId: lane.parentLaneId,
@@ -140,13 +172,14 @@ export function createRebaseSuggestionService(args: {
 
     const lanes = await laneService.list({ includeArchived: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const primaryParentHeadByBranch = new Map<string, string | null>();
     const prLaneIds = getPrLaneIds();
 
     const out: RebaseSuggestion[] = [];
     const nowMs = Date.now();
 
     for (const lane of lanes) {
-      const base = await resolveSuggestionBase(lane, laneById);
+      const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
       if (!base) continue;
       const behindCount = await readBehindCount({
         laneWorktreePath: lane.worktreePath,
@@ -240,7 +273,8 @@ export function createRebaseSuggestionService(args: {
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
     const laneById = new Map(lanes.map((entry) => [entry.id, entry] as const));
-    const base = await resolveSuggestionBase(lane, laneById);
+    const primaryParentHeadByBranch = new Map<string, string | null>();
+    const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to dismiss.");
 
     const existing = loadState(laneId);
@@ -272,7 +306,8 @@ export function createRebaseSuggestionService(args: {
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
     const laneById = new Map(lanes.map((entry) => [entry.id, entry] as const));
-    const base = await resolveSuggestionBase(lane, laneById);
+    const primaryParentHeadByBranch = new Map<string, string | null>();
+    const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to defer.");
 
     const existing = loadState(laneId);
@@ -300,14 +335,18 @@ export function createRebaseSuggestionService(args: {
     reason: string;
   }): Promise<void> => {
     const parentId = args.laneId.trim();
-    const parentHeadSha = (args.postHeadSha ?? "").trim();
-    if (!parentId || !parentHeadSha) return;
+    if (!parentId) return;
 
     // Lightweight: only consider direct children; rebase runs can recurse.
     // Skip lanes that have a queue override — their base is the queue target,
     // not the direct parent, so writing direct-parent ids here would cause
     // listSuggestions() to see a base identity change and reset dismissals.
     const lanes = await laneService.list({ includeArchived: false });
+    const parent = lanes.find((lane) => lane.id === parentId) ?? null;
+    const resolvedParentHeadSha = parent?.laneType === "primary"
+      ? await resolvePrimaryParentHeadSha(parent)
+      : (args.postHeadSha ?? "").trim();
+    if (!resolvedParentHeadSha) return;
     const directChildren = lanes.filter((lane) => lane.parentLaneId === parentId && lane.status.behind > 0);
 
     if (directChildren.length === 0) return;
@@ -326,11 +365,11 @@ export function createRebaseSuggestionService(args: {
       const next: StoredSuggestionState = {
         laneId: child.id,
         parentLaneId: parentId,
-        parentHeadSha,
+        parentHeadSha: resolvedParentHeadSha,
         behindCount: Math.max(0, Math.floor(child.status.behind)),
-        lastSuggestedAt: existing?.parentHeadSha === parentHeadSha ? existing.lastSuggestedAt : ts,
+        lastSuggestedAt: existing?.parentHeadSha === resolvedParentHeadSha ? existing.lastSuggestedAt : ts,
         deferredUntil: existing?.deferredUntil ?? null,
-        dismissedAt: existing?.parentHeadSha === parentHeadSha ? existing.dismissedAt ?? null : null
+        dismissedAt: existing?.parentHeadSha === resolvedParentHeadSha ? existing.dismissedAt ?? null : null
       };
       saveState(next);
     }

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Warning, Trash, Archive } from "@phosphor-icons/react";
-import type { AiConfig, CreatePrFromLaneArgs, LandResult, MergeMethod, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import type { AiConfig, CreatePrFromLaneArgs, LandResult, LaneSummary, MergeMethod, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { useAppStore } from "../../state/appStore";
@@ -10,11 +10,20 @@ import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
+import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
 
-function branchNameFromRef(ref: string): string {
-  const trimmed = ref.trim();
-  if (trimmed.startsWith("refs/heads/")) return trimmed.slice("refs/heads/".length);
-  return trimmed;
+export { branchNameFromRef };
+
+export function resolveDefaultBaseBranch(args: {
+  lane: LaneSummary | null;
+  parentLane: LaneSummary | null;
+  primaryBranchRef?: string | null;
+}): string {
+  return resolveLaneBaseBranch({
+    lane: args.lane,
+    lanes: args.parentLane ? [args.parentLane] : [],
+    primaryBranchRef: args.primaryBranchRef,
+  });
 }
 
 function titleFromBranch(branch: string): string {
@@ -109,10 +118,11 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
   useEffect(() => { void loadPrDescModel(); }, [loadPrDescModel]);
 
   const defaultBaseBranch = React.useMemo(() => {
-    if (!lane) return branchNameFromRef(primaryLane?.branchRef ?? "main");
-    if (parentLane) return branchNameFromRef(parentLane.branchRef);
-    const primaryBranch = primaryLane?.branchRef ?? lane.baseRef;
-    return branchNameFromRef(primaryBranch);
+    return resolveDefaultBaseBranch({
+      lane,
+      parentLane,
+      primaryBranchRef: primaryLane?.branchRef ?? null,
+    });
   }, [lane, parentLane, primaryLane?.branchRef]);
   const defaultHeadBranch = lane ? branchNameFromRef(lane.branchRef) : "";
 
@@ -574,6 +584,28 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
           </div>
         </div>
       )}
+
+      {(() => {
+        const targetDiffMessage = describePrTargetDiff({
+          lane,
+          lanes,
+          targetBranch: pr.baseBranch,
+          primaryBranchRef: primaryLane?.branchRef ?? null,
+        });
+        if (!targetDiffMessage || pr.state !== "open") return null;
+        return (
+          <div className="mt-2 rounded-lg border border-blue-500/20 bg-blue-500/5 p-2.5 text-xs flex items-center gap-2">
+            <Warning size={14} weight="fill" className="text-blue-400 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <span className="font-semibold text-blue-300">PR target differs from lane base</span>
+              <span className="text-muted-fg ml-1.5">{targetDiffMessage}</span>
+            </div>
+            <Button size="sm" variant="outline" className="h-6 px-2 text-xs shrink-0" onClick={() => navigate("/prs?tab=rebase")}>
+              Rebase
+            </Button>
+          </div>
+        );
+      })()}
 
       {/* Rebase warning banner — uses local lane status as primary source */}
       {(() => {

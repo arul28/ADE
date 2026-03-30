@@ -15,6 +15,17 @@ const THEME_BORDER = "var(--color-border)";
 const THEME_FG = "var(--color-fg)";
 const THEME_MUTED = "var(--color-muted-fg)";
 
+function isRunningPtySession(
+  session: TerminalSessionSummary | null | undefined,
+): session is TerminalSessionSummary & { ptyId: string } {
+  return Boolean(
+    session
+    && session.status === "running"
+    && session.ptyId
+    && !isChatToolType(session.toolType),
+  );
+}
+
 function SessionSurface({
   session,
   isActive,
@@ -28,7 +39,7 @@ function SessionSurface({
   if (isChat) {
     return <AgentChatPane laneId={session.laneId} lockSessionId={session.id} onSessionCreated={onOpenChatSession} />;
   }
-  if (session.status === "running" && session.ptyId) {
+  if (isRunningPtySession(session)) {
     return (
       <TerminalView
         key={session.id}
@@ -113,6 +124,7 @@ export function WorkViewArea({
   const activeSession = activeItemId
     ? sessionsById.get(activeItemId) ?? displaySessions[0] ?? null
     : null;
+  const activeRunningTerminalSession = isRunningPtySession(activeSession) ? activeSession : null;
 
   if (viewMode === "grid") {
     return (
@@ -346,9 +358,23 @@ export function WorkViewArea({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1" style={{ background: THEME_CARD }}>
+      <div className="relative min-h-0 flex-1" style={{ background: THEME_CARD }}>
+        {activeRunningTerminalSession ? (
+          <TerminalView
+            key={activeRunningTerminalSession.id}
+            ptyId={activeRunningTerminalSession.ptyId}
+            sessionId={activeRunningTerminalSession.id}
+            isActive
+            className="absolute inset-0 h-full w-full"
+          />
+        ) : null}
+
         {activeSession ? (
-          <SessionSurface session={activeSession} isActive onOpenChatSession={onOpenChatSession} />
+          activeRunningTerminalSession ? null : (
+            <div className="absolute inset-0">
+              <SessionSurface session={activeSession} isActive onOpenChatSession={onOpenChatSession} />
+            </div>
+          )
         ) : (
           <WorkStartSurface
             draftKind={draftKind}

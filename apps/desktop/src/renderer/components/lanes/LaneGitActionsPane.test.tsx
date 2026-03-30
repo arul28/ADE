@@ -18,6 +18,16 @@ let mockStoreState: {
   selectLane: ReturnType<typeof vi.fn>;
 };
 
+let mockAutoRebaseStatuses: Array<{
+  laneId: string;
+  parentLaneId: string | null;
+  parentHeadSha: string | null;
+  state: "autoRebased" | "rebasePending" | "rebaseConflict" | "rebaseFailed";
+  updatedAt: string;
+  conflictCount: number;
+  message: string | null;
+}> = [];
+
 vi.mock("../../state/appStore", () => ({
   useAppStore: (selector: (state: typeof mockStoreState) => unknown) => selector(mockStoreState),
 }));
@@ -85,6 +95,7 @@ describe("LaneGitActionsPane rescue action", () => {
       diverged: false,
       recommendedAction: "push",
     };
+    mockAutoRebaseStatuses = [];
 
     globalThis.window.ade = {
       diff: {
@@ -96,7 +107,7 @@ describe("LaneGitActionsPane rescue action", () => {
         getConflictState: vi.fn(async () => mockConflictState),
       },
       lanes: {
-        listAutoRebaseStatuses: vi.fn(async () => []),
+        listAutoRebaseStatuses: vi.fn(async () => mockAutoRebaseStatuses),
         onAutoRebaseEvent: vi.fn(() => () => undefined),
         createFromUnstaged: vi.fn(async () => buildLane({ id: "lane-2", name: "Rescue lane", status: { dirty: true, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false } })),
       },
@@ -115,7 +126,7 @@ describe("LaneGitActionsPane rescue action", () => {
     }
   });
 
-  function renderPane() {
+  function renderPane(overrides?: Partial<React.ComponentProps<typeof LaneGitActionsPane>>) {
     render(
       <MemoryRouter>
         <LaneGitActionsPane
@@ -127,6 +138,7 @@ describe("LaneGitActionsPane rescue action", () => {
           selectedPath={null}
           selectedMode={null}
           selectedCommitSha={null}
+          {...overrides}
         />
       </MemoryRouter>,
     );
@@ -181,5 +193,31 @@ describe("LaneGitActionsPane rescue action", () => {
     const rescueButton = await screen.findByRole("button", { name: /create new lane with current changes/i });
     expect((rescueButton as HTMLButtonElement).disabled).toBe(true);
     expect(rescueButton.getAttribute("title")).toMatch(/finish the current merge/i);
+  });
+
+  it("treats auto-rebase conflicts as failures and links to the Rebase tab", async () => {
+    const user = userEvent.setup();
+    const resolveRebaseConflict = vi.fn();
+    mockAutoRebaseStatuses = [
+      {
+        laneId: "lane-1",
+        parentLaneId: "lane-main",
+        parentHeadSha: "parent-sha",
+        state: "rebaseConflict",
+        updatedAt: "2026-03-30T12:00:00.000Z",
+        conflictCount: 2,
+        message: "Files need follow-up before this lane can be pushed.",
+      },
+    ];
+
+    renderPane({ onResolveRebaseConflict: resolveRebaseConflict });
+
+    const rebaseTabButton = await screen.findByRole("button", { name: /open rebase tab/i });
+    screen.getByText("AUTO-REBASE FAILED");
+    screen.getByText(/auto-rebase failed\. files need follow-up before this lane can be pushed\./i);
+
+    await user.click(rebaseTabButton);
+
+    expect(resolveRebaseConflict).toHaveBeenCalledWith("lane-1", "lane-main");
   });
 });

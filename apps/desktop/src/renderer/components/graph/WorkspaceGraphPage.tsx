@@ -2611,6 +2611,7 @@ function GraphInner() {
     const autoRebase = autoRebaseByLaneId[selectedLane.id] ?? null;
     if (remoteSync?.diverged) return { label: "Diverged", tone: "text-red-300" };
     if (autoRebase?.state === "rebaseConflict") return { label: "Rebase conflict", tone: "text-red-300" };
+    if (autoRebase?.state === "rebaseFailed") return { label: "Rebase failed", tone: "text-red-300" };
     if (autoRebase?.state === "rebasePending") return { label: "Rebase pending", tone: "text-amber-300" };
     if (remoteSync && ((remoteSync.hasUpstream === false) || remoteSync.ahead > 0)) {
       return { label: remoteSync.hasUpstream === false ? "Publish lane" : "Needs push", tone: "text-emerald-300" };

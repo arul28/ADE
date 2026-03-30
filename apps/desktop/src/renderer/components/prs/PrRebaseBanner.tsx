@@ -15,7 +15,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
 
   const need = rebaseNeeds.find((n) => n.laneId === laneId);
   const autoStatus = autoRebaseStatuses?.find((s) => s.laneId === laneId);
-  const hasAutoRebaseError = autoStatus?.state === "rebaseConflict";
+  const hasAutoRebaseError = autoStatus?.state === "rebaseConflict" || autoStatus?.state === "rebaseFailed";
 
   // Reset dismissed state when lane changes
   React.useEffect(() => {
@@ -39,7 +39,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
         <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
           <XCircle size={14} weight="fill" style={{ color: "#EF4444", flexShrink: 0 }} />
           <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px", color: "#FCA5A5" }}>
-            AUTO-REBASE FAILED — conflicts need manual resolution
+            AUTO-REBASE FAILED — manual follow-up required
           </span>
         </div>
         <button

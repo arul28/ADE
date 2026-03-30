@@ -2,9 +2,10 @@ import React from "react";
 import { Play, Stop, DotsThreeVertical } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, inlineBadge, processStatusColor } from "../lanes/laneDesignTokens";
 import { formatDurationMs } from "../../lib/format";
-import type { ProcessDefinition, ProcessRuntime, ProcessRuntimeStatus } from "../../../shared/types";
+import type { ProcessDefinition, ProcessRuntime } from "../../../shared/types";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { commandArrayToLine } from "../../lib/shell";
+import { formatProcessStatus, isActiveProcessStatus } from "./processUtils";
 
 type CommandCardProps = {
   definition: ProcessDefinition;
@@ -17,10 +18,6 @@ type CommandCardProps = {
   stacks?: { id: string }[];
 };
 
-function isActive(status: ProcessRuntimeStatus | undefined): boolean {
-  return status === "running" || status === "starting" || status === "stopping";
-}
-
 export function CommandCard({
   definition,
   runtime,
@@ -32,7 +29,8 @@ export function CommandCard({
   stacks,
 }: CommandCardProps) {
   const status = runtime?.status;
-  const running = isActive(status);
+  const running = status ? isActiveProcessStatus(status) : false;
+  const statusText = runtime && status && status !== "stopped" ? formatProcessStatus(runtime) : null;
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
 
@@ -45,7 +43,10 @@ export function CommandCard({
       style={{
         background: COLORS.cardBg,
         border: `1px solid ${COLORS.border}`,
-        borderLeft: running ? `3px solid ${COLORS.success}` : `1px solid ${COLORS.border}`,
+        borderLeft:
+          statusText && status
+            ? `3px solid ${processStatusColor(status)}`
+            : `1px solid ${COLORS.border}`,
         borderRadius: 0,
         padding: "14px 16px",
         display: "flex",
@@ -90,9 +91,9 @@ export function CommandCard({
         </div>
 
         {/* Status badge (when running) */}
-        {running && status && (
-          <span style={inlineBadge(COLORS.success, { fontSize: 9, padding: "1px 6px" })}>
-            {status}
+        {statusText && status && (
+          <span style={inlineBadge(processStatusColor(status), { fontSize: 9, padding: "1px 6px" })}>
+            {statusText}
           </span>
         )}
 

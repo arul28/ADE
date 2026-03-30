@@ -60,12 +60,12 @@ type CachedRuntime = {
   ptyExitUnsub: (() => void) | null;
   termDataSub: { dispose: () => void } | null;
   rendererInitStarted: boolean;
+  inputEnabled: boolean;
 };
 
 const HYDRATE_TAIL_BYTES = 240_000;
 const MAX_PENDING_HYDRATION_BYTES = 400_000;
 const MAX_FRAME_WRITE_BYTES = 450_000;
-const LIVE_RUNTIME_KEEPALIVE_MS = 90_000;
 const EXITED_RUNTIME_KEEPALIVE_MS = 8_000;
 
 const runtimeCache = new Map<string, CachedRuntime>();
@@ -172,6 +172,25 @@ function parkRuntime(runtime: CachedRuntime) {
   const parking = ensureParkedRoot();
   if (runtime.host.parentElement !== parking) {
     parking.appendChild(runtime.host);
+  }
+}
+
+function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
+  runtime.inputEnabled = active;
+  try {
+    runtime.host.tabIndex = active ? 0 : -1;
+  } catch {
+    // ignore
+  }
+  try {
+    runtime.host.toggleAttribute("aria-hidden", !active);
+  } catch {
+    // ignore
+  }
+  try {
+    runtime.host.toggleAttribute("inert", !active);
+  } catch {
+    // ignore
   }
 }
 
@@ -543,7 +562,8 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
     ptyDataUnsub: null,
     ptyExitUnsub: null,
     termDataSub: null,
-    rendererInitStarted: false
+    rendererInitStarted: false,
+    inputEnabled: true
   };
 
   // Capture-phase paste listener on host: intercepts ALL paste sources (Cmd+V,
@@ -561,6 +581,7 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
   }, true);
 
   term.attachCustomKeyEventHandler((ev) => {
+    if (!runtime.inputEnabled) return false;
     const isMac = navigator.platform.toLowerCase().includes("mac");
     const mod = isMac ? ev.metaKey : ev.ctrlKey;
     const key = ev.key.toLowerCase();
@@ -700,6 +721,7 @@ export function getTerminalRuntimeHealth(sessionId: string): TerminalHealthCount
 
 export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId: string; sessionId: string; className?: string; isActive?: boolean }) {
   const appTheme = useAppStore((s) => s.theme);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<CachedRuntime | null>(null);
   const [exited, setExited] = useState<number | null>(null);
@@ -862,15 +884,60 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
       el.removeEventListener("wheel", onWheel);
 
       if (runtime.host.parentElement === el) {
+        try {
+          runtime.term.blur();
+        } catch {
+          // ignore
+        }
+        try {
+          runtime.host.blur();
+        } catch {
+          // ignore
+        }
         parkRuntime(runtime);
       }
 
       runtime.refs = Math.max(0, runtime.refs - 1);
-      if (runtime.refs === 0) {
-        scheduleRuntimeDispose(runtime, runtime.exitCode == null ? LIVE_RUNTIME_KEEPALIVE_MS : EXITED_RUNTIME_KEEPALIVE_MS);
+      // Keep live runtimes parked until the PTY exits. Restoring a full-screen
+      // TUI from transcript tail is brittle, especially once transcript capture truncates.
+      if (runtime.refs === 0 && runtime.exitCode != null) {
+        scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
       }
     };
   }, [ptyId, sessionId]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
+    if (!runtime || runtime.disposed) return;
+
+    const active = isActive !== false;
+    const wrapper = wrapperRef.current;
+    setRuntimeInteractionState(runtime, active);
+
+    if (wrapper) {
+      wrapper.tabIndex = -1;
+      if (active) {
+        wrapper.removeAttribute("aria-hidden");
+        wrapper.removeAttribute("inert");
+      } else {
+        wrapper.setAttribute("aria-hidden", "true");
+        wrapper.setAttribute("inert", "");
+      }
+    }
+
+    if (!active) {
+      try {
+        runtime.term.blur();
+      } catch {
+        // ignore
+      }
+      try {
+        runtime.host.blur();
+      } catch {
+        // ignore
+      }
+    }
+  }, [isActive, sessionId]);
 
   useEffect(() => {
     const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
@@ -920,6 +987,7 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
 
   return (
     <div
+      ref={wrapperRef}
       className={cn(
         "relative h-full min-h-0 min-w-0 w-full overflow-hidden rounded-xl bg-surface-recessed",
         exited == null && "ade-terminal-active-glow shadow-[0_0_12px_-4px_rgba(34,197,94,0.2)]",

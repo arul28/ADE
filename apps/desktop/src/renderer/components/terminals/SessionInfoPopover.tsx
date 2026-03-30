@@ -39,7 +39,7 @@ export function SessionInfoPopover({
 }: {
   popover: InfoPopoverState;
   onClose: () => void;
-  onCloseSession: (ptyId: string) => void;
+  onCloseSession: (args: { ptyId: string; sessionId: string }) => void;
   onEndChat: (sessionId: string) => void;
   onResume: (session: TerminalSessionSummary) => void;
   onGoToLane: (session: TerminalSessionSummary) => void;
@@ -206,7 +206,7 @@ export function SessionInfoPopover({
               variant="outline"
               size="sm"
               disabled={closingPtyIds.has(session.ptyId)}
-              onClick={() => { if (session.ptyId) onCloseSession(session.ptyId); }}
+              onClick={() => { if (session.ptyId) onCloseSession({ ptyId: session.ptyId, sessionId: session.id }); }}
             >
               <Square size={14} weight="regular" />
               {closingPtyIds.has(session.ptyId) ? "Closing..." : "Close"}
