@@ -83,7 +83,7 @@ const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
   | { kind: "root"; args: { name: string; baseBranch: string } }
-  | { kind: "import"; args: { branchRef: string; name: string } };
+  | { kind: "import"; args: { branchRef: string; name: string; baseBranch?: string } };
 
 export function resolveCreateLaneRequest(args: {
   name: string;
@@ -108,6 +108,7 @@ export function resolveCreateLaneRequest(args: {
       args: {
         branchRef: args.createImportBranch,
         name: args.name,
+        baseBranch: args.createBaseBranch,
       },
     };
   }
@@ -151,6 +152,7 @@ export function LanesPage() {
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createEnvInitProgress, setCreateEnvInitProgress] = useState<LaneEnvInitProgress | null>(null);
+  const [laneCreated, setLaneCreated] = useState(false);
   const createEnvInitLaneIdRef = useRef<string | null>(null);
   const createBaseBranchUserPickedRef = useRef(false);
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
@@ -1072,6 +1074,7 @@ export function LanesPage() {
   const resetCreateDialogState = useCallback(() => {
     createEnvInitLaneIdRef.current = null;
     createBaseBranchUserPickedRef.current = false;
+    setLaneCreated(false);
     setCreateLaneName("");
     setCreateParentLaneId("");
     setCreateMode("primary");
@@ -1089,6 +1092,8 @@ export function LanesPage() {
     setCreateMode("primary");
     setCreateBaseBranch("");
     setCreateImportBranch("");
+    setCreateBranches([]);
+    setLaneCreated(false);
     createBaseBranchUserPickedRef.current = false;
     const primary = lanes.find((l) => l.laneType === "primary");
     if (primary) {
@@ -1202,6 +1207,7 @@ export function LanesPage() {
 
       // Lane created successfully — record its id so retries skip creation.
       createEnvInitLaneIdRef.current = lane.id;
+      setLaneCreated(true);
 
       await refreshLanes();
       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
@@ -1212,7 +1218,7 @@ export function LanesPage() {
       setCreateError(err instanceof Error ? err.message : String(err));
       setCreateBusy(false);
     }
-  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createBusy, lanes, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates]);
+  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -2006,7 +2012,7 @@ export function LanesPage() {
         busy={createBusy}
         error={createError}
         envInitProgress={createEnvInitProgress}
-        laneCreated={createEnvInitLaneIdRef.current !== null}
+        laneCreated={laneCreated}
         templates={templates}
         selectedTemplateId={selectedTemplateId}
         setSelectedTemplateId={setSelectedTemplateId}

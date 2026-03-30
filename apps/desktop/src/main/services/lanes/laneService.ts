@@ -1291,14 +1291,18 @@ export function createLaneService({
       let branchCreated = false;
       let worktreeAdded = false;
       let laneInserted = false;
-      const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${rawRef}`], {
+      let localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${rawRef}`], {
         cwd: projectRoot, timeoutMs: 8_000
       }).then((r) => r.exitCode === 0);
 
       if (!localExists) {
         const resolved = await resolveImportBranchTarget({ projectRoot, rawRef });
         branchRef = resolved.localBranchName;
-        remoteRefToTrack = resolved.remoteRef;
+        localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${resolved.localBranchName}`], {
+          cwd: projectRoot,
+          timeoutMs: 8_000,
+        }).then((r) => r.exitCode === 0);
+        remoteRefToTrack = localExists ? null : resolved.remoteRef;
       }
 
       // Prevent duplicates.

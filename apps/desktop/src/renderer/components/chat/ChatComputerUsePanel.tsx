@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComputerUseArtifactView, ComputerUseOwnerSnapshot } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
@@ -39,21 +39,70 @@ function openInSystemPlayer(uri: string) {
   }
 }
 
+function PreviewFallback({
+  message,
+  actionLabel,
+  onOpen,
+}: {
+  message: string;
+  actionLabel: string;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="flex min-h-28 w-full flex-col items-center justify-center gap-2 rounded-md border border-white/[0.06] bg-black/20 px-3 py-4 text-center">
+      <div className="text-[11px] text-fg/40">{message}</div>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="rounded-md border border-white/[0.08] px-2.5 py-1 text-[11px] text-fg/50 transition-colors hover:bg-white/[0.04] hover:text-fg/70"
+      >
+        {actionLabel}
+      </button>
+    </div>
+  );
+}
+
 function VideoPreview({ artifact, src }: { artifact: ComputerUseArtifactView; src: string }) {
   const [canPlay, setCanPlay] = useState(true);
+  const stalledTimeoutRef = useRef<number | null>(null);
+
+  const clearStalledTimeout = useCallback(() => {
+    if (stalledTimeoutRef.current == null) return;
+    window.clearTimeout(stalledTimeoutRef.current);
+    stalledTimeoutRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    setCanPlay(true);
+    clearStalledTimeout();
+    return clearStalledTimeout;
+  }, [clearStalledTimeout, src]);
+
+  const handlePlaybackRecovered = useCallback(() => {
+    clearStalledTimeout();
+    setCanPlay(true);
+  }, [clearStalledTimeout]);
+
+  const handlePlaybackError = useCallback(() => {
+    clearStalledTimeout();
+    setCanPlay(false);
+  }, [clearStalledTimeout]);
+
+  const handleStalled = useCallback(() => {
+    clearStalledTimeout();
+    stalledTimeoutRef.current = window.setTimeout(() => {
+      stalledTimeoutRef.current = null;
+      setCanPlay(false);
+    }, 3000);
+  }, [clearStalledTimeout]);
 
   if (!canPlay) {
     return (
-      <button
-        type="button"
-        onClick={() => artifact.uri && openInSystemPlayer(artifact.uri)}
-        className="flex h-28 w-full items-center justify-center gap-2 rounded-md border border-white/[0.06] bg-black/20 text-[11px] text-fg/40 transition-colors hover:bg-white/[0.04] hover:text-fg/60"
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="opacity-50">
-          <path d="M6 3.5L12 8L6 12.5V3.5Z" fill="currentColor" />
-        </svg>
-        Open in system player
-      </button>
+      <PreviewFallback
+        message="Video preview unavailable."
+        actionLabel="Open in system player"
+        onOpen={() => artifact.uri && openInSystemPlayer(artifact.uri)}
+      />
     );
   }
 
@@ -62,8 +111,37 @@ function VideoPreview({ artifact, src }: { artifact: ComputerUseArtifactView; sr
       src={src}
       controls
       className="block max-h-[360px] w-full rounded-md border border-white/[0.06] bg-black"
-      onError={() => setCanPlay(false)}
-      onStalled={() => setCanPlay(false)}
+      onCanPlay={handlePlaybackRecovered}
+      onPlaying={handlePlaybackRecovered}
+      onError={handlePlaybackError}
+      onStalled={handleStalled}
+    />
+  );
+}
+
+function ImagePreview({ artifact, src }: { artifact: ComputerUseArtifactView; src: string }) {
+  const [imageError, setImageError] = useState(false);
+
+  useEffect(() => {
+    setImageError(false);
+  }, [src]);
+
+  if (imageError) {
+    return (
+      <PreviewFallback
+        message="Image preview unavailable."
+        actionLabel="Open in system viewer"
+        onOpen={() => artifact.uri && openInSystemPlayer(artifact.uri)}
+      />
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={artifact.title}
+      className="block max-h-[360px] w-full rounded-md border border-white/[0.06] object-contain"
+      onError={() => setImageError(true)}
     />
   );
 }
@@ -74,14 +152,7 @@ function ArtifactPreview({ artifact }: { artifact: ComputerUseArtifactView }) {
   const src = toPreviewSrc(artifact.uri);
 
   if (isImageArtifact(artifact)) {
-    return (
-      <img
-        src={src}
-        alt={artifact.title}
-        className="block max-h-[360px] w-full rounded-md border border-white/[0.06] object-contain"
-        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-      />
-    );
+    return <ImagePreview artifact={artifact} src={src} />;
   }
 
   if (isVideoArtifact(artifact)) {
@@ -139,8 +210,11 @@ export function ChatComputerUsePanel({
         workflowState: "promoted",
       });
       await onRefresh();
-    } catch { /* ignore */ }
-    setBusy(false);
+    } catch (err) {
+      console.error("[ChatComputerUsePanel] Failed to accept artifact review:", selected.id, err);
+    } finally {
+      setBusy(false);
+    }
   }, [selected, onRefresh]);
 
   const handleDismiss = useCallback(async () => {
@@ -153,8 +227,11 @@ export function ChatComputerUsePanel({
         workflowState: "dismissed",
       });
       await onRefresh();
-    } catch { /* ignore */ }
-    setBusy(false);
+    } catch (err) {
+      console.error("[ChatComputerUsePanel] Failed to dismiss artifact review:", selected.id, err);
+    } finally {
+      setBusy(false);
+    }
   }, [selected, onRefresh]);
 
   if (!snapshot || artifacts.length === 0) {

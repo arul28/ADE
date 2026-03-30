@@ -1119,6 +1119,7 @@ export function CreatePrModal({
                         <select
                           value={normalBaseBranch}
                           onChange={(e) => setNormalBaseBranch(e.target.value)}
+                          aria-label="Target branch"
                           style={selectStyle}
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
@@ -1389,6 +1390,7 @@ export function CreatePrModal({
                         <select
                           value={queueTargetBranch}
                           onChange={(e) => setQueueTargetBranch(e.target.value)}
+                          aria-label="Target branch"
                           style={selectStyle}
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
@@ -1427,6 +1429,7 @@ export function CreatePrModal({
                             setIntegrationBaseBranch(e.target.value);
                             setProposal(null);
                           }}
+                          aria-label="Target branch"
                           style={selectStyle}
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
