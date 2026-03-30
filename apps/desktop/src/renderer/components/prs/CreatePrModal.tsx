@@ -726,7 +726,8 @@ export function CreatePrModal({
         setNumericStep(3);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      const msg = rawMsg.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
       if (mode === "integration" && lastProgressLabel) {
         setExecError(`Failed during "${lastProgressLabel}": ${msg}`);
       } else {
@@ -1709,6 +1710,12 @@ export function CreatePrModal({
                       />
                       CREATE AS DRAFT
                     </label>
+                    <LaneWarningPanel
+                      items={selectedNormalWarnings}
+                      loading={selectedNormalLoading}
+                      rebaseLaneIds={selectedNormalRebaseLaneIds}
+                      onOpenRebase={openRebaseTab}
+                    />
                   </>
                 )}
 
@@ -1769,6 +1776,12 @@ export function CreatePrModal({
                       />
                       CREATE AS DRAFTS
                     </label>
+                    <LaneWarningPanel
+                      items={selectedQueueWarnings}
+                      loading={selectedQueueLoading}
+                      rebaseLaneIds={selectedQueueRebaseLaneIds}
+                      onOpenRebase={openRebaseTab}
+                    />
                   </>
                 )}
 
@@ -1850,6 +1863,12 @@ export function CreatePrModal({
                       />
                       CREATE AS DRAFT
                     </label>
+                    <LaneWarningPanel
+                      items={selectedIntegrationWarnings}
+                      loading={selectedIntegrationLoading}
+                      rebaseLaneIds={selectedIntegrationRebaseLaneIds}
+                      onOpenRebase={openRebaseTab}
+                    />
                   </>
                 )}
 

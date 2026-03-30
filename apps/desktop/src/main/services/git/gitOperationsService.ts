@@ -770,6 +770,19 @@ export function createGitOperationsService({
       return action;
     },
 
+    async stashClear(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_stash_clear",
+        reason: "stash_clear",
+        metadata: {},
+        fn: async (lane) => {
+          await runGitOrThrow(["stash", "clear"], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+        }
+      });
+      return action;
+    },
+
     async fetch(args: { laneId: string }): Promise<GitActionResult> {
       const { action } = await runLaneOperation({
         laneId: args.laneId,

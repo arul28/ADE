@@ -122,7 +122,7 @@ Notification messages emitted by the polling service are now generic (not PR-spe
 
 After a successful GitHub merge, cleanup operations (branch deletion, group membership removal, lane archiving, base branch fetch, cache invalidation, rebase-needs scan) are wrapped in an outer try-catch so that a failure in any cleanup step does not mask the successful merge. The operation is marked as succeeded regardless, with a `cleanupError` metadata field when something went wrong. Individual cleanup failures are logged as warnings.
 
-The Create PR modal validates branch names against invalid git ref characters before submission.
+The Create PR modal validates branch names against invalid git ref characters before submission. All three PR creation modes (normal, queue, integration) display lane warning panels alongside the draft checkbox, surfacing rebase needs and other lane health issues before submission. Error messages from failed GitHub API calls are cleaned of internal IPC prefixes before display, and the PR service wraps creation failures with contextual head/base branch information for clearer diagnostics. GitHub API error responses now extract nested error detail messages (from the `errors` array in the response body) and append them to the thrown error, improving visibility of issues such as duplicate PR or branch protection failures.
 
 The PR detail pane renders markdown body content with `rehype-sanitize` applied after `rehype-raw`, stripping potentially unsafe HTML from PR descriptions fetched from GitHub.
 

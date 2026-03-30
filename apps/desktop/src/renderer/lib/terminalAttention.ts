@@ -120,7 +120,7 @@ export function sessionStatusDot(session: {
     return { cls: "border-2 border-emerald-400 border-t-transparent bg-transparent", spinning: true, label: "Running" };
   }
   if (indicator === "running-needs-attention") {
-    return { cls: "border-2 border-amber-300 border-t-transparent bg-transparent", spinning: true, label: "Awaiting input" };
+    return { cls: "bg-amber-300", spinning: false, label: "Awaiting input" };
   }
   return { cls: "bg-red-400", spinning: false, label: "Ended" };
 }

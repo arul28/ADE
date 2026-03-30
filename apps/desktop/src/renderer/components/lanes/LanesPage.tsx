@@ -1444,7 +1444,7 @@ export function LanesPage() {
             <Plus size={12} /> NEW LANE
           </button>
           {addLaneDropdownOpen ? (
-            <div className="absolute left-0 top-full z-[200] mt-2 w-60 rounded-xl border border-white/[0.06] bg-bg/80 p-1 shadow-float backdrop-blur-xl">
+            <div className="absolute left-0 top-full z-[200] mt-2 w-60 rounded-xl p-1 shadow-float" style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}` }}>
               <button
                 type="button"
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"

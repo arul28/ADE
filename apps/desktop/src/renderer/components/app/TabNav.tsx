@@ -115,10 +115,10 @@ export function TabNav() {
                     : "All active terminals running"
                 }
                 className={cn(
-                  "absolute -right-1 -top-1 ade-status-dot animate-spin",
+                  "absolute -right-1 -top-1 ade-status-dot",
                   terminalAttention.indicator === "running-needs-attention"
                     ? "ade-status-dot-warning"
-                    : "ade-status-dot-active",
+                    : "ade-status-dot-active animate-spin",
                 )}
               />
             ) : null}

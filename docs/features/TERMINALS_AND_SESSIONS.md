@@ -106,3 +106,15 @@ The current terminals and sessions feature follows these rules:
 - avoid perpetual idle polling when there are no live sessions to watch
 
 That preserves ADE's session-awareness while making the session system a lighter dependency for the rest of the UI.
+
+---
+
+## Terminal status indicators
+
+Terminal session status dots use distinct visual treatments per state:
+
+- **Running (active)**: Spinning emerald ring (border spinner animation). Used in the tab nav, top bar, and terminal panel tabs.
+- **Running (needs attention)**: Solid amber dot (no animation). Indicates the terminal is awaiting user input. The top bar variant pulses; the tab nav variant does not animate.
+- **Ended**: Solid red dot (no animation).
+
+The `sessionStatusDot()` helper in `terminalAttention.ts` and `sessionIndicatorState()` produce the dot class and spinning flag. The chat status glyph for "waiting" state renders a static check-circle icon rather than a spinner, distinguishing idle-waiting from active-working.

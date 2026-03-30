@@ -1966,17 +1966,25 @@ export function createPrService({
     }
 
     const createdAt = nowIso();
-    const created = await githubService.apiRequest<any>({
-      method: "POST",
-      path: `/repos/${repo.owner}/${repo.name}/pulls`,
-      body: {
-        title: args.title,
-        head: headBranch,
-        base: baseBranch,
-        body: args.body,
-        draft: Boolean(args.draft)
-      }
-    });
+    let created: { data: any; response: Response | null };
+    try {
+      created = await githubService.apiRequest<any>({
+        method: "POST",
+        path: `/repos/${repo.owner}/${repo.name}/pulls`,
+        body: {
+          title: args.title,
+          head: headBranch,
+          base: baseBranch,
+          body: args.body,
+          draft: Boolean(args.draft)
+        }
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to create pull request for "${headBranch}" → "${baseBranch}": ${msg}`
+      );
+    }
 
     const pr = created.data;
     const prNumber = Number(pr?.number);

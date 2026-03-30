@@ -1789,7 +1789,8 @@ button:active, [role="button"]:active {
   .ade-glow-pulse-red,
   .ade-glow-pulse-amber,
   .ade-conflict-breathe,
-  .ade-float {
+  .ade-float,
+  .pull-btn-flash {
     animation: none !important;
   }
   /* Dropdown item stagger — instant appearance under reduced motion */
@@ -2438,4 +2439,12 @@ button:active, [role="button"]:active {
 }
 .ade-thinking-pulse {
   animation: ade-thinking-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pull-btn-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.pull-btn-flash {
+  animation: pull-btn-flash 2s ease-in-out infinite;
 }

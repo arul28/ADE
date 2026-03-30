@@ -14,6 +14,73 @@ vi.mock("./git", () => ({
 
 import { createGitOperationsService } from "./gitOperationsService";
 
+describe("gitOperationsService.stashClear", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls git stash clear with the lane worktree path and returns the action result", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+
+    const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
+    const mockFinish = vi.fn();
+
+    const service = createGitOperationsService({
+      laneService: {
+        getLaneBaseAndBranch: vi.fn().mockReturnValue({
+          baseRef: "main",
+          branchRef: "feature/stash-test",
+          worktreePath: "/tmp/ade-lane",
+          laneType: "worktree",
+        }),
+      } as any,
+      operationService: {
+        start: mockStart,
+        finish: mockFinish,
+      } as any,
+      projectConfigService: {
+        get: () => ({ effective: { ai: {} } }),
+      } as any,
+      aiIntegrationService: {
+        getFeatureFlag: () => false,
+        getStatus: vi.fn(async () => ({ availableModelIds: [] })),
+        generateCommitMessage: vi.fn(),
+      } as any,
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      } as any,
+    });
+
+    const result = await service.stashClear({ laneId: "lane-1" });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["stash", "clear"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
+    );
+    expect(result).toEqual({
+      operationId: "op-1",
+      preHeadSha: "abc123",
+      postHeadSha: "abc123",
+    });
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        kind: "git_stash_clear",
+      }),
+    );
+    expect(mockFinish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "op-1",
+        status: "succeeded",
+      }),
+    );
+  });
+});
+
 describe("gitOperationsService.generateCommitMessage", () => {
   beforeEach(() => {
     vi.clearAllMocks();

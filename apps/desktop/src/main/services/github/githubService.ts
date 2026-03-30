@@ -255,20 +255,28 @@ export function createGithubService({
     }
 
     if (!response.ok) {
-      const message =
-        (data && typeof data === "object" && !Array.isArray(data) ? asString((data as any).message) : "") ||
-        `GitHub API request failed (HTTP ${response.status})`;
+      const body = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : null;
+      const message = (body ? asString(body.message) : "") || `GitHub API request failed (HTTP ${response.status})`;
+      let detail = "";
+      if (body && Array.isArray(body.errors)) {
+        const errorMessages = (body.errors as any[])
+          .map((e) => (typeof e === "object" && e && typeof e.message === "string" ? e.message : null))
+          .filter(Boolean);
+        if (errorMessages.length > 0) {
+          detail = ": " + errorMessages.join("; ");
+        }
+      }
       const rateRemaining = response.headers.get("x-ratelimit-remaining");
       const rateReset = response.headers.get("x-ratelimit-reset");
       if (rateRemaining === "0" && rateReset) {
         const resetAtMs = Number(rateReset) * 1000;
         const err = new Error(
-          `${message} (rate limit exceeded; resets at ${new Date(resetAtMs).toLocaleString()})`
+          `${message}${detail} (rate limit exceeded; resets at ${new Date(resetAtMs).toLocaleString()})`
         );
         (err as any).rateLimitResetAtMs = resetAtMs;
         throw err;
       }
-      throw new Error(message);
+      throw new Error(message + detail);
     }
 
     // Cache ETag for future conditional requests
