@@ -236,20 +236,25 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   let loaded: number | null = null;
   let total: number | null = null;
   let file: string | null = null;
+  let cachedInstall = inspectInstallPath(installPath);
   let loadAttemptId = 0;
 
+  function refreshCachedInstall() {
+    cachedInstall = inspectInstallPath(installPath);
+    return cachedInstall;
+  }
+
   function getStatus(): EmbeddingServiceStatus {
-    const install = inspectInstallPath(installPath);
     return {
       modelId,
       cacheDir,
       installPath,
-      installState: install.installState,
+      installState: cachedInstall.installState,
       state,
       activity: deriveReportedActivity({
         state,
         activity,
-        installState: install.installState,
+        installState: cachedInstall.installState,
       }),
       progress,
       loaded,
@@ -306,7 +311,11 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     emitStatus();
   }
 
-  async function ensureExtractor(opts: { forceRetry?: boolean; localFilesOnly?: boolean } = {}): Promise<EmbeddingExtractor> {
+  async function ensureExtractor(opts: {
+    forceRetry?: boolean;
+    localFilesOnly?: boolean;
+    installInspection?: ReturnType<typeof inspectInstallPath>;
+  } = {}): Promise<EmbeddingExtractor> {
     const forceRetry = opts.forceRetry === true;
     const localFilesOnly = opts.localFilesOnly === true;
     if (extractor) return extractor;
@@ -329,7 +338,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
       loadAttemptId += 1;
     }
     const attemptId = loadAttemptId;
-    const install = inspectInstallPath(installPath);
+    const install = opts.installInspection ?? refreshCachedInstall();
     state = "loading";
     activity = localFilesOnly || install.installState === "installed" ? "loading-local" : "downloading";
     progress = 0;
@@ -349,13 +358,18 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
 
       let nextExtractor: EmbeddingExtractor | null = null;
       try {
-        const loadedExtractor = await runtime.pipeline(DEFAULT_EMBEDDING_TASK, modelId, {
+        const loadedExtractor = await runtime.pipeline(
+          DEFAULT_EMBEDDING_TASK,
+          localFilesOnly ? installPath : modelId,
+          {
           progress_callback: (event) => handleProgress(event, attemptId),
           local_files_only: localFilesOnly,
-        });
+          },
+        );
         nextExtractor = loadedExtractor;
 
         await runExtractorSmokeTest(loadedExtractor);
+        cachedInstall = localFilesOnly ? install : refreshCachedInstall();
         if (!isCurrentLoadAttempt(attemptId)) {
           if (loadedExtractor.dispose) {
             await loadedExtractor.dispose();
@@ -401,7 +415,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
       extractor = null;
       state = "unavailable";
       activity = "error";
-      const freshInstall = inspectInstallPath(installPath);
+      const freshInstall = refreshCachedInstall();
       lastError = normalizeLoadError({
         message: getErrorMessage(error),
         installState: freshInstall.installState,
@@ -450,9 +464,18 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   }
 
   async function dispose() {
+    loadAttemptId += 1;
     const activeExtractor = extractor;
     extractor = null;
     extractorPromise = null;
+    state = "idle";
+    activity = "idle";
+    lastError = null;
+    progress = null;
+    loaded = null;
+    total = null;
+    file = null;
+    emitStatus();
     if (activeExtractor?.dispose) {
       await activeExtractor.dispose();
     }
@@ -470,7 +493,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   async function probeCache(): Promise<void> {
     if (state === "ready" || state === "loading") return;
     try {
-      const install = inspectInstallPath(installPath);
+      const install = refreshCachedInstall();
       if (install.installState !== "installed") {
         logger.info("memory.embedding.probe_cache_skipped", {
           modelId,
@@ -481,7 +504,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
         return;
       }
       logger.info("memory.embedding.probe_cache", { modelId, cacheDir, installPath });
-      await ensureExtractor({ localFilesOnly: true });
+      await ensureExtractor({ localFilesOnly: true, installInspection: install });
     } catch (error) {
       // Probe is best-effort — don't block startup
       logger.warn("memory.embedding.probe_cache_failed", {

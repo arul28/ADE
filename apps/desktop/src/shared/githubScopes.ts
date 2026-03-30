@@ -46,7 +46,6 @@ function hasScopeLike(normalizedScopes: Set<string>, candidate: string): boolean
   return [...normalizedScopes].some((scope) => (
     scope === candidate
     || scope.startsWith(`${candidate}=`)
-    || (candidate !== "read:org" && candidate !== "admin:org" && scope.startsWith(`${candidate}:`))
   ));
 }
 
@@ -55,12 +54,7 @@ function hasAnyScopeLike(normalizedScopes: Set<string>, candidates: readonly str
 }
 
 export function parseGitHubScopeHeaders(headers: Pick<Headers, "get">): string[] {
-  const merged = new Set<string>([
-    ...splitHeaderScopes(headers.get("x-oauth-scopes")),
-    ...splitHeaderScopes(headers.get("x-accepted-oauth-scopes")),
-    ...splitHeaderScopes(headers.get("x-accepted-scopes")),
-  ]);
-  return [...merged];
+  return splitHeaderScopes(headers.get("x-oauth-scopes"));
 }
 
 export function getGitHubTokenAccessState(scopes: Iterable<string>): GitHubTokenAccessState {
@@ -75,13 +69,9 @@ export function getGitHubTokenAccessState(scopes: Iterable<string>): GitHubToken
   const workflowPresent = hasAnyScopeLike(normalizedScopes, WORKFLOW_FINE_GRAINED_PERMISSIONS);
   const orgPresent = hasAnyScopeLike(normalizedScopes, ORG_FINE_GRAINED_PERMISSIONS);
 
-  const usesFineGrainedPermissions = [...normalizedScopes].some((scope) => (
-    FINE_GRAINED_PERMISSION_PREFIXES.some((candidate) => (
-      scope === candidate
-      || scope.startsWith(`${candidate}=`)
-      || (candidate !== "read:org" && candidate !== "admin:org" && scope.startsWith(`${candidate}:`))
-    ))
-  ));
+  const usesFineGrainedPermissions = FINE_GRAINED_PERMISSION_PREFIXES.some((candidate) =>
+    hasScopeLike(normalizedScopes, candidate),
+  );
 
   const missingClassicScopes = REQUIRED_GITHUB_CLASSIC_SCOPES.filter((scope) => {
     switch (scope) {

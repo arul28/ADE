@@ -626,6 +626,10 @@ export function normalizeSet(values: string[] | undefined): Set<string> {
   return new Set((values ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean));
 }
 
+export function quoteIfNeeded(value: string): string {
+  return /\s/.test(value) ? JSON.stringify(value) : value;
+}
+
 // ── Template rendering helpers ──────────────────────────────────────
 
 /** Walk a dotted path like "a.b.c" into a nested object. */

@@ -1,5 +1,7 @@
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../logging/logger";
+import type * as SharedUtilsModule from "../shared/utils";
 
 const {
   spawnAsyncMock,
@@ -12,7 +14,7 @@ const {
 }));
 
 vi.mock("../shared/utils", async () => {
-  const actual = await vi.importActual<typeof import("../shared/utils")>("../shared/utils");
+  const actual = await vi.importActual<typeof SharedUtilsModule>("../shared/utils");
   return {
     ...actual,
     spawnAsync: spawnAsyncMock,
@@ -50,7 +52,7 @@ describe("devToolsService", () => {
     });
     spawnAsyncMock.mockImplementation(async (command: string) => ({
       status: 0,
-      stdout: `${command} version 1.0.0\n`,
+      stdout: `${path.basename(command)} version 1.0.0\n`,
       stderr: "",
     }));
 
@@ -61,7 +63,7 @@ describe("devToolsService", () => {
     expect(gh).toMatchObject({
       installed: true,
       detectedPath: "/opt/homebrew/bin/gh",
-      detectedVersion: "/opt/homebrew/bin/gh version 1.0.0",
+      detectedVersion: "gh version 1.0.0",
     });
     expect(spawnAsyncMock).toHaveBeenCalledWith("/opt/homebrew/bin/gh", ["--version"]);
     expect(whichCommandMock).not.toHaveBeenCalledWith("gh");

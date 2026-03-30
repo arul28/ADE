@@ -15,6 +15,12 @@ import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTo
 import { Button } from "../ui/Button";
 
 const LINEAR_BRAND = "#5E6AD2";
+const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
+const FEATURES = [
+  { icon: ArrowsLeftRight, title: "Issue Routing", desc: "Link Linear issues to ADE lanes automatically" },
+  { icon: Lightning, title: "CTO Workflows", desc: "Dispatch missions directly from Linear" },
+  { icon: ArrowsClockwise, title: "Status Sync", desc: "Keep statuses in sync across both tools" },
+];
 
 export function LinearSection() {
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
@@ -206,13 +212,6 @@ export function LinearSection() {
       setOauthStartingState(false);
     }
   }, [setOauthSessionIdState, setOauthStartingState, setValidatingState]);
-
-  /* ── Feature preview cards ── */
-  const features = [
-    { icon: ArrowsLeftRight, title: "Issue Routing", desc: "Link Linear issues to ADE lanes automatically" },
-    { icon: Lightning, title: "CTO Workflows", desc: "Dispatch missions directly from Linear" },
-    { icon: ArrowsClockwise, title: "Status Sync", desc: "Keep statuses in sync across both tools" },
-  ];
 
   return (
     <div style={{ display: "flex", maxWidth: 780, flexDirection: "column", gap: 20 }}>
@@ -411,7 +410,20 @@ export function LinearSection() {
                 </Button>
               </div>
               <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
-                Get one at <span style={{ color: COLORS.textMuted }}>linear.app/settings/api</span>
+                Get one at{" "}
+                <a
+                  href={LINEAR_API_SETTINGS_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(event) => {
+                    if (!window.ade.app?.openExternal) return;
+                    event.preventDefault();
+                    void window.ade.app.openExternal(LINEAR_API_SETTINGS_URL);
+                  }}
+                  style={{ color: COLORS.textMuted }}
+                >
+                  linear.app/settings/api
+                </a>
               </div>
             </div>
           </div>
@@ -442,7 +454,7 @@ export function LinearSection() {
           WHAT LINEAR INTEGRATION ENABLES
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-          {features.map(({ icon: Icon, title, desc }) => (
+          {FEATURES.map(({ icon: Icon, title, desc }) => (
             <div key={title} style={{
               display: "flex", alignItems: "flex-start", gap: 10,
               padding: "10px 12px",

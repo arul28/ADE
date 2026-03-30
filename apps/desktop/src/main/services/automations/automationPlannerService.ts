@@ -27,10 +27,11 @@ import {
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
-import { getErrorMessage, resolvePathWithinRoot } from "../shared/utils";
+import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
 
 function resolveAutomationCwdBase(
   projectRoot: string,
@@ -384,7 +385,6 @@ async function runCodexExec(args: {
     });
     throw error;
   }
-  const quoteIfNeeded = (value: string) => (/\s/.test(value) ? JSON.stringify(value) : value);
   const commandPreview = [quoteIfNeeded(codexExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
   const child = spawn(codexExecutable, cliArgs, {
@@ -465,9 +465,10 @@ async function runClaudeHeadless(args: {
 
   cliArgs.push(args.prompt);
 
-  const commandPreview = ["claude", ...cliArgs.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a))].join(" ");
+  const claudeExecutable = resolveClaudeCodeExecutable().path;
+  const commandPreview = [quoteIfNeeded(claudeExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
-  const child = spawn("claude", cliArgs, {
+  const child = spawn(claudeExecutable, cliArgs, {
     cwd: args.cwd,
     env: {
       ...process.env,

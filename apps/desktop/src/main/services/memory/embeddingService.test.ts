@@ -252,6 +252,8 @@ describe("embeddingService", () => {
     await service.probeCache();
 
     expect(pipeline).toHaveBeenCalledTimes(1);
+    expect(pipeline.mock.calls[0]?.[1]).toBe(installPath);
+    expect(pipeline.mock.calls[0]?.[2]).toBeDefined();
     expect(service.getStatus()).toEqual(expect.objectContaining({
       installState: "installed",
       installPath,
@@ -468,6 +470,63 @@ describe("embeddingService", () => {
     expect(releaseSecondAttempt).toBeTypeOf("function");
     releaseSecondAttempt!();
     await secondAttempt;
+  });
+
+  it("keeps the service idle when an in-flight load finishes after dispose", async () => {
+    const logger = createLogger();
+    let releasePipeline: (() => void) | null = null;
+    let resolvePipelineStarted: (() => void) | null = null;
+    const pipelineStarted = new Promise<void>((resolve) => {
+      resolvePipelineStarted = resolve;
+    });
+    const extractor = Object.assign(
+      vi.fn(async (text: string) => ({ data: buildVector(text), dims: [1, EXPECTED_EMBEDDING_DIMENSIONS] })),
+      { dispose: vi.fn(async () => {}) },
+    );
+    const service = createEmbeddingService({
+      logger,
+      cacheDir: createTempCacheDir(),
+      loadRuntime: async () => ({
+        env: {
+          cacheDir: "",
+          allowRemoteModels: true,
+          allowLocalModels: true,
+          useFSCache: true,
+        },
+        pipeline: vi.fn(async () => {
+          resolvePipelineStarted?.();
+          await new Promise<void>((resolve) => {
+            releasePipeline = resolve;
+          });
+          return extractor;
+        }),
+      }),
+    });
+
+    const preloadPromise = service.preload({ forceRetry: true });
+    await pipelineStarted;
+
+    await service.dispose();
+
+    expect(service.getStatus()).toEqual(expect.objectContaining({
+      state: "idle",
+      activity: "idle",
+      progress: null,
+      error: null,
+    }));
+
+    expect(releasePipeline).toBeTypeOf("function");
+    releasePipeline!();
+    await preloadPromise;
+
+    expect(extractor.dispose).toHaveBeenCalledTimes(1);
+    expect(service.isAvailable()).toBe(false);
+    expect(service.getStatus()).toEqual(expect.objectContaining({
+      state: "idle",
+      activity: "idle",
+      progress: null,
+      error: null,
+    }));
   });
 
   it("re-checks the install state after a failed download before normalizing the error", async () => {

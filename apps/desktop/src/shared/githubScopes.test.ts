@@ -14,13 +14,26 @@ function createHeaders(values: Record<string, string>): Pick<Headers, "get"> {
 }
 
 describe("githubScopes", () => {
-  it("merges OAuth and accepted scope headers case-insensitively", () => {
+  it("returns only the granted OAuth scopes from the response headers", () => {
     const scopes = parseGitHubScopeHeaders(createHeaders({
       "x-oauth-scopes": "repo, workflow",
       "x-accepted-oauth-scopes": "Read:Org, workflow",
+      "x-accepted-scopes": "checks=read",
     }));
 
-    expect(scopes).toEqual(expect.arrayContaining(["repo", "workflow", "read:org"]));
+    expect(scopes).toEqual(["repo", "workflow"]);
+  });
+
+  it("does not treat classic sub-scopes as satisfying the top-level requirement", () => {
+    const access = getGitHubTokenAccessState([
+      "repo:status",
+      "workflow",
+      "read:org",
+    ]);
+
+    expect(access.hasRequiredAccess).toBe(false);
+    expect(access.requirements.repo.present).toBe(false);
+    expect(access.missingClassicScopes).toEqual(["repo"]);
   });
 
   it("treats valid fine-grained permissions as full access", () => {
