@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowsClockwise, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
 
 import { useAppStore } from "../../state/appStore";
 import { isRunOwnedSession } from "../../lib/sessions";
@@ -41,6 +42,7 @@ function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
 }
 
 export function TopBar() {
+  const navigate = useNavigate();
   const project = useAppStore((s) => s.project);
   const closeProject = useAppStore((s) => s.closeProject);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
@@ -443,9 +445,7 @@ export function TopBar() {
           data-variant="ghost"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           title={`Sync mode: ${syncSnapshot.mode}`}
-          onClick={() => {
-            window.location.hash = "#/settings";
-          }}
+          onClick={() => navigate("/settings")}
         >
           <span
             className={cn(

@@ -116,6 +116,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const setProject = useAppStore((s) => s.setProject);
+  const setProjectHydrated = useAppStore((s) => s.setProjectHydrated);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
   const refreshKeybindings = useAppStore((s) => s.refreshKeybindings);
@@ -168,6 +169,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    setProjectHydrated(false);
     const initializeProjectState = async () => {
       try {
         const nextProject = await window.ade.app.getProject();
@@ -201,6 +203,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setProject(null);
         setProjectMissing(false);
         setShowWelcome(true);
+      } finally {
+        if (cancelled) return;
+        setProjectHydrated(true);
       }
     };
 
@@ -208,7 +213,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [setProject, refreshLanes, refreshProviderMode, refreshKeybindings, setShowWelcome]);
+  }, [setProject, setProjectHydrated, refreshLanes, refreshProviderMode, refreshKeybindings, setShowWelcome]);
 
   useEffect(() => {
     if (!shouldTrackTerminalAttention) {
@@ -639,8 +644,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ) : null}
 
       {!hideSidebar && project?.rootPath && !showWelcome && (contextStatus?.generation.state === "pending" || contextStatus?.generation.state === "running") ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-sky-500/6 px-3 py-1.5 text-[11px] font-mono text-sky-800">
-          ADE context docs are generating in the background. <Link to="/settings?tab=workspace" className="underline">Open context settings</Link>
+        <div className="shrink-0 mx-3 mt-1.5 rounded bg-sky-500/6 px-3 py-1.5 text-[11px] font-mono text-sky-800 animate-pulse">
+          Generating context docs... <Link to="/settings?tab=workspace" className="underline">Open context settings</Link>
         </div>
       ) : null}
 

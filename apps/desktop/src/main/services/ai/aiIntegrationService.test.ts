@@ -160,7 +160,9 @@ beforeEach(() => {
 
 describe("aiIntegrationService", () => {
   it("routes executeTask through unified executor", async () => {
-    const { service, runCalls } = makeService();
+    const { service, runCalls } = makeService({
+      aiConfig: { features: { mission_planning: true } },
+    });
 
     const result = await service.executeTask({
       feature: "mission_planning",
@@ -176,18 +178,24 @@ describe("aiIntegrationService", () => {
     expect(usageInsertCalls(runCalls)).toHaveLength(1);
   });
 
-  it("treats commit_messages as opt-in until explicitly enabled", () => {
+  it("treats all features as opt-in until explicitly enabled", () => {
     const { service } = makeService();
     const { service: enabledService } = makeService({
       aiConfig: {
         features: {
           commit_messages: true,
+          terminal_summaries: true,
+          pr_descriptions: true,
         },
       },
     });
 
     expect(service.getFeatureFlag("commit_messages")).toBe(false);
+    expect(service.getFeatureFlag("terminal_summaries")).toBe(false);
+    expect(service.getFeatureFlag("pr_descriptions")).toBe(false);
     expect(enabledService.getFeatureFlag("commit_messages")).toBe(true);
+    expect(enabledService.getFeatureFlag("terminal_summaries")).toBe(true);
+    expect(enabledService.getFeatureFlag("pr_descriptions")).toBe(true);
   });
 
   it("routes generated commit messages through the commit_messages feature", async () => {
@@ -248,7 +256,9 @@ describe("aiIntegrationService", () => {
   });
 
   it("uses planning tools for mission planning tasks", async () => {
-    const { service } = makeService();
+    const { service } = makeService({
+      aiConfig: { features: { mission_planning: true } },
+    });
 
     await service.executeTask({
       feature: "mission_planning",
@@ -264,7 +274,9 @@ describe("aiIntegrationService", () => {
   });
 
   it("resolves a default task model when model is omitted", async () => {
-    const { service } = makeService();
+    const { service } = makeService({
+      aiConfig: { features: { orchestrator: true } },
+    });
 
     await service.executeTask({
       feature: "orchestrator",
@@ -280,7 +292,9 @@ describe("aiIntegrationService", () => {
   });
 
   it("resolves a default model for memory consolidation tasks when model is omitted", async () => {
-    const { service } = makeService();
+    const { service } = makeService({
+      aiConfig: { features: { memory_consolidation: true } },
+    });
 
     await service.executeTask({
       feature: "memory_consolidation",
@@ -296,7 +310,9 @@ describe("aiIntegrationService", () => {
   });
 
   it("uses planning tools for read-only orchestrator tasks and none for other read-only tasks", async () => {
-    const { service } = makeService();
+    const { service } = makeService({
+      aiConfig: { features: { orchestrator: true, terminal_summaries: true } },
+    });
 
     await service.executeTask({
       feature: "orchestrator",
@@ -324,7 +340,9 @@ describe("aiIntegrationService", () => {
   });
 
   it("forwards memory context and compaction identifiers to the unified executor when provided", async () => {
-    const { service } = makeService();
+    const { service } = makeService({
+      aiConfig: { features: { orchestrator: true } },
+    });
     const memoryService = {
       writeMemory: vi.fn(),
     } as any;

@@ -27,6 +27,7 @@ import {
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolvePathWithinRoot } from "../shared/utils";
@@ -369,9 +370,10 @@ async function runCodexExec(args: {
 
   cliArgs.push(args.prompt);
 
-  const commandPreview = ["codex", ...cliArgs.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a))].join(" ");
+  const codexExecutable = resolveCodexExecutable().path;
+  const commandPreview = [codexExecutable, ...cliArgs.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a))].join(" ");
 
-  const child = spawn("codex", cliArgs, {
+  const child = spawn(codexExecutable, cliArgs, {
     cwd: args.cwd,
     env: {
       ...process.env,

@@ -50,6 +50,12 @@ const CtoPage = React.lazy(() =>
 
 import { useAppStore } from "../../state/appStore";
 
+const GuardLoadingFallback = (
+  <div className="flex h-full w-full items-center justify-center">
+    <div className="text-xs text-muted-fg/60">Loading...</div>
+  </div>
+);
+
 /* ---------- Per-route error boundary ---------- */
 
 type PageErrorBoundaryState = { hasError: boolean; message: string };
@@ -111,10 +117,15 @@ function PageErrorBoundary({ children }: { children: React.ReactNode }) {
   );
 }
 
-function RequireProject({ children }: { children: React.ReactElement }): React.ReactElement {
+export function RequireProject({ children }: { children: React.ReactElement }): React.ReactElement {
+  const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const project = useAppStore((s) => s.project);
   const location = useLocation();
+
+  if (!projectHydrated) {
+    return GuardLoadingFallback;
+  }
 
   const hasActiveProject = Boolean(project?.rootPath);
   if ((!hasActiveProject || showWelcome) && location.pathname !== "/project" && location.pathname !== "/onboarding") {
@@ -124,11 +135,7 @@ function RequireProject({ children }: { children: React.ReactElement }): React.R
   return children;
 }
 
-const LazyFallback = (
-  <div className="flex h-full w-full items-center justify-center">
-    <div className="text-xs text-muted-fg/60">Loading...</div>
-  </div>
-);
+const LazyFallback = GuardLoadingFallback;
 
 function guarded(element: React.ReactElement): React.ReactElement {
   return (

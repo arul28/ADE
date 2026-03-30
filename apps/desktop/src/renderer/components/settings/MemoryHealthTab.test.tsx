@@ -28,6 +28,10 @@ function createHealthStats() {
       model: {
         modelId: "Xenova/all-MiniLM-L6-v2",
         state: "idle",
+        activity: "idle",
+        installState: "missing",
+        cacheDir: null,
+        installPath: null,
         progress: null,
         loaded: null,
         total: null,
@@ -170,5 +174,38 @@ describe("MemoryHealthTab", () => {
 
     expect(screen.queryByText(/Imported skill: finalize/i)).toBeNull();
     expect(screen.getByText("1 memory")).toBeTruthy();
+  });
+
+  it("treats an on-disk model as unverified until ADE loads it successfully", async () => {
+    const ade = window.ade as any;
+    ade.memory.getHealthStats.mockResolvedValue({
+      ...createHealthStats(),
+      embeddings: {
+        ...createHealthStats().embeddings,
+        model: {
+          modelId: "Xenova/all-MiniLM-L6-v2",
+          state: "idle",
+          activity: "idle",
+          installState: "installed",
+          cacheDir: "/tmp/mock-transformers-cache",
+          installPath: "/tmp/mock-transformers-cache/Xenova/all-MiniLM-L6-v2",
+          progress: null,
+          loaded: null,
+          total: null,
+          file: null,
+          error: null,
+        },
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/settings?tab=memory"]}>
+        <MemoryHealthTab />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Model found on disk/i)).toBeTruthy();
+    expect(screen.getByText(/smart search turns active only after a local verification succeeds/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /verify model/i })).toBeTruthy();
   });
 });

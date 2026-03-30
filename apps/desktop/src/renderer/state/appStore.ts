@@ -86,6 +86,7 @@ function persistTheme(theme: ThemeId) {
 
 type AppState = {
   project: ProjectInfo | null;
+  projectHydrated: boolean;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
   showWelcome: boolean;
   lanes: LaneSummary[];
@@ -102,6 +103,7 @@ type AppState = {
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
 
   setProject: (project: ProjectInfo | null) => void;
+  setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   selectLane: (laneId: string | null) => void;
@@ -162,6 +164,7 @@ function scheduleProjectHydration(get: () => AppState) {
 
 export const useAppStore = create<AppState>((set, get) => ({
   project: null,
+  projectHydrated: false,
   showWelcome: true,
   lanes: [],
   selectedLaneId: null,
@@ -177,6 +180,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   laneWorkViewByScope: {},
 
   setProject: (project) => set({ project }),
+  setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   setLanes: (lanes) => set({ lanes }),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
@@ -252,7 +256,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   refreshProject: async () => {
     const project = await window.ade.app.getProject();
-    set({ project });
+    set({ project, projectHydrated: true });
   },
 
   refreshLanes: async (options) => {
@@ -323,6 +327,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!project) return null;
     set({
       project,
+      projectHydrated: true,
       showWelcome: false,
       lanes: [],
       selectedLaneId: null,
@@ -344,6 +349,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const project = await window.ade.project.switchToPath(rootPath);
     set({
       project,
+      projectHydrated: true,
       showWelcome: false,
       lanes: [],
       selectedLaneId: null,
@@ -364,6 +370,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     await window.ade.project.closeCurrent();
     set({
       project: null,
+      projectHydrated: true,
       showWelcome: true,
       lanes: [],
       selectedLaneId: null,

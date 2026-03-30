@@ -45,6 +45,7 @@ import { useAppStore, THEME_IDS } from "./appStore";
 function resetStore() {
   useAppStore.setState({
     project: null,
+    projectHydrated: false,
     showWelcome: true,
     lanes: [],
     selectedLaneId: null,
@@ -96,6 +97,13 @@ describe("appStore", () => {
       const project = { id: "p1", name: "Test", rootPath: "/tmp/test", gitRemoteUrl: null, gitDefaultBranch: "main", createdAt: "" } as any;
       useAppStore.getState().setProject(project);
       expect(useAppStore.getState().project).toBe(project);
+    });
+
+    it("setProjectHydrated tracks whether startup project hydration finished", () => {
+      useAppStore.getState().setProjectHydrated(true);
+      expect(useAppStore.getState().projectHydrated).toBe(true);
+      useAppStore.getState().setProjectHydrated(false);
+      expect(useAppStore.getState().projectHydrated).toBe(false);
     });
 
     it("setShowWelcome toggles the welcome screen flag", () => {

@@ -852,6 +852,10 @@ function createEmptyMemoryHealthStats() {
       model: {
         modelId: "Xenova/all-MiniLM-L6-v2",
         state: "idle" as const,
+        activity: "idle" as const,
+        installState: "missing" as const,
+        cacheDir: null,
+        installPath: null,
         progress: null,
         loaded: null,
         total: null,
@@ -909,6 +913,10 @@ function createEmptyMemoryHealthStats() {
       model: {
         modelId: string;
         state: "idle" | "loading" | "ready" | "unavailable";
+        activity: "idle" | "loading-local" | "downloading" | "ready" | "error";
+        installState: "missing" | "partial" | "installed";
+        cacheDir: string | null;
+        installPath: string | null;
         progress: number | null;
         loaded: number | null;
         total: number | null;
@@ -991,6 +999,10 @@ function getMemoryHealthStats(ctx: AppContext) {
     model: {
       modelId: embeddingStatus?.modelId ?? "Xenova/all-MiniLM-L6-v2",
       state: embeddingStatus?.state ?? "idle",
+      activity: embeddingStatus?.activity ?? "idle",
+      installState: embeddingStatus?.installState ?? "missing",
+      cacheDir: embeddingStatus?.cacheDir ?? null,
+      installPath: embeddingStatus?.installPath ?? null,
       progress: embeddingStatus?.progress ?? null,
       loaded: embeddingStatus?.loaded ?? null,
       total: embeddingStatus?.total ?? null,
@@ -5451,7 +5463,9 @@ export function registerIpc({
     if (!ctx.embeddingService?.preload) {
       throw new Error("Embedding service is not available.");
     }
-    void ctx.embeddingService.preload({ forceRetry: true }).catch(() => {
+    const embeddingStatus = ctx.embeddingService.getStatus();
+    const localFilesOnly = embeddingStatus.installState === "installed" && embeddingStatus.state !== "unavailable";
+    void ctx.embeddingService.preload({ forceRetry: true, localFilesOnly }).catch(() => {
       // Health polling will pick up the unavailable state; the click itself should remain responsive.
     });
     return getMemoryHealthStats(ctx);

@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import type { GitHubStatus } from "../../../shared/types";
-import { GithubLogo, CheckCircle, Warning, ArrowsClockwise, ShieldCheck, LinkBreak, Key } from "@phosphor-icons/react";
+import { GithubLogo, CheckCircle, Warning, ArrowsClockwise, ShieldCheck, LinkBreak, Key, Shield, GitPullRequest, Eye, GitBranch, UsersThree } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
 const REQUIRED_SCOPES = ["repo", "workflow", "read:org"];
@@ -110,16 +110,17 @@ export function GitHubSection() {
   };
 
   const inputStyle: CSSProperties = {
-    height: 36,
+    height: 40,
     background: COLORS.recessedBg,
     border: `1px solid ${COLORS.border}`,
-    borderRadius: 0,
-    padding: "0 12px",
+    borderRadius: 8,
+    padding: "0 14px",
     fontSize: 12,
     fontFamily: MONO_FONT,
     color: COLORS.textPrimary,
     outline: "none",
     width: "100%",
+    transition: "border-color 150ms ease",
   };
 
   const scopeRowStyle = (present: boolean): CSSProperties => ({
@@ -147,10 +148,12 @@ export function GitHubSection() {
       {saveNotice ? <div style={noticeStyle}>{saveNotice}</div> : null}
       {actionError ? <div style={errorStyle}>{actionError}</div> : null}
 
-      <div style={cardStyle()}>
+      <div style={cardStyle({
+        borderColor: isConnected ? `${COLORS.success}30` : undefined,
+      })}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <GithubLogo size={28} weight="fill" style={{ color: COLORS.textPrimary }} />
+            <GithubLogo size={28} weight="fill" style={{ color: isConnected ? COLORS.textPrimary : COLORS.textMuted }} />
             <span style={{ fontSize: 16, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
               GitHub connection
             </span>
@@ -233,41 +236,56 @@ export function GitHubSection() {
             </div>
 
             {/* Token type tabs */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0, border: `1px solid ${COLORS.border}`, borderRadius: 0, overflow: "hidden" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               {/* Classic PAT */}
-              <div style={{ padding: "12px 14px", borderRight: `1px solid ${COLORS.border}` }}>
-                <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 8 }}>
-                  Classic token
+              <div style={{ padding: "14px 16px", border: `1px solid ${COLORS.border}`, borderTop: `2px solid ${COLORS.accent}`, borderRadius: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <Shield size={18} weight="duotone" style={{ color: COLORS.accent }} />
+                  <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                    Classic token
+                  </div>
                 </div>
                 <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, marginBottom: 8 }}>
                   Prefix: ghp_...
                 </div>
-                <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 10 }}>
                   Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token
                 </div>
-                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>REQUIRED SCOPES</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6, letterSpacing: "0.05em" }}>REQUIRED SCOPES</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {REQUIRED_SCOPES.map((scope) => (
-                    <div key={scope} style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
-                      ● {scope}
-                    </div>
+                    <span key={scope} style={{
+                      display: "inline-block",
+                      fontSize: 10,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.accent,
+                      background: `${COLORS.accent}12`,
+                      padding: "3px 8px",
+                      borderRadius: 4,
+                      fontWeight: 500,
+                    }}>
+                      {scope}
+                    </span>
                   ))}
                 </div>
               </div>
 
               {/* Fine-grained PAT */}
-              <div style={{ padding: "12px 14px" }}>
-                <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 8 }}>
-                  Fine-grained token
+              <div style={{ padding: "14px 16px", border: `1px solid ${COLORS.border}`, borderTop: `2px solid ${COLORS.success}`, borderRadius: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <ShieldCheck size={18} weight="duotone" style={{ color: COLORS.success }} />
+                  <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                    Fine-grained token
+                  </div>
                 </div>
                 <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, marginBottom: 8 }}>
                   Prefix: github_pat_...
                 </div>
-                <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 10 }}>
                   Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token
                 </div>
-                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>REQUIRED PERMISSIONS</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6, letterSpacing: "0.05em" }}>REQUIRED PERMISSIONS</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                   {[
                     "Contents: Read & Write",
                     "Pull requests: Read & Write",
@@ -275,9 +293,19 @@ export function GitHubSection() {
                     "Workflows: Read & Write",
                     "Members (org): Read",
                   ].map((perm) => (
-                    <div key={perm} style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
-                      ● {perm}
-                    </div>
+                    <span key={perm} style={{
+                      display: "inline-block",
+                      fontSize: 10,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.success,
+                      background: `${COLORS.success}10`,
+                      padding: "3px 8px",
+                      borderRadius: 4,
+                      fontWeight: 500,
+                      alignSelf: "flex-start",
+                    }}>
+                      {perm}
+                    </span>
                   ))}
                 </div>
               </div>
@@ -312,21 +340,40 @@ export function GitHubSection() {
       </div>
 
       <div style={cardStyle()}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
           <ShieldCheck size={18} color={COLORS.info} weight="fill" />
           <span style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
             Why these permissions?
           </span>
         </div>
-        <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: "20px" }}>
-          ADE uses your token to create PRs, inspect CI checks, and request reviewers.{" "}
-          <strong style={{ color: COLORS.textPrimary }}>Classic tokens</strong> use broad scopes
-          (<span style={{ color: COLORS.textPrimary }}>repo</span>,{" "}
-          <span style={{ color: COLORS.textPrimary }}>workflow</span>,{" "}
-          <span style={{ color: COLORS.textPrimary }}>read:org</span>).{" "}
-          <strong style={{ color: COLORS.textPrimary }}>Fine-grained tokens</strong> let you grant narrower,
-          per-repository permissions — they are the newer GitHub recommendation.
-          Either type works; fine-grained tokens won't show traditional scopes in the verification above.
+        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "20px", marginBottom: 14 }}>
+          ADE needs a few GitHub permissions to work on your behalf. Either token type works — fine-grained tokens are recommended for tighter control.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <GitPullRequest size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+              <strong style={{ color: COLORS.textPrimary }}>Pull requests</strong> — create PRs, request reviewers, and post review comments
+            </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <GitBranch size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+              <strong style={{ color: COLORS.textPrimary }}>Contents</strong> — read repository files and push branch changes
+            </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Eye size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+              <strong style={{ color: COLORS.textPrimary }}>Workflows</strong> — inspect CI check results and trigger re-runs
+            </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <UsersThree size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+              <strong style={{ color: COLORS.textPrimary }}>Organization</strong> — read org members to suggest reviewers
+            </span>
+          </div>
         </div>
       </div>
     </div>

@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const spawnMock = vi.fn();
+const execFileSyncMock = vi.fn();
 const getAllApiKeysMock = vi.fn();
 
 /** Helper: create a fake ChildProcess that immediately emits close with the given result. */
@@ -36,6 +40,7 @@ vi.mock("node:child_process", async () => {
   return {
     ...actual,
     spawn: (...args: unknown[]) => spawnMock(...args),
+    execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
   };
 });
 
@@ -58,9 +63,11 @@ beforeEach(async () => {
 
 describe("authDetector", () => {
   const originalEnv = { ...process.env };
+  let tempHomeDir: string | null = null;
 
   beforeEach(() => {
     spawnMock.mockReset();
+    execFileSyncMock.mockReset();
     getAllApiKeysMock.mockReset();
     vi.unstubAllGlobals();
     process.env = { ...originalEnv };
@@ -69,6 +76,10 @@ describe("authDetector", () => {
   afterEach(() => {
     process.env = { ...originalEnv };
     vi.unstubAllGlobals();
+    if (tempHomeDir) {
+      fs.rmSync(tempHomeDir, { recursive: true, force: true });
+      tempHomeDir = null;
+    }
   });
 
   it("reports installed-but-unauthenticated CLI providers", async () => {
@@ -234,6 +245,89 @@ describe("authDetector", () => {
     const claude = statuses.find((entry) => entry.cli === "claude");
     expect(claude?.verified).toBe(false);
     expect(claude?.authenticated).toBe(true);
+  });
+
+  it("finds codex through an npm-global prefix when PATH lookup fails", async () => {
+    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-auth-detector-"));
+    const prefixDir = path.join(tempHomeDir, ".npm-global");
+    fs.mkdirSync(path.join(prefixDir, "bin"), { recursive: true });
+    fs.writeFileSync(path.join(tempHomeDir, ".npmrc"), "prefix=~/.npm-global\n", "utf8");
+    fs.writeFileSync(path.join(prefixDir, "bin", "codex"), "#!/bin/sh\nexit 0\n", "utf8");
+    fs.chmodSync(path.join(prefixDir, "bin", "codex"), 0o755);
+    process.env.HOME = tempHomeDir;
+    process.env.PATH = "/usr/bin:/bin";
+
+    spawnMock.mockImplementation((command: string, args: string[] = []) => {
+      if (args[0] === "--version") {
+        if (command === "codex") return fakeError();
+        if (command === path.join(prefixDir, "bin", "codex")) return fakeChild({ status: 0, stdout: "0.105.0\n" });
+        return fakeError();
+      }
+      if (command === "which") {
+        return fakeChild({ status: 1 });
+      }
+      if ((command === "codex" || command.endsWith("/codex")) && args[0] === "login" && args[1] === "status") {
+        return fakeChild({ status: 0, stdout: "Authenticated as test-user\n" });
+      }
+      return fakeChild({ status: 1 });
+    });
+
+    const statuses = await detectCliAuthStatuses();
+    const codex = statuses.find((entry) => entry.cli === "codex");
+
+    expect(codex).toEqual({
+      cli: "codex",
+      installed: true,
+      path: path.join(prefixDir, "bin", "codex"),
+      authenticated: true,
+      verified: true,
+    });
+  });
+
+  it("repairs PATH from the interactive shell during a forced refresh", async () => {
+    process.env.PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+    process.env.SHELL = "/bin/zsh";
+
+    execFileSyncMock.mockImplementation((_command: string, args: string[]) => {
+      if (args[0] === "-lc") {
+        return "__ADE_PATH_START__/Users/arul/.local/bin:/usr/local/bin:/usr/bin:/bin__ADE_PATH_END__";
+      }
+      if (args[0] === "-ic") {
+        return "shell noise\n__ADE_PATH_START__/Users/arul/.npm-global/bin:/Users/arul/.local/bin:/usr/local/bin:/usr/bin:/bin__ADE_PATH_END__";
+      }
+      throw new Error(`unexpected shell args: ${args.join(" ")}`);
+    });
+
+    spawnMock.mockImplementation((command: string, args: string[] = []) => {
+      if (args[0] === "--version") {
+        if (command === "codex" && process.env.PATH?.includes("/Users/arul/.npm-global/bin")) {
+          return fakeChild({ status: 0, stdout: "codex-cli 0.117.0\n" });
+        }
+        return fakeError();
+      }
+      if (command === "which") {
+        if (args[0] === "codex" && process.env.PATH?.includes("/Users/arul/.npm-global/bin")) {
+          return fakeChild({ status: 0, stdout: "/Users/arul/.npm-global/bin/codex\n" });
+        }
+        return fakeChild({ status: 1 });
+      }
+      if ((command === "codex" || command.endsWith("/codex")) && args[0] === "login" && args[1] === "status") {
+        return fakeChild({ status: 0, stdout: "Logged in using ChatGPT\n" });
+      }
+      return fakeChild({ status: 1 });
+    });
+
+    const statuses = await detectCliAuthStatuses({ force: true });
+    const codex = statuses.find((entry) => entry.cli === "codex");
+
+    expect(process.env.PATH).toContain("/Users/arul/.npm-global/bin");
+    expect(codex).toEqual({
+      cli: "codex",
+      installed: true,
+      path: "/Users/arul/.npm-global/bin/codex",
+      authenticated: true,
+      verified: true,
+    });
   });
 
   it("verifies API keys with provider endpoints", async () => {

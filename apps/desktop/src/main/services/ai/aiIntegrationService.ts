@@ -462,7 +462,7 @@ export function createAiIntegrationService(args: {
     const features = isRecord(aiConfig.features) ? aiConfig.features : {};
     const value = features[feature];
     if (value == null) {
-      return feature === "commit_messages" ? false : true;
+      return false;
     }
     return Boolean(value);
   };

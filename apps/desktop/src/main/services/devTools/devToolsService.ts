@@ -1,6 +1,7 @@
 import type { DevToolStatus, DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { Logger } from "../logging/logger";
 import { firstLine, spawnAsync, whichCommand } from "../shared/utils";
+import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 
 type ToolSpec = {
   id: "git" | "gh";
@@ -15,9 +16,9 @@ const TOOL_SPECS: ToolSpec[] = [
   { id: "gh", label: "GitHub CLI", command: "gh", versionArgs: ["--version"], required: false },
 ];
 
-async function readVersion(spec: ToolSpec): Promise<string | null> {
+async function readVersion(commandPath: string, versionArgs: string[]): Promise<string | null> {
   try {
-    const res = await spawnAsync(spec.command, spec.versionArgs);
+    const res = await spawnAsync(commandPath, versionArgs);
     const out = `${res.stdout ?? ""}\n${res.stderr ?? ""}`.trim();
     const line = firstLine(out);
     return line.length ? line.slice(0, 160) : null;
@@ -27,9 +28,10 @@ async function readVersion(spec: ToolSpec): Promise<string | null> {
 }
 
 async function detectOneTool(spec: ToolSpec): Promise<DevToolStatus> {
-  const detectedPath = await whichCommand(spec.command);
+  const detectedPath = resolveExecutableFromKnownLocations(spec.command)?.path
+    ?? await whichCommand(spec.command);
   const installed = Boolean(detectedPath);
-  const detectedVersion = installed ? await readVersion(spec) : null;
+  const detectedVersion = detectedPath ? await readVersion(detectedPath, spec.versionArgs) : null;
   return {
     id: spec.id,
     label: spec.label,

@@ -61,6 +61,10 @@ function createMockMemoryHealthStats(overrides: Partial<any> = {}): any {
       model: {
         modelId: "Xenova/all-MiniLM-L6-v2",
         state: "idle",
+        activity: "idle",
+        installState: "missing",
+        cacheDir: "/tmp/mock-transformers-cache",
+        installPath: "/tmp/mock-transformers-cache/Xenova/all-MiniLM-L6-v2",
         progress: null,
         loaded: null,
         total: null,
@@ -1695,6 +1699,10 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           model: {
             modelId: "Xenova/all-MiniLM-L6-v2",
             state: "ready",
+            activity: "ready",
+            installState: "installed",
+            cacheDir: "/tmp/mock-transformers-cache",
+            installPath: "/tmp/mock-transformers-cache/Xenova/all-MiniLM-L6-v2",
             progress: 100,
             loaded: 1,
             total: 1,
