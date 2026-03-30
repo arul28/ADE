@@ -131,6 +131,7 @@ import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createProofObserver } from "../computerUse/proofObserver";
+import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
 import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "../orchestrator/unifiedOrchestratorAdapter";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
@@ -4795,6 +4796,12 @@ export function createAgentChatService(args: {
                     itemId,
                     turnId,
                   });
+                  // Synthesize a tool_result for the proof observer since the
+                  // Claude V2 SDK never surfaces tool results in the stream.
+                  const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
+                  if (syntheticResult) {
+                    emitChatEvent(managed, syntheticResult);
+                  }
                 }
               }
             }
@@ -4893,6 +4900,12 @@ export function createAgentChatService(args: {
                   itemId,
                   turnId,
                 });
+                // Synthesize a tool_result for the proof observer since the
+                // Claude V2 SDK never surfaces tool results in the stream.
+                const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
+                if (syntheticResult) {
+                  emitChatEvent(managed, syntheticResult);
+                }
               }
             }
           } else if (event.type === "message_start") {

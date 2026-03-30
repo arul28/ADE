@@ -515,6 +515,168 @@ describe("laneService create", () => {
   });
 });
 
+describe("laneService importBranch", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  it("imports a branch from an explicit non-origin remote", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-upstream-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-import-upstream", repoRoot });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "branch" && args[1] === "--track") {
+        expect(args).toEqual(["branch", "--track", "feature/import", "upstream/feature/import"]);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        expect(args[2]).toContain(path.join("worktrees", "imported-lane-"));
+        expect(args[3]).toBe("feature/import");
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/upstream/feature/import") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "fetch" && args[1] === "--prune" && args[2] === "--all") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/remotes/upstream/feature/import") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
+        return { exitCode: 0, stdout: "upstream/feature/import\n", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "HEAD..@{upstream}" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "0\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-import-upstream",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.importBranch({ branchRef: "upstream/feature/import", name: "Imported lane" });
+
+    expect(result.branchRef).toBe("feature/import");
+    expect(result.baseRef).toBe("main");
+    expect(result.parentLaneId).toBe("lane-main");
+    expect(runGitOrThrow).toHaveBeenCalledWith(
+      ["branch", "--track", "feature/import", "upstream/feature/import"],
+      expect.objectContaining({ cwd: repoRoot }),
+    );
+  });
+
+  it("rejects duplicate imported branches before creating a local tracking branch", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-duplicate-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-import-duplicate", repoRoot });
+    const now = "2026-03-11T12:05:00.000Z";
+    db.run(
+      `
+        insert into lanes(
+          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["lane-existing-import", "proj-import-duplicate", "Existing import", null, "worktree", "main", "feature/existing", path.join(repoRoot, "existing"), null, 0, "lane-main", null, null, null, "active", now, null],
+    );
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/existing") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "fetch" && args[1] === "--prune" && args[2] === "--all") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/remotes/origin/feature/existing") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-import-duplicate",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await expect(service.importBranch({ branchRef: "origin/feature/existing" })).rejects.toThrow(
+      "Lane already exists for branch 'feature/existing'",
+    );
+    expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "branch" && args[1] === "--track")).toBe(false);
+  });
+
+  it("removes a created tracking branch when worktree setup fails during import", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-cleanup-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-import-cleanup", repoRoot });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/broken") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "fetch" && args[1] === "--prune" && args[2] === "--all") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/remotes/origin/feature/broken") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "branch" && args[1] === "--track") {
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        throw new Error("worktree add failed");
+      }
+      if (args[0] === "branch" && args[1] === "-D") {
+        expect(args[2]).toBe("feature/broken");
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-import-cleanup",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await expect(service.importBranch({ branchRef: "origin/feature/broken" })).rejects.toThrow("worktree add failed");
+    expect(runGitOrThrow).toHaveBeenCalledWith(
+      ["branch", "-D", "feature/broken"],
+      expect.objectContaining({ cwd: repoRoot }),
+    );
+  });
+});
+
 describe("laneService rebaseStart", () => {
   beforeEach(() => {
     vi.mocked(getHeadSha).mockReset();

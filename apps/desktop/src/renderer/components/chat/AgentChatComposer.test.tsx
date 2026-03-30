@@ -187,32 +187,41 @@ describe("AgentChatComposer", () => {
     expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("opens the advanced popover and wires the advanced controls", () => {
-    const onExecutionModeChange = vi.fn();
-    const onComputerUsePolicyChange = vi.fn();
+  it("shows inline proof toggle and wires callback", () => {
     const onToggleProof = vi.fn();
+    renderComposer({
+      onToggleProof,
+      proofOpen: false,
+      proofArtifactCount: 3,
+    });
+
+    const proofButton = screen.getByTitle("Open proof drawer");
+    fireEvent.click(proofButton);
+    expect(onToggleProof).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("3")).toBeTruthy();
+  });
+
+  it("shows inline context toggle only before first message", () => {
     const onIncludeProjectDocsChange = vi.fn();
     renderComposer({
-      executionMode: "focused",
-      executionModeOptions,
-      onExecutionModeChange,
-      onComputerUsePolicyChange,
-      onToggleProof,
+      chatHasMessages: false,
       includeProjectDocs: false,
       onIncludeProjectDocsChange,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
-
-    fireEvent.click(screen.getByRole("button", { name: /^Parallel/ }));
-    fireEvent.click(screen.getByRole("button", { name: /^Proof\b/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^Project Context\b/i }));
-
-    expect(onExecutionModeChange).toHaveBeenCalledWith("parallel");
-    expect(onToggleProof).toHaveBeenCalledTimes(1);
+    const contextButton = screen.getByTitle("Include project context (PRD + architecture) with first message");
+    fireEvent.click(contextButton);
     expect(onIncludeProjectDocsChange).toHaveBeenCalledWith(true);
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
-    expect(screen.queryByText("Advanced settings")).toBeNull();
+  it("hides context toggle after first message is sent", () => {
+    const onIncludeProjectDocsChange = vi.fn();
+    renderComposer({
+      chatHasMessages: true,
+      includeProjectDocs: false,
+      onIncludeProjectDocsChange,
+    });
+
+    expect(screen.queryByTitle("Include project context (PRD + architecture) with first message")).toBeNull();
   });
 });

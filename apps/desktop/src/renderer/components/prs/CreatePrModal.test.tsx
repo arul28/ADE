@@ -101,6 +101,11 @@ describe("CreatePrModal queue workflow", () => {
       },
       git: {
         getSyncStatus: vi.fn().mockResolvedValue(null),
+        listBranches: vi.fn().mockResolvedValue([
+          { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
+          { name: "develop", isCurrent: false, isRemote: false, upstream: "origin/develop" },
+          { name: "release-9", isCurrent: false, isRemote: false, upstream: null },
+        ]),
       },
     } as any;
   });
@@ -162,10 +167,14 @@ describe("CreatePrModal queue workflow", () => {
     const user = userEvent.setup();
     render(<CreatePrModal open onOpenChange={vi.fn()} />);
 
-    await user.selectOptions(screen.getByRole("combobox"), "lane-1");
-    const targetBranchInput = screen.getByDisplayValue("main");
-    await user.clear(targetBranchInput);
-    await user.type(targetBranchInput, "release-9");
+    // Select source lane
+    const comboboxes = screen.getAllByRole("combobox");
+    await user.selectOptions(comboboxes[0]!, "lane-1");
+
+    // Wait for branches to load, then select a different target branch
+    await waitFor(() => expect(screen.getByDisplayValue("main")).toBeTruthy());
+    const targetSelect = screen.getByDisplayValue("main");
+    await user.selectOptions(targetSelect, "release-9");
 
     await user.click(screen.getByRole("button", { name: /next step/i }));
     await user.click(screen.getByRole("button", { name: /create pr/i }));
@@ -183,10 +192,14 @@ describe("CreatePrModal queue workflow", () => {
     const user = userEvent.setup();
     render(<CreatePrModal open onOpenChange={vi.fn()} />);
 
-    await user.selectOptions(screen.getByRole("combobox"), "lane-1");
-    const targetBranchInput = screen.getByDisplayValue("main");
-    await user.clear(targetBranchInput);
-    await user.type(targetBranchInput, "release-9");
+    // Select source lane
+    const comboboxes = screen.getAllByRole("combobox");
+    await user.selectOptions(comboboxes[0]!, "lane-1");
+
+    // Wait for branches to load, then select a different target branch
+    await waitFor(() => expect(screen.getByDisplayValue("main")).toBeTruthy());
+    const targetSelect = screen.getByDisplayValue("main");
+    await user.selectOptions(targetSelect, "release-9");
 
     expect(screen.getByText("Lane Needs Attention")).toBeTruthy();
     expect(screen.getByText(/targets release-9, but this lane currently tracks main/i)).toBeTruthy();
@@ -200,9 +213,10 @@ describe("CreatePrModal queue workflow", () => {
     await user.click(screen.getAllByRole("button", { name: /queue workflow/i })[0]!);
     await user.click(screen.getByRole("checkbox", { name: /01 queue lane/i }));
 
-    const targetBranchInput = screen.getByDisplayValue("main");
-    await user.clear(targetBranchInput);
-    await user.type(targetBranchInput, "release-9");
+    // Wait for branches to load, then select a different target branch
+    await waitFor(() => expect(screen.getByDisplayValue("main")).toBeTruthy());
+    const targetSelect = screen.getByDisplayValue("main");
+    await user.selectOptions(targetSelect, "release-9");
 
     await user.click(screen.getByRole("button", { name: /next step/i }));
     await user.click(screen.getByRole("button", { name: /create pr/i }));

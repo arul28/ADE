@@ -850,6 +850,7 @@ declare global {
         getOwnerSnapshot: (args: ComputerUseOwnerSnapshotArgs) => Promise<ComputerUseOwnerSnapshot>;
         routeArtifact: (args: ComputerUseArtifactRouteArgs) => Promise<ComputerUseArtifactView>;
         updateArtifactReview: (args: ComputerUseArtifactReviewArgs) => Promise<ComputerUseArtifactView>;
+        readArtifactPreview: (args: { uri: string }) => Promise<string | null>;
         onEvent: (cb: (ev: ComputerUseEventPayload) => void) => () => void;
       };
       pty: {

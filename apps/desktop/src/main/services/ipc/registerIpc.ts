@@ -3902,6 +3902,29 @@ export function registerIpc({
     return ctx.computerUseArtifactBrokerService.updateArtifactReview(arg);
   });
 
+  ipcMain.handle(IPC.computerUseReadArtifactPreview, async (_event, arg: { uri: string }): Promise<string | null> => {
+    const fs = await import("node:fs");
+    const pathMod = await import("node:path");
+    let filePath = arg.uri;
+    if (filePath.startsWith("file://")) {
+      const { fileURLToPath } = await import("node:url");
+      try { filePath = fileURLToPath(filePath); } catch { filePath = decodeURIComponent(filePath.replace(/^file:\/\//i, "")); }
+    }
+    if (!pathMod.default.isAbsolute(filePath)) {
+      const ctx = getCtx();
+      filePath = pathMod.default.resolve(ctx.project.rootPath, filePath);
+    }
+    try {
+      const buf = fs.default.readFileSync(filePath);
+      const ext = pathMod.default.extname(filePath).replace(/^\./, "").toLowerCase();
+      const mimeMap: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", bmp: "image/bmp", svg: "image/svg+xml" };
+      const mime = mimeMap[ext] ?? "image/png";
+      return `data:${mime};base64,${buf.toString("base64")}`;
+    } catch {
+      return null;
+    }
+  });
+
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {
     const ctx = getCtx();
     return await ctx.ptyService.create(arg);

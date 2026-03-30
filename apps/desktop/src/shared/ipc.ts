@@ -122,6 +122,7 @@ export const IPC = {
   computerUseGetOwnerSnapshot: "ade.computerUse.getOwnerSnapshot",
   computerUseRouteArtifact: "ade.computerUse.routeArtifact",
   computerUseUpdateArtifactReview: "ade.computerUse.updateArtifactReview",
+  computerUseReadArtifactPreview: "ade.computerUse.readArtifactPreview",
   computerUseEvent: "ade.computerUse.event",
   ptyCreate: "ade.pty.create",
   ptyWrite: "ade.pty.write",

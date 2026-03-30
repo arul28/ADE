@@ -1169,6 +1169,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.computerUseRouteArtifact, args),
     updateArtifactReview: async (args: ComputerUseArtifactReviewArgs): Promise<ComputerUseArtifactView> =>
       ipcRenderer.invoke(IPC.computerUseUpdateArtifactReview, args),
+    readArtifactPreview: async (args: { uri: string }): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
     onEvent: (cb: (ev: ComputerUseEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ComputerUseEventPayload) => cb(payload);
       ipcRenderer.on(IPC.computerUseEvent, listener);

@@ -1,42 +1,95 @@
-import React, { useEffect, useMemo, useState } from "react";
-import type { ComputerUseArtifactOwnerKind, ComputerUseOwnerSnapshot, ComputerUsePolicy } from "../../../shared/types";
-import {
-  buildComputerUseRoutePresets,
-  describeComputerUseLinks,
-  formatComputerUseKind,
-  formatComputerUseMode,
-  summarizeComputerUseProof,
-} from "../../lib/computerUse";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import type { ComputerUseArtifactView, ComputerUseOwnerSnapshot, ComputerUsePolicy } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
-function isExternalUri(value: string): boolean {
-  return /^https?:\/\//i.test(value);
+function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
+  return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
 }
 
-function openArtifactUri(uri: string | null) {
-  if (!uri) return;
-  if (isExternalUri(uri)) {
-    void window.ade.app.openExternal(uri);
-    return;
+function isVideoArtifact(artifact: ComputerUseArtifactView): boolean {
+  return artifact.kind === "video_recording" || (artifact.mimeType?.startsWith("video/") ?? false);
+}
+
+function kindLabel(kind: string): string {
+  return kind.replace(/_/g, " ");
+}
+
+/** Convert an artifact URI to an ade-artifact:// URL that Electron's custom protocol can serve. */
+function toPreviewSrc(uri: string): string {
+  // Already a remote URL — use directly
+  if (/^https?:\/\//i.test(uri)) return uri;
+  // Strip file:// prefix if present
+  let filePath = uri;
+  if (filePath.startsWith("file://")) {
+    try { filePath = decodeURIComponent(new URL(filePath).pathname); } catch { filePath = filePath.replace(/^file:\/\//i, ""); }
   }
-  void window.ade.app.revealPath(uri);
+  // For relative paths, we can't resolve here — the protocol handler in main will need the project root.
+  // But artifacts stored by the broker are typically absolute or relative to project root.
+  return `ade-artifact://${filePath.startsWith("/") ? "" : "/"}${encodeURI(filePath)}`;
 }
 
-function resolveArtifactPreviewUri(uri: string | null, projectRoot: string | null): string | null {
-  if (!uri) return null;
-  if (isExternalUri(uri)) return uri;
-  const absolutePath = uri.startsWith("/")
-    ? uri
-    : projectRoot
-      ? `${projectRoot.replace(/\/$/, "")}/${uri.replace(/^\.\//, "")}`
-      : null;
-  return absolutePath ? encodeURI(`file://${absolutePath}`) : null;
+function openInSystemPlayer(uri: string) {
+  if (/^https?:\/\//i.test(uri)) {
+    void window.ade.app.openExternal(uri);
+  } else {
+    void window.ade.app.revealPath(uri);
+  }
+}
+
+function VideoPreview({ artifact, src }: { artifact: ComputerUseArtifactView; src: string }) {
+  const [canPlay, setCanPlay] = useState(true);
+
+  if (!canPlay) {
+    return (
+      <button
+        type="button"
+        onClick={() => artifact.uri && openInSystemPlayer(artifact.uri)}
+        className="flex h-28 w-full items-center justify-center gap-2 rounded-md border border-white/[0.06] bg-black/20 text-[11px] text-fg/40 transition-colors hover:bg-white/[0.04] hover:text-fg/60"
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="opacity-50">
+          <path d="M6 3.5L12 8L6 12.5V3.5Z" fill="currentColor" />
+        </svg>
+        Open in system player
+      </button>
+    );
+  }
+
+  return (
+    <video
+      src={src}
+      controls
+      className="block max-h-[360px] w-full rounded-md border border-white/[0.06] bg-black"
+      onError={() => setCanPlay(false)}
+      onStalled={() => setCanPlay(false)}
+    />
+  );
+}
+
+function ArtifactPreview({ artifact }: { artifact: ComputerUseArtifactView }) {
+  if (!artifact.uri) return null;
+
+  const src = toPreviewSrc(artifact.uri);
+
+  if (isImageArtifact(artifact)) {
+    return (
+      <img
+        src={src}
+        alt={artifact.title}
+        className="block max-h-[360px] w-full rounded-md border border-white/[0.06] object-contain"
+        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+      />
+    );
+  }
+
+  if (isVideoArtifact(artifact)) {
+    return <VideoPreview artifact={artifact} src={src} />;
+  }
+
+  return null;
 }
 
 export function ChatComputerUsePanel({
-  laneId,
   sessionId,
-  policy,
   snapshot,
   onRefresh,
 }: {
@@ -46,278 +99,171 @@ export function ChatComputerUsePanel({
   snapshot: ComputerUseOwnerSnapshot | null;
   onRefresh: () => void | Promise<void>;
 }) {
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(snapshot?.artifacts[0]?.id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [routeKind, setRouteKind] = useState<ComputerUseArtifactOwnerKind>("mission");
-  const [routeTargetId, setRouteTargetId] = useState("");
-  const [projectRoot, setProjectRoot] = useState<string | null>(null);
 
-  const selectedArtifact = useMemo(
-    () => snapshot?.artifacts.find((artifact) => artifact.id === selectedArtifactId) ?? snapshot?.artifacts[0] ?? null,
-    [selectedArtifactId, snapshot],
-  );
-  const routePresets = useMemo(
-    () => buildComputerUseRoutePresets({ laneId, chatSessionId: sessionId }),
-    [laneId, sessionId],
+  const artifacts = useMemo(() => snapshot?.artifacts ?? [], [snapshot]);
+  const selected = useMemo(
+    () => artifacts.find((a) => a.id === selectedId) ?? artifacts[0] ?? null,
+    [selectedId, artifacts],
   );
 
   useEffect(() => {
-    setSelectedArtifactId((current) => current && snapshot?.artifacts.some((artifact) => artifact.id === current)
-      ? current
-      : snapshot?.artifacts[0]?.id ?? null);
-  }, [snapshot]);
+    setSelectedId((current) =>
+      current && artifacts.some((a) => a.id === current)
+        ? current
+        : artifacts[0]?.id ?? null,
+    );
+  }, [artifacts]);
 
-  useEffect(() => {
-    let cancelled = false;
-    window.ade.project.getSnapshot()
-      .then((project) => {
-        if (!cancelled) setProjectRoot(project.rootPath);
-      })
-      .catch(() => {
-        if (!cancelled) setProjectRoot(null);
+  const handleReveal = useCallback(() => {
+    if (!selected?.uri) return;
+    if (/^https?:\/\//i.test(selected.uri)) {
+      void window.ade.app.openExternal(selected.uri);
+    } else {
+      const path = selected.uri.startsWith("/")
+        ? selected.uri
+        : selected.uri;
+      void window.ade.app.revealPath(path);
+    }
+  }, [selected]);
+
+  const handleAccept = useCallback(async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await window.ade.computerUse.updateArtifactReview({
+        artifactId: selected.id,
+        reviewState: "accepted",
+        workflowState: "promoted",
       });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+      await onRefresh();
+    } catch { /* ignore */ }
+    setBusy(false);
+  }, [selected, onRefresh]);
 
-  if (!snapshot) {
+  const handleDismiss = useCallback(async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await window.ade.computerUse.updateArtifactReview({
+        artifactId: selected.id,
+        reviewState: "dismissed",
+        workflowState: "dismissed",
+      });
+      await onRefresh();
+    } catch { /* ignore */ }
+    setBusy(false);
+  }, [selected, onRefresh]);
+
+  if (!snapshot || artifacts.length === 0) {
     return (
-      <div className="rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-black/10 px-3 py-2 font-sans text-[11px] text-muted-fg/35">
-        Computer use is {formatComputerUseMode(policy).toLowerCase()} for this chat. Start a session or capture proof to see backend activity and artifacts here.
+      <div className="px-4 py-6 text-center text-[12px] text-fg/30">
+        No artifacts captured yet.
       </div>
     );
   }
 
-  const previewUri = resolveArtifactPreviewUri(selectedArtifact?.uri ?? null, projectRoot);
-  const showImagePreview = Boolean(
-    selectedArtifact
-      && previewUri
-      && (selectedArtifact.kind === "screenshot" || selectedArtifact.mimeType?.startsWith("image/")),
-  );
-  const showVideoPreview = Boolean(
-    selectedArtifact
-      && previewUri
-      && (selectedArtifact.kind === "video_recording" || selectedArtifact.mimeType?.startsWith("video/")),
-  );
-
-  const updateReview = async (artifactId: string, reviewState: "accepted" | "needs_more" | "dismissed", workflowState?: "promoted" | "published" | "dismissed") => {
-    setBusy(true);
-    setError(null);
-    try {
-      await window.ade.computerUse.updateArtifactReview({
-        artifactId,
-        reviewState,
-        ...(workflowState ? { workflowState } : {}),
-      });
-      await onRefresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const routeArtifact = async (artifactId: string, ownerKind: ComputerUseArtifactOwnerKind, ownerId: string) => {
-    if (!ownerId.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await window.ade.computerUse.routeArtifact({
-        artifactId,
-        owner: { kind: ownerKind, id: ownerId.trim() },
-      });
-      setRouteTargetId("");
-      await onRefresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="font-sans text-[11px] font-medium text-sky-300/60">
-            Computer Use
-          </div>
-          <div className="mt-1 font-sans text-[12px] text-fg/50">{snapshot.summary}</div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <span className="inline-flex items-center rounded-[var(--chat-radius-pill)] border border-sky-400/18 bg-sky-500/8 px-2.5 py-1 font-sans text-[10px] font-medium text-sky-200/80">
-            {formatComputerUseMode(policy)}
+    <div className="flex flex-col gap-3 p-3">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] font-medium text-fg/70">Proof</span>
+          <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-white/[0.08] px-1.5 text-[10px] font-medium tabular-nums text-fg/50">
+            {artifacts.length}
           </span>
-          <span className={cn(
-            "inline-flex items-center rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-sans text-[10px] font-medium",
-            snapshot.usingLocalFallback
-              ? "border-amber-400/18 bg-amber-500/8 text-amber-200/80"
-              : "border-emerald-400/18 bg-emerald-500/8 text-emerald-200/80",
-          )}>
-            {snapshot.usingLocalFallback ? "Fallback" : "External"}
-          </span>
-          <button
-            type="button"
-            className="rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10 px-2.5 py-1 font-sans text-[10px] font-medium text-fg/50 hover:text-fg/78"
-            onClick={() => void onRefresh()}
-            disabled={busy}
-          >
-            Refresh
-          </button>
         </div>
+        <button
+          type="button"
+          onClick={() => void onRefresh()}
+          disabled={busy}
+          className="rounded px-1.5 py-0.5 text-[10px] text-fg/40 transition-colors hover:bg-white/[0.06] hover:text-fg/60"
+        >
+          Refresh
+        </button>
       </div>
 
-      <div className="flex flex-wrap gap-3 font-sans text-[11px] text-muted-fg/35">
-        <span>{summarizeComputerUseProof(snapshot)}</span>
-        <span>Backend: {snapshot.activeBackend?.name ?? "not selected"}</span>
-        <span>Artifacts: {snapshot.artifacts.length}</span>
-      </div>
-
-      {snapshot.activity.length > 0 ? (
-        <div className="grid gap-2 lg:grid-cols-2">
-          {snapshot.activity.slice(0, 4).map((item) => (
-            <div key={item.id} className="rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/10 px-3 py-2">
-              <div className="font-sans text-[10px] font-medium text-muted-fg/30">{item.kind.replace(/_/g, " ")}</div>
-              <div className="mt-1 text-[11px] text-fg/72">{item.title}</div>
-              <div className="mt-1 font-sans text-[10px] text-muted-fg/30">{item.detail}</div>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <div className="space-y-2">
-          {snapshot.artifacts.length === 0 ? (
-            <div className="rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/10 px-3 py-2 font-sans text-[11px] text-muted-fg/30">
-              No screenshots, traces, logs, or verification output retained yet.
-            </div>
-          ) : snapshot.artifacts.map((artifact) => (
+      {/* Thumbnail strip */}
+      {artifacts.length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          {artifacts.map((artifact) => (
             <button
               key={artifact.id}
               type="button"
-              onClick={() => setSelectedArtifactId(artifact.id)}
+              onClick={() => setSelectedId(artifact.id)}
               className={cn(
-                "w-full rounded-[var(--chat-radius-card)] border px-3 py-2 text-left transition-colors",
-                selectedArtifact?.id === artifact.id
-                  ? "border-sky-400/24 bg-sky-500/10"
-                  : "border-white/[0.05] bg-black/10 hover:border-white/[0.1]",
+                "shrink-0 rounded-md border px-2.5 py-1.5 text-left transition-colors",
+                selected?.id === artifact.id
+                  ? "border-sky-400/30 bg-sky-500/10"
+                  : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12]",
               )}
             >
-              <div className="font-sans text-[10px] font-medium text-muted-fg/30">{artifact.backendName}</div>
-              <div className="mt-1 text-[11px] text-fg/78">{artifact.title}</div>
-              <div className="mt-1 font-sans text-[10px] text-muted-fg/30">
-                {formatComputerUseKind(artifact.kind)} • {artifact.reviewState}
+              <div className="text-[10px] font-medium text-fg/60 whitespace-nowrap">
+                {kindLabel(artifact.kind)}
+              </div>
+              <div className="mt-0.5 text-[10px] text-fg/30 whitespace-nowrap">
+                {artifact.backendName}
               </div>
             </button>
           ))}
         </div>
+      )}
 
-        {selectedArtifact ? (
-          <div className="space-y-3">
-            <div className="rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/10 px-3 py-3">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="font-sans text-[10px] font-medium text-muted-fg/30">{selectedArtifact.backendName}</div>
-                  <div className="mt-1 text-[13px] text-fg/82">{selectedArtifact.title}</div>
-                  {selectedArtifact.description ? (
-                    <div className="mt-2 text-[11px] leading-relaxed text-fg/58">{selectedArtifact.description}</div>
-                  ) : null}
-                </div>
-                {selectedArtifact.uri ? (
-                  <button
-                    type="button"
-                    className="rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10 px-2.5 py-1 font-sans text-[10px] font-medium text-fg/50 hover:text-fg/78"
-                    onClick={() => openArtifactUri(selectedArtifact.uri)}
-                  >
-                    {isExternalUri(selectedArtifact.uri) ? "Open" : "Reveal"}
-                  </button>
-                ) : null}
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2 font-sans text-[10px] font-medium text-muted-fg/30">
-                <span>{formatComputerUseKind(selectedArtifact.kind)}</span>
-                <span>{selectedArtifact.workflowState}</span>
-                <span>{describeComputerUseLinks(selectedArtifact.links)}</span>
+      {/* Selected artifact */}
+      {selected && (
+        <>
+          <ArtifactPreview artifact={selected} />
+
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="truncate text-[11px] text-fg/60">{selected.title}</div>
+              <div className="mt-0.5 flex items-center gap-2 text-[10px] text-fg/30">
+                <span>{kindLabel(selected.kind)}</span>
+                <span className={cn(
+                  "rounded px-1 py-px text-[9px] font-medium",
+                  selected.reviewState === "accepted" ? "bg-emerald-500/15 text-emerald-300/70" :
+                  selected.reviewState === "dismissed" ? "bg-red-500/15 text-red-300/70" :
+                  "bg-white/[0.06] text-fg/40",
+                )}>
+                  {selected.reviewState}
+                </span>
               </div>
             </div>
-
-            {showImagePreview ? (
-              <div className="overflow-hidden rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/20">
-                <img
-                  src={previewUri!}
-                  alt={selectedArtifact.title}
-                  className="block max-h-[420px] w-full object-contain"
-                />
-              </div>
-            ) : null}
-
-            {showVideoPreview ? (
-              <div className="overflow-hidden rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/20 p-2">
-                <video src={previewUri!} controls className="block max-h-[420px] w-full rounded-[calc(var(--chat-radius-card)-8px)] bg-black" />
-              </div>
-            ) : null}
-
-            {!showImagePreview && !showVideoPreview && selectedArtifact.uri ? (
-              <div className="rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/10 px-3 py-2 font-sans text-[11px] text-muted-fg/34">
-                Inline preview is available for screenshots and recordings. Use open or reveal for this artifact type.
-              </div>
-            ) : null}
-
-            <div className="flex flex-wrap gap-2">
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-emerald-400/18 bg-emerald-500/8 px-2.5 py-1 font-sans text-[10px] font-medium text-emerald-200/80" onClick={() => void updateReview(selectedArtifact.id, "accepted", "promoted")} disabled={busy}>Accept</button>
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-amber-400/18 bg-amber-500/8 px-2.5 py-1 font-sans text-[10px] font-medium text-amber-200/80" onClick={() => void updateReview(selectedArtifact.id, "needs_more")} disabled={busy}>Need more</button>
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-red-400/18 bg-red-500/8 px-2.5 py-1 font-sans text-[10px] font-medium text-red-200/80" onClick={() => void updateReview(selectedArtifact.id, "dismissed", "dismissed")} disabled={busy}>Dismiss</button>
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-sky-400/18 bg-sky-500/8 px-2.5 py-1 font-sans text-[10px] font-medium text-sky-200/80" onClick={() => void updateReview(selectedArtifact.id, "accepted", "published")} disabled={busy}>Publish</button>
-            </div>
-
-            <div className="rounded-[var(--chat-radius-card)] border border-white/[0.05] bg-black/10 px-3 py-3">
-              <div className="font-sans text-[10px] font-medium text-muted-fg/30">Route Artifact</div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {routePresets.map((preset) => (
+            <div className="flex shrink-0 gap-1.5">
+              {selected.reviewState === "pending" && (
+                <>
                   <button
-                    key={`${preset.owner.kind}:${preset.owner.id}`}
                     type="button"
-                    className="rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10 px-2.5 py-1 font-sans text-[10px] font-medium text-fg/50 hover:text-fg/78"
-                    onClick={() => void routeArtifact(selectedArtifact.id, preset.owner.kind, preset.owner.id)}
+                    onClick={() => void handleAccept()}
                     disabled={busy}
+                    className="rounded-md border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-[10px] font-medium text-emerald-300/80 transition-colors hover:bg-emerald-500/20"
                   >
-                    {preset.label}
+                    Accept
                   </button>
-                ))}
-              </div>
-              <div className="mt-3 grid gap-2 md:grid-cols-[140px_minmax(0,1fr)_auto]">
-                <select
-                  value={routeKind}
-                  onChange={(event) => setRouteKind(event.target.value as ComputerUseArtifactOwnerKind)}
-                  className="h-8 rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10 px-2 font-sans text-[11px] text-fg/78 outline-none"
-                >
-                  <option value="mission">mission</option>
-                  <option value="lane">lane</option>
-                  <option value="github_pr">GitHub PR</option>
-                  <option value="linear_issue">linear issue</option>
-                </select>
-                <input
-                  value={routeTargetId}
-                  onChange={(event) => setRouteTargetId(event.target.value)}
-                  placeholder="Target ID"
-                  className="h-8 rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10 px-2 font-sans text-[11px] text-fg/78 outline-none placeholder:text-muted-fg/24"
-                />
+                  <button
+                    type="button"
+                    onClick={() => void handleDismiss()}
+                    disabled={busy}
+                    className="rounded-md border border-white/[0.06] px-2 py-1 text-[10px] font-medium text-fg/40 transition-colors hover:bg-white/[0.06] hover:text-fg/60"
+                  >
+                    Dismiss
+                  </button>
+                </>
+              )}
+              {selected.uri && (
                 <button
                   type="button"
-                  className="rounded-[var(--chat-radius-pill)] border border-white/[0.06] bg-black/10 px-3 font-sans text-[10px] font-medium text-fg/50 hover:text-fg/78"
-                  onClick={() => void routeArtifact(selectedArtifact.id, routeKind, routeTargetId)}
-                  disabled={busy || !routeTargetId.trim()}
+                  onClick={handleReveal}
+                  className="rounded-md border border-white/[0.06] px-2 py-1 text-[10px] font-medium text-fg/40 transition-colors hover:bg-white/[0.06] hover:text-fg/60"
                 >
-                  Attach
+                  Reveal
                 </button>
-              </div>
+              )}
             </div>
           </div>
-        ) : null}
-      </div>
-
-      {error ? <div className="font-sans text-[11px] text-amber-200/80">{error}</div> : null}
+        </>
+      )}
     </div>
   );
 }

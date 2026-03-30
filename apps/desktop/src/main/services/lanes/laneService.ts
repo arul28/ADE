@@ -315,6 +315,69 @@ function describeBranchRebaseTarget(branchName: string, label: string): string {
   return label === branchName ? branchName : `${branchName} (${label})`;
 }
 
+function localBranchNameFromRemoteRef(ref: string): string {
+  const normalized = ref.trim();
+  const slashIndex = normalized.indexOf("/");
+  return slashIndex >= 0 ? normalized.slice(slashIndex + 1) : normalized;
+}
+
+async function resolveImportBranchTarget(args: {
+  projectRoot: string;
+  rawRef: string;
+}): Promise<{ localBranchName: string; remoteRef: string }> {
+  const rawRef = args.rawRef.trim();
+
+  // Refresh cached remote refs, but still allow import when the fetch fails and refs are already present locally.
+  await runGit(["fetch", "--prune", "--all"], {
+    cwd: args.projectRoot,
+    timeoutMs: 60_000,
+  }).catch(() => {});
+
+  const directCandidates = new Set<string>();
+  if (rawRef.includes("/")) directCandidates.add(rawRef);
+  directCandidates.add(`origin/${rawRef}`);
+
+  for (const remoteRef of directCandidates) {
+    const remoteExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/${remoteRef}`], {
+      cwd: args.projectRoot,
+      timeoutMs: 8_000,
+    }).then((result) => result.exitCode === 0);
+    if (remoteExists) {
+      return {
+        localBranchName: localBranchNameFromRemoteRef(remoteRef),
+        remoteRef,
+      };
+    }
+  }
+
+  const remoteRefsRes = await runGit(["for-each-ref", "--format=%(refname:short)", "refs/remotes"], {
+    cwd: args.projectRoot,
+    timeoutMs: 15_000,
+  });
+  if (remoteRefsRes.exitCode === 0) {
+    const suffix = `/${rawRef}`;
+    const matches = remoteRefsRes.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((ref) => !ref.endsWith("/HEAD"))
+      .filter((ref) => ref.endsWith(suffix));
+    if (matches.length === 1) {
+      return {
+        localBranchName: localBranchNameFromRemoteRef(matches[0]!),
+        remoteRef: matches[0]!,
+      };
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `Branch '${rawRef}' exists on multiple remotes. Import it using an explicit remote ref like '${matches[0]}'.`,
+      );
+    }
+  }
+
+  throw new Error(`Branch '${rawRef}' not found locally or on any remote`);
+}
+
 function computeStackDepth(args: {
   laneId: string;
   rowsById: Map<string, LaneRow>;
@@ -1219,12 +1282,24 @@ export function createLaneService({
     },
 
     async importBranch(args: { branchRef: string; name?: string; description?: string; parentLaneId?: string | null }): Promise<LaneSummary> {
-      const branchRef = (args.branchRef ?? "").trim();
-      if (!branchRef) throw new Error("branchRef is required");
-      if (branchRef.includes("\0")) throw new Error("Invalid branchRef");
+      const rawRef = (args.branchRef ?? "").trim();
+      if (!rawRef) throw new Error("branchRef is required");
+      if (rawRef.includes("\0")) throw new Error("Invalid branchRef");
 
-      // Ensure branch exists locally.
-      await runGitOrThrow(["rev-parse", "--verify", branchRef], { cwd: projectRoot, timeoutMs: 12_000 });
+      let branchRef = rawRef;
+      let remoteRefToTrack: string | null = null;
+      let branchCreated = false;
+      let worktreeAdded = false;
+      let laneInserted = false;
+      const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${rawRef}`], {
+        cwd: projectRoot, timeoutMs: 8_000
+      }).then((r) => r.exitCode === 0);
+
+      if (!localExists) {
+        const resolved = await resolveImportBranchTarget({ projectRoot, rawRef });
+        branchRef = resolved.localBranchName;
+        remoteRefToTrack = resolved.remoteRef;
+      }
 
       // Prevent duplicates.
       const existing = db.get<{ id: string }>(
@@ -1242,74 +1317,181 @@ export function createLaneService({
       const suffix = laneId.slice(0, 8);
       const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
 
-      // Attaching an existing branch: do NOT create a new branch, just add a worktree checkout.
-      await runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
-        cwd: projectRoot,
-        timeoutMs: 60_000
-      });
-
-      const parentLaneIdRaw = typeof args.parentLaneId === "string" ? args.parentLaneId.trim() : "";
-      let parentLaneId = parentLaneIdRaw.length ? parentLaneIdRaw : null;
-      // Default to primary lane when no parent is specified.
-      if (!parentLaneId) {
-        const primaryRow = getActivePrimaryLane();
-        if (primaryRow?.id) parentLaneId = primaryRow.id;
-      }
-      const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
-      if (parentLaneId && !parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
-      if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
-
-      const baseRef = parent?.branch_ref ?? defaultBaseRef;
-
-      db.run(
-        `
-          insert into lanes(
-            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
-          )
-          values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, 'active', ?, null)
-        `,
-        [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, now]
-      );
-      invalidateLaneListCache();
-
-      // Best-effort push to establish upstream if not already tracking a remote
       try {
-        const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
-        if (upstreamCheck.exitCode !== 0) {
-          await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+        if (remoteRefToTrack) {
+          await runGitOrThrow(["branch", "--track", branchRef, remoteRefToTrack], { cwd: projectRoot, timeoutMs: 15_000 });
+          branchCreated = true;
         }
-      } catch {
-        // Non-fatal: lane works locally even without remote tracking
-      }
 
-      const row = getLaneRow(laneId);
-      if (!row) throw new Error(`Failed to import lane: ${laneId}`);
-      const rowsById = getRowsById(true);
-      const status = await computeLaneStatus(worktreePath, baseRef, branchRef);
-      const parentStatus = parent ? await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref) : null;
+        // Attaching an existing branch: do NOT create a new branch, just add a worktree checkout.
+        await runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
+          cwd: projectRoot,
+          timeoutMs: 60_000
+        });
+        worktreeAdded = true;
 
-      if (onHeadChanged) {
+        // --- Detect real parent lane via git merge-base ---
+        const parentLaneIdRaw = typeof args.parentLaneId === "string" ? args.parentLaneId.trim() : "";
+        const explicitParentLaneId = parentLaneIdRaw.length ? parentLaneIdRaw : null;
+        let parentLaneId: string | null = null;
+
+        // Try to detect the true parent by finding which lane's HEAD shares the
+        // most recent common ancestor with the imported branch.
         try {
-          const postHeadSha = await getHeadSha(worktreePath);
-          onHeadChanged({
-            laneId,
-            reason: "import_branch",
-            preHeadSha: null,
-            postHeadSha
-          });
-        } catch {
-          // ignore
-        }
-      }
+          const importedHeadSha = await getHeadSha(worktreePath);
+          if (importedHeadSha) {
+            const activeRows = getAllLaneRows(false);
+            let bestLaneId: string | null = null;
+            let bestDistance = Infinity;
 
-      return toLaneSummary({
-        row,
-        status,
-        parentStatus,
-        childCount: 0,
-        stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() })
-      });
+            for (const row of activeRows) {
+              // Skip the lane we are currently importing (same id won't exist yet,
+              // but skip by branch_ref match just in case).
+              if (row.branch_ref === branchRef) continue;
+
+              const laneWorktree = row.worktree_path;
+              if (!laneWorktree) continue;
+
+              const laneHeadSha = await getHeadSha(laneWorktree);
+              if (!laneHeadSha) continue;
+
+              const mbResult = await runGit(
+                ["merge-base", laneHeadSha, importedHeadSha],
+                { cwd: projectRoot, timeoutMs: 10_000 },
+              );
+              if (mbResult.exitCode !== 0) continue;
+              const mergeBaseSha = mbResult.stdout.trim();
+              if (!mergeBaseSha) continue;
+
+              // Count commits between merge-base and the imported branch HEAD.
+              // Fewer commits = closer ancestor = better parent candidate.
+              const countResult = await runGit(
+                ["rev-list", "--count", `${mergeBaseSha}..${importedHeadSha}`],
+                { cwd: projectRoot, timeoutMs: 10_000 },
+              );
+              if (countResult.exitCode !== 0) continue;
+              const distance = parseInt(countResult.stdout.trim(), 10);
+              if (isNaN(distance)) continue;
+
+              if (distance < bestDistance) {
+                bestDistance = distance;
+                bestLaneId = row.id;
+              }
+            }
+
+            if (bestLaneId) {
+              if (explicitParentLaneId && explicitParentLaneId !== bestLaneId) {
+                console.warn(
+                  `[laneService] importBranch: explicit parentLaneId '${explicitParentLaneId}' differs from ` +
+                  `git-detected parent '${bestLaneId}' — using detected parent`,
+                );
+              }
+              parentLaneId = bestLaneId;
+            }
+          }
+        } catch (err) {
+          console.warn("[laneService] importBranch: merge-base parent detection failed, falling back", err);
+        }
+
+        // Fallback: use explicit parent or primary lane if detection yielded nothing.
+        if (!parentLaneId) {
+          parentLaneId = explicitParentLaneId;
+        }
+        if (!parentLaneId) {
+          const primaryRow = getActivePrimaryLane();
+          if (primaryRow?.id) parentLaneId = primaryRow.id;
+        }
+
+        const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
+        if (parentLaneId && !parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
+        if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
+
+        const baseRef = parent?.branch_ref ?? defaultBaseRef;
+
+        db.run(
+          `
+            insert into lanes(
+              id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+              attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+            )
+            values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, 'active', ?, null)
+          `,
+          [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, now]
+        );
+        laneInserted = true;
+        invalidateLaneListCache();
+
+        // Best-effort push to establish upstream if not already tracking a remote
+        try {
+          const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
+          if (upstreamCheck.exitCode !== 0) {
+            await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+          }
+        } catch {
+          // Non-fatal: lane works locally even without remote tracking
+        }
+
+        const row = getLaneRow(laneId);
+        if (!row) throw new Error(`Failed to import lane: ${laneId}`);
+        const rowsById = getRowsById(true);
+        const status = await computeLaneStatus(worktreePath, baseRef, branchRef);
+        const parentStatus = parent ? await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref) : null;
+
+        if (onHeadChanged) {
+          try {
+            const postHeadSha = await getHeadSha(worktreePath);
+            onHeadChanged({
+              laneId,
+              reason: "import_branch",
+              preHeadSha: null,
+              postHeadSha
+            });
+          } catch {
+            // ignore
+          }
+        }
+
+        return toLaneSummary({
+          row,
+          status,
+          parentStatus,
+          childCount: 0,
+          stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() })
+        });
+      } catch (error) {
+        if (laneInserted) throw error;
+
+        const cleanupErrors: string[] = [];
+        if (worktreeAdded) {
+          try {
+            await runGitOrThrow(["worktree", "remove", "--force", worktreePath], {
+              cwd: projectRoot,
+              timeoutMs: 60_000,
+            });
+          } catch (cleanupError) {
+            try {
+              fs.rmSync(worktreePath, { recursive: true, force: true });
+            } catch {
+              cleanupErrors.push(`remove worktree failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+            }
+          }
+        }
+        if (branchCreated) {
+          try {
+            await runGitOrThrow(["branch", "-D", branchRef], {
+              cwd: projectRoot,
+              timeoutMs: 15_000,
+            });
+          } catch (cleanupError) {
+            cleanupErrors.push(`delete branch failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+          }
+        }
+
+        if (cleanupErrors.length > 0) {
+          throw new Error(`${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupErrors.join(" ")}`);
+        }
+        throw error;
+      }
     },
 
     async getChildren(laneId: string): Promise<LaneSummary[]> {

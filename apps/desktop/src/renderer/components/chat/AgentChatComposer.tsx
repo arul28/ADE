@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { At, CaretDown, Image, Paperclip, Square, X, PaperPlaneTilt } from "@phosphor-icons/react";
+import { At, Image, Paperclip, Square, X, PaperPlaneTilt, Cube, BookOpen } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -130,258 +130,7 @@ const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode;
   { value: "full-auto", label: "Full auto" },
 ];
 
-type AdvancedSettingsPopoverProps = {
-  executionModeOptions: ExecutionModeOption[];
-  executionMode: AgentChatExecutionMode | null;
-  onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
-  computerUsePolicy: ComputerUsePolicy;
-  computerUseSnapshot: ComputerUseOwnerSnapshot | null;
-  onOpenComputerUseDetails: () => void;
-  proofOpen: boolean;
-  proofArtifactCount: number;
-  onToggleProof?: () => void;
-  includeProjectDocs?: boolean;
-  onIncludeProjectDocsChange?: (checked: boolean) => void;
-};
 
-function AdvancedSettingsPopover({
-  executionModeOptions,
-  executionMode,
-  onExecutionModeChange,
-  computerUsePolicy,
-  computerUseSnapshot,
-  onOpenComputerUseDetails,
-  proofOpen,
-  proofArtifactCount,
-  onToggleProof,
-  includeProjectDocs,
-  onIncludeProjectDocsChange,
-}: AdvancedSettingsPopoverProps) {
-  const [hoveredExecutionMode, setHoveredExecutionMode] = useState<AgentChatExecutionMode | null>(null);
-  const activeBackend = computerUseSnapshot?.activeBackend?.name ?? (computerUsePolicy.allowLocalFallback ? "Fallback allowed" : "No fallback");
-  const activeExecutionMode = executionModeOptions.find((option) => option.value === executionMode) ?? executionModeOptions[0] ?? null;
-  const helpMode = hoveredExecutionMode
-    ? executionModeOptions.find((option) => option.value === hoveredExecutionMode) ?? activeExecutionMode
-    : activeExecutionMode;
-
-  return (
-    <div className="absolute bottom-full right-0 z-30 mb-3 w-[min(44rem,calc(100vw-2rem))] overflow-hidden rounded-[22px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(18,20,28,0.98),rgba(10,12,18,0.98))] shadow-[0_24px_90px_-40px_rgba(0,0,0,0.88)] backdrop-blur-xl">
-      <div className="border-b border-white/[0.05] px-4 py-3">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <div className="font-sans text-[12px] font-semibold tracking-tight text-fg/86">Advanced settings</div>
-            <div className="max-w-[34rem] text-[11px] leading-5 text-fg/54">
-              Tune execution behavior, computer use, proof retention, and project context without widening the main composer.
-            </div>
-          </div>
-          <button
-            type="button"
-            className="rounded-[var(--chat-radius-pill)] border border-white/[0.08] bg-white/[0.03] px-3 py-1 font-sans text-[11px] font-medium text-fg/58 transition-colors hover:text-fg/82"
-            onClick={onOpenComputerUseDetails}
-            title="Open the detailed computer-use settings"
-          >
-            Computer use details
-          </button>
-        </div>
-      </div>
-
-      <div className="space-y-4 px-4 py-4">
-        {executionModeOptions.length > 0 && onExecutionModeChange ? (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="font-sans text-[11px] font-semibold uppercase tracking-[0.16em] text-fg/64">Execution mode</div>
-                <div className="mt-1 text-[11px] leading-5 text-fg/48">Choose whether the model stays in one thread or spreads work across delegates.</div>
-              </div>
-              {helpMode ? (
-                <div className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-1 font-sans text-[10px] font-medium text-fg/72">
-                  {helpMode.summary}
-                </div>
-              ) : null}
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {executionModeOptions.map((option) => {
-                const isActive = executionMode === option.value;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={cn(
-                      "rounded-[18px] border px-3 py-2 text-left transition-colors",
-                      isActive
-                        ? "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-fg/84"
-                        : "border-white/[0.06] bg-white/[0.03] text-fg/62 hover:border-white/[0.12] hover:bg-white/[0.05]",
-                    )}
-                    style={isActive ? {
-                      borderColor: `${option.accent}44`,
-                      background: `${option.accent}16`,
-                    } : undefined}
-                    onClick={() => onExecutionModeChange(option.value)}
-                    onMouseEnter={() => setHoveredExecutionMode(option.value)}
-                    onMouseLeave={() => setHoveredExecutionMode(null)}
-                    title={option.helper}
-                    aria-pressed={isActive}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-sans text-[12px] font-medium text-fg/82">{option.label}</span>
-                      <span className="font-sans text-[10px] uppercase tracking-[0.16em] text-fg/34">{option.summary}</span>
-                    </div>
-                    <div className="mt-1 text-[11px] leading-5 text-fg/54">{option.helper}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <button
-            type="button"
-            className={cn(
-              "rounded-[18px] border px-3 py-3 text-left transition-colors",
-              proofOpen || proofArtifactCount > 0
-                ? "border-emerald-400/22 bg-emerald-500/10"
-                : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
-            )}
-            onClick={onToggleProof}
-            aria-pressed={proofOpen}
-            disabled={!onToggleProof}
-            title="Open or hide the proof drawer for retained screenshots, traces, logs, and verification output"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-sans text-[12px] font-medium text-fg/84">Proof</span>
-              <span className={cn(
-                "rounded-md border px-2 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.14em]",
-                proofOpen
-                  ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
-                  : "border-white/[0.08] bg-white/[0.03] text-fg/45",
-              )}>
-                {proofArtifactCount > 0 ? `${proofArtifactCount} artifacts` : proofOpen ? "Open" : "Closed"}
-              </span>
-            </div>
-            <div className="mt-1 text-[11px] leading-5 text-fg/58">
-              Inspect retained screenshots, traces, logs, and validation output from this chat.
-            </div>
-          </button>
-
-          <button
-            type="button"
-            className={cn(
-              "rounded-[18px] border px-3 py-3 text-left transition-colors md:col-span-2",
-              includeProjectDocs
-                ? "border-accent/22 bg-accent/10"
-                : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
-            )}
-            onClick={() => onIncludeProjectDocsChange?.(!includeProjectDocs)}
-            aria-pressed={!!includeProjectDocs}
-            disabled={!onIncludeProjectDocsChange}
-            title="Include project-level context docs (PRD and architecture) with the first message"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-sans text-[12px] font-medium text-fg/84">Project Context</span>
-              <span className={cn(
-                "rounded-md border px-2 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.14em]",
-                includeProjectDocs
-                  ? "border-accent/25 bg-accent/10 text-accent"
-                  : "border-white/[0.08] bg-white/[0.03] text-fg/45",
-              )}>
-                {includeProjectDocs ? "Included" : "Off"}
-              </span>
-            </div>
-            <div className="mt-1 text-[11px] leading-5 text-fg/58">
-              Attach the project-level PRD and architecture context to the next turn so the agent starts with more background.
-            </div>
-          </button>
-        </div>
-
-        {helpMode ? (
-          <div className="rounded-[18px] border border-white/[0.06] bg-black/20 px-3 py-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-sans text-[10px] font-semibold uppercase tracking-[0.16em] text-fg/48">Mode help</span>
-              <span className="font-sans text-[10px] text-fg/38">{helpMode.label}</span>
-            </div>
-            <div className="mt-1 text-[11px] leading-5 text-fg/58">{hoveredExecutionMode ? helpMode.helper : helpMode.summary}</div>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function ComputerUseSettingsModal({
-  open,
-  policy,
-  snapshot,
-  onClose,
-  onChange,
-  onOpenProof,
-}: {
-  open: boolean;
-  policy: ComputerUsePolicy;
-  snapshot: ComputerUseOwnerSnapshot | null;
-  onClose: () => void;
-  onChange: (policy: ComputerUsePolicy) => void;
-  onOpenProof: () => void;
-}) {
-  if (!open) return null;
-
-  const activeBackend = snapshot?.activeBackend?.name ?? "None";
-  const artifactCount = snapshot?.artifacts.length ?? 0;
-
-  return (
-    <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(56,189,248,0.1),rgba(7,10,18,0.88))] px-4 backdrop-blur-md"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div className="w-full max-w-sm overflow-hidden rounded-[28px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(15,21,34,0.96),rgba(10,13,22,0.94))] shadow-[0_28px_110px_-36px_rgba(0,0,0,0.82)]">
-        <div className="border-b border-white/[0.05] bg-[linear-gradient(90deg,rgba(56,189,248,0.12),transparent)] px-5 py-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <div className="font-sans text-[15px] font-semibold tracking-tight text-fg/88">Computer use</div>
-              <div className="text-[12px] leading-5 text-fg/58">
-                ADE captures proof from your agent's tool calls automatically.
-              </div>
-            </div>
-            <button
-              type="button"
-              className="rounded-[var(--chat-radius-pill)] border border-white/[0.08] bg-white/[0.03] px-3 py-1 font-sans text-[11px] font-medium text-fg/60 transition-colors hover:text-fg/85"
-              onClick={onClose}
-              title="Close"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-
-        <div className="space-y-4 px-5 py-5">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-sans text-[11px] uppercase tracking-[0.14em] text-muted-fg/40">Backend</span>
-              <span className="text-[12px] text-fg/78">{activeBackend}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="font-sans text-[11px] uppercase tracking-[0.14em] text-muted-fg/40">Artifacts</span>
-              <span className="text-[12px] text-fg/78">{artifactCount} captured</span>
-            </div>
-          </div>
-
-          <div className="grid gap-3">
-            <button
-              type="button"
-              className="rounded-[18px] border border-white/[0.06] bg-white/[0.03] px-4 py-2.5 font-sans text-[12px] font-medium text-fg/78 transition-colors hover:border-white/[0.12] hover:text-fg/90"
-              onClick={onOpenProof}
-              title="Open the proof drawer"
-            >
-              Open proof drawer
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export function AgentChatComposer({
   surfaceMode = "standard",
@@ -437,6 +186,7 @@ export function AgentChatComposer({
   onClearEvents,
   promptSuggestion,
   subagentSnapshots = [],
+  chatHasMessages = false,
 }: {
   surfaceMode?: ChatSurfaceMode;
   sdkSlashCommands?: AgentChatSlashCommand[];
@@ -495,6 +245,7 @@ export function AgentChatComposer({
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
   subagentSnapshots?: ChatSubagentSnapshot[];
+  chatHasMessages?: boolean;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -510,14 +261,10 @@ export function AgentChatComposer({
   const [hoveredCodexPreset, setHoveredCodexPreset] = useState<"plan" | "edit" | "full-auto" | null>(null);
 
   const [dragActive, setDragActive] = useState(false);
-  const [advancedMenuOpen, setAdvancedMenuOpen] = useState(false);
-  const [computerUseModalOpen, setComputerUseModalOpen] = useState(false);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const advancedMenuRef = useRef<HTMLDivElement | null>(null);
-  const advancedButtonRef = useRef<HTMLButtonElement | null>(null);
   const fileAddInProgressRef = useRef(false);
   const canAttach = !turnActive;
 
@@ -552,41 +299,6 @@ export function AgentChatComposer({
     const timeout = window.setTimeout(() => attachmentInputRef.current?.focus(), 0);
     return () => window.clearTimeout(timeout);
   }, [attachmentPickerOpen]);
-
-  useEffect(() => {
-    if (!computerUseModalOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        setComputerUseModalOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [computerUseModalOpen]);
-
-  useEffect(() => {
-    if (!advancedMenuOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (advancedMenuRef.current?.contains(target)) return;
-      if (advancedButtonRef.current?.contains(target)) return;
-      setAdvancedMenuOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setAdvancedMenuOpen(false);
-        advancedButtonRef.current?.focus();
-      }
-    };
-    window.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [advancedMenuOpen]);
 
   useEffect(() => {
     if (!attachmentPickerOpen) return;
@@ -1210,44 +922,47 @@ export function AgentChatComposer({
             </div>
 
             <div className="ml-auto flex shrink-0 items-center gap-1.5">
-              <div className="relative">
+              {/* Proof drawer toggle */}
+              {onToggleProof ? (
                 <button
-                  ref={advancedButtonRef}
                   type="button"
                   className={cn(
-                    "inline-flex h-7 items-center gap-1 rounded-md border px-2.5 font-sans text-[10px] font-medium transition-colors",
-                    advancedMenuOpen
-                      ? "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)]"
+                    "relative inline-flex h-7 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors",
+                    proofOpen
+                      ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-200/80"
                       : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.12] hover:text-fg/68",
                   )}
-                  onClick={() => setAdvancedMenuOpen((open) => !open)}
-                  title="Open advanced composer settings"
-                  aria-expanded={advancedMenuOpen}
+                  onClick={onToggleProof}
+                  title={proofOpen ? "Close proof drawer" : "Open proof drawer"}
+                  aria-pressed={proofOpen}
                 >
-                  <span>Advanced</span>
-                  <CaretDown size={10} weight="bold" />
+                  <Cube size={12} weight={proofOpen ? "fill" : "regular"} />
+                  {proofArtifactCount > 0 ? (
+                    <span className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-emerald-500/20 px-1 font-mono text-[8px] font-bold text-emerald-200/90">
+                      {proofArtifactCount}
+                    </span>
+                  ) : null}
                 </button>
-                {advancedMenuOpen ? (
-                  <div ref={advancedMenuRef}>
-                    <AdvancedSettingsPopover
-                      executionModeOptions={executionModeOptions}
-                      executionMode={executionMode ?? null}
-                      onExecutionModeChange={onExecutionModeChange}
-                      computerUsePolicy={computerUsePolicy}
-                      computerUseSnapshot={computerUseSnapshot ?? null}
-                      onOpenComputerUseDetails={() => {
-                        setAdvancedMenuOpen(false);
-                        setComputerUseModalOpen(true);
-                      }}
-                      proofOpen={proofOpen}
-                      proofArtifactCount={proofArtifactCount}
-                      onToggleProof={onToggleProof}
-                      includeProjectDocs={includeProjectDocs}
-                      onIncludeProjectDocsChange={onIncludeProjectDocsChange}
-                    />
-                  </div>
-                ) : null}
-              </div>
+              ) : null}
+
+              {/* Include context toggle -- only before first message */}
+              {!chatHasMessages && onIncludeProjectDocsChange ? (
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex h-7 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors",
+                    includeProjectDocs
+                      ? "border-accent/22 bg-accent/10 text-accent"
+                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.12] hover:text-fg/68",
+                  )}
+                  onClick={() => onIncludeProjectDocsChange(!includeProjectDocs)}
+                  title="Include project context (PRD + architecture) with first message"
+                  aria-pressed={!!includeProjectDocs}
+                >
+                  <BookOpen size={12} weight={includeProjectDocs ? "fill" : "regular"} />
+                  <span>Context</span>
+                </button>
+              ) : null}
 
               {turnActive ? (
                 <>
@@ -1352,17 +1067,6 @@ export function AgentChatComposer({
         </div>
       </div>
       </ChatComposerShell>
-      <ComputerUseSettingsModal
-        open={computerUseModalOpen}
-        policy={computerUsePolicy}
-        snapshot={computerUseSnapshot ?? null}
-        onClose={() => setComputerUseModalOpen(false)}
-        onChange={onComputerUsePolicyChange}
-        onOpenProof={() => {
-          if (!proofOpen) onToggleProof?.();
-          setComputerUseModalOpen(false);
-        }}
-      />
     </>
   );
 }
