@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowsClockwise, Check, Stack, Upload, Warning } from "@phosphor-icons/react";
+import { ArrowDown, ArrowsClockwise, Check, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
