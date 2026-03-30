@@ -203,6 +203,65 @@ function createStubFileService(workspaceRoot: string) {
   };
 }
 
+function createStubChatService() {
+  let listener: ((event: unknown) => void) | null = null;
+  const baseSession = {
+    sessionId: "session-1",
+    laneId: "lane-1",
+    provider: "claude",
+    model: "claude-3.5-sonnet",
+    status: "idle",
+    startedAt: "2026-03-17T00:10:00.000Z",
+    lastActivityAt: "2026-03-17T00:10:00.000Z",
+  };
+
+  const service = {
+    subscribeToEvents: vi.fn((callback: (event: unknown) => void) => {
+      listener = callback;
+      return () => {
+        if (listener === callback) {
+          listener = null;
+        }
+      };
+    }),
+    interrupt: vi.fn().mockResolvedValue(undefined),
+    steer: vi.fn().mockResolvedValue(undefined),
+    approveToolUse: vi.fn().mockResolvedValue(undefined),
+    respondToInput: vi.fn().mockResolvedValue(undefined),
+    resumeSession: vi.fn().mockResolvedValue(baseSession),
+    updateSession: vi.fn().mockResolvedValue(baseSession),
+    dispose: vi.fn().mockResolvedValue(undefined),
+    listSessions: vi.fn().mockResolvedValue([]),
+    getSessionSummary: vi.fn().mockResolvedValue(null),
+    getChatTranscript: vi.fn().mockResolvedValue([]),
+    createSession: vi.fn().mockResolvedValue(baseSession),
+    getAvailableModels: vi.fn().mockResolvedValue([]),
+    getSlashCommands: vi.fn().mockResolvedValue([]),
+  } as const;
+
+  return {
+    service: service as any,
+    emit: (event: unknown) => {
+      listener?.(event);
+    },
+  };
+}
+
+async function sendCommand(ws: WebSocket, queue: ReturnType<typeof createMessageQueue>, payload: {
+  commandId: string;
+  action: string;
+  args: Record<string, unknown>;
+}) {
+  ws.send(encodeSyncEnvelope({
+    type: "command",
+    requestId: payload.commandId,
+    payload,
+  }));
+  const ack = await queue.next("command_ack");
+  const result = await queue.next("command_result");
+  return { ack, result };
+}
+
 const activeDisposers: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -857,6 +916,330 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const rejectedResult = await client.queue.next("command_result");
     expect((rejectedResult.payload as { ok: boolean; error?: { code: string } }).ok).toBe(false);
     expect((rejectedResult.payload as { ok: boolean; error?: { code: string } }).error?.code).toBe("unsupported_command");
+  });
+
+  it("broadcasts chat events to subscribed peers, supports multiple subscriptions, and stops after unsubscribe", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-chat-events-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-chat-events-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const chatService = createStubChatService();
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        refresh: vi.fn().mockResolvedValue([]),
+        listSnapshots: vi.fn().mockReturnValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
+      sessionService: {
+        list: () => [],
+        get: () => null,
+        readTranscriptTail: async () => "",
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+      } as any,
+      agentChatService: chatService.service,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const port = await host.waitUntilListening();
+    const token = host.getBootstrapToken();
+    const clientA = await connectClient({
+      port,
+      token,
+      deviceId: "peer-chat-a",
+      deviceName: "Peer Chat A",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+    });
+    const clientB = await connectClient({
+      port,
+      token,
+      deviceId: "peer-chat-b",
+      deviceName: "Peer Chat B",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+    });
+    activeDisposers.push(clientA.close, clientB.close);
+
+    clientA.ws.send(encodeSyncEnvelope({
+      type: "chat_subscribe",
+      payload: { sessionId: "session-1" },
+    }));
+    clientB.ws.send(encodeSyncEnvelope({
+      type: "chat_subscribe",
+      payload: { sessionId: "session-1" },
+    }));
+    clientB.ws.send(encodeSyncEnvelope({
+      type: "chat_subscribe",
+      payload: { sessionId: "session-2" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    chatService.emit({
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:10:00.000Z",
+      event: { type: "text", text: "hello from session 1", turnId: "turn-1", itemId: "item-1" },
+      sequence: 1,
+    });
+
+    const eventA = await clientA.queue.next("chat_event");
+    const eventB = await clientB.queue.next("chat_event");
+    expect((eventA.payload as { sessionId: string; event: { text: string } }).sessionId).toBe("session-1");
+    expect((eventA.payload as { sessionId: string; event: { text: string } }).event.text).toBe("hello from session 1");
+    expect((eventB.payload as { sessionId: string }).sessionId).toBe("session-1");
+
+    chatService.emit({
+      sessionId: "session-2",
+      timestamp: "2026-03-17T00:10:01.000Z",
+      event: { type: "text", text: "hello from session 2", turnId: "turn-2", itemId: "item-2" },
+      sequence: 2,
+    });
+
+    const session2Event = await clientB.queue.next("chat_event");
+    expect((session2Event.payload as { sessionId: string; event: { text: string } }).sessionId).toBe("session-2");
+
+    clientB.ws.send(encodeSyncEnvelope({
+      type: "chat_unsubscribe",
+      payload: { sessionId: "session-1" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    chatService.emit({
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:10:02.000Z",
+      event: { type: "text", text: "still live for A only", turnId: "turn-3", itemId: "item-3" },
+      sequence: 3,
+    });
+
+    const replayA = await clientA.queue.next("chat_event");
+    expect((replayA.payload as { sessionId: string; event: { text: string } }).sessionId).toBe("session-1");
+    await expect(clientB.queue.next("chat_event", 250)).rejects.toThrow(/Timed out waiting for chat_event/);
+  });
+
+  it("resubscribes chat listeners after reconnect and routes chat remote commands", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-chat-commands-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-chat-commands-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const chatService = createStubChatService();
+    const baseSession = {
+      sessionId: "session-1",
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-3.5-sonnet",
+      status: "idle",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      lastActivityAt: "2026-03-17T00:10:00.000Z",
+    };
+    chatService.service.resumeSession.mockResolvedValue(baseSession);
+    chatService.service.updateSession.mockResolvedValue({ ...baseSession, title: "Updated title" });
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        refresh: vi.fn().mockResolvedValue([]),
+        listSnapshots: vi.fn().mockReturnValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
+      sessionService: {
+        list: () => [],
+        get: () => null,
+        readTranscriptTail: async () => "",
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+      } as any,
+      agentChatService: chatService.service,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const port = await host.waitUntilListening();
+    const token = host.getBootstrapToken();
+    const firstClient = await connectClient({
+      port,
+      token,
+      deviceId: "peer-chat-command-a",
+      deviceName: "Peer Chat Command A",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+    });
+    activeDisposers.push(firstClient.close);
+
+    firstClient.ws.send(encodeSyncEnvelope({
+      type: "chat_subscribe",
+      payload: { sessionId: "session-1" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    chatService.emit({
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:10:03.000Z",
+      event: { type: "text", text: "before reconnect", turnId: "turn-1" },
+      sequence: 1,
+    });
+    const firstReconnectEvent = await firstClient.queue.next("chat_event");
+    expect((firstReconnectEvent.payload as { sessionId: string }).sessionId).toBe("session-1");
+
+    await firstClient.close();
+    activeDisposers.pop();
+
+    const secondClient = await connectClient({
+      port,
+      token,
+      deviceId: "peer-chat-command-a",
+      deviceName: "Peer Chat Command A",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+    });
+    activeDisposers.push(secondClient.close);
+    secondClient.ws.send(encodeSyncEnvelope({
+      type: "chat_subscribe",
+      payload: { sessionId: "session-1" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    chatService.emit({
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:10:04.000Z",
+      event: { type: "text", text: "after reconnect", turnId: "turn-2" },
+      sequence: 2,
+    });
+    const secondReconnectEvent = await secondClient.queue.next("chat_event");
+    expect((secondReconnectEvent.payload as { sessionId: string; event: { text: string } }).event.text).toBe("after reconnect");
+
+    const interrupt = await sendCommand(secondClient.ws, secondClient.queue, {
+      commandId: "chat-interrupt",
+      action: "chat.interrupt",
+      args: { sessionId: "session-1" },
+    });
+    expect((interrupt.result.payload as { ok: boolean }).ok).toBe(true);
+    expect(chatService.service.interrupt).toHaveBeenCalledWith({ sessionId: "session-1" });
+
+    const steer = await sendCommand(secondClient.ws, secondClient.queue, {
+      commandId: "chat-steer",
+      action: "chat.steer",
+      args: { sessionId: "session-1", text: "Please continue." },
+    });
+    expect((steer.result.payload as { ok: boolean }).ok).toBe(true);
+    expect(chatService.service.steer).toHaveBeenCalledWith({ sessionId: "session-1", text: "Please continue." });
+
+    const approve = await sendCommand(secondClient.ws, secondClient.queue, {
+      commandId: "chat-approve",
+      action: "chat.approve",
+      args: { sessionId: "session-1", itemId: "item-approve", decision: "accept", responseText: "Ship it" },
+    });
+    expect((approve.result.payload as { ok: boolean }).ok).toBe(true);
+    expect(chatService.service.approveToolUse).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      itemId: "item-approve",
+      decision: "accept",
+      responseText: "Ship it",
+    });
+
+    const respond = await sendCommand(secondClient.ws, secondClient.queue, {
+      commandId: "chat-respond",
+      action: "chat.respondToInput",
+      args: {
+        sessionId: "session-1",
+        itemId: "item-question",
+        decision: "decline",
+        answers: { answer: "yes" },
+        responseText: "No thanks",
+      },
+    });
+    expect((respond.result.payload as { ok: boolean }).ok).toBe(true);
+    expect(chatService.service.respondToInput).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      itemId: "item-question",
+      decision: "decline",
+      answers: { answer: "yes" },
+      responseText: "No thanks",
+    });
+
+    const resume = await sendCommand(secondClient.ws, secondClient.queue, {
+      commandId: "chat-resume",
+      action: "chat.resume",
+      args: { sessionId: "session-1" },
+    });
+    expect((resume.result.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
+    expect(chatService.service.resumeSession).toHaveBeenCalledWith({ sessionId: "session-1" });
+
+    const update = await sendCommand(secondClient.ws, secondClient.queue, {
+      commandId: "chat-update",
+      action: "chat.updateSession",
+      args: {
+        sessionId: "session-1",
+        title: "Updated title",
+        reasoningEffort: "high",
+        permissionMode: "edit",
+      },
+    });
+    expect((update.result.payload as { ok: boolean; result: { title?: string } }).result.title).toBe("Updated title");
+    expect(chatService.service.updateSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      title: "Updated title",
+      reasoningEffort: "high",
+      permissionMode: "edit",
+    }));
+
+    const dispose = await sendCommand(secondClient.ws, secondClient.queue, {
+      commandId: "chat-dispose",
+      action: "chat.dispose",
+      args: { sessionId: "session-1" },
+    });
+    expect((dispose.result.payload as { ok: boolean }).ok).toBe(true);
+    expect(chatService.service.dispose).toHaveBeenCalledWith({ sessionId: "session-1" });
   });
 
   it("pairs a phone peer using the desktop PIN and allows paired reconnect auth", async () => {

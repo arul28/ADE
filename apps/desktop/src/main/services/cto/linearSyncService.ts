@@ -375,6 +375,7 @@ export function createLinearSyncService(args: {
 
   const processIssueUpdate = async (issueId: string): Promise<void> => {
     if (disposed) return;
+    if (inFlight) return;
     if (!(args.hasCredentials?.() ?? true) && !args.dispatcherService.hasActiveRuns()) {
       args.logger?.info("linear_workflow.issue_update_skipped", {
         reason: "no_credentials",

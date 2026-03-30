@@ -284,7 +284,7 @@ export function createLinearOutboundService(args: {
         continue;
       }
 
-      const artifactPath = path.resolve(entry);
+      const artifactPath = path.resolve(args.projectRoot, entry);
       let stat: fs.Stats;
       try {
         stat = fs.statSync(artifactPath);

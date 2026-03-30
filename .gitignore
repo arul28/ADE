@@ -42,9 +42,10 @@ release-stable/
 # Docs / binary assets
 *.pdf
 
-# Xcode user data
+# Xcode user data & derived data
 xcuserdata/
 *.xcuserstate
+apps/ios/.dry-run-derived-data/
 
 # Tool configs (personal)
 .factory/
