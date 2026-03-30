@@ -25,6 +25,7 @@ describe("augmentProcessPathWithShellAndKnownCliDirs", () => {
   beforeEach(async () => {
     vi.resetModules();
     execFileSyncMock.mockReset();
+    setPlatform("darwin");
     ({ augmentProcessPathWithShellAndKnownCliDirs } = await import("./cliExecutableResolver"));
   });
 
@@ -33,7 +34,6 @@ describe("augmentProcessPathWithShellAndKnownCliDirs", () => {
   });
 
   it("merges login and interactive shell PATH entries on macOS", () => {
-    setPlatform("darwin");
     execFileSyncMock.mockImplementation((_shellPath: string, args: string[]) => {
       if (args[0] === "-lc") {
         return "noise __ADE_PATH_START__/usr/bin:/bin:/opt/custom/login/bin__ADE_PATH_END__";
@@ -60,6 +60,7 @@ describe("augmentProcessPathWithShellAndKnownCliDirs", () => {
     expect(entries).toContain("/opt/custom/login/bin");
     expect(entries).toContain("/Users/test/.interactive/bin");
     expect(entries).toContain("/Users/test/.npm-global/bin");
-    expect(env.PATH).toBe(nextPath);
+    expect(env.PATH).toBe("/usr/bin:/bin");
+    expect(nextPath).not.toBe(env.PATH);
   });
 });

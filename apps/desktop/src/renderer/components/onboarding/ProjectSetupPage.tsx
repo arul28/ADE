@@ -142,7 +142,8 @@ export function ProjectSetupPage() {
       .then((next) => {
         if (!cancelled) setStatus(next);
       })
-      .catch(() => {
+      .catch((error) => {
+        console.error("ProjectSetupPage: failed to load onboarding status", error);
         if (!cancelled) setStatus({ completedAt: null, dismissedAt: null });
       });
 
@@ -151,7 +152,9 @@ export function ProjectSetupPage() {
       .then((aiStatus) => {
         if (!cancelled) setAvailableModelIds(deriveConfiguredModelIds(aiStatus));
       })
-      .catch(() => {});
+      .catch((error) => {
+        console.error("ProjectSetupPage: failed to load AI status", error);
+      });
 
     // Load saved context doc prefs
     window.ade.context?.getPrefs?.()
@@ -165,7 +168,10 @@ export function ProjectSetupPage() {
         }
         setPrefsLoaded(true);
       })
-      .catch(() => { setPrefsLoaded(true); });
+      .catch((error) => {
+        console.error("ProjectSetupPage: failed to load context doc prefs", error);
+        setPrefsLoaded(true);
+      });
 
     return () => { cancelled = true; };
   }, []);
@@ -175,7 +181,8 @@ export function ProjectSetupPage() {
     try {
       const next = await window.ade.context.getStatus();
       setContextStatus(next);
-    } catch {
+    } catch (error) {
+      console.error("ProjectSetupPage: failed to refresh context status", error);
       setContextStatus(null);
     } finally {
       setContextLoading(false);
@@ -242,7 +249,9 @@ export function ProjectSetupPage() {
         modelId: contextModelId,
         reasoningEffort: contextReasoningEffort,
         events: contextEvents,
-      }).catch(() => {});
+      }).catch((error) => {
+        console.error("ProjectSetupPage: failed to launch context docs generation", error);
+      });
 
       setContextLaunchNotice("Generation started in the background. You can finish setup now.");
       window.setTimeout(() => { void reloadContextStatus(); }, 800);
@@ -262,7 +271,9 @@ export function ProjectSetupPage() {
         modelId: contextModelId,
         reasoningEffort: contextReasoningEffort,
         events: contextEvents,
-      }).catch(() => {});
+      })?.catch((error) => {
+        console.error("ProjectSetupPage: failed to auto-save context doc prefs", error);
+      });
     }, 400);
     return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
   }, [prefsLoaded, contextModelId, contextReasoningEffort, contextEvents]);
@@ -555,7 +566,7 @@ export function ProjectSetupPage() {
             <Button
               size="md"
               variant="primary"
-              disabled={busy || (step === "tools" && gitInstalled !== true) || (isLastStep && gitInstalled === false)}
+              disabled={busy || (step === "tools" && gitInstalled !== true) || (isLastStep && gitInstalled !== true)}
               onClick={() => void handleNext()}
             >
               {busy ? "Saving..." : isLastStep ? "Finish setup" : "Continue"}

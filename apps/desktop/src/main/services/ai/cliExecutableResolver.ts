@@ -175,21 +175,17 @@ export function augmentProcessPathWithShellAndKnownCliDirs(args?: {
   }
 
   const env = args?.env ?? process.env;
-  const shellPath = env.SHELL?.trim() || "/bin/zsh";
+  const shellPath = env.SHELL?.trim() || "/bin/sh";
   const timeoutMs = args?.timeoutMs ?? 1_000;
   const loginPath = readShellPath(shellPath, "-lc", timeoutMs);
   const interactivePath = args?.includeInteractiveShell
     ? readShellPath(shellPath, "-ic", timeoutMs)
     : null;
 
-  const nextPath = augmentPathWithKnownCliDirs(
+  return augmentPathWithKnownCliDirs(
     mergePathEntries(env.PATH, loginPath, interactivePath),
     env,
   );
-  if (nextPath.length > 0) {
-    env.PATH = nextPath;
-  }
-  return env.PATH ?? "";
 }
 
 export function resolveExecutableFromKnownLocations(

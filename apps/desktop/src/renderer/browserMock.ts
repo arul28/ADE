@@ -741,6 +741,24 @@ if (typeof window !== "undefined" && !(window as any).ade) {
 
   // Flag for App.tsx to switch to BrowserRouter
   (window as any).__adeBrowserMock = true;
+  const sharedMemoryHealthStats = createMockMemoryHealthStats();
+  const resolveDownloadedMemoryHealthStats = async () => {
+    sharedMemoryHealthStats.embeddings = {
+      ...sharedMemoryHealthStats.embeddings,
+      model: {
+        ...sharedMemoryHealthStats.embeddings.model,
+        state: "ready",
+        activity: "ready",
+        installState: "installed",
+        progress: 100,
+        loaded: 1,
+        total: 1,
+        file: "/tmp/mock-model.onnx",
+        error: null,
+      },
+    };
+    return sharedMemoryHealthStats;
+  };
 
   (window as any).ade = {
     app: {
@@ -1684,33 +1702,8 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         lastError: null,
       }),
       search: resolvedArg([]),
-      getHealthStats: resolved(createMockMemoryHealthStats()),
-      downloadEmbeddingModel: resolved(createMockMemoryHealthStats({
-        embeddings: {
-          entriesEmbedded: 0,
-          entriesTotal: 0,
-          queueDepth: 0,
-          processing: false,
-          lastBatchProcessedAt: null,
-          cacheEntries: 0,
-          cacheHits: 0,
-          cacheMisses: 0,
-          cacheHitRate: 0,
-          model: {
-            modelId: "Xenova/all-MiniLM-L6-v2",
-            state: "ready",
-            activity: "ready",
-            installState: "installed",
-            cacheDir: "/tmp/mock-transformers-cache",
-            installPath: "/tmp/mock-transformers-cache/Xenova/all-MiniLM-L6-v2",
-            progress: 100,
-            loaded: 1,
-            total: 1,
-            file: "/tmp/mock-model.onnx",
-            error: null,
-          },
-        },
-      })),
+      getHealthStats: resolved(sharedMemoryHealthStats),
+      downloadEmbeddingModel: resolveDownloadedMemoryHealthStats,
       runSweep: resolved(createMockSweepResult()),
       runConsolidation: resolved(createMockConsolidationResult()),
     },

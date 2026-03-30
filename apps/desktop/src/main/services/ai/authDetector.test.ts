@@ -52,9 +52,18 @@ vi.mock("./apiKeyStore", () => ({
 let detectAllAuth: typeof import("./authDetector").detectAllAuth;
 let detectCliAuthStatuses: typeof import("./authDetector").detectCliAuthStatuses;
 let verifyProviderApiKey: typeof import("./authDetector").verifyProviderApiKey;
+const originalPlatform = process.platform;
+
+function setPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    value,
+    configurable: true,
+  });
+}
 
 beforeEach(async () => {
   vi.resetModules();
+  setPlatform("darwin");
   const mod = await import("./authDetector");
   detectAllAuth = mod.detectAllAuth;
   detectCliAuthStatuses = mod.detectCliAuthStatuses;
@@ -75,6 +84,7 @@ describe("authDetector", () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
+    setPlatform(originalPlatform);
     vi.unstubAllGlobals();
     if (tempHomeDir) {
       fs.rmSync(tempHomeDir, { recursive: true, force: true });

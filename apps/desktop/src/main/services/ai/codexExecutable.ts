@@ -19,12 +19,18 @@ export function resolveCodexExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
 }): CodexExecutableResolution {
+  const env = args?.env ?? process.env;
   const authPath = findCodexAuthPath(args?.auth);
   if (authPath) {
     return { path: authPath, source: "auth" };
   }
 
-  const resolved = resolveExecutableFromKnownLocations("codex", args?.env);
+  const envPath = env.CODEX_EXECUTABLE?.trim() || env.CODEX_EXECUTABLE_PATH?.trim();
+  if (envPath) {
+    return { path: envPath, source: "path" };
+  }
+
+  const resolved = resolveExecutableFromKnownLocations("codex", env);
   if (resolved) {
     return {
       path: resolved.path,

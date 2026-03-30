@@ -371,7 +371,8 @@ async function runCodexExec(args: {
   cliArgs.push(args.prompt);
 
   const codexExecutable = resolveCodexExecutable().path;
-  const commandPreview = [codexExecutable, ...cliArgs.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a))].join(" ");
+  const quoteIfNeeded = (value: string) => (/\s/.test(value) ? JSON.stringify(value) : value);
+  const commandPreview = [quoteIfNeeded(codexExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
   const child = spawn(codexExecutable, cliArgs, {
     cwd: args.cwd,

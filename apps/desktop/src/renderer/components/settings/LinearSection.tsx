@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowsLeftRight,
   ArrowsClockwise,
@@ -56,15 +56,28 @@ export function LinearSection() {
   }, [loadProjects]);
 
   /* ── Initial load ── */
-  useState(() => { void loadStatus(); });
+  useEffect(() => {
+    void loadStatus();
+  }, [loadStatus]);
 
   /* ── OAuth polling ── */
-  useState(() => {
+  useEffect(() => {
     if (!oauthSessionId) return;
+    const cto = window.ade?.cto;
+    if (!cto) {
+      setOauthSessionId(null);
+      setOauthStarting(false);
+      setError("Linear integration is unavailable in this environment.");
+      return;
+    }
+
     let active = true;
+    let timer: number | null = null;
+    let timeout: number | null = null;
+
     const poll = async () => {
       try {
-        const session = await window.ade.cto!.getLinearOAuthSession({ sessionId: oauthSessionId });
+        const session = await cto.getLinearOAuthSession({ sessionId: oauthSessionId });
         if (!active) return;
         if (session.status === "completed") {
           setOauthSessionId(null);
@@ -88,15 +101,19 @@ export function LinearSection() {
       }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 1500);
-    const timeout = window.setTimeout(() => {
+    timer = window.setInterval(() => void poll(), 1500);
+    timeout = window.setTimeout(() => {
       if (!active) return;
       setOauthSessionId(null);
       setOauthStarting(false);
       setError("OAuth timed out. Please try again.");
     }, 5 * 60 * 1000);
-    return () => { active = false; clearInterval(timer); clearTimeout(timeout); };
-  });
+    return () => {
+      active = false;
+      if (timer != null) clearInterval(timer);
+      if (timeout != null) clearTimeout(timeout);
+    };
+  }, [loadProjects, loadStatus, oauthSessionId]);
 
   /* ── Handlers ── */
   const handleValidate = useCallback(async () => {
@@ -133,13 +150,18 @@ export function LinearSection() {
 
   const handleDisconnect = useCallback(async () => {
     if (!window.ade?.cto) return;
-    const status = await window.ade.cto.clearLinearToken();
-    setConnection(status);
-    setProjects([]);
-    setTokenInput("");
-    setError(null);
-    setOauthSessionId(null);
-    setOauthStarting(false);
+    try {
+      const status = await window.ade.cto.clearLinearToken();
+      setConnection(status);
+      setProjects([]);
+      setTokenInput("");
+      setError(null);
+      setOauthSessionId(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect Linear.");
+    } finally {
+      setOauthStarting(false);
+    }
   }, []);
 
   /* ── Feature preview cards ── */

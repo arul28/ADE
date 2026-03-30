@@ -161,11 +161,14 @@ async function commandPath(command: string): Promise<string> {
 }
 
 async function refreshProcessPathFromShell(): Promise<void> {
-  augmentProcessPathWithShellAndKnownCliDirs({
+  const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
     env: process.env,
     includeInteractiveShell: true,
     timeoutMs: 2_000,
   });
+  if (nextPath) {
+    process.env.PATH = nextPath;
+  }
 }
 
 /** JSON fields that indicate a positive login state across CLI versions. */

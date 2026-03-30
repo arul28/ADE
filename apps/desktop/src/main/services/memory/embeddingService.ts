@@ -316,13 +316,30 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
       runtime.env.allowRemoteModels = !localFilesOnly;
       runtime.env.useFSCache = true;
 
-      const nextExtractor = await runtime.pipeline(DEFAULT_EMBEDDING_TASK, modelId, {
-        progress_callback: handleProgress,
-        local_files_only: localFilesOnly,
-      });
+      let nextExtractor: EmbeddingExtractor | null = null;
+      try {
+        const loadedExtractor = await runtime.pipeline(DEFAULT_EMBEDDING_TASK, modelId, {
+          progress_callback: handleProgress,
+          local_files_only: localFilesOnly,
+        });
+        nextExtractor = loadedExtractor;
 
-      await runExtractorSmokeTest(nextExtractor);
-      extractor = nextExtractor;
+        await runExtractorSmokeTest(loadedExtractor);
+        extractor = loadedExtractor;
+      } catch (error) {
+        if (nextExtractor?.dispose) {
+          try {
+            await nextExtractor.dispose();
+          } catch (disposeError) {
+            logger.warn("memory.embedding.dispose_failed_after_smoke_test", {
+              modelId,
+              cacheDir,
+              error: getErrorMessage(disposeError),
+            });
+          }
+        }
+        throw error;
+      }
       state = "ready";
       activity = "ready";
       progress = 100;

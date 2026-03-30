@@ -166,6 +166,7 @@ export function AiFeaturesSection() {
   }, [loadStatus]);
 
   const availableModelIds = React.useMemo(() => deriveConfiguredModelIds(status), [status]);
+  const featureRowHoverCss = `.ai-feature-row:hover { background: ${COLORS.hoverBg}; }`;
 
   const saveChatTitleSettings = useCallback(async (patch: Partial<NonNullable<AiConfig["chat"]>>) => {
     const nextModelId =
@@ -286,76 +287,170 @@ export function AiFeaturesSection() {
   }
 
   return (
-    <div style={{ maxWidth: 720 }}>
-      <div style={sectionLabelStyle}>AI-Powered Automations</div>
-      <div style={{ fontSize: 12, color: COLORS.textSecondary, fontFamily: SANS_FONT, marginBottom: 12, lineHeight: 1.6 }}>
-        ADE can handle routine tasks in the background while you focus on what matters. Enable the helpers you want and pick a model for each.
-      </div>
-
-      <div style={cardStyle({ padding: 0 })}>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "44px 1fr auto 60px",
-            gap: 12,
-            alignItems: "center",
-            padding: "10px 16px",
-            borderBottom: `1px solid ${COLORS.border}`,
-          }}
-        >
-          <div style={{ ...LABEL_STYLE, fontSize: 9, letterSpacing: "0.05em" }}>ON</div>
-          <div style={{ ...LABEL_STYLE, fontSize: 9, letterSpacing: "0.05em" }}>FEATURE</div>
-          <div style={{ ...LABEL_STYLE, fontSize: 9, letterSpacing: "0.05em" }}>MODEL</div>
-          <div style={{ ...LABEL_STYLE, fontSize: 9, letterSpacing: "0.05em", textAlign: "right" }}>TODAY</div>
+    <>
+      <style>{featureRowHoverCss}</style>
+      <div style={{ maxWidth: 720 }}>
+        <div style={sectionLabelStyle}>AI-Powered Automations</div>
+        <div style={{ fontSize: 12, color: COLORS.textSecondary, fontFamily: SANS_FONT, marginBottom: 12, lineHeight: 1.6 }}>
+          ADE can handle routine tasks in the background while you focus on what matters. Enable the helpers you want and pick a model for each.
         </div>
 
-        {FEATURES.map((feature, index) => {
-          const row = status.features.find((entry) => entry.feature === feature.key);
-          const enabled = row?.enabled ?? false;
-          const dailyUsage = row?.dailyUsage ?? 0;
-          const selectedModel = featureModels[feature.key] ?? "";
-          const needsModelSelection = enabled && !selectedModel;
-          const IconComponent = feature.icon;
+        <div style={cardStyle({ padding: 0 })}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "44px 1fr auto 60px",
+              gap: 12,
+              alignItems: "center",
+              padding: "10px 16px",
+              borderBottom: `1px solid ${COLORS.border}`,
+            }}
+          >
+            <div style={{ ...LABEL_STYLE, fontSize: 9, letterSpacing: "0.05em" }}>ON</div>
+            <div style={{ ...LABEL_STYLE, fontSize: 9, letterSpacing: "0.05em" }}>FEATURE</div>
+            <div style={{ ...LABEL_STYLE, fontSize: 9, letterSpacing: "0.05em" }}>MODEL</div>
+            <div style={{ ...LABEL_STYLE, fontSize: 9, letterSpacing: "0.05em", textAlign: "right" }}>TODAY</div>
+          </div>
 
-          return (
-            <div
-              key={feature.key}
-              className="ai-feature-row"
-              style={{
-                display: "grid",
-                gridTemplateColumns: "44px 1fr auto 60px",
-                gap: 12,
-                alignItems: "center",
-                padding: "12px 16px",
-                borderBottom: index < FEATURES.length - 1 ? `1px solid ${COLORS.border}` : undefined,
-                borderRadius: 8,
-                transition: "background 150ms ease",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-            >
-              <Toggle checked={enabled} onChange={(value) => handleToggle(feature.key, value)} />
+          {FEATURES.map((feature, index) => {
+            const row = status.features.find((entry) => entry.feature === feature.key);
+            const enabled = row?.enabled ?? false;
+            const dailyUsage = row?.dailyUsage ?? 0;
+            const selectedModel = featureModels[feature.key] ?? "";
+            const needsModelSelection = enabled && !selectedModel;
+            const IconComponent = feature.icon;
 
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                <IconComponent
-                  size={18}
-                  weight="duotone"
+            return (
+              <div
+                key={feature.key}
+                className="ai-feature-row"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "44px 1fr auto 60px",
+                  gap: 12,
+                  alignItems: "center",
+                  padding: "12px 16px",
+                  borderBottom: index < FEATURES.length - 1 ? `1px solid ${COLORS.border}` : undefined,
+                  borderRadius: 8,
+                  transition: "background 150ms ease",
+                }}
+              >
+                <Toggle checked={enabled} onChange={(value) => handleToggle(feature.key, value)} />
+
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  <IconComponent
+                    size={18}
+                    weight="duotone"
+                    style={{
+                      color: enabled ? COLORS.accent : COLORS.textDim,
+                      flexShrink: 0,
+                      marginTop: 1,
+                    }}
+                  />
+                  <div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontFamily: SANS_FONT,
+                        fontWeight: 600,
+                        color: enabled ? COLORS.textPrimary : COLORS.textMuted,
+                      }}
+                    >
+                      {feature.label}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontFamily: SANS_FONT,
+                        color: COLORS.textDim,
+                        marginTop: 2,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {feature.subtitle}
+                    </div>
+                    {needsModelSelection ? (
+                      <div
+                        style={{
+                          fontSize: 10,
+                          fontFamily: SANS_FONT,
+                          color: COLORS.warning,
+                          marginTop: 4,
+                        }}
+                      >
+                        Select a model to enable this feature.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div style={{ opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? "auto" : "none" }}>
+                  <UnifiedModelSelector
+                    value={selectedModel}
+                    onChange={(modelId) => void handleModelChange(feature.key, modelId)}
+                    availableModelIds={availableModelIds}
+                    disabled={!enabled}
+                    showReasoning
+                    reasoningEffort={featureReasoning[feature.key] ?? null}
+                    onReasoningEffortChange={(effort) => void handleReasoningChange(feature.key, effort)}
+                  />
+                </div>
+
+                <div
                   style={{
-                    color: enabled ? COLORS.accent : COLORS.textDim,
-                    flexShrink: 0,
-                    marginTop: 1,
+                    fontSize: 12,
+                    fontFamily: MONO_FONT,
+                    fontWeight: 600,
+                    color: dailyUsage > 0 ? COLORS.textSecondary : COLORS.textDim,
+                    textAlign: "right",
                   }}
-                />
+                >
+                  {dailyUsage}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Auto-name chat tabs */}
+          <div
+            className="ai-feature-row"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "44px 1fr auto 60px",
+              gap: 12,
+              alignItems: "center",
+              padding: "12px 16px",
+              borderTop: `1px solid ${COLORS.border}`,
+              borderRadius: 8,
+              transition: "background 150ms ease",
+            }}
+          >
+            <Toggle
+              checked={chatAutoTitleEnabled}
+              onChange={(value) => void saveChatTitleSettings({ autoTitleEnabled: value })}
+            />
+
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+              <ChatText
+                size={18}
+                weight="duotone"
+                style={{
+                  color: chatAutoTitleEnabled ? COLORS.accent : COLORS.textDim,
+                  flexShrink: 0,
+                  marginTop: 1,
+                }}
+              />
+              <div>
                 <div>
                   <div
                     style={{
                       fontSize: 12,
                       fontFamily: SANS_FONT,
                       fontWeight: 600,
-                      color: enabled ? COLORS.textPrimary : COLORS.textMuted,
+                      color: chatAutoTitleEnabled ? COLORS.textPrimary : COLORS.textMuted,
                     }}
                   >
-                    {feature.label}
+                    Auto-name chat tabs
                   </div>
                   <div
                     style={{
@@ -366,148 +461,55 @@ export function AiFeaturesSection() {
                       lineHeight: 1.4,
                     }}
                   >
-                    {feature.subtitle}
+                    Tabs automatically get descriptive names based on conversation content
                   </div>
-                  {needsModelSelection ? (
-                    <div
-                      style={{
-                        fontSize: 10,
-                        fontFamily: SANS_FONT,
-                        color: COLORS.warning,
-                        marginTop: 4,
-                      }}
-                    >
-                      Select a model to enable this feature.
-                    </div>
-                  ) : null}
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={chatAutoTitleRefresh}
+                      onChange={(e) => void saveChatTitleSettings({ autoTitleRefreshOnComplete: e.target.checked })}
+                      style={{ margin: 0 }}
+                    />
+                    <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+                      Refresh when session closes
+                    </span>
+                  </label>
                 </div>
               </div>
-
-              <div style={{ opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? "auto" : "none" }}>
-                <UnifiedModelSelector
-                  value={selectedModel}
-                  onChange={(modelId) => void handleModelChange(feature.key, modelId)}
-                  availableModelIds={availableModelIds}
-                  disabled={!enabled}
-                  showReasoning
-                  reasoningEffort={featureReasoning[feature.key] ?? null}
-                  onReasoningEffortChange={(effort) => void handleReasoningChange(feature.key, effort)}
-                />
-              </div>
-
-              <div
-                style={{
-                  fontSize: 12,
-                  fontFamily: MONO_FONT,
-                  fontWeight: 600,
-                  color: dailyUsage > 0 ? COLORS.textSecondary : COLORS.textDim,
-                  textAlign: "right",
-                }}
-              >
-                {dailyUsage}
-              </div>
             </div>
-          );
-        })}
 
-        {/* Auto-name chat tabs */}
-        <div
-          className="ai-feature-row"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "44px 1fr auto 60px",
-            gap: 12,
-            alignItems: "center",
-            padding: "12px 16px",
-            borderTop: `1px solid ${COLORS.border}`,
-            borderRadius: 8,
-            transition: "background 150ms ease",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-        >
-          <Toggle
-            checked={chatAutoTitleEnabled}
-            onChange={(value) => void saveChatTitleSettings({ autoTitleEnabled: value })}
-          />
+            <div style={{ opacity: chatAutoTitleEnabled ? 1 : 0.4, pointerEvents: chatAutoTitleEnabled ? "auto" : "none" }}>
+              <UnifiedModelSelector
+                value={utilityModel}
+                onChange={(modelId) => {
+                  setUtilityModel(modelId);
+                  void saveChatTitleSettings({ autoTitleModelId: modelId });
+                }}
+                availableModelIds={availableModelIds}
+                disabled={!chatAutoTitleEnabled}
+                showReasoning
+                reasoningEffort={chatAutoTitleReasoning}
+                onReasoningEffortChange={(effort) => {
+                  setChatAutoTitleReasoning(effort);
+                  void saveChatTitleSettings({ autoTitleReasoningEffort: effort });
+                }}
+              />
+            </div>
 
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-            <ChatText
-              size={18}
-              weight="duotone"
+            <div
               style={{
-                color: chatAutoTitleEnabled ? COLORS.accent : COLORS.textDim,
-                flexShrink: 0,
-                marginTop: 1,
+                fontSize: 12,
+                fontFamily: MONO_FONT,
+                fontWeight: 600,
+                color: COLORS.textDim,
+                textAlign: "right",
               }}
-            />
-            <div>
-              <div
-                style={{
-                  fontSize: 12,
-                  fontFamily: SANS_FONT,
-                  fontWeight: 600,
-                  color: chatAutoTitleEnabled ? COLORS.textPrimary : COLORS.textMuted,
-                }}
-              >
-                Auto-name chat tabs
-              </div>
-              <div
-                style={{
-                  fontSize: 11,
-                  fontFamily: SANS_FONT,
-                  color: COLORS.textDim,
-                  marginTop: 2,
-                  lineHeight: 1.4,
-                }}
-              >
-                Tabs automatically get descriptive names based on conversation content
-              </div>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={chatAutoTitleRefresh}
-                  onChange={(e) => void saveChatTitleSettings({ autoTitleRefreshOnComplete: e.target.checked })}
-                  style={{ margin: 0 }}
-                />
-                <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-                  Refresh when session closes
-                </span>
-              </label>
+            >
+              —
             </div>
-          </div>
-
-          <div style={{ opacity: chatAutoTitleEnabled ? 1 : 0.4, pointerEvents: chatAutoTitleEnabled ? "auto" : "none" }}>
-            <UnifiedModelSelector
-              value={utilityModel}
-              onChange={(modelId) => {
-                setUtilityModel(modelId);
-                void saveChatTitleSettings({ autoTitleModelId: modelId });
-              }}
-              availableModelIds={availableModelIds}
-              disabled={!chatAutoTitleEnabled}
-              showReasoning
-              reasoningEffort={chatAutoTitleReasoning}
-              onReasoningEffortChange={(effort) => {
-                setChatAutoTitleReasoning(effort);
-                void saveChatTitleSettings({ autoTitleReasoningEffort: effort });
-              }}
-            />
-          </div>
-
-          <div
-            style={{
-              fontSize: 12,
-              fontFamily: MONO_FONT,
-              fontWeight: 600,
-              color: COLORS.textDim,
-              textAlign: "right",
-            }}
-          >
-            —
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

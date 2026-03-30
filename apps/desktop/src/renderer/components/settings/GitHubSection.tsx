@@ -19,6 +19,7 @@ export function GitHubSection() {
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
+  const [tokenFocused, setTokenFocused] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,8 +121,15 @@ export function GitHubSection() {
     color: COLORS.textPrimary,
     outline: "none",
     width: "100%",
-    transition: "border-color 150ms ease",
+    transition: "border-color 150ms ease, box-shadow 150ms ease",
   };
+
+  const inputFocusedStyle: CSSProperties = tokenFocused
+    ? {
+        borderColor: COLORS.accent,
+        boxShadow: `0 0 0 3px ${COLORS.accent}22`,
+      }
+    : {};
 
   const scopeRowStyle = (present: boolean): CSSProperties => ({
     display: "flex",
@@ -236,7 +244,7 @@ export function GitHubSection() {
             </div>
 
             {/* Token type tabs */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
               {/* Classic PAT */}
               <div style={{ padding: "14px 16px", border: `1px solid ${COLORS.border}`, borderTop: `2px solid ${COLORS.accent}`, borderRadius: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -318,7 +326,9 @@ export function GitHubSection() {
                 value={githubTokenDraft}
                 onChange={(event) => setGithubTokenDraft(event.target.value)}
                 placeholder="ghp_... or github_pat_..."
-                style={inputStyle}
+                style={{ ...inputStyle, ...inputFocusedStyle }}
+                onFocus={() => setTokenFocused(true)}
+                onBlur={() => setTokenFocused(false)}
               />
               {githubTokenDraft.trim() ? (
                 <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
@@ -348,6 +358,7 @@ export function GitHubSection() {
         </div>
         <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "20px", marginBottom: 14 }}>
           ADE needs a few GitHub permissions to work on your behalf. Either token type works — fine-grained tokens are recommended for tighter control.
+          Fine-grained tokens also need Metadata: Read so ADE can inspect repository metadata alongside the other permissions below.
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

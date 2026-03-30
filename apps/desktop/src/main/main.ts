@@ -113,11 +113,14 @@ import type { Logger } from "./services/logging/logger";
  * the AI SDK can locate the CLI.
  */
 function fixElectronShellPath(): void {
-  augmentProcessPathWithShellAndKnownCliDirs({
+  const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
     env: process.env,
     includeInteractiveShell: true,
     timeoutMs: 1_500,
   });
+  if (nextPath) {
+    process.env.PATH = nextPath;
+  }
 }
 
 // Must run before any service or child process is created.

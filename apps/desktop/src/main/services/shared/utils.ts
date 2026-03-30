@@ -113,7 +113,7 @@ export async function whichCommand(command: string): Promise<string | null> {
       const line = firstLine(res.stdout ?? "");
       return line.length ? line : null;
     }
-    const lookupShell = process.env.SHELL || "/bin/zsh";
+    const lookupShell = process.env.SHELL || "/bin/sh";
     const res = await spawnAsync(lookupShell, ["-lc", 'command -v "$1" 2>/dev/null || true', "--", command]);
     const line = firstLine(res.stdout ?? "");
     return line.length ? line : null;

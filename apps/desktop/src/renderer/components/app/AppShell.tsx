@@ -204,8 +204,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setProjectMissing(false);
         setShowWelcome(true);
       } finally {
-        if (cancelled) return;
-        setProjectHydrated(true);
+        if (!cancelled) setProjectHydrated(true);
       }
     };
 

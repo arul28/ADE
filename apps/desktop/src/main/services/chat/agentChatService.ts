@@ -6572,7 +6572,20 @@ export function createAgentChatService(args: {
       path: process.env.PATH ?? "",
       ...(adeMcpLaunch ? { adeMcpLaunch } : {}),
     });
-    const codexExecutable = resolveCodexExecutable().path;
+    let codexExecutable: string;
+    try {
+      codexExecutable = resolveCodexExecutable().path;
+      if (!codexExecutable) {
+        throw new Error("Codex executable path was empty.");
+      }
+    } catch (error) {
+      logger.error("Failed to resolve Codex executable for spawn in agentChatService (resolveCodexExecutable)", {
+        sessionId: managed.session.id,
+        cwd: managed.laneWorktreePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
     const proc = spawn(codexExecutable, ["app-server"], {
       cwd: managed.laneWorktreePath,
       stdio: ["pipe", "pipe", "pipe"]

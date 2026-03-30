@@ -29,6 +29,47 @@ function getVisualState(model: MemoryHealthStats["embeddings"]["model"] | null |
   return "missing" as const;
 }
 
+function ProgressBar({
+  value,
+  max,
+  color,
+  label,
+  description,
+}: {
+  value: number;
+  max: number;
+  color: string;
+  label: string;
+  description?: string | null;
+}) {
+  const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
+          {label}
+        </div>
+        {description ? (
+          <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, lineHeight: "16px" }}>
+            {description}
+          </div>
+        ) : null}
+      </div>
+      <div
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={max}
+        aria-valuenow={value}
+        aria-valuetext={description ? `${pct}% complete, ${description}` : `${pct}% complete`}
+        style={{ height: 10, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, overflow: "hidden" }}
+      >
+        <div style={{ width: `${pct}%`, height: "100%", background: color, transition: "width 180ms ease" }} />
+      </div>
+    </div>
+  );
+}
+
 export function EmbeddingsSection() {
   const [stats, setStats] = useState<MemoryHealthStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -244,17 +285,14 @@ export function EmbeddingsSection() {
                 ? <>Downloading <span style={{ fontFamily: MONO_FONT }}>{model.file}</span>...</>
                 : "Downloading model files..."}
             </div>
-            <div style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-              <div
-                style={{
-                  height: "100%",
-                  borderRadius: 3,
-                  width: `${downloadPct}%`,
-                  background: COLORS.info,
-                  transition: "width 0.4s ease",
-                }}
-              />
-            </div>
+            <ProgressBar
+              key={model?.modelId ?? "embedding-download-progress"}
+              value={downloadPct}
+              max={100}
+              color={COLORS.info}
+              label={model?.file ? `Downloading ${model.file}` : "Downloading model files"}
+              description={bytesLabel}
+            />
             <div style={{ marginTop: 4, display: "flex", justifyContent: "space-between", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
               <span>{downloadPct}%</span>
               {bytesLabel ? <span>{bytesLabel}</span> : null}

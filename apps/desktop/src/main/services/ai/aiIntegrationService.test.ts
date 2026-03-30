@@ -178,7 +178,7 @@ describe("aiIntegrationService", () => {
     expect(usageInsertCalls(runCalls)).toHaveLength(1);
   });
 
-  it("treats all features as opt-in until explicitly enabled", () => {
+  it("preserves legacy defaults for missing AI feature toggles", () => {
     const { service } = makeService();
     const { service: enabledService } = makeService({
       aiConfig: {
@@ -191,8 +191,9 @@ describe("aiIntegrationService", () => {
     });
 
     expect(service.getFeatureFlag("commit_messages")).toBe(false);
-    expect(service.getFeatureFlag("terminal_summaries")).toBe(false);
-    expect(service.getFeatureFlag("pr_descriptions")).toBe(false);
+    expect(service.getFeatureFlag("terminal_summaries")).toBe(true);
+    expect(service.getFeatureFlag("pr_descriptions")).toBe(true);
+    expect(service.getFeatureFlag("orchestrator")).toBe(true);
     expect(enabledService.getFeatureFlag("commit_messages")).toBe(true);
     expect(enabledService.getFeatureFlag("terminal_summaries")).toBe(true);
     expect(enabledService.getFeatureFlag("pr_descriptions")).toBe(true);

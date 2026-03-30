@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { EmbeddingsSection } from "./EmbeddingsSection";
 
 function createHealthStats(overrides: Partial<any> = {}) {
@@ -97,7 +97,8 @@ describe("EmbeddingsSection", () => {
 
     expect(await screen.findByText(/Smart search only shows Ready after the model loads and passes a local verification check/i)).toBeTruthy();
     expect(screen.getByText("/tmp/mock-transformers-cache/Xenova/all-MiniLM-L6-v2")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /verify model/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /verify model/i }));
+    expect(memoryApi.downloadEmbeddingModel).toHaveBeenCalledTimes(1);
   });
 
   it("describes a local cache load instead of a fresh download", async () => {
