@@ -551,6 +551,7 @@ import type { createSyncService } from "../sync/syncService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 export type AppContext = {
   db: AdeDb;

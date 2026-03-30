@@ -28,6 +28,13 @@ function toPreviewSrc(uri: string): string {
   return `ade-artifact://${filePath.startsWith("/") ? "" : "/"}${encodeURI(filePath)}`;
 }
 
+function normalizeToFsPath(uri: string): string {
+  if (uri.startsWith("file://")) {
+    try { return decodeURIComponent(new URL(uri).pathname); } catch { return uri.replace(/^file:\/\//i, ""); }
+  }
+  return uri;
+}
+
 function openInSystemPlayer(uri: string) {
   if (/^https?:\/\//i.test(uri)) {
     void window.ade.app.openExternal(uri);
