@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { createLaneEnvironmentService } from "./laneEnvironmentService";
 import type { LaneEnvInitConfig, LaneOverlayOverrides, LaneSummary } from "../../../shared/types";
 
@@ -113,6 +113,27 @@ describe("laneEnvironmentService", () => {
 
       expect(result.overallStatus).toBe("completed");
     });
+
+    it("fails when an env file source escapes the project root", async () => {
+      const outsidePath = path.join(path.dirname(projectRoot), `lane-env-outside-${Date.now()}.env`);
+      fs.writeFileSync(outsidePath, "SECRET=1\n", "utf8");
+
+      const worktreePath = path.join(projectRoot, "worktree-escape");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const lane = makeLane({ id: "lane-escape", name: "escape-lane", worktreePath });
+      const config: LaneEnvInitConfig = {
+        envFiles: [{ source: `../${path.basename(outsidePath)}`, dest: ".env" }]
+      };
+
+      try {
+        const service = createService();
+        const result = await service.initLaneEnvironment(lane, config, {});
+        expect(result.overallStatus).toBe("failed");
+      } finally {
+        fs.rmSync(outsidePath, { force: true });
+      }
+    });
   });
 
   describe("multi-lane collision", () => {
@@ -200,6 +221,24 @@ describe("laneEnvironmentService", () => {
     });
   });
 
+  describe("dependency installs", () => {
+    it("fails when a dependency cwd escapes the worktree", async () => {
+      const worktreePath = path.join(projectRoot, "wt-deps");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      fs.mkdirSync(path.join(path.dirname(worktreePath), "outside-deps"), { recursive: true });
+
+      const lane = makeLane({ id: "l-deps", name: "deps-test", worktreePath });
+      const config: LaneEnvInitConfig = {
+        dependencies: [{ command: ["npm", "--version"], cwd: "../outside-deps" }]
+      };
+
+      const service = createService();
+      const result = await service.initLaneEnvironment(lane, config, {});
+
+      expect(result.overallStatus).toBe("failed");
+    });
+  });
+
   describe("resolveEnvInitConfig", () => {
     it("returns undefined when both inputs are undefined", () => {
       const service = createService();
@@ -278,12 +317,93 @@ describe("laneEnvironmentService", () => {
       expect(fs.readFileSync(dockerLogPath, "utf-8").trim().split("\n")).toEqual([
         "compose",
         "-f",
-        path.join(projectRoot, "infra/compose.yaml"),
+        fs.realpathSync(path.join(projectRoot, "infra/compose.yaml")),
         "-p",
         "lane-lane-clean",
         "down",
         "--remove-orphans"
       ]);
+    });
+
+    it("skips docker teardown when the compose path escapes the project root", async () => {
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-env-bin-"));
+      const dockerLogPath = path.join(projectRoot, "docker-args.log");
+      const dockerPath = path.join(binDir, "docker");
+      fs.writeFileSync(
+        dockerPath,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ADE_TEST_DOCKER_LOG\"\n",
+        { mode: 0o755 }
+      );
+      process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+      process.env.ADE_TEST_DOCKER_LOG = dockerLogPath;
+
+      const outsideCompose = path.join(path.dirname(projectRoot), `compose-${Date.now()}.yaml`);
+      fs.writeFileSync(outsideCompose, "services: {}\n");
+
+      const worktreePath = path.join(projectRoot, "wt-cleanup-escape");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      try {
+        const lane = makeLane({ id: "lane-clean-escape", name: "cleanup lane", worktreePath });
+        const service = createService();
+        await service.cleanupLaneEnvironment(lane, {
+          docker: { composePath: `../${path.basename(outsideCompose)}`, projectPrefix: "lane" }
+        });
+
+        expect(fs.existsSync(dockerLogPath)).toBe(false);
+      } finally {
+        fs.rmSync(outsideCompose, { force: true });
+      }
+    });
+
+    it("still runs docker teardown when compose path validation hits a non-escape error", async () => {
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-env-bin-"));
+      const dockerLogPath = path.join(projectRoot, "docker-args.log");
+      const dockerPath = path.join(binDir, "docker");
+      fs.writeFileSync(
+        dockerPath,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ADE_TEST_DOCKER_LOG\"\n",
+        { mode: 0o755 }
+      );
+      process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+      process.env.ADE_TEST_DOCKER_LOG = dockerLogPath;
+
+      const composeDir = path.join(projectRoot, "infra");
+      fs.mkdirSync(composeDir, { recursive: true });
+      const composePath = path.join(composeDir, "compose.yaml");
+      fs.writeFileSync(composePath, "services: {}\n");
+
+      const worktreePath = path.join(projectRoot, "wt-cleanup-permission");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const originalLstatSync = fs.lstatSync.bind(fs);
+      const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" as const });
+      const spy = vi.spyOn(fs, "lstatSync").mockImplementation(((filePath: fs.PathLike) => {
+        if (String(filePath) === composePath) {
+          throw permissionError;
+        }
+        return originalLstatSync(filePath);
+      }) as typeof fs.lstatSync);
+
+      try {
+        const lane = makeLane({ id: "lane-clean-permission", name: "cleanup lane", worktreePath });
+        const service = createService();
+        await service.cleanupLaneEnvironment(lane, {
+          docker: { composePath: "infra/compose.yaml", projectPrefix: "lane" }
+        });
+
+        expect(fs.readFileSync(dockerLogPath, "utf-8").trim().split("\n")).toEqual([
+          "compose",
+          "-f",
+          fs.realpathSync(composePath),
+          "-p",
+          "lane-lane-clean-permission",
+          "down",
+          "--remove-orphans"
+        ]);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 

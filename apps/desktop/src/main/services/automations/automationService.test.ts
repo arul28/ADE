@@ -1,4 +1,6 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
@@ -46,14 +48,30 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
       id text primary key,
       project_id text not null,
       automation_id text not null,
+      chat_session_id text,
+      mission_id text,
+      worker_run_id text,
+      worker_agent_id text,
+      queue_item_id text,
+      ingress_event_id text,
       trigger_type text not null,
       started_at text not null,
       ended_at text,
       status text not null,
+      execution_kind text,
+      queue_status text,
+      executor_mode text,
       actions_completed integer not null,
       actions_total integer not null,
       error_message text,
-      trigger_metadata text
+      verification_required integer not null default 0,
+      spend_usd real not null default 0,
+      trigger_metadata text,
+      summary text,
+      confidence_json text,
+      billing_code text,
+      linked_procedure_ids_json text,
+      procedure_feedback_json text
     )
   `);
   raw.run(`
@@ -187,6 +205,55 @@ describe("automationService integration", () => {
     expect(mapped.length).toBe(1);
     expect(String(mapped[0]?.status)).toBe("succeeded");
     expect(String(mapped[0]?.output ?? "")).toContain("hello");
+  });
+
+  it("rejects run-command cwd values that escape through symlinks", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-runtime-root-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-runtime-outside-"));
+    const symlinkPath = path.join(projectRoot, "linked-outside");
+    fs.symlinkSync(outsideDir, symlinkPath);
+
+    const rule = {
+      id: "escape",
+      name: "Escape",
+      trigger: { type: "manual" as const },
+      actions: [{ type: "run-command" as const, command: "echo hello", cwd: "linked-outside", timeoutMs: 10_000 }],
+      enabled: true
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "escape" });
+      expect(run.status).toBe("failed");
+      expect(run.errorMessage).toContain("Unsafe cwd");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it("computes nextRunAt for scheduled rules", async () => {
@@ -345,4 +412,441 @@ describe("automationService integration", () => {
 
     await expect(service.triggerManually({ id: "echo" })).rejects.toThrow(/untrusted/i);
   });
+
+  it("runs agent-session automations in plan mode when publish verification is required", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-agent-session-"));
+    const createSession = vi.fn(async () => ({ id: "session-1" }));
+    const runSessionTurn = vi.fn(async () => ({ outputText: "Prepared a review summary." }));
+
+    const rule = {
+      id: "agent-review",
+      name: "Agent review",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      toolPalette: ["github"] as const,
+      contextSources: [],
+      memory: { mode: "project" as const },
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: true, mode: "intervention" as const },
+      billingCode: "auto:test",
+      execution: {
+        kind: "agent-session" as const,
+        session: { title: "Review output" },
+      },
+      modelConfig: {
+        orchestratorModel: {
+          modelId: "openai/gpt-5.4-codex",
+          thinkingLevel: "medium",
+        },
+      },
+      prompt: "Review the latest PR status.",
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [{ id: "lane-1", laneType: "primary" }],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      agentChatService: {
+        createSession,
+        runSessionTurn,
+      } as any,
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "agent-review" });
+      expect(run.status).toBe("succeeded");
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+        permissionMode: "plan",
+      }));
+      const row = mapExecRows(raw.exec("select queue_status from automation_runs where automation_id = 'agent-review'"))[0];
+      expect(String(row?.queue_status)).toBe("verification-required");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not attach codex sandbox for agent-session automations in dry-run mode", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-dry-run-"));
+    const createSession = vi.fn(async () => ({ id: "session-1" }));
+    const runSessionTurn = vi.fn(async () => ({ outputText: "Prepared a dry-run summary." }));
+
+    const rule = {
+      id: "agent-dry-run",
+      name: "Agent dry run",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      toolPalette: ["github"] as const,
+      contextSources: [],
+      memory: { mode: "project" as const },
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "dry-run" as const },
+      billingCode: "auto:test",
+      execution: {
+        kind: "agent-session" as const,
+        session: { title: "Dry run output" },
+      },
+      modelConfig: {
+        orchestratorModel: {
+          modelId: "openai/gpt-5.4-codex",
+          thinkingLevel: "medium",
+        },
+      },
+      prompt: "Dry-run the automation.",
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [{ id: "lane-1", laneType: "primary" }],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      agentChatService: {
+        createSession,
+        runSessionTurn,
+      } as any,
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "agent-dry-run" });
+      expect(run.status).toBe("succeeded");
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+        permissionMode: "plan",
+      }));
+      const sessionArgs = (createSession as any).mock.calls[0][0] as Record<string, unknown>;
+      expect(sessionArgs).not.toHaveProperty("codexSandbox");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("simulates manual dry runs without starting automation side effects", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-manual-dry-run-"));
+    const createSession = vi.fn(async () => ({ id: "session-1" }));
+
+    const rule = {
+      id: "agent-manual-dry-run",
+      name: "Agent manual dry run",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      toolPalette: [] as const,
+      contextSources: [],
+      memory: { mode: "project" as const },
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" as const },
+      billingCode: "auto:test",
+      execution: {
+        kind: "agent-session" as const,
+      },
+      prompt: "Summarize the current state.",
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [{ id: "lane-1", laneType: "primary" }],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      agentChatService: {
+        createSession,
+      } as any,
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "agent-manual-dry-run", dryRun: true });
+      expect(run.status).toBe("succeeded");
+      const row = db.get<{ queue_status: string }>("select queue_status from automation_runs where automation_id = 'agent-manual-dry-run'");
+      expect(row?.queue_status).toBe("completed-clean");
+      expect(createSession).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks agent-session automations when the budget cap rejects the run", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-budget-"));
+    const createSession = vi.fn(async () => ({ id: "session-1" }));
+
+    const rule = {
+      id: "agent-budget",
+      name: "Agent budget",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      toolPalette: [] as const,
+      contextSources: [],
+      memory: { mode: "project" as const },
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" as const },
+      billingCode: "auto:test",
+      execution: {
+        kind: "agent-session" as const,
+      },
+      prompt: "Summarize the current state.",
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [{ id: "lane-1", laneType: "primary" }],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      agentChatService: {
+        createSession,
+      } as any,
+      budgetCapService: {
+        checkBudget: vi.fn(() => ({ allowed: false, reason: "Budget exceeded" })),
+      } as any,
+    });
+
+    try {
+      await expect(service.triggerManually({ id: "agent-budget" })).rejects.toThrow("Budget exceeded");
+      expect(createSession).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("checks the budget cap against the resolved provider group", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-budget-provider-"));
+    const createSession = vi.fn(async () => ({ id: "session-1" }));
+    const checkBudget = vi.fn(() => ({ allowed: false, reason: "Budget exceeded" }));
+
+    const rule = {
+      id: "agent-budget-provider",
+      name: "Agent budget provider",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      toolPalette: [] as const,
+      contextSources: [],
+      memory: { mode: "project" as const },
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" as const },
+      billingCode: "auto:test",
+      execution: {
+        kind: "agent-session" as const,
+      },
+      modelConfig: {
+        orchestratorModel: {
+          modelId: "openai/gpt-5.4-codex",
+          thinkingLevel: "medium",
+        },
+      },
+      prompt: "Summarize the current state.",
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [{ id: "lane-1", laneType: "primary" }],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      agentChatService: {
+        createSession,
+      } as any,
+      budgetCapService: {
+        checkBudget,
+      } as any,
+    });
+
+    try {
+      await expect(service.triggerManually({ id: "agent-budget-provider" })).rejects.toThrow("Budget exceeded");
+      expect(checkBudget).toHaveBeenCalledWith("automation-rule", "agent-budget-provider", "codex");
+      expect(createSession).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not attach codexSandbox when a codex automation runs in dry-run mode", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-codex-dryrun-"));
+    const createSession = vi.fn(async () => ({ id: "session-1" }));
+    const runSessionTurn = vi.fn(async () => ({ outputText: "Planned changes only." }));
+
+    const rule = {
+      id: "agent-codex-dryrun",
+      name: "Agent codex dry run",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      toolPalette: ["github"] as const,
+      contextSources: [],
+      memory: { mode: "project" as const },
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "dry-run" as const },
+      billingCode: "auto:test",
+      execution: {
+        kind: "agent-session" as const,
+      },
+      permissionConfig: {
+        providers: {
+          codexSandbox: "workspace-write" as const,
+        },
+      },
+      modelConfig: {
+        orchestratorModel: {
+          modelId: "openai/gpt-5.4-codex",
+          thinkingLevel: "medium",
+        },
+      },
+      prompt: "Plan the latest changes.",
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [{ id: "lane-1", laneType: "primary" }],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      agentChatService: {
+        createSession,
+        runSessionTurn,
+      } as any,
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "agent-codex-dryrun" });
+      expect(run.status).toBe("succeeded");
+      expect(createSession).toHaveBeenCalledWith(expect.not.objectContaining({
+        codexSandbox: "workspace-write",
+      }));
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+        permissionMode: "plan",
+      }));
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
 });

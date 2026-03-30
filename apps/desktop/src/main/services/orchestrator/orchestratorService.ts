@@ -39,7 +39,6 @@ import type {
   OrchestratorRuntimeEventType,
   OrchestratorTeamRuntimeState,
   OrchestratorTimelineEvent,
-  PackExport,
   PrepareResolverSessionArgs,
   PtyCreateArgs,
   RunCompletionEvaluation,
@@ -83,6 +82,12 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createPrService } from "../prs/prService";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createExternalMcpService } from "../externalMcp/externalMcpService";
+import type { AiTaskType } from "../ai/aiIntegrationService";
+import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
+import type { KnowledgeCaptureService } from "../memory/knowledgeCaptureService";
+import type { MemoryBriefing, MemoryBriefingService } from "../memory/memoryBriefingService";
+import type { MissionMemoryLifecycleService } from "../memory/missionMemoryLifecycleService";
+import type { ProceduralLearningService } from "../memory/proceduralLearningService";
 import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
 import { getMissionStateDocumentPath } from "./missionStateDoc";
@@ -101,7 +106,7 @@ import {
   type RunRow, type StepRow, type AttemptRow, type ClaimRow,
   type ContextSnapshotRow, type HandoffRow, type TimelineRow,
   type RuntimeEventRow, type GateReportRow, type ArtifactRow,
-  DEFAULT_CONTEXT_POLICY, DEFAULT_CONTEXT_PROFILE_ID,
+  DEFAULT_CONTEXT_POLICY,
   TERMINAL_RUN_STATUSES, RETRYABLE_ERROR_CLASSES,
   MAX_TIMELINE_LIMIT, GATE_THRESHOLDS,
   normalizeIsoTimestamp, normalizeRunStatus,
@@ -130,7 +135,7 @@ import {
 } from "./stepPolicyResolver";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
-import type { MissionPermissionConfig } from "../../../shared/types/missions";
+import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 // Row types, StepPolicy, and other extracted types are imported from
@@ -212,7 +217,7 @@ export type OrchestratorExecutorStartArgs = {
     };
     /** Per-provider permission modes (new unified shape). When present, adapters
      *  should prefer this over the legacy cli/inProcess fields. */
-    _providers?: import("../../../shared/types/missions").MissionProviderPermissions;
+    _providers?: MissionProviderPermissions;
   };
   /** Checkpoint content from a previous interrupted attempt's worker checkpoint file. */
   previousCheckpoint?: string;
@@ -223,7 +228,7 @@ export type OrchestratorExecutorStartArgs = {
   /** Project ID for memory service scoping. */
   memoryProjectId?: string;
   /** Precomputed shared memory briefing for prompt assembly. */
-  memoryBriefing?: import("../memory/memoryBriefingService").MemoryBriefing | null;
+  memoryBriefing?: MemoryBriefing | null;
 };
 
 export type OrchestratorExecutorAdapter = {
@@ -818,11 +823,11 @@ export function createOrchestratorService({
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   memoryService?: ReturnType<typeof createMemoryService> | null;
-  memoryBriefingService?: import("../memory/memoryBriefingService").MemoryBriefingService | null;
-  missionMemoryLifecycleService?: import("../memory/missionMemoryLifecycleService").MissionMemoryLifecycleService | null;
-  episodicSummaryService?: import("../memory/episodicSummaryService").EpisodicSummaryService | null;
-  proceduralLearningService?: import("../memory/proceduralLearningService").ProceduralLearningService | null;
-  knowledgeCaptureService?: import("../memory/knowledgeCaptureService").KnowledgeCaptureService | null;
+  memoryBriefingService?: MemoryBriefingService | null;
+  missionMemoryLifecycleService?: MissionMemoryLifecycleService | null;
+  episodicSummaryService?: EpisodicSummaryService | null;
+  proceduralLearningService?: ProceduralLearningService | null;
+  knowledgeCaptureService?: KnowledgeCaptureService | null;
   externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
@@ -6839,7 +6844,7 @@ export function createOrchestratorService({
           );
 
           const stepType = String(step.metadata?.stepType ?? step.metadata?.taskType ?? "").trim().toLowerCase();
-          const taskType: import("../ai/aiIntegrationService").AiTaskType =
+          const taskType: AiTaskType =
             stepType === "analysis" || stepType === "planning"
               ? "planning"
               : stepType === "review" || stepType === "test_review" || stepType === "review_test"

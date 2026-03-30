@@ -43,7 +43,7 @@ export const compactHeaderCls =
 
 /* ── Stat chip for inline metrics ── */
 export const statChipCls =
-  "inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-[linear-gradient(135deg,rgba(21,28,40,0.72),rgba(14,18,28,0.82))] px-2.5 py-1 text-[11px] font-medium text-fg/68 backdrop-blur-md shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:border-[rgba(56,189,248,0.22)] hover:text-fg/82 hover:shadow-[0_0_12px_rgba(56,189,248,0.06)]";
+  "inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-[linear-gradient(135deg,rgba(21,28,40,0.72),rgba(14,18,28,0.82))] px-3 py-1.5 text-xs font-medium text-fg/68 backdrop-blur-md shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:border-[rgba(56,189,248,0.22)] hover:text-fg/82 hover:shadow-[0_0_12px_rgba(56,189,248,0.06)]";
 
 /* ── Pipeline stage card with glow effect ── */
 export const stageCardCls =

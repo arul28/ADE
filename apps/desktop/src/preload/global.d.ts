@@ -16,6 +16,7 @@ import type {
   ConflictProposal,
   ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
+  ContextDocPrefs,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
   ContextOpenDocArgs,
@@ -72,9 +73,17 @@ import type {
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSlashCommand,
+  AgentChatSlashCommandsArgs,
+  AgentChatFileSearchArgs,
+  AgentChatFileSearchResult,
   AgentChatSession,
+  AgentChatSessionCapabilities,
+  AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatSubagentSnapshot,
+  AgentChatSubagentListArgs,
   AgentChatUpdateSessionArgs,
   AutomationsEventPayload,
   AutomationManualTriggerRequest,
@@ -122,7 +131,6 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
-  CtoIdentity,
   AgentIdentity,
   AgentCoreMemory,
   AgentSessionLogEntry,
@@ -200,6 +208,8 @@ import type {
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
   GitActionResult,
+  GitBranchSummary,
+  GitCheckoutBranchArgs,
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
@@ -207,6 +217,7 @@ import type {
   GitGetCommitMessageArgs,
   GitGenerateCommitMessageArgs,
   GitGenerateCommitMessageResult,
+  GitListBranchesArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
@@ -284,14 +295,12 @@ import type {
   PrIssueResolutionStartResult,
   RebaseResolutionStartArgs,
   RebaseResolutionStartResult,
-  PrLabel,
   PrMergeContext,
   PrReview,
   PrReviewThread,
   PrReviewThreadComment,
   PrStatus,
   PrSummary,
-  PrUser,
   PrWithConflicts,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
@@ -321,22 +330,6 @@ import type {
   ListSessionsArgs,
   ListTestRunsArgs,
   OperationRecord,
-  PackExport,
-  PackEvent,
-  PackHeadVersion,
-  PackSummary,
-  PackVersion,
-  PackVersionSummary,
-  Checkpoint,
-  GetLaneExportArgs,
-  GetProjectExportArgs,
-  GetConflictExportArgs,
-  GetFeatureExportArgs,
-  GetPlanExportArgs,
-  GetMissionExportArgs,
-  GetMissionPackArgs,
-  RefreshMissionPackArgs,
-  ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -370,6 +363,13 @@ import type {
   CommitExternalConflictResolverRunArgs,
   CommitExternalConflictResolverRunResult,
   RunConflictPredictionArgs,
+  PrepareResolverSessionArgs,
+  PrepareResolverSessionResult,
+  AttachResolverSessionArgs,
+  FinalizeResolverSessionArgs,
+  CancelResolverSessionArgs,
+  SuggestResolverTargetArgs,
+  SuggestResolverTargetResult,
   SessionDeltaSummary,
   StackChainItem,
   StopTestRunArgs,
@@ -418,6 +418,8 @@ import type {
   GetMissionLogsResult,
   ExportMissionLogsArgs,
   ExportMissionLogsResult,
+  GetAggregatedUsageArgs,
+  AggregatedUsageStats,
   GetOrchestratorGateReportArgs,
   GetOrchestratorRunGraphArgs,
   ListOrchestratorRunsArgs,
@@ -736,7 +738,7 @@ declare global {
         sendAgentMessage: (args: SendAgentMessageArgs) => Promise<OrchestratorChatMessage>;
         getGlobalChat: (args: GetGlobalChatArgs) => Promise<OrchestratorChatMessage[]>;
         getActiveAgents: (args: GetActiveAgentsArgs) => Promise<ActiveAgentInfo[]>;
-        getAggregatedUsage: (args: import("../shared/types").GetAggregatedUsageArgs) => Promise<import("../shared/types").AggregatedUsageStats>;
+        getAggregatedUsage: (args: GetAggregatedUsageArgs) => Promise<AggregatedUsageStats>;
         onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => () => void;
         onThreadEvent: (cb: (ev: OrchestratorThreadEvent) => void) => () => void;
         onDagMutation: (cb: (ev: DagMutationEvent) => void) => () => void;
@@ -832,10 +834,10 @@ declare global {
         updateSession: (args: AgentChatUpdateSessionArgs) => Promise<AgentChatSession>;
         warmupModel: (args: { sessionId: string; modelId: string }) => Promise<void>;
         onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => () => void;
-        slashCommands: (args: import("../shared/types").AgentChatSlashCommandsArgs) => Promise<import("../shared/types").AgentChatSlashCommand[]>;
-        fileSearch: (args: import("../shared/types").AgentChatFileSearchArgs) => Promise<import("../shared/types").AgentChatFileSearchResult[]>;
-        listSubagents: (args: import("../shared/types").AgentChatSubagentListArgs) => Promise<import("../shared/types").AgentChatSubagentSnapshot[]>;
-        getSessionCapabilities: (args: import("../shared/types").AgentChatSessionCapabilitiesArgs) => Promise<import("../shared/types").AgentChatSessionCapabilities>;
+        slashCommands: (args: AgentChatSlashCommandsArgs) => Promise<AgentChatSlashCommand[]>;
+        fileSearch: (args: AgentChatFileSearchArgs) => Promise<AgentChatFileSearchResult[]>;
+        listSubagents: (args: AgentChatSubagentListArgs) => Promise<AgentChatSubagentSnapshot[]>;
+        getSessionCapabilities: (args: AgentChatSessionCapabilitiesArgs) => Promise<AgentChatSessionCapabilities>;
         saveTempAttachment: (args: { data: string; filename: string }) => Promise<{ path: string }>;
       };
       computerUse: {
@@ -903,8 +905,8 @@ declare global {
         rebaseAbort: (laneId: string) => Promise<GitActionResult>;
         mergeContinue: (laneId: string) => Promise<GitActionResult>;
         mergeAbort: (laneId: string) => Promise<GitActionResult>;
-        listBranches: (args: import("../shared/types").GitListBranchesArgs) => Promise<import("../shared/types").GitBranchSummary[]>;
-        checkoutBranch: (args: import("../shared/types").GitCheckoutBranchArgs) => Promise<GitActionResult>;
+        listBranches: (args: GitListBranchesArgs) => Promise<GitBranchSummary[]>;
+        checkoutBranch: (args: GitCheckoutBranchArgs) => Promise<GitActionResult>;
       };
       conflicts: {
         getLaneStatus: (args: GetLaneConflictStatusArgs) => Promise<ConflictStatus>;
@@ -921,19 +923,19 @@ declare global {
         runExternalResolver: (args: RunExternalConflictResolverArgs) => Promise<ConflictExternalResolverRunSummary>;
         listExternalResolverRuns: (args?: ListExternalConflictResolverRunsArgs) => Promise<ConflictExternalResolverRunSummary[]>;
         commitExternalResolverRun: (args: CommitExternalConflictResolverRunArgs) => Promise<CommitExternalConflictResolverRunResult>;
-        prepareResolverSession: (args: import("../shared/types").PrepareResolverSessionArgs) => Promise<import("../shared/types").PrepareResolverSessionResult>;
-        attachResolverSession: (args: import("../shared/types").AttachResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
-        finalizeResolverSession: (args: import("../shared/types").FinalizeResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
-        cancelResolverSession: (args: import("../shared/types").CancelResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
-        suggestResolverTarget: (args: import("../shared/types").SuggestResolverTargetArgs) => Promise<import("../shared/types").SuggestResolverTargetResult>;
+        prepareResolverSession: (args: PrepareResolverSessionArgs) => Promise<PrepareResolverSessionResult>;
+        attachResolverSession: (args: AttachResolverSessionArgs) => Promise<ConflictExternalResolverRunSummary>;
+        finalizeResolverSession: (args: FinalizeResolverSessionArgs) => Promise<ConflictExternalResolverRunSummary>;
+        cancelResolverSession: (args: CancelResolverSessionArgs) => Promise<ConflictExternalResolverRunSummary>;
+        suggestResolverTarget: (args: SuggestResolverTargetArgs) => Promise<SuggestResolverTargetResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
       context: {
         getStatus: () => Promise<ContextStatus>;
         generateDocs: (args: ContextGenerateDocsArgs) => Promise<ContextGenerateDocsResult>;
         openDoc: (args: ContextOpenDocArgs) => Promise<void>;
-        getPrefs: () => Promise<import("../shared/types").ContextDocPrefs>;
-        savePrefs: (prefs: import("../shared/types").ContextDocPrefs) => Promise<import("../shared/types").ContextDocPrefs>;
+        getPrefs: () => Promise<ContextDocPrefs>;
+        savePrefs: (prefs: ContextDocPrefs) => Promise<ContextDocPrefs>;
         onStatusChanged: (cb: (status: ContextStatus) => void) => () => void;
       };
       github: {

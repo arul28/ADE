@@ -382,6 +382,7 @@ The MCP server is a standalone package (`apps/mcp-server`) that exposes ADE's in
 - **Lifecycle**: Headless mode runs standalone with its own AI backend; embedded mode shares the desktop app's service instances
 - **Smart entry point**: Auto-detects `.ade/mcp.sock` to choose proxy (embedded) vs headless mode
 - **Session identity**: The MCP server propagates a `chatSessionId` field through `SessionIdentity`, resolved from the `ADE_CHAT_SESSION_ID` environment variable or the `initialize` handshake params. This links MCP tool calls back to their originating chat session for artifact ownership, computer use proof association, and audit logging. For standalone chat sessions (no mission/run/step context), the server infers the chat session from the caller ID when not explicitly provided.
+- **Role resolution**: Session roles are determined by environment context first. When the environment does not specify a role, the session defaults to `external`. The `external` role receives the base tool set plus any external MCP tool specs; internal roles (`agent`, `cto`, `orchestrator`, `evaluator`) are assigned only through trusted environment variables set by ADE's own worker spawning infrastructure. External sessions also receive a restrictive default computer use policy (`allowLocalFallback: false`).
 
 #### MCP Launch Resolution
 

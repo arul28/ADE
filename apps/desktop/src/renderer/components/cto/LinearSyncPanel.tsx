@@ -3,9 +3,11 @@ import { useNavigate } from "react-router-dom";
 import type {
   AgentIdentity,
   CtoFlowPolicyRevision,
+  LaneSummary,
   LinearConnectionStatus,
   LinearIngressEventRecord,
   LinearIngressStatus,
+  LinearSyncResolutionAction,
   LinearWorkflowMatchCandidate,
   LinearSyncDashboard,
   LinearSyncQueueItem,
@@ -125,6 +127,10 @@ export function deriveRunStallSummary(detail: LinearWorkflowRunDetail, queueItem
     return "No employee could be resolved yet. Pick a delegation override, or update the workflow target.";
   }
 
+  if (detail.run.status === "awaiting_lane_choice") {
+    return "Pick an execution lane to resume this workflow.";
+  }
+
   if (stalledReason) {
     return stalledReason;
   }
@@ -238,7 +244,7 @@ function buildRunTimeline(detail: LinearWorkflowRunDetail): Array<{
   return entries.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
 }
 
-export function LinearSyncPanel() {
+export function LinearSyncPanel({ lanes, selectedLaneId }: { lanes: LaneSummary[]; selectedLaneId: string | null }) {
   const navigate = useNavigate();
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
   const [dashboard, setDashboard] = useState<LinearSyncDashboard | null>(null);
@@ -249,7 +255,7 @@ export function LinearSyncPanel() {
   const [selectedRunDetail, setSelectedRunDetail] = useState<LinearWorkflowRunDetail | null>(null);
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [reviewNote, setReviewNote] = useState("");
-  const [queueActionLoading, setQueueActionLoading] = useState<"approve" | "reject" | "retry" | "complete" | null>(null);
+  const [queueActionLoading, setQueueActionLoading] = useState<LinearSyncResolutionAction | null>(null);
   const [revisions, setRevisions] = useState<CtoFlowPolicyRevision[]>([]);
   const [agents, setAgents] = useState<AgentIdentity[]>([]);
   const [ingressStatus, setIngressStatus] = useState<LinearIngressStatus | null>(null);
@@ -259,6 +265,7 @@ export function LinearSyncPanel() {
   const [error, setError] = useState<string | null>(null);
   const [statusNote, setStatusNote] = useState<string | null>(null);
   const [delegationOverrides, setDelegationOverrides] = useState<Record<string, string>>({});
+  const [laneChoices, setLaneChoices] = useState<Record<string, string>>({});
   const runtimeRefreshTimerRef = useRef<number | null>(null);
 
   const selectedWorkflow = useMemo(
@@ -401,8 +408,13 @@ export function LinearSyncPanel() {
   );
 
   const actOnRun = useCallback(
-    async (action: "approve" | "reject" | "retry" | "complete") => {
+    async (action: LinearSyncResolutionAction) => {
       if (!window.ade?.cto || !selectedRunId) return;
+      const laneId = laneChoices[selectedRunId]?.trim() || undefined;
+      if (selectedRunDetail?.run.status === "awaiting_lane_choice" && action === "resume" && !laneId) {
+        setError("Choose an execution lane before continuing this workflow.");
+        return;
+      }
       setQueueActionLoading(action);
       setError(null);
       try {
@@ -412,8 +424,15 @@ export function LinearSyncPanel() {
           action,
           note: reviewNote.trim() || undefined,
           employeeOverride: override || undefined,
+          laneId,
         });
         setDelegationOverrides((prev) => {
+          if (!prev[selectedRunId]) return prev;
+          const next = { ...prev };
+          delete next[selectedRunId];
+          return next;
+        });
+        setLaneChoices((prev) => {
           if (!prev[selectedRunId]) return prev;
           const next = { ...prev };
           delete next[selectedRunId];
@@ -426,6 +445,7 @@ export function LinearSyncPanel() {
           reject: "Supervisor decision recorded.",
           complete: "Delegated work marked complete.",
           retry: "Workflow queued to retry.",
+          resume: "Workflow resumed with operator routing input.",
         };
         setStatusNote(statusMessages[action] ?? "Workflow updated.");
       } catch (err) {
@@ -434,7 +454,7 @@ export function LinearSyncPanel() {
         setQueueActionLoading(null);
       }
     },
-    [delegationOverrides, loadRunDetail, loadRuntimeState, reviewNote, selectedRunId]
+    [delegationOverrides, laneChoices, loadRunDetail, loadRuntimeState, reviewNote, selectedRunDetail?.run.status, selectedRunId]
   );
 
   const savePolicy = useCallback(async () => {
@@ -509,6 +529,15 @@ export function LinearSyncPanel() {
   );
   const selectedRunDelegationStatus = selectedRunQueueItem?.status ?? (selectedRunDetail?.run.status === "awaiting_delegation" ? "awaiting_delegation" : null);
   const showDelegationOverride = selectedRunDelegationStatus ? shouldShowDelegationOverride(selectedRunDelegationStatus) : false;
+  const selectedRunLaneId = useMemo(
+    () => laneChoices[selectedRunId ?? ""] ?? selectedRunDetail?.run.executionLaneId ?? selectedRunQueueItem?.laneId ?? selectedLaneId ?? lanes[0]?.id ?? "",
+    [laneChoices, lanes, selectedLaneId, selectedRunDetail, selectedRunId, selectedRunQueueItem]
+  );
+  const showLaneChoice = selectedRunDetail?.run.status === "awaiting_lane_choice";
+  const canResumeRun = Boolean(
+    selectedRunDetail
+    && (selectedRunDetail.run.status === "awaiting_delegation" || selectedRunDetail.run.status === "awaiting_lane_choice")
+  );
   const canMarkRunComplete = Boolean(
     selectedRunDetail
     && selectedRunDetail.run.status === "waiting_for_target"
@@ -523,9 +552,9 @@ export function LinearSyncPanel() {
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="linear-sync-panel">
       {(statusNote || error) && (
-        <div className="px-4 py-2">
-          {statusNote ? <div className="text-[11px] text-success">{statusNote}</div> : null}
-          {error ? <div className="text-[11px] text-error">{error}</div> : null}
+        <div className="px-4 py-2.5">
+          {statusNote ? <div className="text-xs text-success">{statusNote}</div> : null}
+          {error ? <div className="text-xs text-error">{error}</div> : null}
         </div>
       )}
 
@@ -544,7 +573,10 @@ export function LinearSyncPanel() {
 
         <main className="min-h-0 overflow-auto p-4">
           {!selectedWorkflow ? (
-            <div className="flex items-center justify-center h-full text-xs text-muted-fg/35">Select or create a workflow</div>
+            <div className="flex flex-col items-center justify-center h-full gap-2">
+              <div className="text-sm font-medium text-muted-fg/40">No workflow selected</div>
+              <div className="text-xs text-muted-fg/25">Select a workflow from the sidebar or create one from the preset templates.</div>
+            </div>
           ) : (
             <PipelineCanvas
               workflow={selectedWorkflow}
@@ -569,6 +601,10 @@ export function LinearSyncPanel() {
           selectedRunStallSummary={selectedRunStallSummary}
           selectedRunDelegationOverride={selectedRunDelegationOverride}
           showDelegationOverride={showDelegationOverride}
+          selectedRunLaneId={selectedRunLaneId}
+          showLaneChoice={showLaneChoice}
+          availableLanes={lanes}
+          canResumeRun={canResumeRun}
           canMarkRunComplete={canMarkRunComplete}
           selectedRunTimeline={selectedRunTimeline}
           reviewNote={reviewNote}
@@ -577,6 +613,17 @@ export function LinearSyncPanel() {
           delegatedEmployeeOptions={delegatedEmployeeOptions}
           onDelegationOverrideChange={(runId, value) => {
             setDelegationOverrides((current) => {
+              const next = { ...current };
+              if (value === null) {
+                delete next[runId];
+              } else {
+                next[runId] = value;
+              }
+              return next;
+            });
+          }}
+          onLaneChoiceChange={(runId, value) => {
+            setLaneChoices((current) => {
               const next = { ...current };
               if (value === null) {
                 delete next[runId];

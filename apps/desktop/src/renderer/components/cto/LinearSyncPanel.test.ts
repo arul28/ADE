@@ -169,6 +169,14 @@ describe("LinearSyncPanel", () => {
     expect(
       deriveRunStallSummary(
         makeRunDetail({
+          run: { status: "awaiting_lane_choice" } as unknown as LinearWorkflowRunDetail["run"],
+        })
+      )
+    ).toContain("Pick an execution lane");
+
+    expect(
+      deriveRunStallSummary(
+        makeRunDetail({
           run: {
             status: "waiting_for_target",
             executionContext: {

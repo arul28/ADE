@@ -191,6 +191,8 @@ ADE applies redaction rules to strip potential secrets from context sent to AI t
 - Strings matching known token formats (JWT patterns, API key prefixes)
 - Custom redaction patterns configurable in `.ade/ade.yaml` under `ai.redact`
 
+The `redactSecrets()` utility in `shared/utils.ts` scrubs raw text output before it is persisted in logs or result JSON. It covers Bearer tokens, OpenAI/Anthropic-style API keys (`sk-`), GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), Slack tokens (`xox*`), AWS access keys (`AKIA`/`ASIA`), and JSON-embedded sensitive key-value pairs. The `sanitizeStructuredData()` companion utility operates on parsed objects, redacting sensitive keys, enforcing depth limits, and truncating oversized arrays/strings to prevent unbounded data from reaching logs or agent context.
+
 ### Configuration Trust
 
 See [CONFIGURATION.md](./CONFIGURATION.md) for the full trust model specification.
@@ -226,14 +228,9 @@ ADE enforces several safety measures for git operations to prevent accidental da
 
 #### Path Validation
 
-All file operations validate that the target path is within the lane's root directory. This prevents directory traversal attacks where a malicious proposal could attempt to modify files outside the expected scope.
+All file operations validate that the target path is within the lane's root directory using `resolvePathWithinRoot()`, which resolves symlinks before performing containment checks. This prevents directory traversal attacks -- including those using symlinks -- where a malicious proposal could attempt to modify files outside the expected scope. The function resolves both the root and candidate paths through the real filesystem layout (via `realpathSync`) before checking containment, and supports an `allowMissing` mode for paths that do not yet exist on disk.
 
-```typescript
-function validatePath(lanePath: string, targetPath: string): boolean {
-  const resolved = path.resolve(lanePath, targetPath);
-  return resolved.startsWith(path.resolve(lanePath));
-}
-```
+Path containment is enforced across all security-sensitive surfaces: lane environment initialization (env files, docker compose, dependency commands, mount points, copy paths), coordinator tools (file read, workspace search, context discovery), process service (working directory validation), sync host (artifact path resolution), MCP server (context file resolution, manifest paths), computer use artifact ingestion, and project config validation (process and test suite working directories).
 
 #### Branch Protection
 
@@ -359,7 +356,7 @@ Memories follow a lifecycle: `candidate` --> `promoted` --> `archived`. This pre
 | Memory content redaction | Done | Secret redaction rules applied to memory content before prompt injection |
 | Shared facts scoping (run-level isolation) | Done | Shared facts scoped to orchestrator run via run_id |
 
-**Overall status**: DONE. Core local security model (process isolation, preload bridge, config trust, operation tracking, path validation, force push safety, secret redaction, proposal confidence, memory scoping, memory promotion policy) is fully implemented. ADE is a local-only application with no cloud backend — AI features are powered by local CLI tools via the agent SDKs (AgentExecutor interface).
+**Overall status**: DONE. Core local security model (process isolation, preload bridge, config trust, operation tracking, path validation with symlink-aware containment, force push safety, secret redaction, structured data sanitization, proposal confidence, memory scoping, memory promotion policy, HTML sanitization in rendered markdown) is fully implemented. ADE is a local-only application with no cloud backend — AI features are powered by local CLI tools via the agent SDKs (AgentExecutor interface).
 
 ---
 

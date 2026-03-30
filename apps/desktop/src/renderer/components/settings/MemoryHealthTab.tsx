@@ -36,7 +36,7 @@ const SECTION_LABEL: React.CSSProperties = {
   marginBottom: 10,
 };
 
-const SELECT_STYLE: React.CSSProperties = {
+const _SELECT_STYLE: React.CSSProperties = {
   width: "100%",
   height: 32,
   padding: "0 8px",
@@ -168,7 +168,7 @@ function pct(current: number, max: number): number {
   return Math.max(0, Math.min(100, Math.round((current / max) * 100)));
 }
 
-function fmtPct(value: number): string {
+function _fmtPct(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0%";
   if (value >= 1) return "100%";
   return `${Math.round(value * 100)}%`;
@@ -232,13 +232,13 @@ function scopeColor(scope: MemoryScope): string {
   return COLORS.info;
 }
 
-function statusColor(status: MemoryStatus): string {
+function _statusColor(status: MemoryStatus): string {
   if (status === "promoted") return COLORS.success;
   if (status === "candidate") return COLORS.warning;
   return COLORS.textDim;
 }
 
-function importanceColor(importance: MemoryImportance): string {
+function _importanceColor(importance: MemoryImportance): string {
   if (importance === "high") return COLORS.danger;
   if (importance === "medium") return COLORS.warning;
   return COLORS.textMuted;
@@ -540,9 +540,9 @@ export function MemoryHealthTab() {
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [sweepRunning, setSweepRunning] = React.useState(false);
   const [consolidationRunning, setConsolidationRunning] = React.useState(false);
-  const [modelSaving, setModelSaving] = React.useState(false);
+  const [_modelSaving, setModelSaving] = React.useState(false);
   const [modelValue, setModelValue] = React.useState(DEFAULT_CONSOLIDATION_MODEL);
-  const [modelOptions, setModelOptions] = React.useState<Array<{ id: string; label: string }>>([]);
+  const [_modelOptions, setModelOptions] = React.useState<Array<{ id: string; label: string }>>([]);
 
   /* ── Browser state ── */
   const [budgetEntries, setBudgetEntries] = React.useState<MemoryEntry[]>([]);
@@ -564,9 +564,9 @@ export function MemoryHealthTab() {
   const [procedures, setProcedures] = React.useState<ProcedureListItem[]>([]);
   const [indexedSkills, setIndexedSkills] = React.useState<SkillIndexEntry[]>([]);
   const [selectedProcedureId, setSelectedProcedureId] = React.useState<string | null>(null);
-  const [selectedProcedureDetail, setSelectedProcedureDetail] = React.useState<ProcedureDetail | null>(null);
-  const [procedureDetailLoading, setProcedureDetailLoading] = React.useState(false);
-  const [procedureSort, setProcedureSort] = React.useState<ProcedureSort>("confidence");
+  const [_selectedProcedureDetail, setSelectedProcedureDetail] = React.useState<ProcedureDetail | null>(null);
+  const [_procedureDetailLoading, setProcedureDetailLoading] = React.useState(false);
+  const [procedureSort, _setProcedureSort] = React.useState<ProcedureSort>("confidence");
   const [knowledgeSyncStatus, setKnowledgeSyncStatus] = React.useState<KnowledgeSyncStatus>(createEmptyKnowledgeSyncStatus());
   const [syncRunning, setSyncRunning] = React.useState(false);
 
@@ -603,7 +603,7 @@ export function MemoryHealthTab() {
     return Array.from(new Set(all)).sort((a, b) => a.localeCompare(b));
   }, [visibleBudgetEntries, visibleCandidateEntries, visibleSearchResults]);
 
-  const sortedProcedures = React.useMemo(() => {
+  const _sortedProcedures = React.useMemo(() => {
     const next = [...procedures];
     next.sort((a, b) => {
       if (procedureSort === "applications") return (b.procedural.successCount + b.procedural.failureCount) - (a.procedural.successCount + a.procedural.failureCount);
@@ -620,7 +620,7 @@ export function MemoryHealthTab() {
   const candidateEntries = searchInput.trim().length > 0 ? [] : visibleCandidateEntries.filter((e) => matchesFilters(e, scopeFilter, categoryFilter, "pending"));
 
   const embReady = embeddingsReady(stats);
-  const embProgress = pct(stats.embeddings.entriesEmbedded, Math.max(stats.embeddings.entriesTotal, 1));
+  const _embProgress = pct(stats.embeddings.entriesEmbedded, Math.max(stats.embeddings.entriesTotal, 1));
   const modelDownloadPct = (() => {
     const { progress, loaded, total } = stats.embeddings.model;
     if (typeof progress === "number" && Number.isFinite(progress)) return Math.max(0, Math.min(100, Math.round(progress)));
@@ -763,7 +763,7 @@ export function MemoryHealthTab() {
     finally { setConsolidationRunning(false); }
   }, [consolidationRunning, loadDashboard, memoryApi]);
 
-  const handleModelChange = React.useCallback(async (next: string) => {
+  const _handleModelChange = React.useCallback(async (next: string) => {
     const prev = modelValue;
     setModelValue(next); setModelSaving(true); setActionError(null);
     try { await window.ade.ai.updateConfig({ featureModelOverrides: { memory_consolidation: next } as AiConfig["featureModelOverrides"] }); }
@@ -786,7 +786,7 @@ export function MemoryHealthTab() {
     finally { setSyncRunning(false); }
   }, [loadDashboard, memoryApi, syncRunning]);
 
-  const handleOpenProcedure = React.useCallback(async (id: string) => {
+  const _handleOpenProcedure = React.useCallback(async (id: string) => {
     if (!memoryApi?.getProcedureDetail) return;
     setSelectedProcedureId(id); setProcedureDetailLoading(true);
     try { const d = await memoryApi.getProcedureDetail({ id }); setSelectedProcedureDetail(d); setActionError(null); }

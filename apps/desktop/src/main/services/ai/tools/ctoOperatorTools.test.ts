@@ -139,6 +139,40 @@ describe("createCtoOperatorTools", () => {
     expect(toolKeys).toContain("listFileWorkspaces");
     expect(toolKeys).toContain("readWorkspaceFile");
     expect(toolKeys).toContain("searchWorkspaceText");
+
+    // PR creation & management tools
+    expect(toolKeys).toContain("createPrFromLane");
+    expect(toolKeys).toContain("landPullRequest");
+    expect(toolKeys).toContain("closePullRequest");
+    expect(toolKeys).toContain("requestPrReviewers");
+
+    // Lane management tools
+    expect(toolKeys).toContain("deleteLane");
+
+    // Worker management tools
+    expect(toolKeys).toContain("removeWorker");
+    expect(toolKeys).toContain("updateWorker");
+
+    // Test management tools
+    expect(toolKeys).toContain("listTestSuites");
+    expect(toolKeys).toContain("runTests");
+    expect(toolKeys).toContain("stopTestRun");
+    expect(toolKeys).toContain("listTestRuns");
+    expect(toolKeys).toContain("getTestLog");
+
+    // Terminal management tools
+    expect(toolKeys).toContain("createTerminal");
+
+    // Linear issue discovery tools
+    expect(toolKeys).toContain("listLinearIssues");
+    expect(toolKeys).toContain("getLinearIssue");
+    expect(toolKeys).toContain("updateLinearIssueAssignee");
+    expect(toolKeys).toContain("addLinearIssueLabel");
+
+    // Automation management tools
+    expect(toolKeys).toContain("listAutomations");
+    expect(toolKeys).toContain("triggerAutomation");
+    expect(toolKeys).toContain("listAutomationRuns");
   });
 
   // ── Chat tools ──────────────────────────────────────────────────
@@ -791,7 +825,7 @@ describe("createCtoOperatorTools", () => {
   // ── Linear workflow tools ───────────────────────────────────────
 
   describe("Linear workflow tools", () => {
-    it.each(["approve", "reject", "retry", "complete"] as const)(
+    it.each(["approve", "reject", "retry", "resume", "complete"] as const)(
       "resolves Linear run actions for %s",
       async (action) => {
         const deps = buildDeps({
@@ -813,6 +847,8 @@ describe("createCtoOperatorTools", () => {
           action,
           "operator note",
           { workflows: [] },
+          undefined,
+          undefined,
         );
         expect(result).toMatchObject({ success: true, run: { id: "run-1" } });
       },

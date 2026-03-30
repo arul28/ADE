@@ -17,7 +17,80 @@ import type {
 } from "../../../shared/types";
 
 import type { Logger } from "../logging/logger";
-import { isWithinDir } from "../shared/utils";
+import {
+  resolvePathWithinRoot,
+  secureCopyPathIntoRoot,
+  secureWriteFileWithinRoot,
+} from "../shared/utils";
+
+/** Resolve a relative path against `root` and throw if it escapes.  Logs a warning on escape. */
+function resolveCheckedPath(
+  root: string,
+  relative: string,
+  logger: Logger,
+  logTag: string,
+  logContext: Record<string, string>,
+  opts: { allowMissing?: boolean } = {},
+): string {
+  try {
+    return resolvePathWithinRoot(root, relative, opts);
+  } catch (err) {
+    if (err instanceof Error && err.message === "Path escapes root") {
+      logger.warn(logTag, logContext);
+      throw new Error("Path escapes allowed directory");
+    }
+    throw err;
+  }
+}
+
+function isPathEscapeError(error: unknown): boolean {
+  return error instanceof Error && error.message === "Path escapes allowed directory";
+}
+
+function secureWriteTextFile(
+  root: string,
+  relative: string,
+  content: string,
+  logger: Logger,
+  logTag: string,
+  logContext: Record<string, string>,
+): void {
+  try {
+    secureWriteFileWithinRoot(root, relative, content, "utf8");
+  } catch (error) {
+    if (error instanceof Error && error.message === "Path escapes root") {
+      logger.warn(logTag, logContext);
+      throw new Error("Path escapes allowed directory");
+    }
+    throw error;
+  }
+}
+
+function secureCopyPath(
+  sourceRoot: string,
+  sourceRelative: string,
+  destRoot: string,
+  destRelative: string,
+  logger: Logger,
+  sourceLogTag: string,
+  sourceLogContext: Record<string, string>,
+  destLogTag: string,
+  destLogContext: Record<string, string>,
+): void {
+  const sourcePath = resolveCheckedPath(sourceRoot, sourceRelative, logger, sourceLogTag, sourceLogContext, { allowMissing: true });
+  if (!fs.existsSync(sourcePath)) {
+    return;
+  }
+  try {
+    secureCopyPathIntoRoot(destRoot, destRelative, sourcePath);
+  } catch (error) {
+    if (error instanceof Error && error.message === "Path escapes root") {
+      logger.warn(destLogTag, destLogContext);
+      throw new Error("Path escapes allowed directory");
+    }
+    throw error;
+  }
+}
 
 function cloneDockerConfig(config: LaneDockerConfig): LaneDockerConfig {
   return config.services
@@ -173,19 +246,7 @@ export function createLaneEnvironmentService({
     laneVars: Record<string, string>
   ): Promise<void> {
     for (const file of envFiles) {
-      const sourcePath = path.resolve(projectRoot, file.source);
-      const destPath = path.resolve(worktreePath, file.dest);
-
-      if (!isWithinDir(worktreePath, destPath)) {
-        logger.warn("lane_env_init.env_file_path_escape", { dest: file.dest, worktreePath });
-        throw new Error("Path escapes allowed directory");
-      }
-
-      // Ensure destination directory exists
-      const destDir = path.dirname(destPath);
-      if (!fs.existsSync(destDir)) {
-        fs.mkdirSync(destDir, { recursive: true });
-      }
+      const sourcePath = resolveCheckedPath(projectRoot, file.source, logger, "lane_env_init.env_file_source_escape", { source: file.source, projectRoot }, { allowMissing: true });
 
       if (!fs.existsSync(sourcePath)) {
         logger.warn("lane_env_init.env_file_missing", { source: file.source });
@@ -201,7 +262,14 @@ export function createLaneEnvironmentService({
         content = content.replace(new RegExp(`\\{\\{${escapeRegExp(key)}\\}\\}`, "g"), value);
       }
 
-      fs.writeFileSync(destPath, content, "utf-8");
+      secureWriteTextFile(
+        worktreePath,
+        file.dest,
+        content,
+        logger,
+        "lane_env_init.env_file_path_escape",
+        { dest: file.dest, worktreePath },
+      );
       logger.debug("lane_env_init.env_file_copied", { source: file.source, dest: file.dest });
     }
   }
@@ -215,7 +283,7 @@ export function createLaneEnvironmentService({
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath ?? "" });
       return { exitCode: 0, stderr: "" };
     }
-    const composePath = path.resolve(projectRoot, docker.composePath);
+    const composePath = resolveCheckedPath(projectRoot, docker.composePath, logger, "lane_env_init.docker_compose_escape", { path: docker.composePath, projectRoot }, { allowMissing: true });
     if (!fs.existsSync(composePath)) {
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath });
       return { exitCode: 0, stderr: "" };
@@ -251,7 +319,7 @@ export function createLaneEnvironmentService({
         logger.warn("lane_env_init.dependency_command_not_allowed", { command: baseCommand });
         continue;
       }
-      const cwd = dep.cwd ? path.resolve(worktreePath, dep.cwd) : worktreePath;
+      const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });
       const result = await execCommand(dep.command, cwd);
       if (result.exitCode !== 0) {
         failures.push(`${dep.command.join(" ")}: ${result.stderr.slice(0, 500)}`);
@@ -270,22 +338,7 @@ export function createLaneEnvironmentService({
     mountPoints: LaneMountPointConfig[]
   ): void {
     for (const mp of mountPoints) {
-      const sourcePath = path.resolve(adeDir, mp.source);
-      const destPath = path.resolve(worktreePath, mp.dest);
-
-      if (!isWithinDir(adeDir, sourcePath)) {
-        logger.warn("lane_env_init.mount_source_path_escape", { source: mp.source, adeDir });
-        throw new Error("Path escapes allowed directory");
-      }
-      if (!isWithinDir(worktreePath, destPath)) {
-        logger.warn("lane_env_init.mount_dest_path_escape", { dest: mp.dest, worktreePath });
-        throw new Error("Path escapes allowed directory");
-      }
-
-      const destDir = path.dirname(destPath);
-      if (!fs.existsSync(destDir)) {
-        fs.mkdirSync(destDir, { recursive: true });
-      }
+      const sourcePath = resolveCheckedPath(adeDir, mp.source, logger, "lane_env_init.mount_source_path_escape", { source: mp.source, adeDir }, { allowMissing: true });
 
       if (!fs.existsSync(sourcePath)) {
         logger.warn("lane_env_init.mount_source_missing", { source: mp.source });
@@ -293,7 +346,17 @@ export function createLaneEnvironmentService({
       }
 
       // Copy file (not symlink, to avoid cross-worktree issues)
-      fs.copyFileSync(sourcePath, destPath);
+      secureCopyPath(
+        adeDir,
+        mp.source,
+        worktreePath,
+        mp.dest,
+        logger,
+        "lane_env_init.mount_source_path_escape",
+        { source: mp.source, adeDir },
+        "lane_env_init.mount_dest_path_escape",
+        { dest: mp.dest, worktreePath },
+      );
       logger.debug("lane_env_init.mount_point_setup", { source: mp.source, dest: mp.dest });
     }
   }
@@ -303,34 +366,32 @@ export function createLaneEnvironmentService({
     copyPaths: LaneCopyPathConfig[]
   ): void {
     for (const cp of copyPaths) {
-      const sourcePath = path.resolve(projectRoot, cp.source);
+      const sourcePath = resolveCheckedPath(projectRoot, cp.source, logger, "lane_env_init.copy_source_path_escape", { source: cp.source, projectRoot }, { allowMissing: true });
       const dest = cp.dest ?? cp.source;
-      const destPath = path.resolve(worktreePath, dest);
-
-      if (!isWithinDir(worktreePath, destPath)) {
-        logger.warn("lane_env_init.copy_dest_path_escape", { dest, worktreePath });
-        throw new Error("Path escapes allowed directory");
-      }
 
       if (!fs.existsSync(sourcePath)) {
         logger.warn("lane_env_init.copy_path_missing", { source: cp.source });
         continue;
       }
 
-      const stat = fs.statSync(sourcePath);
-      if (stat.isDirectory()) {
-        // Recursive directory copy
-        fs.cpSync(sourcePath, destPath, { recursive: true, force: true });
-        logger.debug("lane_env_init.copy_path_dir", { source: cp.source, dest });
-      } else {
-        // Single file copy
-        const destDir = path.dirname(destPath);
-        if (!fs.existsSync(destDir)) {
-          fs.mkdirSync(destDir, { recursive: true });
-        }
-        fs.copyFileSync(sourcePath, destPath);
-        logger.debug("lane_env_init.copy_path_file", { source: cp.source, dest });
+      secureCopyPath(
+        projectRoot,
+        cp.source,
+        worktreePath,
+        dest,
+        logger,
+        "lane_env_init.copy_source_path_escape",
+        { source: cp.source, projectRoot },
+        "lane_env_init.copy_dest_path_escape",
+        { dest, worktreePath },
+      );
+      let sourceIsDirectory = false;
+      try {
+        sourceIsDirectory = fs.statSync(sourcePath).isDirectory();
+      } catch {
+        sourceIsDirectory = false;
       }
+      logger.debug(sourceIsDirectory ? "lane_env_init.copy_path_dir" : "lane_env_init.copy_path_file", { source: cp.source, dest });
     }
   }
 
@@ -495,8 +556,33 @@ export function createLaneEnvironmentService({
         return;
       }
       const projectName = buildDockerProjectName(lane.id, config.docker.projectPrefix);
-      const composePath = path.resolve(projectRoot, config.docker.composePath);
-      if (!fs.existsSync(composePath)) {
+      let composePath: string;
+      let skipExistsCheck = false;
+      try {
+        composePath = resolveCheckedPath(
+          projectRoot,
+          config.docker.composePath,
+          logger,
+          "lane_env_cleanup.docker_compose_escape",
+          { laneId: lane.id, path: config.docker.composePath, projectRoot },
+          { allowMissing: true },
+        );
+      } catch (error) {
+        if (isPathEscapeError(error)) {
+          progressMap.delete(lane.id);
+          return;
+        }
+        logger.warn("lane_env_cleanup.docker_compose_path_validation_failed", {
+          laneId: lane.id,
+          path: config.docker.composePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        composePath = path.isAbsolute(config.docker.composePath)
+          ? config.docker.composePath
+          : path.resolve(projectRoot, config.docker.composePath);
+        skipExistsCheck = true;
+      }
+      if (!skipExistsCheck && !fs.existsSync(composePath)) {
         logger.warn("lane_env_cleanup.docker_compose_missing", { laneId: lane.id, path: config.docker.composePath });
         progressMap.delete(lane.id);
         return;

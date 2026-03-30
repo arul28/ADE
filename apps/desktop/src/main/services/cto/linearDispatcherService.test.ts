@@ -706,6 +706,67 @@ describe("linearDispatcherService", () => {
     db.close();
   });
 
+  it("resumes awaiting-delegation runs after an operator picks an override", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-resume-awaiting-delegation-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildEmployeeSessionPolicy();
+    const employeeIssue = {
+      ...issueFixture,
+      assigneeId: "unknown-agent",
+      assigneeName: "Unknown Agent",
+      labels: ["workflow:backend"],
+    };
+    const ensureIdentitySession = vi.fn(async () => ({ id: "session-override-1" }));
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => employeeIssue),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => []) } as any,
+      workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession,
+        sendMessage: vi.fn(async () => ({ id: "message-1" })),
+        listSessions: vi.fn(async () => []),
+      } as any,
+      laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun(employeeIssue, buildMatch(policy));
+    const awaitingDelegation = await dispatcher.advanceRun(run.id, policy);
+    expect(awaitingDelegation?.status).toBe("awaiting_delegation");
+
+    const queued = await dispatcher.resolveRunAction(run.id, "resume", "Use CTO.", policy, "cto");
+    expect(queued?.status).toBe("queued");
+
+    const resumed = await dispatcher.advanceRun(run.id, policy);
+    expect(resumed?.status).toBe("waiting_for_target");
+    expect(ensureIdentitySession).toHaveBeenCalledWith(expect.objectContaining({
+      identityKey: "cto",
+      laneId: "lane-1",
+    }));
+    db.close();
+  });
+
   it("launches a direct CTO employee session when the workflow targets CTO", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-cto-session-"));
     const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
@@ -753,6 +814,75 @@ describe("linearDispatcherService", () => {
       laneId: "lane-1",
     }));
     expect(dispatcher.listQueue()[0]?.sessionId).toBe("session-cto-1");
+    db.close();
+  });
+
+  it("resumes awaiting-lane-choice runs after an operator picks a lane", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-lane-choice-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const policy = buildDirectCtoSessionPolicy({
+      laneSelection: "operator_prompt",
+      sessionReuse: "reuse_existing",
+    });
+    const ensureIdentitySession = vi.fn(async () => ({ id: "session-cto-2" }));
+
+    const dispatcher = createLinearDispatcherService({
+      db,
+      projectId: "project-1",
+      issueTracker: {
+        fetchIssueById: vi.fn(async () => issueFixture),
+        fetchWorkflowStates: vi.fn(async () => []),
+        updateIssueState: vi.fn(async () => {}),
+        addLabel: vi.fn(async () => {}),
+        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+      } as any,
+      workerAgentService: { listAgents: vi.fn(() => []) } as any,
+      workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
+      missionService: { create: vi.fn(), get: vi.fn() } as any,
+      aiOrchestratorService: { startMissionRun: vi.fn() } as any,
+      agentChatService: {
+        ensureIdentitySession,
+        sendMessage: vi.fn(async () => ({ id: "message-1" })),
+        listSessions: vi.fn(async () => []),
+      } as any,
+      laneService: {
+        ensurePrimaryLane: vi.fn(async () => {}),
+        list: vi.fn(async () => [
+          { id: "lane-1", laneType: "primary", name: "Primary" },
+          { id: "lane-2", laneType: "worktree", name: "Existing lane" },
+        ]),
+      } as any,
+      templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
+      closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+      outboundService: createOutboundServiceMocks(),
+      workerTaskSessionService: {
+        deriveTaskKey: vi.fn(() => "task-key-1"),
+        ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+      } as any,
+      prService: {
+        getForLane: vi.fn(() => null),
+        createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+      } as any,
+    });
+
+    const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:backend"], assigneeName: "CTO" }, buildMatch(policy));
+    const awaitingLaneChoice = await dispatcher.advanceRun(run.id, policy);
+
+    expect(awaitingLaneChoice?.status).toBe("awaiting_lane_choice");
+
+    const queued = await dispatcher.resolveRunAction(run.id, "resume", "Use the existing lane.", policy, undefined, "lane-2");
+    expect(queued?.executionLaneId).toBe("lane-2");
+
+    await dispatcher.advanceRun(run.id, policy);
+
+    expect(ensureIdentitySession).toHaveBeenCalledWith(expect.objectContaining({
+      identityKey: "cto",
+      laneId: "lane-2",
+    }));
+    expect(dispatcher.listQueue()[0]).toEqual(expect.objectContaining({
+      laneId: "lane-2",
+      sessionId: "session-cto-2",
+    }));
     db.close();
   });
 

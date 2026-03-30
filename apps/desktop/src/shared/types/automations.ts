@@ -104,6 +104,7 @@ export type AutomationManualTriggerRequest = {
   laneId?: string | null;
   reviewProfileOverride?: AutomationReviewProfile | null;
   verboseTrace?: boolean;
+  dryRun?: boolean;
 };
 
 export type AutomationRunListArgs = {

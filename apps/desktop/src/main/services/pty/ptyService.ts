@@ -369,13 +369,7 @@ export function createPtyService({
     } catch {
       // ignore
     }
-    for (const cleanupPath of entry.cleanupPaths) {
-      try {
-        fs.unlinkSync(cleanupPath);
-      } catch {
-        // best effort
-      }
-    }
+    cleanupEntryPaths(entry);
     flushPreview(entry);
 
     const endedAt = new Date().toISOString();
@@ -490,6 +484,16 @@ export function createPtyService({
       });
     } catch {
       // ignore callback failures
+    }
+  };
+
+  const cleanupEntryPaths = (entry: PtyEntry) => {
+    for (const cleanupPath of entry.cleanupPaths) {
+      try {
+        fs.unlinkSync(cleanupPath);
+      } catch {
+        // best effort
+      }
     }
   };
 
@@ -881,6 +885,7 @@ export function createPtyService({
       } catch {
         // ignore
       }
+      cleanupEntryPaths(entry);
       try {
         entry.pty.kill();
       } catch {

@@ -3,6 +3,7 @@ import type { createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import type { Server as NetServer } from "node:net";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -92,6 +93,7 @@ import type {
   CreateIntegrationPrResult,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
+  ReorderQueuePrsArgs,
   CommitIntegrationArgs,
   CleanupIntegrationWorkflowArgs,
   CleanupIntegrationWorkflowResult,
@@ -198,26 +200,10 @@ import type {
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
-  PackExport,
-  PackDeltaDigestArgs,
-  PackDeltaDigestV1,
-  PackEvent,
-  PackHeadVersion,
-  PackSummary,
-  PackVersion,
-  PackVersionSummary,
-  Checkpoint,
-  GetLaneExportArgs,
-  GetProjectExportArgs,
-  GetConflictExportArgs,
-  ContextExportLevel,
-  GetMissionPackArgs,
-  RefreshMissionPackArgs,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
   ContextOpenDocArgs,
   ContextStatus,
-  ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessRuntime,
@@ -241,7 +227,6 @@ import type {
   RebaseStartArgs,
   RebaseStartResult,
   RebaseSuggestion,
-  RebaseRunEventPayload,
   AutoRebaseLaneStatus,
   RiskMatrixEntry,
   PrepareConflictProposalArgs,
@@ -272,7 +257,6 @@ import type {
   MissionIntervention,
   MissionArtifact,
   MissionStep,
-  MissionStatus,
   MissionSummary,
   PhaseCard,
   PhaseProfile,
@@ -291,6 +275,8 @@ import type {
   ImportPhaseProfileArgs,
   MissionPhaseConfiguration,
   MissionDashboardSnapshot,
+  GetFullMissionViewArgs,
+  FullMissionViewResult,
   MissionPreflightRequest,
   MissionPreflightResult,
   GetMissionRunViewArgs,
@@ -325,6 +311,12 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  SyncDesktopConnectionDraft,
+  SyncDeviceRecord,
+  SyncDeviceRuntimeState,
+  SyncPeerDeviceType,
+  SyncRoleSnapshot,
+  SyncTransferReadiness,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
@@ -422,6 +414,7 @@ import type {
   CtoStartLinearOAuthResult,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
+  CtoSetLinearOAuthClientArgs,
   CtoFlowPolicyRevision,
   CtoSaveFlowPolicyArgs,
   CtoRollbackFlowPolicyRevisionArgs,
@@ -457,7 +450,6 @@ import type {
   ComputerUseArtifactReviewArgs,
   ComputerUseArtifactRouteArgs,
   ComputerUseArtifactView,
-  ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
   ComputerUseSettingsSnapshot,
@@ -465,6 +457,10 @@ import type {
   LaneOverlayOverrides,
   LaneTemplate,
   PortLease,
+  UpdateOAuthRedirectConfigArgs,
+  GenerateRedirectUrisArgs,
+  EncodeOAuthStateArgs,
+  DecodeOAuthStateArgs,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -550,7 +546,7 @@ import type { createSyncHostService } from "../sync/syncHostService";
 import type { createSyncService } from "../sync/syncService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
-import { getErrorMessage, isRecord, isWithinDir, nowIso, toMemoryEntryDto, toOptionalString } from "../shared/utils";
+import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
 
 export type AppContext = {
   db: AdeDb;
@@ -633,7 +629,7 @@ export type AppContext = {
   configReloadService?: ConfigReloadService | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
-  mcpSocketServer?: import("node:net").Server;
+  mcpSocketServer?: NetServer;
   mcpSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
 };
@@ -1342,6 +1338,16 @@ function buildPrAiDisplayText(context: PrAiResolutionContext): string {
   return "Resolve this PR with AI.";
 }
 
+function getAllowedDirs(getCtx: () => AppContext): string[] {
+  const projectRoot = getCtx().project.rootPath;
+  return [
+    projectRoot,
+    app.getPath("downloads"),
+    app.getPath("documents"),
+    app.getPath("temp"),
+  ];
+}
+
 export function registerIpc({
   getCtx,
   switchProjectFromDialog,
@@ -1688,14 +1694,16 @@ export function registerIpc({
     const normalized = path.resolve(raw);
     // Validate the path is within known safe directories only.
     // Reject requests to reveal arbitrary paths (e.g. ~/.ssh, /etc, /System).
-    const projectRoot = getCtx().project.rootPath;
-    const allowedDirs = [
-      projectRoot,
-      app.getPath("downloads"),
-      app.getPath("documents"),
-      app.getPath("temp"),
-    ];
-    if (!allowedDirs.some((dir) => isWithinDir(dir, normalized))) {
+    const allowedDirs = getAllowedDirs(getCtx);
+    const allowed = allowedDirs.some((dir) => {
+      try {
+        resolvePathWithinRoot(dir, normalized);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (!allowed) {
       throw new Error("Path is outside allowed directories.");
     }
     shell.showItemInFolder(normalized);
@@ -1720,10 +1728,32 @@ export function registerIpc({
         throw new Error("Unsupported editor target.");
       }
       const rootPath = path.resolve(rootRaw);
-      const targetPath = relRaw ? path.resolve(rootPath, relRaw) : rootPath;
-      const relToRoot = path.relative(rootPath, targetPath);
-      if (relToRoot.startsWith("..") || path.isAbsolute(relToRoot)) {
-        throw new Error("relativePath escapes rootPath.");
+
+      // Validate the renderer-supplied root is a known workspace root
+      // (same pattern as appRevealPath).
+      const allowedRoots = getAllowedDirs(getCtx);
+      const rootAllowed = allowedRoots.some((dir) => {
+        try {
+          resolvePathWithinRoot(dir, rootPath);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (!rootAllowed) {
+        throw new Error("rootPath is outside allowed directories.");
+      }
+
+      let targetPath: string;
+      try {
+        const candidatePath = relRaw ? path.resolve(rootPath, relRaw) : rootPath;
+        targetPath = resolvePathWithinRoot(rootPath, candidatePath, { allowMissing: true });
+      } catch (resolveError: unknown) {
+        // Only translate containment errors; rethrow unexpected failures.
+        if (resolveError instanceof Error && resolveError.message === "Path escapes root") {
+          throw new Error("relativePath escapes rootPath.");
+        }
+        throw resolveError;
       }
 
       if (target === "finder") {
@@ -2006,7 +2036,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.syncGetStatus, async (): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+  ipcMain.handle(IPC.syncGetStatus, async (): Promise<SyncRoleSnapshot> => {
     const ctx = getCtx();
     if (!ctx.syncService) {
       throw new Error("Sync service is not available.");
@@ -2014,7 +2044,7 @@ export function registerIpc({
     return await ctx.syncService.getStatus();
   });
 
-  ipcMain.handle(IPC.syncListDevices, async (): Promise<import("../../../shared/types").SyncDeviceRuntimeState[]> => {
+  ipcMain.handle(IPC.syncListDevices, async (): Promise<SyncDeviceRuntimeState[]> => {
     const ctx = getCtx();
     if (!ctx.syncService) {
       throw new Error("Sync service is not available.");
@@ -2026,8 +2056,8 @@ export function registerIpc({
     IPC.syncUpdateLocalDevice,
     async (
       _event,
-      arg: { name?: string; deviceType?: import("../../../shared/types").SyncPeerDeviceType },
-    ): Promise<import("../../../shared/types").SyncDeviceRecord> => {
+      arg: { name?: string; deviceType?: SyncPeerDeviceType },
+    ): Promise<SyncDeviceRecord> => {
       const ctx = getCtx();
       if (!ctx.syncService) {
         throw new Error("Sync service is not available.");
@@ -2041,7 +2071,7 @@ export function registerIpc({
 
   ipcMain.handle(
     IPC.syncConnectToBrain,
-    async (_event, arg: import("../../../shared/types").SyncDesktopConnectionDraft): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+    async (_event, arg: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> => {
       const ctx = getCtx();
       if (!ctx.syncService) {
         throw new Error("Sync service is not available.");
@@ -2050,7 +2080,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.syncDisconnectFromBrain, async (): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+  ipcMain.handle(IPC.syncDisconnectFromBrain, async (): Promise<SyncRoleSnapshot> => {
     const ctx = getCtx();
     if (!ctx.syncService) {
       throw new Error("Sync service is not available.");
@@ -2058,7 +2088,7 @@ export function registerIpc({
     return await ctx.syncService.disconnectFromBrain();
   });
 
-  ipcMain.handle(IPC.syncForgetDevice, async (_event, arg: { deviceId: string }): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+  ipcMain.handle(IPC.syncForgetDevice, async (_event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
     const ctx = getCtx();
     if (!ctx.syncService) {
       throw new Error("Sync service is not available.");
@@ -2066,7 +2096,7 @@ export function registerIpc({
     return await ctx.syncService.forgetDevice(typeof arg?.deviceId === "string" ? arg.deviceId : "");
   });
 
-  ipcMain.handle(IPC.syncGetTransferReadiness, async (): Promise<import("../../../shared/types").SyncTransferReadiness> => {
+  ipcMain.handle(IPC.syncGetTransferReadiness, async (): Promise<SyncTransferReadiness> => {
     const ctx = getCtx();
     if (!ctx.syncService) {
       throw new Error("Sync service is not available.");
@@ -2074,7 +2104,7 @@ export function registerIpc({
     return await ctx.syncService.getTransferReadiness();
   });
 
-  ipcMain.handle(IPC.syncTransferBrainToLocal, async (): Promise<import("../../../shared/types").SyncRoleSnapshot> => {
+  ipcMain.handle(IPC.syncTransferBrainToLocal, async (): Promise<SyncRoleSnapshot> => {
     const ctx = getCtx();
     if (!ctx.syncService) {
       throw new Error("Sync service is not available.");
@@ -2261,6 +2291,7 @@ export function registerIpc({
       laneId: arg?.laneId ?? null,
       reviewProfileOverride: arg?.reviewProfileOverride ?? null,
       verboseTrace: Boolean(arg?.verboseTrace),
+      dryRun: Boolean(arg?.dryRun),
     });
   });
 
@@ -2386,19 +2417,19 @@ export function registerIpc({
 
   ipcMain.handle(
     IPC.missionsGetFullMissionView,
-    async (_event, arg: import("../../../shared/types").GetFullMissionViewArgs): Promise<import("../../../shared/types").FullMissionViewResult> => {
+    async (_event, arg: GetFullMissionViewArgs): Promise<FullMissionViewResult> => {
       const ctx = getCtx();
       const missionId = typeof arg?.missionId === "string" ? arg.missionId.trim() : "";
       if (!missionId) return { mission: null, runGraph: null, artifacts: [], checkpoints: [], dashboard: null };
 
-      let dashboard: import("../../../shared/types").MissionDashboardSnapshot | null = null;
+      let dashboard: MissionDashboardSnapshot | null = null;
       try { dashboard = ctx.missionService.getDashboard(); } catch { /* best-effort */ }
 
       const mission = await ctx.missionService.get(missionId);
 
-      let runGraph: import("../../../shared/types").OrchestratorRunGraph | null = null;
-      let artifacts: import("../../../shared/types").OrchestratorArtifact[] = [];
-      let checkpoints: import("../../../shared/types").OrchestratorWorkerCheckpoint[] = [];
+      let runGraph: OrchestratorRunGraph | null = null;
+      let artifacts: OrchestratorArtifact[] = [];
+      let checkpoints: OrchestratorWorkerCheckpoint[] = [];
 
       const runs = await ctx.orchestratorService.listRuns({ missionId, limit: 20 });
       const activeStatuses = new Set(["active", "bootstrapping", "queued", "paused"]);
@@ -2432,14 +2463,7 @@ export function registerIpc({
     const ctx = getCtx();
     const prompt = typeof arg?.prompt === "string" ? arg.prompt.trim() : "";
     if (!prompt.length) throw new Error("Mission prompt is required.");
-    const title =
-      typeof arg?.title === "string" && arg.title.trim().length > 0
-        ? arg.title.trim()
-        : prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "Mission";
     const plannerEngine = arg?.plannerEngine ?? "auto";
-    const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : null;
-    const executionMode = arg?.executionMode ?? "local";
-    const targetMachineId = typeof arg?.targetMachineId === "string" ? arg.targetMachineId.trim() || null : null;
     const autostart = arg?.autostart !== false;
     const runMode = arg?.launchMode === "manual" ? "manual" : "autopilot";
     const defaultExecutorKind: OrchestratorExecutorKind = runMode === "manual"
@@ -2462,7 +2486,7 @@ export function registerIpc({
             event: "mission_start",
             reason: `missions_create_autostart:${created.id}`
           });
-          const launch = await ctx.aiOrchestratorService.startMissionRun({
+          await ctx.aiOrchestratorService.startMissionRun({
             missionId: created.id,
             runMode,
             autopilotOwnerId: "missions-autopilot",
@@ -3479,9 +3503,9 @@ export function registerIpc({
 
   const parseOAuthUpdateConfigArgs = (
     value: unknown,
-  ): import("../../../shared/types").UpdateOAuthRedirectConfigArgs => {
+  ): UpdateOAuthRedirectConfigArgs => {
     const record = requireRecord(value, "OAuth config update");
-    const updates: import("../../../shared/types").UpdateOAuthRedirectConfigArgs = {};
+    const updates: UpdateOAuthRedirectConfigArgs = {};
 
     if ("enabled" in record) {
       if (typeof record.enabled !== "boolean") {
@@ -3515,7 +3539,7 @@ export function registerIpc({
 
   const parseGenerateRedirectUrisArgs = (
     value: unknown,
-  ): import("../../../shared/types").GenerateRedirectUrisArgs => {
+  ): GenerateRedirectUrisArgs => {
     if (value === undefined) return {};
     const record = requireRecord(value, "OAuth redirect URI request");
     if (record.provider === undefined) return {};
@@ -3527,7 +3551,7 @@ export function registerIpc({
 
   const parseEncodeOAuthStateArgs = (
     value: unknown,
-  ): import("../../../shared/types").EncodeOAuthStateArgs => {
+  ): EncodeOAuthStateArgs => {
     const record = requireRecord(value, "OAuth state encode request");
     if (typeof record.laneId !== "string" || !record.laneId.trim()) {
       throw new Error("OAuth state encode laneId must be a non-empty string");
@@ -3540,7 +3564,7 @@ export function registerIpc({
 
   const parseDecodeOAuthStateArgs = (
     value: unknown,
-  ): import("../../../shared/types").DecodeOAuthStateArgs => {
+  ): DecodeOAuthStateArgs => {
     const record = requireRecord(value, "OAuth state decode request");
     if (typeof record.encodedState !== "string" || !record.encodedState) {
       throw new Error("OAuth state decode encodedState must be a non-empty string");
@@ -4587,7 +4611,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));
 
-  ipcMain.handle(IPC.prsReorderQueue, async (_event, arg: import("../../../shared/types").ReorderQueuePrsArgs): Promise<void> => {
+  ipcMain.handle(IPC.prsReorderQueue, async (_event, arg: ReorderQueuePrsArgs): Promise<void> => {
     await getCtx().prService.reorderQueuePrs(arg);
   });
 
@@ -5661,7 +5685,7 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.ctoSetLinearOAuthClient, async (_event, arg: import("../../../shared/types").CtoSetLinearOAuthClientArgs): Promise<LinearConnectionStatus> => {
+  ipcMain.handle(IPC.ctoSetLinearOAuthClient, async (_event, arg: CtoSetLinearOAuthClientArgs): Promise<LinearConnectionStatus> => {
     const ctx = getCtx();
     if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
     ctx.linearCredentialService.setOAuthClientCredentials({

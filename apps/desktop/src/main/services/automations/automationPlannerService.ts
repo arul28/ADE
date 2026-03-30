@@ -29,7 +29,33 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
-import { isWithinDir } from "../shared/utils";
+import { resolvePathWithinRoot } from "../shared/utils";
+
+function resolveAutomationCwdBase(
+  projectRoot: string,
+  laneService: ReturnType<typeof createLaneService>,
+  laneId: string | null | undefined,
+): string {
+  return laneId ? laneService.getLaneWorktreePath(laneId) : projectRoot;
+}
+
+function validateAutomationCwd(baseCwd: string, cwdRaw: string): string | null {
+  const candidate = path.isAbsolute(cwdRaw) ? cwdRaw : path.resolve(baseCwd, cwdRaw);
+  let resolved: string;
+  try {
+    resolved = resolvePathWithinRoot(baseCwd, candidate, { allowMissing: true });
+  } catch {
+    return "cwd must stay within the target lane worktree or project root.";
+  }
+  try {
+    if (!fs.statSync(resolved).isDirectory()) {
+      return "cwd must point to an existing directory within the target lane worktree or project root.";
+    }
+  } catch {
+    return "cwd must point to an existing directory within the target lane worktree or project root.";
+  }
+  return null;
+}
 
 function slugify(input: string): string {
   const s = input
@@ -486,6 +512,7 @@ function normalizeDraft(args: {
   draft: AutomationRuleDraft;
   suites: TestSuiteDefinition[];
   projectRoot: string;
+  laneService: ReturnType<typeof createLaneService>;
 }): {
   normalized: AutomationRuleDraftNormalized | null;
   issues: AutomationDraftIssue[];
@@ -642,28 +669,17 @@ function normalizeDraft(args: {
 
       const cwdRaw = safeTrim(action?.cwd);
       if (cwdRaw) {
-        if (path.isAbsolute(cwdRaw)) {
-          if (!isWithinDir(args.projectRoot, cwdRaw)) {
-            issues.push({
-              level: "error",
-              path: `actions[${idx}].cwd`,
-              message: "Absolute cwd must be within the project root."
-            });
-          } else {
-            next.cwd = cwdRaw;
-          }
+        const executionLaneId = safeTrim(args.draft.execution?.targetLaneId) || null;
+        const baseCwd = resolveAutomationCwdBase(args.projectRoot, args.laneService, executionLaneId);
+        const cwdIssue = validateAutomationCwd(baseCwd, cwdRaw);
+        if (cwdIssue) {
+          issues.push({
+            level: "error",
+            path: `actions[${idx}].cwd`,
+            message: cwdIssue
+          });
         } else {
-          // Require relative cwd to stay within the project root (runtime also enforces lane/base cwd bounds).
-          const resolved = path.resolve(args.projectRoot, cwdRaw);
-          if (!isWithinDir(args.projectRoot, resolved)) {
-            issues.push({
-              level: "error",
-              path: `actions[${idx}].cwd`,
-              message: "cwd must not escape the project root."
-            });
-          } else {
-            next.cwd = cwdRaw;
-          }
+          next.cwd = cwdRaw;
         }
       }
 
@@ -1036,7 +1052,7 @@ export function createAutomationPlannerService({
         ? { kind: "built-in", builtIn: { actions: [] } }
         : { kind: "agent-session", session: {} };
 
-      const normalizedRes = normalizeDraft({ draft, suites, projectRoot });
+      const normalizedRes = normalizeDraft({ draft, suites, projectRoot, laneService });
       const confidence = clampNumber(1 - normalizedRes.ambiguities.length * 0.18 - normalizedRes.issues.filter((i) => i.level === "warning").length * 0.08, 0, 1);
 
       return {
@@ -1052,7 +1068,7 @@ export function createAutomationPlannerService({
 
     validateDraft(req: AutomationValidateDraftRequest): AutomationValidateDraftResult {
       const suites = readSuites();
-      const { normalized, issues } = normalizeDraft({ draft: req.draft, suites, projectRoot });
+      const { normalized, issues } = normalizeDraft({ draft: req.draft, suites, projectRoot, laneService });
       const required = normalized ? requiredConfirmationsForDraft(normalized) : [];
       const missing = normalized ? missingConfirmations(required, req.confirmations) : [];
 
@@ -1143,7 +1159,7 @@ export function createAutomationPlannerService({
 
     simulate(req: AutomationSimulateRequest): AutomationSimulateResult {
       const suites = readSuites();
-      const { normalized, issues } = normalizeDraft({ draft: req.draft, suites, projectRoot });
+      const { normalized, issues } = normalizeDraft({ draft: req.draft, suites, projectRoot, laneService });
       if (!normalized) {
         return { normalized: null, actions: [], notes: [], issues };
       }

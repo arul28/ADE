@@ -69,20 +69,20 @@ export function WorkflowListSidebar({
     >
       <div className="space-y-3">
         {/* Connection status */}
-        <div className={cn(cardCls, "space-y-3 p-3")}>
+        <div className={cn(cardCls, "space-y-3 p-3.5")}>
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/40">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-fg/40">
                 Linear connection
               </div>
-              <div className="mt-1 text-xs text-fg/70">
+              <div className="mt-1.5 text-xs leading-relaxed text-fg/70">
                 {connection?.connected
                   ? `Connected${connection.viewerName ? ` as ${connection.viewerName}` : ""}.`
                   : "Not connected. Connect Linear in Settings, then come back here to manage workflows."}
               </div>
             </div>
             <span
-              className="rounded-full px-2 py-1 text-[9px] font-medium uppercase tracking-wider"
+              className="shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider"
               style={{
                 color: connection?.connected ? "#34D399" : "#F59E0B",
                 background: connection?.connected ? "rgba(52, 211, 153, 0.08)" : "rgba(245, 158, 11, 0.08)",
@@ -93,11 +93,11 @@ export function WorkflowListSidebar({
             </span>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" className="!text-[10px]" onClick={onNavigateSettings}>
+            <Button variant="outline" size="sm" className="!text-[11px]" onClick={onNavigateSettings}>
               {connection?.connected ? "Manage in Settings" : "Connect in Settings"}
             </Button>
-            <Button variant="ghost" size="sm" className="!h-7 !text-[10px]" onClick={onRefresh}>
-              <ArrowClockwise size={10} />
+            <Button variant="ghost" size="sm" className="!h-7 !text-[11px]" onClick={onRefresh} disabled={loading} aria-busy={loading}>
+              <ArrowClockwise size={11} aria-hidden="true" />
               Refresh
             </Button>
           </div>
@@ -105,12 +105,12 @@ export function WorkflowListSidebar({
 
         {/* Workflow list */}
         <div>
-          <div className="mb-2 flex items-center justify-between">
+          <div className="mb-2.5 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-medium text-muted-fg/40 uppercase tracking-wider">Workflows</span>
+              <span className="text-[11px] font-semibold text-muted-fg/40 uppercase tracking-[0.12em]">Workflows</span>
               {workflows.length > 0 && (
                 <span
-                  className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-semibold"
+                  className="inline-flex h-[1.125rem] min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold tabular-nums"
                   style={{ background: "rgba(56,189,248,0.12)", color: "#38BDF8" }}
                 >
                   {workflows.length}
@@ -118,11 +118,11 @@ export function WorkflowListSidebar({
               )}
             </div>
             <div className="flex items-center gap-1.5">
-              <Button variant="ghost" size="sm" className="!h-5 !px-1.5" onClick={onSyncNow} disabled={loading} title="Sync now">
-                <Lightning size={9} />
+              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onSyncNow} disabled={loading} title="Sync now" aria-label="Sync now" aria-busy={loading}>
+                <Lightning size={11} aria-hidden="true" />
               </Button>
-              <Button variant="ghost" size="sm" className="!h-5 !px-1.5" onClick={onRefresh} title="Refresh">
-                <ArrowClockwise size={9} />
+              <Button variant="ghost" size="sm" className="!h-6 !px-1.5" onClick={onRefresh} disabled={loading} title="Refresh" aria-label="Refresh" aria-busy={loading}>
+                <ArrowClockwise size={11} aria-hidden="true" />
               </Button>
             </div>
           </div>
@@ -131,7 +131,7 @@ export function WorkflowListSidebar({
           <button
             type="button"
             onClick={() => onAddPreset("employee_session")}
-            className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-medium transition-all duration-200 hover:bg-white/[0.04]"
+            className="mb-2.5 flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold transition-all duration-200 hover:bg-white/[0.04]"
             style={{
               border: "1px solid transparent",
               backgroundImage: "linear-gradient(rgba(12,10,20,0.95), rgba(12,10,20,0.95)), linear-gradient(135deg, rgba(56,189,248,0.5), rgba(167,139,250,0.5))",
@@ -140,11 +140,11 @@ export function WorkflowListSidebar({
               color: "#38BDF8",
             }}
           >
-            <Plus size={11} weight="bold" />
+            <Plus size={12} weight="bold" />
             New Workflow
           </button>
 
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             {workflows.map((workflow) => {
               const isSelected = selectedWorkflowId === workflow.id;
               const typeLabel = TARGET_TYPE_LABELS[workflow.target.type]?.displayName ?? workflow.target.type;
@@ -154,21 +154,29 @@ export function WorkflowListSidebar({
                   key={workflow.id}
                   type="button"
                   onClick={() => onSelectWorkflow(workflow.id)}
+                  aria-current={isSelected ? "true" : undefined}
+                  aria-pressed={workflow.enabled}
                   className={cn(
-                    "w-full rounded-lg px-3 py-2 text-left transition-all duration-200",
+                    "w-full rounded-lg px-3 py-2.5 text-left transition-all duration-200",
                     isSelected ? "bg-[rgba(167,139,250,0.08)]" : "hover:bg-white/[0.03]",
                   )}
                   style={isSelected ? { border: "1px solid rgba(167,139,250,0.15)" } : { border: "1px solid transparent" }}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="truncate text-xs font-medium text-fg">{workflow.name}</div>
+                    <div className="truncate text-xs font-medium text-fg">
+                      {workflow.name}
+                      <span className="sr-only">
+                        {` ${isSelected ? "selected" : "not selected"} ${workflow.enabled ? "enabled" : "disabled"}`}
+                      </span>
+                    </div>
                     <div
-                      className="h-1.5 w-1.5 rounded-full shrink-0"
+                      className="h-2 w-2 rounded-full shrink-0"
+                      aria-hidden="true"
                       style={{ background: workflow.enabled ? "#34D399" : "#6B7280" }}
                     />
                   </div>
-                  <div className="mt-0.5 text-[10px] text-muted-fg/35">{typeLabel}</div>
-                  <div className="mt-0.5 truncate text-[9px] text-muted-fg/25">{triggers}</div>
+                  <div className="mt-0.5 text-[11px] text-muted-fg/40">{typeLabel}</div>
+                  <div className="mt-0.5 truncate text-[10px] text-muted-fg/30 leading-snug">{triggers}</div>
                 </button>
               );
             })}
@@ -177,23 +185,23 @@ export function WorkflowListSidebar({
 
         {/* Add from template */}
         <div>
-          <div className="mb-2 text-[10px] font-medium text-muted-fg/40 uppercase tracking-wider">
+          <div className="mb-2.5 text-[11px] font-semibold text-muted-fg/40 uppercase tracking-[0.12em]">
             Add from template
           </div>
-          <div className="grid gap-1.5">
+          <div className="grid gap-2">
             {PRESET_TEMPLATES.map(({ type, label, color, description }) => (
               <button
                 key={type}
                 type="button"
                 onClick={() => onAddPreset(type)}
-                className="rounded-lg px-3 py-2 text-left transition-all duration-200 hover:bg-white/[0.04]"
+                className="rounded-lg px-3 py-2.5 text-left transition-all duration-200 hover:bg-white/[0.04] hover:translate-x-[1px]"
                 style={{ border: `1px solid ${color}15`, background: `${color}06` }}
               >
                 <div className="flex items-center gap-2">
-                  <Plus size={9} style={{ color }} />
-                  <span className="text-[11px] font-medium" style={{ color }}>{label}</span>
+                  <Plus size={11} style={{ color }} />
+                  <span className="text-xs font-semibold" style={{ color }}>{label}</span>
                 </div>
-                <div className="mt-0.5 text-[9px] text-muted-fg/30 leading-snug">{description}</div>
+                <div className="mt-1 text-[11px] text-muted-fg/35 leading-snug">{description}</div>
               </button>
             ))}
           </div>

@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import type {
   FileChangeEvent,
@@ -24,7 +23,15 @@ import type {
 } from "../../../shared/types";
 import type { createLaneService } from "../lanes/laneService";
 import { runGit } from "../git/git";
-import { hasNullByte, isWithinDir, normalizeRelative } from "../shared/utils";
+import {
+  hasNullByte,
+  normalizeRelative,
+  resolvePathWithinRoot,
+  secureMkdirWithinRoot,
+  secureRenameWithinRoot,
+  secureWriteFileWithinRoot,
+  secureWriteTextAtomicWithinRoot,
+} from "../shared/utils";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 
@@ -122,11 +129,21 @@ async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; time
   });
 }
 
-function ensureSafePath(rootPath: string, relPath: string): { absPath: string; normalizedRel: string } {
+function ensureSafePath(
+  rootPath: string,
+  relPath: string,
+  opts: { allowMissing?: boolean } = {},
+): { absPath: string; normalizedRel: string } {
   const normalizedRel = normalizeRelative(relPath);
-  const absPath = path.normalize(path.join(rootPath, normalizedRel));
-  if (!isWithinDir(rootPath, absPath)) {
-    throw new Error("Refusing to access path outside workspace");
+  const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
+  let absPath: string;
+  try {
+    absPath = resolvePathWithinRoot(rootPath, joinedPath, { allowMissing: opts.allowMissing });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Path escapes root") {
+      throw new Error("Refusing to access path outside workspace");
+    }
+    throw error;
   }
   if (containsDotGit(absPath)) {
     throw new Error("Refusing to access .git internals");
@@ -134,29 +151,17 @@ function ensureSafePath(rootPath: string, relPath: string): { absPath: string; n
   return { absPath, normalizedRel };
 }
 
-function isWorkspaceRootRelativePath(normalizedRel: string): boolean {
-  return normalizedRel === "" || normalizedRel === ".";
+function assertMutablePathAllowed(rootPath: string, relPath: string): string {
+  const normalizedRel = normalizeRelative(relPath);
+  const candidatePath = path.join(rootPath, normalizedRel);
+  if (containsDotGit(candidatePath)) {
+    throw new Error("Refusing to access .git internals");
+  }
+  return normalizedRel;
 }
 
-function writeTextAtomicAbs(absPath: string, text: string): void {
-  fs.mkdirSync(path.dirname(absPath), { recursive: true });
-  const tmp = `${absPath}.tmp-${randomUUID()}`;
-  fs.writeFileSync(tmp, text, "utf8");
-  try {
-    fs.renameSync(tmp, absPath);
-  } catch (err: any) {
-    try {
-      fs.copyFileSync(tmp, absPath);
-      fs.unlinkSync(tmp);
-    } catch {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        // ignore
-      }
-      throw err;
-    }
-  }
+function isWorkspaceRootRelativePath(normalizedRel: string): boolean {
+  return normalizedRel === "" || normalizedRel === ".";
 }
 
 function inferDirectoryStatus(statusMap: Map<string, FileTreeChangeStatus>, relPath: string): FileTreeChangeStatus {
@@ -401,8 +406,8 @@ export function createFileService({
   return {
     writeTextAtomic({ laneId, relPath, text }: { laneId: string; relPath: string; text: string }): void {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-      const { absPath } = ensureSafePath(worktreePath, relPath);
-      writeTextAtomicAbs(absPath, text);
+      assertMutablePathAllowed(worktreePath, relPath);
+      secureWriteTextAtomicWithinRoot(worktreePath, relPath, text);
       invalidateGitStatusCache(worktreePath);
       if (onLaneWorktreeMutation) {
         onLaneWorktreeMutation({
@@ -455,8 +460,8 @@ export function createFileService({
 
     writeWorkspaceText(args: FilesWriteTextArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
-      writeTextAtomicAbs(absPath, args.text);
+      const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
+      secureWriteTextAtomicWithinRoot(workspace.rootPath, args.path, args.text);
       invalidateGitStatusCache(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
@@ -473,10 +478,10 @@ export function createFileService({
 
     createFile(args: FilesCreateFileArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
-      fs.mkdirSync(path.dirname(absPath), { recursive: true });
+      const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
+      const { absPath } = ensureSafePath(workspace.rootPath, args.path, { allowMissing: true });
       if (!fs.existsSync(absPath)) {
-        fs.writeFileSync(absPath, args.content ?? "", "utf8");
+        secureWriteFileWithinRoot(workspace.rootPath, args.path, args.content ?? "", "utf8");
       }
       invalidateGitStatusCache(workspace.rootPath);
       indexService.onFileChanged({
@@ -491,8 +496,8 @@ export function createFileService({
 
     createDirectory(args: FilesCreateDirectoryArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      const { absPath } = ensureSafePath(workspace.rootPath, args.path);
-      fs.mkdirSync(absPath, { recursive: true });
+      assertMutablePathAllowed(workspace.rootPath, args.path);
+      secureMkdirWithinRoot(workspace.rootPath, args.path);
       invalidateGitStatusCache(workspace.rootPath);
       indexService.invalidateWorkspace(args.workspaceId);
       emitLaneMutation(args.workspaceId, "directory_create");
@@ -500,10 +505,9 @@ export function createFileService({
 
     rename(args: FilesRenameArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      const { absPath: oldAbs, normalizedRel: oldRel } = ensureSafePath(workspace.rootPath, args.oldPath);
-      const { absPath: newAbs, normalizedRel: newRel } = ensureSafePath(workspace.rootPath, args.newPath);
-      fs.mkdirSync(path.dirname(newAbs), { recursive: true });
-      fs.renameSync(oldAbs, newAbs);
+      const oldRel = assertMutablePathAllowed(workspace.rootPath, args.oldPath);
+      const newRel = assertMutablePathAllowed(workspace.rootPath, args.newPath);
+      secureRenameWithinRoot(workspace.rootPath, args.oldPath, args.newPath);
       invalidateGitStatusCache(workspace.rootPath);
       if (oldRel === ".gitignore" || newRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
@@ -521,7 +525,7 @@ export function createFileService({
 
     deletePath(args: FilesDeleteArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path, { allowMissing: true });
       if (isWorkspaceRootRelativePath(normalizedRel)) {
         throw new Error("Refusing to delete workspace root.");
       }

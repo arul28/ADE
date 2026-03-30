@@ -44,7 +44,7 @@ import {
   TERMINAL_STEP_STATUSES,
 } from "./orchestratorContext";
 import { readMissionStateDocument, updateMissionStateDocument } from "./missionStateDoc";
-import { isWithinDir } from "../shared/utils";
+import { escapeRegExp, resolvePathWithinRoot } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { registerTeamMember } from "./teamRuntimeState";
 import type { createMemoryService } from "../memory/memoryService";
@@ -675,6 +675,85 @@ export function createCoordinatorToolSet(deps: {
     : null;
   const resolvedProjectRoot = path.resolve(projectRoot);
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const resolvedWorkspaceRootReal = fs.existsSync(resolvedWorkspaceRoot)
+    ? fs.realpathSync(resolvedWorkspaceRoot)
+    : resolvedWorkspaceRoot;
+  const resolveWorkspacePath = (candidatePath: string, allowMissing: boolean = false): string | null => {
+    try {
+      return resolvePathWithinRoot(resolvedWorkspaceRoot, candidatePath, { allowMissing });
+    } catch {
+      return null;
+    }
+  };
+  const getFsErrorCode = (error: unknown): string | null => {
+    if (!error || typeof error !== "object" || !("code" in error)) return null;
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" ? code : null;
+  };
+  const formatWorkspaceReadError = (kind: "file" | "step output", reference: string, error: unknown): string => {
+    const code = getFsErrorCode(error);
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return `file not found: ${reference}`;
+    }
+    if (code === "EACCES" || code === "EPERM") {
+      return `permission denied: ${reference}`;
+    }
+    return `failed to read ${kind}: ${reference}`;
+  };
+  const MAX_CONTENT_SEARCH_PATTERN_LENGTH = 200;
+  const filenamePatternToRegExp = (pattern: string): RegExp => {
+    const normalized = pattern.replace(/\\/g, "/").trim();
+    if (!normalized.length) return /^$/i;
+    let source = "^";
+    for (let index = 0; index < normalized.length; index += 1) {
+      const char = normalized[index]!;
+      if (char === "*") {
+        const next = normalized[index + 1];
+        if (next === "*") {
+          if (normalized[index + 2] === "/") {
+            source += "(?:.*/)?";
+            index += 2;
+          } else {
+            source += ".*";
+            index += 1;
+          }
+        } else {
+          source += "[^/]*";
+        }
+        continue;
+      }
+      source += escapeRegExp(char);
+    }
+    source += "$";
+    return new RegExp(source, "i");
+  };
+  const isUnsafeContentSearchPattern = (pattern: string): boolean => {
+    if (pattern.length > MAX_CONTENT_SEARCH_PATTERN_LENGTH) return true;
+    return /\\[1-9]/.test(pattern)
+      || /\(\?[:!=<]/.test(pattern)
+      || /\((?:[^()\\]|\\.)*[+*{](?:[^()\\]|\\.)*\)[+*{]/.test(pattern)
+      || /(?:^|[^\\])(?:\*|\+|\{[^}]+\})(?:\s*)(?:\*|\+|\{[^}]+\})/.test(pattern);
+  };
+  const compileContentSearchRegex = (pattern: string, explicitRegexMode: boolean = false): RegExp => {
+    const normalized = pattern.trim();
+    if (!normalized.length) {
+      throw new Error("pattern is required");
+    }
+    if (!explicitRegexMode) {
+      return new RegExp(escapeRegExp(normalized), "i");
+    }
+    try {
+      if (isUnsafeContentSearchPattern(normalized)) {
+        throw new Error("Unsafe regular expression pattern.");
+      }
+      return new RegExp(normalized, "i");
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unsafe regular expression pattern.") {
+        throw error;
+      }
+      throw new Error(`Invalid regular expression pattern: ${normalized}`);
+    }
+  };
 
   const normalizeLaneId = (value: string | null | undefined): string | null => {
     if (typeof value !== "string") return null;
@@ -6030,34 +6109,32 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         if (planningReadBlockReason) {
           return { ok: false, error: planningReadBlockReason };
         }
-        const fullPath = path.resolve(resolvedWorkspaceRoot, filePath);
-        // Security: ensure path is within mission workspace root
-        if (!isWithinDir(resolvedWorkspaceRoot, fullPath)) {
+        const fullPath = resolveWorkspacePath(filePath, true);
+        if (!fullPath) {
           return { ok: false, error: "Path is outside mission workspace root" };
         }
-        let stat: fs.Stats;
         try {
-          stat = fs.statSync(fullPath);
-        } catch {
-          return { ok: false, error: `File not found: ${filePath}` };
+          const stat = fs.statSync(fullPath);
+          if (stat.isDirectory()) {
+            const entries = fs.readdirSync(fullPath).slice(0, 100);
+            return { ok: true, type: "directory", entries };
+          }
+          const content = fs.readFileSync(fullPath, "utf-8");
+          const lines = content.split("\n");
+          const limit = maxLines ?? 200;
+          const truncated = lines.length > limit;
+          const result = truncated ? lines.slice(0, limit).join("\n") : content;
+          return {
+            ok: true,
+            type: "file",
+            filePath,
+            content: result,
+            totalLines: lines.length,
+            truncated,
+          };
+        } catch (error) {
+          return { ok: false, error: formatWorkspaceReadError("file", filePath, error) };
         }
-        if (stat.isDirectory()) {
-          const entries = fs.readdirSync(fullPath).slice(0, 100);
-          return { ok: true, type: "directory", entries };
-        }
-        const content = fs.readFileSync(fullPath, "utf-8");
-        const lines = content.split("\n");
-        const limit = maxLines ?? 200;
-        const truncated = lines.length > limit;
-        const result = truncated ? lines.slice(0, limit).join("\n") : content;
-        return {
-          ok: true,
-          type: "file",
-          filePath,
-          content: result,
-          totalLines: lines.length,
-          truncated,
-        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { ok: false, error: msg };
@@ -6074,17 +6151,16 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     execute: async ({ stepKey }) => {
       try {
         const sanitized = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const filePath = path.resolve(resolvedWorkspaceRoot, `.ade/step-output-${sanitized}.md`);
-        if (!isWithinDir(resolvedWorkspaceRoot, filePath)) {
+        const filePath = resolveWorkspacePath(`.ade/step-output-${sanitized}.md`, true);
+        if (!filePath) {
           return { ok: false, error: "Path is outside mission workspace root" };
         }
-        let content: string;
         try {
-          content = fs.readFileSync(filePath, "utf-8");
-        } catch {
-          return { ok: false, error: `Step output file not found for step: ${stepKey}` };
+          const content = fs.readFileSync(filePath, "utf-8");
+          return { ok: true, stepKey, content };
+        } catch (error) {
+          return { ok: false, error: formatWorkspaceReadError("step output", stepKey, error) };
         }
-        return { ok: true, stepKey, content };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { ok: false, error: msg };
@@ -6096,11 +6172,12 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     description:
       "Search project files by name pattern or content. Use to find relevant code or files.",
     inputSchema: z.object({
-      pattern: z.string().describe("Search pattern — a filename glob (e.g. '**/*.ts') or content regex"),
+      pattern: z.string().describe("Search pattern — a filename glob (e.g. '**/*.ts') or literal content text"),
       searchType: z.enum(["filename", "content"]).default("content").describe("Whether to search file names or file content"),
       maxResults: z.number().optional().describe("Maximum results to return (default: 20)"),
+      explicitRegexMode: z.boolean().default(false).describe("Treat content patterns as regular expressions instead of literal text."),
     }),
-    execute: async ({ pattern, searchType, maxResults }) => {
+    execute: async ({ pattern, searchType, maxResults, explicitRegexMode }) => {
       try {
         const g = graph();
         const planningReadBlockReason = getPlanningRepoReadBlockReason(g);
@@ -6111,65 +6188,81 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         if (searchType === "filename") {
           // Simple recursive file listing with glob matching
           const results: string[] = [];
+          const filenameRegex = filenamePatternToRegExp(pattern);
+          const visited = new Set<string>();
           const walkDir = (dir: string, depth = 0) => {
             if (depth > 6 || results.length >= limit) return;
             try {
+              const realDir = fs.realpathSync(dir);
+              if (visited.has(realDir)) return;
+              visited.add(realDir);
               const entries = fs.readdirSync(dir, { withFileTypes: true });
               for (const entry of entries) {
                 if (results.length >= limit) break;
                 if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-                const rel = path.relative(workspaceRoot, path.join(dir, entry.name));
-                if (entry.isDirectory()) {
-                  walkDir(path.join(dir, entry.name), depth + 1);
-                } else if (new RegExp(pattern.replace(/\*/g, ".*")).test(entry.name)) {
-                  results.push(rel);
+                const fullPath = resolveWorkspacePath(path.join(dir, entry.name));
+                if (!fullPath) continue;
+                const rel = path.relative(resolvedWorkspaceRootReal, fullPath);
+                try {
+                  if (fs.statSync(fullPath).isDirectory()) {
+                    walkDir(fullPath, depth + 1);
+                  } else if (filenameRegex.test(rel.replace(/\\/g, "/"))) {
+                    results.push(rel);
+                  }
+                } catch {
+                  // Skip entries whose stat fails (broken symlinks, etc.)
                 }
               }
             } catch {
               // Skip unreadable dirs
             }
           };
-          walkDir(workspaceRoot);
+          walkDir(resolvedWorkspaceRoot);
           return { ok: true, searchType, pattern, results, total: results.length };
         }
         // Content search using a simple line-by-line grep
         const results: Array<{ file: string; line: number; text: string }> = [];
-        const regex = new RegExp(pattern, "i");
+        const regex = compileContentSearchRegex(pattern, explicitRegexMode);
+        const visited = new Set<string>();
         const walkDir = (dir: string, depth = 0) => {
           if (depth > 6 || results.length >= limit) return;
           try {
+            const realDir = fs.realpathSync(dir);
+            if (visited.has(realDir)) return;
+            visited.add(realDir);
             const entries = fs.readdirSync(dir, { withFileTypes: true });
             for (const entry of entries) {
               if (results.length >= limit) break;
               if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "dist") continue;
-              const fullPath = path.join(dir, entry.name);
-              if (entry.isDirectory()) {
-                walkDir(fullPath, depth + 1);
-              } else {
-                try {
-                  const stat = fs.statSync(fullPath);
+              const fullPath = resolveWorkspacePath(path.join(dir, entry.name));
+              if (!fullPath) continue;
+              try {
+                const stat = fs.statSync(fullPath);
+                if (stat.isDirectory()) {
+                  walkDir(fullPath, depth + 1);
+                } else {
                   if (stat.size > 500_000) continue; // Skip large files
                   const content = fs.readFileSync(fullPath, "utf-8");
                   const lines = content.split("\n");
                   for (let i = 0; i < lines.length && results.length < limit; i++) {
                     if (regex.test(lines[i]!)) {
                       results.push({
-                        file: path.relative(workspaceRoot, fullPath),
+                        file: path.relative(resolvedWorkspaceRootReal, fullPath),
                         line: i + 1,
                         text: lines[i]!.slice(0, 200),
                       });
                     }
                   }
-                } catch {
-                  // Skip unreadable files
                 }
+              } catch {
+                // Skip entries whose stat/read fails (broken symlinks, etc.)
               }
             }
           } catch {
             // Skip unreadable dirs
           }
         };
-        walkDir(workspaceRoot);
+        walkDir(resolvedWorkspaceRoot);
         return { ok: true, searchType, pattern, results, total: results.length };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -6188,7 +6281,8 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         const keyFiles = ["package.json", "tsconfig.json", "README.md", "CLAUDE.md"];
         const docs: Record<string, string> = {};
         for (const f of keyFiles) {
-          const fp = path.resolve(workspaceRoot, f);
+          const fp = resolveWorkspacePath(f, true);
+          if (!fp) continue;
           try {
             const content = fs.readFileSync(fp, "utf-8");
             docs[f] = content.slice(0, 4_000);
@@ -6205,9 +6299,12 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         } catch {
           // Ignore
         }
+        const workspaceRootLabel = "./";
         return {
           ok: true,
-          projectRoot: workspaceRoot,
+          projectRoot: workspaceRootLabel,
+          projectRootRedacted: true,
+          rootLabel: workspaceRootLabel,
           topLevelEntries: topLevel,
           docs,
         };

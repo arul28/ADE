@@ -101,7 +101,7 @@ import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
-import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso } from "../shared/utils";
+import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 
 type PullRequestRow = {
   id: string;
@@ -261,8 +261,10 @@ const EMPTY_CONFLICT_EXCERPTS: ConflictExcerpts = {
 
 function readConflictFilePreviewFromWorktree(worktreePath: string, filePath: string): IntegrationProposalStep["conflictingFiles"][number] {
   const root = path.resolve(worktreePath);
-  const absPath = path.resolve(root, filePath);
-  if (absPath !== root && !absPath.startsWith(`${root}${path.sep}`)) {
+  let absPath: string;
+  try {
+    absPath = resolvePathWithinRoot(root, filePath);
+  } catch {
     return { path: filePath, ...EMPTY_CONFLICT_EXCERPTS };
   }
 
@@ -2488,8 +2490,10 @@ export function createPrService({
     for (const rawPath of filePaths) {
       const filePath = rawPath.trim();
       if (!filePath) continue;
-      const absPath = path.resolve(worktreeRoot, filePath);
-      if (absPath !== worktreeRoot && !absPath.startsWith(`${worktreeRoot}${path.sep}`)) {
+      let absPath: string;
+      try {
+        absPath = resolvePathWithinRoot(worktreeRoot, filePath);
+      } catch {
         continue;
       }
       try {

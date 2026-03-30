@@ -23,7 +23,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
-import { isWithinDir, fileSizeOrZero, nowIso } from "../shared/utils";
+import { isWithinDir, fileSizeOrZero, nowIso, resolvePathWithinRoot } from "../shared/utils";
 
 type ManagedTerminationReason = "stopped" | "killed" | "crashed" | "restart";
 
@@ -758,7 +758,13 @@ export function createProcessService({
 
     const laneRoot = laneService.getLaneWorktreePath(laneId);
     const configuredCwd = opts.overlay?.cwd?.trim() ? opts.overlay.cwd : definition.cwd;
-    const cwd = path.isAbsolute(configuredCwd) ? configuredCwd : path.join(laneRoot, configuredCwd);
+    const cwdCandidate = path.isAbsolute(configuredCwd) ? configuredCwd : path.join(laneRoot, configuredCwd);
+    let cwd: string;
+    try {
+      cwd = resolvePathWithinRoot(laneRoot, cwdCandidate);
+    } catch {
+      throw new Error(`Process '${definition.id}' cwd escapes lane workspace`);
+    }
     const env = {
       ...process.env,
       // Inject color-friendly defaults for processes running without a PTY.

@@ -47,7 +47,7 @@ export function TimelineEntry({
   };
 
   return (
-    <div className="bg-surface-recessed border border-border/10 px-2.5 py-2">
+    <div className="rounded-md bg-surface-recessed border border-border/10 px-3 py-2.5">
       <div className="flex items-start gap-2">
         {/* Left: icon or expand toggle */}
         {hasChildren ? (
@@ -56,38 +56,38 @@ export function TimelineEntry({
             onClick={() => setExpanded(!expanded)}
             className="mt-0.5 shrink-0 text-muted-fg/50 hover:text-fg transition-colors"
           >
-            {expanded ? <CaretDown size={10} /> : <CaretRight size={10} />}
+            {expanded ? <CaretDown size={11} /> : <CaretRight size={11} />}
           </button>
         ) : Icon ? (
-          <Icon size={10} weight="bold" className="mt-0.5 shrink-0 text-muted-fg/40" />
+          <Icon size={11} weight="bold" className="mt-0.5 shrink-0 text-muted-fg/40" />
         ) : (
-          <span className="w-2.5 shrink-0" />
+          <span className="w-3 shrink-0" />
         )}
 
         {/* Content */}
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-[10px] text-muted-fg truncate">
+            <span className="text-[11px] font-medium text-muted-fg truncate">
               {title}
             </span>
             <div className="flex items-center gap-2 shrink-0">
               {status && (
                 <Chip
                   className={cn(
-                    "text-[8px]",
+                    "!text-[9px]",
                     variantClasses[statusVariant ?? "muted"],
                   )}
                 >
                   {status}
                 </Chip>
               )}
-              <span className="font-mono text-[9px] text-muted-fg/40">
+              <span className="text-[10px] text-muted-fg/45 tabular-nums">
                 {formatTimestamp(timestamp)}
               </span>
             </div>
           </div>
           {subtitle && (
-            <div className="font-mono text-[9px] text-muted-fg/50 mt-0.5 line-clamp-2">
+            <div className="text-[10px] text-muted-fg/50 mt-0.5 line-clamp-2">
               {subtitle}
             </div>
           )}
@@ -96,7 +96,7 @@ export function TimelineEntry({
 
       {/* Expandable content */}
       {hasChildren && expanded && (
-        <div className="ml-4 mt-2 pl-2 border-l border-border/20">
+        <div className="ml-5 mt-2.5 pl-2.5 border-l border-border/20">
           {children}
         </div>
       )}

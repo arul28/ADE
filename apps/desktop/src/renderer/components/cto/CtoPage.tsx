@@ -701,7 +701,7 @@ export function CtoPage() {
               </div>
 
               {/* Center: Stats as compact chips */}
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-2">
                 {[
                   {
                     label: selectedWorker ? "Role" : "Focus",
@@ -726,20 +726,20 @@ export function CtoPage() {
                 ].map((chip) => (
                   <div key={chip.label} className={statChipCls}>
                     <span className="text-muted-fg/46">{chip.label}</span>
-                    <span style={{ color: chip.color }}>{chip.value}</span>
+                    <span className="font-semibold" style={{ color: chip.color }}>{chip.value}</span>
                   </div>
                 ))}
               </div>
 
               {/* Right: Bridge/brain status */}
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2.5">
                 {[
                   { label: bridgeSummary, tone: openclawStatus?.state === "connected" ? "#34D399" : "#38BDF8" },
                   { label: currentBrainSummary || "Brain not set", tone: selectedWorker ? "#60A5FA" : "#38BDF8" },
                 ].map((item) => (
                   <div
                     key={item.label}
-                    className="rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.1em]"
+                    className="rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]"
                     style={{
                       color: item.tone,
                       borderColor: `${item.tone}22`,
@@ -753,8 +753,8 @@ export function CtoPage() {
             </div>
 
             {/* Tab bar */}
-            <div className="px-4 pb-3 pt-1">
-              <div className={cn(shellTabBarCls, "w-full flex-wrap !p-1 !gap-0.5")}>
+            <div className="px-4 pb-3 pt-1.5">
+              <div className={cn(shellTabBarCls, "w-full flex-wrap !p-1.5 !gap-1")}>
                 {TABS.map(({ id, label, icon: Icon, color }) => {
                   const active = activeTab === id;
                   return (
@@ -763,18 +763,18 @@ export function CtoPage() {
                       type="button"
                       onClick={() => setActiveTab(id)}
                       className={cn(
-                        "flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-all duration-200",
-                        active ? "text-fg" : "text-muted-fg/44 hover:text-muted-fg/68",
+                        "flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all duration-200",
+                        active ? "text-fg" : "text-muted-fg/44 hover:text-muted-fg/68 hover:bg-white/[0.03]",
                       )}
                       style={active
                         ? {
                             background: `${color}12`,
                             border: `1px solid ${color}24`,
-                            boxShadow: "0 8px 20px rgba(0,0,0,0.16)",
+                            boxShadow: `0 8px 20px rgba(0,0,0,0.16), 0 0 12px ${color}08`,
                           }
                         : { border: "1px solid transparent" }}
                     >
-                      <Icon size={12} weight={active ? "fill" : "regular"} style={active ? { color } : undefined} />
+                      <Icon size={14} weight={active ? "fill" : "regular"} style={active ? { color } : undefined} />
                       {label}
                     </button>
                   );
@@ -788,10 +788,10 @@ export function CtoPage() {
         <div className="flex-1 min-h-0 overflow-hidden">
           {/* Chat tab */}
           <div className={cn("h-full min-h-0 flex-col p-4 pt-0", activeTab === "chat" ? "flex" : "hidden")}>
-            {loading && <div className="px-1 py-2 font-mono text-[10px] text-muted-fg/55" data-testid="cto-loading">Connecting persistent session...</div>}
-            {error && <div className="px-1 py-2 font-mono text-[10px] text-error" data-testid="cto-error">{error}</div>}
+            {loading && <div className="px-1 py-2 text-xs text-muted-fg/55" data-testid="cto-loading">Connecting persistent session...</div>}
+            {error && <div className="px-1 py-2 text-xs text-error" data-testid="cto-error">{error}</div>}
             {!laneId && (
-              <div className="px-1 py-2 font-mono text-[10px] text-muted-fg/55" data-testid="cto-no-lane">
+              <div className="px-1 py-2 text-xs text-muted-fg/55" data-testid="cto-no-lane">
                 Create a lane to start the persistent CTO session.
               </div>
             )}
@@ -895,7 +895,7 @@ export function CtoPage() {
                           { label: "Paused", value: String(teamStats.paused) },
                         ].map((item) => (
                           <div key={item.label} className={cn(cardCls, "p-4")}>
-                            <div className="font-mono text-[10px] uppercase tracking-wide text-muted-fg/50">{item.label}</div>
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-fg/45">{item.label}</div>
                             <div className="mt-2 font-sans text-2xl font-bold text-fg">{item.value}</div>
                           </div>
                         ))}
@@ -946,7 +946,7 @@ export function CtoPage() {
           )}
 
           {/* Linear tab */}
-          {activeTab === "linear" && <LinearSyncPanel />}
+          {activeTab === "linear" && <LinearSyncPanel lanes={lanes} selectedLaneId={laneId} />}
 
           {/* Settings tab */}
           {activeTab === "settings" && (

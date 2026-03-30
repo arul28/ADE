@@ -409,7 +409,7 @@ export async function launchPrIssueResolutionChat(
     model: descriptor.id,
     modelId: descriptor.id,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    unifiedPermissionMode: mapPermissionMode(args.permissionMode) as import("../../../shared/types").AgentChatUnifiedPermissionMode,
+    permissionMode: mapPermissionMode(args.permissionMode),
     surface: "work",
     sessionProfile: "workflow",
   });

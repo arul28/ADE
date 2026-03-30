@@ -359,6 +359,8 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     fs.writeFileSync(path.join(workspaceRoot, "notes.txt"), "initial", "utf8");
     fs.writeFileSync(path.join(workspaceRoot, ".git", "config"), "[core]\n", "utf8");
     const artifactPath = path.join(projectRoot, ".ade", "artifacts", "computer-use", "shot.png");
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-artifact-outside-"));
+    const outsideArtifact = path.join(outsideDir, "outside-artifact.txt");
     fs.writeFileSync(artifactPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]));
 
     const host = createSyncHostService({
@@ -459,6 +461,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     activeDisposers.push(async () => {
       await host.dispose();
       brainDb.close();
+      fs.rmSync(outsideDir, { recursive: true, force: true });
     });
 
     const client = await connectClient({
@@ -503,6 +506,25 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(artifactPayload.result.encoding).toBe("base64");
     expect(Buffer.from(artifactPayload.result.content, "base64").length).toBeGreaterThan(0);
 
+    const artifactLinkPath = path.join(projectRoot, ".ade", "artifacts", "linked-secret.txt");
+    fs.writeFileSync(outsideArtifact, "secret", "utf8");
+    fs.symlinkSync(outsideArtifact, artifactLinkPath);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "file_request",
+      requestId: "artifact-link-read",
+      payload: {
+        action: "readArtifact",
+        args: {
+          path: path.relative(projectRoot, artifactLinkPath),
+        },
+      },
+    }));
+    const linkedArtifactResponse = await client.queue.next("file_response");
+    const linkedArtifactPayload = linkedArtifactResponse.payload as { ok: boolean; error?: { message: string } };
+    expect(linkedArtifactPayload.ok).toBe(false);
+    expect(linkedArtifactPayload.error?.message).toMatch(/\.ade\/artifacts/i);
+
     client.ws.send(encodeSyncEnvelope({
       type: "file_request",
       requestId: "git-blocked",
@@ -518,6 +540,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const blockedPayload = blockedResponse.payload as { ok: boolean; error?: { message: string } };
     expect(blockedPayload.ok).toBe(false);
     expect(blockedPayload.error?.message).toMatch(/\.git/i);
+
+    fs.rmSync(artifactLinkPath, { force: true });
+    fs.rmSync(outsideArtifact, { force: true });
   });
 
   it("streams terminal snapshots, live output, exit events, and supports the quick-run seed command", async () => {

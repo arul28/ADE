@@ -609,10 +609,14 @@ export type CtoSaveLinearWorkflowDefinitionsArgs = {
   actor?: string;
 };
 
+export type LinearSyncResolutionAction = "approve" | "reject" | "retry" | "complete" | "resume";
+
 export type CtoResolveLinearWorkflowRunArgs = {
   runId: string;
-  action: "approve" | "reject" | "retry" | "complete";
+  action: LinearSyncResolutionAction;
   note?: string;
+  employeeOverride?: string;
+  laneId?: string;
 };
 
 export type CtoListLinearWorkflowRunsArgs = {
@@ -704,9 +708,10 @@ export type CtoGetLinearWorkflowRunDetailArgs = {
 
 export type CtoResolveLinearSyncQueueItemArgs = {
   queueItemId: string;
-  action: "approve" | "reject" | "retry" | "complete";
+  action: LinearSyncResolutionAction;
   note?: string;
   employeeOverride?: string;
+  laneId?: string;
 };
 
 export type LinearSyncDashboard = {

@@ -13,7 +13,7 @@ import {
   type ModelMessage,
   type UserContent,
 } from "ai";
-import { query as claudeQuery, unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
+import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 import type { Query as ClaudeSDKQuery, SDKMessage, SDKUserMessage, Options as ClaudeSDKOptions, PermissionResult as ClaudePermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
 type ClaudeV2Session = {
@@ -39,7 +39,7 @@ import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
-import { nowIso, fileSizeOrZero } from "../shared/utils";
+import { fileSizeOrZero, isEnoentError, nowIso, readFileWithinRootSecure, resolvePathWithinRoot } from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import {
   createDefaultComputerUsePolicy,
@@ -70,6 +70,8 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
+  AgentChatSlashCommand,
+  AgentChatSlashCommandsArgs,
   AgentChatSubagentListArgs,
   AgentChatSubagentSnapshot,
   AgentChatSurface,
@@ -81,6 +83,7 @@ import type {
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
   ComputerUsePolicy,
+  ThinkingLevel,
   TerminalSessionStatus,
   TerminalToolType,
   CtoCapabilityMode,
@@ -102,7 +105,7 @@ import { createUniversalToolSet, type PermissionMode } from "../ai/tools/univers
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools } from "../ai/tools/ctoOperatorTools";
-import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "../ai/tools/systemPrompt";
+import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   getProviderRuntimeHealth,
@@ -119,6 +122,8 @@ import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearDispatcherService } from "../cto/linearDispatcherService";
+import type { LinearClient } from "../cto/linearClient";
+import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createProofObserver } from "../computerUse/proofObserver";
@@ -138,12 +143,6 @@ type JsonRpcEnvelope = {
     message?: string;
     data?: unknown;
   };
-};
-
-type ClaudeToolPermissionResult = {
-  behavior: "allow" | "deny";
-  message?: string;
-  interrupt?: boolean;
 };
 
 type PersistedClaudeMessage = {
@@ -240,7 +239,7 @@ type CodexRuntime = {
 type ClaudeRuntime = {
   kind: "claude";
   sdkSessionId: string | null;
-  activeQuery: import("@anthropic-ai/claude-agent-sdk").Query | null;
+  activeQuery: ClaudeSDKQuery | null;
   v2Session: ClaudeV2Session | null;
   /** Single stream generator kept alive across turns (never closed by for-await). */
   v2StreamGen: AsyncGenerator<any, void> | null;
@@ -316,22 +315,25 @@ function codexNotificationDedupKey(payload: JsonRpcEnvelope): string | null {
   const method = typeof payload.method === "string" ? payload.method : "";
   const params = asRecord(payload.params) ?? {};
 
-  if (method === "item/started" || method === "codex/event/item_started") {
-    const itemId = readCodexNotificationItemId(params);
-    return itemId ? `item_started:${itemId}` : null;
+  switch (method) {
+    case "item/started":
+    case "codex/event/item_started": {
+      const itemId = readCodexNotificationItemId(params);
+      return itemId ? `item_started:${itemId}` : null;
+    }
+    case "item/completed":
+    case "codex/event/item_completed": {
+      const itemId = readCodexNotificationItemId(params);
+      return itemId ? `item_completed:${itemId}` : null;
+    }
+    case "turn/aborted":
+    case "codex/event/turn_aborted": {
+      const turnId = extractCodexTurnId(params);
+      return turnId ? `turn_aborted:${turnId}` : null;
+    }
+    default:
+      return null;
   }
-
-  if (method === "item/completed" || method === "codex/event/item_completed") {
-    const itemId = readCodexNotificationItemId(params);
-    return itemId ? `item_completed:${itemId}` : null;
-  }
-
-  if (method === "turn/aborted" || method === "codex/event/turn_aborted") {
-    const turnId = extractCodexTurnId(params);
-    return turnId ? `turn_aborted:${turnId}` : null;
-  }
-
-  return null;
 }
 
 function shouldSkipDuplicateCodexNotification(runtime: CodexRuntime, payload: JsonRpcEnvelope): boolean {
@@ -553,9 +555,15 @@ type PreparedSendMessage = {
   promptText: string;
   visibleText: string;
   attachments: AgentChatFileRef[];
+  resolvedAttachments: ResolvedAgentChatFileRef[];
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
   onDispatched?: () => void;
+};
+
+type ResolvedAgentChatFileRef = AgentChatFileRef & {
+  _resolvedPath: string;
+  _rootPath: string;
 };
 
 type ResolvedChatConfig = {
@@ -939,9 +947,10 @@ function readProviderParentItemId(value: unknown): string | undefined {
 function buildStreamingUserContent(
   args: {
     baseText: string;
-    attachments: AgentChatFileRef[];
+    attachments: ResolvedAgentChatFileRef[];
     runtimeKind: "claude" | "unified";
     modelDescriptor?: ModelDescriptor;
+    logger?: Logger;
   },
 ): UserContent {
   if (!args.attachments.length) {
@@ -953,14 +962,8 @@ function buildStreamingUserContent(
   ];
 
   for (const attachment of args.attachments) {
-    const resolvedPath = path.resolve(attachment.path);
-    if (!fs.existsSync(resolvedPath)) {
-      parts.push({ type: "text", text: `\nAttachment missing: ${attachment.path}` });
-      continue;
-    }
-
     try {
-      const data = fs.readFileSync(resolvedPath);
+      const data = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
       const mediaType = inferAttachmentMediaType(attachment);
 
       if (attachment.type === "image") {
@@ -983,7 +986,7 @@ function buildStreamingUserContent(
         parts.push({
           type: "file",
           data,
-          filename: path.basename(resolvedPath) || undefined,
+          filename: path.basename(attachment._resolvedPath) || undefined,
           mediaType,
         });
         continue;
@@ -994,9 +997,19 @@ function buildStreamingUserContent(
         text: `\nAttached file: ${attachment.path}`,
       });
     } catch (error) {
+      if (isEnoentError(error)) {
+        parts.push({ type: "text", text: `\nAttachment missing: ${attachment.path}` });
+        continue;
+      }
+      args.logger?.warn("agent_chat.streaming_attachment_unavailable", {
+        attachmentPath: attachment.path,
+        resolvedPath: attachment._resolvedPath,
+        rootPath: attachment._rootPath,
+        error,
+      });
       parts.push({
         type: "text",
-        text: `\nAttachment unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}`,
+        text: `\nAttachment unavailable: ${attachment.path}`,
       });
     }
   }
@@ -1541,7 +1554,7 @@ function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
   return provider === "codex" || provider === "claude" ? "full_mcp" : "fallback";
 }
 
-function guardedIdentityPermissionModeForProvider(provider: AgentChatProvider): AgentChatSession["permissionMode"] {
+function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
   return "plan";
 }
 
@@ -1579,10 +1592,13 @@ export function createAgentChatService(args: {
   getMissionService?: () => ReturnType<typeof createMissionService> | null;
   getAiOrchestratorService?: () => ReturnType<typeof createAiOrchestratorService> | null;
   getLinearDispatcherService?: () => ReturnType<typeof createLinearDispatcherService> | null;
-  linearClient?: import("../cto/linearClient").LinearClient | null;
-  linearCredentials?: import("../cto/linearCredentialService").LinearCredentialService | null;
+  linearClient?: LinearClient | null;
+  linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
+  getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
+  ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
+  getAutomationService?: () => { list: () => any[]; triggerManually: (args: any) => Promise<any>; listRuns: (args?: any) => any[] } | null;
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -1611,6 +1627,9 @@ export function createAgentChatService(args: {
     linearCredentials: linearCredentialsRef,
     prService,
     processService,
+    getTestService,
+    ptyService,
+    getAutomationService,
     computerUseArtifactBrokerService,
     laneService,
     sessionService,
@@ -1633,6 +1652,18 @@ export function createAgentChatService(args: {
   fs.mkdirSync(chatSessionsDir, { recursive: true });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
+
+  const stageAttachmentForCodexInput = (attachment: ResolvedAgentChatFileRef): string => {
+    const content = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+    const stagedDir = path.join(layout.tmpDir, "agent-chat-attachments");
+    fs.mkdirSync(stagedDir, { recursive: true });
+    const baseName = path.basename(attachment.path) || path.basename(attachment._resolvedPath) || "attachment";
+    const stagedPath = path.join(stagedDir, `${randomUUID()}-${baseName}`);
+    const tempPath = `${stagedPath}.tmp`;
+    fs.writeFileSync(tempPath, content);
+    fs.renameSync(tempPath, stagedPath);
+    return stagedPath;
+  };
 
   const managedSessions = new Map<string, ManagedChatSession>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
@@ -3946,6 +3977,7 @@ export function createAgentChatService(args: {
       promptText: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
+      resolvedAttachments?: ResolvedAgentChatFileRef[];
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -3960,6 +3992,11 @@ export function createAgentChatService(args: {
     }
     const runtime = managed.runtime;
     const attachments = args.attachments ?? [];
+    const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
+      ...attachment,
+      _resolvedPath: attachment.path,
+      _rootPath: managed.laneWorktreePath,
+    }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
     const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, attachments);
     const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
@@ -4009,13 +4046,14 @@ export function createAgentChatService(args: {
       text_elements: []
     });
 
-    for (const attachment of attachments) {
+    for (const attachment of resolvedAttachments) {
+      const stagedPath = stageAttachmentForCodexInput(attachment);
       if (attachment.type === "image") {
-        input.push({ type: "localImage", path: attachment.path });
+        input.push({ type: "localImage", path: stagedPath });
         continue;
       }
       const name = path.basename(attachment.path) || attachment.path;
-      input.push({ type: "mention", name, path: attachment.path });
+      input.push({ type: "mention", name, path: stagedPath });
     }
 
     managed.session.status = "active";
@@ -4064,9 +4102,9 @@ export function createAgentChatService(args: {
 
   // ── Helpers for unified turn logic ──
 
-  const mapReasoningEffortToThinking = (effort: string | null | undefined): import("../../../shared/types").ThinkingLevel | null => {
+  const mapReasoningEffortToThinking = (effort: string | null | undefined): ThinkingLevel | null => {
     if (!effort) return null;
-    const map: Record<string, import("../../../shared/types").ThinkingLevel> = {
+    const map: Record<string, ThinkingLevel> = {
       none: "none",
       minimal: "minimal",
       low: "low",
@@ -4145,6 +4183,7 @@ export function createAgentChatService(args: {
       promptText: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
+      resolvedAttachments?: ResolvedAgentChatFileRef[];
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -4165,6 +4204,11 @@ export function createAgentChatService(args: {
     managed.session.status = "active";
 
     const attachments = args.attachments ?? [];
+    const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
+      ...attachment,
+      _resolvedPath: attachment.path,
+      _rootPath: managed.laneWorktreePath,
+    }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
     emitPreparedUserMessage(managed, {
       text: displayText,
@@ -4269,7 +4313,9 @@ export function createAgentChatService(args: {
 
       // Build the message — plain string for text-only, or SDKUserMessage with
       // image content blocks (streaming input format per SDK docs).
-      const messageToSend = buildClaudeV2Message(basePromptText, attachments);
+      const messageToSend = buildClaudeV2Message(basePromptText, resolvedAttachments, {
+        baseDir: managed.laneWorktreePath,
+      });
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
       if (typeof runtime.v2Session.setPermissionMode === "function") {
@@ -4859,6 +4905,7 @@ export function createAgentChatService(args: {
       promptText: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
+      resolvedAttachments?: ResolvedAgentChatFileRef[];
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -4882,6 +4929,11 @@ export function createAgentChatService(args: {
     runtime.interrupted = false;
     managed.session.status = "active";
     const attachments = args.attachments ?? [];
+    const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
+      ...attachment,
+      _resolvedPath: attachment.path,
+      _rootPath: managed.laneWorktreePath,
+    }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
     emitPreparedUserMessage(managed, {
       text: displayText,
@@ -4978,9 +5030,10 @@ export function createAgentChatService(args: {
           role: "user",
           content: buildStreamingUserContent({
             baseText: streamingBaseText,
-            attachments,
+            attachments: resolvedAttachments,
             runtimeKind: "unified",
             modelDescriptor: runtime.modelDescriptor,
+            logger,
           }),
         };
       });
@@ -5191,6 +5244,9 @@ export function createAgentChatService(args: {
             prService: prService ?? null,
             fileService: fileService ?? null,
             processService: processService ?? null,
+            testService: getTestService?.() ?? null,
+            ptyService: ptyService ?? null,
+            automationService: getAutomationService?.() ?? null,
             issueTracker: linearIssueTracker ?? null,
             listChats: listSessions,
             getChatStatus: getSessionSummary,
@@ -7583,6 +7639,33 @@ export function createAgentChatService(args: {
     const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
 
     const managed = ensureManagedSession(sessionId);
+    const publicAttachments = attachments.map((attachment) => ({
+      ...attachment,
+      path: attachment.path.trim(),
+    }));
+    const resolvedAttachments = publicAttachments.map((attachment): ResolvedAgentChatFileRef => {
+      const rawPath = attachment.path;
+      if (!rawPath.length) {
+        throw new Error("Attachment path is required.");
+      }
+      const isAbsolute = path.isAbsolute(rawPath);
+      const root = isAbsolute ? projectRoot : managed.laneWorktreePath;
+      try {
+        const safePath = resolvePathWithinRoot(root, rawPath, { allowMissing: true });
+        return {
+          ...attachment,
+          path: rawPath,
+          _resolvedPath: safePath,
+          _rootPath: root,
+        };
+      } catch {
+        throw new Error(
+          isAbsolute
+            ? `Attachment path must stay within the project root: ${rawPath}`
+            : `Attachment path must stay within the active lane: ${rawPath}`,
+        );
+      }
+    });
     const allowClaudeLoginCommand = managed.session.provider === "claude" && slashCommand === "/login";
     const claudeRuntimeHealth = managed.session.provider === "claude"
       ? getProviderRuntimeHealth("claude")
@@ -7636,7 +7719,8 @@ export function createAgentChatService(args: {
       managed,
       promptText,
       visibleText,
-      attachments,
+      attachments: publicAttachments,
+      resolvedAttachments,
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
     };
@@ -7711,6 +7795,7 @@ export function createAgentChatService(args: {
       promptText,
       visibleText,
       attachments,
+      resolvedAttachments,
       reasoningEffort,
       onDispatched,
     } = prepared;
@@ -7726,7 +7811,7 @@ export function createAgentChatService(args: {
       if (reasoningEffort) {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
       }
-      await runTurn(managed, { promptText, displayText: visibleText, attachments, onDispatched });
+      await runTurn(managed, { promptText, displayText: visibleText, attachments, resolvedAttachments, onDispatched });
       return;
     }
 
@@ -7793,7 +7878,7 @@ export function createAgentChatService(args: {
         }
       }
 
-      await sendCodexMessage(managed, { promptText, displayText: visibleText, attachments, onDispatched });
+      await sendCodexMessage(managed, { promptText, displayText: visibleText, attachments, resolvedAttachments, onDispatched });
       return;
     }
 
@@ -7803,7 +7888,7 @@ export function createAgentChatService(args: {
     }
 
     ensureClaudeSessionRuntime(managed);
-    await runClaudeTurn(managed, { promptText, displayText: visibleText, attachments, onDispatched });
+    await runClaudeTurn(managed, { promptText, displayText: visibleText, attachments, resolvedAttachments, onDispatched });
   };
 
   const sendMessage = async (
@@ -8778,13 +8863,13 @@ export function createAgentChatService(args: {
     return deriveSessionCapabilities(managed);
   };
 
-  const getSlashCommands = ({ sessionId }: import("../../../shared/types").AgentChatSlashCommandsArgs): import("../../../shared/types").AgentChatSlashCommand[] => {
+  const getSlashCommands = ({ sessionId }: AgentChatSlashCommandsArgs): AgentChatSlashCommand[] => {
     const managed = managedSessions.get(sessionId);
     if (!managed) return [];
     const provider = managed.session.provider;
 
     // Local commands available to all providers
-    const localCommands: import("../../../shared/types").AgentChatSlashCommand[] = [
+    const localCommands: AgentChatSlashCommand[] = [
       { name: "/clear", description: "Clear chat history", source: "local" },
     ];
     if (provider === "claude") {
@@ -8798,21 +8883,21 @@ export function createAgentChatService(args: {
     // Claude SDK commands
     if (provider === "claude" && managed.runtime?.kind === "claude") {
       const rt = managed.runtime;
-      const sdkCmds: import("../../../shared/types").AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+      const sdkCmds: AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
       // Merge: SDK commands first, then local commands that don't conflict
-      const sdkNames = new Set(sdkCmds.map((c: import("../../../shared/types").AgentChatSlashCommand) => c.name));
+      const sdkNames = new Set(sdkCmds.map((c: AgentChatSlashCommand) => c.name));
       return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
     }
 
     // Codex SDK commands
     if (provider === "codex" && managed.runtime?.kind === "codex") {
       const rt = managed.runtime;
-      const sdkCmds: import("../../../shared/types").AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+      const sdkCmds: AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
@@ -8822,7 +8907,7 @@ export function createAgentChatService(args: {
       if (!sdkCmds.some((c) => c.name === "/review")) {
         sdkCmds.push({ name: "/review", description: "Review uncommitted changes", source: "sdk" as const });
       }
-      const sdkNames = new Set(sdkCmds.map((c: import("../../../shared/types").AgentChatSlashCommand) => c.name));
+      const sdkNames = new Set(sdkCmds.map((c: AgentChatSlashCommand) => c.name));
       return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
     }
 

@@ -124,6 +124,8 @@ After a successful GitHub merge, cleanup operations (branch deletion, group memb
 
 The Create PR modal validates branch names against invalid git ref characters before submission.
 
+The PR detail pane renders markdown body content with `rehype-sanitize` applied after `rehype-raw`, stripping potentially unsafe HTML from PR descriptions fetched from GitHub.
+
 ---
 
 ## Queue landing state machine

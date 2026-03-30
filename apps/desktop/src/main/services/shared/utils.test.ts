@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import {
   isRecord,
   asString,
@@ -14,6 +17,7 @@ import {
   parseDiffNameOnly,
   safeJsonParse,
   isWithinDir,
+  resolvePathWithinRoot,
   toOptionalString,
   normalizeRelative,
   normalizeBranchName,
@@ -215,6 +219,96 @@ describe("isWithinDir", () => {
   it("returns false when candidate is outside root", () => {
     expect(isWithinDir("/project", "/other/file.ts")).toBe(false);
     expect(isWithinDir("/project/src", "/project/file.ts")).toBe(false);
+  });
+});
+
+describe("resolvePathWithinRoot", () => {
+  it("rejects symlink escapes for existing paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
+    const linkPath = path.join(root, "linked-outside");
+    try {
+      fs.symlinkSync(outsideDir, linkPath);
+      expect(() => resolvePathWithinRoot(root, path.join(linkPath, "secret.txt"), { allowMissing: true })).toThrow(
+        /Path escapes root/,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a normal child path when intermediate segments do not exist yet", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    try {
+      const target = "nested/new-file.txt";
+      const resolved = resolvePathWithinRoot(root, target, { allowMissing: true });
+      expect(path.basename(resolved)).toBe("new-file.txt");
+      expect(resolved.endsWith(`${path.sep}nested${path.sep}new-file.txt`)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves relative child paths against the provided root", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    try {
+      const resolved = resolvePathWithinRoot(root, "nested/new-file.txt", { allowMissing: true });
+      expect(path.basename(resolved)).toBe("new-file.txt");
+      expect(resolved.endsWith(`${path.sep}nested${path.sep}new-file.txt`)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects symlink escapes that point outside the root", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
+    try {
+      const linkPath = path.join(tempRoot, "linked");
+      const outsideFile = path.join(outsideDir, "secret.txt");
+      fs.writeFileSync(outsideFile, "secret", "utf8");
+      fs.symlinkSync(outsideDir, linkPath, "dir");
+
+      expect(() => resolvePathWithinRoot(tempRoot, path.join(linkPath, "secret.txt"))).toThrow("Path escapes root");
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects relative symlink traversals hidden by .. segments", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
+    try {
+      fs.symlinkSync(outsideDir, path.join(tempRoot, "linked"), "dir");
+      expect(() => resolvePathWithinRoot(tempRoot, "linked/../secret.txt", { allowMissing: true })).toThrow("Path escapes root");
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rethrows non-missing lstat errors while resolving paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const rootReal = fs.realpathSync(root);
+    const originalLstatSync = fs.lstatSync.bind(fs);
+    const blockedPath = path.join(rootReal, "blocked");
+    const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" as const });
+
+    const spy = vi.spyOn(fs, "lstatSync").mockImplementation(((filePath: fs.PathLike) => {
+      if (String(filePath) === blockedPath) {
+        throw permissionError;
+      }
+      return originalLstatSync(filePath);
+    }) as typeof fs.lstatSync);
+
+    try {
+      expect(() => resolvePathWithinRoot(root, "blocked/child.txt", { allowMissing: true })).toThrow(permissionError);
+    } finally {
+      spy.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

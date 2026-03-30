@@ -505,11 +505,11 @@ lanes (
 
 When a lane is created, ADE can automatically initialize its working environment via the `laneEnvironmentService`. The service executes initialization steps in a deterministic order:
 
-1. **Environment Files** (`env-files`): Copy/template `.env` files with lane-specific values (ports, hostnames, API keys). Destination paths are validated against the worktree root via `isWithinDir()` to prevent path traversal.
-2. **Docker Services** (`docker`): Start lane-specific Docker Compose services (databases, caches, queues)
-3. **Dependency Installation** (`dependencies`): Run install commands from an allowlist of known package managers (`npm`, `yarn`, `pnpm`, `pip`, `pip3`, `bundle`, `cargo`, `go`, `composer`, `poetry`, `pipenv`, `bun`). Commands outside this allowlist are rejected.
-4. **Mount Points** (`mount-points`): Configure runtime mount points for agent profiles/context. Both source and destination paths are validated to prevent escaping the allowed directories.
-5. **Copy Paths**: File copy destinations are validated against the worktree to prevent path escape.
+1. **Environment Files** (`env-files`): Copy/template `.env` files with lane-specific values (ports, hostnames, API keys). Both source and destination paths are validated against their respective roots via `resolvePathWithinRoot()` (symlink-aware) to prevent path traversal.
+2. **Docker Services** (`docker`): Start lane-specific Docker Compose services (databases, caches, queues). The compose file path is validated against the project root to prevent path escape.
+3. **Dependency Installation** (`dependencies`): Run install commands from an allowlist of known package managers (`npm`, `yarn`, `pnpm`, `pip`, `pip3`, `bundle`, `cargo`, `go`, `composer`, `poetry`, `pipenv`, `bun`). Commands outside this allowlist are rejected. Working directories for dependency commands are validated against the worktree root.
+4. **Mount Points** (`mount-points`): Configure runtime mount points for agent profiles/context. Both source and destination paths are validated via `resolvePathWithinRoot()` to prevent escaping the allowed directories, including through symlinks.
+5. **Copy Paths**: Both source and destination paths are validated via symlink-aware containment checks against the project root and worktree respectively.
 
 ### LaneEnvInitProgress Component
 

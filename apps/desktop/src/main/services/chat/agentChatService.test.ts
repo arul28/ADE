@@ -1836,6 +1836,125 @@ describe("createAgentChatService", () => {
       expect(toolResults).toHaveLength(1);
     });
 
+    it("rejects attachments outside the project root before dispatch", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const threadsBefore = mockState.codexThreadCounter;
+      const turnsBefore = mockState.codexTurnCounter;
+      const outsidePath = path.join(process.cwd(), `.ade-agent-chat-outside-${Date.now()}.txt`);
+      fs.writeFileSync(outsidePath, "secret", "utf8");
+      try {
+        await expect(service.sendMessage({
+          sessionId: session.id,
+          text: "Review this file",
+          attachments: [{ path: outsidePath, type: "file" }],
+        })).rejects.toThrow(/project root/);
+      } finally {
+        fs.rmSync(outsidePath, { force: true });
+      }
+      expect(mockState.codexThreadCounter).toBe(threadsBefore);
+      expect(mockState.codexTurnCounter).toBe(turnsBefore);
+    });
+
+    it("keeps public attachment paths trimmed without exposing resolved filesystem paths", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      fs.writeFileSync(path.join(tmpRoot, "note.txt"), "hello", "utf8");
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const attachments = [{ path: " note.txt ", type: "file" as const }];
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Review this file",
+        attachments,
+      });
+
+      const userMessage = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: { type: "user_message"; attachments?: Array<{ path: string; type: "file" | "image" }> } } =>
+          event.event.type === "user_message",
+      );
+
+      expect(attachments[0]?.path).toBe(" note.txt ");
+      expect(userMessage.event.attachments).toEqual([{ path: "note.txt", type: "file" }]);
+    });
+
+    it("logs attachment read failures and keeps the fallback text generic", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      const attachmentDir = path.join(tmpRoot, "attachment-dir");
+      fs.mkdirSync(attachmentDir, { recursive: true });
+      vi.mocked(generateText).mockResolvedValue({ text: "Attachment fallback test" } as any);
+      let streamArgs: Record<string, unknown> | null = null;
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        streamArgs = args;
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Check this attachment",
+        attachments: [{ path: "attachment-dir", type: "file" }],
+      });
+
+      const rawMessages = streamArgs && Array.isArray((streamArgs as { messages?: unknown }).messages)
+        ? (streamArgs as { messages: Array<{ role: string; content: unknown }> }).messages
+        : [];
+      const messages = rawMessages;
+      const currentUserMessageText = JSON.stringify(messages.at(-1)?.content);
+      const userMessageEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+        } => event.event.type === "user_message",
+      );
+      const rendererPayload = JSON.stringify(userMessageEvent.event);
+
+      expect(currentUserMessageText).toContain("Attachment unavailable: attachment-dir");
+      expect(currentUserMessageText).not.toContain("Path is not a regular file");
+      expect(currentUserMessageText).not.toContain("EISDIR");
+      expect(rendererPayload).not.toContain("Path is not a regular file");
+      expect(rendererPayload).not.toContain("EISDIR");
+      expect(rendererPayload).not.toContain(attachmentDir);
+      expect(rendererPayload).not.toContain(tmpRoot);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.streaming_attachment_unavailable",
+        expect.objectContaining({
+          attachmentPath: "attachment-dir",
+          error: expect.any(Error),
+        }),
+      );
+    });
+
     it("prefers the canonical turn-scoped Codex text stream when item-scoped deltas also arrive", async () => {
       const textEvents: Array<{ text: string; itemId?: string; turnId?: string }> = [];
       const { service } = createService({

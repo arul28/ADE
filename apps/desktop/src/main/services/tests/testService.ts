@@ -21,7 +21,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
-import { nowIso } from "../shared/utils";
+import { nowIso, resolvePathWithinRoot } from "../shared/utils";
 
 type ActiveRunEntry = {
   laneId: string;
@@ -273,7 +273,13 @@ export function createTestService({
     const startedAt = nowIso();
     const laneRoot = laneService.getLaneWorktreePath(laneId);
     const configuredCwd = overlay.cwd?.trim() ? overlay.cwd : suite.cwd;
-    const cwd = path.isAbsolute(configuredCwd) ? configuredCwd : path.join(laneRoot, configuredCwd);
+    const cwdCandidate = path.isAbsolute(configuredCwd) ? configuredCwd : path.join(laneRoot, configuredCwd);
+    let cwd: string;
+    try {
+      cwd = resolvePathWithinRoot(laneRoot, cwdCandidate);
+    } catch {
+      throw new Error(`Test suite '${suite.id}' cwd escapes lane workspace`);
+    }
 
     if (!suite.command.length) throw new Error(`Suite '${suite.id}' has an empty command`);
 

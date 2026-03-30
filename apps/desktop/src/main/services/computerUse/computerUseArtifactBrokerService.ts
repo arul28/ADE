@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type {
   ComputerUseArtifactIngestionRequest,
@@ -33,8 +34,8 @@ import type { createExternalMcpService } from "../externalMcp/externalMcpService
 import {
   fileExists,
   isRecord,
-  isWithinDir,
   nowIso,
+  resolvePathWithinRoot,
   safeJsonParse,
   toOptionalString,
   writeTextAtomic,
@@ -73,6 +74,66 @@ type StoredLinkRow = {
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
+}
+
+function isAllowedExternalArtifactSource(
+  absolutePath: string,
+  roots: string[],
+): boolean {
+  return roots.some((root) => {
+    try {
+      resolvePathWithinRoot(root, absolutePath);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void {
+  const sourceFlags = fs.constants.O_RDONLY | (typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0);
+  const sourceFd = fs.openSync(sourcePath, sourceFlags);
+  const tempPath = `${targetPath}.tmp-${randomUUID()}`;
+  let tempCreated = false;
+
+  try {
+    const sourceStat = fs.fstatSync(sourceFd);
+    if (!sourceStat.isFile()) {
+      throw new Error("Artifact source must be a regular file.");
+    }
+
+    const targetFd = fs.openSync(tempPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, sourceStat.mode & 0o777);
+    tempCreated = true;
+    try {
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      let position = 0;
+      for (;;) {
+        const bytesRead = fs.readSync(sourceFd, buffer, 0, buffer.length, position);
+        if (bytesRead === 0) break;
+
+        let offset = 0;
+        while (offset < bytesRead) {
+          offset += fs.writeSync(targetFd, buffer, offset, bytesRead - offset);
+        }
+        position += bytesRead;
+      }
+      fs.fsyncSync(targetFd);
+    } finally {
+      fs.closeSync(targetFd);
+    }
+
+    fs.renameSync(tempPath, targetPath);
+    tempCreated = false;
+  } finally {
+    if (tempCreated) {
+      try {
+        fs.rmSync(tempPath, { force: true });
+      } catch {
+        // Best-effort cleanup only.
+      }
+    }
+    fs.closeSync(sourceFd);
+  }
 }
 
 function dedupeOwners(owners: ComputerUseArtifactOwner[]): ComputerUseArtifactOwner[] {
@@ -134,8 +195,14 @@ export function createComputerUseArtifactBrokerService(args: {
   logger?: Logger | null;
   onEvent?: (payload: ComputerUseEventPayload) => void;
 }) {
-  const { db, projectId, projectRoot, missionService, orchestratorService, externalMcpService, logger, onEvent } = args;
+  const { db, projectId, projectRoot, missionService, orchestratorService, externalMcpService, onEvent } = args;
   const layout = resolveAdeLayout(projectRoot);
+  const allowedImportRoots = Array.from(new Set([
+    layout.artifactsDir,
+    layout.tmpDir,
+    os.tmpdir(),
+    path.join(os.homedir(), ".agent-browser"),
+  ]));
 
   const emit = (payload: ComputerUseEventPayload): void => {
     try {
@@ -164,18 +231,26 @@ export function createComputerUseArtifactBrokerService(args: {
 
     const pathLike = toOptionalString(input.path) ?? (directUri && !isHttpUrl(directUri) ? directUri : null);
     if (pathLike) {
-      const absolutePath = path.isAbsolute(pathLike) ? pathLike : path.resolve(projectRoot, pathLike);
+      const absolutePath = path.isAbsolute(pathLike)
+        ? pathLike
+        : resolvePathWithinRoot(projectRoot, pathLike, { allowMissing: true });
       if (fileExists(absolutePath)) {
-        if (isWithinDir(layout.artifactsDir, absolutePath)) {
+        try {
+          const existingArtifactPath = resolvePathWithinRoot(layout.artifactsDir, absolutePath);
           return {
-            uri: toProjectArtifactUri(projectRoot, absolutePath),
+            uri: toProjectArtifactUri(projectRoot, existingArtifactPath),
             storageKind: "file",
             mimeType: toOptionalString(input.mimeType),
           };
+        } catch {
+          // Fall through to external import handling.
+        }
+        if (!isAllowedExternalArtifactSource(absolutePath, allowedImportRoots)) {
+          throw new Error(`Artifact path is outside allowed import roots: ${absolutePath}`);
         }
         const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
         const targetPath = createComputerUseArtifactPath(projectRoot, title, extension);
-        fs.copyFileSync(absolutePath, targetPath);
+        secureCopyFromDescriptor(absolutePath, targetPath);
         return {
           uri: toProjectArtifactUri(projectRoot, targetPath),
           storageKind: "file",

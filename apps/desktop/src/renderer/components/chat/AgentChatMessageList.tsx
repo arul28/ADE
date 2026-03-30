@@ -247,26 +247,20 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
   return null;
 }
 
-function messageCardStyle(): React.CSSProperties {
-  return {
-    borderColor: "rgba(245, 158, 11, 0.16)",
-    background: "#171412",
-  };
-}
+const MESSAGE_CARD_STYLE: React.CSSProperties = {
+  borderColor: "rgba(245, 158, 11, 0.16)",
+  background: "#171412",
+};
 
-function surfaceInlineCardStyle(): React.CSSProperties {
-  return {
-    borderColor: "rgba(255, 255, 255, 0.08)",
-    background: "#14161a",
-  };
-}
+const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
+  borderColor: "rgba(255, 255, 255, 0.08)",
+  background: "#14161a",
+};
 
-function assistantMessageCardStyle(): React.CSSProperties {
-  return {
-    borderColor: "rgba(148, 163, 184, 0.14)",
-    background: "#101318",
-  };
-}
+const ASSISTANT_MESSAGE_CARD_STYLE: React.CSSProperties = {
+  borderColor: "rgba(148, 163, 184, 0.14)",
+  background: "#101318",
+};
 
 function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
   if (event.deliveryState === "failed") {
@@ -376,8 +370,6 @@ function todoItemStatusClass(status: string): string {
 
 function statusColorClass(status: string | undefined): string {
   switch (status) {
-    case "completed":
-      return "text-emerald-400/70";
     case "failed":
       return "text-red-400/70";
     case "running":
@@ -657,7 +649,7 @@ function CollapsibleCard({
   const isOpen = forceOpen === true ? true : open;
 
   return (
-    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={surfaceInlineCardStyle()}>
+    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={SURFACE_INLINE_CARD_STYLE}>
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-mono text-[11px]"
@@ -1063,7 +1055,7 @@ function renderEvent(
         <div className="flex justify-end">
           <div
             className={cn(GLASS_CARD_CLASS, "max-w-[88%] border-l-2 border-l-amber-400/40 px-4 py-3")}
-            style={surfaceInlineCardStyle()}
+            style={SURFACE_INLINE_CARD_STYLE}
           >
             <div className="mb-1.5 flex items-center gap-2">
               <span className="relative flex h-2 w-2">
@@ -1085,7 +1077,7 @@ function renderEvent(
     }
     return (
       <div className="flex justify-end">
-        <div className={cn(GLASS_CARD_CLASS, "group max-w-[82%] px-4 py-3")} style={messageCardStyle()}>
+        <div className={cn(GLASS_CARD_CLASS, "group max-w-[82%] px-4 py-3")} style={MESSAGE_CARD_STYLE}>
           <div className="mb-2 flex items-center gap-2">
             <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-amber-300/20 bg-amber-400/[0.10]">
               <User size={10} weight="regular" className="text-amber-200/90" />
@@ -1124,7 +1116,7 @@ function renderEvent(
             "group max-w-[94%] px-4 py-3",
             options?.turnActive && "min-h-[5.5rem]",
           )}
-          style={assistantMessageCardStyle()}
+          style={ASSISTANT_MESSAGE_CARD_STYLE}
         >
           <div className="mb-2 flex items-center gap-2">
             <span className="inline-flex h-4.5 w-4.5 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03]">
@@ -1450,7 +1442,7 @@ function renderEvent(
   /* ── Structured Question ── */
   if (event.type === "structured_question") {
     return (
-      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={messageCardStyle()}>
+      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={MESSAGE_CARD_STYLE}>
         <div className="mb-2 flex items-center gap-2">
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
             <ChatCircleText size={13} weight="bold" className="text-[var(--chat-accent)]" />
@@ -1792,7 +1784,7 @@ function renderEvent(
       bodyText = event.description;
     }
     return (
-      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={surfaceInlineCardStyle()}>
+      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={SURFACE_INLINE_CARD_STYLE}>
         <div className="mb-2 flex items-center gap-2">
           {isAskUser ? (
             <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-500/[0.10] shadow-[0_0_0_3px_rgba(245,158,11,0.12)]">
@@ -1901,7 +1893,7 @@ function renderEvent(
   /* ── Error ── */
   if (event.type === "error") {
     return (
-      <div className={cn(GLASS_CARD_CLASS, "group border-red-500/12 p-0")} style={surfaceInlineCardStyle()}>
+      <div className={cn(GLASS_CARD_CLASS, "group border-red-500/12 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
         <div className="h-px w-full bg-gradient-to-r from-transparent via-red-500/40 to-transparent" />
         <div className="p-4">
           <div className="mb-2 flex items-center gap-2">

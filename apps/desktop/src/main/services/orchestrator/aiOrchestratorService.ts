@@ -1,9 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import nodePath from "node:path";
 import type {
   MissionDetail,
-  MissionExecutionPolicy,
   MissionStepStatus,
   MissionStatus,
   CancelOrchestratorRunArgs,
@@ -23,13 +22,15 @@ import type {
   CleanupOrchestratorTeamResourcesResult,
   UserSteeringDirective,
   OrchestratorChatMessage,
-  OrchestratorChatThread,
   OrchestratorChatTarget,
   SendOrchestratorChatArgs,
   GetOrchestratorChatArgs,
+  GetGlobalChatArgs,
   ListOrchestratorChatThreadsArgs,
   GetOrchestratorThreadMessagesArgs,
   SendOrchestratorThreadMessageArgs,
+  GetActiveAgentsArgs,
+  SendAgentMessageArgs,
   OrchestratorWorkerDigest,
   ListOrchestratorWorkerDigestsArgs,
   GetOrchestratorWorkerDigestArgs,
@@ -50,18 +51,19 @@ import type {
   ExecutionPlanPreview,
   ExecutionPlanPhase,
   ExecutionPlanStepPreview,
+  PhaseCard,
   OrchestratorWorkerRole,
   RecoveryLoopPolicy,
   AggregatedUsageStats,
   GetAggregatedUsageArgs,
   RecoveryLoopState,
   IntegrationPrPolicy,
+  QueueLandingState,
   PrStrategy,
-  StartOrchestratorRunStepInput,
   OrchestratorRunStatus,
   OrchestratorTeamMember,
   OrchestratorTeamRuntimeState,
-  TeamRuntimeConfig,
+  MissionAgentRuntimeConfig,
   FinalizeRunArgs,
   FinalizeRunResult,
   GetMissionStateDocumentArgs,
@@ -117,13 +119,23 @@ import type { createPrService } from "../prs/prService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import type { HumanWorkDigestService } from "../memory/humanWorkDigestService";
+import type { MissionMemoryLifecycleService } from "../memory/missionMemoryLifecycleService";
+import type { MissionBudgetService } from "./missionBudgetService";
 import {
   buildComputerUseOwnerSnapshot,
   collectRequiredComputerUseKindsFromPhases,
   getComputerUseArtifactKinds,
 } from "../computerUse/controlPlane";
 import { createMemoryService } from "../memory/memoryService";
-import { CoordinatorAgent, type CoordinatorPlanningStartupFailure } from "./coordinatorAgent";
+import {
+  CoordinatorAgent,
+  type CoordinatorAvailableProvider,
+  type CoordinatorPlanningStartupFailure,
+  type CoordinatorProjectContext,
+  type CoordinatorRuntimeFailure,
+  type CoordinatorUserRules,
+} from "./coordinatorAgent";
 import { routeEventToCoordinator } from "./runtimeEventRouter";
 import {
   deleteCoordinatorCheckpoint,
@@ -158,6 +170,7 @@ import type {
   MissionRuntimeProfile,
   SessionRuntimeSignal,
   AttemptRuntimeTracker,
+  OrchestratorContext,
   OrchestratorChatSessionState,
   WorkerDeliveryContext,
   ParallelMissionStepDescriptor,
@@ -205,11 +218,9 @@ import {
   workerStateFromRuntimeSignal,
   parseTerminalRuntimeState,
   toOptionalString,
-  readConfig,
   mapOrchestratorStepStatus,
   deriveMissionStatusFromRun,
   buildOutcomeSummary,
-  buildConflictResolutionInstructions,
   extractRunFailureMessage,
   filterExecutionSteps,
   runOrchestratorHookCommand,
@@ -570,8 +581,6 @@ export function normalizeCoordinatorUpdateForChat(message: string): string | nul
 
 // Import from team runtime config module
 import {
-  resolveMissionTeamRuntime as resolveMissionTeamRuntimeCtx,
-  normalizeTeamRuntimeConfig as normalizeTeamRuntimeConfigFn,
   normalizeAgentRuntimeFlags,
 } from "./teamRuntimeConfig";
 
@@ -590,10 +599,8 @@ import {
   getRunMetadata as getRunMetadataCtx,
   updateRunMetadata as updateRunMetadataCtx,
   loadSteeringDirectivesFromMetadata as loadSteeringDirectivesCtx,
-  loadChatSessionStateFromMetadata as loadChatSessionStateCtx,
   emitOrchestratorMessage as emitOrchestratorMessageCtx,
   upsertThread as upsertThreadCtx,
-  summarizeRunForChat as summarizeRunForChatCtx,
   appendChatMessageCtx,
   updateChatMessage as updateChatMessageCtx,
   listChatThreadsCtx,
@@ -764,9 +771,9 @@ export function createAiOrchestratorService(args: {
   prService?: ReturnType<typeof createPrService> | null;
   conflictService?: ReturnType<typeof createConflictService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
-  missionBudgetService?: import("./missionBudgetService").MissionBudgetService | null;
-  humanWorkDigestService?: import("../memory/humanWorkDigestService").HumanWorkDigestService | null;
-  missionMemoryLifecycleService?: import("../memory/missionMemoryLifecycleService").MissionMemoryLifecycleService | null;
+  missionBudgetService?: MissionBudgetService | null;
+  humanWorkDigestService?: HumanWorkDigestService | null;
+  missionMemoryLifecycleService?: MissionMemoryLifecycleService | null;
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   projectRoot?: string;
   onThreadEvent?: (event: OrchestratorThreadEvent) => void;
@@ -844,7 +851,7 @@ export function createAiOrchestratorService(args: {
   let healthSweepTimer: NodeJS.Timeout | null = null;
 
   // ── OrchestratorContext — shared state for extracted modules ──
-  const ctx: import("./orchestratorContext").OrchestratorContext = {
+  const ctx: OrchestratorContext = {
     db,
     logger,
     missionService,
@@ -951,10 +958,6 @@ export function createAiOrchestratorService(args: {
   const resolveCallTypeConfig = (missionId: string, callType: OrchestratorCallType) =>
     resolveCallTypeConfigCtx(ctx, missionId, callType);
 
-  // ── Team runtime config (delegated to teamRuntimeConfig module) ──
-  const resolveMissionTeamRuntime = (missionId: string) => resolveMissionTeamRuntimeCtx(ctx, missionId);
-  const normalizeTeamRuntimeConfig = (missionId: string, config: TeamRuntimeConfig) => normalizeTeamRuntimeConfigFn(missionId, config);
-
   const getMissionMetadata = (missionId: string): Record<string, unknown> => getMissionMetadataCtx(ctx, missionId);
   const updateMissionMetadata = (missionId: string, mutate: (metadata: Record<string, unknown>) => void): void => updateMissionMetadataCtx(ctx, missionId, mutate);
   const getMissionIdForRun = (runId: string): string | null => getMissionIdForRunCtx(ctx, runId);
@@ -965,8 +968,6 @@ export function createAiOrchestratorService(args: {
   const upsertThread = (args: Parameters<typeof upsertThreadCtx>[1]) => upsertThreadCtx(ctx, args);
 
   const loadSteeringDirectivesFromMetadata = (missionId: string) => loadSteeringDirectivesCtx(ctx, missionId);
-
-  const loadChatSessionStateFromMetadata = (missionId: string) => loadChatSessionStateCtx(ctx, missionId);
 
   const appendChatMessage = (message: OrchestratorChatMessage): OrchestratorChatMessage =>
     appendChatMessageCtx(ctx, message);
@@ -1184,15 +1185,6 @@ export function createAiOrchestratorService(args: {
 
   const clipStructuredText = (value: string, maxChars = 8_000): string =>
     value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 16))}\n[truncated]`;
-
-  const stringifyStructuredDetail = (value: unknown): string => {
-    if (typeof value === "string") return clipStructuredText(value, 12_000);
-    try {
-      return clipStructuredText(JSON.stringify(value, null, 2), 12_000);
-    } catch {
-      return String(value);
-    }
-  };
 
   const structuredThreadKeyForEvent = (scopeKey: string, event: AgentChatEvent): string | null => {
     switch (event.type) {
@@ -1938,10 +1930,10 @@ export function createAiOrchestratorService(args: {
     missionGoal: string,
     modelConfig: ModelConfig,
     opts?: {
-      userRules?: import("./coordinatorAgent").CoordinatorUserRules;
-      projectContext?: import("./coordinatorAgent").CoordinatorProjectContext;
-      availableProviders?: import("./coordinatorAgent").CoordinatorAvailableProvider[];
-      phases?: import("../../../shared/types").PhaseCard[];
+      userRules?: CoordinatorUserRules;
+      projectContext?: CoordinatorProjectContext;
+      availableProviders?: CoordinatorAvailableProvider[];
+      phases?: PhaseCard[];
       skipInitialActivationMessage?: boolean;
       missionLaneId?: string;
     },
@@ -2067,7 +2059,7 @@ export function createAiOrchestratorService(args: {
             },
           });
         },
-        onCoordinatorRuntimeFailure: (failure: import("./coordinatorAgent").CoordinatorRuntimeFailure) => {
+        onCoordinatorRuntimeFailure: (failure: CoordinatorRuntimeFailure) => {
           const lifecycleMessage = failure.reasonCode === "coordinator_runtime_provider_auth_failed"
             ? "The orchestrator could not authenticate with the selected provider, so I paused the run."
             : failure.category === "provider_unreachable"
@@ -2100,6 +2092,7 @@ export function createAiOrchestratorService(args: {
               turnId: failure.turnId,
               modelId,
               error: failure.message,
+              coordinatorFailureHandled: true,
             },
           });
           endCoordinatorAgentV2(runId);
@@ -2899,7 +2892,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     updateMissionStateDoc(runId, { coordinatorAvailability: availability }, options);
   };
 
-  const onQueueLandingStateChanged = async (queueState: import("../../../shared/types").QueueLandingState): Promise<void> => {
+  const onQueueLandingStateChanged = async (queueState: QueueLandingState): Promise<void> => {
     const runId = queueState.config.originRunId ?? null;
     const missionId = queueState.config.originMissionId ?? (runId ? getMissionIdForRun(runId) : null);
     if (!runId || !missionId) return;
@@ -4664,55 +4657,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       appendChatMessage,
     });
 
-  const summarizeRunForChat = (missionId: string): string => summarizeRunForChatCtx(ctx, missionId);
-
-  const resolveChatProvider = (missionId: string): "claude" | "codex" | null => {
-    const existingSession = activeChatSessions.get(missionId) ?? loadChatSessionStateFromMetadata(missionId);
-    if (existingSession) {
-      return existingSession.provider;
-    }
-
-    const runs = orchestratorService.listRuns({ missionId });
-    const activeRun = runs.find((entry) => entry.status === "active" || entry.status === "bootstrapping" || entry.status === "queued" || entry.status === "paused");
-    if (activeRun) {
-      try {
-        const graph = orchestratorService.getRunGraph({ runId: activeRun.id, timelineLimit: 0 });
-        const runningAttempt = graph.attempts
-          .filter((attempt) => attempt.status === "running")
-          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-        if (runningAttempt) {
-          const rawMeta = isRecord((runningAttempt as any).metadata) ? ((runningAttempt as any).metadata as Record<string, unknown>) : null;
-          const attemptModel = typeof rawMeta?.model === "string"
-            ? rawMeta.model
-            : typeof rawMeta?.modelId === "string"
-              ? rawMeta.modelId
-              : null;
-          if (attemptModel) {
-            const desc = getModelById(attemptModel);
-            if (desc?.family === "openai") return "codex";
-            if (desc?.family === "anthropic") return "claude";
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    const config = readConfig(projectConfigService);
-    if (config.defaultOrchestratorModelId === "claude" || config.defaultOrchestratorModelId === "codex") {
-      return config.defaultOrchestratorModelId as "claude" | "codex";
-    }
-    if (config.defaultOrchestratorModelId) {
-      const desc = getModelById(config.defaultOrchestratorModelId);
-      if (desc?.family === "anthropic") return "claude";
-      if (desc?.family === "openai") return "codex";
-    }
-    const availability = aiIntegrationService?.getAvailability?.();
-    if (availability?.claude) return "claude";
-    if (availability?.codex) return "codex";
-    return null;
-  };
-
   const resolveMissionProjectId = (missionId: string): string => {
     const row = db.get<{ project_id: string | null }>(
       `select project_id from missions where id = ? limit 1`,
@@ -6456,7 +6400,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   // TERMINAL_PHASE_STEP_STATUSES — imported from missionLifecycle
 
-  const syncMissionPhaseFromRun = (graph: OrchestratorRunGraph, reason: string) => {
+  const syncMissionPhaseFromRun = (graph: OrchestratorRunGraph, _reason: string) => {
     if (!graph.run.missionId) return;
     const target = deriveMissionPhaseSyncTarget(graph);
     if (!target) return;
@@ -7526,13 +7470,13 @@ Check all worker statuses and continue managing the mission from here. Read work
     const missionMeta = getMissionMetadata(missionId);
     const launch = isRecord(missionMeta?.launch) ? missionMeta.launch as Record<string, unknown> : {};
 
-    const userRules: import("./coordinatorAgent").CoordinatorUserRules = {};
+    const userRules: CoordinatorUserRules = {};
     if (typeof launch.providerPreference === "string") userRules.providerPreference = launch.providerPreference;
     if (typeof launch.costMode === "string") userRules.costMode = launch.costMode;
     if (typeof launch.maxParallelWorkers === "number") userRules.maxParallelWorkers = launch.maxParallelWorkers;
     const agentRuntime = isRecord(launch.agentRuntime) ? launch.agentRuntime : null;
     if (agentRuntime) {
-      const flags = normalizeAgentRuntimeFlags(agentRuntime as Partial<import("../../../shared/types").MissionAgentRuntimeConfig>);
+      const flags = normalizeAgentRuntimeFlags(agentRuntime as Partial<MissionAgentRuntimeConfig>);
       userRules.allowParallelAgents = flags.allowParallelAgents;
       userRules.allowSubAgents = flags.allowSubAgents;
       userRules.allowClaudeAgentTeams = flags.allowClaudeAgentTeams;
@@ -7595,7 +7539,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
     }
 
-    const projectCtx: import("./coordinatorAgent").CoordinatorProjectContext | undefined =
+    const projectCtx: CoordinatorProjectContext | undefined =
       projectRoot ? {
         projectRoot,
         projectDocPaths: projectDocsContext.found ? projectDocsContext.paths : undefined,
@@ -7604,7 +7548,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       } : undefined;
 
     // Detect available providers
-    const availableProviders: import("./coordinatorAgent").CoordinatorAvailableProvider[] = [];
+    const availableProviders: CoordinatorAvailableProvider[] = [];
     const availability = aiIntegrationService?.getAvailability?.();
     if (availability) {
       if (availability.claude) availableProviders.push({ name: "claude", available: true });
@@ -8048,7 +7992,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const runId = typeof meta?.runId === "string" ? meta.runId.trim() : "";
         const attemptId = typeof meta?.attemptId === "string" ? meta.attemptId.trim() : "";
         const stepId = typeof meta?.stepId === "string" ? meta.stepId.trim() : "";
-        const sessionId = typeof meta?.sessionId === "string" ? meta.sessionId.trim() : "";
+        const _sessionId = typeof meta?.sessionId === "string" ? meta.sessionId.trim() : "";
         const ownerGraph = runId ? loadRunGraph(runId) : null;
         const ownerAttempt = attemptId.length > 0 ? ownerGraph?.attempts.find((entry) => entry.id === attemptId) ?? null : null;
         const ownerStep = stepId.length > 0 ? ownerGraph?.steps.find((entry) => entry.id === stepId) ?? null : null;
@@ -8397,13 +8341,13 @@ Check all worker statuses and continue managing the mission from here. Read work
   const deliverMessageToAgent = (args: Parameters<typeof deliverMessageToAgentCtx>[1]) =>
     deliverMessageToAgentCtx(ctx, args, { sendWorkerMessageToSession });
 
-  const getGlobalChat = (args: import("../../../shared/types").GetGlobalChatArgs) =>
+  const getGlobalChat = (args: GetGlobalChatArgs) =>
     getGlobalChatCtx(ctx, args);
 
-  const getActiveAgents = (args: import("../../../shared/types").GetActiveAgentsArgs) =>
+  const getActiveAgents = (args: GetActiveAgentsArgs) =>
     getActiveAgentsCtx(ctx, args);
 
-  const sendAgentMessageWithMentions = (agentMsgArgs: import("../../../shared/types").SendAgentMessageArgs) =>
+  const sendAgentMessageWithMentions = (agentMsgArgs: SendAgentMessageArgs) =>
     sendAgentMessageWithMentionsCtx(ctx, agentMsgArgs, { deliverMessageToAgent });
 
   const maybeForwardSubagentCompletionRollup = (args: {
@@ -10169,8 +10113,10 @@ Check all worker statuses and continue managing the mission from here. Read work
         if (event.reason !== "finalized") {
           const missionId = getMissionIdForRun(runId);
           if (missionId) {
+            let suppressGenericIntervention = false;
             const launchFailure = getRunLaunchFailureMetadata(runId);
             if (launchFailure && hasOpenMissionLaunchFailureIntervention({ missionId, runId })) {
+              suppressGenericIntervention = true;
               logger.info("ai_orchestrator.coordinator_unavailable_suppressed", {
                 runId,
                 missionId,
@@ -10178,25 +10124,46 @@ Check all worker statuses and continue managing the mission from here. Read work
                 reason: event.reason,
                 failureStage: launchFailure.failureStage ?? null,
               });
-              return;
             }
-            pauseRunWithIntervention({
-              runId,
-              missionId,
-              stepId: event.stepId ?? null,
-              source: "transition_decision",
-              reasonCode: existingCoordinator ? "coordinator_recovery_failed" : "coordinator_unavailable",
-              title: existingCoordinator ? "Coordinator recovery failed" : "Coordinator unavailable",
-              body: existingCoordinator
-                ? "Coordinator agent terminated and could not be recovered. Mission paused to prevent non-autonomous fallback logic."
-                : "Coordinator agent is not available for this run. Mission paused to prevent non-autonomous fallback logic.",
-              requestedAction: "Resume after coordinator runtime is healthy, or restart the mission run.",
-              metadata: {
-                runtimeEventType: event.type,
-                runtimeEventReason: event.reason,
-                attemptId: event.attemptId ?? null
-              }
-            });
+
+            // Skip creating a generic coordinator_unavailable intervention if
+            // onCoordinatorRuntimeFailure already handled this failure and
+            // created a more specific intervention with full failure context.
+            const mission = missionService.get(missionId);
+            const alreadyHandledByRuntimeFailure = mission?.interventions.some((entry) => {
+              if (entry.status !== "open") return false;
+              const meta = isRecord(entry.metadata) ? entry.metadata : null;
+              return meta?.coordinatorFailureHandled === true && meta?.runId === runId;
+            }) ?? false;
+            if (alreadyHandledByRuntimeFailure) {
+              suppressGenericIntervention = true;
+              logger.info("ai_orchestrator.coordinator_unavailable_suppressed_runtime_failure", {
+                runId,
+                missionId,
+                eventType: event.type,
+                reason: event.reason,
+              });
+            }
+
+            if (!suppressGenericIntervention) {
+              pauseRunWithIntervention({
+                runId,
+                missionId,
+                stepId: event.stepId ?? null,
+                source: "transition_decision",
+                reasonCode: existingCoordinator ? "coordinator_recovery_failed" : "coordinator_unavailable",
+                title: existingCoordinator ? "Coordinator recovery failed" : "Coordinator unavailable",
+                body: existingCoordinator
+                  ? "Coordinator agent terminated and could not be recovered. Mission paused to prevent non-autonomous fallback logic."
+                  : "Coordinator agent is not available for this run. Mission paused to prevent non-autonomous fallback logic.",
+                requestedAction: "Resume after coordinator runtime is healthy, or restart the mission run.",
+                metadata: {
+                  runtimeEventType: event.type,
+                  runtimeEventReason: event.reason,
+                  attemptId: event.attemptId ?? null
+                }
+              });
+            }
           }
         } else if (runStatus === "succeeded" || runStatus === "failed" || runStatus === "canceled") {
           resolveCoordinatorHealthInterventions({
@@ -10211,14 +10178,13 @@ Check all worker statuses and continue managing the mission from here. Read work
           reason: event.reason,
           recovered: false
         });
-        return;
+      } else {
+        resolveCoordinatorHealthInterventions({
+          runId,
+          note: "Coordinator runtime is healthy again; closed stale coordinator availability intervention.",
+          resolutionReason: "coordinator_recovered",
+        });
       }
-
-      resolveCoordinatorHealthInterventions({
-        runId,
-        note: "Coordinator runtime is healthy again; closed stale coordinator availability intervention.",
-        resolutionReason: "coordinator_recovered",
-      });
 
       // Run finalized — coordinator's job is done, shut it down
       if (event.reason === "finalized") {
@@ -10330,14 +10296,16 @@ Check all worker statuses and continue managing the mission from here. Read work
       // transition handlers, quality gates, retry decisions, failure diagnosis,
       // fan-out analysis, or intervention auto-resolution.
       // ────────────────────────────────────────────────────────────────────
-      try {
-        routeEventToCoordinator(coordinator, event, { graph: getEventGraph() });
-      } catch (routeError) {
-        logger.debug("ai_orchestrator.coordinator_v2_route_failed", {
-          runId,
-          reason: event.reason,
-          error: routeError instanceof Error ? routeError.message : String(routeError),
-        });
+      if (coordinator) {
+        try {
+          routeEventToCoordinator(coordinator, event, { graph: getEventGraph() });
+        } catch (routeError) {
+          logger.debug("ai_orchestrator.coordinator_v2_route_failed", {
+            runId,
+            reason: event.reason,
+            error: routeError instanceof Error ? routeError.message : String(routeError),
+          });
+        }
       }
       return;
     },

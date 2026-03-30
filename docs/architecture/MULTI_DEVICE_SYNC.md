@@ -123,6 +123,7 @@ After applying remote changesets that touch `unified_memories`, ADE rebuilds the
 | **Changeset sync** | Bidirectional cr-sqlite changeset exchange | All devices |
 | **File access** | Request/response for file reads, directory listings, writes | iOS Files tab, desktop remote viewing |
 | **Terminal stream** | Subscribe to terminal session output from host | iOS Work tab |
+| **Chat stream** | Subscribe to agent chat transcript events from host. A `chat_subscribe` message sends a snapshot of recent transcript events and begins polling for new entries; `chat_unsubscribe` stops streaming. Incremental events are delivered as `chat_event` envelopes. | iOS Work tab, controller chat views |
 | **Command routing** | Send execution commands to host | All non-host devices |
 
 ### Reconnection
@@ -276,6 +277,8 @@ Rule for future workstreams:
 
 - **State-only operations** (create lane metadata, update settings): write locally, cr-sqlite syncs.
 - **Execution operations** (create worktree, run terminal command, create PR): send command to host via WebSocket. Host executes, state changes sync back.
+
+The remote command service (`syncRemoteCommandService`) registers named actions that controllers can invoke. Agent chat commands include `chat.create`, `chat.send`, `chat.interrupt`, `chat.steer`, `chat.approve`, `chat.respondToInput`, `chat.resume`, `chat.updateSession`, `chat.dispose`, and `chat.models`. All chat commands are viewer-allowed and queueable, enabling full remote chat session control from companion devices.
 
 ---
 

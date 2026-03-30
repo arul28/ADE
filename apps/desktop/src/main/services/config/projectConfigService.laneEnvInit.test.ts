@@ -180,6 +180,75 @@ describe("projectConfigService lane env init", () => {
     );
   });
 
+  it("rejects process, suite, and overlay cwd values outside the project root", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-cwd-"));
+    tempDirs.push(root);
+
+    const adeDir = path.join(root, ".ade");
+    fs.mkdirSync(adeDir, { recursive: true });
+
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-cwd-outside-"));
+    tempDirs.push(outsideDir);
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger()
+    });
+
+    const validation = service.validate({
+      shared: {
+        version: 1,
+        processes: [
+          {
+            id: "proc-1",
+            name: "Proc 1",
+            command: ["echo", "ok"],
+            cwd: outsideDir,
+          },
+        ],
+        stackButtons: [],
+        testSuites: [
+          {
+            id: "suite-1",
+            name: "Suite 1",
+            command: ["echo", "ok"],
+            cwd: outsideDir,
+          },
+        ],
+        laneOverlayPolicies: [
+          {
+            id: "overlay-1",
+            name: "Overlay 1",
+            overrides: {
+              cwd: outsideDir,
+            },
+          },
+        ],
+        automations: []
+      },
+      local: {
+        version: 1,
+        processes: [],
+        stackButtons: [],
+        testSuites: [],
+        laneOverlayPolicies: [],
+        automations: []
+      }
+    });
+
+    expect(validation.ok).toBe(false);
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "effective.processes[0].cwd", message: expect.stringContaining("project root") }),
+        expect.objectContaining({ path: "effective.testSuites[0].cwd", message: expect.stringContaining("project root") }),
+        expect.objectContaining({ path: "effective.laneOverlayPolicies[0].overrides.cwd", message: expect.stringContaining("project root") }),
+      ]),
+    );
+  });
+
   it("deep merges nested docker config across shared and local lane env init", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-lane-init-docker-merge-"));
     tempDirs.push(root);

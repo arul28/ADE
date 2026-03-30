@@ -15,6 +15,7 @@ import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/m
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { runGit } from "../../desktop/src/main/services/git/git";
+import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import {
   createDefaultComputerUsePolicy,
@@ -1045,14 +1046,14 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "resolveLinearRunAction",
-    description: "Approve, reject, retry, or explicitly complete a Linear workflow run.",
+    description: "Approve, reject, retry, resume, or explicitly complete a Linear workflow run.",
     inputSchema: {
       type: "object",
       required: ["runId", "action"],
       additionalProperties: false,
       properties: {
         runId: { type: "string", minLength: 1 },
-        action: { type: "string", enum: ["approve", "reject", "retry", "complete"] },
+        action: { type: "string", enum: ["approve", "reject", "retry", "complete", "resume"] },
         note: { type: "string" }
       }
     }
@@ -1160,9 +1161,10 @@ const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         queueItemId: { type: "string", minLength: 1 },
-        action: { type: "string", enum: ["approve", "reject", "retry", "complete"] },
+        action: { type: "string", enum: ["approve", "reject", "retry", "complete", "resume"] },
         note: { type: "string" },
-        employeeOverride: { type: "string" }
+        employeeOverride: { type: "string" },
+        laneId: { type: "string" }
       }
     }
   },
@@ -1827,8 +1829,10 @@ function resolveSpawnContextFile(args: {
     if (path.isAbsolute(contextFilePathRaw)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be a relative path within the project directory");
     }
-    const abs = path.resolve(args.runtime.projectRoot, contextFilePathRaw);
-    if (!abs.startsWith(args.runtime.projectRoot + path.sep) && abs !== args.runtime.projectRoot) {
+    let abs: string;
+    try {
+      abs = resolvePathWithinRoot(args.runtime.projectRoot, path.resolve(args.runtime.projectRoot, contextFilePathRaw));
+    } catch {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be within the project directory");
     }
     if (!fs.existsSync(abs)) {
@@ -2012,6 +2016,9 @@ async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionS
   const visibleBaseTools = shouldHideLocalComputerUse
     ? TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
     : TOOL_SPECS;
+  if (callerCtx.role === "external" || !callerCtx.role) {
+    return [...visibleBaseTools, ...externalToolSpecs];
+  }
   if (callerCtx.role === "agent") {
     return [...visibleBaseTools, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS, ...externalToolSpecs];
   }
@@ -2028,22 +2035,14 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
-  const requestedRole = asTrimmedString(identity.role);
-  const validRole: SessionIdentity["role"] =
-    envContext.role
-      ?? (
-        requestedRole === "cto"
-        || requestedRole === "orchestrator"
-        || requestedRole === "agent"
-        || requestedRole === "evaluator"
-          ? requestedRole
-          : "external"
-      );
+  const validRole: SessionIdentity["role"] = envContext.role ?? "external";
   const requestedComputerUsePolicy = normalizeComputerUsePolicy(
-    identity.computerUsePolicy,
-    envContext.computerUsePolicy ?? createDefaultComputerUsePolicy(),
+    identity.computerUsePolicy ?? envContext.computerUsePolicy,
+    createDefaultComputerUsePolicy(),
   );
-  const effectiveComputerUsePolicy = envContext.computerUsePolicy ?? requestedComputerUsePolicy;
+  const effectiveComputerUsePolicy = validRole === "external"
+    ? createDefaultComputerUsePolicy({ allowLocalFallback: false })
+    : requestedComputerUsePolicy;
 
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.chatSessionId ?? envContext.attemptId ?? "unknown",
@@ -3161,11 +3160,19 @@ async function runTool(args: {
     }
 
     if (name === "resolveLinearSyncQueueItem") {
+      const action = assertNonEmptyString(toolArgs.action, "action");
+      if (!new Set(["approve", "reject", "retry", "complete", "resume"]).has(action)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "action must be one of: approve, reject, retry, complete, resume",
+        );
+      }
       return await requireLinearSyncService(runtime).resolveQueueItem({
         queueItemId: assertNonEmptyString(toolArgs.queueItemId, "queueItemId"),
-        action: assertNonEmptyString(toolArgs.action, "action") as "approve" | "reject" | "retry" | "complete",
+        action: action as "approve" | "reject" | "retry" | "complete" | "resume",
         note: asOptionalTrimmedString(toolArgs.note) ?? undefined,
         employeeOverride: asOptionalTrimmedString(toolArgs.employeeOverride) ?? undefined,
+        laneId: asOptionalTrimmedString(toolArgs.laneId) ?? undefined,
       });
     }
 
@@ -3630,7 +3637,15 @@ async function runTool(args: {
     const manifestPath = asOptionalTrimmedString(toolArgs.manifestPath);
     let inputs = Array.isArray(toolArgs.inputs) ? toolArgs.inputs.map((entry) => safeObject(entry)) : [];
     if (manifestPath) {
-      const resolvedManifest = path.isAbsolute(manifestPath) ? manifestPath : path.resolve(runtime.projectRoot, manifestPath);
+      if (path.isAbsolute(manifestPath)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "manifestPath must be relative to the project root");
+      }
+      let resolvedManifest: string;
+      try {
+        resolvedManifest = resolvePathWithinRoot(runtime.projectRoot, path.resolve(runtime.projectRoot, manifestPath));
+      } catch {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "manifestPath must stay within the project root");
+      }
       inputs = loadAgentBrowserArtifactPayloadFromFile(resolvedManifest).map((entry) => ({
         ...entry,
         metadata: {

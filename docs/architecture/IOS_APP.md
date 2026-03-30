@@ -151,6 +151,7 @@ Current Phase 6 stance:
 | `command_result` | Host to phone | Command execution result or error |
 | `file_request` / `file_response` | Bidirectional | On-demand file access |
 | `terminal_subscribe` / `terminal_data` | Phone to host / host to phone | Terminal output streaming |
+| `chat_subscribe` / `chat_event` | Phone to host / host to phone | Agent chat transcript streaming. Subscribe sends a snapshot of recent events; incremental events follow via polling. |
 | `heartbeat` | Bidirectional | Connection health (30s interval) |
 
 ### Offline Behavior
