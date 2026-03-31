@@ -15,6 +15,7 @@ import type {
   CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
   LaneIcon,
+  MissionLaneRole,
   LaneStateSnapshotSummary,
   LaneStatus,
   LaneSummary,
@@ -53,6 +54,8 @@ type LaneRow = {
   icon: string | null;
   tags_json: string | null;
   folder: string | null;
+  mission_id: string | null;
+  lane_role: MissionLaneRole | null;
   created_at: string;
   archived_at: string | null;
   status: string;
@@ -162,6 +165,8 @@ function toLaneSummary(args: {
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
     folder: row.folder,
+    missionId: row.mission_id,
+    laneRole: row.lane_role,
     createdAt: row.created_at,
     archivedAt: row.archived_at
   };
@@ -905,6 +910,8 @@ export function createLaneService({
     startPoint: string;
     parentLaneId: string | null;
     folder?: string;
+    missionId?: string | null;
+    laneRole?: MissionLaneRole | null;
   }): Promise<LaneSummary> => {
     const laneId = randomUUID();
     const now = new Date().toISOString();
@@ -922,11 +929,24 @@ export function createLaneService({
       `
         insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, status, created_at, archived_at
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, mission_id, lane_role, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, ?, 'active', ?, null)
+        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, ?, ?, ?, 'active', ?, null)
       `,
-      [laneId, projectId, args.name, args.description ?? null, args.baseRef, branchRef, worktreePath, args.parentLaneId, args.folder ?? null, now]
+      [
+        laneId,
+        projectId,
+        args.name,
+        args.description ?? null,
+        args.baseRef,
+        branchRef,
+        worktreePath,
+        args.parentLaneId,
+        args.folder ?? null,
+        args.missionId ?? null,
+        args.laneRole ?? null,
+        now
+      ]
     );
     invalidateLaneListCache();
 
@@ -1141,8 +1161,32 @@ export function createLaneService({
         baseRef: parent.branch_ref,
         startPoint: parentHeadSha,
         parentLaneId: parent.id,
-        folder: args.folder
+        folder: args.folder,
+        missionId: args.missionId ?? null,
+        laneRole: args.laneRole ?? null
       });
+    },
+
+    setMissionOwnership(args: {
+      laneId: string;
+      missionId?: string | null;
+      laneRole?: MissionLaneRole | null;
+    }): void {
+      const laneId = args.laneId.trim();
+      if (!laneId.length) throw new Error("laneId is required.");
+      const existing = getLaneRow(laneId);
+      if (!existing) throw new Error(`Lane not found: ${laneId}`);
+      db.run(
+        `
+          update lanes
+          set mission_id = ?,
+              lane_role = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [args.missionId?.trim() || null, args.laneRole ?? null, laneId, projectId]
+      );
+      invalidateLaneListCache();
     },
 
     async createFromUnstaged(args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> {

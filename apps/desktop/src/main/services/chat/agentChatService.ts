@@ -1047,6 +1047,42 @@ function readProviderParentItemId(value: unknown): string | undefined {
   return undefined;
 }
 
+function normalizeClaudeTodoItems(
+  value: unknown,
+): Extract<AgentChatEvent, { type: "todo_update" }>["items"] | null {
+  if (!value || typeof value !== "object") return null;
+  const todos = (value as { todos?: unknown }).todos;
+  if (!Array.isArray(todos) || todos.length === 0) return null;
+
+  const items: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = todos.flatMap((todo, index) => {
+    if (!todo || typeof todo !== "object") return [];
+    const record = todo as Record<string, unknown>;
+    const description = [
+      record.content,
+      record.activeForm,
+      record.description,
+      record.text,
+    ].find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)?.trim();
+    if (!description) return [];
+
+    const rawStatus = typeof record.status === "string" ? record.status : "";
+    const status: Extract<AgentChatEvent, { type: "todo_update" }>["items"][number]["status"] = rawStatus === "completed"
+      ? "completed"
+      : rawStatus === "in_progress" || rawStatus === "inProgress"
+        ? "in_progress"
+        : "pending";
+
+    const explicitId = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
+    return [{
+      id: explicitId ?? `todo-${index}`,
+      description,
+      status,
+    }];
+  });
+
+  return items.length ? items : null;
+}
+
 function buildStreamingUserContent(
   args: {
     baseText: string;
@@ -4473,6 +4509,7 @@ export function createAgentChatService(args: {
     const emittedSyntheticItemIds = new Set<string>();
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
+    const emittedClaudeTodoIds = new Set<string>();
     const markFirstStreamEvent = (kind: string): void => {
       if (firstStreamEventLogged) return;
       firstStreamEventLogged = true;
@@ -4827,6 +4864,15 @@ export function createAgentChatService(args: {
                     itemId,
                     turnId,
                   });
+                  const todoItems = toolName === "TodoWrite" ? normalizeClaudeTodoItems(block.input ?? {}) : null;
+                  if (todoItems && !emittedClaudeTodoIds.has(itemId)) {
+                    emittedClaudeTodoIds.add(itemId);
+                    emitChatEvent(managed, {
+                      type: "todo_update",
+                      items: todoItems,
+                      turnId,
+                    });
+                  }
                   // Synthesize a tool_result for the proof observer since the
                   // Claude V2 SDK never surfaces tool results in the stream.
                   const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
@@ -4942,6 +4988,15 @@ export function createAgentChatService(args: {
                   itemId,
                   turnId,
                 });
+                const todoItems = toolName === "TodoWrite" ? normalizeClaudeTodoItems(block.input ?? {}) : null;
+                if (todoItems && !emittedClaudeTodoIds.has(itemId)) {
+                  emittedClaudeTodoIds.add(itemId);
+                  emitChatEvent(managed, {
+                    type: "todo_update",
+                    items: todoItems,
+                    turnId,
+                  });
+                }
                 if (typeof contentIndex === "number") {
                   const initial =
                     block.input != null && typeof block.input === "object" && Object.keys(block.input as object).length

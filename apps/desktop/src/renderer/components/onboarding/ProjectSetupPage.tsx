@@ -308,6 +308,11 @@ export function ProjectSetupPage() {
             onReasoningEffortChange={setContextReasoningEffort}
             className="w-full"
           />
+          {!contextModelId.trim() ? (
+            <div style={{ marginTop: 8, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>
+              Auto-refresh stays idle until you select a model.
+            </div>
+          ) : null}
 
           {/* Status */}
           <div style={{ marginTop: 16, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>

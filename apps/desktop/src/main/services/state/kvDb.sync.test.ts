@@ -262,10 +262,10 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
 
     // FTS4/5 may not be available (e.g. node:sqlite without fts modules).
     // When unavailable, the fallback plain table is used — verify with LIKE.
-    const isFts = Boolean(
-      db2.get<{ type: string }>(
-        "select type from sqlite_master where name = 'unified_memories_fts' and type = 'table' limit 1"
-      )
+    const isFts = /virtual\s+table/i.test(
+      db2.get<{ sql: string | null }>(
+        "select sql from sqlite_master where name = 'unified_memories_fts' and type = 'table' limit 1"
+      )?.sql ?? ""
     );
     if (isFts) {
       // Real FTS virtual table — query with MATCH

@@ -453,7 +453,7 @@ function buildCoordinatorRulesSection(rules: CoordinatorUserRules | undefined): 
   if (rules.laneStrategy) ruleLines.push(`- Lane strategy: ${rules.laneStrategy}`);
   if (rules.customInstructions) ruleLines.push(`- Custom instructions: ${rules.customInstructions}`);
   if (rules.coordinatorModel) ruleLines.push(`- Coordinator model: ${rules.coordinatorModel} (user selected)`);
-  if (rules.prStrategy) ruleLines.push(`- PR strategy: ${rules.prStrategy}`);
+  if (rules.closeoutContract) ruleLines.push(`- Closeout contract: ${rules.closeoutContract}`);
   if (rules.budgetLimitUsd != null) ruleLines.push(`- Budget limit: $${rules.budgetLimitUsd.toFixed(2)} USD`);
   if (rules.budgetLimitTokens != null) ruleLines.push(`- Token budget limit: ${rules.budgetLimitTokens.toLocaleString()} tokens`);
   if (rules.recoveryEnabled != null) ruleLines.push(`- Recovery loops: ${rules.recoveryEnabled ? `enabled (max ${rules.recoveryMaxIterations ?? 3} iterations)` : "disabled"}`);

@@ -30,18 +30,29 @@ create table if not exists lanes (
       icon text,
       tags_json text,
       folder text,
+      mission_id text,
+      lane_role text,
       status text not null,
       created_at text not null,
       archived_at text,
       foreign key(project_id) references projects(id),
-      foreign key(parent_lane_id) references lanes(id)
+      foreign key(parent_lane_id) references lanes(id),
+      foreign key(mission_id) references missions(id) on delete cascade on delete set null
     );
+
+alter table lanes add column mission_id text;
+
+alter table lanes add column lane_role text;
 
 create index if not exists idx_lanes_project_id on lanes(project_id);
 
 create index if not exists idx_lanes_project_type on lanes(project_id, lane_type);
 
 create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id);
+
+create index if not exists idx_lanes_project_mission on lanes(project_id, mission_id);
+
+create index if not exists idx_lanes_project_role on lanes(project_id, lane_role);
 
 create table if not exists lane_state_snapshots (
       lane_id text primary key,
@@ -589,12 +600,16 @@ create table if not exists missions (
       id text primary key,
       project_id text not null,
       lane_id text,
+      mission_lane_id text,
+      result_lane_id text,
       title text not null,
       prompt text not null,
       status text not null,
       priority text not null default 'normal',
       execution_mode text not null default 'local',
       target_machine_id text,
+      queue_claim_token text,
+      queue_claimed_at text,
       outcome_summary text,
       last_error text,
       metadata_json text,
@@ -602,15 +617,36 @@ create table if not exists missions (
       updated_at text not null,
       started_at text,
       completed_at text,
+      archived_at text,
       foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id)
+      foreign key(lane_id) references lanes(id),
+      foreign key(mission_lane_id) references lanes(id) on delete set null,
+      foreign key(result_lane_id) references lanes(id) on delete set null
     );
+
+alter table missions add column mission_lane_id text;
+
+alter table missions add column result_lane_id text;
+
+alter table missions add column queue_claim_token text;
+
+alter table missions add column queue_claimed_at text;
+
+alter table missions add column archived_at text;
 
 create index if not exists idx_missions_project_updated on missions(project_id, updated_at);
 
 create index if not exists idx_missions_project_status on missions(project_id, status);
 
 create index if not exists idx_missions_project_lane on missions(project_id, lane_id);
+
+create index if not exists idx_missions_project_mission_lane on missions(project_id, mission_lane_id);
+
+create index if not exists idx_missions_project_result_lane on missions(project_id, result_lane_id);
+
+drop index if exists idx_missions_queue_claim_token;
+
+create index if not exists idx_missions_project_queue_claim on missions(project_id, queue_claim_token);
 
 create table if not exists mission_steps (
       id text primary key,
@@ -627,7 +663,7 @@ create table if not exists mission_steps (
       updated_at text not null,
       started_at text,
       completed_at text,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id),
       foreign key(lane_id) references lanes(id)
     );
@@ -645,7 +681,7 @@ create table if not exists mission_events (
       summary text not null,
       payload_json text,
       created_at text not null,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id)
     );
 
@@ -705,7 +741,7 @@ create table if not exists mission_artifacts (
       created_at text not null,
       updated_at text not null,
       created_by text not null,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id),
       foreign key(lane_id) references lanes(id)
     );
@@ -728,7 +764,7 @@ create table if not exists mission_interventions (
       created_at text not null,
       updated_at text not null,
       resolved_at text,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id),
       foreign key(lane_id) references lanes(id)
     );
@@ -788,7 +824,7 @@ create table if not exists mission_phase_overrides (
       phases_json text not null,
       created_at text not null,
       updated_at text not null,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id),
       foreign key(profile_id) references phase_profiles(id)
     );
@@ -812,7 +848,7 @@ create table if not exists orchestrator_runs (
       started_at text,
       completed_at text,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id)
+      foreign key(mission_id) references missions(id) on delete cascade
     );
 
 create index if not exists idx_orchestrator_runs_project_status on orchestrator_runs(project_id, status);
@@ -996,7 +1032,7 @@ create table if not exists mission_step_handoffs (
       payload_json text not null,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(mission_step_id) references mission_steps(id),
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
@@ -1061,7 +1097,7 @@ create table if not exists orchestrator_chat_threads (
       created_at text not null,
       updated_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id),
@@ -1095,7 +1131,7 @@ create table if not exists orchestrator_chat_messages (
       metadata_json text,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(thread_id) references orchestrator_chat_threads(id),
       foreign key(attempt_id) references orchestrator_attempts(id),
       foreign key(lane_id) references lanes(id),
@@ -1132,7 +1168,7 @@ create table if not exists orchestrator_worker_digests (
       suggested_next_actions_json text not null,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id),
@@ -1161,7 +1197,7 @@ create table if not exists orchestrator_artifacts (
       declared integer not null default 0,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id)
@@ -1183,7 +1219,7 @@ create table if not exists orchestrator_context_checkpoints (
       source_json text not null,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id)
     );
 
@@ -1204,7 +1240,7 @@ create table if not exists orchestrator_worker_checkpoints (
       created_at text not null,
       updated_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id)
@@ -1231,7 +1267,7 @@ create table if not exists orchestrator_lane_decisions (
       metadata_json text,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(lane_id) references lanes(id)
@@ -1267,7 +1303,7 @@ create table if not exists orchestrator_ai_decisions (
       completion_tokens integer,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id)
@@ -1288,7 +1324,7 @@ create table if not exists mission_metrics_config (
       project_id text not null,
       toggles_json text not null,
       updated_at text not null,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id)
     );
 
@@ -1306,7 +1342,7 @@ create table if not exists orchestrator_metrics_samples (
       metadata_json text,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(attempt_id) references orchestrator_attempts(id)
     );
@@ -1717,7 +1753,7 @@ create table if not exists orchestrator_team_members (
       created_at text not null,
       updated_at text not null,
       foreign key(run_id) references orchestrator_runs(id),
-      foreign key(mission_id) references missions(id)
+      foreign key(mission_id) references missions(id) on delete cascade
     );
 
 create index if not exists idx_orchestrator_team_members_run on orchestrator_team_members(run_id);
@@ -2263,3 +2299,36 @@ create index if not exists idx_budget_usage_records_scope_week on budget_usage_r
 create index if not exists idx_budget_usage_records_week on budget_usage_records(week_key);
 
 create index if not exists idx_budget_usage_records_provider_week on budget_usage_records(provider, week_key);
+
+create table if not exists pr_issue_inventory (
+      id text primary key,
+      pr_id text not null,
+      source text not null,
+      type text not null,
+      external_id text not null,
+      state text not null default 'new',
+      round integer not null default 0,
+      file_path text,
+      line integer,
+      severity text,
+      headline text not null,
+      body text,
+      author text,
+      url text,
+      dismiss_reason text,
+      agent_session_id text,
+      created_at text not null,
+      updated_at text not null,
+      unique(pr_id, external_id)
+    );
+
+create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state);
+
+create table if not exists pr_pipeline_settings (
+      pr_id text primary key,
+      auto_merge integer not null default 0,
+      merge_method text not null default 'repo_default',
+      max_rounds integer not null default 5,
+      on_rebase_needed text not null default 'pause',
+      updated_at text not null
+    );

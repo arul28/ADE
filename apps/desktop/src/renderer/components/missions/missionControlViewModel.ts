@@ -134,8 +134,11 @@ export function deriveActivePhaseViewModel(args: {
     }
     if (openInterventions.length > 0) {
       exitRequirements.push(`Answer ${openInterventions.length} open planning question(s).`);
+    }
+    if (activePhase.requiresApproval) {
+      exitRequirements.push("Review the generated plan and explicitly approve the planning phase before ADE moves into Development.");
     } else {
-      exitRequirements.push("Once the planner succeeds, ADE should move into Development without a separate plan-exit approval step.");
+      exitRequirements.push("Once the planner succeeds, ADE can move into Development immediately.");
     }
   } else if (activePhase.phaseKey === "validation") {
     if (phaseSteps.length > 0) {
@@ -190,7 +193,7 @@ export function deriveActivePhaseViewModel(args: {
     validationRequired: activePhase.validationGate.required,
     validationTier: activePhase.validationGate.tier,
     clarificationLabel: activePhase.askQuestions.enabled
-      ? `active phase owner may ask${activePhase.askQuestions.maxQuestions ? `, max ${activePhase.askQuestions.maxQuestions}` : ""}`
+      ? `active phase owner may ask${activePhase.askQuestions.maxQuestions == null ? " without a question limit" : `, max ${activePhase.askQuestions.maxQuestions}`}`
       : "Ask questions disabled",
     whyActive: whyBits.join(" "),
     exitRequirements,

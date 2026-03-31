@@ -12,6 +12,7 @@ import type {
   RecoveryLoopPolicy,
   IntegrationPrPolicy,
   MissionCloseoutRequirement,
+  MissionFinalizationPolicyKind,
 } from "./orchestrator";
 import type { AiCliPermissionMode, AiCliSandboxPermissions, AiInProcessPermissionMode } from "./config";
 import type { AgentChatPermissionMode } from "./chat";
@@ -292,7 +293,7 @@ export type PhaseCardBudget = {
 
 export type PhaseCardAskQuestions = {
   enabled: boolean;
-  maxQuestions?: number;
+  maxQuestions?: number | null;
 };
 
 export type PhaseCardValidationGate = {
@@ -539,6 +540,10 @@ export type MissionSummary = {
   prompt: string;
   laneId: string | null;
   laneName: string | null;
+  missionLaneId?: string | null;
+  missionLaneName?: string | null;
+  resultLaneId?: string | null;
+  resultLaneName?: string | null;
   status: MissionStatus;
   priority: MissionPriority;
   executionMode: MissionExecutionMode;
@@ -581,6 +586,14 @@ export type MissionEvent = {
   createdAt: string;
 };
 
+export type MissionDetailWarning = {
+  code: "invalid_json" | "truncated_events";
+  source: "mission" | "step" | "event" | "artifact" | "intervention";
+  field: string;
+  recordId: string | null;
+  message: string;
+};
+
 export type MissionArtifact = {
   id: string;
   missionId: string;
@@ -617,6 +630,8 @@ export type MissionDetail = MissionSummary & {
   events: MissionEvent[];
   artifacts: MissionArtifact[];
   interventions: MissionIntervention[];
+  warnings?: MissionDetailWarning[];
+  plannerPlan?: PlannerPlan | null;
   phaseConfiguration?: MissionPhaseConfiguration | null;
   computerUse?: ComputerUsePolicy | null;
 };
@@ -924,6 +939,7 @@ export type MissionConcurrencyCheckResult = {
 export type MissionLaneClaimCheckResult = {
   claimed: boolean;
   byMissionId?: string;
+  reason?: string;
 };
 
 export type MissionConcurrencyConfig = {
@@ -935,7 +951,22 @@ export type MissionsEventPayload = {
   type: "missions-updated";
   missionId?: string;
   reason?: string;
+  claimToken?: string | null;
   at: string;
+};
+
+export type GetMissionEventsArgs = {
+  missionId: string;
+  limit?: number;
+  before?: string | null;
+};
+
+export type MissionEventsPage = {
+  missionId: string;
+  events: MissionEvent[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  warnings: MissionDetailWarning[];
 };
 
 export type MissionStepHandoff = {
@@ -960,6 +991,7 @@ export type MissionLevelSettings = {
   recoveryLoop?: RecoveryLoopPolicy;
   integrationPr?: IntegrationPrPolicy;
   prStrategy?: PrStrategy;
+  finalizationPolicyKind?: MissionFinalizationPolicyKind;
   teamRuntime?: TeamRuntimeConfig;
 };
 
@@ -975,6 +1007,7 @@ export type MissionExecutionPolicy = {
   recoveryLoop?: RecoveryLoopPolicy;
   integrationPr?: IntegrationPrPolicy;
   prStrategy?: PrStrategy;
+  finalizationPolicyKind?: MissionFinalizationPolicyKind;
   /** Team runtime: spawn coordinator + teammates with shared task list and direct messaging */
   teamRuntime?: TeamRuntimeConfig;
 };

@@ -91,6 +91,11 @@ const APPROVED_CONFLICT_TARGETS: ConflictTarget[] = [
     columns: "project_id,lane_id,process_key",
   },
   {
+    file: "src/main/services/prs/issueInventoryService.ts",
+    table: "pr_pipeline_settings",
+    columns: "pr_id",
+  },
+  {
     file: "src/main/services/prs/prService.ts",
     table: "pull_request_snapshots",
     columns: "pr_id",

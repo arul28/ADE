@@ -2517,6 +2517,93 @@ export function createPrService({
     }
   };
 
+  const createIntegrationLane = async (args: {
+    sourceLaneIds: string[];
+    integrationLaneName: string;
+    baseBranch: string;
+    description?: string;
+    allowDirtyWorktree?: boolean;
+    missionId?: string | null;
+    laneRole?: "mission_root" | "worker" | "integration" | "result" | null;
+  }): Promise<{
+    integrationLane: LaneSummary;
+    mergeResults: Array<{ laneId: string; success: boolean; error?: string }>;
+  }> => {
+    if (!args.sourceLaneIds.length) throw new Error("At least one source lane is required");
+    const integrationLaneName = args.integrationLaneName.trim();
+    if (!integrationLaneName) throw new Error("Integration lane name is required");
+
+    const lanes = await laneService.list({ includeArchived: false });
+    const preflight = buildIntegrationPreflight(lanes, args.sourceLaneIds, args.baseBranch);
+    if (!preflight.uniqueSourceLaneIds.length) throw new Error("At least one valid source lane is required");
+    if (preflight.duplicateSourceLaneIds.length > 0) {
+      throw new Error(`Duplicate source lanes selected: ${preflight.duplicateSourceLaneIds.join(", ")}`);
+    }
+    if (preflight.missingSourceLaneIds.length > 0) {
+      throw new Error(`Source lanes not found: ${preflight.missingSourceLaneIds.join(", ")}`);
+    }
+    if (!preflight.baseLane) {
+      throw new Error(`Could not map base branch "${args.baseBranch}" to an active lane. Create or attach that lane first.`);
+    }
+    assertDirtyWorktreesAllowed({
+      lanes,
+      laneIds: preflight.uniqueSourceLaneIds,
+      allowDirtyWorktree: args.allowDirtyWorktree
+    });
+
+    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+    const sourceLaneNames = preflight.uniqueSourceLaneIds.map((laneId) => laneMap.get(laneId)?.name ?? laneId);
+    let integrationLane: LaneSummary | null = null;
+    try {
+      integrationLane = await laneService.createChild({
+        parentLaneId: preflight.baseLane.id,
+        name: integrationLaneName,
+        description: args.description?.trim().length
+          ? args.description.trim()
+          : `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
+        missionId: args.missionId ?? null,
+        laneRole: args.laneRole ?? "integration",
+      });
+
+      const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
+      for (const sourceLaneId of preflight.uniqueSourceLaneIds) {
+        const sourceLane = laneMap.get(sourceLaneId);
+        if (!sourceLane) {
+          mergeResults.push({ laneId: sourceLaneId, success: false, error: `Lane not found: ${sourceLaneId}` });
+          continue;
+        }
+        const sourceBranch = branchNameFromRef(sourceLane.branchRef);
+        const mergeRes = await runGit(
+          ["merge", "--no-ff", "-m", `Merge ${sourceLane.name} into integration`, sourceBranch],
+          { cwd: integrationLane.worktreePath, timeoutMs: 60_000 }
+        );
+        if (mergeRes.exitCode !== 0) {
+          await runGit(["merge", "--abort"], { cwd: integrationLane.worktreePath, timeoutMs: 10_000 });
+          mergeResults.push({ laneId: sourceLaneId, success: false, error: mergeRes.stderr.trim() || "Merge failed" });
+        } else {
+          mergeResults.push({ laneId: sourceLaneId, success: true });
+        }
+      }
+
+      return {
+        integrationLane,
+        mergeResults,
+      };
+    } catch (error) {
+      if (integrationLane) {
+        try {
+          await laneService.archive({ laneId: integrationLane.id });
+        } catch (cleanupError) {
+          logger.warn("prs.integration_lane_cleanup_failed", {
+            laneId: integrationLane.id,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          });
+        }
+      }
+      throw error;
+    }
+  };
+
   const landStackEnhanced = async (args: LandStackEnhancedArgs): Promise<LandResult[]> => {
     if (args.mode === "sequential") {
       return await landStack({ rootLaneId: args.rootLaneId, method: args.method });
@@ -4305,6 +4392,21 @@ export function createPrService({
 
     async createIntegrationPr(args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> {
       return await createIntegrationPr(args);
+    },
+
+    async createIntegrationLane(args: {
+      sourceLaneIds: string[];
+      integrationLaneName: string;
+      baseBranch: string;
+      description?: string;
+      allowDirtyWorktree?: boolean;
+      missionId?: string | null;
+      laneRole?: "mission_root" | "worker" | "integration" | "result" | null;
+    }): Promise<{
+      integrationLane: LaneSummary;
+      mergeResults: Array<{ laneId: string; success: boolean; error?: string }>;
+    }> {
+      return await createIntegrationLane(args);
     },
 
     async simulateIntegration(args: SimulateIntegrationArgs): Promise<IntegrationProposal> {

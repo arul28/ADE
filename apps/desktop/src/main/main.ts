@@ -34,6 +34,7 @@ import { createGithubService } from "./services/github/githubService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
+import { createIssueInventoryService } from "./services/prs/issueInventoryService";
 import { detectDefaultBaseRef, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
@@ -220,7 +221,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     ? "'self' http://localhost:* http://127.0.0.1:*"
     : "'self' file: app:";
   const cspWsSources = isDevMode ? " ws://localhost:* ws://127.0.0.1:*" : "";
-  const cspImageSources = `${cspSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com`;
+  const cspImageSources = `${cspSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io`;
   const cspPolicy = [
     `default-src ${cspSources}`,
     `base-uri 'self'`,
@@ -991,10 +992,11 @@ app.whenReady().then(async () => {
         if (hotPrIds.size > 0) {
           prServiceRef?.markHotRefresh(Array.from(hotPrIds));
         }
-        aiOrchestratorServiceRef?.onQueueLandingStateChanged?.(state);
       }
     });
     queueLandingService.init();
+
+    const issueInventoryService = createIssueInventoryService({ db });
 
     const fileService = createFileService({
       laneService,
@@ -1499,6 +1501,7 @@ app.whenReady().then(async () => {
         if (event.reason === "ready_to_start" && event.missionId) {
           void aiOrchestratorServiceRef?.startMissionRun({
             missionId: event.missionId,
+            queueClaimToken: event.claimToken ?? null,
           }).catch((error) => {
             logger.warn("missions.queue_autostart_failed", {
               missionId: event.missionId,
@@ -2301,6 +2304,7 @@ app.whenReady().then(async () => {
       prPollingService,
       computerUseArtifactBrokerService,
       queueLandingService,
+      issueInventoryService,
       jobEngine,
       automationService,
       automationPlannerService,
@@ -2393,6 +2397,7 @@ app.whenReady().then(async () => {
       prService: null,
       prPollingService: null,
       queueLandingService: null,
+      issueInventoryService: null,
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,

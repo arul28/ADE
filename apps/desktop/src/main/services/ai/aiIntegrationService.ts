@@ -221,7 +221,7 @@ function resolveUnifiedToolMode(args: {
     return "planning";
   }
   if (args.taskType === "initial_context") {
-    return "planning";
+    return "none";
   }
   if (args.feature === "orchestrator" && args.permissionMode === "read-only") {
     return "planning";

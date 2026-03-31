@@ -51,6 +51,7 @@ type OpenTab = {
 type FilesPageNavState = {
   openFilePath?: string;
   laneId?: string;
+  preferPrimaryWorkspace?: boolean;
 };
 
 type ConflictHunk = {
@@ -335,7 +336,7 @@ export function FilesPage() {
   const [tree, setTree] = useState<FileTreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(initialSession?.selectedNodePath ?? null);
-  const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; key: string } | null>(null);
+  const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; preferPrimaryWorkspace: boolean; key: string } | null>(null);
   const treeRefreshStateRef = useRef<{
     inFlight: boolean;
     queuedFull: boolean;
@@ -557,7 +558,12 @@ export function FilesPage() {
     const st = (location.state as FilesPageNavState | null) ?? null;
     const openFilePath = st?.openFilePath?.trim();
     if (!openFilePath) return;
-    pendingOpenRef.current = { key: location.key, filePath: openFilePath, laneId: st?.laneId ?? null };
+    pendingOpenRef.current = {
+      key: location.key,
+      filePath: openFilePath,
+      laneId: st?.laneId ?? null,
+      preferPrimaryWorkspace: st?.preferPrimaryWorkspace === true,
+    };
   }, [location.key, location.state]);
 
   const refreshTreeNow = useCallback(async (parentPath?: string) => {
@@ -688,7 +694,9 @@ export function FilesPage() {
     if (!workspaces.length) return;
 
     const desiredWorkspaceId =
-      pending.laneId != null
+      pending.preferPrimaryWorkspace
+        ? workspaces.find((ws) => ws.kind === "primary")?.id ?? null
+        : pending.laneId != null
         ? workspaces.find((ws) => ws.kind !== "primary" && ws.laneId === pending.laneId)?.id ?? null
         : null;
     const targetWorkspaceId = desiredWorkspaceId ?? workspaceId;

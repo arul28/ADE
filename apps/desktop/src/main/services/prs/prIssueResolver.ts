@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { getModelById } from "../../../shared/modelRegistry";
 import type {
+  IssueInventoryItem,
   LaneSummary,
   PrActionRun,
   PrCheck,
@@ -20,7 +21,16 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createPrService } from "./prService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { createIssueInventoryService } from "./issueInventoryService";
 import { mapPermissionMode, readRecentCommits } from "./resolverUtils";
+
+type PreviouslyHandledSummary = {
+  fixedCount: number;
+  dismissedCount: number;
+  escalatedCount: number;
+  fixedHeadlines: string[];
+  dismissedHeadlines: string[];
+};
 
 type IssueResolutionPromptArgs = {
   pr: PrSummary;
@@ -34,6 +44,12 @@ type IssueResolutionPromptArgs = {
   scope: PrIssueResolutionScope;
   additionalInstructions: string | null;
   recentCommits: Array<{ sha: string; subject: string }>;
+  /** Current round number (1-based). */
+  round?: number | null;
+  /** Summary of prior rounds for incremental resolution. */
+  previouslyHandled?: PreviouslyHandledSummary | null;
+  /** When provided, use these inventory items instead of raw threads/checks for the issue sections. */
+  inventoryItems?: IssueInventoryItem[] | null;
 };
 
 export type PrIssueResolutionLaunchDeps = {
@@ -41,6 +57,7 @@ export type PrIssueResolutionLaunchDeps = {
   laneService: Pick<ReturnType<typeof createLaneService>, "list" | "getLaneBaseAndBranch">;
   agentChatService: Pick<ReturnType<typeof createAgentChatService>, "createSession" | "sendMessage">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
+  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
 };
 
 type PreparedIssueResolutionPrompt = {
@@ -48,6 +65,10 @@ type PreparedIssueResolutionPrompt = {
   lane: LaneSummary;
   prompt: string;
   title: string;
+  /** New items from inventory that were included in this prompt (for marking as sent). */
+  inventoryNewItems?: IssueInventoryItem[];
+  /** The round number assigned (for marking items). */
+  roundNumber?: number;
 };
 
 function truncateText(value: string, max: number): string {
@@ -245,6 +266,21 @@ function formatRecentCommitsSummary(recentCommits: Array<{ sha: string; subject:
   return recentCommits.map((commit) => `- ${commit.sha.slice(0, 7)} ${commit.subject}`).join("\n");
 }
 
+function formatInventoryItemsSummary(items: IssueInventoryItem[]): string {
+  const newItems = items.filter((i) => i.state === "new");
+  if (newItems.length === 0) return "- No new inventory items to address.";
+
+  return newItems.map((item, index) => {
+    const location = item.filePath
+      ? `${item.filePath}${item.line != null ? `:${item.line}` : ""}`
+      : "unknown location";
+    const severityPrefix = item.severity ? `[${item.severity[0].toUpperCase()}${item.severity.slice(1)}] ` : "";
+    const sourceTag = item.source !== "unknown" ? ` | source: ${item.source}` : "";
+    const authorTag = item.author ? ` | author: ${item.author}` : "";
+    return `${index + 1}. ${severityPrefix}${item.type === "check_failure" ? "Check" : "Thread"} ${item.externalId} at ${location}${sourceTag}${authorTag}\n   Summary: ${item.headline}\n   Reference: ${item.url ?? "(no URL available)"}`;
+  }).join("\n");
+}
+
 function buildSelectedScopeDescription(scope: PrIssueResolutionScope): string {
   if (scope === "both") return "checks and review comments";
   if (scope === "comments") return "review comments";
@@ -262,6 +298,10 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
   ].filter(Boolean);
 
   const scopeLabel = buildSelectedScopeDescription(args.scope);
+  const roundNumber = args.round ?? null;
+  const previouslyHandled = args.previouslyHandled ?? null;
+  const useInventory = args.inventoryItems != null && args.inventoryItems.length > 0;
+
   const promptSections = [
     "You are resolving issues on an existing GitHub pull request inside ADE.",
     "Address every valid issue in the selected scope without asking the user to enumerate them again.",
@@ -275,6 +315,11 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     `- Lane: ${args.lane.name}`,
     `- Worktree: ${args.lane.worktreePath}`,
     `- Selected scope: ${scopeLabel}`,
+  ];
+  if (roundNumber != null) {
+    promptSections.push(`- Resolution round: ${roundNumber}`);
+  }
+  promptSections.push(
     `- Actionable failing checks: ${availability.hasActionableChecks ? availability.failingCheckCount : 0}`,
     `- Actionable unresolved review threads: ${actionableThreads.length}`,
     "",
@@ -289,18 +334,64 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     "",
     "Changed test files / likely hotspots",
     formatChangedTestFilesSummary(args.files),
-    "",
-    "Current failing checks",
-    formatChecksSummary(args.checks, args.actionRuns),
-    "",
-    "Current unresolved review threads (summaries + references)",
-    formatReviewThreadsSummary(args.reviewThreads),
-    "",
-    "Advisory top-level issue comments (filtered)",
-    formatIssueCommentsSummary(args.issueComments),
+  );
+
+  // When inventory items are provided, use them instead of raw threads/checks
+  if (useInventory) {
+    promptSections.push(
+      "",
+      "Current issues to address (from inventory — NEW items only)",
+      formatInventoryItemsSummary(args.inventoryItems!),
+    );
+  } else {
+    promptSections.push(
+      "",
+      "Current failing checks",
+      formatChecksSummary(args.checks, args.actionRuns),
+      "",
+      "Current unresolved review threads (summaries + references)",
+      formatReviewThreadsSummary(args.reviewThreads),
+      "",
+      "Advisory top-level issue comments (filtered)",
+      formatIssueCommentsSummary(args.issueComments),
+    );
+  }
+
+  // Insert "Previous rounds" section when running incremental rounds
+  if (previouslyHandled && (previouslyHandled.fixedCount > 0 || previouslyHandled.dismissedCount > 0 || previouslyHandled.escalatedCount > 0)) {
+    promptSections.push(
+      "",
+      "Previous rounds",
+      `- Fixed ${previouslyHandled.fixedCount} issues, dismissed ${previouslyHandled.dismissedCount}, escalated ${previouslyHandled.escalatedCount}`,
+    );
+    if (previouslyHandled.fixedHeadlines.length > 0) {
+      promptSections.push(`- Fixed: ${previouslyHandled.fixedHeadlines.slice(0, 8).join(", ")}`);
+    }
+    if (previouslyHandled.dismissedHeadlines.length > 0) {
+      promptSections.push(`- Dismissed: ${previouslyHandled.dismissedHeadlines.slice(0, 8).join(", ")}`);
+    }
+    promptSections.push(
+      "Do not re-address items that are already fixed or dismissed. Focus only on the NEW items listed above.",
+    );
+  }
+
+  const isIncremental = roundNumber != null && roundNumber > 1;
+
+  promptSections.push(
     "",
     "Goal",
-    `Get the selected PR issue scope (${scopeLabel}) into a good state. The overall goal is to get all CI checks passing and all valid selected review issues handled.`,
+  );
+  if (isIncremental) {
+    promptSections.push(
+      `This is continuation round ${roundNumber}. Get the remaining NEW issues in the selected scope (${scopeLabel}) resolved. Prior rounds have already addressed some items — focus on what remains.`,
+    );
+  } else {
+    promptSections.push(
+      `Get the selected PR issue scope (${scopeLabel}) into a good state. The overall goal is to get all CI checks passing and all valid selected review issues handled.`,
+    );
+  }
+
+  promptSections.push(
     "",
     "Requirements",
     "- Fix all valid issues in the selected scope, not just the first one.",
@@ -315,7 +406,13 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     "- Treat newly added or heavily modified test files as likely regression hotspots, even if CI only surfaced a different failure first.",
     "- Watch carefully for regressions caused by your fixes. If a change breaks an existing test because the expected behavior legitimately changed, update the test. Do not change tests just to mask a bug.",
     "- Continue iterating until the selected issue set is cleared and CI is green, or stop only with a concrete blocker and explain it clearly.",
-  ];
+  );
+  if (isIncremental) {
+    promptSections.push(
+      "- Focus on the remaining NEW issues. Do not re-address items from prior rounds.",
+      "- If a prior fix introduced a regression, address the regression before moving to new items.",
+    );
+  }
 
   const trimmedAdditionalInstructions = args.additionalInstructions?.trim() ?? "";
   if (trimmedAdditionalInstructions.length > 0) {
@@ -361,6 +458,35 @@ async function preparePrIssueResolutionPrompt(
     throw new Error("Checks and comments are no longer both actionable. Refresh the PR and choose the currently available scope.");
   }
 
+  // If inventory service is available, sync and build incremental context
+  const inventoryService = deps.issueInventoryService ?? null;
+  let previouslyHandled: PreviouslyHandledSummary | null = null;
+  let roundNumber: number | null = null;
+  let inventoryNewItems: IssueInventoryItem[] | undefined;
+
+  if (inventoryService) {
+    // Sync the inventory with fresh GitHub data
+    const snapshot = inventoryService.syncFromPrData(pr.id, checks, reviewThreads, comments);
+    const convergence = snapshot.convergence;
+    roundNumber = convergence.currentRound + 1;
+    inventoryNewItems = inventoryService.getNewItems(pr.id);
+
+    // Build summary of previously handled items across all prior rounds
+    if (convergence.currentRound > 0) {
+      const fixedItems = snapshot.items.filter((i) => i.state === "fixed");
+      const dismissedItems = snapshot.items.filter((i) => i.state === "dismissed");
+      const escalatedItems = snapshot.items.filter((i) => i.state === "escalated");
+
+      previouslyHandled = {
+        fixedCount: fixedItems.length,
+        dismissedCount: dismissedItems.length,
+        escalatedCount: escalatedItems.length,
+        fixedHeadlines: fixedItems.map((i) => i.headline),
+        dismissedHeadlines: dismissedItems.map((i) => i.headline),
+      };
+    }
+  }
+
   return {
     pr,
     lane,
@@ -376,8 +502,15 @@ async function preparePrIssueResolutionPrompt(
       scope: args.scope,
       additionalInstructions: args.additionalInstructions?.trim() || null,
       recentCommits: await readRecentCommits(lane.worktreePath),
+      round: roundNumber,
+      previouslyHandled,
+      inventoryItems: inventoryNewItems ?? null,
     }),
-    title: `Resolve PR #${pr.githubPrNumber} issues`,
+    title: roundNumber != null && roundNumber > 1
+      ? `Resolve PR #${pr.githubPrNumber} issues (round ${roundNumber})`
+      : `Resolve PR #${pr.githubPrNumber} issues`,
+    inventoryNewItems,
+    roundNumber: roundNumber ?? undefined,
   };
 }
 
@@ -422,6 +555,19 @@ export async function launchPrIssueResolutionChat(
     displayText: prepared.title,
     ...(reasoningEffort ? { reasoningEffort } : {}),
   });
+
+  // Mark inventory items as sent to agent for this round
+  if (deps.issueInventoryService && prepared.inventoryNewItems && prepared.roundNumber != null) {
+    const itemIds = prepared.inventoryNewItems.map((item) => item.id);
+    if (itemIds.length > 0) {
+      deps.issueInventoryService.markSentToAgent(
+        prepared.pr.id,
+        itemIds,
+        session.id,
+        prepared.roundNumber,
+      );
+    }
+  }
 
   return {
     sessionId: session.id,

@@ -255,8 +255,9 @@ async function createSmokeFixture() {
   );
 
   const missionService = createMissionService({ db, projectId });
+  let resultLaneCounter = 0;
   const laneService = {
-    list: async () => db.all<{
+    list: async ({ includeArchived }: { includeArchived?: boolean } = {}) => db.all<{
       id: string;
       project_id: string;
       name: string;
@@ -266,6 +267,9 @@ async function createSmokeFixture() {
       worktree_path: string | null;
       attached_root_path: string | null;
       status: string | null;
+      archived_at: string | null;
+      mission_id: string | null;
+      lane_role: string | null;
     }>(
       `
         select
@@ -277,13 +281,16 @@ async function createSmokeFixture() {
           branch_ref,
           worktree_path,
           attached_root_path,
-          status
+          status,
+          archived_at,
+          mission_id,
+          lane_role
         from lanes
         where project_id = ?
-          and archived_at is null
+          and (? = 1 or archived_at is null)
         order by created_at asc, id asc
       `,
-      [projectId]
+      [projectId, includeArchived ? 1 : 0]
     ).map((row) => ({
       id: row.id,
       projectId: row.project_id,
@@ -293,9 +300,19 @@ async function createSmokeFixture() {
       branchRef: row.branch_ref,
       worktreePath: row.worktree_path,
       attachedRootPath: row.attached_root_path,
-      status: row.status === "archived" ? "archived" : "active",
+      status: row.archived_at ? "archived" : row.status === "archived" ? "archived" : "active",
+      missionId: row.mission_id,
+      laneRole: row.lane_role,
+      archivedAt: row.archived_at,
     })),
-    createChild: async (args: { parentLaneId: string; name: string; description?: string; folder?: string }) => {
+    createChild: async (args: {
+      parentLaneId: string;
+      name: string;
+      description?: string;
+      folder?: string;
+      missionId?: string | null;
+      laneRole?: string | null;
+    }) => {
       const childId = `lane-${Math.random().toString(36).slice(2, 10)}`;
       const childBranch = `mission/${childId}`;
       db.run(
@@ -315,10 +332,13 @@ async function createSmokeFixture() {
             color,
             icon,
             tags_json,
+            folder,
+            mission_id,
+            lane_role,
             status,
             created_at,
             archived_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           childId,
@@ -335,6 +355,9 @@ async function createSmokeFixture() {
           null,
           null,
           JSON.stringify(args.folder ? [args.folder] : []),
+          args.folder ?? null,
+          args.missionId ?? null,
+          args.laneRole ?? null,
           "active",
           now,
           null,
@@ -345,8 +368,114 @@ async function createSmokeFixture() {
         name: args.name,
         branchRef: childBranch,
         laneType: "worktree",
+        worktreePath: projectRoot,
+        missionId: args.missionId ?? null,
+        laneRole: args.laneRole ?? null,
       };
-    }
+    },
+    archive: async ({ laneId: targetLaneId }: { laneId: string }) => {
+      db.run(
+        `update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?`,
+        [new Date().toISOString(), targetLaneId, projectId]
+      );
+    },
+    setMissionOwnership: async ({
+      laneId: targetLaneId,
+      missionId,
+      laneRole,
+    }: {
+      laneId: string;
+      missionId: string | null;
+      laneRole?: string | null;
+    }) => {
+      db.run(
+        `update lanes set mission_id = ?, lane_role = ? where id = ? and project_id = ?`,
+        [missionId, laneRole ?? null, targetLaneId, projectId]
+      );
+    },
+    getLaneWorktreePath: (targetLaneId: string) => {
+      const row = db.get<{ worktree_path: string | null }>(
+        `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+        [targetLaneId, projectId]
+      );
+      return row?.worktree_path ?? projectRoot;
+    },
+  } as any;
+  const prService = {
+    createIntegrationLane: vi.fn(async ({
+      sourceLaneIds,
+      integrationLaneName,
+      missionId,
+      laneRole,
+    }: {
+      sourceLaneIds: string[];
+      integrationLaneName: string;
+      missionId?: string | null;
+      laneRole?: string | null;
+    }) => {
+      resultLaneCounter += 1;
+      const resultLaneId = `result-lane-${resultLaneCounter}`;
+      db.run(
+        `
+          insert into lanes(
+            id,
+            project_id,
+            name,
+            description,
+            lane_type,
+            base_ref,
+            branch_ref,
+            worktree_path,
+            attached_root_path,
+            is_edit_protected,
+            parent_lane_id,
+            color,
+            icon,
+            tags_json,
+            folder,
+            mission_id,
+            lane_role,
+            status,
+            created_at,
+            archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          resultLaneId,
+          projectId,
+          integrationLaneName,
+          "Result lane for smoke mission",
+          "worktree",
+          "main",
+          `integration/${resultLaneId}`,
+          projectRoot,
+          null,
+          0,
+          laneId,
+          null,
+          null,
+          null,
+          null,
+          missionId ?? null,
+          laneRole ?? "result",
+          "active",
+          new Date().toISOString(),
+          null,
+        ]
+      );
+      return {
+        integrationLane: {
+          id: resultLaneId,
+          name: integrationLaneName,
+          laneType: "worktree",
+          branchRef: `integration/${resultLaneId}`,
+          worktreePath: projectRoot,
+          missionId: missionId ?? null,
+          laneRole: laneRole ?? "result",
+        },
+        mergeResults: sourceLaneIds.map((sourceLaneId) => ({ laneId: sourceLaneId, success: true })),
+      };
+    }),
   } as any;
   const projectConfigService = {
     get: () => ({
@@ -369,10 +498,11 @@ async function createSmokeFixture() {
     logger: createLogger(),
     missionService,
     orchestratorService,
-    aiIntegrationService: createMockAiIntegrationService(),
-    laneService,
-    projectConfigService,
-    projectRoot
+      aiIntegrationService: createMockAiIntegrationService(),
+      laneService,
+      projectConfigService,
+      prService,
+      projectRoot
   });
 
   return {
@@ -781,8 +911,67 @@ describe("orchestrator smoke", () => {
     } as any;
 
     let laneCounter = 0;
+    let resultLaneCounter = 0;
     const laneService = {
-      createChild: vi.fn().mockImplementation(async ({ parentLaneId, name }: { parentLaneId: string; name: string }) => {
+      list: vi.fn(async ({ includeArchived }: { includeArchived?: boolean } = {}) => db.all<{
+        id: string;
+        project_id: string;
+        name: string;
+        lane_type: string | null;
+        base_ref: string | null;
+        branch_ref: string | null;
+        worktree_path: string | null;
+        attached_root_path: string | null;
+        status: string | null;
+        archived_at: string | null;
+        mission_id: string | null;
+        lane_role: string | null;
+      }>(
+        `
+          select
+            id,
+            project_id,
+            name,
+            lane_type,
+            base_ref,
+            branch_ref,
+            worktree_path,
+            attached_root_path,
+            status,
+            archived_at,
+            mission_id,
+            lane_role
+          from lanes
+          where project_id = ?
+            and (? = 1 or archived_at is null)
+          order by created_at asc, id asc
+        `,
+        [projectId, includeArchived ? 1 : 0]
+      ).map((row) => ({
+        id: row.id,
+        projectId: row.project_id,
+        name: row.name,
+        laneType: row.lane_type === "primary" ? "primary" : "worktree",
+        baseRef: row.base_ref,
+        branchRef: row.branch_ref,
+        worktreePath: row.worktree_path,
+        attachedRootPath: row.attached_root_path,
+        status: row.archived_at ? "archived" : row.status === "archived" ? "archived" : "active",
+        missionId: row.mission_id,
+        laneRole: row.lane_role,
+        archivedAt: row.archived_at,
+      }))),
+      createChild: vi.fn().mockImplementation(async ({
+        parentLaneId,
+        name,
+        missionId,
+        laneRole,
+      }: {
+        parentLaneId: string;
+        name: string;
+        missionId?: string | null;
+        laneRole?: string | null;
+      }) => {
         laneCounter += 1;
         const id = `lane-child-${laneCounter}`;
         db.run(
@@ -802,10 +991,13 @@ describe("orchestrator smoke", () => {
               color,
               icon,
               tags_json,
+              folder,
+              mission_id,
+              lane_role,
               status,
               created_at,
               archived_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             id,
@@ -822,13 +1014,127 @@ describe("orchestrator smoke", () => {
             null,
             null,
             null,
+            null,
+            missionId ?? null,
+            laneRole ?? null,
             "active",
             new Date().toISOString(),
             null
           ]
         );
-        return { id, name };
-      })
+        return {
+          id,
+          name,
+          laneType: "worktree",
+          branchRef: `feature/${id}`,
+          worktreePath: projectRoot,
+          missionId: missionId ?? null,
+          laneRole: laneRole ?? null,
+        };
+      }),
+      archive: vi.fn(async ({ laneId: targetLaneId }: { laneId: string }) => {
+        db.run(
+          `update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?`,
+          [new Date().toISOString(), targetLaneId, projectId]
+        );
+      }),
+      setMissionOwnership: vi.fn(async ({
+        laneId: targetLaneId,
+        missionId,
+        laneRole,
+      }: {
+        laneId: string;
+        missionId: string | null;
+        laneRole?: string | null;
+      }) => {
+        db.run(
+          `update lanes set mission_id = ?, lane_role = ? where id = ? and project_id = ?`,
+          [missionId, laneRole ?? null, targetLaneId, projectId]
+        );
+      }),
+      getLaneWorktreePath: vi.fn((targetLaneId: string) => {
+        const row = db.get<{ worktree_path: string | null }>(
+          `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+          [targetLaneId, projectId]
+        );
+        return row?.worktree_path ?? projectRoot;
+      }),
+    } as any;
+    const prService = {
+      createIntegrationLane: vi.fn(async ({
+        sourceLaneIds,
+        integrationLaneName,
+        missionId,
+        laneRole,
+      }: {
+        sourceLaneIds: string[];
+        integrationLaneName: string;
+        missionId?: string | null;
+        laneRole?: string | null;
+      }) => {
+        resultLaneCounter += 1;
+        const resultLaneId = `complex-result-${resultLaneCounter}`;
+        db.run(
+          `
+            insert into lanes(
+              id,
+              project_id,
+              name,
+              description,
+              lane_type,
+              base_ref,
+              branch_ref,
+              worktree_path,
+              attached_root_path,
+              is_edit_protected,
+              parent_lane_id,
+              color,
+              icon,
+              tags_json,
+              folder,
+              mission_id,
+              lane_role,
+              status,
+              created_at,
+              archived_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            resultLaneId,
+            projectId,
+            integrationLaneName,
+            "Complex smoke result lane",
+            "worktree",
+            "main",
+            `integration/${resultLaneId}`,
+            projectRoot,
+            null,
+            0,
+            laneId,
+            null,
+            null,
+            null,
+            null,
+            missionId ?? null,
+            laneRole ?? "result",
+            "active",
+            new Date().toISOString(),
+            null,
+          ]
+        );
+        return {
+          integrationLane: {
+            id: resultLaneId,
+            name: integrationLaneName,
+            laneType: "worktree",
+            branchRef: `integration/${resultLaneId}`,
+            worktreePath: projectRoot,
+            missionId: missionId ?? null,
+            laneRole: laneRole ?? "result",
+          },
+          mergeResults: sourceLaneIds.map((sourceLaneId) => ({ laneId: sourceLaneId, success: true })),
+        };
+      }),
     } as any;
 
     const orchestratorService = createOrchestratorService({
@@ -845,6 +1151,7 @@ describe("orchestrator smoke", () => {
       laneService,
       projectConfigService,
       aiIntegrationService,
+      prService,
       projectRoot
     });
 
@@ -860,6 +1167,7 @@ describe("orchestrator smoke", () => {
         prompt: complexPrompt,
         laneId
       });
+      setMissionPlanningMode(db, mission.id, "off");
 
       orchestratorService.registerExecutorAdapter({
         kind: "codex",
@@ -915,6 +1223,20 @@ describe("orchestrator smoke", () => {
       });
       if (!launch.started) throw new Error("Expected complex mission run to start");
       const runId = launch.started.run.id;
+      const initialRunRow = db.get<{ metadata_json: string | null }>(
+        `select metadata_json from orchestrator_runs where id = ? limit 1`,
+        [runId]
+      );
+      const initialRunMetadata = initialRunRow?.metadata_json
+        ? (JSON.parse(initialRunRow.metadata_json) as Record<string, unknown>)
+        : {};
+      delete initialRunMetadata.phaseConfiguration;
+      delete initialRunMetadata.phaseOverride;
+      delete initialRunMetadata.phaseRuntime;
+      db.run(
+        `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ?`,
+        [JSON.stringify(initialRunMetadata), new Date().toISOString(), runId]
+      );
 
       // In the AI-first flow, startMissionRun creates an empty run.
       // Simulate the coordinator creating child lanes and adding steps.
@@ -947,7 +1269,13 @@ describe("orchestrator smoke", () => {
             dependencyStepKeys: [],
             executorKind: "unified",
             laneId,
-            metadata: { instructions: "Implement GET /api/health", modelId: workerModelId, taskType: "implementation" }
+            metadata: {
+              instructions: "Implement GET /api/health",
+              modelId: workerModelId,
+              taskType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+            }
           },
           {
             stepKey: "runtime-watchdog-hardening",
@@ -956,7 +1284,13 @@ describe("orchestrator smoke", () => {
             dependencyStepKeys: [],
             executorKind: "unified",
             laneId: childLane1.id,
-            metadata: { instructions: "Improve stall detection", modelId: workerModelId, taskType: "implementation" }
+            metadata: {
+              instructions: "Improve stall detection",
+              modelId: workerModelId,
+              taskType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+            }
           },
           {
             stepKey: "ui-telemetry-panel",
@@ -965,7 +1299,13 @@ describe("orchestrator smoke", () => {
             dependencyStepKeys: [],
             executorKind: "unified",
             laneId: childLane2.id,
-            metadata: { instructions: "Expose telemetry in UI", modelId: workerModelId, taskType: "implementation" }
+            metadata: {
+              instructions: "Expose telemetry in UI",
+              modelId: workerModelId,
+              taskType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+            }
           },
           {
             stepKey: "integration-contract-check",
@@ -974,7 +1314,13 @@ describe("orchestrator smoke", () => {
             dependencyStepKeys: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"],
             executorKind: "unified",
             laneId,
-            metadata: { instructions: "Validate interface compatibility", modelId: workerModelId, taskType: "integration" }
+            metadata: {
+              instructions: "Validate interface compatibility",
+              modelId: workerModelId,
+              taskType: "integration",
+              phaseKey: "development",
+              phaseName: "Development",
+            }
           },
           {
             stepKey: "docs-and-readme",
@@ -983,7 +1329,13 @@ describe("orchestrator smoke", () => {
             dependencyStepKeys: ["integration-contract-check"],
             executorKind: "unified",
             laneId,
-            metadata: { instructions: "Document changes", modelId: workerModelId, taskType: "implementation" }
+            metadata: {
+              instructions: "Document changes",
+              modelId: workerModelId,
+              taskType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+            }
           },
           {
             stepKey: "test-matrix",
@@ -992,7 +1344,13 @@ describe("orchestrator smoke", () => {
             dependencyStepKeys: ["integration-contract-check"],
             executorKind: "unified",
             laneId,
-            metadata: { instructions: "Run tests", modelId: workerModelId, taskType: "test" }
+            metadata: {
+              instructions: "Run tests",
+              modelId: workerModelId,
+              taskType: "test",
+              phaseKey: "testing",
+              phaseName: "Testing",
+            }
           },
           {
             stepKey: "rollback-and-risk-check",
@@ -1001,7 +1359,13 @@ describe("orchestrator smoke", () => {
             dependencyStepKeys: ["integration-contract-check"],
             executorKind: "unified",
             laneId,
-            metadata: { instructions: "Verify rollback path", modelId: workerModelId, taskType: "validation" }
+            metadata: {
+              instructions: "Verify rollback path",
+              modelId: workerModelId,
+              taskType: "validation",
+              phaseKey: "validation",
+              phaseName: "Validation",
+            }
           },
           {
             stepKey: "final-review-gate",
@@ -1010,7 +1374,13 @@ describe("orchestrator smoke", () => {
             dependencyStepKeys: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"],
             executorKind: "unified",
             laneId,
-            metadata: { instructions: "Final review", modelId: workerModelId, taskType: "milestone" }
+            metadata: {
+              instructions: "Final review",
+              modelId: workerModelId,
+              taskType: "milestone",
+              phaseKey: "validation",
+              phaseName: "Validation",
+            }
           }
         ]
       });
@@ -1044,6 +1414,25 @@ describe("orchestrator smoke", () => {
       let terminalReached = false;
       for (let i = 0; i < 120; i += 1) {
         const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        for (const step of graph.steps) {
+          const meta = step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
+            ? (step.metadata as Record<string, unknown>)
+            : {};
+          if (step.stepKey !== "planner-launch-tracker" && meta.plannerLaunchTracker !== true) continue;
+          if (step.status !== "pending" && step.status !== "ready" && step.status !== "running") continue;
+          const skippedAt = new Date().toISOString();
+          db.run(
+            `
+              update orchestrator_steps
+              set status = 'skipped',
+                  started_at = coalesce(started_at, ?),
+                  completed_at = ?,
+                  updated_at = ?
+              where id = ?
+            `,
+            [skippedAt, skippedAt, skippedAt, step.id]
+          );
+        }
         const status = graph.run.status;
         if (status === "succeeded" || status === "failed" || status === "canceled") {
           terminalReached = true;

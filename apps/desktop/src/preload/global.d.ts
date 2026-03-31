@@ -319,6 +319,10 @@ import type {
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
+  IssueInventoryItem,
+  IssueInventorySnapshot,
+  ConvergenceStatus,
+  PipelineSettings,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   ListOverlapsArgs,
@@ -1018,6 +1022,17 @@ declare global {
         reopen: (args: ReopenPrArgs) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;
         aiReviewSummary: (args: AiReviewSummaryArgs) => Promise<AiReviewSummary>;
+        issueInventorySync: (prId: string) => Promise<IssueInventorySnapshot>;
+        issueInventoryGet: (prId: string) => Promise<IssueInventorySnapshot>;
+        issueInventoryGetNew: (prId: string) => Promise<IssueInventoryItem[]>;
+        issueInventoryMarkFixed: (prId: string, itemIds: string[]) => Promise<void>;
+        issueInventoryMarkDismissed: (prId: string, itemIds: string[], reason: string) => Promise<void>;
+        issueInventoryMarkEscalated: (prId: string, itemIds: string[]) => Promise<void>;
+        issueInventoryGetConvergence: (prId: string) => Promise<ConvergenceStatus>;
+        issueInventoryReset: (prId: string) => Promise<void>;
+        pipelineSettingsGet: (prId: string) => Promise<PipelineSettings>;
+        pipelineSettingsSave: (prId: string, settings: Partial<PipelineSettings>) => Promise<void>;
+        pipelineSettingsDelete: (prId: string) => Promise<void>;
         dismissIntegrationCleanup: (args: DismissIntegrationCleanupArgs) => Promise<IntegrationProposal>;
         cleanupIntegrationWorkflow: (args: CleanupIntegrationWorkflowArgs) => Promise<CleanupIntegrationWorkflowResult>;
       };
