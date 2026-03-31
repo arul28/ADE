@@ -495,10 +495,22 @@ export function PrDetailPane({
     setConvergenceBusy(false);
     setAutoConverge(false);
     setConvergenceSessionId(null);
+    setConvergenceMerged(false);
+    setConvergencePauseReason(null);
+    setPipelineSettings(DEFAULT_PIPELINE_SETTINGS);
+    pipelineSettingsRef.current = DEFAULT_PIPELINE_SETTINGS;
     if (autoConvergeTimerRef.current) {
       clearTimeout(autoConvergeTimerRef.current);
       autoConvergeTimerRef.current = null;
     }
+    if (autoConvergePollerRef.current) {
+      clearTimeout(autoConvergePollerRef.current);
+      autoConvergePollerRef.current = null;
+    }
+    lastCommentCountRef.current = -1;
+    stableCountRef.current = 0;
+    behindCountRef.current = 0;
+    autoConvergeAdditionalRef.current = "";
     setEditingTitle(false);
     setEditingBody(false);
     setShowLabelEditor(false);
@@ -758,15 +770,22 @@ export function PrDetailPane({
   // After agent session completes, polls every 60s. Triggers next round when:
   //   1. All GitHub checks are done (no queued/in_progress), AND
   //   2. Comment/thread count hasn't changed for 2 consecutive polls (~2 min stability)
-  const autoConvergePollerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoConvergePollerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCommentCountRef = React.useRef<number>(-1);
   const stableCountRef = React.useRef<number>(0);
   const autoConvergeAdditionalRef = React.useRef<string>("");
   const handleRunNextRoundRef = React.useRef<(instructions: string) => Promise<void>>();
 
+  // Refs for mutable values read inside the poller tick so we never
+  // capture stale closure values.
+  const autoConvergeRef = React.useRef(autoConverge);
+  autoConvergeRef.current = autoConverge;
+  const convergenceSessionIdRef = React.useRef(convergenceSessionId);
+  convergenceSessionIdRef.current = convergenceSessionId;
+
   const stopAutoConvergePoller = React.useCallback(() => {
     if (autoConvergePollerRef.current) {
-      clearInterval(autoConvergePollerRef.current);
+      clearTimeout(autoConvergePollerRef.current);
       autoConvergePollerRef.current = null;
     }
     lastCommentCountRef.current = -1;
@@ -776,123 +795,133 @@ export function PrDetailPane({
 
   const startAutoConvergePoller = React.useCallback(() => {
     stopAutoConvergePoller();
-    autoConvergePollerRef.current = setInterval(async () => {
-      if (!autoConverge) { stopAutoConvergePoller(); return; }
-      try {
-        // Poll checks and inventory
-        const [freshChecks, snapshot] = await Promise.all([
-          window.ade.prs.getChecks(pr.id),
-          window.ade.prs.issueInventorySync(pr.id),
-        ]);
-        setInventorySnapshot(snapshot);
 
-        // Skip rebase logic while an agent session is still active
-        if (!convergenceSessionId) {
-          // Rebase detection: check if the PR is behind its base branch
-          const freshStatus = await window.ade.prs.getStatus(pr.id);
-          const isBehind = (freshStatus?.behindBaseBy ?? 0) > 0;
+    const scheduleTick = () => {
+      autoConvergePollerRef.current = setTimeout(async () => {
+        if (!autoConvergeRef.current) { stopAutoConvergePoller(); return; }
+        try {
+          // Poll checks and inventory
+          const [freshChecks, snapshot] = await Promise.all([
+            window.ade.prs.getChecks(pr.id),
+            window.ade.prs.issueInventorySync(pr.id),
+          ]);
+          setInventorySnapshot(snapshot);
 
-          if (isBehind) {
-            const rebasePolicy = pipelineSettingsRef.current.onRebaseNeeded;
-            if (rebasePolicy === "pause") {
-              stopAutoConvergePoller();
-              setConvergencePauseReason("PR is behind base branch. Rebase needed to continue.");
+          // Skip rebase logic while an agent session is still active
+          if (!convergenceSessionIdRef.current) {
+            // Rebase detection: check if the PR is behind its base branch
+            const freshStatus = await window.ade.prs.getStatus(pr.id);
+            const isBehind = (freshStatus?.behindBaseBy ?? 0) > 0;
+
+            if (isBehind) {
+              const rebasePolicy = pipelineSettingsRef.current.onRebaseNeeded;
+              if (rebasePolicy === "pause") {
+                stopAutoConvergePoller();
+                setConvergencePauseReason("PR is behind base branch. Rebase needed to continue.");
+                return;
+              }
+              // rebasePolicy === "auto_rebase"
+              // The existing auto-rebase system should handle this. After rebase push,
+              // checks go to in_progress and Gate 1 naturally blocks until they finish.
+              // If the PR has been behind for 3+ consecutive polls (~3 min), rebase is stuck.
+              behindCountRef.current++;
+              if (behindCountRef.current >= 3) {
+                stopAutoConvergePoller();
+                setConvergencePauseReason("PR needs rebase but auto-rebase appears stuck. Resolve conflicts manually.");
+                return;
+              }
+              scheduleTick(); // Keep polling, give auto-rebase time to work
               return;
             }
-            // rebasePolicy === "auto_rebase"
-            // The existing auto-rebase system should handle this. After rebase push,
-            // checks go to in_progress and Gate 1 naturally blocks until they finish.
-            // If the PR has been behind for 3+ consecutive polls (~3 min), rebase is stuck.
-            behindCountRef.current++;
-            if (behindCountRef.current >= 3) {
-              stopAutoConvergePoller();
-              setConvergencePauseReason("PR needs rebase but auto-rebase appears stuck. Resolve conflicts manually.");
-              return;
+            behindCountRef.current = 0; // Reset if not behind
+          }
+
+          // Check 1: Are all GitHub checks done?
+          const checksStillRunning = freshChecks.some(
+            (c: PrCheck) => c.status === "queued" || c.status === "in_progress",
+          );
+          if (checksStillRunning) {
+            lastCommentCountRef.current = -1;
+            stableCountRef.current = 0;
+            scheduleTick(); // Keep polling
+            return;
+          }
+
+          // Check 2: Has the comment count stabilized?
+          const currentCount = snapshot.items.filter((i) => i.state === "new").length;
+          if (currentCount === lastCommentCountRef.current) {
+            stableCountRef.current++;
+          } else {
+            stableCountRef.current = 0;
+          }
+          lastCommentCountRef.current = currentCount;
+
+          // Trigger next round: checks done + 2 consecutive stable polls + has new items
+          if (stableCountRef.current >= 2 && currentCount > 0) {
+            stopAutoConvergePoller();
+            const convergence = snapshot.convergence;
+            if (convergence.currentRound >= convergence.maxRounds) {
+              setAutoConverge(false);
+              return; // Max rounds reached
             }
-            return; // Keep polling, give auto-rebase time to work
-          }
-          behindCountRef.current = 0; // Reset if not behind
-        }
+            // Launch next round
+            void handleRunNextRoundRef.current?.(autoConvergeAdditionalRef.current);
+          } else if (stableCountRef.current >= 2 && currentCount === 0) {
+            // No new items after stabilization — convergence is done
+            stopAutoConvergePoller();
 
-        // Check 1: Are all GitHub checks done?
-        const checksStillRunning = freshChecks.some(
-          (c: PrCheck) => c.status === "queued" || c.status === "in_progress",
-        );
-        if (checksStillRunning) {
-          lastCommentCountRef.current = -1;
-          stableCountRef.current = 0;
-          return; // Keep polling
-        }
-
-        // Check 2: Has the comment count stabilized?
-        const currentCount = snapshot.items.filter((i) => i.state === "new").length;
-        if (currentCount === lastCommentCountRef.current) {
-          stableCountRef.current++;
-        } else {
-          stableCountRef.current = 0;
-        }
-        lastCommentCountRef.current = currentCount;
-
-        // Trigger next round: checks done + 2 consecutive stable polls + has new items
-        if (stableCountRef.current >= 2 && currentCount > 0) {
-          stopAutoConvergePoller();
-          const convergence = snapshot.convergence;
-          if (convergence.currentRound >= convergence.maxRounds) {
-            setAutoConverge(false);
-            return; // Max rounds reached
-          }
-          // Launch next round
-          void handleRunNextRoundRef.current?.(autoConvergeAdditionalRef.current);
-        } else if (stableCountRef.current >= 2 && currentCount === 0) {
-          // No new items after stabilization — convergence is done
-          stopAutoConvergePoller();
-
-          // Auto-merge if enabled
-          const settings = pipelineSettingsRef.current;
-          if (settings.autoMerge) {
-            // Verify all checks are passing
-            const allChecksPassed = freshChecks.every(
-              (c: PrCheck) =>
-                c.conclusion === "success" ||
-                c.conclusion === "neutral" ||
-                c.conclusion === "skipped",
-            );
-            if (allChecksPassed) {
-              try {
-                // Map pipeline merge method to MergeMethod for the land call
-                const method: MergeMethod =
-                  settings.mergeMethod === "repo_default"
-                    ? mergeMethodRef.current // fall back to the repo/component-level default
-                    : settings.mergeMethod;
-                const res = await window.ade.prs.land({ prId: pr.id, method });
-                if (res.success) {
-                  setConvergenceMerged(true);
-                  setAutoConverge(false);
-                  await onRefreshRef.current();
-                } else {
-                  setActionError(res.error ?? "Auto-merge failed");
+            // Auto-merge if enabled
+            const settings = pipelineSettingsRef.current;
+            if (settings.autoMerge) {
+              // Verify all checks are passing
+              const allChecksPassed = freshChecks.every(
+                (c: PrCheck) =>
+                  c.conclusion === "success" ||
+                  c.conclusion === "neutral" ||
+                  c.conclusion === "skipped",
+              );
+              if (allChecksPassed) {
+                try {
+                  // Map pipeline merge method to MergeMethod for the land call
+                  const method: MergeMethod =
+                    settings.mergeMethod === "repo_default"
+                      ? mergeMethodRef.current // fall back to the repo/component-level default
+                      : settings.mergeMethod;
+                  const res = await window.ade.prs.land({ prId: pr.id, method });
+                  if (res.success) {
+                    setConvergenceMerged(true);
+                    setAutoConverge(false);
+                    await onRefreshRef.current();
+                  } else {
+                    setActionError(res.error ?? "Auto-merge failed");
+                    setAutoConverge(false);
+                  }
+                } catch (err: unknown) {
+                  setActionError(
+                    err instanceof Error ? err.message : "Auto-merge failed",
+                  );
                   setAutoConverge(false);
                 }
-              } catch (err: unknown) {
-                setActionError(
-                  err instanceof Error ? err.message : "Auto-merge failed",
-                );
+              } else {
+                // Checks not passing — cannot auto-merge
+                setActionError("Auto-merge skipped: some checks are not passing");
                 setAutoConverge(false);
               }
             } else {
-              // Checks not passing — cannot auto-merge
-              setActionError("Auto-merge skipped: some checks are not passing");
               setAutoConverge(false);
             }
           } else {
-            setAutoConverge(false);
+            scheduleTick(); // Not yet stable, keep polling
           }
+        } catch {
+          // Poll failed, schedule retry
+          scheduleTick();
         }
-      } catch {
-        // Poll failed, retry next interval
-      }
-    }, 60_000); // Poll every 60 seconds
-  }, [autoConverge, convergenceSessionId, pr.id, stopAutoConvergePoller]);
+      }, 60_000); // Poll every 60 seconds
+    };
+
+    scheduleTick();
+  }, [pr.id, stopAutoConvergePoller]);
 
   // Listen for agent session completion to start polling
   React.useEffect(() => {

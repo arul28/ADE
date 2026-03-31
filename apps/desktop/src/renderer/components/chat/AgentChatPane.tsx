@@ -98,11 +98,21 @@ function getExecutionModeOptions(model: ModelDescriptor | null | undefined): Exe
   return [];
 }
 
-function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
+export type PendingSteerEntry = {
+  steerId: string;
+  text: string;
+};
+
+export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   turnActive: boolean;
   pendingInputs: DerivedPendingInput[];
+  pendingSteers: PendingSteerEntry[];
 } {
   let turnActive = false;
+
+  // Track pending steers: added on queued user_message, removed on cancel/deliver notices
+  const steerMap = new Map<string, PendingSteerEntry>();
+  const resolvedSteerIds = new Set<string>();
 
   for (const envelope of events) {
     const event = envelope.event;
@@ -110,12 +120,23 @@ function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
       turnActive = event.turnStatus === "started";
     } else if (event.type === "done") {
       turnActive = false;
+    } else if (event.type === "user_message" && event.steerId && event.deliveryState === "queued") {
+      if (!resolvedSteerIds.has(event.steerId)) {
+        steerMap.set(event.steerId, { steerId: event.steerId, text: event.text });
+      }
+    } else if (event.type === "system_notice" && event.steerId) {
+      // "cancelled" or "Delivering" notices resolve the steer
+      if (/cancelled|delivering/i.test(event.message)) {
+        steerMap.delete(event.steerId);
+        resolvedSteerIds.add(event.steerId);
+      }
     }
   }
 
   return {
     turnActive,
     pendingInputs: derivePendingInputRequests(events),
+    pendingSteers: Array.from(steerMap.values()),
   };
 }
 
@@ -491,6 +512,7 @@ export function AgentChatPane({
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
+  const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
   const [modelId, setModelId] = useState<string>("");
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
@@ -564,6 +586,7 @@ export function AgentChatPane({
       ? (providerConnections?.codex ?? null)
       : null;
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
+  const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
   const surfaceMode = presentation?.mode ?? "standard";
@@ -888,6 +911,7 @@ export function AgentChatPane({
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
       setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: derived.turnActive }));
       setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
+      setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: derived.pendingSteers }));
     } catch {
       // Ignore transcript history failures.
     }
@@ -898,6 +922,7 @@ export function AgentChatPane({
     setEventsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
     setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: [] }));
+    setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: [] }));
   }, []);
 
   useEffect(() => {
@@ -1147,19 +1172,22 @@ export function AgentChatPane({
     // Commit the ref immediately so subsequent flushes see the latest events.
     eventsBySessionRef.current = next;
 
-    // Derive turnActive and approvals from the fully-updated event lists.
+    // Derive turnActive, approvals, and pending steers from the fully-updated event lists.
     const activePatch: Record<string, boolean> = {};
     const pendingInputPatch: Record<string, DerivedPendingInput[]> = {};
+    const pendingSteerPatch: Record<string, PendingSteerEntry[]> = {};
     for (const sessionId of touchedSessionIds) {
       const derived = deriveRuntimeState(next[sessionId] ?? []);
       activePatch[sessionId] = derived.turnActive;
       pendingInputPatch[sessionId] = derived.pendingInputs;
+      pendingSteerPatch[sessionId] = derived.pendingSteers;
     }
 
-    // All three setters fire synchronously — React 18 batches them into one render.
+    // All setters fire synchronously — React 18 batches them into one render.
     setEventsBySession(next);
     setTurnActiveBySession((activePrev) => ({ ...activePrev, ...activePatch }));
     setPendingInputsBySession((pendingPrev) => ({ ...pendingPrev, ...pendingInputPatch }));
+    setPendingSteersBySession((steerPrev) => ({ ...steerPrev, ...pendingSteerPatch }));
   }, []);
 
   const scheduleQueuedEventFlush = useCallback(() => {
@@ -1424,11 +1452,11 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = false;
       touchSession(created.id);
       setSelectedSessionId(created.id);
-      // Fire-and-forget: don't block session creation on the parent opening the tab.
-      // Blocking here caused a race where work.refresh() would re-resolve selection
-      // before the new session was indexed, routing the user to an old chat.
-      void onSessionCreated?.(created.id);
-      void refreshSessions().catch(() => {});
+      // Await tab navigation and session-list refresh before returning so the
+      // caller doesn't send the first message while the user is still on the
+      // blank "new chat" screen.
+      await onSessionCreated?.(created.id);
+      await refreshSessions().catch(() => {});
       return created.id;
     })();
     createSessionPromiseRef.current = createPromise;
@@ -2050,6 +2078,17 @@ export function AgentChatPane({
             promptSuggestion={promptSuggestion}
             subagentSnapshots={selectedSubagentSnapshots}
             chatHasMessages={selectedEvents.some(env => env.event.type === "user_message" || env.event.type === "text")}
+            pendingSteers={pendingSteers}
+            onCancelSteer={(steerId) => {
+              if (selectedSessionId) {
+                void window.ade.agentChat.cancelSteer({ sessionId: selectedSessionId, steerId });
+              }
+            }}
+            onEditSteer={(steerId, text) => {
+              if (selectedSessionId) {
+                void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text });
+              }
+            }}
           />
         }
         bodyClassName="flex min-h-0 flex-col overflow-hidden"

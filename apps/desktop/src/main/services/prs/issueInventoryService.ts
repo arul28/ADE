@@ -240,6 +240,7 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
     };
   }
 
+
   function upsertItem(
     prId: string,
     externalId: string,

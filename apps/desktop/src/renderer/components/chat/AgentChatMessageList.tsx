@@ -810,12 +810,26 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
 function resolveModelLabel(modelId?: string, model?: string): string | null {
   if (modelId) {
     const desc = getModelById(modelId);
-    if (desc) return `${desc.displayName} (${modelId})`;
+    if (desc) {
+      // When the runtime-reported model name differs from all known canonical
+      // identifiers, show it in the parenthetical so the user sees the exact
+      // model string the provider returned (e.g. a snapshot variant).
+      const normalizedModel = model?.trim().toLowerCase() ?? "";
+      const isNonCanonicalModel = normalizedModel.length > 0
+        && normalizedModel !== desc.id.toLowerCase()
+        && normalizedModel !== desc.shortId.toLowerCase()
+        && normalizedModel !== desc.sdkModelId.toLowerCase();
+      if (isNonCanonicalModel) {
+        return `${desc.displayName} (${model?.trim()})`;
+      }
+      return `${desc.displayName} (${modelId})`;
+    }
     return modelId;
   }
   if (model) {
-    const desc = getModelById(model);
-    return desc?.displayName ?? model;
+    const desc = resolveModelDescriptor(model);
+    if (desc) return `${desc.displayName} (${desc.id})`;
+    return model;
   }
   return null;
 }
@@ -1780,6 +1794,8 @@ function renderEvent(
       bodyText = requestDescription || primaryQuestionText || question || event.description;
     } else if (isAskUser) {
       bodyText = question;
+    } else if (isPlanApproval) {
+      bodyText = requestDescription || primaryQuestionText || event.description;
     } else {
       bodyText = event.description;
     }
@@ -1802,7 +1818,11 @@ function renderEvent(
           </span>
           <span className="font-mono text-[10px] text-muted-fg/40">{requestSource || event.kind}</span>
         </div>
-        <div className="text-[12px] leading-relaxed text-fg/75">{bodyText}</div>
+        {isPlanApproval ? (
+          <div className="max-h-72 overflow-y-auto text-[12px] leading-relaxed text-fg/75 whitespace-pre-wrap">{bodyText}</div>
+        ) : (
+          <div className="text-[12px] leading-relaxed text-fg/75">{bodyText}</div>
+        )}
         {isQuestionRequest && quickOptions.length > 0 && options?.onApproval ? (
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             {quickOptions.map((option) => (
@@ -1993,7 +2013,8 @@ function renderEvent(
     const costLabel = typeof event.costUsd === "number" && event.costUsd > 0
       ? `$${event.costUsd < 0.01 ? event.costUsd.toFixed(4) : event.costUsd.toFixed(2)}`
       : null;
-    if (event.status === "completed" && !inputTokens && !outputTokens) {
+    const hasUsageData = Boolean(inputTokens || outputTokens || cacheRead || cacheCreation || costLabel || modelLabel);
+    if (event.status === "completed" && !hasUsageData) {
       return null;
     }
     const statusTone = event.status === "completed"
@@ -2079,9 +2100,13 @@ type TurnSummary = {
   totalDeletions: number;
   backgroundAgentCount: number;
   activeBackgroundAgentCount: number;
+  turnModel: { label: string; modelId?: string; model?: string } | null;
 };
 
-function deriveTurnSummary(events: AgentChatEventEnvelope[]): TurnSummary | null {
+function deriveTurnSummary(
+  events: AgentChatEventEnvelope[],
+  turnModelState: DerivedTurnModelState | null,
+): TurnSummary | null {
   const latestTurnId = [...events]
     .reverse()
     .map((envelope) => getEventTurnId(envelope.event))
@@ -2177,6 +2202,7 @@ function deriveTurnSummary(events: AgentChatEventEnvelope[]): TurnSummary | null
     totalDeletions,
     backgroundAgentCount,
     activeBackgroundAgentCount,
+    turnModel: turnModelState?.map.get(latestTurnId) ?? null,
   };
 }
 
@@ -2206,6 +2232,12 @@ function TurnSummaryCard({
               ? `${completedCount} of ${totalCount} tasks completed`
               : filesLabel ?? agentsLabel ?? "Turn summary"}
           </span>
+          {summary.turnModel?.label ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] text-fg/45">
+              <ModelGlyph modelId={summary.turnModel.modelId} model={summary.turnModel.model} size={10} className="text-fg/35" />
+              <span>{summary.turnModel.label}</span>
+            </span>
+          ) : null}
           {onReviewChanges && summary.files.length > 0 ? (
             <button
               type="button"
@@ -2544,7 +2576,6 @@ export function AgentChatMessageList({
   const groupedRows = useMemo(() => groupConsecutiveWorkLogRows(rows), [rows]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
-  const turnSummary = useMemo(() => deriveTurnSummary(events), [events]);
 
   const currentLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
     ? (location.state as { laneId: string }).laneId
@@ -2601,12 +2632,6 @@ export function AgentChatMessageList({
     onOpenWorkspacePath?.(target.openFilePath, target.laneId);
   }, [currentLaneId, filesWorkspaces, navigate, onOpenWorkspacePath]);
 
-  const handleReviewChanges = useCallback(() => {
-    if (!turnSummary?.files.length) return;
-    const state = currentLaneId ? { laneId: currentLaneId } : undefined;
-    navigate("/files", state ? { state } : undefined);
-  }, [currentLaneId, navigate, turnSummary?.files.length]);
-
   const handleNavigateSuggestion = useCallback((suggestion: OperatorNavigationSuggestion) => {
     navigate(suggestion.href);
   }, [navigate]);
@@ -2617,6 +2642,13 @@ export function AgentChatMessageList({
     turnModelStateRef.current = nextState;
     return nextState;
   }, [events]);
+  const turnSummary = useMemo(() => deriveTurnSummary(events, turnModelState), [events, turnModelState]);
+
+  const handleReviewChanges = useCallback(() => {
+    if (!turnSummary?.files.length) return;
+    const state = currentLaneId ? { laneId: currentLaneId } : undefined;
+    navigate("/files", state ? { state } : undefined);
+  }, [currentLaneId, navigate, turnSummary]);
 
   useEffect(() => {
     stickToBottomRef.current = stickToBottom;

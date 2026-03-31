@@ -830,6 +830,7 @@ export function PrConvergencePanel({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [open, busy, onOpenChange]);
 
+
   if (!open) return null;
 
   // Group items by state

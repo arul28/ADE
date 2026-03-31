@@ -446,6 +446,7 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
       ? formatIssueCommentsDetailed(args.issueComments)
       : formatIssueCommentsSummary(args.issueComments);
 
+
     promptSections.push(
       "",
       "Current failing checks",

@@ -53,6 +53,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef<{ showLoading: boolean; force: boolean } | null>(null);
+  const refreshWaitersRef = useRef<Array<() => void>>([]);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const hasActiveSessionsRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
@@ -98,7 +99,11 @@ export function useLaneWorkSessions(laneId: string | null) {
           showLoading: (refreshQueuedRef.current?.showLoading ?? false) || showLoading,
           force: (refreshQueuedRef.current?.force ?? false) || Boolean(options.force),
         };
-        return;
+        // Return a promise that resolves when the in-flight refresh completes,
+        // so callers who `await refresh()` get reliable timing.
+        return new Promise<void>((resolve) => {
+          refreshWaitersRef.current.push(resolve);
+        });
       }
       refreshInFlightRef.current = true;
       if (showLoading) setLoading(true);
@@ -114,6 +119,12 @@ export function useLaneWorkSessions(laneId: string | null) {
       } finally {
         if (showLoading) setLoading(false);
         refreshInFlightRef.current = false;
+
+        // Resolve all callers that were waiting on this in-flight refresh.
+        const waiters = refreshWaitersRef.current;
+        refreshWaitersRef.current = [];
+        for (const resolve of waiters) resolve();
+
         const queued = refreshQueuedRef.current;
         refreshQueuedRef.current = null;
         if (queued) {
@@ -406,9 +417,13 @@ export function useLaneWorkSessions(laneId: string | null) {
         startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
       });
       selectLane(args.laneId);
+      // Refresh the session list *before* activating the tab so the new
+      // session exists in sessionsById when the UI resolves activeSession.
+      // Without this, activeItemId points to an unknown ID and the view
+      // falls back to the most recent session for several seconds.
+      await refresh({ showLoading: false, force: true });
       focusSession(result.sessionId);
       openSessionTab(result.sessionId);
-      await refresh({ showLoading: false, force: true });
       return result;
     },
     [focusSession, openSessionTab, refresh, selectLane],
@@ -417,9 +432,10 @@ export function useLaneWorkSessions(laneId: string | null) {
   const handleOpenChatSession = useCallback(async (sessionId: string) => {
     if (!laneId) return;
     selectLane(laneId);
+    // Refresh first so the session is in the list before we activate the tab.
+    await refresh({ showLoading: false, force: true });
     focusSession(sessionId);
     openSessionTab(sessionId);
-    await refresh({ showLoading: false, force: true });
   }, [focusSession, laneId, openSessionTab, refresh, selectLane]);
 
   const closePtySession = useCallback(async (ptyId: string) => {

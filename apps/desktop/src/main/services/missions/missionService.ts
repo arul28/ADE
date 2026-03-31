@@ -2926,6 +2926,7 @@ export function createMissionService({
         ...(args.recoveryLoop ? { recoveryLoop: args.recoveryLoop } : {}),
         ...(executionPolicyArg?.integrationPr ? { integrationPr: executionPolicyArg.integrationPr } : {}),
         ...(executionPolicyArg?.teamRuntime ? { teamRuntime: executionPolicyArg.teamRuntime } : {}),
+        prStrategy: executionPolicyArg?.prStrategy ?? { kind: "manual" },
         finalizationPolicyKind: "result_lane",
       };
 

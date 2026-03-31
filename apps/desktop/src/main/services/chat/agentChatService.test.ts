@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { generateText, streamText } from "ai";
-import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
+import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -223,7 +223,8 @@ import { runGit } from "../git/git";
 import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
-import type { AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
+import { mapPermissionToClaude } from "../orchestrator/permissionMapping";
+import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1949,6 +1950,92 @@ describe("createAgentChatService", () => {
 
       expect(updated.computerUse!.mode).toBe("enabled");
     });
+
+    it("manuallyNamed suppresses auto-titling after sendMessage", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-session-1",
+              slash_commands: [],
+            };
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+          yield {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "Done" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      } as any);
+
+      // Mock generateText so auto-title would produce a different name if called
+      vi.mocked(generateText).mockResolvedValue({
+        text: "Auto Generated Title",
+      } as any);
+
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      // Set the title manually with manuallyNamed flag
+      await service.updateSession({
+        sessionId: session.id,
+        title: "My Title",
+        manuallyNamed: true,
+      });
+
+      expect(sessionService.updateMeta).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: session.id, title: "My Title" }),
+      );
+
+      // Send a message — this would normally trigger auto-titling
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Build me a new feature",
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done",
+      );
+
+      // Give auto-title a chance to fire (it's a void promise)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // generateText should NOT have been called for auto-titling because
+      // manuallyNamed suppresses it. (generateText is only used for auto-titling.)
+      expect(generateText).not.toHaveBeenCalled();
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -2673,6 +2760,24 @@ describe("createAgentChatService", () => {
         service.warmupModel({ sessionId: session.id, modelId: "anthropic/claude-sonnet-4-6-api" }),
       ).resolves.toBeUndefined();
     });
+
+    it("does not rewrite a live session when the requested model does not match the backend session", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await expect(
+        service.warmupModel({ sessionId: session.id, modelId: "anthropic/claude-sonnet-4-6" }),
+      ).resolves.toBeUndefined();
+
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.provider).toBe("unified");
+      expect(summary?.modelId).toBe("anthropic/claude-sonnet-4-6-api");
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -3221,6 +3326,262 @@ describe("createAgentChatService", () => {
         }),
       ).rejects.toThrow(/not found/i);
     });
+
+    it("cancelSteer removes a queued steer and emits a system_notice", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let interruptedTurnClosed = false;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          // init stream
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        if (streamCall === 2) {
+          // The blocking turn — yields an assistant message then waits
+          yield {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "Still working" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          while (!interruptedTurnClosed) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          return;
+        }
+
+        // streamCall >= 3: any follow-up turn — should NOT happen because the steer was cancelled
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Follow up" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+
+      const mockSession = {
+        send,
+        stream,
+        close: vi.fn(() => {
+          interruptedTurnClosed = true;
+        }),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      };
+
+      vi.mocked(unstable_v2_createSession).mockReturnValue(mockSession as any);
+      vi.mocked(unstable_v2_resumeSession).mockReturnValue(mockSession as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      // Start a turn so the runtime is busy
+      const activeTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do some work",
+        timeoutMs: 15_000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      // Queue a steer — runtime is busy so it should be queued
+      await service.steer({ sessionId: session.id, text: "queued steer text" });
+
+      // Find the queued user_message event to get the steerId
+      const queuedEvent = events.find(
+        (e) =>
+          e.event.type === "user_message"
+          && (e.event as any).deliveryState === "queued"
+          && (e.event as any).text === "queued steer text",
+      );
+      expect(queuedEvent).toBeDefined();
+      const steerId = (queuedEvent!.event as any).steerId as string;
+      expect(steerId).toBeTruthy();
+
+      // Cancel the steer
+      await service.cancelSteer({ sessionId: session.id, steerId });
+
+      // Verify a system_notice with "Queued message cancelled." was emitted
+      const cancelNotice = events.find(
+        (e) =>
+          e.event.type === "system_notice"
+          && (e.event as any).message === "Queued message cancelled.",
+      );
+      expect(cancelNotice).toBeDefined();
+
+      // Interrupt the turn to let it complete
+      await service.interrupt({ sessionId: session.id });
+      await activeTurn;
+
+      // The cancelled steer should NOT have been delivered — `send` should not have been
+      // called with "queued steer text"
+      const sendCalls = send.mock.calls.map((c: any[]) => c[0]);
+      const deliveredSteer = sendCalls.find(
+        (arg: any) =>
+          (typeof arg === "string" && arg.includes("queued steer text"))
+          || (typeof arg === "object" && JSON.stringify(arg).includes("queued steer text")),
+      );
+      expect(deliveredSteer).toBeUndefined();
+    });
+
+    it("editSteer updates the queued steer text and cancels on interrupt", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let interruptedTurnClosed = false;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "Still working" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          while (!interruptedTurnClosed) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          return;
+        }
+
+        // streamCall >= 3: follow-up turn after steer delivery
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Responding to updated text" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+
+      const mockSession = {
+        send,
+        stream,
+        close: vi.fn(() => {
+          interruptedTurnClosed = true;
+        }),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      };
+
+      vi.mocked(unstable_v2_createSession).mockReturnValue(mockSession as any);
+      vi.mocked(unstable_v2_resumeSession).mockReturnValue(mockSession as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      // Start a turn so the runtime is busy
+      const activeTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do some work",
+        timeoutMs: 15_000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      // Queue a steer
+      await service.steer({ sessionId: session.id, text: "original steer text" });
+
+      // Get the steerId from the queued user_message event
+      const queuedEvent = events.find(
+        (e) =>
+          e.event.type === "user_message"
+          && (e.event as any).deliveryState === "queued"
+          && (e.event as any).text === "original steer text",
+      );
+      expect(queuedEvent).toBeDefined();
+      const steerId = (queuedEvent!.event as any).steerId as string;
+      expect(steerId).toBeTruthy();
+
+      // Edit the steer
+      await service.editSteer({ sessionId: session.id, steerId, text: "updated text" });
+
+      // Verify a user_message with updated text and deliveryState "queued" was emitted
+      const editedEvent = events.find(
+        (e) =>
+          e.event.type === "user_message"
+          && (e.event as any).deliveryState === "queued"
+          && (e.event as any).text === "updated text"
+          && (e.event as any).steerId === steerId,
+      );
+      expect(editedEvent).toBeDefined();
+
+      // Interrupt the turn — queued steers should be cancelled, not delivered
+      await service.interrupt({ sessionId: session.id });
+      await activeTurn;
+
+      // Wait for the cancellation notice for the queued steer
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "system_notice"
+          && (event.event as any).steerId === steerId
+          && /cancelled/i.test((event.event as any).message),
+      );
+
+      // The steer should NOT have been delivered via send
+      const sendCalls = send.mock.calls.map((c: any[]) => c[0]);
+      const deliveredWithUpdatedText = sendCalls.find(
+        (arg: any) =>
+          (typeof arg === "string" && arg.includes("updated text"))
+          || (typeof arg === "object" && JSON.stringify(arg).includes("updated text")),
+      );
+      expect(deliveredWithUpdatedText).toBeUndefined();
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -3237,6 +3598,71 @@ describe("createAgentChatService", () => {
           decision: "accept",
         }),
       ).rejects.toThrow(/not found/i);
+    });
+
+    it("gracefully handles missing Claude approval without throwing", async () => {
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-missing-approval",
+            slash_commands: [],
+          };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Done" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-missing-approval",
+        setPermissionMode,
+      } as any);
+
+      const { service, logger } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      // Run a turn so the Claude runtime gets created
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Hello",
+      });
+
+      // Call approveToolUse with a non-existent itemId — should NOT throw
+      await service.approveToolUse({
+        sessionId: session.id,
+        itemId: "nonexistent-item-id",
+        decision: "accept",
+      });
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.claude_approval_not_found",
+        expect.objectContaining({
+          sessionId: session.id,
+          itemId: "nonexistent-item-id",
+          decision: "accept",
+        }),
+      );
     });
 
     it("exits unified plan mode after a one-time plan approval", async () => {

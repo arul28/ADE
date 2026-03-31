@@ -524,16 +524,17 @@ export function FilesPage() {
     });
   }, []);
 
-  const switchWorkspace = useCallback((nextWorkspaceId: string) => {
-    if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
+  const switchWorkspace = useCallback((nextWorkspaceId: string): boolean => {
+    if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return false;
     if (hasUnsavedTabs) {
       const ok = window.confirm("You have unsaved changes. Switch workspace anyway?");
-      if (!ok) return;
+      if (!ok) return false;
     }
     setWorkspaceId(nextWorkspaceId);
     setOpenTabs([]);
     setActiveTabPath(null);
     setSelectedNodePath(null);
+    return true;
   }, [workspaceId, hasUnsavedTabs]);
 
   const nodeByPath = useMemo(() => {
@@ -722,7 +723,11 @@ export function FilesPage() {
     }
     const targetWorkspaceId = desiredWorkspaceId ?? workspaceId;
     if (targetWorkspaceId && targetWorkspaceId !== workspaceId) {
-      switchWorkspace(targetWorkspaceId);
+      const switched = switchWorkspace(targetWorkspaceId);
+      if (!switched) {
+        pendingOpenRef.current = null;
+        navigate(location.pathname, { replace: true, state: null });
+      }
       return;
     }
     if (!workspaceId) return;

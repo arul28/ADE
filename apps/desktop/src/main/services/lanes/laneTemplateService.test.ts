@@ -443,4 +443,187 @@ describe("laneTemplateService", () => {
       });
     });
   });
+
+  // ---------------------------------------------------------------
+  // 4. Setup script resolution tests
+  // ---------------------------------------------------------------
+
+  describe("resolveSetupScript", () => {
+    function makeService() {
+      const snapshot = makeSnapshot();
+      const configService = makeProjectConfigService(snapshot);
+      return createLaneTemplateService({
+        projectConfigService: configService,
+        logger,
+      });
+    }
+
+    it("returns null when template has no setupScript", () => {
+      const service = makeService();
+      const template = makeTemplate({ id: "tpl-no-script", name: "No Script" });
+
+      const result = service.resolveSetupScript(template);
+
+      expect(result).toBeNull();
+    });
+
+    it("returns null when setupScript has empty commands and no scriptPath", () => {
+      const service = makeService();
+      const template = makeTemplate({
+        id: "tpl-empty-script",
+        name: "Empty Script",
+        setupScript: { commands: [] },
+      });
+
+      const result = service.resolveSetupScript(template);
+
+      expect(result).toBeNull();
+    });
+
+    it("uses unixCommands on non-Windows", () => {
+      const service = makeService();
+      const template = makeTemplate({
+        id: "tpl-unix",
+        name: "Unix Commands",
+        setupScript: {
+          commands: ["generic-cmd"],
+          unixCommands: ["bash setup.sh"],
+          windowsCommands: ["powershell setup.ps1"],
+        },
+      });
+
+      const result = service.resolveSetupScript(template);
+
+      expect(result).not.toBeNull();
+      expect(result!.commands).toEqual(["bash setup.sh"]);
+    });
+
+    it("falls back to generic commands when no unixCommands provided", () => {
+      const service = makeService();
+      const template = makeTemplate({
+        id: "tpl-generic",
+        name: "Generic Commands",
+        setupScript: {
+          commands: ["npm run setup"],
+        },
+      });
+
+      const result = service.resolveSetupScript(template);
+
+      expect(result).not.toBeNull();
+      expect(result!.commands).toEqual(["npm run setup"]);
+    });
+
+    it("uses unixScriptPath on non-Windows, falls back to generic scriptPath", () => {
+      const service = makeService();
+
+      const templateWithUnix = makeTemplate({
+        id: "tpl-unix-path",
+        name: "Unix Script Path",
+        setupScript: {
+          scriptPath: "setup.sh",
+          unixScriptPath: "scripts/unix-setup.sh",
+          windowsScriptPath: "scripts/win-setup.ps1",
+        },
+      });
+
+      const resultWithUnix = service.resolveSetupScript(templateWithUnix);
+      expect(resultWithUnix).not.toBeNull();
+      expect(resultWithUnix!.scriptPath).toBe("scripts/unix-setup.sh");
+
+      const templateFallback = makeTemplate({
+        id: "tpl-fallback-path",
+        name: "Fallback Script Path",
+        setupScript: {
+          scriptPath: "setup.sh",
+        },
+      });
+
+      const resultFallback = service.resolveSetupScript(templateFallback);
+      expect(resultFallback).not.toBeNull();
+      expect(resultFallback!.scriptPath).toBe("setup.sh");
+    });
+
+    it("defaults injectPrimaryPath to false when not set", () => {
+      const service = makeService();
+      const template = makeTemplate({
+        id: "tpl-no-inject",
+        name: "No Inject",
+        setupScript: {
+          commands: ["echo hello"],
+        },
+      });
+
+      const result = service.resolveSetupScript(template);
+
+      expect(result).not.toBeNull();
+      expect(result!.injectPrimaryPath).toBe(false);
+    });
+
+    it("returns injectPrimaryPath true when explicitly set", () => {
+      const service = makeService();
+      const template = makeTemplate({
+        id: "tpl-inject",
+        name: "With Inject",
+        setupScript: {
+          commands: ["echo hello"],
+          injectPrimaryPath: true,
+        },
+      });
+
+      const result = service.resolveSetupScript(template);
+
+      expect(result).not.toBeNull();
+      expect(result!.injectPrimaryPath).toBe(true);
+    });
+
+    it("returns commands and scriptPath together", () => {
+      const service = makeService();
+      const template = makeTemplate({
+        id: "tpl-both",
+        name: "Both",
+        setupScript: {
+          commands: ["npm install", "npm run build"],
+          scriptPath: "scripts/post-setup.sh",
+          injectPrimaryPath: true,
+        },
+      });
+
+      const result = service.resolveSetupScript(template);
+
+      expect(result).not.toBeNull();
+      expect(result!.commands).toEqual(["npm install", "npm run build"]);
+      expect(result!.scriptPath).toBe("scripts/post-setup.sh");
+      expect(result!.injectPrimaryPath).toBe(true);
+    });
+
+    it("uses windowsCommands and windowsScriptPath on win32", () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, "platform", { value: "win32", writable: true });
+
+      try {
+        const service = makeService();
+        const template = makeTemplate({
+          id: "tpl-win",
+          name: "Windows",
+          setupScript: {
+            commands: ["generic-cmd"],
+            unixCommands: ["bash setup.sh"],
+            windowsCommands: ["powershell setup.ps1"],
+            scriptPath: "setup.sh",
+            unixScriptPath: "scripts/unix-setup.sh",
+            windowsScriptPath: "scripts/win-setup.ps1",
+          },
+        });
+
+        const result = service.resolveSetupScript(template);
+
+        expect(result).not.toBeNull();
+        expect(result!.commands).toEqual(["powershell setup.ps1"]);
+        expect(result!.scriptPath).toBe("scripts/win-setup.ps1");
+      } finally {
+        Object.defineProperty(process, "platform", { value: originalPlatform, writable: true });
+      }
+    });
+  });
 });

@@ -264,7 +264,7 @@ type ClaudeRuntime = {
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   busy: boolean;
   activeTurnId: string | null;
-  pendingSteers: string[];
+  pendingSteers: Array<{ steerId: string; text: string }>;
   approvals: Map<string, PendingClaudeApproval>;
   interrupted: boolean;
   /** Set when a reasoning effort change is requested mid-turn; flushed when idle. */
@@ -291,7 +291,7 @@ type UnifiedRuntime = {
   permissionMode: PermissionMode;
   pendingApprovals: Map<string, PendingUnifiedApproval>;
   approvalOverrides: Set<"bash" | "write" | "exitPlanMode">;
-  pendingSteers: string[];
+  pendingSteers: Array<{ steerId: string; text: string }>;
   interrupted: boolean;
   resolvedModel: LanguageModel;
   modelDescriptor: ModelDescriptor;
@@ -687,6 +687,7 @@ type ResolvedChatConfig = {
 };
 
 const MAX_PENDING_STEERS = 10;
+const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 
 const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
 const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
@@ -707,6 +708,7 @@ const AUTO_TITLE_MAX_CHARS = 48;
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const TURN_TIMEOUT_MS = 300_000; // 5 minutes – overall turn-level timeout
+const CLAUDE_STREAM_IDLE_TIMEOUT_MS = 75_000;
 const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
 Return only the title text.
 - Use 2 to 6 words.
@@ -1008,12 +1010,44 @@ function parseJsonLine(raw: string): JsonRpcEnvelope | null {
   }
 }
 
+function resolveClaudeCliModelIdFromRuntimeValue(model: string): string | undefined {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized.length) return undefined;
+
+  const normalizedWithoutProvider = normalized
+    .replace(/^anthropic\//, "")
+    .replace(/-api$/, "");
+
+  const inputs = [normalized, normalizedWithoutProvider];
+
+  return listModelDescriptorsForProvider("claude").find((descriptor) => {
+    const descriptorShortId = descriptor.shortId.toLowerCase();
+    const candidates = new Set([
+      descriptor.id.toLowerCase(),
+      descriptorShortId,
+      descriptor.sdkModelId.toLowerCase(),
+      descriptor.id.toLowerCase().replace(/^anthropic\//, ""),
+    ]);
+
+    if (inputs.some((input) => candidates.has(input))) return true;
+
+    return normalizedWithoutProvider === `claude-${descriptorShortId}`
+      || normalizedWithoutProvider.startsWith(`claude-${descriptorShortId}-`)
+      || normalizedWithoutProvider.includes(descriptorShortId);
+  })?.id;
+}
+
 function resolveModelIdFromStoredValue(
   model: string,
   providerHint?: AgentChatProvider,
 ): string | undefined {
   const normalized = model.trim().toLowerCase();
   if (!normalized.length) return undefined;
+
+  if (providerHint === "claude") {
+    const resolvedClaudeCliModelId = resolveClaudeCliModelIdFromRuntimeValue(normalized);
+    if (resolvedClaudeCliModelId) return resolvedClaudeCliModelId;
+  }
 
   const aliasMatch = resolveModelAlias(normalized);
   if (aliasMatch) {
@@ -1041,6 +1075,48 @@ function resolveModelIdFromStoredValue(
   }
 
   return preferred?.id ?? matches[0]?.id;
+}
+
+function normalizeReportedModelName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length ? normalized : null;
+}
+
+function extractReportedModelUsageNames(value: unknown): string[] {
+  if (!value || typeof value !== "object") return [];
+  return Object.keys(value as Record<string, unknown>)
+    .map(normalizeReportedModelName)
+    .filter((name): name is string => name !== null);
+}
+
+function resolveClaudeTurnModelPayload(
+  session: Pick<AgentChatSession, "model" | "modelId">,
+  candidates: Array<string | null | undefined>,
+): { model: string; modelId?: string } {
+  for (const candidate of candidates) {
+    const normalized = normalizeReportedModelName(candidate);
+    if (!normalized) continue;
+    const normalizedCliModel = resolveClaudeCliModel(normalized);
+    const resolvedCliModelId =
+      resolveClaudeCliModelIdFromRuntimeValue(normalized)
+      ?? resolveClaudeCliModelIdFromRuntimeValue(normalizedCliModel);
+    if (resolvedCliModelId) {
+      return { model: normalized, modelId: resolvedCliModelId };
+    }
+    const resolvedModelId =
+      resolveModelIdFromStoredValue(normalized, "claude")
+      ?? resolveModelIdFromStoredValue(normalizedCliModel, "claude");
+    if (resolvedModelId) {
+      return { model: normalized, modelId: resolvedModelId };
+    }
+    return { model: normalized };
+  }
+
+  return {
+    model: session.model,
+    ...(session.modelId ? { modelId: session.modelId } : {}),
+  };
 }
 
 function fallbackModelForProvider(provider: AgentChatProvider): string {
@@ -2145,6 +2221,20 @@ export function createAgentChatService(args: {
     // Intercept ExitPlanMode to show a plan approval UI instead of letting the
     // SDK handle it natively (which just collapses into the work log).
     if (toolName === "ExitPlanMode") {
+      // In bypass / full-auto mode, auto-approve the plan without showing
+      // approval UI — the user opted out of all permission gates.
+      const effectiveAccess = managed.session.claudePermissionMode ?? managed.session.permissionMode;
+      if (effectiveAccess === "bypassPermissions" || managed.session.permissionMode === "full-auto") {
+        // Transition out of plan mode so the UI reflects the change,
+        // matching the state update performed after manual approval.
+        if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
+          managed.session.permissionMode = "edit";
+          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+          persistChatState(managed);
+        }
+        return { behavior: "allow" };
+      }
+
       const inputRecord = (input && typeof input === "object" && !Array.isArray(input)) ? input as Record<string, unknown> : {};
       const planContent = typeof inputRecord.planDescription === "string"
         ? inputRecord.planDescription
@@ -2183,7 +2273,7 @@ export function createAgentChatService(args: {
 
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
-        description: "Plan ready for approval",
+        description: planSummary,
         detail: { tool: "ExitPlanMode", planContent },
       });
 
@@ -2199,6 +2289,12 @@ export function createAgentChatService(args: {
 
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
       if (approved) {
+        // Switch session out of plan mode so the UI reflects the transition.
+        if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
+          managed.session.permissionMode = "edit";
+          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+          persistChatState(managed);
+        }
         // Allow the tool — the SDK will process ExitPlanMode normally and
         // Claude will receive the standard "plan approved" tool result.
         return { behavior: "allow" };
@@ -4686,6 +4782,9 @@ export function createAgentChatService(args: {
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
     let costUsd: number | null = null;
+    let reportedAssistantModel: string | null = null;
+    let reportedInitModel: string | null = null;
+    const reportedUsageModels = new Set<string>();
     const turnStartedAt = Date.now();
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
@@ -4701,6 +4800,15 @@ export function createAgentChatService(args: {
       emittedClaudeTodoIds.add(itemId);
       emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
     };
+    let turnTimeout: ReturnType<typeof setTimeout> | undefined;
+    let idleTimeout: ReturnType<typeof setTimeout> | undefined;
+    let timeoutError: Error | null = null;
+    const buildDoneModelPayload = (): { model: string; modelId?: string } =>
+      resolveClaudeTurnModelPayload(managed.session, [
+        reportedAssistantModel,
+        ...(reportedUsageModels.size === 1 ? [...reportedUsageModels] : []),
+        reportedInitModel,
+      ]);
     const markFirstStreamEvent = (kind: string): void => {
       if (firstStreamEventLogged) return;
       firstStreamEventLogged = true;
@@ -4722,8 +4830,48 @@ export function createAgentChatService(args: {
       if (typeof contentIndex !== "number" || !Number.isFinite(contentIndex)) return undefined;
       return `claude-${kind}:${turnId}:${contentIndex}`;
     };
+    const clearClaudeTurnTimers = (): void => {
+      if (turnTimeout) {
+        clearTimeout(turnTimeout);
+        turnTimeout = undefined;
+      }
+      if (idleTimeout) {
+        clearTimeout(idleTimeout);
+        idleTimeout = undefined;
+      }
+    };
+    const failClaudeTurn = (message: string, reason: "timeout" | "idle"): void => {
+      if (timeoutError || runtime.interrupted) return;
+      timeoutError = new Error(message);
+      logger.warn("agent_chat.claude_turn_watchdog_fired", {
+        sessionId: managed.session.id,
+        turnId,
+        reason,
+      });
+      cancelClaudeWarmup(managed, runtime, "timeout");
+      try { runtime.v2Session?.close(); } catch { /* ignore */ }
+      runtime.sdkSessionId = null;
+    };
+    const bumpClaudeIdleDeadline = (): void => {
+      if (idleTimeout) {
+        clearTimeout(idleTimeout);
+      }
+      idleTimeout = setTimeout(() => {
+        failClaudeTurn(
+          `Claude stopped streaming for ${Math.round(CLAUDE_STREAM_IDLE_TIMEOUT_MS / 1000)}s. The turn was reset so you can retry.`,
+          "idle",
+        );
+      }, CLAUDE_STREAM_IDLE_TIMEOUT_MS);
+    };
 
     try {
+      turnTimeout = setTimeout(() => {
+        failClaudeTurn(
+          `Claude turn exceeded ${Math.round(TURN_TIMEOUT_MS / 1000)}s. The runtime was reset so you can retry.`,
+          "timeout",
+        );
+      }, TURN_TIMEOUT_MS);
+
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
       const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
       const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
@@ -4759,18 +4907,9 @@ export function createAgentChatService(args: {
       }
       // ── V2 persistent session with background pre-warming ──
       // The pre-warm was kicked off in ensureClaudeSessionRuntime. Wait for it.
-      if (runtime.v2WarmupDone) {
-        const warmupWaitStartedAt = Date.now();
-        logger.info("agent_chat.claude_v2_turn_waiting_for_warmup", {
-          sessionId: managed.session.id,
-          turnId,
-        });
-        await runtime.v2WarmupDone;
-        logger.info("agent_chat.claude_v2_turn_warmup_wait_done", {
-          sessionId: managed.session.id,
-          turnId,
-          waitedMs: Date.now() - warmupWaitStartedAt,
-        });
+      await waitForClaudeWarmup(managed, runtime, turnId);
+      if (timeoutError) {
+        throw timeoutError;
       }
       if (runtime.interrupted) {
         throw new Error("Claude turn interrupted during warmup.");
@@ -4802,6 +4941,7 @@ export function createAgentChatService(args: {
       }
 
       // V2 pattern: send() then stream() per turn. Session stays alive between turns.
+      bumpClaudeIdleDeadline();
       await runtime.v2Session.send(messageToSend);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
@@ -4810,6 +4950,10 @@ export function createAgentChatService(args: {
 
       for await (const msg of runtime.v2Session.stream()) {
         if (runtime.interrupted) break;
+        if (timeoutError) {
+          throw timeoutError;
+        }
+        bumpClaudeIdleDeadline();
         markFirstStreamEvent(msg.type);
 
         // Capture session_id from any message
@@ -4822,6 +4966,7 @@ export function createAgentChatService(args: {
         if (msg.type === "system" && (msg as any).subtype === "init") {
           const initMsg = msg as any;
           runtime.sdkSessionId = initMsg.session_id ?? runtime.sdkSessionId;
+          reportedInitModel = normalizeReportedModelName(initMsg.model) ?? reportedInitModel;
           if (Array.isArray(initMsg.slash_commands)) {
             applyClaudeSlashCommands(runtime, initMsg.slash_commands);
           }
@@ -5041,6 +5186,7 @@ export function createAgentChatService(args: {
         if (msg.type === "assistant") {
           const assistantMsg = msg as any;
           const betaMessage = assistantMsg.message;
+          reportedAssistantModel = normalizeReportedModelName(betaMessage?.model) ?? reportedAssistantModel;
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               if (block.type === "text") {
@@ -5281,6 +5427,9 @@ export function createAgentChatService(args: {
         // result — turn complete
         if (msg.type === "result") {
           const resultMsg = msg as any;
+          for (const modelName of extractReportedModelUsageNames(resultMsg.modelUsage)) {
+            reportedUsageModels.add(modelName);
+          }
           if (resultMsg.usage) {
             usage = {
               inputTokens: resultMsg.usage.input_tokens ?? null,
@@ -5354,8 +5503,12 @@ export function createAgentChatService(args: {
           continue;
         }
       }
+      if (timeoutError) {
+        throw timeoutError;
+      }
 
       // ── Turn completion ──
+      clearClaudeTurnTimers();
       // Note: v2Session is NOT closed here — it stays alive for the next turn
       runtime.activeQuery = null;
       runtime.busy = false;
@@ -5373,14 +5526,14 @@ export function createAgentChatService(args: {
         runtime.v2WarmupDone = null;
       }
 
+      const doneModel = buildDoneModelPayload();
       const finalStatus = runtime.interrupted ? "interrupted" : "completed";
       emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
       emitChatEvent(managed, {
         type: "done",
         turnId,
         status: finalStatus,
-        model: managed.session.model,
-        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        ...doneModel,
         ...(usage ? { usage } : {}),
         ...(costUsd != null ? { costUsd } : {}),
       });
@@ -5400,21 +5553,11 @@ export function createAgentChatService(args: {
       persistChatState(managed);
 
       // Process queued steers (skip if session was disposed during execution)
-      if (!managed.closed && runtime.pendingSteers.length) {
-        const steerText = runtime.pendingSteers.shift() ?? "";
-        if (steerText.trim().length) {
-          const preparedSteer = prepareSendMessage({
-            sessionId: managed.session.id,
-            text: steerText,
-            displayText: steerText,
-            attachments: [],
-          });
-          if (preparedSteer) {
-            await executePreparedSendMessage(preparedSteer);
-          }
-        }
+      if (runtime.pendingSteers.length) {
+        await deliverNextQueuedSteer(managed, runtime);
       }
     } catch (error) {
+      clearClaudeTurnTimers();
       runtime.activeQuery = null;
       runtime.busy = false;
       runtime.activeTurnId = null;
@@ -5425,6 +5568,7 @@ export function createAgentChatService(args: {
       runtime.v2Session = null;
       runtime.v2StreamGen = null;
       runtime.v2WarmupDone = null;
+      const doneModel = buildDoneModelPayload();
 
       if (runtime.interrupted) {
         managed.session.status = "idle";
@@ -5433,8 +5577,7 @@ export function createAgentChatService(args: {
           type: "done",
           turnId,
           status: "interrupted",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          ...doneModel,
         });
       } else {
         managed.session.status = "idle";
@@ -5457,8 +5600,7 @@ export function createAgentChatService(args: {
           type: "done",
           turnId,
           status: "failed",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          ...doneModel,
         });
 
         appendWorkerActivityToCto(managed, {
@@ -5482,6 +5624,8 @@ export function createAgentChatService(args: {
       }
 
       persistChatState(managed);
+      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+      return;
     }
   };
 
@@ -6120,19 +6264,8 @@ export function createAgentChatService(args: {
         persistChatState(managed);
 
         // Process queued steers (skip if session was disposed during execution)
-        if (!managed.closed && runtime.pendingSteers.length) {
-          const steerText = runtime.pendingSteers.shift() ?? "";
-          if (steerText.trim().length) {
-            const preparedSteer = prepareSendMessage({
-              sessionId: managed.session.id,
-              text: steerText,
-              displayText: steerText,
-              attachments: [],
-            });
-            if (preparedSteer) {
-              await executePreparedSendMessage(preparedSteer);
-            }
-          }
+        if (runtime.pendingSteers.length) {
+          await deliverNextQueuedSteer(managed, runtime);
         }
       }
     } catch (error) {
@@ -6185,6 +6318,8 @@ export function createAgentChatService(args: {
       }
 
       persistChatState(managed);
+      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+      return;
     }
   };
 
@@ -7744,7 +7879,7 @@ export function createAgentChatService(args: {
   const cancelClaudeWarmup = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
-    reason: "interrupt" | "teardown" | "session_reset",
+    reason: "interrupt" | "teardown" | "session_reset" | "timeout",
   ): void => {
     if (!runtime.v2WarmupDone) return;
     runtime.v2WarmupCancelled = true;
@@ -7753,6 +7888,85 @@ export function createAgentChatService(args: {
       sessionId: managed.session.id,
       reason,
     });
+  };
+
+  const cancelQueuedSteers = (
+    managed: ManagedChatSession,
+    runtime: Pick<ClaudeRuntime | UnifiedRuntime, "pendingSteers" | "activeTurnId">,
+    reason: "interrupted" | "failed" | "disposed",
+  ): void => {
+    const cancelled = runtime.pendingSteers.splice(0);
+    if (!cancelled.length) return;
+
+    const cancelReasons: Record<typeof reason, string> = {
+      interrupted: "Queued message cancelled because the current turn was interrupted.",
+      failed: "Queued message cancelled because the current turn failed.",
+      disposed: "Queued message cancelled because the session was closed.",
+    };
+    const message = cancelReasons[reason];
+
+    for (const steer of cancelled) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId: steer.steerId,
+        message,
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+    }
+  };
+
+  const waitForClaudeWarmup = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    turnId: string,
+  ): Promise<void> => {
+    if (!runtime.v2WarmupDone) return;
+
+    const warmupWaitStartedAt = Date.now();
+    logger.info("agent_chat.claude_v2_turn_waiting_for_warmup", {
+      sessionId: managed.session.id,
+      turnId,
+    });
+
+    let warmupTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const warmupTimeout = new Promise<"timeout">((resolve) => {
+        warmupTimeoutHandle = setTimeout(() => resolve("timeout"), CLAUDE_WARMUP_WAIT_TIMEOUT_MS);
+      });
+      const warmupState = await Promise.race([
+        runtime.v2WarmupDone.then(() => "ready" as const),
+        warmupTimeout,
+      ]);
+
+      if (warmupState === "timeout") {
+        logger.warn("agent_chat.claude_v2_turn_warmup_timeout", {
+          sessionId: managed.session.id,
+          turnId,
+          timeoutMs: CLAUDE_WARMUP_WAIT_TIMEOUT_MS,
+        });
+        cancelClaudeWarmup(managed, runtime, "timeout");
+        try { runtime.v2Session?.close(); } catch { /* ignore */ }
+        runtime.v2Session = null;
+        runtime.v2WarmupDone = null;
+        runtime.sdkSessionId = null;
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Claude session warmup timed out. Restarting the session for this turn.",
+          turnId,
+        });
+        return;
+      }
+
+      logger.info("agent_chat.claude_v2_turn_warmup_wait_done", {
+        sessionId: managed.session.id,
+        turnId,
+        waitedMs: Date.now() - warmupWaitStartedAt,
+      });
+    } finally {
+      if (warmupTimeoutHandle) clearTimeout(warmupTimeoutHandle);
+    }
   };
 
   const applyClaudeSlashCommands = (
@@ -7778,6 +7992,105 @@ export function createAgentChatService(args: {
         };
       })
       .filter((command): command is { name: string; description: string; argumentHint?: string } => Boolean(command));
+  };
+
+  const deliverNextQueuedSteer = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime | UnifiedRuntime,
+  ): Promise<boolean> => {
+    if (managed.closed) return false;
+
+    const nextSteer = runtime.pendingSteers.shift();
+    if (!nextSteer) return false;
+
+    const trimmed = nextSteer.text.trim();
+    if (!trimmed.length) {
+      persistChatState(managed);
+      return false;
+    }
+
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      steerId: nextSteer.steerId,
+      message: "Delivering your queued message...",
+      turnId: runtime.activeTurnId ?? undefined,
+    });
+
+    runtime.interrupted = false;
+    persistChatState(managed);
+
+    // Re-resolve lane context so that a lane switch that occurred while the
+    // steer was queued is reflected in the delivered prompt.
+    const executionContext = resolveManagedExecutionContext(managed, {
+      purpose: "deliver queued steer",
+    });
+    const laneDirectiveKey = executionContext.laneDirectiveKey;
+    const shouldInjectLaneDirective =
+      laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
+    const promptText = composeLaunchDirectives(trimmed, [
+      shouldInjectLaneDirective
+        ? buildLaneWorktreeDirective({
+            laneId: executionContext.laneId,
+            laneWorktreePath: executionContext.laneWorktreePath,
+          })
+        : null,
+    ]);
+
+    if (runtime.kind === "claude") {
+      await runClaudeTurn(managed, {
+        promptText,
+        displayText: trimmed,
+        attachments: [],
+        laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
+      });
+    } else {
+      await runTurn(managed, {
+        promptText,
+        displayText: trimmed,
+        attachments: [],
+        laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
+      });
+    }
+
+    return true;
+  };
+
+  /** Enqueue a steer or drop it if the queue is full. Returns true if queued. */
+  const enqueueSteerOrDrop = (
+    managed: ManagedChatSession,
+    runtime: Pick<ClaudeRuntime | UnifiedRuntime, "pendingSteers" | "activeTurnId">,
+    sessionId: string,
+    steerId: string,
+    text: string,
+  ): boolean => {
+    if (runtime.pendingSteers.length >= MAX_PENDING_STEERS) {
+      logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      return false;
+    }
+    runtime.pendingSteers.push({ steerId, text });
+    emitChatEvent(managed, {
+      type: "user_message",
+      text,
+      steerId,
+      turnId: runtime.activeTurnId ?? undefined,
+      deliveryState: "queued",
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      steerId,
+      message: `Message queued (#${runtime.pendingSteers.length}) — will be sent after the current turn.`,
+      turnId: runtime.activeTurnId ?? undefined,
+    });
+    persistChatState(managed);
+    return true;
   };
 
   /**
@@ -7860,6 +8173,7 @@ export function createAgentChatService(args: {
         }
 
         if (runtime.v2WarmupCancelled) {
+          // Warmup was cancelled during streaming — clean up and bail
           try { runtime.v2Session?.close(); } catch { /* ignore */ }
           runtime.v2Session = null;
           return;
@@ -8837,29 +9151,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "unified") {
       const runtime = managed.runtime;
       if (runtime.busy) {
-        if (runtime.pendingSteers.length >= MAX_PENDING_STEERS) {
-          logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "info",
-            message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
-            turnId: runtime.activeTurnId ?? undefined,
-          });
-          return;
-        }
-        runtime.pendingSteers.push(trimmed);
-        emitChatEvent(managed, {
-          type: "user_message",
-          text: trimmed,
-          turnId: runtime.activeTurnId ?? undefined,
-        });
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: "Message queued — will be sent when the current turn completes.",
-          turnId: runtime.activeTurnId ?? undefined,
-        });
-        persistChatState(managed);
+        enqueueSteerOrDrop(managed, runtime, sessionId, randomUUID(), trimmed);
         return;
       }
       const preparedSteer = prepareSendMessage({
@@ -8901,29 +9193,7 @@ export function createAgentChatService(args: {
 
     const runtime = ensureClaudeSessionRuntime(managed);
     if (runtime.busy) {
-      if (runtime.pendingSteers.length >= MAX_PENDING_STEERS) {
-        logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
-          turnId: runtime.activeTurnId ?? undefined,
-        });
-        return;
-      }
-      runtime.pendingSteers.push(trimmed);
-      emitChatEvent(managed, {
-        type: "user_message",
-        text: trimmed,
-        turnId: runtime.activeTurnId ?? undefined,
-      });
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
-        message: "Message queued — will be sent when the current turn completes.",
-        turnId: runtime.activeTurnId ?? undefined,
-      });
-      persistChatState(managed);
+      enqueueSteerOrDrop(managed, runtime, sessionId, randomUUID(), trimmed);
       return;
     }
 
@@ -8937,12 +9207,57 @@ export function createAgentChatService(args: {
     await executePreparedSendMessage(preparedSteer);
   };
 
-  const cancelSteer = async ({ sessionId }: AgentChatCancelSteerArgs): Promise<void> => {
-    await interrupt({ sessionId });
+  const cancelSteer = async ({ sessionId, steerId }: AgentChatCancelSteerArgs): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    const runtime = managed.runtime;
+    if (!runtime || runtime.kind === "codex") return;
+
+    const queue = runtime.pendingSteers;
+    const idx = queue.findIndex((s) => s.steerId === steerId);
+    if (idx === -1) return;
+
+    queue.splice(idx, 1);
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      steerId,
+      message: "Queued message cancelled.",
+      turnId: runtime.activeTurnId ?? undefined,
+    });
+    persistChatState(managed);
   };
 
-  const editSteer = async ({ sessionId, text }: AgentChatEditSteerArgs): Promise<void> => {
-    await steer({ sessionId, text });
+  const editSteer = async ({ sessionId, steerId, text }: AgentChatEditSteerArgs): Promise<void> => {
+    const trimmed = text.trim();
+    const managed = ensureManagedSession(sessionId);
+    const runtime = managed.runtime;
+    if (!runtime || runtime.kind === "codex") return;
+
+    const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
+    if (idx === -1) return;
+
+    if (!trimmed.length) {
+      runtime.pendingSteers.splice(idx, 1);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Queued message cancelled (empty edit).",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      return;
+    }
+
+    runtime.pendingSteers[idx].text = trimmed;
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: trimmed,
+      steerId,
+      turnId: runtime.activeTurnId ?? undefined,
+      deliveryState: "queued",
+    });
+    persistChatState(managed);
   };
 
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
@@ -8953,6 +9268,8 @@ export function createAgentChatService(args: {
       if (managed.runtime.interrupted) return;
       managed.runtime.interrupted = true;
       managed.runtime.abortController?.abort();
+      cancelQueuedSteers(managed, managed.runtime, "interrupted");
+      persistChatState(managed);
       for (const [itemId, approval] of managed.runtime.pendingApprovals) {
         approval.resolve({ decision: "decline" });
         managed.runtime.pendingApprovals.delete(itemId);
@@ -8984,12 +9301,14 @@ export function createAgentChatService(args: {
     // and breaks cleanly rather than throwing from a closed session.
     runtime.interrupted = true;
     cancelClaudeWarmup(managed, runtime, "interrupt");
+    cancelQueuedSteers(managed, runtime, "interrupted");
     runtime.activeQuery?.interrupt().catch(() => {});
     // Drain pending approvals so their promises settle instead of hanging forever
     for (const pending of runtime.approvals.values()) {
       pending.resolve({ decision: "cancel" });
     }
     runtime.approvals.clear();
+    runtime.pendingElicitations.clear();
     // Close the V2 session on interrupt — it will be recreated on the next turn
     try { runtime.v2Session?.close(); } catch { /* ignore */ }
     runtime.v2Session = null;
@@ -9414,7 +9733,15 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "claude") {
       const pending = managed.runtime.approvals.get(itemId);
       if (!pending) {
-        throw new Error(`No pending approval found for item '${itemId}'.`);
+        // The approval may have already been resolved (e.g. double-click,
+        // turn interrupted, or stale UI state). Log and return silently
+        // instead of throwing — the UI will clear the stale entry.
+        logger.warn("agent_chat.claude_approval_not_found", {
+          sessionId,
+          itemId,
+          decision,
+        });
+        return;
       }
       managed.runtime.approvals.delete(itemId);
       pending.resolve({ decision, answers, responseText });
@@ -9533,6 +9860,7 @@ export function createAgentChatService(args: {
     // Mark streaming runtimes as interrupted so the catch block handles gracefully
     if (managed.runtime?.kind === "claude" || managed.runtime?.kind === "unified") {
       managed.runtime.interrupted = true;
+      cancelQueuedSteers(managed, managed.runtime, "disposed");
     }
 
     await finishSession(managed, "disposed", {
@@ -9808,14 +10136,17 @@ export function createAgentChatService(args: {
     const isAnthropicCli = descriptor.family === "anthropic" && descriptor.isCliWrapped;
     if (!isAnthropicCli) return;
 
+    // Warmup should never rewrite the live session model. It's only allowed to
+    // prime the currently-selected Claude runtime when the backend session is
+    // already aligned with the requested model and fully idle.
+    if (managed.session.provider !== "claude") return;
+    if (managed.session.modelId !== descriptor.id) return;
+    if (managed.session.status === "active") return;
+    if (managed.runtime && managed.runtime.kind !== "claude") return;
+    if (managed.runtime?.kind === "claude" && managed.runtime.busy) return;
+
     // Only prewarm if the session is idle (not mid-turn) and not already warmed
     if (managed.runtime?.kind === "claude" && (managed.runtime.v2Session || managed.runtime.v2WarmupDone)) return;
-
-    // Apply the selected model to the session so buildClaudeV2SessionOpts
-    // picks up the correct model for warmup.
-    managed.session.provider = "claude";
-    managed.session.modelId = descriptor.id;
-    managed.session.model = descriptor.shortId;
 
     // Ensure a Claude runtime exists and kick off pre-warming
     ensureClaudeSessionRuntime(managed);

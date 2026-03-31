@@ -1488,8 +1488,8 @@ interface AgentChatService {
   createSession(laneId: string, provider: "codex" | "claude" | "unified", model: string, modelId: string, opts?: CreateSessionOpts): Promise<ChatSession>;
   sendMessage(sessionId: string, text: string, attachments?: FileRef[]): AsyncIterable<ChatEvent>;
   steer(sessionId: string, text: string): Promise<void>;
-  cancelSteer(sessionId: string): Promise<void>;
-  editSteer(sessionId: string, text: string): Promise<void>;
+  cancelSteer(sessionId: string, steerId: string): Promise<void>;
+  editSteer(sessionId: string, steerId: string, text: string): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
   resumeSession(sessionId: string): Promise<ChatSession>;
   listSessions(laneId?: string): Promise<ChatSessionSummary[]>;
@@ -1525,12 +1525,12 @@ type ChatEvent =
   | { type: "plan"; steps: Array<{ text: string; status: "pending" | "in_progress" | "completed" | "failed" }> }
   | { type: "reasoning"; summary: string; isCollapsed: boolean }
   | { type: "approval_request"; itemId: string; kind: "command" | "file_change"; description: string; detail: unknown }
-  | { type: "system_notice"; noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error"; message: string; detail?: string | AgentChatNoticeDetail }
+  | { type: "system_notice"; noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error"; message: string; detail?: string | AgentChatNoticeDetail; steerId?: string }
   | { type: "status"; turnStatus: "started" | "completed" | "interrupted" | "failed"; error?: string }
   | { type: "subagent_started"; taskId: string; description: string; turnId?: string }
   | { type: "subagent_result"; taskId: string; status: "completed" | "stopped" | "failed"; summary: string; turnId?: string }
   | { type: "error"; message: string; errorInfo?: string }
-  | { type: "done"; turnId: string };
+  | { type: "done"; turnId: string; status: "completed" | "interrupted" | "failed"; model: string; modelId?: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number }; costUsd?: number };
 
 type ApprovalDecision = "accept" | "accept_for_session" | "decline" | "cancel";
 
@@ -1670,7 +1670,7 @@ async function* sendMessage(text: string): AsyncIterable<ChatEvent> {
 |---|---|---|
 | Protocol | JSON-RPC 2.0 over stdio | Vercel AI SDK `streamText()` |
 | Multi-turn | Native thread management | ADE manages `messages[]` |
-| Steering | `turn/steer` (native) | Queue text, inject on next turn |
+| Steering | `turn/steer` (native) | Queue text with steerId, deliver on next idle; cancel/edit queued steers |
 | Approval flow | `requestApproval` notifications | `canUseTool` callback |
 | File changes | `fileChange` items with diffs | Tool call events (Write, Edit) |
 | Command execution | `commandExecution` items with live output | Tool call events (Bash) |

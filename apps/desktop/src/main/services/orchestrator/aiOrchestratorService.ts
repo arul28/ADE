@@ -6954,8 +6954,10 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
 
       startupStage = "run_activate";
-      const activatedRun = orchestratorService.activateRun(startedRunId);
+      // Persist the mission lane before activation so that any listeners
+      // of the run_activated event can already resolve the lane ID.
       persistMissionLaneIdForRun(startedRunId, missionLaneId);
+      const activatedRun = orchestratorService.activateRun(startedRunId);
       transitionMissionStatus(missionId, "in_progress");
       if (initialPhase?.phaseKey.trim().toLowerCase() !== "planning") {
         emitOrchestratorMessage(

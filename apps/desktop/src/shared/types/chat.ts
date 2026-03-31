@@ -127,6 +127,7 @@ export type AgentChatEvent =
       text: string;
       attachments?: AgentChatFileRef[];
       turnId?: string;
+      steerId?: string;
       deliveryState?: "queued" | "delivered" | "failed";
       processed?: boolean;
     }
@@ -313,6 +314,7 @@ export type AgentChatEvent =
       noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error";
       message: string;
       detail?: string | AgentChatNoticeDetail;
+      steerId?: string;
       turnId?: string;
     }
   | {
@@ -583,12 +585,19 @@ export type AgentChatSteerArgs = {
   text: string;
 };
 
+export type AgentChatSteerResult = {
+  steerId: string;
+  queued: boolean;
+};
+
 export type AgentChatCancelSteerArgs = {
   sessionId: string;
+  steerId: string;
 };
 
 export type AgentChatEditSteerArgs = {
   sessionId: string;
+  steerId: string;
   text: string;
 };
 
