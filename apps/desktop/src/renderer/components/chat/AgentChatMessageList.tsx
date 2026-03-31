@@ -1792,6 +1792,8 @@ function renderEvent(
       bodyText = requestDescription || primaryQuestionText || question || event.description;
     } else if (isAskUser) {
       bodyText = question;
+    } else if (isPlanApproval) {
+      bodyText = requestDescription || primaryQuestionText || event.description;
     } else {
       bodyText = event.description;
     }
@@ -1814,7 +1816,11 @@ function renderEvent(
           </span>
           <span className="font-mono text-[10px] text-muted-fg/40">{requestSource || event.kind}</span>
         </div>
-        <div className="text-[12px] leading-relaxed text-fg/75">{bodyText}</div>
+        {isPlanApproval ? (
+          <div className="max-h-72 overflow-y-auto text-[12px] leading-relaxed text-fg/75 whitespace-pre-wrap">{bodyText}</div>
+        ) : (
+          <div className="text-[12px] leading-relaxed text-fg/75">{bodyText}</div>
+        )}
         {isQuestionRequest && quickOptions.length > 0 && options?.onApproval ? (
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             {quickOptions.map((option) => (

@@ -223,6 +223,7 @@ import { runGit } from "../git/git";
 import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
+import { mapPermissionToClaude } from "../orchestrator/permissionMapping";
 import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
@@ -2887,6 +2888,326 @@ describe("createAgentChatService", () => {
   });
 
   // --------------------------------------------------------------------------
+  // Claude plan mode (canUseTool / ExitPlanMode)
+  // --------------------------------------------------------------------------
+
+  describe("Claude plan mode", () => {
+    it("auto-approves ExitPlanMode in bypass permission mode without showing approval UI", async () => {
+      let capturedCanUseTool: ((toolName: string, input: unknown) => Promise<any>) | null = null;
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-bypass",
+            slash_commands: [],
+          };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Implementing plan." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockImplementation((opts: any) => {
+        capturedCanUseTool = opts.canUseTool ?? null;
+        return {
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-bypass",
+          setPermissionMode,
+        } as any;
+      });
+
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        claudePermissionMode: "bypassPermissions",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Run the plan.",
+      });
+
+      // canUseTool should have been captured during session creation
+      // canUseTool must have been captured during session creation
+      const canUseTool = capturedCanUseTool as unknown as (toolName: string, input: unknown) => Promise<any>;
+      expect(canUseTool).toBeTruthy();
+
+      // Calling ExitPlanMode should auto-approve without blocking
+      const result = await canUseTool("ExitPlanMode", { planDescription: "Step 1: do X" });
+      expect(result).toEqual({ behavior: "allow" });
+
+      // No approval_request events should have been emitted for ExitPlanMode
+      const approvalEvents = events.filter(
+        (e) => e.event.type === "approval_request",
+      );
+      expect(approvalEvents).toHaveLength(0);
+    });
+
+    it("auto-approves ExitPlanMode in full-auto permission mode", async () => {
+      // Override the permission mapping mock so "full-auto" maps to
+      // "bypassPermissions" for Claude, which is the real mapping.
+      vi.mocked(mapPermissionToClaude).mockReturnValue("bypassPermissions" as any);
+
+      let capturedCanUseTool: ((toolName: string, input: unknown) => Promise<any>) | null = null;
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-fullauto",
+            slash_commands: [],
+          };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Implementing." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockImplementation((opts: any) => {
+        capturedCanUseTool = opts.canUseTool ?? null;
+        return {
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-fullauto",
+          setPermissionMode,
+        } as any;
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        permissionMode: "full-auto",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Run the plan.",
+      });
+
+      const canUseTool = capturedCanUseTool as unknown as (toolName: string, input: unknown) => Promise<any>;
+      expect(canUseTool).toBeTruthy();
+
+      const result = await canUseTool("ExitPlanMode", { planDescription: "My plan" });
+      expect(result).toEqual({ behavior: "allow" });
+    });
+
+    it("emits plan approval description with actual plan content, not a hardcoded string", async () => {
+      let capturedCanUseTool: ((toolName: string, input: unknown) => Promise<any>) | null = null;
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-plan-desc",
+            slash_commands: [],
+          };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Plan proposed." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockImplementation((opts: any) => {
+        capturedCanUseTool = opts.canUseTool ?? null;
+        return {
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-plan-desc",
+          setPermissionMode,
+        } as any;
+      });
+
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        permissionMode: "plan",
+        interactionMode: "plan",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Propose a plan.",
+        interactionMode: "plan",
+      });
+
+      const canUseTool = capturedCanUseTool as unknown as (toolName: string, input: unknown) => Promise<any>;
+      expect(canUseTool).toBeTruthy();
+
+      const planText = "1. Refactor module A\n2. Add tests for module B\n3. Update docs";
+      // Call canUseTool in the background — it will block waiting for approval
+      const canUseToolPromise = canUseTool("ExitPlanMode", { planDescription: planText });
+
+      // Wait for the approval event to be emitted
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => {
+          if (event.event.type !== "approval_request") return false;
+          const detail = event.event.detail as { request?: { kind?: string } } | undefined;
+          return detail?.request?.kind === "plan_approval";
+        },
+      );
+
+      // The description should contain the actual plan content, not a hardcoded string
+      expect(approvalEvent.event.description).toBe(planText);
+      expect(approvalEvent.event.description).not.toBe("Plan ready for approval");
+
+      // Approve to unblock the promise
+      await service.approveToolUse({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+
+      const result = await canUseToolPromise;
+      expect(result).toEqual({ behavior: "allow" });
+    });
+
+    it("transitions Claude session from plan to edit mode after plan approval", async () => {
+      let capturedCanUseTool: ((toolName: string, input: unknown) => Promise<any>) | null = null;
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-plan-exit",
+            slash_commands: [],
+          };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Plan proposed." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockImplementation((opts: any) => {
+        capturedCanUseTool = opts.canUseTool ?? null;
+        return {
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-plan-exit",
+          setPermissionMode,
+        } as any;
+      });
+
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        permissionMode: "plan",
+        interactionMode: "plan",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Propose a plan.",
+        interactionMode: "plan",
+      });
+
+      const canUseTool = capturedCanUseTool as unknown as (toolName: string, input: unknown) => Promise<any>;
+      expect(canUseTool).toBeTruthy();
+
+      // Call canUseTool — it blocks until approval
+      const canUseToolPromise = canUseTool("ExitPlanMode", { planDescription: "My plan" });
+
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => {
+          if (event.event.type !== "approval_request") return false;
+          const detail = event.event.detail as { request?: { kind?: string } } | undefined;
+          return detail?.request?.kind === "plan_approval";
+        },
+      );
+
+      // Approve the plan
+      await service.approveToolUse({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+
+      const result = await canUseToolPromise;
+      expect(result).toEqual({ behavior: "allow" });
+
+      // Session should have transitioned from plan to edit
+      const updated = await service.getSessionSummary(session.id);
+      expect(updated?.permissionMode).toBe("edit");
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // setComputerUseArtifactBrokerService
   // --------------------------------------------------------------------------
 
@@ -3653,6 +3974,71 @@ describe("createAgentChatService", () => {
           decision: "accept",
         }),
       ).rejects.toThrow(/not found/i);
+    });
+
+    it("gracefully handles missing Claude approval without throwing", async () => {
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-missing-approval",
+            slash_commands: [],
+          };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Done" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-missing-approval",
+        setPermissionMode,
+      } as any);
+
+      const { service, logger } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      // Run a turn so the Claude runtime gets created
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Hello",
+      });
+
+      // Call approveToolUse with a non-existent itemId — should NOT throw
+      await service.approveToolUse({
+        sessionId: session.id,
+        itemId: "nonexistent-item-id",
+        decision: "accept",
+      });
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.claude_approval_not_found",
+        expect.objectContaining({
+          sessionId: session.id,
+          itemId: "nonexistent-item-id",
+          decision: "accept",
+        }),
+      );
     });
 
     it("exits unified plan mode after a one-time plan approval", async () => {
