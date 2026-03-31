@@ -12,17 +12,17 @@ import {
 } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type {
+  AiDetectedAuth,
   ComputerUsePolicy,
   MissionAgentRuntimeConfig,
   MissionModelConfig,
+  MissionPriority,
+  ModelConfig,
   PhaseCard,
   PhaseProfile,
-  PrStrategy,
-  PrDepth,
   OrchestratorDecisionTimeoutCapHours,
   AggregatedUsageStats,
   MissionBudgetTelemetrySnapshot,
-  MergeMethod,
   TeamRuntimeConfig,
   MissionPermissionConfig,
   CreateMissionArgs,
@@ -30,7 +30,7 @@ import type {
 } from "../../../shared/types";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
-import { getDefaultModelDescriptor, MODEL_REGISTRY, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
@@ -52,8 +52,7 @@ export type CreateDraft = {
   title: string;
   prompt: string;
   laneId: string;
-  priority: import("../../../shared/types").MissionPriority;
-  prStrategy: PrStrategy;
+  priority: MissionPriority;
   modelConfig: MissionModelConfig;
   phaseProfileId: string | null;
   phaseOverride: PhaseCard[];
@@ -64,7 +63,7 @@ export type CreateDraft = {
 };
 
 export type CreateMissionDefaults = {
-  orchestratorModel?: import("../../../shared/types").ModelConfig;
+  orchestratorModel?: ModelConfig;
   permissionConfig?: MissionPermissionConfig;
 };
 
@@ -88,7 +87,7 @@ const CREATE_DIALOG_PHASE_SYNC_DELAY_MS = 1_500;
 
 type CreateMissionDialogAiStatusCache = {
   availableModelIds: string[];
-  detectedAuth: import("../../../shared/types").AiDetectedAuth[] | null;
+  detectedAuth: AiDetectedAuth[] | null;
 };
 
 const createMissionDialogCache: {
@@ -206,7 +205,6 @@ export function buildCreateMissionDraft(
     prompt: "",
     laneId: "",
     priority: "normal",
-    prStrategy: { kind: "integration", targetBranch: "main", draft: true },
     modelConfig: buildDefaultModelConfig(defaults, builtInProfiles),
     phaseProfileId: null,
     phaseOverride: [],
@@ -233,7 +231,7 @@ export function buildMissionLaunchRequest(args: {
     agentRuntime: args.draft.agentRuntime,
     teamRuntime: args.draft.teamRuntime,
     executionPolicy: {
-      prStrategy: args.draft.prStrategy,
+      finalizationPolicyKind: "result_lane",
       ...(args.draft.teamRuntime ? { teamRuntime: args.draft.teamRuntime } : {}),
     },
     modelConfig: {
@@ -343,7 +341,7 @@ function CreateMissionDialogInner({
   const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({});
   const [disabledPhases, setDisabledPhases] = useState<Record<string, boolean>>({});
   const [availableModelIds, setAvailableModelIds] = useState<string[] | undefined>(() => createMissionDialogCache.aiStatus?.availableModelIds);
-  const [aiDetectedAuth, setAiDetectedAuth] = useState<import("../../../shared/types").AiDetectedAuth[] | null>(() => createMissionDialogCache.aiStatus?.detectedAuth ?? null);
+  const [aiDetectedAuth, setAiDetectedAuth] = useState<AiDetectedAuth[] | null>(() => createMissionDialogCache.aiStatus?.detectedAuth ?? null);
   const [currentUsage, setCurrentUsage] = useState<AggregatedUsageStats | null>(null);
   const [weeklyUsage, setWeeklyUsage] = useState<AggregatedUsageStats | null>(null);
   const [budgetTelemetry, setBudgetTelemetry] = useState<MissionBudgetTelemetrySnapshot | null>(null);
@@ -976,253 +974,22 @@ function CreateMissionDialogInner({
                   </select>
                 </label>
 
-                {/* c. PR Strategy + Depth */}
+                {/* c. Mission closeout */}
                 <div className="space-y-1">
                   <span style={dlgLabelStyle}>
-                    <GitBranch size={12} weight="bold" className="inline mr-1 -mt-0.5" style={{ color: COLORS.textMuted }} />
-                    PR STRATEGY
+                    RESULT LANE CLOSEOUT
                   </span>
-                  <div className="flex flex-wrap gap-1">
-                    {(["integration", "per-lane", "queue", "manual"] as const).map((kind) => {
-                      const labels: Record<string, string> = {
-                        integration: "INTEGRATION",
-                        "per-lane": "PER-LANE",
-                        queue: "QUEUE",
-                        manual: "MANUAL",
-                      };
-                      const strategyColors: Record<string, string> = {
-                        integration: "#8B5CF6",
-                        "per-lane": "#3B82F6",
-                        queue: "#F59E0B",
-                        manual: "#71717A",
-                      };
-                      const accentColor = strategyColors[kind];
-                      return (
-                        <button
-                          key={kind}
-                          type="button"
-                          onClick={() => {
-                            if (kind === "manual") {
-                              setDraft((p) => ({ ...p, prStrategy: { kind: "manual" as const } }));
-                            } else if (kind === "queue") {
-                              setDraft((p) => ({
-                                ...p,
-                                prStrategy: {
-                                  kind: "queue" as const,
-                                  targetBranch: (p.prStrategy.kind !== "manual" && "targetBranch" in p.prStrategy ? p.prStrategy.targetBranch : undefined) ?? "main",
-                                  draft: p.prStrategy.kind !== "manual" && "draft" in p.prStrategy ? p.prStrategy.draft : true,
-                                  autoRebase: true,
-                                  ciGating: true,
-                                  autoLand: false,
-                                  autoResolveConflicts: false,
-                                  archiveLaneOnLand: false,
-                                  mergeMethod: "squash" as MergeMethod,
-                                }
-                              }));
-                            } else {
-                              const prevTarget = (p: CreateDraft) => p.prStrategy.kind !== "manual" && "targetBranch" in p.prStrategy ? p.prStrategy.targetBranch : "main";
-                              const prevDraft = (p: CreateDraft) => p.prStrategy.kind !== "manual" && "draft" in p.prStrategy ? p.prStrategy.draft : true;
-                              setDraft((p) => ({
-                                ...p,
-                                prStrategy: { kind, targetBranch: prevTarget(p) ?? "main", draft: prevDraft(p) ?? true }
-                              }));
-                            }
-                          }}
-                          className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
-                          title={kind === "manual"
-                            ? "Complete mission without PR automation."
-                            : kind === "integration"
-                              ? "Create one integration PR flow at mission end."
-                              : kind === "per-lane"
-                                ? "Create one PR per lane at mission end."
-                                : "Use queue-based PR automation at mission end."
-                          }
-                          style={draft.prStrategy.kind === kind
-                            ? { background: `${accentColor}18`, color: accentColor, border: `1px solid ${accentColor}30`, fontFamily: MONO_FONT }
-                            : { background: COLORS.recessedBg, color: COLORS.textMuted, border: `1px solid ${COLORS.border}`, fontFamily: MONO_FONT }
-                          }
-                        >
-                          {labels[kind]}
-                        </button>
-                      );
-                    })}
+                  <div className="space-y-2 rounded-md border p-3" style={{ borderColor: COLORS.border, background: COLORS.recessedBg }}>
+                    <div className="text-[11px]" style={{ color: COLORS.textPrimary }}>
+                      ADE will finish this mission with one result lane containing the consolidated changes.
+                    </div>
+                    <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      Worker and integration lanes stay mission-scoped during execution. When closeout succeeds, only the result lane stays visible in the main lane surfaces.
+                    </div>
+                    <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      No PR is opened automatically. If you want a PR later, create or link it from the result lane after review.
+                    </div>
                   </div>
-                  <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    Applied after mission work completes. This is not a phase card.
-                  </div>
-                  {draft.prStrategy.kind !== "manual" && (
-                    <div className="flex items-center gap-3 mt-1">
-                      <label className="flex items-center gap-1.5 text-[10px]">
-                        <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Target branch</span>
-                        <input
-                          value={"targetBranch" in draft.prStrategy ? draft.prStrategy.targetBranch ?? "main" : "main"}
-                          onChange={(e) => {
-                            const branch = e.target.value;
-                            setDraft((p) => ({
-                              ...p,
-                              prStrategy: { ...p.prStrategy, targetBranch: branch } as PrStrategy
-                            }));
-                          }}
-                          className="h-6 w-24 px-2 text-xs outline-none"
-                          style={dlgInputStyle}
-                        />
-                      </label>
-                      {(draft.prStrategy.kind === "per-lane" || draft.prStrategy.kind === "queue" || (draft.prStrategy.kind === "integration" && draft.prStrategy.prDepth === "open-and-comment")) && (
-                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <input
-                            type="checkbox"
-                            checked={"draft" in draft.prStrategy ? draft.prStrategy.draft ?? true : true}
-                            onChange={(e) => {
-                              const isDraft = e.target.checked;
-                              setDraft((p) => ({
-                                ...p,
-                                prStrategy: { ...p.prStrategy, draft: isDraft } as PrStrategy
-                              }));
-                            }}
-                          />
-                          Draft PR
-                        </label>
-                      )}
-                    </div>
-                  )}
-                  {draft.prStrategy.kind === "queue" && (
-                    <div className="mt-1 space-y-2">
-                      <div className="flex items-center gap-3">
-                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <input
-                            type="checkbox"
-                            checked={draft.prStrategy.autoRebase ?? true}
-                            onChange={(e) => setDraft((p) => ({
-                              ...p,
-                              prStrategy: { ...p.prStrategy, autoRebase: e.target.checked } as PrStrategy
-                            }))}
-                          />
-                          Auto-rebase
-                        </label>
-                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <input
-                            type="checkbox"
-                            checked={draft.prStrategy.ciGating ?? true}
-                            onChange={(e) => setDraft((p) => ({
-                              ...p,
-                              prStrategy: { ...p.prStrategy, ciGating: e.target.checked } as PrStrategy
-                            }))}
-                          />
-                          CI gating
-                        </label>
-                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <input
-                            type="checkbox"
-                            checked={draft.prStrategy.autoLand ?? false}
-                            onChange={(e) => setDraft((p) => {
-                              const prevQueue = p.prStrategy.kind === "queue" ? p.prStrategy : { kind: "queue" as const };
-                              return {
-                                ...p,
-                                prStrategy: {
-                                  ...prevQueue,
-                                  autoLand: e.target.checked,
-                                } as PrStrategy
-                              };
-                            })}
-                          />
-                          Auto-land queue
-                        </label>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <input
-                            type="checkbox"
-                            checked={draft.prStrategy.autoResolveConflicts ?? false}
-                            onChange={(e) => setDraft((p) => ({
-                              ...p,
-                              prStrategy: { ...p.prStrategy, autoResolveConflicts: e.target.checked } as PrStrategy
-                            }))}
-                          />
-                          Auto-resolve conflicts
-                        </label>
-                        <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <input
-                            type="checkbox"
-                            checked={draft.prStrategy.archiveLaneOnLand ?? false}
-                            onChange={(e) => setDraft((p) => ({
-                              ...p,
-                              prStrategy: { ...p.prStrategy, archiveLaneOnLand: e.target.checked } as PrStrategy
-                            }))}
-                          />
-                          Archive lane on land
-                        </label>
-                        <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <span>Merge method</span>
-                          <select
-                            value={draft.prStrategy.mergeMethod ?? "squash"}
-                            onChange={(e) => setDraft((p) => ({
-                              ...p,
-                              prStrategy: { ...p.prStrategy, mergeMethod: e.target.value as MergeMethod } as PrStrategy
-                            }))}
-                            className="h-6 px-2 text-xs outline-none"
-                            style={dlgInputStyle}
-                          >
-                            <option value="merge">merge</option>
-                            <option value="squash">squash</option>
-                            <option value="rebase">rebase</option>
-                          </select>
-                        </label>
-                      </div>
-                      {(draft.prStrategy.autoResolveConflicts ?? false) ? (
-                        <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          Uses the configured Claude/Codex CLI resolver model from mission runtime settings. Auto-land uses the same resolver path when configured. Launch is blocked if no compatible resolver model is available.
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
-                  {draft.prStrategy.kind === "integration" && (
-                    <div className="mt-2 space-y-1">
-                      <span style={{ fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted }}>
-                        PR DEPTH
-                      </span>
-                      <div className="flex flex-col gap-0.5">
-                        {([
-                          { value: "propose-only" as PrDepth, label: "PROPOSE ONLY", desc: "Create draft PRs, flag conflicts" },
-                          { value: "resolve-conflicts" as PrDepth, label: "RESOLVE CONFLICTS", desc: "Also resolve conflicts with AI workers" },
-                          { value: "open-and-comment" as PrDepth, label: "OPEN & COMMENT", desc: "Also open PRs and add review comments" },
-                        ] as const).map((opt) => {
-                          const currentDepth = draft.prStrategy.kind === "integration" ? (draft.prStrategy.prDepth ?? "resolve-conflicts") : "resolve-conflicts";
-                          const isSelected = currentDepth === opt.value;
-                          return (
-                            <button
-                              key={opt.value}
-                              type="button"
-                              onClick={() => {
-                                setDraft((p) => ({
-                                  ...p,
-                                  prStrategy: { ...p.prStrategy, prDepth: opt.value } as PrStrategy
-                                }));
-                              }}
-                              className="flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
-                              style={{
-                                background: isSelected ? `${COLORS.accent}18` : "transparent",
-                                border: isSelected ? `1px solid ${COLORS.accent}30` : `1px solid ${COLORS.border}`,
-                                fontFamily: MONO_FONT,
-                              }}
-                            >
-                              <span
-                                className="font-bold uppercase tracking-[1px]"
-                                style={{ fontSize: 10, color: isSelected ? COLORS.accent : COLORS.textPrimary, minWidth: 130 }}
-                              >
-                                {opt.label}
-                              </span>
-                              <span style={{ fontSize: 10, color: COLORS.textMuted }}>
-                                {opt.desc}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div style={{ fontSize: 9, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 4 }}>
-                        Closing automation never auto-merges without explicit human approval.
-                      </div>
-                    </div>
-                  )}
                 </div>
 
                 {/* d. Phase Configuration */}
@@ -1854,6 +1621,7 @@ function CreateMissionDialogInner({
                         <div className="space-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                           <div>Lane: {preflightCurrent.approvalSummary.laneLabel ?? preflightCurrent.approvalSummary.laneId ?? "default active lane"}</div>
                           <div>Execution: {preflightCurrent.approvalSummary.recommendedExecution.strategy}</div>
+                          <div>Closeout: one result lane</div>
                           <div>Model: {preflightCurrent.approvalSummary.recommendedExecution.orchestratorModelId ?? "not configured"}</div>
                         </div>
                         <div className="space-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>

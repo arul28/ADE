@@ -1,5 +1,30 @@
-import type { AgentChatPermissionMode, AiPermissionMode } from "../../../shared/types";
+import type { AgentChatPermissionMode, AiPermissionMode, PrComment } from "../../../shared/types";
 import { runGit } from "../git/git";
+
+// ---------------------------------------------------------------------------
+// Noisy comment detection — shared by issue inventory and issue resolver
+// ---------------------------------------------------------------------------
+
+const NOISY_BOT_AUTHORS = new Set(["vercel", "vercel[bot]", "mintlify", "mintlify[bot]"]);
+
+const NOISY_BODY_PATTERNS = [
+  /\[vc\]:/i,
+  /mintlify-preview/i,
+  /this is an auto-generated comment/i,
+  /pre-merge checks/i,
+  /thanks for using \[coderabbit\]/i,
+  /<!-- internal state/i,
+  /walkthrough/i,
+  /@codex review/i,
+];
+
+export function isNoisyIssueComment(comment: PrComment): boolean {
+  const author = comment.author.trim().toLowerCase();
+  const body = (comment.body ?? "").trim();
+  if (!body) return true;
+  if (NOISY_BOT_AUTHORS.has(author)) return true;
+  return NOISY_BODY_PATTERNS.some((pattern) => pattern.test(body));
+}
 
 /**
  * Map ADE's permission mode to the agent chat permission mode.
@@ -18,9 +43,10 @@ export function mapPermissionMode(mode: AiPermissionMode | undefined): AgentChat
 export async function readRecentCommits(
   worktreePath: string,
   count = 8,
+  ref = "HEAD",
 ): Promise<Array<{ sha: string; subject: string }>> {
   const result = await runGit(
-    ["log", "--format=%H%x09%s", "-n", String(count)],
+    ["log", "--format=%H%x09%s", "-n", String(count), ref],
     { cwd: worktreePath, timeoutMs: 10_000 },
   );
   if (result.exitCode !== 0) return [];

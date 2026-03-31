@@ -26,6 +26,7 @@ function buildRebaseResolutionPrompt(args: {
   conflictingFiles: string[];
   laneCommits: Array<{ sha: string; subject: string }>;
   baseCommits: Array<{ sha: string; subject: string }>;
+  forcePushAfterRebase: boolean;
 }): string {
   const sections: string[] = [
     "You are resolving a rebase conflict inside ADE (Autonomous Development Environment).",
@@ -79,7 +80,9 @@ function buildRebaseResolutionPrompt(args: {
     "4. After resolving all conflicts, continue the rebase until complete.",
     "5. Run any relevant tests or type checks to verify the rebase didn't break anything.",
     "6. If the rebase is clean and tests pass, report success.",
-    "7. Do NOT push — the user will review and push when ready.",
+    ...(args.forcePushAfterRebase
+      ? ["7. After the rebase completes successfully, force push the rewritten branch to update the remote: `git push --force-with-lease`."]
+      : ["7. Do NOT push — the user will review and push when ready."]),
     "",
     "Requirements",
     "- Use parallel agents when they will materially speed up independent work.",
@@ -116,11 +119,12 @@ export async function launchRebaseResolutionChat(
   }
 
   // Get recent commits on both the lane and the parent
-  const parentLane = lane.parentLaneId ? lanes.find((l) => l.id === lane.parentLaneId) ?? null : null;
-  const [laneCommits, baseCommits] = await Promise.all([
+  const [laneCommits, remoteBaseCommits, localBaseCommits] = await Promise.all([
     readRecentCommits(lane.worktreePath, 8),
-    parentLane?.worktreePath ? readRecentCommits(parentLane.worktreePath, rebaseNeed.behindBy) : Promise.resolve([]),
+    readRecentCommits(lane.worktreePath, rebaseNeed.behindBy, `origin/${rebaseNeed.baseBranch}`),
+    readRecentCommits(lane.worktreePath, rebaseNeed.behindBy, rebaseNeed.baseBranch),
   ]);
+  const baseCommits = remoteBaseCommits.length > 0 ? remoteBaseCommits : localBaseCommits;
 
   const prompt = buildRebaseResolutionPrompt({
     lane,
@@ -130,6 +134,7 @@ export async function launchRebaseResolutionChat(
     conflictingFiles: rebaseNeed.conflictingFiles,
     laneCommits,
     baseCommits,
+    forcePushAfterRebase: args.forcePushAfterRebase !== false,
   });
 
   const title = `Rebase ${lane.name} onto ${rebaseNeed.baseBranch}`;
@@ -141,7 +146,7 @@ export async function launchRebaseResolutionChat(
     model: descriptor.id,
     modelId: descriptor.id,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    unifiedPermissionMode: mapPermissionMode(args.permissionMode) as import("../../../shared/types").AgentChatUnifiedPermissionMode,
+    permissionMode: mapPermissionMode(args.permissionMode),
     surface: "work",
     sessionProfile: "workflow",
     requestedCwd: lane.worktreePath,

@@ -2530,6 +2530,104 @@ describe("createAgentChatService", () => {
       expect(setPermissionMode).toHaveBeenCalledWith("plan");
       expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[1]);
     });
+
+    it("emits todo_update events for Claude TodoWrite tool uses", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{
+              type: "tool_use",
+              id: "todo-call-1",
+              name: "TodoWrite",
+              input: {
+                todos: [
+                  {
+                    content: "Inspect Claude task rendering",
+                    activeForm: "Inspecting Claude task rendering",
+                    status: "completed",
+                  },
+                  {
+                    content: "Render ADE task list UI",
+                    activeForm: "Rendering ADE task list UI",
+                    status: "in_progress",
+                  },
+                ],
+              },
+            }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Track the current task list.",
+      });
+
+      const todoEvent = events.find((event) => event.event.type === "todo_update");
+      expect(todoEvent).toBeTruthy();
+      expect(todoEvent?.event).toMatchObject({
+        type: "todo_update",
+        items: [
+          {
+            id: "todo-0",
+            description: "Inspect Claude task rendering",
+            status: "completed",
+          },
+          {
+            id: "todo-1",
+            description: "Render ADE task list UI",
+            status: "in_progress",
+          },
+        ],
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "tool_call",
+            tool: "TodoWrite",
+            itemId: "todo-call-1",
+          }),
+        }),
+      ]));
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -3214,5 +3312,134 @@ describe("createAgentChatService", () => {
       expect(updated?.permissionMode).toBe("edit");
       expect(updated?.unifiedPermissionMode).toBe("edit");
     });
+  });
+
+  it("emits immediate startup activity before unified stream output arrives", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "unified",
+      model: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const startedEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+      } => event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const startupActivity = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "activity" }>;
+      } =>
+        event.event.type === "activity"
+        && event.event.turnId === startedEvent.event.turnId
+        && (event.event.activity === "thinking" || event.event.activity === "working"),
+    );
+
+    expect(startupActivity.event.detail).toBeTruthy();
+
+    releaseStream();
+    await sendPromise;
+  });
+
+  it("emits immediate startup activity before Claude SDK stream output arrives", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-1",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      await streamGate;
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-1",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const startedEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+      } => event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const startupActivity = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "activity" }>;
+      } =>
+        event.event.type === "activity"
+        && event.event.turnId === startedEvent.event.turnId
+        && (event.event.activity === "thinking" || event.event.activity === "working"),
+    );
+
+    expect(startupActivity.event.detail).toBeTruthy();
+
+    releaseStream();
+    await sendPromise;
   });
 });

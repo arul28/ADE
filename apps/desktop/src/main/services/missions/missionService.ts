@@ -16,6 +16,7 @@ import type {
   DeletePhaseItemArgs,
   ExportPhaseItemsArgs,
   ExportPhaseItemsResult,
+  GetMissionEventsArgs,
   ImportPhaseProfileArgs,
   ImportPhaseItemsArgs,
   ListPhaseItemsArgs,
@@ -31,7 +32,9 @@ import type {
   MissionArtifact,
   MissionArtifactType,
   MissionDetail,
+  MissionDetailWarning,
   MissionEvent,
+  MissionEventsPage,
   MissionExecutionMode,
   MissionIntervention,
   MissionInterventionResolutionKind,
@@ -120,12 +123,17 @@ type MissionRow = {
   prompt: string;
   lane_id: string | null;
   lane_name: string | null;
+  mission_lane_id: string | null;
+  mission_lane_name: string | null;
+  result_lane_id: string | null;
+  result_lane_name: string | null;
   status: string;
   priority: string;
   execution_mode: string;
   target_machine_id: string | null;
   outcome_summary: string | null;
   last_error: string | null;
+  metadata_json?: string | null;
   artifact_count: number;
   open_interventions: number;
   total_steps: number;
@@ -134,6 +142,9 @@ type MissionRow = {
   updated_at: string;
   started_at: string | null;
   completed_at: string | null;
+  queue_claim_token?: string | null;
+  queue_claimed_at?: string | null;
+  archived_at?: string | null;
 };
 
 type MissionStepRow = {
@@ -240,6 +251,10 @@ type CreateMissionInternalArgs = CreateMissionArgs & {
   plannerPlan?: PlannerPlan | null;
 };
 
+const MISSION_EVENTS_PAGE_LIMIT = 200;
+const MISSION_QUEUED_CLAIM_STALE_MS = 2 * 60 * 1000;
+const MISSION_START_MANUAL_TOKEN = "__manual__";
+
 function safeParseRecord(raw: string | null): Record<string, unknown> | null {
   const parsed = safeJsonParse(raw, null);
   return isRecord(parsed) ? parsed : null;
@@ -248,6 +263,55 @@ function safeParseRecord(raw: string | null): Record<string, unknown> | null {
 function safeParseArray(raw: string | null): unknown[] {
   const parsed = safeJsonParse(raw, null);
   return Array.isArray(parsed) ? parsed : [];
+}
+
+function parseMissionCursor(cursor: string | null | undefined): { createdAt: string; id: string } | null {
+  if (typeof cursor !== "string") return null;
+  const trimmed = cursor.trim();
+  if (!trimmed.length) return null;
+  const separator = trimmed.indexOf("::");
+  if (separator <= 0 || separator === trimmed.length - 2) return null;
+  return {
+    createdAt: trimmed.slice(0, separator),
+    id: trimmed.slice(separator + 2),
+  };
+}
+
+function encodeMissionCursor(event: MissionEvent | MissionEventRow): string {
+  return `${"createdAt" in event ? event.createdAt : event.created_at}::${event.id}`;
+}
+
+function parseRecordWithWarning(
+  raw: string | null,
+  warning: Omit<MissionDetailWarning, "code" | "message">
+): { value: Record<string, unknown> | null; warning: MissionDetailWarning | null } {
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return { value: null, warning: null };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (isRecord(parsed)) {
+      return { value: parsed, warning: null };
+    }
+    return {
+      value: null,
+      warning: {
+        ...warning,
+        code: "invalid_json",
+        message: "Stored JSON did not decode to an object.",
+      }
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      value: null,
+      warning: {
+        ...warning,
+        code: "invalid_json",
+        message: `Stored JSON could not be parsed: ${detail}`,
+      }
+    };
+  }
 }
 
 function coerceNumber(value: unknown): number | undefined {
@@ -430,11 +494,14 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
       const planningPhase = phaseKey === "planning";
       const testingOrValidation = phaseKey === "testing" || phaseKey === "validation";
       const askQuestionsEnabled = planningPhase && phase.askQuestions.enabled !== false;
+      const rawMaxQuestions = phase.askQuestions.maxQuestions;
       const askQuestions: PhaseCard["askQuestions"] = {
         ...phase.askQuestions,
         enabled: askQuestionsEnabled,
         maxQuestions: askQuestionsEnabled
-          ? Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))
+          ? rawMaxQuestions == null
+            ? null
+            : Math.max(1, Math.min(10, Number(rawMaxQuestions) || 5))
           : undefined,
       };
       const validationGate: PhaseCard["validationGate"] = planningPhase || phaseKey === "development"
@@ -599,12 +666,6 @@ function coerceNullableString(value: unknown): string | null {
   return trimmed.length ? trimmed : null;
 }
 
-function truncateForMetadata(value: string | null, maxChars = 120_000): string | null {
-  if (!value) return null;
-  if (value.length <= maxChars) return value;
-  return `${value.slice(0, maxChars)}\n...<truncated>`;
-}
-
 function normalizeMissionComputerUse(value: unknown) {
   return normalizeComputerUsePolicy(value, createDefaultComputerUsePolicy());
 }
@@ -618,6 +679,10 @@ function toMissionSummary(row: MissionRow): MissionSummary {
     prompt: row.prompt,
     laneId: row.lane_id,
     laneName: row.lane_name,
+    missionLaneId: row.mission_lane_id ?? null,
+    missionLaneName: row.mission_lane_name ?? null,
+    resultLaneId: row.result_lane_id ?? null,
+    resultLaneName: row.result_lane_name ?? null,
     status: normalizeMissionStatus(row.status),
     priority: normalizeMissionPriority(row.priority),
     executionMode: normalizeExecutionMode(row.execution_mode),
@@ -649,34 +714,6 @@ function toMissionStep(row: MissionStepRow): MissionStep {
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
-    metadata: safeParseRecord(row.metadata_json)
-  };
-}
-
-function toMissionEvent(row: MissionEventRow): MissionEvent {
-  return {
-    id: row.id,
-    missionId: row.mission_id,
-    eventType: row.event_type,
-    actor: row.actor,
-    summary: row.summary,
-    payload: safeParseRecord(row.payload_json),
-    createdAt: row.created_at
-  };
-}
-
-function toMissionArtifact(row: MissionArtifactRow): MissionArtifact {
-  return {
-    id: row.id,
-    missionId: row.mission_id,
-    artifactType: normalizeArtifactType(row.artifact_type),
-    title: row.title,
-    description: row.description,
-    uri: row.uri,
-    laneId: row.lane_id,
-    createdBy: row.created_by,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
     metadata: safeParseRecord(row.metadata_json)
   };
 }
@@ -749,18 +786,37 @@ export function createMissionService({
 
   const ensureMissionSchemaCompatibility = () => {
     const missionColumns = db.all<{ name: string }>("pragma table_info(missions)");
-    const hasArchivedAt = missionColumns.some((column) => column.name === "archived_at");
-    if (!hasArchivedAt) {
-      db.run("alter table missions add column archived_at text");
-    }
+    const laneColumns = db.all<{ name: string }>("pragma table_info(lanes)");
+    const missionColumnNames = new Set(missionColumns.map((column) => column.name));
+    const laneColumnNames = new Set(laneColumns.map((column) => column.name));
+    if (!missionColumnNames.has("archived_at")) db.run("alter table missions add column archived_at text");
+    if (!missionColumnNames.has("mission_lane_id")) db.run("alter table missions add column mission_lane_id text");
+    if (!missionColumnNames.has("result_lane_id")) db.run("alter table missions add column result_lane_id text");
+    if (!missionColumnNames.has("queue_claim_token")) db.run("alter table missions add column queue_claim_token text");
+    if (!missionColumnNames.has("queue_claimed_at")) db.run("alter table missions add column queue_claimed_at text");
+    if (!laneColumnNames.has("mission_id")) db.run("alter table lanes add column mission_id text");
+    if (!laneColumnNames.has("lane_role")) db.run("alter table lanes add column lane_role text");
+    db.run("create index if not exists idx_missions_project_mission_lane on missions(project_id, mission_lane_id)");
+    db.run("create index if not exists idx_missions_project_result_lane on missions(project_id, result_lane_id)");
+    db.run("drop index if exists idx_missions_queue_claim_token");
+    db.run("create index if not exists idx_missions_project_queue_claim on missions(project_id, queue_claim_token)");
+    db.run("create index if not exists idx_lanes_project_mission on lanes(project_id, mission_id)");
+    db.run("create index if not exists idx_lanes_project_role on lanes(project_id, lane_role)");
   };
 
   ensureMissionSchemaCompatibility();
 
+  // Note: ON DELETE CASCADE foreign key migrations are handled centrally by
+  // kvDb's retrofitForeignKeyCascadeActions() which runs at database open time,
+  // before any service is created. No per-service FK migration is needed here.
+
   // Late-bound reference to the service object for use in internal helpers.
   // Assigned after the return object is created. Uses a minimal interface
   // to avoid circular type dependency.
-  let serviceRef: { processQueue(): string[] } | null = null;
+  let serviceRef: {
+    processQueue(): string[];
+    isLaneClaimed(laneId: string, excludeMissionId?: string): MissionLaneClaimCheckResult;
+  } | null = null;
 
   const emit = (payload: Omit<MissionsEventPayload, "type" | "at">) => {
     try {
@@ -785,19 +841,228 @@ export function createMissionService({
     }
   };
 
+  const getMissionLaunchLaneConflict = (laneId: string, excludeMissionId?: string): string | null => {
+    const lane = db.get<{
+      id: string;
+      status: string;
+      archived_at: string | null;
+      mission_id: string | null;
+      lane_role: string | null;
+      rebase_in_progress: number | null;
+    }>(
+      `
+        select
+          l.id,
+          l.status,
+          l.archived_at,
+          l.mission_id,
+          l.lane_role,
+          coalesce(s.rebase_in_progress, 0) as rebase_in_progress
+        from lanes l
+        left join lane_state_snapshots s on s.lane_id = l.id
+        where l.id = ?
+          and l.project_id = ?
+        limit 1
+      `,
+      [laneId, projectId]
+    );
+    if (!lane?.id) return `Lane not found: ${laneId}`;
+    if (lane.archived_at || lane.status === "archived") return "Lane is archived.";
+    if (Number(lane.rebase_in_progress ?? 0) === 1) return "Lane is currently rebasing.";
+    if (lane.mission_id && lane.mission_id !== excludeMissionId) {
+      return "Lane is already owned by another mission.";
+    }
+    const existingResultMission = db.get<{ id: string }>(
+      `
+        select id
+        from missions
+        where project_id = ?
+          and result_lane_id = ?
+          and archived_at is null
+          and (? is null or id != ?)
+        limit 1
+      `,
+      [projectId, laneId, excludeMissionId ?? null, excludeMissionId ?? null]
+    );
+    if (existingResultMission?.id) {
+      return "Lane is already assigned as another mission's result lane.";
+    }
+    return null;
+  };
+
+  const assertMissionLaunchLaneAvailable = (laneId: string | null | undefined, excludeMissionId?: string) => {
+    if (!laneId) return;
+    const conflict = getMissionLaunchLaneConflict(laneId, excludeMissionId);
+    if (conflict) {
+      throw new Error(conflict);
+    }
+  };
+
+  const claimQueuedMissionStart = (missionId: string): string | null => {
+    const staleBefore = new Date(Date.now() - MISSION_QUEUED_CLAIM_STALE_MS).toISOString();
+    db.run("begin immediate");
+    try {
+      const row = db.get<{
+        status: string;
+        lane_id: string | null;
+        queue_claim_token: string | null;
+        queue_claimed_at: string | null;
+        metadata_json: string | null;
+      }>(
+        `
+          select status, lane_id, queue_claim_token, queue_claimed_at, metadata_json
+          from missions
+          where id = ?
+            and project_id = ?
+            and archived_at is null
+          limit 1
+        `,
+        [missionId, projectId]
+      );
+      if (!row || normalizeMissionStatus(row.status) !== "queued") {
+        db.run("commit");
+        return null;
+      }
+      const launchMetadata = parseRecordWithWarning(row.metadata_json, {
+        source: "mission",
+        field: "metadata_json",
+        recordId: missionId,
+      }).value;
+      const launch = launchMetadata && isRecord(launchMetadata.launch) ? launchMetadata.launch : null;
+      if (launch && launch.autostart === false) {
+        db.run("commit");
+        return null;
+      }
+      const existingClaimIsFresh =
+        typeof row.queue_claim_token === "string"
+        && row.queue_claim_token.trim().length > 0
+        && typeof row.queue_claimed_at === "string"
+        && row.queue_claimed_at >= staleBefore;
+      if (existingClaimIsFresh) {
+        db.run("commit");
+        return null;
+      }
+      if (activeConcurrencyConfig.laneExclusivity && row.lane_id) {
+        const laneConflict = getMissionLaunchLaneConflict(row.lane_id, missionId);
+        if (laneConflict || serviceRef?.isLaneClaimed(row.lane_id, missionId).claimed) {
+          db.run("commit");
+          return null;
+        }
+      }
+      const token = randomUUID();
+      const claimedAt = nowIso();
+      db.run(
+        `
+          update missions
+          set queue_claim_token = ?,
+              queue_claimed_at = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [token, claimedAt, claimedAt, missionId, projectId]
+      );
+      db.run("commit");
+      return token;
+    } catch (error) {
+      try {
+        db.run("rollback");
+      } catch {
+        // Ignore rollback failures after failed queue claim attempts.
+      }
+      throw error;
+    }
+  };
+
+  const clearMissionQueueClaim = (missionId: string, claimToken?: string | null): void => {
+    const normalizedToken = typeof claimToken === "string" ? claimToken.trim() : "";
+    const params: Array<string | null> = [nowIso(), missionId, projectId];
+    let tokenClause = "";
+    if (normalizedToken.length) {
+      tokenClause = "and queue_claim_token = ?";
+      params.push(normalizedToken);
+    }
+    db.run(
+      `
+        update missions
+        set queue_claim_token = null,
+            queue_claimed_at = null,
+            updated_at = ?
+        where id = ?
+          and project_id = ?
+          ${tokenClause}
+      `,
+      params
+    );
+  };
+
+  const beginMissionStart = (missionId: string, claimToken?: string | null): boolean => {
+    const startedAt = nowIso();
+    const normalizedToken = typeof claimToken === "string" ? claimToken.trim() : "";
+    if (normalizedToken.length && normalizedToken !== MISSION_START_MANUAL_TOKEN) {
+      db.run(
+        `
+          update missions
+          set status = 'planning',
+              queue_claim_token = null,
+              queue_claimed_at = null,
+              started_at = coalesce(started_at, ?),
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+            and status = 'queued'
+            and archived_at is null
+            and queue_claim_token = ?
+        `,
+        [startedAt, startedAt, missionId, projectId, normalizedToken]
+      );
+    } else {
+      db.run(
+        `
+          update missions
+          set status = 'planning',
+              started_at = coalesce(started_at, ?),
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+            and status = 'queued'
+            and archived_at is null
+            and queue_claim_token is null
+        `,
+        [startedAt, startedAt, missionId, projectId]
+      );
+    }
+    const row = db.get<{ status: string; queue_claim_token: string | null }>(
+      `
+        select status, queue_claim_token
+        from missions
+        where id = ?
+          and project_id = ?
+        limit 1
+      `,
+      [missionId, projectId]
+    );
+    return normalizeMissionStatus(row?.status ?? "") === "planning" && row?.queue_claim_token == null;
+  };
+
   const baseMissionSelect = `
     select
       m.id as id,
       m.title as title,
       m.prompt as prompt,
       m.lane_id as lane_id,
-      l.name as lane_name,
+      launch_lane.name as lane_name,
+      m.mission_lane_id as mission_lane_id,
+      mission_lane.name as mission_lane_name,
+      m.result_lane_id as result_lane_id,
+      result_lane.name as result_lane_name,
       m.status as status,
       m.priority as priority,
       m.execution_mode as execution_mode,
       m.target_machine_id as target_machine_id,
       m.outcome_summary as outcome_summary,
       m.last_error as last_error,
+      m.metadata_json as metadata_json,
       (
         select count(*)
         from mission_artifacts ma
@@ -821,9 +1086,14 @@ export function createMissionService({
       m.created_at as created_at,
       m.updated_at as updated_at,
       m.started_at as started_at,
-      m.completed_at as completed_at
+      m.completed_at as completed_at,
+      m.archived_at as archived_at,
+      m.queue_claim_token as queue_claim_token,
+      m.queue_claimed_at as queue_claimed_at
     from missions m
-    left join lanes l on l.id = m.lane_id
+    left join lanes launch_lane on launch_lane.id = m.lane_id
+    left join lanes mission_lane on mission_lane.id = m.mission_lane_id
+    left join lanes result_lane on result_lane.id = m.result_lane_id
     where m.project_id = ?
   `;
 
@@ -1753,12 +2023,86 @@ export function createMissionService({
       return rows.map(toMissionSummary);
     },
 
+    listEvents(args: GetMissionEventsArgs): MissionEventsPage {
+      const missionId = String(args.missionId ?? "").trim();
+      if (!missionId.length) {
+        throw new Error("missionId is required.");
+      }
+      if (!getMissionRow(missionId)) {
+        throw new Error(`Mission not found: ${missionId}`);
+      }
+      const requestedLimit = Number.isFinite(args.limit)
+        ? Math.max(1, Math.min(500, Math.floor(args.limit ?? MISSION_EVENTS_PAGE_LIMIT)))
+        : MISSION_EVENTS_PAGE_LIMIT;
+      const fetchLimit = requestedLimit + 1;
+      const before = parseMissionCursor(args.before ?? null);
+      const params: Array<string | number> = [projectId, missionId];
+      let beforeClause = "";
+      if (before) {
+        beforeClause = `
+          and (
+            created_at < ?
+            or (created_at = ? and id < ?)
+          )
+        `;
+        params.push(before.createdAt, before.createdAt, before.id);
+      }
+      params.push(fetchLimit);
+      const rows = db.all<MissionEventRow>(
+        `
+          select
+            id,
+            mission_id,
+            event_type,
+            actor,
+            summary,
+            payload_json,
+            created_at
+          from mission_events
+          where project_id = ?
+            and mission_id = ?
+            ${beforeClause}
+          order by created_at desc, id desc
+          limit ?
+        `,
+        params
+      );
+      const hasMore = rows.length > requestedLimit;
+      const pageRows = hasMore ? rows.slice(0, requestedLimit) : rows;
+      const warnings: MissionDetailWarning[] = [];
+      const events = pageRows.map((row) => {
+        const parsedPayload = parseRecordWithWarning(row.payload_json, {
+          source: "event",
+          field: "payload_json",
+          recordId: row.id,
+        });
+        if (parsedPayload.warning) warnings.push(parsedPayload.warning);
+        return {
+          id: row.id,
+          missionId: row.mission_id,
+          eventType: row.event_type,
+          actor: row.actor,
+          summary: row.summary,
+          payload: parsedPayload.value,
+          createdAt: row.created_at,
+        } satisfies MissionEvent;
+      });
+      return {
+        missionId,
+        events,
+        nextCursor: hasMore && pageRows.length > 0 ? encodeMissionCursor(pageRows[pageRows.length - 1]) : null,
+        hasMore,
+        warnings,
+      };
+    },
+
     get(missionId: string): MissionDetail | null {
       const id = missionId.trim();
       if (!id.length) return null;
 
       const row = getMissionRow(id);
       if (!row) return null;
+      const warnings: MissionDetailWarning[] = [];
 
       const steps = db
         .all<MissionStepRow>(
@@ -1784,28 +2128,41 @@ export function createMissionService({
           `,
           [projectId, id]
         )
-        .map(toMissionStep);
+        .map((stepRow) => {
+          const metadata = parseRecordWithWarning(stepRow.metadata_json, {
+            source: "step",
+            field: "metadata_json",
+            recordId: stepRow.id,
+          });
+          if (metadata.warning) warnings.push(metadata.warning);
+          return {
+            id: stepRow.id,
+            missionId: stepRow.mission_id,
+            index: Number(stepRow.step_index ?? 0),
+            title: stepRow.title,
+            detail: stepRow.detail,
+            kind: stepRow.kind,
+            laneId: stepRow.lane_id,
+            status: normalizeStepStatus(stepRow.status),
+            createdAt: stepRow.created_at,
+            updatedAt: stepRow.updated_at,
+            startedAt: stepRow.started_at,
+            completedAt: stepRow.completed_at,
+            metadata: metadata.value,
+          } satisfies MissionStep;
+        });
 
-      const events = db
-        .all<MissionEventRow>(
-          `
-            select
-              id,
-              mission_id,
-              event_type,
-              actor,
-              summary,
-              payload_json,
-              created_at
-            from mission_events
-            where project_id = ?
-              and mission_id = ?
-            order by created_at desc
-            limit 500
-          `,
-          [projectId, id]
-        )
-        .map(toMissionEvent);
+      const eventPage = this.listEvents({ missionId: id, limit: MISSION_EVENTS_PAGE_LIMIT });
+      warnings.push(...eventPage.warnings);
+      if (eventPage.hasMore) {
+        warnings.push({
+          code: "truncated_events",
+          source: "event",
+          field: "events",
+          recordId: id,
+          message: `Showing the newest ${MISSION_EVENTS_PAGE_LIMIT} mission events. Load more to inspect older history.`,
+        });
+      }
 
       const artifacts = db
         .all<MissionArtifactRow>(
@@ -1829,7 +2186,27 @@ export function createMissionService({
           `,
           [projectId, id]
         )
-        .map(toMissionArtifact);
+        .map((artifactRow) => {
+          const metadata = parseRecordWithWarning(artifactRow.metadata_json, {
+            source: "artifact",
+            field: "metadata_json",
+            recordId: artifactRow.id,
+          });
+          if (metadata.warning) warnings.push(metadata.warning);
+          return {
+            id: artifactRow.id,
+            missionId: artifactRow.mission_id,
+            artifactType: normalizeArtifactType(artifactRow.artifact_type),
+            title: artifactRow.title,
+            description: artifactRow.description,
+            uri: artifactRow.uri,
+            laneId: artifactRow.lane_id,
+            createdBy: artifactRow.created_by,
+            createdAt: artifactRow.created_at,
+            updatedAt: artifactRow.updated_at,
+            metadata: metadata.value,
+          } satisfies MissionArtifact;
+        });
 
       const interventions = db
         .all<MissionInterventionRow>(
@@ -1858,22 +2235,59 @@ export function createMissionService({
           `,
           [projectId, id]
         )
-        .map(toMissionIntervention);
+        .map((interventionRow) => {
+          const metadata = parseRecordWithWarning(interventionRow.metadata_json, {
+            source: "intervention",
+            field: "metadata_json",
+            recordId: interventionRow.id,
+          });
+          if (metadata.warning) warnings.push(metadata.warning);
+          const resolutionKindRaw = typeof interventionRow.resolution_kind === "string"
+            ? interventionRow.resolution_kind.trim()
+            : "";
+          return {
+            id: interventionRow.id,
+            missionId: interventionRow.mission_id,
+            interventionType: normalizeInterventionType(interventionRow.intervention_type),
+            status: normalizeInterventionStatus(interventionRow.status),
+            resolutionKind: isValidResolutionKind(resolutionKindRaw) ? resolutionKindRaw : null,
+            title: interventionRow.title,
+            body: interventionRow.body,
+            requestedAction: interventionRow.requested_action,
+            resolutionNote: interventionRow.resolution_note,
+            laneId: interventionRow.lane_id,
+            createdAt: interventionRow.created_at,
+            updatedAt: interventionRow.updated_at,
+            resolvedAt: interventionRow.resolved_at,
+            metadata: metadata.value,
+          } satisfies MissionIntervention;
+        });
 
-      const metadata = safeParseRecord(
+      const metadata = parseRecordWithWarning(
         db.get<{ metadata_json: string | null }>(
           `select metadata_json from missions where id = ? and project_id = ? limit 1`,
           [id, projectId]
-        )?.metadata_json ?? null
+        )?.metadata_json ?? null,
+        {
+          source: "mission",
+          field: "metadata_json",
+          recordId: id,
+        }
       );
-      const launchMetadata = isRecord(metadata?.launch) ? metadata.launch : null;
+      if (metadata.warning) warnings.push(metadata.warning);
+      const launchMetadata = isRecord(metadata.value?.launch) ? metadata.value.launch : null;
+      const plannerPlan = isRecord(metadata.value?.plannerPlan)
+        ? (metadata.value.plannerPlan as PlannerPlan)
+        : null;
 
       return {
         ...toMissionSummary(row),
         steps,
-        events,
+        events: eventPage.events,
         artifacts,
         interventions,
+        warnings,
+        plannerPlan,
         phaseConfiguration: resolveMissionPhaseConfiguration(id),
         computerUse: launchMetadata ? normalizeMissionComputerUse(launchMetadata.computerUse) : null,
       };
@@ -2276,9 +2690,65 @@ export function createMissionService({
     getDashboard(): MissionDashboardSnapshot {
       ensurePhaseStorageSeeded();
       const activeMissions = this.list({ status: "active", limit: 50 });
+      const activeMissionIds = activeMissions.map((mission) => mission.id);
+      const phaseGroupsByMission = new Map<string, ReturnType<typeof groupMissionStepsByPhase>>();
+      const activeWorkerCounts = new Map<string, number>();
+
+      if (activeMissionIds.length > 0) {
+        const placeholders = activeMissionIds.map(() => "?").join(", ");
+        const stepRows = db.all<MissionStepRow>(
+          `
+            select
+              id,
+              mission_id,
+              step_index,
+              title,
+              detail,
+              kind,
+              lane_id,
+              status,
+              created_at,
+              updated_at,
+              started_at,
+              completed_at,
+              metadata_json
+            from mission_steps
+            where project_id = ?
+              and mission_id in (${placeholders})
+            order by mission_id asc, step_index asc
+          `,
+          [projectId, ...activeMissionIds]
+        );
+        const stepsByMission = new Map<string, MissionStep[]>();
+        for (const stepRow of stepRows) {
+          const bucket = stepsByMission.get(stepRow.mission_id) ?? [];
+          bucket.push(toMissionStep(stepRow));
+          stepsByMission.set(stepRow.mission_id, bucket);
+        }
+        for (const missionId of activeMissionIds) {
+          phaseGroupsByMission.set(missionId, groupMissionStepsByPhase(stepsByMission.get(missionId) ?? []));
+        }
+
+        const workerRows = db.all<{ mission_id: string; count: number }>(
+          `
+            select r.mission_id as mission_id, count(distinct oa.id) as count
+            from orchestrator_attempts oa
+            inner join orchestrator_runs r on r.id = oa.run_id
+            where oa.project_id = ?
+              and r.project_id = ?
+              and r.mission_id in (${placeholders})
+              and oa.status = 'running'
+            group by r.mission_id
+          `,
+          [projectId, projectId, ...activeMissionIds]
+        );
+        for (const row of workerRows) {
+          activeWorkerCounts.set(row.mission_id, Number(row.count ?? 0));
+        }
+      }
+
       const active = activeMissions.map((mission) => {
-        const detail = this.get(mission.id);
-        const phaseGroups = groupMissionStepsByPhase(detail?.steps ?? []);
+        const phaseGroups = phaseGroupsByMission.get(mission.id) ?? [];
         const currentPhase = phaseGroups.find((group) => group.completed < group.total) ?? phaseGroups[phaseGroups.length - 1] ?? null;
         const phaseProgress = currentPhase
           ? {
@@ -2287,22 +2757,7 @@ export function createMissionService({
               pct: currentPhase.total > 0 ? Math.round((currentPhase.completed / currentPhase.total) * 100) : 0
             }
           : { completed: 0, total: 0, pct: 0 };
-
-        const activeWorkers = db.get<{ count: number }>(
-          `
-            select count(distinct oa.id) as count
-            from orchestrator_attempts oa
-            where oa.project_id = ?
-              and oa.status = 'running'
-              and oa.run_id in (
-                select id
-                from orchestrator_runs
-                where project_id = ?
-                  and mission_id = ?
-              )
-          `,
-          [projectId, projectId, mission.id]
-        )?.count ?? 0;
+        const activeWorkers = activeWorkerCounts.get(mission.id) ?? 0;
 
         const startedAtMs = mission.startedAt ? Date.parse(mission.startedAt) : NaN;
         const elapsedMs = Number.isFinite(startedAtMs) ? Math.max(0, Date.now() - startedAtMs) : 0;
@@ -2422,6 +2877,7 @@ export function createMissionService({
       const title = deriveMissionTitle(prompt, args.title);
       const laneId = coerceNullableString(args.laneId);
       assertLaneExists(laneId);
+      assertMissionLaunchLaneAvailable(laneId);
       const priority = args.priority ?? "normal";
       const executionMode = args.executionMode ?? "local";
       const targetMachineId = coerceNullableString(args.targetMachineId);
@@ -2455,13 +2911,22 @@ export function createMissionService({
       const executionPolicyArg = args.executionPolicy && typeof args.executionPolicy === "object"
         ? (args.executionPolicy as Partial<MissionExecutionPolicy>)
         : null;
+      const storedExecutionPolicy = executionPolicyArg
+        ? {
+            ...executionPolicyArg,
+            prStrategy: undefined,
+            finalizationPolicyKind: "result_lane" as const,
+          }
+        : {
+            finalizationPolicyKind: "result_lane" as const,
+          };
 
       // Build mission-level settings from new args fields
       const missionLevelSettings: import("../../../shared/types").MissionLevelSettings = {
         ...(args.recoveryLoop ? { recoveryLoop: args.recoveryLoop } : {}),
-        ...(executionPolicyArg?.prStrategy ? { prStrategy: executionPolicyArg.prStrategy } : {}),
         ...(executionPolicyArg?.integrationPr ? { integrationPr: executionPolicyArg.integrationPr } : {}),
         ...(executionPolicyArg?.teamRuntime ? { teamRuntime: executionPolicyArg.teamRuntime } : {}),
+        finalizationPolicyKind: "result_lane",
       };
 
       ensurePhaseStorageSeeded();
@@ -2521,7 +2986,7 @@ export function createMissionService({
       const createdAt = nowIso();
       const missionMetadata = {
         source: "manual",
-        version: 2,
+        version: 3,
         launch: {
           autostart,
           runMode: launchMode,
@@ -2536,8 +3001,12 @@ export function createMissionService({
           phaseProfileId: selectedProfile?.id ?? null,
           hasPhaseOverride: hasExplicitOverride
         },
-        ...(executionPolicyArg ? { executionPolicy: executionPolicyArg } : {}),
+        executionPolicy: storedExecutionPolicy,
         missionLevelSettings,
+        finalization: {
+          kind: "result_lane",
+          resultLanePolicy: "single_visible_lane",
+        },
         phaseConfiguration: {
           profileId: selectedProfile?.id ?? null,
           phaseKeys: selectedPhases.map((phase) => phase.phaseKey),
@@ -2748,6 +3217,7 @@ export function createMissionService({
 
       const nextLaneId = args.laneId !== undefined ? coerceNullableString(args.laneId) : existing.lane_id;
       assertLaneExists(nextLaneId);
+      assertMissionLaunchLaneAvailable(nextLaneId, missionId);
 
       const nextPrompt = args.prompt !== undefined ? normalizePrompt(args.prompt) : existing.prompt;
       if (!nextPrompt.length) throw new Error("Mission prompt cannot be empty.");
@@ -2879,6 +3349,60 @@ export function createMissionService({
         [JSON.stringify(next), nowIso(), id, projectId]
       );
       db.flushNow();
+    },
+
+    beginStart(missionId: string, claimToken?: string | null): boolean {
+      const id = missionId.trim();
+      if (!id.length) throw new Error("Mission id is required.");
+      if (!getMissionRow(id)) throw new Error(`Mission not found: ${id}`);
+      return beginMissionStart(id, claimToken ?? null);
+    },
+
+    clearQueueClaim(missionId: string, claimToken?: string | null): void {
+      const id = missionId.trim();
+      if (!id.length) throw new Error("Mission id is required.");
+      if (!getMissionRow(id)) throw new Error(`Mission not found: ${id}`);
+      clearMissionQueueClaim(id, claimToken ?? null);
+    },
+
+    setMissionLane(args: { missionId: string; laneId: string | null }): void {
+      const missionId = args.missionId.trim();
+      if (!missionId.length) throw new Error("missionId is required.");
+      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+      const laneId = coerceNullableString(args.laneId);
+      assertLaneExists(laneId);
+      assertMissionLaunchLaneAvailable(laneId, missionId);
+      db.run(
+        `
+          update missions
+          set mission_lane_id = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [laneId, nowIso(), missionId, projectId]
+      );
+      emit({ missionId, reason: "mission-lane-updated" });
+    },
+
+    setResultLane(args: { missionId: string; laneId: string | null }): void {
+      const missionId = args.missionId.trim();
+      if (!missionId.length) throw new Error("missionId is required.");
+      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+      const laneId = coerceNullableString(args.laneId);
+      assertLaneExists(laneId);
+      assertMissionLaunchLaneAvailable(laneId, missionId);
+      db.run(
+        `
+          update missions
+          set result_lane_id = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [laneId, nowIso(), missionId, projectId]
+      );
+      emit({ missionId, reason: "result-lane-updated" });
     },
 
     archive(args: ArchiveMissionArgs): void {
@@ -3688,55 +4212,119 @@ export function createMissionService({
     isLaneClaimed(laneId: string, excludeMissionId?: string): MissionLaneClaimCheckResult {
       if (!activeConcurrencyConfig.laneExclusivity) return { claimed: false };
       if (!laneId) return { claimed: false };
+      const laneConflict = getMissionLaunchLaneConflict(laneId, excludeMissionId);
+      if (laneConflict) {
+        const laneOwner = db.get<{ mission_id: string | null }>(
+          `select mission_id from lanes where id = ? and project_id = ? limit 1`,
+          [laneId, projectId]
+        );
+        const resultOwner = db.get<{ id: string }>(
+          `
+            select id
+            from missions
+            where project_id = ?
+              and result_lane_id = ?
+              and archived_at is null
+              and (? is null or id != ?)
+            limit 1
+          `,
+          [projectId, laneId, excludeMissionId ?? null, excludeMissionId ?? null]
+        );
+        return {
+          claimed: true,
+          byMissionId: laneOwner?.mission_id ?? resultOwner?.id,
+          reason: laneConflict,
+        };
+      }
       const activeMissions = this.list({ status: "active" })
         .filter(m => ACTIVE_MISSION_STATUSES.has(m.status) && m.id !== excludeMissionId);
       for (const mission of activeMissions) {
-        if (mission.laneId === laneId) return { claimed: true, byMissionId: mission.id };
+        if (
+          mission.laneId === laneId
+          || mission.missionLaneId === laneId
+          || mission.resultLaneId === laneId
+        ) {
+          return { claimed: true, byMissionId: mission.id, reason: "Lane is already assigned to another active mission." };
+        }
         const detail = this.get(mission.id);
         if (detail) {
           const hasRunningStepOnLane = detail.steps.some(
             s => s.laneId === laneId && s.status === "running"
           );
-          if (hasRunningStepOnLane) return { claimed: true, byMissionId: mission.id };
+          if (hasRunningStepOnLane) {
+            return { claimed: true, byMissionId: mission.id, reason: "Lane has an active mission step running on it." };
+          }
         }
       }
       return { claimed: false };
     },
 
+    consumeQueueClaim(missionId: string, claimToken?: string | null): boolean {
+      const id = missionId.trim();
+      if (!id.length) throw new Error("Mission id is required.");
+      if (!getMissionRow(id)) throw new Error(`Mission not found: ${id}`);
+      const before = db.get<{ queue_claim_token: string | null }>(
+        `select queue_claim_token from missions where id = ? and project_id = ? limit 1`,
+        [id, projectId]
+      );
+      clearMissionQueueClaim(id, claimToken ?? null);
+      const after = db.get<{ queue_claim_token: string | null }>(
+        `select queue_claim_token from missions where id = ? and project_id = ? limit 1`,
+        [id, projectId]
+      );
+      return before?.queue_claim_token !== after?.queue_claim_token;
+    },
+
     processQueue(): string[] {
       const started: string[] = [];
-      const queuedMissions = this.list({})
-        .filter(m => m.status === "queued")
-        .sort((a, b) =>
-          (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2)
-          || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-        );
-      for (const mission of queuedMissions) {
-        const detail = this.get(mission.id);
-        const metadata = detail
-          ? safeParseRecord(
-              db.get<{ metadata_json: string | null }>(
-                "select metadata_json from missions where id = ? and project_id = ? limit 1",
-                [mission.id, projectId]
-              )?.metadata_json ?? null
-            )
-          : null;
+      const queuedMissions = db.all<MissionRow>(
+        `${baseMissionSelect}
+         and m.archived_at is null
+         and m.status = 'queued'
+         order by
+           case m.priority
+             when 'urgent' then 0
+             when 'high' then 1
+             when 'normal' then 2
+             else 3
+           end,
+           m.created_at asc`,
+        [projectId]
+      );
+      for (const row of queuedMissions) {
+        const mission = toMissionSummary(row);
+        const metadata = safeParseRecord(row.metadata_json ?? null);
         const launch = metadata && isRecord(metadata.launch) ? metadata.launch : null;
         if (launch && launch.autostart === false) continue;
+        const currentClaimToken = typeof row.queue_claim_token === "string" ? row.queue_claim_token.trim() : "";
+        const currentClaimedAt = typeof row.queue_claimed_at === "string" ? row.queue_claimed_at.trim() : "";
+        if (currentClaimToken.length > 0) {
+          const claimedAtMs = Date.parse(currentClaimedAt);
+          if (Number.isFinite(claimedAtMs) && Date.now() - claimedAtMs < MISSION_QUEUED_CLAIM_STALE_MS) {
+            continue;
+          }
+          clearMissionQueueClaim(mission.id, currentClaimToken);
+        }
         const check = this.canStartMission(mission.id);
         if (!check.allowed) break;
         if (activeConcurrencyConfig.laneExclusivity && mission.laneId) {
+          const laneConflict = getMissionLaunchLaneConflict(mission.laneId, mission.id);
+          if (laneConflict) continue;
           const laneClaim = this.isLaneClaimed(mission.laneId, mission.id);
           if (laneClaim.claimed) continue;
+        }
+        const claimToken = claimQueuedMissionStart(mission.id);
+        if (!claimToken) {
+          continue;
         }
         recordEvent({
           missionId: mission.id,
           eventType: "mission_ready_to_start",
           actor: "system",
           summary: "Mission eligible to start after concurrency slot opened.",
-          payload: { queuePosition: 1 }
+          payload: { queuePosition: 1, claimToken }
         });
-        emit({ missionId: mission.id, reason: "ready_to_start" });
+        emit({ missionId: mission.id, reason: "ready_to_start", claimToken });
         started.push(mission.id);
       }
       return started;

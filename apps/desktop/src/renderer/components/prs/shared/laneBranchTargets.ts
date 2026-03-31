@@ -1,15 +1,8 @@
 import type { LaneSummary } from "../../../../shared/types";
+import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../../shared/laneBaseResolution";
 
 export function branchNameFromRef(ref?: string | null): string {
-  const trimmed = (ref ?? "").trim();
-  if (trimmed.startsWith("refs/heads/")) return trimmed.slice("refs/heads/".length);
-  if (trimmed.startsWith("refs/remotes/")) {
-    const remoteRef = trimmed.slice("refs/remotes/".length);
-    const slashIndex = remoteRef.indexOf("/");
-    return slashIndex >= 0 ? remoteRef.slice(slashIndex + 1) : remoteRef;
-  }
-  if (trimmed.startsWith("origin/")) return trimmed.slice("origin/".length);
-  return trimmed;
+  return branchNameFromLaneRef(ref);
 }
 
 export function resolveLaneBaseBranch(args: {
@@ -18,11 +11,14 @@ export function resolveLaneBaseBranch(args: {
   primaryBranchRef?: string | null;
 }): string {
   if (!args.lane) return branchNameFromRef(args.primaryBranchRef ?? "main");
-  if (args.lane.parentLaneId) {
-    const parent = args.lanes.find((entry) => entry.id === args.lane?.parentLaneId) ?? null;
-    if (parent?.branchRef) return branchNameFromRef(parent.branchRef);
-  }
-  return branchNameFromRef(args.lane.baseRef || args.primaryBranchRef || "main");
+  const parent = args.lane.parentLaneId
+    ? args.lanes.find((entry) => entry.id === args.lane?.parentLaneId) ?? null
+    : null;
+  return resolveStableLaneBaseBranch({
+    lane: args.lane,
+    parent,
+    primaryBranchRef: args.primaryBranchRef,
+  });
 }
 
 export function describePrTargetDiff(args: {

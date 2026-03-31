@@ -1,6 +1,7 @@
 import React from "react";
 import { Warning, XCircle } from "@phosphor-icons/react";
 import type { RebaseNeed, AutoRebaseLaneStatus } from "../../../shared/types";
+import { findLaneBaseNeed } from "./shared/rebaseNeedUtils";
 
 type PrRebaseBannerProps = {
   laneId: string;
@@ -13,7 +14,12 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
   const [dismissed, setDismissed] = React.useState(false);
   const [syncBusy, setSyncBusy] = React.useState(false);
 
-  const need = rebaseNeeds.find((n) => n.laneId === laneId);
+  const need = React.useMemo(() => {
+    const laneNeed = findLaneBaseNeed(rebaseNeeds, laneId);
+    if (!laneNeed || laneNeed.behindBy <= 0 || laneNeed.dismissedAt) return null;
+    if (laneNeed.deferredUntil && new Date(laneNeed.deferredUntil) > new Date()) return null;
+    return laneNeed;
+  }, [laneId, rebaseNeeds]);
   const autoStatus = autoRebaseStatuses?.find((s) => s.laneId === laneId);
   const hasAutoRebaseError = autoStatus?.state === "rebaseConflict" || autoStatus?.state === "rebaseFailed";
 

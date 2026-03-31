@@ -8,15 +8,32 @@ const shared = {
   poolOptions: {
     forks: { maxForks: 4 },
   },
+  environment: "node" as const,
 };
 
 export default defineWorkspace([
   {
     test: {
       ...shared,
-      name: "unit",
-      include: ["src/**/*.test.{ts,tsx}"],
-      environment: "node",
+      name: "unit-main",
+      include: ["src/main/**/*.test.{ts,tsx}"],
+    },
+  },
+  {
+    test: {
+      ...shared,
+      name: "unit-renderer",
+      include: ["src/renderer/**/*.test.{ts,tsx}"],
+    },
+  },
+  {
+    test: {
+      ...shared,
+      name: "unit-shared",
+      include: [
+        "src/shared/**/*.test.{ts,tsx}",
+        "src/preload/**/*.test.{ts,tsx}",
+      ],
     },
   },
 ]);

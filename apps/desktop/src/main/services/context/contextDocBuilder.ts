@@ -413,6 +413,50 @@ function validateContextDoc(id: ContextDocId, content: string): { valid: boolean
   return { valid: reasons.length === 0, reasons };
 }
 
+function compactGeneratedContextDoc(id: ContextDocId, content: string): string {
+  const normalized = content.trim();
+  if (normalized.length <= CONTEXT_DOC_MAX_CHARS) return normalized;
+
+  const spec = docSpecFor(id);
+  if (!normalized.startsWith(spec.title)) return normalized;
+
+  const headingOffsets = spec.requiredHeadings.map((heading) => normalized.indexOf(heading));
+  if (headingOffsets.some((offset) => offset < 0)) return normalized;
+  for (let index = 1; index < headingOffsets.length; index += 1) {
+    if (headingOffsets[index] <= headingOffsets[index - 1]) return normalized;
+  }
+
+  const sectionBodies = spec.requiredHeadings.map((heading, index) => {
+    const bodyStart = headingOffsets[index] + heading.length;
+    const sectionEnd = index + 1 < headingOffsets.length
+      ? headingOffsets[index + 1]
+      : normalized.length;
+    return normalized.slice(bodyStart, sectionEnd).trim();
+  });
+
+  const scaffoldLines = [
+    spec.title,
+    "",
+    ...spec.requiredHeadings.flatMap((heading) => [heading, ""]),
+  ];
+  const scaffoldLength = scaffoldLines.join("\n").length;
+  const reservedEllipsisBudget = spec.requiredHeadings.length * 20;
+  const bodyBudget = Math.max(
+    120 * spec.requiredHeadings.length,
+    CONTEXT_DOC_MAX_CHARS - scaffoldLength - reservedEllipsisBudget,
+  );
+  const perSectionBudget = Math.max(120, Math.floor(bodyBudget / spec.requiredHeadings.length));
+
+  const compactedLines: string[] = [spec.title, ""];
+  for (let index = 0; index < spec.requiredHeadings.length; index += 1) {
+    compactedLines.push(spec.requiredHeadings[index]);
+    compactedLines.push(clipText(sectionBodies[index], perSectionBudget));
+    compactedLines.push("");
+  }
+
+  return compactedLines.join("\n").trim();
+}
+
 function computeContextDocHealth(args: {
   id: ContextDocId;
   exists: boolean;
@@ -601,6 +645,8 @@ function buildGenerationPrompt(args: {
     "",
     "Output rules:",
     "- Return JSON only: {\"prd\":\"...\",\"architecture\":\"...\"}.",
+    "- The first character of your response must be `{` and the last character must be `}`.",
+    "- Do not include narration, thinking text, Markdown fences, or any text before/after the JSON object.",
     `- Each doc must stay under ${CONTEXT_DOC_MAX_CHARS} characters.`,
     "- Use these exact headings and no changelog language.",
     "",
@@ -906,7 +952,6 @@ export async function runContextDocGeneration(
       ? args.reasoningEffort.trim()
       : null;
   const providerHint = provider === "codex" || provider === "claude" ? provider : undefined;
-  const generatedAt = nowIso();
   const warnings: ContextGenerateDocsResult["warnings"] = [];
   const lastRunRaw = deps.db.getJson<PersistedContextDocRun>(CONTEXT_DOC_LAST_RUN_KEY);
   const lastGeneratedAt = typeof lastRunRaw?.generatedAt === "string" ? lastRunRaw.generatedAt : null;
@@ -935,7 +980,6 @@ export async function runContextDocGeneration(
         cwd: deps.projectRoot,
         ...(providerHint ? { provider: providerHint } : {}),
         prompt,
-        timeoutMs: 120_000,
         ...(modelId ? { model: modelId } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         jsonSchema: {
@@ -955,8 +999,18 @@ export async function runContextDocGeneration(
         : parseStructuredOutput(aiResult.text);
       const structured = isRecord(structuredCandidate) ? structuredCandidate : null;
       if (structured) {
-        generatedPrd = asString(structured.prd).trim();
-        generatedArch = asString(structured.architecture).trim();
+        generatedPrd = compactGeneratedContextDoc("prd_ade", asString(structured.prd));
+        generatedArch = compactGeneratedContextDoc("architecture_ade", asString(structured.architecture));
+      } else if (aiResult.text.trim()) {
+        warnings.push({
+          code: "generator_unstructured_output",
+          message: "Model returned text instead of the required JSON object for context docs.",
+        });
+      } else {
+        warnings.push({
+          code: "generator_empty_output",
+          message: "Model returned empty output for context docs.",
+        });
       }
     } catch (error) {
       warnings.push({
@@ -1028,13 +1082,14 @@ export async function runContextDocGeneration(
     health: ContextDocHealth;
   };
 
-  const allowAi = prdValidation.valid && archValidation.valid && overlapScore < 0.72;
+  const rejectBothForOverlap = overlapScore >= 0.72;
 
   function resolveDocStrategy(
     generated: string,
     existingFile: { body: string },
     existingHealth: ContextDocHealth,
     deterministicContent: string,
+    allowAi: boolean,
   ): ResolvedDoc {
     if (allowAi) {
       return { content: generated, source: "ai", preserveExisting: false, health: "ready" };
@@ -1046,8 +1101,20 @@ export async function runContextDocGeneration(
   }
 
   const resolvedDocs: Record<ContextDocId, ResolvedDoc> = {
-    prd_ade: resolveDocStrategy(generatedPrd, existingPrdFile, existingPrdBaseHealth, deterministicPrd),
-    architecture_ade: resolveDocStrategy(generatedArch, existingArchFile, existingArchBaseHealth, deterministicArch),
+    prd_ade: resolveDocStrategy(
+      generatedPrd,
+      existingPrdFile,
+      existingPrdBaseHealth,
+      deterministicPrd,
+      prdValidation.valid && !rejectBothForOverlap,
+    ),
+    architecture_ade: resolveDocStrategy(
+      generatedArch,
+      existingArchFile,
+      existingArchBaseHealth,
+      deterministicArch,
+      archValidation.valid && !rejectBothForOverlap,
+    ),
   };
 
   const FALLBACK_WARNINGS: Record<ContextDocOutputSource, Record<ContextDocId, { code: string; message: string } | null>> = {
@@ -1062,11 +1129,10 @@ export async function runContextDocGeneration(
     ai: { prd_ade: null, architecture_ade: null },
   };
 
-  if (!allowAi) {
-    for (const [id, doc] of Object.entries(resolvedDocs) as Array<[ContextDocId, ResolvedDoc]>) {
-      const warning = FALLBACK_WARNINGS[doc.source]?.[id];
-      if (warning) warnings.push(warning);
-    }
+  for (const [id, doc] of Object.entries(resolvedDocs) as Array<[ContextDocId, ResolvedDoc]>) {
+    if (doc.source === "ai") continue;
+    const warning = FALLBACK_WARNINGS[doc.source]?.[id];
+    if (warning) warnings.push(warning);
   }
 
   const persistResolvedDoc = (id: ContextDocId) => {
@@ -1113,6 +1179,7 @@ export async function runContextDocGeneration(
     });
   }
 
+  const generatedAt = nowIso();
   deps.db.setJson(CONTEXT_DOC_LAST_RUN_KEY, {
     generatedAt,
     provider,

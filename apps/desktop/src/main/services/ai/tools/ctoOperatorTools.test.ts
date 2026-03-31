@@ -223,8 +223,20 @@ describe("createCtoOperatorTools", () => {
       expect(result).toMatchObject({
         success: true,
         sessionId: "chat-1",
-        navigation: { surface: "work", laneId: "lane-1", sessionId: "chat-1", href: "/work?laneId=lane-1&sessionId=chat-1" },
-        navigationSuggestions: [{ surface: "work", laneId: "lane-1", sessionId: "chat-1", href: "/work?laneId=lane-1&sessionId=chat-1" }],
+        navigation: {
+          surface: "work",
+          laneId: "lane-1",
+          sessionId: "chat-1",
+          href: "/work?laneId=lane-1&sessionId=chat-1",
+          label: "Open in Work",
+        },
+        navigationSuggestions: [{
+          surface: "work",
+          laneId: "lane-1",
+          sessionId: "chat-1",
+          href: "/work?laneId=lane-1&sessionId=chat-1",
+          label: "Open in Work",
+        }],
         requestedTitle: "Backend follow-up",
       });
     });
@@ -423,11 +435,23 @@ describe("createCtoOperatorTools", () => {
 
       expect(createdLane).toMatchObject({
         success: true,
-        navigation: { surface: "lanes", laneId: "lane-2", href: "/lanes?laneId=lane-2" },
+        navigation: {
+          surface: "lanes",
+          laneId: "lane-2",
+          sessionId: null,
+          href: "/lanes?laneId=lane-2",
+          label: "Open lane",
+        },
       });
       expect(startedMission).toMatchObject({
         success: true,
-        navigation: { surface: "missions", laneId: "lane-2", missionId: "mission-7", href: "/missions?missionId=mission-7&laneId=lane-2" },
+        navigation: {
+          surface: "missions",
+          laneId: "lane-2",
+          missionId: "mission-7",
+          href: "/missions?missionId=mission-7&laneId=lane-2",
+          label: "Open mission",
+        },
       });
     });
 

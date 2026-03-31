@@ -34,6 +34,14 @@ import { useChatMcpSummary } from "../chat/useChatMcpSummary";
 import { useMissionsStore } from "./useMissionsStore";
 
 const BG_PAGE = COLORS.pageBg;
+const THREAD_MESSAGE_PAGE_SIZE = 100;
+
+function threadStatusLabel(loading: boolean, error: string | null, hasMore: boolean): string {
+  if (loading) return "Loading thread messages...";
+  if (error) return error;
+  if (hasMore) return "Older messages are available.";
+  return "Showing the full hydrated thread.";
+}
 
 function resolveMissionPhaseAccent(phaseLabel: string | null): string {
   const normalized = (phaseLabel ?? "").trim().toLowerCase();
@@ -117,6 +125,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   // ── State ──
   const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
   const [threadMessages, setThreadMessages] = useState<OrchestratorChatMessage[]>([]);
+  const [threadMessagesLoading, setThreadMessagesLoading] = useState(false);
+  const [threadMessagesLoadingMore, setThreadMessagesLoadingMore] = useState(false);
+  const [threadMessagesError, setThreadMessagesError] = useState<string | null>(null);
+  const [threadMessagesHasMore, setThreadMessagesHasMore] = useState(false);
   const [workerStates, setWorkerStates] = useState<OrchestratorWorkerState[]>([]);
   const [teamRuntimeState, setTeamRuntimeState] = useState<OrchestratorTeamRuntimeState | null>(null);
   const [selectedChannelId, setSelectedChannelId] = useState("global");
@@ -131,6 +143,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const threadRefreshTimerRef = useRef<number | null>(null);
   const messageRefreshTimerRef = useRef<number | null>(null);
   const channelsRef = useRef<Channel[]>([]);
+  const latestThreadMessagesRequestRef = useRef(0);
 
   useEffect(() => { selectedChannelIdRef.current = selectedChannelId; }, [selectedChannelId]);
 
@@ -170,7 +183,53 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
 
   // ── Data fetching ──
   const refreshThreads = useCallback(async () => { try { setThreads(await window.ade.orchestrator.listChatThreads({ missionId, includeClosed: true })); } catch { /* ignore */ } }, [missionId]);
-  const refreshThreadMessages = useCallback(async (threadId?: string | null) => { if (!threadId) { setThreadMessages([]); return; } try { setThreadMessages(await window.ade.orchestrator.getThreadMessages({ missionId, threadId, limit: 200 })); } catch { /* ignore */ } }, [missionId]);
+  const refreshThreadMessages = useCallback(async (
+    threadId?: string | null,
+    mode: "replace" | "append-older" = "replace",
+  ) => {
+    if (!threadId) {
+      setThreadMessages([]);
+      setThreadMessagesError(null);
+      setThreadMessagesHasMore(false);
+      setThreadMessagesLoading(false);
+      setThreadMessagesLoadingMore(false);
+      return;
+    }
+    const requestId = latestThreadMessagesRequestRef.current + 1;
+    latestThreadMessagesRequestRef.current = requestId;
+    const before = mode === "append-older" ? threadMessages[0]?.timestamp ?? null : null;
+    if (mode === "replace") {
+      setThreadMessagesLoading(true);
+      setThreadMessagesError(null);
+    } else {
+      setThreadMessagesLoadingMore(true);
+    }
+    try {
+      const nextMessages = await window.ade.orchestrator.getThreadMessages({
+        missionId,
+        threadId,
+        limit: THREAD_MESSAGE_PAGE_SIZE,
+        before,
+      });
+      if (latestThreadMessagesRequestRef.current !== requestId) return;
+      setThreadMessages((current) => {
+        if (mode === "append-older") {
+          const seen = new Set(current.map((entry) => entry.id));
+          return [...nextMessages.filter((entry) => !seen.has(entry.id)), ...current];
+        }
+        return nextMessages;
+      });
+      setThreadMessagesHasMore(nextMessages.length >= THREAD_MESSAGE_PAGE_SIZE);
+    } catch (error) {
+      if (latestThreadMessagesRequestRef.current !== requestId) return;
+      setThreadMessagesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (latestThreadMessagesRequestRef.current === requestId) {
+        setThreadMessagesLoading(false);
+        setThreadMessagesLoadingMore(false);
+      }
+    }
+  }, [missionId, threadMessages]);
   const refreshWorkers = useCallback(async () => {
     try {
       const [st, rt] = await Promise.all([
@@ -188,6 +247,30 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     if (selectedChannel.kind === "global") return;
     await refreshThreadMessages(selectedChannel.threadId);
   }, [refreshThreadMessages, selectedChannel]);
+
+  const loadOlderSelectedMessages = useCallback(() => {
+    if (!selectedChannel || selectedChannel.kind === "global" || !threadMessagesHasMore || threadMessagesLoadingMore) return;
+    void refreshThreadMessages(selectedChannel.threadId, "append-older");
+  }, [refreshThreadMessages, selectedChannel, threadMessagesHasMore, threadMessagesLoadingMore]);
+
+  useEffect(() => {
+    latestThreadMessagesRequestRef.current += 1;
+    setThreads([]);
+    setThreadMessages([]);
+    setThreadMessagesError(null);
+    setThreadMessagesHasMore(false);
+    setThreadMessagesLoading(false);
+    setThreadMessagesLoadingMore(false);
+    setWorkerStates([]);
+    setTeamRuntimeState(null);
+    setSelectedChannelId("global");
+    setInput("");
+    setAttachments([]);
+    setSending(false);
+    setRunActionBusy(null);
+    setCompletedCollapsed(true);
+    setJumpNotice(null);
+  }, [missionId]);
 
   useEffect(() => {
     void refreshThreads();
@@ -540,25 +623,66 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
             )
           )}
         >
-          <ChatMessageArea
-            selectedChannel={selectedChannel}
-            workerStatusDot={workerStatusDotFn}
-            displayMessages={displayMessages}
-            attemptNameMap={attemptNameMap}
-            jumpNotice={jumpNotice}
-            chatNotice={chatNotice}
-            chatBlocked={chatBlocked}
-            threadIntervention={threadIntervention}
-            onOpenIntervention={onOpenIntervention}
-            showStreamingIndicator={showStreaming}
-            missionNarrative={selectedChannel?.kind === "global" ? missionNarrative : null}
-            runtimeSummary={runtimeSummary}
-            agentRuntimeConfig={agentRuntimeConfig}
-            mcpSummary={selectedChannel?.kind === "worker" ? null : mcpSummary}
-            runControls={runControls}
-            onOpenMcpSettings={openExternalMcpSettings}
-            onApproval={handleApproval}
-          />
+          <>
+            {selectedChannel?.kind !== "global" ? (
+              <div
+                className="flex items-center justify-between gap-3 px-4 py-2 text-[11px]"
+                style={{
+                  borderBottom: "1px solid rgba(255,255,255,0.06)",
+                  background: "rgba(20,16,29,0.68)",
+                  color: COLORS.textSecondary,
+                  fontFamily: MONO_FONT,
+                }}
+              >
+                <div>
+                  {threadStatusLabel(threadMessagesLoading, threadMessagesError, threadMessagesHasMore)}
+                </div>
+                <div className="flex items-center gap-2">
+                  {threadMessagesError ? (
+                    <button
+                      type="button"
+                      className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em]"
+                      style={{ border: `1px solid ${COLORS.accent}30`, color: COLORS.accent }}
+                      onClick={() => void refreshSelectedMessages()}
+                    >
+                      Retry
+                    </button>
+                  ) : null}
+                  {threadMessagesHasMore ? (
+                    <button
+                      type="button"
+                      className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] disabled:opacity-55"
+                      style={{ border: `1px solid ${COLORS.accent}30`, color: COLORS.accent }}
+                      onClick={loadOlderSelectedMessages}
+                      disabled={threadMessagesLoadingMore}
+                      aria-label={threadMessagesLoadingMore ? "Loading older mission thread messages" : "Load older mission thread messages"}
+                    >
+                      {threadMessagesLoadingMore ? "Loading..." : "Load older"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            <ChatMessageArea
+              selectedChannel={selectedChannel}
+              workerStatusDot={workerStatusDotFn}
+              displayMessages={displayMessages}
+              attemptNameMap={attemptNameMap}
+              jumpNotice={jumpNotice}
+              chatNotice={chatNotice}
+              chatBlocked={chatBlocked}
+              threadIntervention={threadIntervention}
+              onOpenIntervention={onOpenIntervention}
+              showStreamingIndicator={showStreaming}
+              missionNarrative={selectedChannel?.kind === "global" ? missionNarrative : null}
+              runtimeSummary={runtimeSummary}
+              agentRuntimeConfig={agentRuntimeConfig}
+              mcpSummary={selectedChannel?.kind === "worker" ? null : mcpSummary}
+              runControls={runControls}
+              onOpenMcpSettings={openExternalMcpSettings}
+              onApproval={handleApproval}
+            />
+          </>
         </ChatSurfaceShell>
       </div>
     </div>

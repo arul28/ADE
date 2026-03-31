@@ -81,7 +81,7 @@ describe("lanePrWarnings", () => {
     const diverged = describeLanePrIssues(makeLane(), makeSyncStatus({ ahead: 1, behind: 3, diverged: true }));
 
     expect(unpublished).toEqual(["has not been published to remote"]);
-    expect(diverged).toEqual(["has diverged from remote (1 ahead, 3 behind)"]);
+    expect(diverged).toEqual(["has diverged from remote (1 ahead, 3 behind) — force push if this is from a rebase, or pull to merge remote changes."]);
   });
 
   it("builds warnings only for lanes with issues", () => {
@@ -174,7 +174,7 @@ describe("lanePrWarnings", () => {
 
     expect(issues).toEqual([
       "has a rebase in progress",
-      "has diverged from remote (2 ahead, 1 behind)",
+      "has diverged from remote (2 ahead, 1 behind) — force push if this is from a rebase, or pull to merge remote changes.",
     ]);
   });
 

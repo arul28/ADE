@@ -5,20 +5,8 @@ import { sessionStatusDot } from "../../lib/terminalAttention";
 import { primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
-import { MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { ToolLogo } from "./ToolLogos";
-
-/** Tool-type accent gradient for left bar — more vibrant, colorful palette */
-function toolAccentGradient(toolType: string | null | undefined): string {
-  if (toolType === "claude" || toolType === "claude-chat" || toolType === "claude-orchestrated")
-    return "from-orange-500/80 to-orange-500/10";
-  if (toolType === "codex" || toolType === "codex-chat" || toolType === "codex-orchestrated")
-    return "from-blue-500/70 to-blue-500/10";
-  if (toolType === "ai-chat") return "from-teal-500/70 to-teal-500/10";
-  if (toolType === "shell") return "from-emerald-500/60 to-emerald-500/10";
-  return "from-violet-500/50 to-violet-500/10";
-}
-
 
 function truncateSummary(text: string | null, maxWords = 8): string {
   if (!text) return "";
@@ -33,34 +21,6 @@ const DELTA_CHIP_STYLE: React.CSSProperties = {
   fontFamily: MONO_FONT,
   letterSpacing: "0",
   borderRadius: 4,
-};
-
-const SELECTED_CARD_BASE: React.CSSProperties = {
-  background: "rgba(255,255,255, 0.05)",
-  border: "1px solid rgba(255,255,255, 0.08)",
-  boxShadow: "none",
-};
-
-const UNSELECTED_CARD_BASE: React.CSSProperties = {
-  background: "rgba(255,255,255, 0.02)",
-  border: "1px solid rgba(255,255,255, 0.03)",
-  boxShadow: "none",
-};
-
-const INFO_BUTTON_STYLE: React.CSSProperties = {
-  borderRadius: 999,
-  border: "1px solid rgba(255,255,255, 0.06)",
-  background: "rgba(255,255,255, 0.04)",
-};
-
-const RESUME_BUTTON_STYLE: React.CSSProperties = {
-  borderRadius: 6,
-  border: "1px solid rgba(255,255,255, 0.06)",
-  background: "rgba(255,255,255, 0.04)",
-  fontSize: 10,
-  fontWeight: 500,
-  fontFamily: SANS_FONT,
-  letterSpacing: "0",
 };
 
 export const SessionCard = React.memo(function SessionCard({
@@ -92,54 +52,43 @@ export const SessionCard = React.memo(function SessionCard({
       <button
         type="button"
         className={cn(
-          "ade-glass-card relative w-full overflow-hidden text-left transition-all duration-150",
-          isSelected ? "hover:bg-white/[0.02]" : "hover:bg-white/[0.03]",
+          "relative w-full overflow-hidden text-left transition-all duration-100 rounded-md",
+          isSelected
+            ? "bg-white/[0.05] hover:bg-white/[0.06]"
+            : "bg-transparent hover:bg-white/[0.03]",
         )}
         style={{
-          fontFamily: SANS_FONT,
-          borderRadius: 10,
-          ...(isSelected ? SELECTED_CARD_BASE : UNSELECTED_CARD_BASE),
+          border: isSelected ? "1px solid rgba(255,255,255,0.08)" : "1px solid transparent",
         }}
         onClick={() => onSelect(session.id)}
       >
-        <div className="pl-3 pr-2 py-2">
-          {/* Top row: logo + title + status */}
+        <div className="px-2 py-1.5">
+          {/* Top row */}
           <div className="flex items-center gap-2 min-w-0">
             <span
               title={dot.label}
-              className={cn("h-2.5 w-2.5 shrink-0 rounded-full", dot.cls, dot.spinning && "animate-spin")}
+              className={cn("h-2 w-2 shrink-0 rounded-full", dot.cls, dot.spinning && "animate-spin")}
             />
-            <ToolLogo toolType={session.toolType} size={12} />
+            <ToolLogo toolType={session.toolType} size={11} />
             <span
-              className="min-w-0 flex-1 truncate text-xs"
-              style={{
-                fontFamily: SANS_FONT,
-                fontWeight: 500,
-                color: isSelected ? "var(--color-fg)" : undefined,
-              }}
+              className="min-w-0 flex-1 truncate text-[11px]"
+              style={{ fontWeight: isSelected ? 500 : 400 }}
             >
               {primaryText}
             </span>
           </div>
 
-          {/* Bottom row: summary + badges */}
-          <div className="mt-1 flex items-center gap-1.5 pl-[14px] min-w-0">
-            <span
-              className="shrink-0"
-              style={{ fontSize: 10, fontFamily: SANS_FONT, fontWeight: 400, color: "var(--color-muted-fg)", opacity: 0.7 }}
-            >
+          {/* Bottom row */}
+          <div className="mt-0.5 flex items-center gap-1.5 pl-[18px] min-w-0">
+            <span className="shrink-0 text-[10px] text-muted-fg/50">
               {session.laneName}
             </span>
             {secondaryText ? (
-              <span
-                className="truncate"
-                style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 400, color: "var(--color-muted-fg)" }}
-              >
+              <span className="truncate text-[10px] text-muted-fg/70">
                 {secondaryText}
               </span>
             ) : null}
 
-            {/* Delta chips for ended sessions */}
             {delta && (delta.insertions > 0 || delta.deletions > 0) ? (
               <>
                 <span
@@ -170,30 +119,34 @@ export const SessionCard = React.memo(function SessionCard({
       </button>
 
       {/* Hover actions */}
-      <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-        {/* Info button */}
+      <div className="absolute right-1.5 top-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           type="button"
-          className="inline-flex items-center justify-center h-5 w-5 text-muted-fg hover:text-fg transition-colors"
-          style={INFO_BUTTON_STYLE}
+          className="inline-flex items-center justify-center h-5 w-5 rounded-full text-muted-fg/60 hover:text-fg transition-colors"
+          style={{
+            border: "1px solid rgba(255,255,255,0.06)",
+            background: "rgba(255,255,255,0.04)",
+          }}
           onClick={(e) => { e.stopPropagation(); onInfoClick(e); }}
           title="Session details"
         >
-          <Info size={11} weight="regular" />
+          <Info size={10} weight="regular" />
         </button>
 
-        {/* Resume button */}
         {canResume ? (
           <button
             type="button"
-            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-muted-fg hover:text-fg transition-colors"
-            style={RESUME_BUTTON_STYLE}
+            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-muted-fg/60 hover:text-fg transition-colors text-[10px] font-medium"
+            style={{
+              border: "1px solid rgba(255,255,255,0.06)",
+              background: "rgba(255,255,255,0.04)",
+            }}
             disabled={resumingSessionId != null}
             onClick={(e) => { e.stopPropagation(); onResume(); }}
             title="Resume"
           >
-            <Play size={10} weight="regular" />
-            RESUME
+            <Play size={9} weight="regular" />
+            Resume
           </button>
         ) : null}
       </div>

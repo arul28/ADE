@@ -196,6 +196,8 @@ type PersistedChatState = {
   lastLaneDirectiveKey?: string | null;
   manuallyNamed?: boolean;
   requestedCwd?: string | null;
+  /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
+  approvalOverrides?: string[];
   updatedAt: string;
 };
 
@@ -268,6 +270,10 @@ type ClaudeRuntime = {
   /** Set when a reasoning effort change is requested mid-turn; flushed when idle. */
   pendingSessionReset?: boolean;
   turnMemoryPolicyState: TurnMemoryPolicyState | null;
+  /** Tool names the user has approved for the session via "Allow for Session". */
+  approvalOverrides: Set<string>;
+  /** Pending MCP elicitation resolvers keyed by elicitation_id. */
+  pendingElicitations: Map<string, () => void>;
 };
 
 type PendingUnifiedApproval = {
@@ -787,6 +793,15 @@ function sessionSupportsReasoning(session: AgentChatSession): boolean {
   return resolveSessionModelDescriptor(session)?.capabilities.reasoning ?? true;
 }
 
+function initialTurnActivity(session: AgentChatSession): {
+  activity: Extract<AgentChatEvent, { type: "activity" }>["activity"];
+  detail: string;
+} {
+  return sessionSupportsReasoning(session)
+    ? { activity: "thinking", detail: REASONING_ACTIVITY_DETAIL }
+    : { activity: "working", detail: WORKING_ACTIVITY_DETAIL };
+}
+
 function normalizeUsagePayload(
   value: unknown
 ): { inputTokens?: number | null; outputTokens?: number | null } | undefined {
@@ -1047,6 +1062,45 @@ function readProviderParentItemId(value: unknown): string | undefined {
   return undefined;
 }
 
+function normalizeClaudeTodoItems(
+  value: unknown,
+): Extract<AgentChatEvent, { type: "todo_update" }>["items"] | null {
+  if (!value || typeof value !== "object") return null;
+  const todos = (value as { todos?: unknown }).todos;
+  if (!Array.isArray(todos) || todos.length === 0) return null;
+
+  const items: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = todos.flatMap((todo, index) => {
+    if (!todo || typeof todo !== "object") return [];
+    const record = todo as Record<string, unknown>;
+    const description = [
+      record.content,
+      record.activeForm,
+      record.description,
+      record.text,
+    ].find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)?.trim();
+    if (!description) return [];
+
+    const rawStatus = typeof record.status === "string" ? record.status : "";
+    let status: Extract<AgentChatEvent, { type: "todo_update" }>["items"][number]["status"];
+    if (rawStatus === "completed") {
+      status = "completed";
+    } else if (rawStatus === "in_progress" || rawStatus === "inProgress") {
+      status = "in_progress";
+    } else {
+      status = "pending";
+    }
+
+    const explicitId = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
+    return [{
+      id: explicitId ?? `todo-${index}`,
+      description,
+      status,
+    }];
+  });
+
+  return items.length ? items : null;
+}
+
 function buildStreamingUserContent(
   args: {
     baseText: string;
@@ -1131,6 +1185,15 @@ function buildExecutionModeDirective(
       "[ADE launch directive]",
       "Use Codex parallel delegation for independent subtasks when it improves latency or coverage.",
       "Split bounded work into parallel subagents, keep each delegate narrowly scoped, then reconcile results before the final answer.",
+      "If the task is tightly coupled, stay focused instead of forcing delegation.",
+    ].join("\n");
+  }
+
+  if (provider === "claude" && (mode === "subagents" || mode === "parallel")) {
+    return [
+      "[ADE launch directive]",
+      "Use Claude subagents for independent subtasks when they will materially improve latency or coverage.",
+      "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
     ].join("\n");
   }
@@ -2009,10 +2072,75 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  const CLAUDE_READ_ONLY_TOOLS = new Set([
+    "read", "glob", "grep", "toolsearch", "tasklist", "taskget",
+    "webfetch", "websearch",
+  ]);
+
+  const normalizeToolNameForApproval = (toolName: string): string =>
+    toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+
+  const claudeToolNeedsApproval = (
+    toolName: string,
+    input: Record<string, unknown>,
+    permissionMode: string,
+  ): boolean => {
+    const normalized = normalizeToolNameForApproval(toolName);
+    // bypassPermissions → never prompt
+    if (permissionMode === "bypassPermissions") return false;
+    // plan mode → handled elsewhere (deny writes entirely)
+    if (permissionMode === "plan") return false;
+    // Read-only tools never need approval
+    if (CLAUDE_READ_ONLY_TOOLS.has(normalized)) return false;
+    // acceptEdits → only prompt for Bash
+    if (permissionMode === "acceptEdits") {
+      return normalized.includes("bash");
+    }
+    // default → prompt for mutating tools (Bash, Write, Edit, NotebookEdit, Agent, etc.)
+    if (normalized.includes("bash") || normalized.includes("write") || normalized.includes("edit")
+      || normalized.includes("agent") || normalized.includes("notebookedit")) {
+      return true;
+    }
+    // MCP tools → prompt
+    if (normalized.startsWith("mcp_") || normalized.startsWith("mcp__")) return true;
+    return false;
+  };
+
+  const buildClaudeToolApprovalDescription = (
+    toolName: string,
+    input: Record<string, unknown>,
+    sdkOptions?: { blockedPath?: string; decisionReason?: string },
+  ): string => {
+    const lowerName = toolName.toLowerCase();
+    let headline: string;
+    if (sdkOptions?.decisionReason) {
+      headline = sdkOptions.decisionReason;
+    } else if (lowerName.includes("bash")) {
+      const cmd = typeof input.command === "string" ? input.command
+        : typeof input.cmd === "string" ? input.cmd
+        : null;
+      headline = cmd
+        ? `Run command: ${cmd.length > 120 ? cmd.slice(0, 117) + "..." : cmd}`
+        : "Run a shell command";
+    } else if (lowerName.includes("write")) {
+      const filePath = typeof input.file_path === "string" ? input.file_path : null;
+      headline = filePath ? `Write file: ${filePath}` : "Write a file";
+    } else if (lowerName.includes("edit")) {
+      const filePath = typeof input.file_path === "string" ? input.file_path : null;
+      headline = filePath ? `Edit file: ${filePath}` : "Edit a file";
+    } else {
+      headline = `Use tool: ${toolName}`;
+    }
+    if (sdkOptions?.blockedPath) {
+      return `${headline}\nPath: ${sdkOptions.blockedPath}`;
+    }
+    return headline;
+  };
+
   const buildClaudeCanUseTool = (
     runtime: ClaudeRuntime,
     managed: ManagedChatSession,
-  ): ClaudeSDKOptions["canUseTool"] => async (toolName, input): Promise<ClaudePermissionResult> => {
+  ): ClaudeSDKOptions["canUseTool"] => async (toolName, input, sdkOptions): Promise<ClaudePermissionResult> => {
     // ── ExitPlanMode interception ──
     // Intercept ExitPlanMode to show a plan approval UI instead of letting the
     // SDK handle it natively (which just collapses into the work log).
@@ -2060,10 +2188,14 @@ export function createAgentChatService(args: {
       });
 
       // Block until the user responds via the approval UI.
-      const response = await new Promise<{ decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }>((resolve) => {
-        runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-      });
-      runtime.approvals.delete(approvalItemId);
+      let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
+      try {
+        response = await new Promise<typeof response>((resolve) => {
+          runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+        });
+      } finally {
+        runtime.approvals.delete(approvalItemId);
+      }
 
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
       if (approved) {
@@ -2082,22 +2214,101 @@ export function createAgentChatService(args: {
       };
     }
 
+    // ── Memory orientation guard ──
     const state = runtime.turnMemoryPolicyState;
     if (isMemorySearchToolName(toolName) && state) {
       state.explicitSearchPerformed = true;
       state.orientationSatisfied = true;
       return { behavior: "allow" };
     }
-    if (!state || state.classification !== "required" || state.orientationSatisfied || state.explicitSearchPerformed) {
-      return { behavior: "allow" };
+    if (state && state.classification === "required" && !state.orientationSatisfied && !state.explicitSearchPerformed) {
+      if (isClaudeMutatingToolCall(toolName, input)) {
+        return { behavior: "deny", message: CHAT_MEMORY_GUARD_MESSAGE };
+      }
     }
-    if (!isClaudeMutatingToolCall(toolName, input)) {
-      return { behavior: "allow" };
+
+    // ── Tool permission prompts ──
+    // Surface approval prompts for non-bypass permission modes so the user can
+    // allow or deny individual tool calls (matching the unified runtime pattern).
+    const effectivePermMode = managed.session.claudePermissionMode ?? "default";
+    if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
+      // Check session-wide overrides — user already said "Allow for Session" for this tool
+      const normalizedForOverride = normalizeToolNameForApproval(toolName);
+      if (runtime.approvalOverrides.has(normalizedForOverride)) {
+        return { behavior: "allow" };
+      }
+
+      const approvalItemId = randomUUID();
+      const turnId = runtime.activeTurnId ?? undefined;
+      const description = buildClaudeToolApprovalDescription(toolName, input, sdkOptions);
+      const request: PendingInputRequest = {
+        requestId: approvalItemId,
+        itemId: approvalItemId,
+        source: "claude",
+        kind: "approval",
+        title: `Allow ${toolName}?`,
+        description,
+        questions: [{
+          id: "tool_decision",
+          header: toolName,
+          question: description,
+          options: [
+            { label: "Allow", value: "allow", recommended: true },
+            { label: "Allow for Session", value: "allow_session" },
+            { label: "Deny", value: "deny" },
+          ],
+          allowsFreeform: true,
+        }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          tool: toolName,
+          input,
+          ...(sdkOptions?.blockedPath ? { blockedPath: sdkOptions.blockedPath } : {}),
+          ...(sdkOptions?.decisionReason ? { decisionReason: sdkOptions.decisionReason } : {}),
+          ...(sdkOptions?.toolUseID ? { toolUseID: sdkOptions.toolUseID } : {}),
+        },
+        turnId: turnId ?? null,
+      };
+
+      emitPendingInputRequest(managed, request, {
+        kind: normalizedForOverride.includes("bash") ? "command" : "file_change",
+        description,
+        detail: { tool: toolName, ...(sdkOptions?.blockedPath ? { blockedPath: sdkOptions.blockedPath } : {}) },
+      });
+
+      let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
+      try {
+        response = await new Promise<typeof response>((resolve) => {
+          runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+        });
+      } finally {
+        runtime.approvals.delete(approvalItemId);
+      }
+
+      const approved = response.decision === "accept" || response.decision === "accept_for_session";
+      if (response.decision === "accept_for_session") {
+        runtime.approvalOverrides.add(normalizedForOverride);
+      }
+      if (approved) {
+        return {
+          behavior: "allow",
+          ...(response.decision === "accept_for_session" && sdkOptions?.suggestions?.length
+            ? { updatedPermissions: sdkOptions.suggestions }
+            : {}),
+        };
+      }
+      const feedback = typeof response.responseText === "string" ? response.responseText.trim() : "";
+      return {
+        behavior: "deny",
+        message: feedback.length > 0
+          ? `User denied this tool call: ${feedback}`
+          : "User denied this tool call.",
+      };
     }
-    return {
-      behavior: "deny",
-      message: CHAT_MEMORY_GUARD_MESSAGE,
-    };
+
+    return { behavior: "allow" };
   };
 
   const clearSubagentSnapshots = (sessionId: string): void => {
@@ -3169,6 +3380,9 @@ export function createAgentChatService(args: {
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined } : {}),
+      ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
+        ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
+        : {}),
       ...(managed.runtime?.kind === "unified"
         ? { messages: managed.runtime.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })) }
         : {}),
@@ -3260,6 +3474,9 @@ export function createAgentChatService(args: {
             .slice(-12)
         : undefined;
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length ? record.sdkSessionId.trim() : undefined;
+      const approvalOverrides = Array.isArray(record.approvalOverrides)
+        ? record.approvalOverrides.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+        : undefined;
       const hydrated: PersistedChatState = {
         version: 2,
         sessionId,
@@ -3292,6 +3509,7 @@ export function createAgentChatService(args: {
           ? { threadId: record.threadId.trim() }
           : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
+        ...(approvalOverrides?.length ? { approvalOverrides } : {}),
         ...(messages?.length ? { messages } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
         ...(typeof record.continuitySummary === "string" && record.continuitySummary.trim().length
@@ -4238,17 +4456,23 @@ export function createAgentChatService(args: {
       _rootPath: managed.laneWorktreePath,
     }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    managed.session.status = "active";
+    emitPreparedUserMessage(managed, {
+      text: displayText,
+      attachments,
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "started" });
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+    });
     const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, attachments);
     const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
 
     // Intercept /review command — route to review/start RPC instead of turn/start
     if (args.promptText.trim().startsWith("/review")) {
-      emitPreparedUserMessage(managed, {
-        text: displayText,
-        attachments,
-        laneDirectiveKey: args.laneDirectiveKey,
-        onDispatched: args.onDispatched,
-      });
       const reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
         threadId: managed.session.threadId,
         target: "uncommittedChanges",
@@ -4298,13 +4522,6 @@ export function createAgentChatService(args: {
       input.push({ type: "mention", name, path: stagedPath });
     }
 
-    managed.session.status = "active";
-    emitPreparedUserMessage(managed, {
-      text: displayText,
-      attachments,
-      laneDirectiveKey: args.laneDirectiveKey,
-      onDispatched: args.onDispatched,
-    });
     if (autoMemoryNotice) {
       emitChatEvent(managed, {
         type: "system_notice",
@@ -4325,9 +4542,6 @@ export function createAgentChatService(args: {
     if (turnId) {
       managed.runtime.activeTurnId = turnId;
       if (managed.runtime.startedTurnId !== turnId) {
-        const reasoningActivity = sessionSupportsReasoning(managed.session)
-          ? { activity: "thinking" as const, detail: REASONING_ACTIVITY_DETAIL }
-          : { activity: "working" as const, detail: WORKING_ACTIVITY_DETAIL };
         managed.runtime.startedTurnId = turnId;
         emitChatEvent(managed, {
           type: "status",
@@ -4336,7 +4550,7 @@ export function createAgentChatService(args: {
         });
         emitChatEvent(managed, {
           type: "activity",
-          ...reasoningActivity,
+          ...initialTurnActivity(managed.session),
           turnId,
         });
       }
@@ -4463,6 +4677,11 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+      turnId,
+    });
 
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
@@ -4473,6 +4692,15 @@ export function createAgentChatService(args: {
     const emittedSyntheticItemIds = new Set<string>();
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
+    const emittedClaudeTodoIds = new Set<string>();
+    const maybeEmitTodoUpdate = (toolName: string, input: unknown, itemId: string): void => {
+      if (toolName !== "TodoWrite") return;
+      if (emittedClaudeTodoIds.has(itemId)) return;
+      const todoItems = normalizeClaudeTodoItems(input ?? {});
+      if (!todoItems) return;
+      emittedClaudeTodoIds.add(itemId);
+      emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
+    };
     const markFirstStreamEvent = (kind: string): void => {
       if (firstStreamEventLogged) return;
       firstStreamEventLogged = true;
@@ -4695,6 +4923,39 @@ export function createAgentChatService(args: {
           continue;
         }
 
+        // system:elicitation_complete — MCP URL-mode authentication finished
+        if (msg.type === "system" && (msg as any).subtype === "elicitation_complete") {
+          const elicitMsg = msg as any;
+          const elicitationId = typeof elicitMsg.elicitation_id === "string" ? elicitMsg.elicitation_id : "";
+          const serverName = typeof elicitMsg.mcp_server_name === "string" ? elicitMsg.mcp_server_name : "MCP server";
+          // Resolve any pending URL-mode elicitation promise
+          if (elicitationId && runtime.pendingElicitations.has(elicitationId)) {
+            runtime.pendingElicitations.get(elicitationId)!();
+            runtime.pendingElicitations.delete(elicitationId);
+          }
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: `MCP authentication complete: ${serverName}`,
+            turnId,
+          });
+          continue;
+        }
+
+        // system:local_command_output — output from local slash commands (/voice, /cost, etc.)
+        if (msg.type === "system" && (msg as any).subtype === "local_command_output") {
+          const cmdMsg = msg as any;
+          const content = typeof cmdMsg.content === "string" ? cmdMsg.content.trim() : "";
+          if (content.length > 0) {
+            emitChatEvent(managed, {
+              type: "text",
+              text: content,
+              turnId,
+            });
+          }
+          continue;
+        }
+
         // auth_status — authentication events
         if (msg.type === "auth_status") {
           const authMsg = msg as any;
@@ -4827,6 +5088,7 @@ export function createAgentChatService(args: {
                     itemId,
                     turnId,
                   });
+                  maybeEmitTodoUpdate(toolName, block.input, itemId);
                   // Synthesize a tool_result for the proof observer since the
                   // Claude V2 SDK never surfaces tool results in the stream.
                   const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
@@ -4942,6 +5204,15 @@ export function createAgentChatService(args: {
                   itemId,
                   turnId,
                 });
+                const todoItems = toolName === "TodoWrite" ? normalizeClaudeTodoItems(block.input ?? {}) : null;
+                if (todoItems && !emittedClaudeTodoIds.has(itemId)) {
+                  emittedClaudeTodoIds.add(itemId);
+                  emitChatEvent(managed, {
+                    type: "todo_update",
+                    items: todoItems,
+                    turnId,
+                  });
+                }
                 if (typeof contentIndex === "number") {
                   const initial =
                     block.input != null && typeof block.input === "object" && Object.keys(block.input as object).length
@@ -5029,6 +5300,16 @@ export function createAgentChatService(args: {
                 turnId,
               });
             }
+          }
+          if (Array.isArray(resultMsg.permission_denials) && resultMsg.permission_denials.length > 0) {
+            const denials = resultMsg.permission_denials as Array<{ tool_name: string; tool_use_id?: string }>;
+            const denialSummary = denials.map((d) => d.tool_name).join(", ");
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              message: `${denials.length} tool call${denials.length === 1 ? " was" : "s were"} denied this turn: ${denialSummary}`,
+              turnId,
+            });
           }
           continue;
         }
@@ -5251,6 +5532,11 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+      turnId,
+    });
 
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
@@ -6429,9 +6715,6 @@ export function createAgentChatService(args: {
       runtime.recentNotificationKeys.clear();
       managed.session.status = "active";
       if (!turnId || runtime.startedTurnId !== turnId) {
-        const reasoningActivity = sessionSupportsReasoning(managed.session)
-          ? { activity: "thinking" as const, detail: REASONING_ACTIVITY_DETAIL }
-          : { activity: "working" as const, detail: WORKING_ACTIVITY_DETAIL };
         runtime.startedTurnId = turnId;
         emitChatEvent(managed, {
           type: "status",
@@ -6440,7 +6723,7 @@ export function createAgentChatService(args: {
         });
         emitChatEvent(managed, {
           type: "activity",
-          ...reasoningActivity,
+          ...initialTurnActivity(managed.session),
           ...(turnId ? { turnId } : {})
         });
       }
@@ -7259,6 +7542,162 @@ export function createAgentChatService(args: {
       ) as any;
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
 
+      // Handle MCP elicitation requests (form input or OAuth URL flows).
+      (opts as any).onElicitation = async (
+        elicitReq: { serverName: string; message: string; mode?: "form" | "url"; url?: string; elicitationId?: string; requestedSchema?: Record<string, unknown> },
+        elicitOpts: { signal: AbortSignal },
+      ): Promise<{ action: "accept" | "decline" | "cancel"; content?: Record<string, string | number | boolean | string[]> }> => {
+        const approvalItemId = randomUUID();
+        const turnId = runtime.activeTurnId ?? undefined;
+
+        if (elicitReq.mode === "url" && elicitReq.url) {
+          // URL mode: open browser and wait for elicitation_complete stream event
+          try {
+            const parsed = new URL(elicitReq.url);
+            if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+              require("electron").shell.openExternal(elicitReq.url);
+            } else {
+              logger.warn("agent_chat.blocked_open_external", { protocol: parsed.protocol });
+            }
+          } catch { /* best effort */ }
+
+          const request: PendingInputRequest = {
+            requestId: approvalItemId,
+            itemId: approvalItemId,
+            source: "claude",
+            kind: "question",
+            title: `Authentication: ${elicitReq.serverName}`,
+            description: `${elicitReq.message}\n\nA browser window has been opened for authentication. Click "Done" once you have completed the authentication flow.`,
+            questions: [{
+              id: "auth_action",
+              header: elicitReq.serverName,
+              question: elicitReq.message,
+              options: [
+                { label: "Done", value: "done", recommended: true },
+                { label: "Cancel", value: "cancel" },
+              ],
+              allowsFreeform: false,
+            }],
+            allowsFreeform: false,
+            blocking: true,
+            canProceedWithoutAnswer: false,
+            providerMetadata: { serverName: elicitReq.serverName, mode: "url", elicitationId: elicitReq.elicitationId },
+            turnId: turnId ?? null,
+          };
+
+          emitPendingInputRequest(managed, request, {
+            kind: "tool_call",
+            description: `MCP authentication: ${elicitReq.serverName}`,
+            detail: { serverName: elicitReq.serverName },
+          });
+
+          // Also register a resolver that the elicitation_complete stream event can trigger
+          if (elicitReq.elicitationId) {
+            const waitForComplete = new Promise<void>((resolve) => {
+              runtime.pendingElicitations.set(elicitReq.elicitationId!, resolve);
+            });
+            // Race: user clicks "Done" OR elicitation_complete arrives
+            let userResponse: { decision?: AgentChatApprovalDecision };
+            try {
+              userResponse = await Promise.race([
+                new Promise<{ decision?: AgentChatApprovalDecision }>((resolve) => {
+                  runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+                }),
+                waitForComplete.then(() => ({ decision: "accept" as AgentChatApprovalDecision })),
+              ]);
+            } finally {
+              runtime.approvals.delete(approvalItemId);
+              runtime.pendingElicitations.delete(elicitReq.elicitationId);
+            }
+            if (userResponse.decision === "cancel" || userResponse.decision === "decline") {
+              return { action: "cancel" };
+            }
+            return { action: "accept" };
+          }
+
+          // No elicitationId — just wait for user click
+          let elicitResponse: { decision?: AgentChatApprovalDecision };
+          try {
+            elicitResponse = await new Promise<typeof elicitResponse>((resolve) => {
+              runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+            });
+          } finally {
+            runtime.approvals.delete(approvalItemId);
+          }
+          return elicitResponse.decision === "cancel" || elicitResponse.decision === "decline"
+            ? { action: "cancel" }
+            : { action: "accept" };
+        }
+
+        // Form mode: map requestedSchema to structured questions
+        const questions: PendingInputRequest["questions"] = [];
+        const schema = elicitReq.requestedSchema ?? {};
+        const properties = (schema as any).properties as Record<string, { type?: string; description?: string; enum?: string[] }> | undefined;
+        if (properties) {
+          for (const [key, prop] of Object.entries(properties)) {
+            questions.push({
+              id: key,
+              header: key,
+              question: prop.description ?? key,
+              ...(prop.enum ? { options: prop.enum.map((v) => ({ label: v, value: v })) } : {}),
+              allowsFreeform: !prop.enum,
+              isSecret: key.toLowerCase().includes("password") || key.toLowerCase().includes("secret") || key.toLowerCase().includes("token"),
+            });
+          }
+        }
+        if (questions.length === 0) {
+          questions.push({
+            id: "input",
+            header: elicitReq.serverName,
+            question: elicitReq.message,
+            allowsFreeform: true,
+          });
+        }
+
+        const request: PendingInputRequest = {
+          requestId: approvalItemId,
+          itemId: approvalItemId,
+          source: "claude",
+          kind: "structured_question",
+          title: `Input requested: ${elicitReq.serverName}`,
+          description: elicitReq.message,
+          questions,
+          allowsFreeform: true,
+          blocking: true,
+          canProceedWithoutAnswer: false,
+          providerMetadata: { serverName: elicitReq.serverName, mode: "form" },
+          turnId: turnId ?? null,
+        };
+
+        emitPendingInputRequest(managed, request, {
+          kind: "tool_call",
+          description: `MCP input: ${elicitReq.serverName}`,
+          detail: { serverName: elicitReq.serverName },
+        });
+
+        let formResponse: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
+        try {
+          formResponse = await new Promise<typeof formResponse>((resolve) => {
+            runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+          });
+        } finally {
+          runtime.approvals.delete(approvalItemId);
+        }
+
+        if (formResponse.decision === "cancel" || formResponse.decision === "decline") {
+          return { action: "decline" };
+        }
+
+        // Map answers to the expected content shape
+        const content: Record<string, string | number | boolean | string[]> = {};
+        if (formResponse.answers) {
+          for (const [key, value] of Object.entries(formResponse.answers)) {
+            content[key] = value;
+          }
+        }
+        return { action: "accept", content };
+      };
+
       // Enable MCP tool search for sessions with many MCP tools.
       // When enabled, the SDK defers tool definitions and loads them on-demand
       // via the ToolSearch tool, keeping the context window lean.
@@ -7513,6 +7952,8 @@ export function createAgentChatService(args: {
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
       turnMemoryPolicyState: null,
+      approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
+      pendingElicitations: new Map<string, () => void>(),
     };
     managed.runtime = runtime;
 
@@ -7751,7 +8192,7 @@ export function createAgentChatService(args: {
         );
       }
       effectiveProvider = resolved;
-      normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.shortId : resolvedDescriptor.id;
+      normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.sdkModelId : resolvedDescriptor.id;
     }
 
     const rawEffort = effectiveProvider === "codex"
@@ -7945,7 +8386,7 @@ export function createAgentChatService(args: {
     }
 
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
-    const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.shortId : targetDescriptor.id;
+    const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.sdkModelId : targetDescriptor.id;
     const targetReasoningEffort = pickHandoffReasoningEffort(
       targetDescriptor,
       managed.session.reasoningEffort ?? sourceSession.reasoningEffort,
@@ -8544,7 +8985,12 @@ export function createAgentChatService(args: {
     runtime.interrupted = true;
     cancelClaudeWarmup(managed, runtime, "interrupt");
     runtime.activeQuery?.interrupt().catch(() => {});
-    // Close the V2 session — it will be recreated on the next turn.
+    // Drain pending approvals so their promises settle instead of hanging forever
+    for (const pending of runtime.approvals.values()) {
+      pending.resolve({ decision: "cancel" });
+    }
+    runtime.approvals.clear();
+    // Close the V2 session on interrupt — it will be recreated on the next turn
     try { runtime.v2Session?.close(); } catch { /* ignore */ }
     runtime.v2Session = null;
     runtime.v2StreamGen = null;

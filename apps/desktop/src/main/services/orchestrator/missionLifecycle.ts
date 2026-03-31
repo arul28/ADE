@@ -43,6 +43,7 @@ import type {
   MissionLevelSettings,
   PhaseCard,
 } from "../../../shared/types";
+import { TERMINAL_MISSION_STATUSES } from "../../../shared/types";
 import { resolveExecutionPolicy, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import { getMissionMetadata, getMissionIdForRun } from "./chatMessageService";
 import { readDocPaths } from "./stepPolicyResolver";
@@ -438,6 +439,14 @@ export function transitionMissionStatus(
   const mission = ctx.missionService.get(missionId);
   if (!mission) return;
   if (mission.status === next && args?.outcomeSummary == null && args?.lastError == null) return;
+  if (TERMINAL_MISSION_STATUSES.has(mission.status) && !TERMINAL_MISSION_STATUSES.has(next)) {
+    ctx.logger.debug("ai_orchestrator.mission_status_regression_skipped", {
+      missionId,
+      from: mission.status,
+      to: next,
+    });
+    return;
+  }
 
   // VAL-STATE-001: Before transitioning to intervention_required, pause all
   // active runs for this mission so we never have an active run while the

@@ -8,6 +8,10 @@ export type TerminalAttentionIndicator = "none" | "running-active" | "running-ne
 export type WorkViewMode = "tabs" | "grid";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
 export type WorkDraftKind = "chat" | "cli" | "shell";
+/** How sessions are grouped in the Work sidebar list. */
+export type WorkSessionListOrganization =
+  | "all-lanes-by-status"
+  | "by-lane";
 export type WorkProjectViewState = {
   openItemIds: string[];
   activeItemId: string | null;
@@ -17,6 +21,12 @@ export type WorkProjectViewState = {
   laneFilter: string;
   statusFilter: WorkStatusFilter;
   search: string;
+  /** Session list grouping mode. */
+  sessionListOrganization: WorkSessionListOrganization;
+  /** Lane ids collapsed in "by-lane" folder view (others expanded). */
+  workCollapsedLaneIds: string[];
+  /** When true, sessions sidebar is hidden for a full-width content area (persisted per project). */
+  workFocusSessionsHidden: boolean;
 };
 export type TerminalAttentionSnapshot = {
   runningCount: number;
@@ -49,6 +59,9 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     laneFilter: "all",
     statusFilter: "all",
     search: "",
+    sessionListOrganization: "all-lanes-by-status",
+    workCollapsedLaneIds: [],
+    workFocusSessionsHidden: false,
   };
 }
 

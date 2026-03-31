@@ -49,6 +49,7 @@ type GenerationRunMeta = {
 const CONTEXT_DOC_PREFS_KEY = "context:docs:preferences.v1";
 const CONTEXT_DOC_LAST_RUN_KEY = "context:docs:lastRun.v1";
 const CONTEXT_DOC_GENERATION_STATUS_KEY = "context:docs:generationStatus.v1";
+const STALE_GENERATION_TIMEOUT_MS = 5 * 60_000;
 
 /** Minimum interval between auto-refresh runs (per event name). */
 const AUTO_REFRESH_MIN_INTERVAL_MS: Record<ContextRefreshEventName, number> = {
@@ -121,6 +122,16 @@ function normalizeGenerationSource(value: unknown): ContextDocGenerationSource |
   return null;
 }
 
+function pickDefined<T>(value: T | undefined, fallback: T): T {
+  return value !== undefined ? value : fallback;
+}
+
+function parseIsoMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : null;
+}
+
 export function createContextDocService(args: {
   db: AdeDb;
   logger: Logger;
@@ -155,9 +166,11 @@ export function createContextDocService(args: {
     aiIntegrationService,
   };
 
+  let activeGeneration: Promise<ContextGenerateDocsResult> | null = null;
+
   const buildStatusSnapshot = (): ContextStatus => ({
     ...readContextStatusImpl({ db, projectId, projectRoot, packsDir }),
-    generation: readGenerationStatus(),
+    generation: reconcileGenerationStatus(),
   });
 
   const emitStatusChanged = (): void => {
@@ -247,6 +260,55 @@ export function createContextDocService(args: {
     };
   };
 
+  const normalizeStaleGenerationStatus = (
+    status: ContextDocGenerationStatus,
+  ): { status: ContextDocGenerationStatus; changed: boolean } => {
+    if (status.state !== "pending" && status.state !== "running") {
+      return { status, changed: false };
+    }
+
+    const startedAtMs = parseIsoMs(status.startedAt);
+    const requestedAtMs = parseIsoMs(status.requestedAt);
+    const baselineMs = startedAtMs ?? requestedAtMs;
+    if (baselineMs == null) {
+      return {
+        status: {
+          ...status,
+          state: "failed",
+          finishedAt: nowIso(),
+          error: "Context doc generation state was left in progress without timestamps. ADE reset it.",
+        },
+        changed: true,
+      };
+    }
+
+    if (Date.now() - baselineMs <= STALE_GENERATION_TIMEOUT_MS) {
+      return { status, changed: false };
+    }
+
+    return {
+      status: {
+        ...status,
+        state: "failed",
+        finishedAt: nowIso(),
+        error: "Previous context doc generation did not finish. ADE reset the stale in-progress state.",
+      },
+      changed: true,
+    };
+  };
+
+  const reconcileGenerationStatus = (): ContextDocGenerationStatus => {
+    const current = readGenerationStatus();
+    if (activeGeneration && (current.state === "pending" || current.state === "running")) {
+      return current;
+    }
+    const normalized = normalizeStaleGenerationStatus(current);
+    if (normalized.changed) {
+      db.setJson(CONTEXT_DOC_GENERATION_STATUS_KEY, normalized.status);
+    }
+    return normalized.status;
+  };
+
   const writeGenerationStatus = (next: ContextStatus["generation"]): void => {
     db.setJson(CONTEXT_DOC_GENERATION_STATUS_KEY, next);
     emitStatusChanged();
@@ -264,20 +326,18 @@ export function createContextDocService(args: {
     const previous = args.previous ?? readGenerationStatus();
     return {
       state: args.state,
-      requestedAt: args.requestedAt ?? args.meta?.requestedAt ?? previous.requestedAt ?? null,
-      startedAt: args.startedAt ?? previous.startedAt ?? null,
-      finishedAt: args.finishedAt ?? previous.finishedAt ?? null,
-      error: args.error ?? null,
-      source: args.meta?.source ?? previous.source ?? null,
-      event: args.meta?.event ?? previous.event ?? null,
-      reason: args.meta?.reason ?? previous.reason ?? null,
-      provider: args.meta?.provider ?? previous.provider ?? null,
-      modelId: args.meta?.modelId ?? previous.modelId ?? null,
-      reasoningEffort: args.meta?.reasoningEffort ?? previous.reasoningEffort ?? null,
+      requestedAt: pickDefined(args.requestedAt, pickDefined(args.meta?.requestedAt, previous.requestedAt ?? null)),
+      startedAt: pickDefined(args.startedAt, previous.startedAt ?? null),
+      finishedAt: pickDefined(args.finishedAt, previous.finishedAt ?? null),
+      error: pickDefined(args.error, null),
+      source: pickDefined(args.meta?.source, previous.source ?? null),
+      event: pickDefined(args.meta?.event, previous.event ?? null),
+      reason: pickDefined(args.meta?.reason, previous.reason ?? null),
+      provider: pickDefined(args.meta?.provider, previous.provider ?? null),
+      modelId: pickDefined(args.meta?.modelId, previous.modelId ?? null),
+      reasoningEffort: pickDefined(args.meta?.reasoningEffort, previous.reasoningEffort ?? null),
     };
   };
-
-  let activeGeneration: Promise<ContextGenerateDocsResult> | null = null;
 
   const generateDocsInternal = async (
     docArgs: ContextGenerateDocsArgs,
@@ -364,14 +424,19 @@ export function createContextDocService(args: {
     return activeGeneration;
   };
 
-  const generateDocs = async (docArgs: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
-    await generateDocsInternal(docArgs, {
+  const generateDocs = async (docArgs: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
+    const modelId = toOptionalString(docArgs.modelId);
+    if (!modelId) {
+      throw new Error("Select a model before generating context docs.");
+    }
+    return generateDocsInternal(docArgs, {
       source: "manual",
       reason: "manual_generate",
       provider: normalizeContextProvider(docArgs.provider),
-      modelId: toOptionalString(docArgs.modelId),
+      modelId,
       reasoningEffort: toOptionalString(docArgs.reasoningEffort),
     });
+  };
 
   /**
    * Resolves which events are enabled, merging project config with stored prefs.
@@ -441,6 +506,15 @@ export function createContextDocService(args: {
       return null;
     }
 
+    if (!prefs.modelId) {
+      settlePendingWithoutRun();
+      logger.debug("context_docs.auto_refresh_skipped_missing_model", {
+        event,
+        reason: docArgs.reason ?? null,
+      });
+      return null;
+    }
+
     if (!activeGeneration) {
       writeGenerationStatus(
         buildGenerationStatus({
@@ -498,6 +572,8 @@ export function createContextDocService(args: {
       return null;
     }
   };
+
+  reconcileGenerationStatus();
 
   return {
     getDocMeta() {

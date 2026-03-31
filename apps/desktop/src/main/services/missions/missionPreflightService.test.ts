@@ -339,7 +339,7 @@ describe("missionPreflightService", () => {
     expect(result.canLaunch).toBe(true);
   });
 
-  it("blocks launch when queue auto-resolve is enabled without a compatible CLI resolver model", async () => {
+  it("summarizes result-lane closeout for new missions without requiring PR automation", async () => {
     const profiles = createProfiles();
     const service = createMissionPreflightService({
       logger: createLogger(),
@@ -383,7 +383,7 @@ describe("missionPreflightService", () => {
 
     const result = await service.runPreflight({
       launch: {
-        prompt: "Land the queue automatically after implementation.",
+        prompt: "Land the consolidated implementation in one lane.",
         phaseProfileId: profiles[0]!.id,
         phaseOverride: profiles[0]!.phases.map((phase) => ({
           ...phase,
@@ -399,21 +399,16 @@ describe("missionPreflightService", () => {
             modelId: "google/gemini-2.5-flash",
           },
         },
-        executionPolicy: {
-          prStrategy: {
-            kind: "queue",
-            targetBranch: "main",
-            autoLand: true,
-            autoResolveConflicts: true,
-            ciGating: true,
-            mergeMethod: "squash",
-          },
-        },
       } as any,
     });
 
-    expect(result.canLaunch).toBe(false);
-    expect(result.checklist.find((item) => item.id === "capabilities")?.severity).toBe("fail");
+    expect(result.canLaunch).toBe(true);
+    expect(result.checklist.find((item) => item.id === "capabilities")?.severity).toBe("pass");
+    expect(
+      result.approvalSummary?.conflictAssumptions.some((detail) =>
+        detail.includes("result lane") && detail.includes("will not auto-open a PR"),
+      ),
+    ).toBe(true);
   });
 
   it("surfaces computer-use readiness when an external backend satisfies required proof", async () => {

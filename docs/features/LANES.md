@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-24
+> Last updated: 2026-03-31
 
 ---
 
@@ -65,6 +65,19 @@ ADE supports three types of lanes:
 | **Worktree** | A dedicated worktree created by ADE in a managed location. | `.ade/worktrees/<name>/` | Standard parallel development. Most lanes are this type. |
 | **Attached** | A pre-existing external worktree that the user links into ADE. | User-specified path | Integrating worktrees created outside ADE. |
 
+### Mission lane roles
+
+Lanes can be associated with a mission through two optional fields on the lane record: `missionId` and `laneRole`. The `MissionLaneRole` type defines four roles:
+
+| Role | Description |
+|------|-------------|
+| `mission_root` | The base lane the mission was launched from. |
+| `worker` | A lane created for an individual worker agent during execution. |
+| `integration` | A lane used for merging worker outputs (legacy, retained for compatibility). |
+| `result` | The single output lane containing the consolidated mission changes. |
+
+The lane service exposes `setMissionOwnership()` to tag or re-tag a lane's mission affiliation after creation. Child lane creation also accepts `missionId` and `laneRole` so worker and result lanes are tagged at birth.
+
 ### Lane Status
 
 Lane status is a composite indicator derived from multiple signals:
@@ -82,6 +95,19 @@ A **stack** is a parent-child relationship between lanes. The child lane's branc
 - **Stacked PRs**: Each lane in the stack has its own PR, reviewed independently but merged in order.
 - **Layered development**: Build feature B on top of feature A before A is merged.
 - **Rebase operations**: When a parent lane is updated, propagate those changes to all children.
+
+### Lane base resolution
+
+The `shouldLaneTrackParent()` function in `src/shared/laneBaseResolution.ts` determines whether a child lane should track its parent lane's branch as its comparison ref. A lane tracks its parent only when the parent is **not** a primary lane and the parent has a valid branch ref. When the parent is a primary lane, the child uses its own `baseRef` (the project's default branch) instead, because the primary lane's branch _is_ the default branch and tracking it would produce zero behind-by counts.
+
+The `branchNameFromLaneRef()` helper normalizes branch refs (stripping `refs/heads/`, `refs/remotes/`, and `origin/` prefixes) so that comparisons work uniformly regardless of how the ref was stored.
+
+These shared functions are consumed by `laneService`, `conflictService`, `autoRebaseService`, and renderer-side utilities to ensure consistent base-ref resolution across ahead/behind computation, rebase suggestions, conflict prediction, and auto-rebase.
+
+On startup, the lane service runs two repair routines:
+
+- **`repairPrimaryParentedRootLanes`** -- Detaches non-primary lanes that point to the primary lane as their parent, resetting their `base_ref` to the project default branch. This cleans up lanes that were incorrectly parented to the primary lane in older versions.
+- **`repairLegacyPrimaryBaseRootLanes`** -- Normalizes `base_ref` on root worktree lanes that still reference a stale or non-default branch, aligning them with the project's current default branch. Lanes with open PRs are excluded from repair to avoid disrupting active workflows.
 
 ---
 
@@ -267,7 +293,7 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 
 | Service | Responsibility |
 |---------|---------------|
-| `laneService` | CRUD operations for lanes. Creates/removes worktrees via git. Computes lane status by aggregating dirty state, ahead/behind, and other signals. Manages lane metadata in the database. Supports primary, worktree, and attached lane types. Provides rebase (recursive rebase with remote tracking branch resolution for primary parents, dirty-worktree guard), reparent, stack chain, appearance management, and `createFromUnstaged` (stash-based unstaged change rescue to a new child lane with automatic rollback on failure). |
+| `laneService` | CRUD operations for lanes. Creates/removes worktrees via git. Computes lane status by aggregating dirty state, ahead/behind, and other signals. Manages lane metadata in the database. Supports primary, worktree, and attached lane types. Provides rebase (recursive rebase with remote tracking branch resolution for primary parents, dirty-worktree guard), reparent, stack chain, appearance management, `createFromUnstaged` (stash-based unstaged change rescue to a new child lane with automatic rollback on failure), mission lane ownership (`setMissionOwnership`), and startup repair routines for legacy lane base refs. |
 | `rebaseSuggestionService` | Monitors stacked lanes for parent-advanced state. Generates rebase suggestions with dismiss/defer lifecycle. Emits real-time suggestion events to the renderer. |
 | `gitService` | All git operations: stage, unstage, discard, commit, stash (push, list, apply, pop, drop, clear), fetch, sync (merge/rebase), push, conflict state detection (merge/rebase in-progress, continue, abort). Operates on a specified worktree path. Returns structured results with success/failure and output. |
 | `diffService` | Computes working tree diffs (unstaged changes) and index diffs (staged changes). Per-file diff content for the Monaco viewer. Handles binary file detection and large file truncation. |
@@ -381,11 +407,15 @@ lanes (
   color             TEXT,                   -- User-customizable lane color
   icon              TEXT,                   -- Lane icon: 'star' | 'flag' | 'bolt' | 'shield' | 'tag' | null
   tags_json         TEXT,                   -- JSON array of tag strings (up to 24)
+  folder            TEXT,                   -- Optional organizational folder
+  mission_id        TEXT,                   -- Mission that owns this lane (nullable)
+  lane_role         TEXT,                   -- Mission lane role: 'mission_root' | 'worker' | 'integration' | 'result'
   created_at        TEXT NOT NULL,          -- ISO 8601 timestamp
   archived_at       TEXT,                   -- ISO 8601 timestamp, NULL if active
   status            TEXT NOT NULL,          -- 'active' | 'archived'
   FOREIGN KEY (project_id) REFERENCES projects(id),
-  FOREIGN KEY (parent_lane_id) REFERENCES lanes(id)
+  FOREIGN KEY (parent_lane_id) REFERENCES lanes(id),
+  FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
 )
 ```
 

@@ -3,6 +3,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
 import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload } from "../../../shared/types";
+import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { fetchQueueTargetTrackingBranches, fetchRemoteTrackingBranch, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { isRecord, nowIso } from "../shared/utils";
 
@@ -133,10 +134,10 @@ export function createRebaseSuggestionService(args: {
 
     if (lane.parentLaneId) {
       const parent = laneById.get(lane.parentLaneId);
-      if (parent) {
+      if (parent && shouldLaneTrackParent({ lane, parent })) {
         let parentHeadSha: string | null;
         if (parent.laneType === "primary") {
-          const parentBranch = parent.branchRef.trim();
+          const parentBranch = branchNameFromLaneRef(parent.branchRef);
           if (!parentBranch) return null;
           if (primaryParentHeadByBranch.has(parentBranch)) {
             parentHeadSha = primaryParentHeadByBranch.get(parentBranch) ?? null;

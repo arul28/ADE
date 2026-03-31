@@ -10,7 +10,6 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { nowIso } from "../shared/utils";
 import type { GetModelCapabilitiesResult } from "../../../shared/types";
-import { getModelById } from "../../../shared/modelRegistry";
 import type {
   MissionDetail,
   MissionExecutionPolicy,
@@ -53,9 +52,6 @@ import type {
   RecoveryDiagnosisTier,
   RecoveryDiagnosis,
   OrchestratorContextView,
-  IntegrationPrPolicy,
-  PrDepth,
-  PrStrategy,
   OrchestratorArtifactKind,
   ModelConfig,
   MissionModelConfig,
@@ -113,9 +109,6 @@ export type {
   RecoveryDiagnosisTier,
   RecoveryDiagnosis,
   OrchestratorContextView,
-  IntegrationPrPolicy,
-  PrDepth,
-  PrStrategy,
   OrchestratorArtifactKind,
   ModelConfig,
   MissionModelConfig,
@@ -128,6 +121,7 @@ export type {
 
 export type MissionRunStartArgs = {
   missionId: string;
+  queueClaimToken?: string | null;
   runMode?: "autopilot" | "manual";
   autopilotOwnerId?: string;
   defaultExecutorKind?: OrchestratorExecutorKind;
@@ -283,20 +277,6 @@ export type CoordinatorSessionEntry = {
   pendingInit: Promise<void> | null;
 };
 
-export type PendingIntegrationContext = {
-  proposalId: string;
-  missionId: string;
-  integrationLaneName: string;
-  integrationLaneId: string;
-  baseBranch: string;
-  isDraft: boolean;
-  prDepth: PrDepth;
-  conflictStepKeys: string[];
-  reviewStepKey: string | null;
-  laneIdArray: string[];
-  missionTitle: string;
-};
-
 export type ParallelMissionStepDescriptor = {
   id: string;
   index: number;
@@ -423,7 +403,6 @@ export type OrchestratorContext = {
   aiTimeoutBudgetRunLocks: Set<string>;
   aiRetryDecisionLocks: Set<string>;
   coordinatorSessions: Map<string, CoordinatorSessionEntry>;
-  pendingIntegrations: Map<string, PendingIntegrationContext>;
   coordinatorThinkingLoops: Map<string, NodeJS.Timeout>;
   pendingCoordinatorEvals: Map<string, NodeJS.Timeout>;
 

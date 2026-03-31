@@ -152,6 +152,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus | null>(null);
   const [onboardingStatusLoading, setOnboardingStatusLoading] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
+  const [dismissedContextBannerRoots, setDismissedContextBannerRoots] = useState<Record<string, true>>({});
   const [projectMissing, setProjectMissing] = useState(false);
   const isOnboardingRoute = location.pathname === "/onboarding";
   const shouldTrackTerminalAttention =
@@ -430,6 +431,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     () => missingContextDocs.map((doc) => doc.label).join(", "),
     [missingContextDocs],
   );
+  const currentProjectRoot = project?.rootPath ?? null;
+  const contextBannerDismissed = Boolean(currentProjectRoot && dismissedContextBannerRoots[currentProjectRoot]);
+  const generationState = contextStatus?.generation.state;
 
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
@@ -530,6 +534,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     && location.pathname === "/project"
     && onboardingStatusLoading;
   const hideSidebar = isOnboardingRoute || shouldHoldProjectRouteForOnboarding;
+  const showContextBanner =
+    !hideSidebar &&
+    Boolean(project?.rootPath) &&
+    !showWelcome &&
+    generationState !== "pending" &&
+    generationState !== "running" &&
+    actionableContextDocs.length > 0 &&
+    !contextBannerDismissed;
 
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
@@ -654,12 +666,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar && project?.rootPath && !showWelcome && contextStatus?.generation.state !== "pending" && contextStatus?.generation.state !== "running" && actionableContextDocs.length > 0 ? (
+      {showContextBanner ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          {missingContextDocs.length > 0
-            ? `Missing ADE context docs: ${missingContextSummary}.`
-            : `ADE context docs need regeneration: ${actionableContextSummary}.`}
-          <Link to="/settings?tab=workspace" className="ml-2 underline">Generate docs</Link>
+          <span>
+            {missingContextDocs.length > 0
+              ? `Missing ADE context docs: ${missingContextSummary}.`
+              : `ADE context docs need regeneration: ${actionableContextSummary}.`}
+            <Link to="/settings?tab=workspace" className="ml-2 underline">Generate docs</Link>
+          </span>
+          <button
+            type="button"
+            className="ml-2 text-amber-900/70 hover:text-amber-900"
+            onClick={() => {
+              if (!currentProjectRoot) return;
+              setDismissedContextBannerRoots((prev) => ({ ...prev, [currentProjectRoot]: true }));
+            }}
+            title="Dismiss for this session"
+          >
+            ×
+          </button>
         </div>
       ) : null}
 

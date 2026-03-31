@@ -628,6 +628,7 @@ export type RebaseResolutionStartArgs = {
   modelId: string;
   reasoning?: string | null;
   permissionMode?: AiPermissionMode;
+  forcePushAfterRebase?: boolean;
 };
 
 export type RebaseResolutionStartResult = {
@@ -706,6 +707,7 @@ export type RecheckIntegrationStepResult = {
 export type RebaseNeed = {
   laneId: string;
   laneName: string;
+  kind: "lane_base" | "pr_target";
   baseBranch: string;
   behindBy: number;
   conflictPredicted: boolean;
@@ -1036,4 +1038,82 @@ export type AiReviewSummary = {
   potentialIssues: string[];
   recommendations: string[];
   mergeReadiness: "ready" | "needs_work" | "blocked";
+};
+
+// --------------------------------
+// Pipeline Settings (auto-converge / auto-merge)
+// --------------------------------
+
+/** Merge method for the auto-merge pipeline — extends MergeMethod with repo_default. */
+export type PipelineMergeMethod = MergeMethod | "repo_default";
+
+export type RebasePolicy = "pause" | "auto_rebase";
+
+export type PipelineSettings = {
+  autoMerge: boolean;
+  mergeMethod: PipelineMergeMethod;
+  maxRounds: number;
+  onRebaseNeeded: RebasePolicy;
+};
+
+export const DEFAULT_PIPELINE_SETTINGS: PipelineSettings = {
+  autoMerge: false,
+  mergeMethod: "repo_default",
+  maxRounds: 5,
+  onRebaseNeeded: "pause",
+};
+
+// --------------------------------
+// Issue Inventory (PR Convergence Loop)
+// --------------------------------
+
+export type IssueInventoryState = "new" | "sent_to_agent" | "fixed" | "dismissed" | "escalated";
+
+export type IssueSource = "coderabbit" | "codex" | "copilot" | "human" | "ade" | "unknown";
+
+export type IssueInventoryItem = {
+  id: string;
+  prId: string;
+  source: IssueSource;
+  type: "review_thread" | "check_failure" | "issue_comment";
+  externalId: string;
+  state: IssueInventoryState;
+  round: number;
+  filePath: string | null;
+  line: number | null;
+  severity: "critical" | "major" | "minor" | null;
+  headline: string;
+  body: string | null;
+  author: string | null;
+  url: string | null;
+  dismissReason: string | null;
+  agentSessionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ConvergenceRoundStat = {
+  round: number;
+  newCount: number;
+  fixedCount: number;
+  dismissedCount: number;
+};
+
+export type ConvergenceStatus = {
+  currentRound: number;
+  maxRounds: number;
+  issuesPerRound: ConvergenceRoundStat[];
+  totalNew: number;
+  totalFixed: number;
+  totalDismissed: number;
+  totalEscalated: number;
+  totalSentToAgent: number;
+  isConverging: boolean;
+  canAutoAdvance: boolean;
+};
+
+export type IssueInventorySnapshot = {
+  prId: string;
+  items: IssueInventoryItem[];
+  convergence: ConvergenceStatus;
 };

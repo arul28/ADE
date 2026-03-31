@@ -15,6 +15,7 @@ import type { TerminalSessionSummary } from "./sessions";
 // ---------------------------------------------------------------------------
 
 export type LaneType = "primary" | "worktree" | "attached";
+export type MissionLaneRole = "mission_root" | "worker" | "integration" | "result";
 
 export type LaneStatus = {
   dirty: boolean;
@@ -45,6 +46,8 @@ export type LaneSummary = {
   icon: LaneIcon | null;
   tags: string[];
   folder?: string | null;
+  missionId?: string | null;
+  laneRole?: MissionLaneRole | null;
   createdAt: string;
   archivedAt?: string | null;
 };
@@ -115,6 +118,8 @@ export type CreateChildLaneArgs = {
   name: string;
   description?: string;
   folder?: string;
+  missionId?: string | null;
+  laneRole?: MissionLaneRole | null;
 };
 
 export type CreateLaneFromUnstagedArgs = {

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-10
+> Last updated: 2026-03-31
 
 This document describes the renderer architecture in `apps/desktop/src/renderer`, including routing, theme system, state model, layout patterns, and IPC integration constraints.
 
@@ -128,6 +128,13 @@ Core app state includes:
 - `laneInspectorTabs`
 - `keybindings`
 
+Per-project work view state (`WorkProjectViewState`) is keyed by project root path and tracks:
+
+- `openItemIds` / `activeItemId` / `viewMode` / `draftKind` / `laneFilter` / `statusFilter` / `search` -- standard work tab state
+- `sessionListOrganization` -- how sessions are grouped in the sidebar: `"all-lanes-by-status"` (flat list grouped by running/awaiting/ended) or `"by-lane"` (folder view grouped by lane)
+- `workCollapsedLaneIds` -- which lane folders are collapsed in "by-lane" mode
+- `workFocusSessionsHidden` -- whether the session sidebar is hidden for a full-width content area
+
 Store actions include project/lane refresh, project switching, provider mode refresh, keybindings refresh, and theme persistence.
 
 ### Domain-Specific Stores
@@ -154,7 +161,7 @@ ADE uses multiple layout systems depending on surface complexity:
 - `PaneTilingLayout`: recursive pane trees for high-density workspaces
 - `SplitPane` / resizable panels: 2-pane and 3-pane structured views
 - Floating pane primitives for modular lane/conflict/terminal sub-surfaces
-- **Work view session grid** (`WorkViewArea`): CSS Grid with `auto-fill` and `minmax` for fluid responsive session card layout that adapts to viewport width without fixed breakpoints
+- **Work view session grid** (`WorkViewArea`): CSS Grid with `auto-fill` and `minmax` for fluid responsive session card layout that adapts to viewport width without fixed breakpoints. The session list sidebar supports two organization modes: flat status-grouped ("all-lanes-by-status") and lane-folder-grouped ("by-lane") with collapsible lane sections and a `LaneCombobox` for lane filtering
 
 Layout state persistence is backed by IPC calls into local SQLite (`layout`, `tilingTree`, `graphState` domains).
 
@@ -198,9 +205,9 @@ The missions UI has been further decomposed through the M3/M4 UI overhaul. The c
 | `MissionTabContainer.tsx` | — | Tab content rendering |
 | `InterventionPanel.tsx` | — | Dedicated intervention display and resolve UI |
 | `missionHelpers.ts` | ~520 | `STATUS_CONFIG`, `classifyErrorSource`, `computeProgress`, `collapseFeedMessages`, `getAvailableLifecycleActions`, `usagePercentColor`, `formatResetCountdown` |
-| `CreateMissionDialog.tsx` | ~1,500 | Full mission creation wizard with model selection, budget, PR strategy |
+| `CreateMissionDialog.tsx` | ~1,250 | Mission creation wizard with model selection, budget, result-lane closeout |
 | `MissionSettingsDialog.tsx` | ~590 | Runtime settings adjustment for active missions |
-| `PlanTab.tsx` | ~190 | Plan DAG visualization tab |
+| `PlanTab.tsx` | ~400 | Plan tab with planner review summary, DAG visualization, and phase-grouped step list |
 | `WorkTab.tsx` | ~210 | Worker runtime inspection, transcript-oriented follow mode, and validator lineage tab |
 | `StepDetailPanel.tsx` | ~270 | Sidebar panel for step inspection and attempt history |
 | `ActivityNarrativeHeader.tsx` | ~150 | Run narrative header for the Activity tab |
@@ -247,10 +254,21 @@ Common logic that was previously duplicated across pages has been consolidated i
 - `format.ts` — Formatting helpers: `relativeWhen`, `formatDate`, `formatTime`, `formatDurationMs`, `formatTokens`, `formatCost`, `statusTone`
 - `shell.ts` — Shell utilities: `quoteShellArg`, `parseCommandLine`
 - `sessions.ts` — Session-related utilities
+- `platform.ts` — Platform detection: `isMac`, `isMacPlatform`, `isMacUserAgent`
 
 **`src/renderer/hooks/`** — Shared React hooks:
 - `useClickOutside.ts` — Click-outside detection (replaced 4 independent implementations)
 - `useThreadEventRefresh.ts` — Debounced thread event refresh (replaced 3 independent implementations)
+
+**`src/shared/`** — Cross-process shared logic:
+- `laneBaseResolution.ts` — `shouldLaneTrackParent()`, `branchNameFromLaneRef()`, `resolveStableLaneBaseBranch()` for consistent lane base-ref resolution across main process and renderer
+
+**PR shared utilities** (`prs/shared/`):
+- `rebaseNeedUtils.ts` — `rebaseNeedItemKey()`, `findLaneBaseNeed()`, `findMatchingRebaseNeed()` for rebase need deduplication and lookup by kind or PR id
+- `laneBranchTargets.ts` — Branch target resolution for PR creation and rebase flows
+
+**Work view components** (`terminals/`):
+- `LaneCombobox.tsx` — Searchable combobox for lane filtering in the work session sidebar, with keyboard navigation, portal-based dropdown, and "All lanes" option
 
 **Design tokens** are consolidated in `lanes/laneDesignTokens.ts` and imported by components across missions, lanes, terminals, PRs, settings, and other feature areas
 
@@ -316,6 +334,7 @@ Mission selection previously triggered 5+ separate IPC calls (metadata, run, ste
 Renderer architecture is fully operational for the current desktop scope:
 
 - 11-tab shell + startup/onboarding routes are implemented.
+- Branded startup splash screen with animated logo glow while the workspace initializes.
 - Six-theme token system is implemented and wired through settings.
 - High-density pane layouts are implemented across lanes/work/graph/prs.
 - Key feature pages (Play, Lanes, Files, Work, Graph, PRs, History, Automations, CTO, Missions, Settings) are implemented.
@@ -325,5 +344,9 @@ Renderer architecture is fully operational for the current desktop scope:
 - Shared utility layer established: `renderer/lib/` (format, shell, sessions), `renderer/hooks/` (useClickOutside, useThreadEventRefresh), `context/contextShared.ts`, `prs/shared/`, `lanes/laneDesignTokens.ts`.
 - Mission detail tabs: Plan, Work, DAG, Chat, Activity, Details.
 - Mission chat is split by channel purpose: Global is the high-signal summary/broadcast view, while orchestrator and worker threads reuse the shared agent chat message renderer for detailed structured event/tool/thinking display.
+- Context doc banner is dismissible per project per session.
+- Work tab session sidebar supports two organization modes (flat status-grouped and lane-folder-grouped) with collapsible lane sections and sidebar-toggle focus mode.
+- Commit timeline scrolls to the bottom (newest commits) on initial load.
+- PR convergence panel with issue inventory, round-based convergence progress, embedded agent chat, and pipeline settings.
 
 Future UI surfaces for Machines are planned in `docs/final-plan/README.md`.

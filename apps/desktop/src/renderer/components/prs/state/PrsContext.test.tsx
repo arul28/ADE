@@ -28,6 +28,7 @@ describe("PrsContext refresh", () => {
     const refreshedNeed: RebaseNeed = {
       laneId: "lane-1",
       laneName: "Lane 1",
+      kind: "lane_base",
       baseBranch: "main",
       behindBy: 1,
       conflictPredicted: false,

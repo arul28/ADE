@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiffChanges, GitConflictState, GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
-import { LaneGitActionsPane } from "./LaneGitActionsPane";
+import { __resetLaneGitActionRuntimeForTests, LaneGitActionsPane } from "./LaneGitActionsPane";
 
 vi.mock("./CommitTimeline", () => ({
   CommitTimeline: () => null,
@@ -65,19 +65,41 @@ function buildLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
 
 describe("LaneGitActionsPane rescue action", () => {
   const originalAde = globalThis.window.ade;
-  let mockChanges: DiffChanges;
+  let mockChangesByLaneId: Record<string, DiffChanges>;
   let mockConflictState: GitConflictState;
   let mockSyncStatus: GitUpstreamSyncStatus;
 
   beforeEach(() => {
     mockStoreState = {
-      lanes: [buildLane()],
+      lanes: [
+        buildLane(),
+        buildLane({
+          id: "lane-2",
+          name: "Second lane",
+          branchRef: "feature/second",
+          worktreePath: "/tmp/ade/second",
+          status: {
+            dirty: false,
+            ahead: 0,
+            behind: 0,
+            remoteBehind: -1,
+            rebaseInProgress: false,
+          },
+        }),
+      ],
       refreshLanes: vi.fn(async () => undefined),
       selectLane: vi.fn(),
     };
-    mockChanges = {
-      staged: [],
-      unstaged: [{ path: "src/file.ts", kind: "modified" }],
+    __resetLaneGitActionRuntimeForTests();
+    mockChangesByLaneId = {
+      "lane-1": {
+        staged: [],
+        unstaged: [{ path: "src/file.ts", kind: "modified" }],
+      },
+      "lane-2": {
+        staged: [],
+        unstaged: [],
+      },
     };
     mockConflictState = {
       laneId: "lane-1",
@@ -99,9 +121,11 @@ describe("LaneGitActionsPane rescue action", () => {
 
     globalThis.window.ade = {
       diff: {
-        getChanges: vi.fn(async () => mockChanges),
+        getChanges: vi.fn(async ({ laneId }: { laneId: string }) => mockChangesByLaneId[laneId] ?? { staged: [], unstaged: [] }),
       },
       git: {
+        commit: vi.fn(async () => ({ operationId: "git-commit", preHeadSha: "abc", postHeadSha: "def" })),
+        generateCommitMessage: vi.fn(async () => ({ message: "feat: auto", model: "openai/gpt-5.4-mini" })),
         stashList: vi.fn(async () => []),
         getSyncStatus: vi.fn(async () => mockSyncStatus),
         getConflictState: vi.fn(async () => mockConflictState),
@@ -112,13 +136,21 @@ describe("LaneGitActionsPane rescue action", () => {
         createFromUnstaged: vi.fn(async () => buildLane({ id: "lane-2", name: "Rescue lane", status: { dirty: true, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false } })),
       },
       projectConfig: {
-        get: vi.fn(async () => ({ effective: { ai: {} } })),
+        get: vi.fn(async () => ({
+          effective: {
+            ai: {
+              features: { commit_messages: true },
+              featureModelOverrides: { commit_messages: "openai/gpt-5.4-mini" },
+            },
+          },
+        })),
       },
     } as any;
   });
 
   afterEach(() => {
     cleanup();
+    __resetLaneGitActionRuntimeForTests();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {
@@ -166,7 +198,7 @@ describe("LaneGitActionsPane rescue action", () => {
   });
 
   it("disables the rescue button when staged changes are present", async () => {
-    mockChanges = {
+    mockChangesByLaneId["lane-1"] = {
       staged: [{ path: "src/file.ts", kind: "modified" }],
       unstaged: [{ path: "src/file.ts", kind: "modified" }],
     };
@@ -219,5 +251,101 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(rebaseTabButton);
 
     expect(resolveRebaseConflict).toHaveBeenCalledWith("lane-1", "lane-main");
+  });
+
+  it("keeps the generating commit state when leaving and returning to the lane", async () => {
+    const user = userEvent.setup();
+    let resolveGeneratedMessage: ((value: { message: string; model: string | null }) => void) | undefined;
+    const generatedMessagePromise = new Promise<{ message: string; model: string | null }>((resolve) => {
+      resolveGeneratedMessage = resolve;
+    });
+    mockChangesByLaneId["lane-1"] = {
+      staged: [{ path: "src/file.ts", kind: "modified" }],
+      unstaged: [],
+    };
+    (window.ade.git.generateCommitMessage as any).mockImplementation(() => generatedMessagePromise);
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-1"
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "COMMIT" }));
+    await waitFor(() => {
+      expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false });
+    });
+    expect(screen.getByRole("button", { name: "GENERATING..." })).toBeTruthy();
+
+    rerender(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-2"
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "COMMIT" })).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "GENERATING..." })).toBeNull();
+
+    rerender(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-1"
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "GENERATING..." })).toBeTruthy();
+    });
+
+    rerender(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-2"
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+
+    resolveGeneratedMessage!({ message: "feat: auto", model: "openai/gpt-5.4-mini" });
+    await waitFor(() => {
+      expect(window.ade.git.commit).toHaveBeenCalledWith({ laneId: "lane-1", message: "feat: auto", amend: false });
+    });
+
+    const commitInput = screen.getByPlaceholderText(/commit message/i) as HTMLInputElement;
+    expect(commitInput.value).toBe("");
   });
 });

@@ -2,7 +2,7 @@
 
 > This document defines the ownership split between canonical docs and generated agent bootstrap docs. Detailed service and storage design stays in the other architecture docs.
 >
-> Last updated: 2026-03-25
+> Last updated: 2026-03-31
 
 ## Purpose
 
@@ -115,6 +115,10 @@ Generated docs are only accepted when they pass all of these checks:
 - PRD and architecture output are sufficiently distinct (token-level Jaccard overlap check)
 - invalid AI output does not overwrite previously valid docs
 
+When a generated doc exceeds the character budget but has valid structure, the builder compacts it by trimming each section proportionally rather than rejecting it outright. The compaction preserves the required heading scaffold and clips section bodies to a per-section budget.
+
+Validation and acceptance are evaluated per doc independently. A PRD doc that passes validation can be accepted as `ai` even if the architecture doc fails and falls back. The overlap check rejects both docs only when they are too similar (Jaccard >= 0.72).
+
 If the AI path fails for a given doc:
 
 - preserve the previous valid generated doc when one exists (source: `previous_good`)
@@ -126,6 +130,10 @@ The generation result reports per-doc outcomes (`docResults`) including health, 
 ## Runtime health model
 
 The UI consumes doc health from the main process, not renderer heuristics. The context doc service pushes status changes to the renderer via the `contextStatusChanged` IPC event whenever generation status or doc health changes, replacing the previous polling approach.
+
+The context doc service reconciles stale generation states on startup and on every status read. If a generation has been in `pending` or `running` state for longer than 5 minutes without an active generation promise, it is automatically reset to `failed` with an explanatory error message. This prevents the UI from showing a permanent spinner after a crash or unclean shutdown.
+
+Auto-refresh is skipped when no model is configured. The Settings > Context section surfaces a hint when auto-refresh stays idle because no model is selected. Manual generation also requires a model selection before proceeding.
 
 Each `ContextDocStatus` carries a `health` field and a `source` field:
 

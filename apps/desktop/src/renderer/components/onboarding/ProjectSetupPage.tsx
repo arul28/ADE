@@ -308,9 +308,8 @@ export function ProjectSetupPage() {
             onReasoningEffortChange={setContextReasoningEffort}
             className="w-full"
           />
-
           {/* Status */}
-          <div style={{ marginTop: 16, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>
+          <div style={{ marginTop: 8, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>
             {describeContextStatusLine({ contextLoading, isGenerating, contextStatus, contextModelId })}
           </div>
 

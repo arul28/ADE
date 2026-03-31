@@ -350,24 +350,43 @@ export function PhaseCardEditor({
                 Enabled
               </label>
               <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                {phase.askQuestions.enabled
-                  ? `${phase.name || "Active phase"} worker may ask blocking clarification questions when needed.`
-                  : `${phase.name || "Active phase"} will proceed without asking questions.`}
+                {(() => {
+                  const name = phase.name || "Active phase";
+                  if (!phase.askQuestions.enabled) return `${name} will proceed without asking questions.`;
+                  if (phase.askQuestions.maxQuestions == null) return `${name} worker may ask blocking clarification questions without a preset limit.`;
+                  return `${name} worker may ask blocking clarification questions when needed.`;
+                })()}
               </div>
+              {isPlanningPhase ? (
+                <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                  <input
+                    type="checkbox"
+                    checked={phase.askQuestions.maxQuestions == null}
+                    onChange={(e) => {
+                      updateField("askQuestions", {
+                        ...phase.askQuestions,
+                        maxQuestions: e.target.checked ? null : 5,
+                      });
+                    }}
+                    disabled={readOnly || !phase.askQuestions.enabled}
+                  />
+                  Unlimited planning questions
+                </label>
+              ) : null}
               <label className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                 <span style={{ fontSize: 9 }}>Max questions</span>
                 <input
                   type="number"
                   min={1}
                   max={10}
-                  value={Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))}
+                  value={phase.askQuestions.maxQuestions == null ? 5 : Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions) || 5))}
                   onChange={(e) => {
                     const maxQuestions = Math.max(1, Math.min(10, Number(e.target.value) || 5));
                     updateField("askQuestions", { ...phase.askQuestions, maxQuestions });
                   }}
                   className="h-6 w-16 px-1 text-[10px] text-center outline-none"
                   style={inputStyle}
-                  disabled={readOnly || !phase.askQuestions.enabled}
+                  disabled={readOnly || !phase.askQuestions.enabled || (isPlanningPhase && phase.askQuestions.maxQuestions == null)}
                 />
               </label>
             </div>

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-30
+> Last updated: 2026-03-31
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -410,6 +410,12 @@ The launch resolver checks candidates in order: bundled proxy path (from `proces
 | `get_lane_status` | Get current status of a specific lane | No |
 | `list_lanes` | List all active lanes with summary status | No |
 | `commit_changes` | Stage and commit changes in a lane | Yes |
+| `pr_get_checks` | Get current CI checks for a pull request | No |
+| `pr_get_review_comments` | Fetch actionable review comments, reviews, and check status | No |
+| `pr_refresh_issue_inventory` | Refresh the PR issue inventory (checks, threads, comments) | No |
+| `pr_rerun_failed_checks` | Rerun failed CI checks for a pull request | Yes |
+| `pr_reply_to_review_thread` | Reply to a GitHub PR review thread | Yes |
+| `pr_resolve_review_thread` | Resolve a GitHub PR review thread | Yes |
 
 #### Resource Providers
 
@@ -565,8 +571,8 @@ Mission prompt + memory briefings
 │        │                                           │
 │        ▼                                           │
 │  ┌──────────────────┐                              │
-│  │   PR Strategy    │ ──> integration/per-lane/    │
-│  │                  │     queue/manual PR flow      │
+│  │   Closeout       │ ──> result lane assembly      │
+│  │                  │     (no auto-PR creation)     │
 │  └──────────────────┘                              │
 │        │                                           │
 │        ▼                                           │
@@ -582,13 +588,13 @@ Mission service (user-facing lifecycle)
 
 #### Planning Phase (Built-In, Default On)
 
-Planning is a first-class mission phase (`planning`) inside the orchestrator run. As of the current runtime, planning enforcement is mandatory — if the coordinator receives a `phases` array that lacks a planning phase, the `CoordinatorAgent` constructor injects a synthetic `builtin:planning` PhaseCard at position 0 with `mustBeFirst: true`, `requiresApproval: false`, and `askQuestions: { enabled: true, maxQuestions: 5 }`, shifting all other phase positions down. This guarantees that every phased mission begins with a research-and-plan pass before any code-changing workers are spawned.
+Planning is a first-class mission phase (`planning`) inside the orchestrator run. As of the current runtime, planning enforcement is mandatory — if the coordinator receives a `phases` array that lacks a planning phase, the `CoordinatorAgent` constructor injects a synthetic `builtin:planning` PhaseCard at position 0 with `mustBeFirst: true`, `requiresApproval: false`, and `askQuestions: { enabled: true }`, shifting all other phase positions down. This guarantees that every phased mission begins with a research-and-plan pass before any code-changing workers are spawned.
 
 Runtime flow with planning enabled:
 
 1. Mission run starts with `phaseRuntime.currentPhaseKey = "planning"`.
 2. Coordinator enters planning mode, gathers mission context, and should hand planning work off quickly.
-3. If planning clarifications are enabled (`askQuestions.enabled === true`), the coordinator must issue at least one `ask_user` clarification or confirmation round before finalizing the plan. The `PhaseCardAskQuestions` type supports multi-round deliberation: when `orderingConstraints.canLoop` is true on the planning phase, the coordinator may loop back to gather additional clarifications before finalizing the plan. A `loopTarget` field optionally names the phase to loop back to (e.g., looping from a review phase back to planning). The `maxQuestions` field (clamped to 1–10) bounds how many questions the coordinator can ask per phase iteration, preventing unbounded clarification cycles.
+3. If planning clarifications are enabled (`askQuestions.enabled === true`), the coordinator must issue at least one `ask_user` clarification or confirmation round before finalizing the plan. The `PhaseCardAskQuestions` type supports multi-round deliberation: when `orderingConstraints.canLoop` is true on the planning phase, the coordinator may loop back to gather additional clarifications before finalizing the plan. A `loopTarget` field optionally names the phase to loop back to (e.g., looping from a review phase back to planning). When `maxQuestions` is set (clamped to 1-10) it bounds how many questions the coordinator can ask per phase iteration. When `maxQuestions` is null (the default for the built-in planning phase), the coordinator may ask unlimited follow-up rounds.
 4. While a planning quiz intervention is open, coordinator task/delegation tools are runtime-blocked.
 5. Planning work runs in read-only mode.
 6. Coordinator requires a usable planner result before downstream development unlocks.
@@ -596,7 +602,7 @@ Runtime flow with planning enabled:
 8. Once approval is granted (or if `requiresApproval` is false, which is the built-in default), the coordinator transitions to development.
 9. After delegation, coordinator should stay mostly event-driven until workers report actionable progress, failure, or escalation.
 
-**Mandatory planning enforcement** (VAL-PLAN-005): The `CoordinatorAgent` constructor enforces that a planning phase exists. If the caller-provided `phases` array omits planning, the constructor injects one with `mustBeFirst: true`, `askQuestions: { enabled: true, maxQuestions: 5 }`, and `requiresApproval: false`. Additionally, on the first coordinator turn, a planning watchdog (`enforcePlanningFirstTurnDelegation`) checks whether the coordinator actually spawned a planning worker; if it did not (and no planning execution record exists), the watchdog force-spawns a read-only planning worker via `buildPlanningRecoveryPrompt()` to prevent the coordinator from bypassing the planning phase.
+**Mandatory planning enforcement** (VAL-PLAN-005): The `CoordinatorAgent` constructor enforces that a planning phase exists. If the caller-provided `phases` array omits planning, the constructor injects one with `mustBeFirst: true`, `askQuestions: { enabled: true }` (unlimited follow-up rounds), and `requiresApproval: false`. Additionally, on the first coordinator turn, a planning watchdog (`enforcePlanningFirstTurnDelegation`) checks whether the coordinator actually spawned a planning worker; if it did not (and no planning execution record exists), the watchdog force-spawns a read-only planning worker via `buildPlanningRecoveryPrompt()` to prevent the coordinator from bypassing the planning phase.
 
 Runtime flow with planning disabled:
 
@@ -1220,7 +1226,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 - AI orchestrator service with mission lifecycle management, decomposed into modular architecture (core + 8 extracted modules)
 - Orchestrator service decomposed (`orchestratorQueries.ts`, `stepPolicyResolver.ts` extracted)
 - Built-in planning phase runtime (default-on profiles), clarification gating, and explicit coordinator phase transitions
-- PR strategies (integration/per-lane/queue/manual) replacing merge phase
+- Result-lane closeout replacing per-strategy PR finalization (integration/per-lane/queue/manual removed from coordinator; missions always end with a single result lane)
 - Team synthesis and recovery loops
 - Execution plan preview with approval gates
 - Inter-agent messaging decomposed into `chatMessageService.ts` and `workerDeliveryService.ts`
@@ -1231,7 +1237,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 - Session resume via resumeUnified()
 - Shared facts injection and run narrative generation
 - Orchestrator Overhaul Phases 1-9 complete (reflection protocol, cross-mission trends, pattern-candidate promotion, adaptive runtime, UI overhaul)
-- Coordinator finalization awareness: `check_finalization_status` tool + queue landing event routing
+- Coordinator finalization awareness: `check_finalization_status` tool, result-lane closeout contract, terminal status regression guard
 - Approval gates (`phase_approval` intervention type), mandatory planning enforcement, multi-round deliberation
 - Adaptive runtime (`classifyTaskComplexity`, `scaleParallelismCap`, `evaluateModelDowngrade`)
 - Budget-gated spawns (hard cap checks before every worker spawn)
@@ -1820,7 +1826,7 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection. Centralized launch resolution (`adeMcpLaunch.ts`) with bundled proxy mode for packaged builds. |
-| AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-9 complete (reflection protocol, adaptive runtime, UI overhaul). V1 closeout: coordinator finalization awareness. M4/M5 additions: approval gates, mandatory planning enforcement, multi-round deliberation, adaptive runtime, model downgrade, budget-gated spawns, benign error classification. |
+| AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-9 complete (reflection protocol, adaptive runtime, UI overhaul). V1 closeout: coordinator finalization awareness. M4/M5 additions: approval gates, mandatory planning enforcement, multi-round deliberation, adaptive runtime, model downgrade, budget-gated spawns, benign error classification. Result-lane closeout replacing per-strategy PR finalization. |
 | Phase 4 orchestrator delegation/team runtime | Complete | `delegate_parallel`, push sub-agent progress/completion rollups, native teammate auto-registration + allocation cap guardrails, single team-member data path |
 | Adaptive Runtime (M5) | Complete | `adaptiveRuntime.ts` — `classifyTaskComplexity`, `scaleParallelismCap`, `evaluateModelDowngrade`; budget hard cap enforcement in coordinator tools |
 | Approval Gates (M4/M5) | Complete | `phase_approval` intervention type, `requiresApproval` on PhaseCard, blocking phase transitions until user approval |

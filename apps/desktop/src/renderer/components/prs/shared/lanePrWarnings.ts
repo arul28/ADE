@@ -38,7 +38,15 @@ export function describeLanePrIssues(
   }
 
   if (syncStatus.diverged) {
-    issues.push(`has diverged from remote (${syncStatus.ahead} ahead, ${syncStatus.behind} behind)`);
+    if (syncStatus.recommendedAction === "force_push_lease") {
+      issues.push(
+        `has diverged from remote (${syncStatus.ahead} ahead, ${syncStatus.behind} behind) — this is expected after a rebase. Force push to update the remote branch before creating a PR.`
+      );
+    } else {
+      issues.push(
+        `has diverged from remote (${syncStatus.ahead} ahead, ${syncStatus.behind} behind) — force push if this is from a rebase, or pull to merge remote changes.`
+      );
+    }
     return issues;
   }
 

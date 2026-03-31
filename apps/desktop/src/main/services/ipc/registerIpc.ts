@@ -127,6 +127,10 @@ import type {
   PrIssueResolutionPromptPreviewResult,
   PrIssueResolutionStartArgs,
   PrIssueResolutionStartResult,
+  IssueInventoryItem,
+  IssueInventorySnapshot,
+  ConvergenceStatus,
+  PipelineSettings,
   RebaseResolutionStartArgs,
   RebaseResolutionStartResult,
   LinkPrToLaneArgs,
@@ -495,6 +499,7 @@ import type { createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
+import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import {
@@ -588,6 +593,7 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
   queueLandingService: ReturnType<typeof createQueueLandingService>;
+  issueInventoryService: ReturnType<typeof createIssueInventoryService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
@@ -752,11 +758,29 @@ function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
 }
 
 function toRecentProjectSummary(entry: { rootPath: string; displayName: string; lastOpenedAt: string }): RecentProjectSummary {
+  let laneCount: number | undefined;
+  try {
+    const gitPath = path.join(entry.rootPath, ".git");
+    const worktreesPath = path.join(gitPath, "worktrees");
+    if (fs.existsSync(gitPath)) {
+      laneCount = 1; // Primary lane
+      if (fs.existsSync(worktreesPath)) {
+        const wtCount = fs.readdirSync(worktreesPath, { withFileTypes: true })
+          .filter((dirent) => dirent.isDirectory())
+          .length;
+        laneCount += wtCount;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   return {
     rootPath: entry.rootPath,
     displayName: entry.displayName,
     lastOpenedAt: entry.lastOpenedAt,
-    exists: fs.existsSync(entry.rootPath)
+    exists: fs.existsSync(entry.rootPath),
+    laneCount,
   };
 }
 
@@ -1430,17 +1454,21 @@ export function registerIpc({
           })(),
           args: summarizeIpcValue(args),
         });
-        const IPC_TIMEOUT_MS = 30_000;
+        const IPC_TIMEOUT_MS = channel === IPC.contextGenerateDocs ? null : 30_000;
         try {
-          const result = await Promise.race([
-            listener(event, ...args),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`)),
-                IPC_TIMEOUT_MS
-              )
-            ),
-          ]);
+          const result = await (
+            IPC_TIMEOUT_MS == null
+              ? listener(event, ...args)
+              : Promise.race([
+                  listener(event, ...args),
+                  new Promise<never>((_, reject) =>
+                    setTimeout(
+                      () => reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`)),
+                      IPC_TIMEOUT_MS
+                    )
+                  ),
+                ])
+          );
           logger.info("ipc.invoke.done", {
             callId,
             channel,
@@ -5025,6 +5053,38 @@ export function registerIpc({
   ipcMain.handle(IPC.prsReopen, (_e, args) => getCtx().prService.reopenPr(args));
   ipcMain.handle(IPC.prsRerunChecks, (_e, args) => getCtx().prService.rerunChecks(args));
   ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => getCtx().prService.aiReviewSummary(args));
+
+  // Issue Inventory (PR convergence loop)
+  ipcMain.handle(IPC.prsIssueInventorySync, async (_e, args: { prId: string }): Promise<IssueInventorySnapshot> => {
+    const ctx = getCtx();
+    const [checks, reviewThreads, comments] = await Promise.all([
+      ctx.prService.getChecks(args.prId),
+      ctx.prService.getReviewThreads(args.prId),
+      ctx.prService.getComments(args.prId).catch(() => []),
+    ]);
+    return ctx.issueInventoryService.syncFromPrData(args.prId, checks, reviewThreads, comments);
+  });
+  ipcMain.handle(IPC.prsIssueInventoryGet, (_e, args: { prId: string }): IssueInventorySnapshot =>
+    getCtx().issueInventoryService.getInventory(args.prId));
+  ipcMain.handle(IPC.prsIssueInventoryGetNew, (_e, args: { prId: string }): IssueInventoryItem[] =>
+    getCtx().issueInventoryService.getNewItems(args.prId));
+  ipcMain.handle(IPC.prsIssueInventoryMarkFixed, (_e, args: { prId: string; itemIds: string[] }): void =>
+    getCtx().issueInventoryService.markFixed(args.prId, args.itemIds));
+  ipcMain.handle(IPC.prsIssueInventoryMarkDismissed, (_e, args: { prId: string; itemIds: string[]; reason: string }): void =>
+    getCtx().issueInventoryService.markDismissed(args.prId, args.itemIds, args.reason));
+  ipcMain.handle(IPC.prsIssueInventoryMarkEscalated, (_e, args: { prId: string; itemIds: string[] }): void =>
+    getCtx().issueInventoryService.markEscalated(args.prId, args.itemIds));
+  ipcMain.handle(IPC.prsIssueInventoryGetConvergence, (_e, args: { prId: string }): ConvergenceStatus =>
+    getCtx().issueInventoryService.getConvergenceStatus(args.prId));
+  ipcMain.handle(IPC.prsIssueInventoryReset, (_e, args: { prId: string }): void =>
+    getCtx().issueInventoryService.resetInventory(args.prId));
+
+  ipcMain.handle(IPC.prsPipelineSettingsGet, (_e, args: { prId: string }): PipelineSettings =>
+    getCtx().issueInventoryService.getPipelineSettings(args.prId));
+  ipcMain.handle(IPC.prsPipelineSettingsSave, (_e, args: { prId: string; settings: Partial<PipelineSettings> }): void =>
+    getCtx().issueInventoryService.savePipelineSettings(args.prId, args.settings));
+  ipcMain.handle(IPC.prsPipelineSettingsDelete, (_e, args: { prId: string }): void =>
+    getCtx().issueInventoryService.deletePipelineSettings(args.prId));
 
   ipcMain.handle(IPC.rebaseScanNeeds, async () => getCtx().conflictService.scanRebaseNeeds());
 

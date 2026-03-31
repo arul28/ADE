@@ -704,7 +704,8 @@ describe("mandatory planning enforcement", () => {
     const builtIn = createBuiltInPhaseCards();
     const planningCard = builtIn.find((c: any) => c.phaseKey === "planning");
     expect(planningCard).toBeDefined();
-    expect(planningCard!.requiresApproval).toBe(false);
+    expect(planningCard!.requiresApproval).toBe(true);
+    expect(planningCard!.askQuestions.maxQuestions).toBeNull();
     expect(planningCard!.orderingConstraints.mustBeFirst).toBe(true);
   });
 });

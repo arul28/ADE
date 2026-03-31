@@ -103,6 +103,7 @@ import { buildIntegrationPreflight } from "./integrationPlanning";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
 import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 
 type PullRequestRow = {
   id: string;
@@ -180,9 +181,7 @@ type PrGroupMemberLookupRow = {
 };
 
 function branchNameFromRef(ref: string): string {
-  const trimmed = ref.trim();
-  if (trimmed.startsWith("refs/heads/")) return trimmed.slice("refs/heads/".length);
-  return trimmed;
+  return branchNameFromLaneRef(ref);
 }
 
 function normalizeGroupMemberRole(raw: string): PrGroupMemberRole {
@@ -796,6 +795,7 @@ export function createPrService({
     }
 
     const successorBaseBranch = branchNameFromRef(successorParent.branchRef);
+    const successorParentLaneId = successorParent.laneType === "primary" ? null : successorParent.id;
     const updatedLaneIds: string[] = [];
     const failedLaneIds: string[] = [];
 
@@ -818,7 +818,7 @@ export function createPrService({
         });
         const refreshedChild = {
           ...(allLanesById.get(child.id) ?? child),
-          parentLaneId: successorParent.id,
+          parentLaneId: successorParentLaneId,
           baseRef: successorParent.branchRef,
         };
         allLanesById.set(child.id, refreshedChild);
@@ -838,7 +838,7 @@ export function createPrService({
             failedLaneIds.push(child.id);
             await recordAttentionStatusSafely({
               laneId: child.id,
-              parentLaneId: successorParent.id,
+              parentLaneId: successorParentLaneId,
               parentHeadSha: null,
               state: "rebaseFailed",
               conflictCount: 0,
@@ -849,7 +849,7 @@ export function createPrService({
         }
         const recorded = await recordAttentionStatusSafely({
           laneId: child.id,
-          parentLaneId: successorParent.id,
+          parentLaneId: successorParentLaneId,
           parentHeadSha: null,
           state: "autoRebased",
           conflictCount: 0,
@@ -1941,8 +1941,12 @@ export function createPrService({
     const headBranch = branchNameFromRef(lane.branchRef);
     const parentLane = lane.parentLaneId ? allLanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
     const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
-    const inferredBaseRef = parentLane?.branchRef ?? lane.baseRef ?? primaryLane?.branchRef ?? "main";
-    const baseBranch = (args.baseBranch ?? branchNameFromRef(inferredBaseRef)).trim();
+    const defaultBaseBranch = resolveStableLaneBaseBranch({
+      lane,
+      parent: parentLane,
+      primaryBranchRef: primaryLane?.branchRef ?? null,
+    });
+    const baseBranch = (args.baseBranch ?? defaultBaseBranch).trim();
 
     // Push the branch to remote before creating the PR
     const upstreamCheck = await runGit(
@@ -2517,6 +2521,91 @@ export function createPrService({
     }
   };
 
+  const createIntegrationLane = async (args: {
+    sourceLaneIds: string[];
+    integrationLaneName: string;
+    baseBranch: string;
+    description?: string;
+    allowDirtyWorktree?: boolean;
+    missionId?: string | null;
+    laneRole?: "mission_root" | "worker" | "integration" | "result" | null;
+  }): Promise<{
+    integrationLane: LaneSummary;
+    mergeResults: Array<{ laneId: string; success: boolean; error?: string }>;
+  }> => {
+    if (!args.sourceLaneIds.length) throw new Error("At least one source lane is required");
+    const integrationLaneName = args.integrationLaneName.trim();
+    if (!integrationLaneName) throw new Error("Integration lane name is required");
+
+    const lanes = await laneService.list({ includeArchived: false });
+    const preflight = buildIntegrationPreflight(lanes, args.sourceLaneIds, args.baseBranch);
+    if (!preflight.uniqueSourceLaneIds.length) throw new Error("At least one valid source lane is required");
+    if (preflight.duplicateSourceLaneIds.length > 0) {
+      throw new Error(`Duplicate source lanes selected: ${preflight.duplicateSourceLaneIds.join(", ")}`);
+    }
+    if (preflight.missingSourceLaneIds.length > 0) {
+      throw new Error(`Source lanes not found: ${preflight.missingSourceLaneIds.join(", ")}`);
+    }
+    if (!preflight.baseLane) {
+      throw new Error(`Could not map base branch "${args.baseBranch}" to an active lane. Create or attach that lane first.`);
+    }
+    assertDirtyWorktreesAllowed({
+      lanes,
+      laneIds: preflight.uniqueSourceLaneIds,
+      allowDirtyWorktree: args.allowDirtyWorktree
+    });
+
+    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+    const sourceLaneNames = preflight.uniqueSourceLaneIds.map((laneId) => laneMap.get(laneId)?.name ?? laneId);
+    let integrationLane: LaneSummary | null = null;
+    try {
+      integrationLane = await laneService.createChild({
+        parentLaneId: preflight.baseLane.id,
+        name: integrationLaneName,
+        description: args.description?.trim() || `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
+        missionId: args.missionId ?? null,
+        laneRole: args.laneRole ?? "integration",
+      });
+
+      const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
+      for (const sourceLaneId of preflight.uniqueSourceLaneIds) {
+        const sourceLane = laneMap.get(sourceLaneId);
+        if (!sourceLane) {
+          mergeResults.push({ laneId: sourceLaneId, success: false, error: `Lane not found: ${sourceLaneId}` });
+          continue;
+        }
+        const sourceBranch = branchNameFromRef(sourceLane.branchRef);
+        const mergeRes = await runGit(
+          ["merge", "--no-ff", "-m", `Merge ${sourceLane.name} into integration`, sourceBranch],
+          { cwd: integrationLane.worktreePath, timeoutMs: 60_000 }
+        );
+        if (mergeRes.exitCode !== 0) {
+          await runGit(["merge", "--abort"], { cwd: integrationLane.worktreePath, timeoutMs: 10_000 });
+          mergeResults.push({ laneId: sourceLaneId, success: false, error: mergeRes.stderr.trim() || "Merge failed" });
+        } else {
+          mergeResults.push({ laneId: sourceLaneId, success: true });
+        }
+      }
+
+      return {
+        integrationLane,
+        mergeResults,
+      };
+    } catch (error) {
+      if (integrationLane) {
+        try {
+          await laneService.archive({ laneId: integrationLane.id });
+        } catch (cleanupError) {
+          logger.warn("prs.integration_lane_cleanup_failed", {
+            laneId: integrationLane.id,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          });
+        }
+      }
+      throw error;
+    }
+  };
+
   const landStackEnhanced = async (args: LandStackEnhancedArgs): Promise<LandResult[]> => {
     if (args.mode === "sequential") {
       return await landStack({ rootLaneId: args.rootLaneId, method: args.method });
@@ -2641,9 +2730,7 @@ export function createPrService({
       const normalized = normalizeBranchName(rawBranch);
       if (!normalized) return null;
       const byBranch = lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalized);
-      if (byBranch) return byBranch.id;
-      const byBase = lanes.find((lane) => normalizeBranchName(lane.baseRef) === normalized);
-      return byBase?.id ?? null;
+      return byBranch?.id ?? null;
     };
 
     const fallbackTargetLaneId = findLaneIdByBranch(row.base_branch);
@@ -4305,6 +4392,21 @@ export function createPrService({
 
     async createIntegrationPr(args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> {
       return await createIntegrationPr(args);
+    },
+
+    async createIntegrationLane(args: {
+      sourceLaneIds: string[];
+      integrationLaneName: string;
+      baseBranch: string;
+      description?: string;
+      allowDirtyWorktree?: boolean;
+      missionId?: string | null;
+      laneRole?: "mission_root" | "worker" | "integration" | "result" | null;
+    }): Promise<{
+      integrationLane: LaneSummary;
+      mergeResults: Array<{ laneId: string; success: boolean; error?: string }>;
+    }> {
+      return await createIntegrationLane(args);
     },
 
     async simulateIntegration(args: SimulateIntegrationArgs): Promise<IntegrationProposal> {

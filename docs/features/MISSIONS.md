@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-13
+> Last updated: 2026-03-31
 
 Missions are ADE's structured execution system for multi-step work. A mission creates durable run, step, attempt, intervention, and artifact state, while the orchestrator coordinates workers across the configured provider/runtime mix.
 
@@ -51,11 +51,17 @@ Worker tools now correctly resolve DB state from the canonical repo root while f
 - file operations (reads, writes, diffs) operate within the lane's workspace boundary
 - headless workers launched via the MCP server get the same root propagation as desktop workers
 
-### Coordinator finalization awareness
+### Closeout contract
 
-The coordinator can now check the finalization state of a mission via the `check_finalization_status` tool, which reads the mission state doc and returns the current state of contract satisfaction, execution completeness, and queue landing. Additionally, queue landing completion events are routed to the coordinator's event loop so it observes downstream completion signals.
+Mission closeout follows a single-path model: all missions end with a **result lane** that contains the consolidated mission changes. The coordinator assembles worker outputs into one result lane and stops before PR creation. The user decides when and how to open a PR from the result lane.
 
-This is awareness, not automation: the coordinator uses finalization status to make informed decisions, but completion still routes through runtime validation gates.
+The previous multi-strategy finalization model (integration/per-lane/queue/manual PR strategies) has been replaced by the `result_lane` finalization policy kind. The `CreateMissionDialog` no longer exposes PR strategy selection; every mission launch sets `finalizationPolicyKind: "result_lane"`.
+
+The coordinator can check the finalization state of a mission via the `check_finalization_status` tool, which reads the mission state doc and returns the current state of contract satisfaction, execution completeness, and result lane readiness.
+
+### Terminal status regression guard
+
+When a mission reaches a terminal status (completed, failed, cancelled), the runtime prevents transitions back to non-terminal states. If a transition from a terminal status to a non-terminal status is attempted, it is logged and silently skipped rather than applied. This prevents stale coordinator events from reopening completed missions.
 
 ### Step execution resilience
 
@@ -87,8 +93,8 @@ The runtime is responsible for:
 
 Mission detail remains organized around:
 
-- **Plan**
-- **Chat**
+- **Plan** -- planner review summary (objective, strategy, complexity, assumptions, risks), DAG visualization, and phase-grouped step list
+- **Chat** -- paginated thread messages with cursor-based loading and a "load older" path for long threads
 - **Artifacts**
 - **History**
 
@@ -135,6 +141,8 @@ The create dialog prewarms:
 
 That reduces the "open dialog and wait for everything" feeling.
 
+The create dialog no longer includes a PR strategy selector. All missions launch with result-lane closeout by default.
+
 ### Conditional budget telemetry
 
 The launcher no longer fetches mission budget telemetry just because the dialog opened.
@@ -165,6 +173,24 @@ That keeps missions aware of stale project knowledge without forcing the entire 
 
 ---
 
+## Mission queue deduplication
+
+When multiple missions are queued, the runtime uses a claim-token mechanism to prevent duplicate starts from stale orchestrator events. `claimQueuedMissionStart()` acquires an exclusive token under a `BEGIN IMMEDIATE` transaction. A claim is considered stale after 2 minutes, at which point another orchestrator cycle can reclaim the mission. The `queue_claim_token` and `queue_claimed_at` columns on the missions table support this deduplication. Missions with `autostart: false` in their launch metadata are excluded from automatic queue processing.
+
+---
+
+## Mission event pagination
+
+Mission events are paginated via cursor-based loading. `getMissionEvents({ missionId, limit?, before? })` returns a `MissionEventsPage` containing the event slice, a `nextCursor` for the next page, a `hasMore` flag, and any `warnings` generated during deserialization. The default page size is 200 events. The cursor encodes `createdAt::id` for stable ordering. The mission detail view uses this to load recent events eagerly and older events on demand.
+
+---
+
+## Mission detail warnings
+
+When loading a mission detail, the service tracks and surfaces deserialization warnings (`MissionDetailWarning`) for records with invalid JSON in metadata fields. Each warning includes a `code` (`invalid_json` or `truncated_events`), the `source` entity type (mission, step, event, artifact, intervention), the affected `field`, and a human-readable `message`. Warnings are returned alongside the mission detail so the UI can surface data integrity issues without silently dropping records.
+
+---
+
 ## Context and persistence
 
 Mission persistence still includes:
@@ -174,6 +200,8 @@ Mission persistence still includes:
 - worker session lineage
 - artifacts and outcomes
 - mission-pack updates
+- mission lane ownership (lanes track `missionId` and `laneRole` for mission-scoped filtering)
+- mission lane id and result lane id (tracked on the mission record itself)
 
 Mission context remains task-centric rather than identity-centric:
 

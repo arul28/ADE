@@ -312,7 +312,7 @@ describe("aiIntegrationService", () => {
 
   it("uses planning tools for read-only orchestrator tasks and none for other read-only tasks", async () => {
     const { service } = makeService({
-      aiConfig: { features: { orchestrator: true, terminal_summaries: true } },
+      aiConfig: { features: { orchestrator: true, terminal_summaries: true, initial_context: true } },
     });
 
     await service.executeTask({
@@ -333,11 +333,22 @@ describe("aiIntegrationService", () => {
       permissionMode: "read-only",
     });
 
-    expect(mockState.executeUnified).toHaveBeenCalledTimes(2);
+    await service.executeTask({
+      feature: "initial_context",
+      taskType: "initial_context",
+      prompt: "Generate bootstrap docs",
+      cwd: "/tmp",
+      model: "anthropic/claude-sonnet-4-6",
+      permissionMode: "read-only",
+    });
+
+    expect(mockState.executeUnified).toHaveBeenCalledTimes(3);
     const orchestratorCall = mockState.executeUnified.mock.calls[0]?.[0] as Record<string, unknown>;
     const summaryCall = mockState.executeUnified.mock.calls[1]?.[0] as Record<string, unknown>;
+    const initialContextCall = mockState.executeUnified.mock.calls[2]?.[0] as Record<string, unknown>;
     expect(orchestratorCall.tools).toBe("planning");
     expect(summaryCall.tools).toBe("none");
+    expect(initialContextCall.tools).toBe("none");
   });
 
   it("forwards memory context and compaction identifiers to the unified executor when provided", async () => {

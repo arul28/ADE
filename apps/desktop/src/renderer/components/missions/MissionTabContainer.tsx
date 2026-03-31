@@ -6,6 +6,7 @@ import {
 } from "@phosphor-icons/react";
 import type {
   OrchestratorAttempt,
+  PhaseCard,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -15,7 +16,6 @@ import { useShallow } from "zustand/react/shallow";
 
 /* ── Imported tab content components ── */
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
-import { OrchestratorDAG } from "./OrchestratorDAG";
 import { CompletionBanner } from "./CompletionBanner";
 import { MissionChatV2 } from "./MissionChatV2";
 import { PlanTab } from "./PlanTab";
@@ -82,15 +82,12 @@ const selectTabContentData = (s: MissionsStore) => ({
   selectedMission: s.selectedMission,
   runGraph: s.runGraph,
   activeTab: s.activeTab,
-  planSubview: s.planSubview,
   selectedStepId: s.selectedStepId,
-  activityPanelMode: s.activityPanelMode,
   orchestratorArtifacts: s.orchestratorArtifacts,
   workerCheckpoints: s.workerCheckpoints,
   modelCapabilities: s.modelCapabilities,
   chatJumpTarget: s.chatJumpTarget,
   logsFocusInterventionId: s.logsFocusInterventionId,
-  steerBusy: s.steerBusy,
 });
 
 /** Prompt inspector state — rarely changes, grouped separately. */
@@ -112,15 +109,12 @@ export function MissionTabContent() {
     selectedMission,
     runGraph,
     activeTab,
-    planSubview,
     selectedStepId,
-    activityPanelMode,
     orchestratorArtifacts,
     workerCheckpoints,
     modelCapabilities,
     chatJumpTarget,
     logsFocusInterventionId,
-    steerBusy,
   } = useMissionsStore(useShallow(selectTabContentData));
 
   const {
@@ -169,7 +163,7 @@ export function MissionTabContent() {
   const missionPhaseBadge = useMemo(() => {
     const runMeta = isRecord(runGraph?.run?.metadata) ? runGraph.run.metadata : null;
     const runPhaseOverride = Array.isArray(runMeta?.phaseOverride)
-      ? (runMeta.phaseOverride as import("../../../shared/types").PhaseCard[])
+      ? (runMeta.phaseOverride as PhaseCard[])
       : null;
     const missionPhaseOverride = Array.isArray(selectedMission?.phaseConfiguration?.selectedPhases)
       ? selectedMission.phaseConfiguration.selectedPhases
@@ -238,27 +232,6 @@ export function MissionTabContent() {
     routeMissionIntervention(s, interventionId);
   };
 
-  const handleInterventionResponse = async (interventionId: string, directiveText: string) => {
-    const s = useMissionsStore.getState();
-    if (!s.selectedMission) return;
-    s.setSteerBusy(true);
-    try {
-      await window.ade.orchestrator.steerMission({
-        missionId: s.selectedMission.id,
-        interventionId,
-        directive: directiveText,
-        priority: "instruction",
-      });
-      s.setActiveInterventionId(null);
-      await s.refreshMissionList({ preserveSelection: true, silent: true });
-      await s.selectMission(s.selectedMission.id);
-    } catch (err) {
-      s.setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      s.setSteerBusy(false);
-    }
-  };
-
   return (
     <>
       {runGraph && (
@@ -301,10 +274,10 @@ export function MissionTabContent() {
           <div className="space-y-3">
             <div className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
               <div className="text-[10px] font-semibold uppercase tracking-[0.12em]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                Execution plan
+                Plan review
               </div>
               <div className="mt-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
-                Review the phase-by-phase work breakdown below. Selected step details stay visible here instead of living in a separate split pane.
+                Review the planner summary, milestone or feature groupings, dependency graph, and phase-by-phase work breakdown below. Selected step details stay visible here instead of living in a separate split pane.
               </div>
             </div>
             <StepDetailPanel step={selectedStep} attempts={selectedStepAttempts} allSteps={runSteps} claims={runClaims} onOpenWorkerThread={(target) => { useMissionsStore.getState().setChatJumpTarget(target); useMissionsStore.getState().setActiveTab("chat"); }} onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)} />

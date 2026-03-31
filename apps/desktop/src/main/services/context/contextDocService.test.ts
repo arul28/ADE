@@ -156,6 +156,7 @@ describe("contextDocService", () => {
 
     await service.generateDocs({
       provider: "claude",
+      modelId: "anthropic/claude-sonnet-4-6",
       events: { onSessionEnd: true },
     });
     db.setJson("context:docs:lastRun.v1", {
@@ -176,6 +177,7 @@ describe("contextDocService", () => {
 
     await service.generateDocs({
       provider: "unified",
+      modelId: "openai/gpt-5.4-codex",
       events: { onPrCreate: true },
     });
 
@@ -218,6 +220,7 @@ describe("contextDocService", () => {
 
     await service.generateDocs({
       provider: "unified",
+      modelId: "openai/gpt-5.4-codex",
       events: { onPrCreate: true },
     });
 
@@ -321,6 +324,121 @@ describe("contextDocService", () => {
     });
   });
 
+  it("rejects manual generation when no model is selected", async () => {
+    const { service } = await createFixture();
+
+    await expect(service.generateDocs({
+      provider: "unified",
+      events: { onPrCreate: true },
+    })).rejects.toThrow("Select a model before generating context docs.");
+
+    expect(runContextDocGeneration).not.toHaveBeenCalled();
+  });
+
+  it("skips auto-refresh when no model is configured", async () => {
+    const { service } = await createFixture();
+
+    await service.savePrefs({
+      provider: "unified",
+      modelId: null,
+      reasoningEffort: null,
+      events: { onPrCreate: true },
+    });
+
+    const refreshed = await service.maybeAutoRefreshDocs({
+      event: "pr_create",
+      reason: "pr_opened",
+    });
+
+    expect(refreshed).toBeNull();
+    expect(runContextDocGeneration).not.toHaveBeenCalled();
+    expect(service.getStatus().generation.state).toBe("idle");
+  });
+
+  it("clears stale finished timestamps when a new generation starts", async () => {
+    const { db, service } = await createFixture();
+    const deferred = createDeferred<Awaited<ReturnType<typeof runContextDocGeneration>>>();
+
+    await service.generateDocs({
+      provider: "unified",
+      modelId: "openai/gpt-5.4-codex",
+      events: { onPrLand: true },
+    });
+
+    vi.mocked(runContextDocGeneration).mockReturnValueOnce(deferred.promise as ReturnType<typeof runContextDocGeneration>);
+    db.setJson("context:docs:lastRun.v1", {
+      generatedAt: "2026-03-05T11:30:00.000Z",
+    });
+
+    const refreshPromise = service.maybeAutoRefreshDocs({
+      event: "pr_land",
+      reason: "prs_land:456",
+    });
+
+    const duringRun = service.getStatus().generation;
+    expect(["pending", "running"]).toContain(duringRun.state);
+    expect(duringRun.finishedAt).toBeNull();
+
+    deferred.resolve({
+      provider: "unified",
+      generatedAt: "2026-03-05T12:01:00.000Z",
+      prdPath: "/tmp/PRD.ade.md",
+      architecturePath: "/tmp/ARCHITECTURE.ade.md",
+      usedFallbackPath: false,
+      degraded: false,
+      docResults: [
+        { id: "prd_ade", health: "ready", source: "ai", sizeBytes: 512 },
+        { id: "architecture_ade", health: "ready", source: "ai", sizeBytes: 640 },
+      ],
+      warnings: [],
+      outputPreview: "generated",
+    });
+
+    await refreshPromise;
+  });
+
+  it("does not mark an active long-running generation as stale", async () => {
+    const { service } = await createFixture();
+    const deferred = createDeferred<Awaited<ReturnType<typeof runContextDocGeneration>>>();
+    vi.mocked(runContextDocGeneration).mockReturnValueOnce(deferred.promise as ReturnType<typeof runContextDocGeneration>);
+
+    const generatePromise = service.generateDocs({
+      provider: "unified",
+      modelId: "openai/gpt-5.4-codex",
+    });
+
+    vi.advanceTimersByTime(6 * 60_000);
+
+    expect(service.getStatus().generation).toMatchObject({
+      state: "running",
+      provider: "unified",
+      modelId: "openai/gpt-5.4-codex",
+    });
+
+    deferred.resolve({
+      provider: "unified",
+      generatedAt: "2026-03-05T12:06:00.000Z",
+      prdPath: "/tmp/PRD.ade.md",
+      architecturePath: "/tmp/ARCHITECTURE.ade.md",
+      usedFallbackPath: false,
+      degraded: false,
+      docResults: [
+        { id: "prd_ade", health: "ready", source: "ai", sizeBytes: 512 },
+        { id: "architecture_ade", health: "ready", source: "ai", sizeBytes: 640 },
+      ],
+      warnings: [],
+      outputPreview: "generated",
+    });
+
+    await expect(generatePromise).resolves.toMatchObject({
+      generatedAt: "2026-03-05T12:06:00.000Z",
+    });
+    expect(service.getStatus().generation).toMatchObject({
+      state: "succeeded",
+      finishedAt: "2026-03-05T12:06:00.000Z",
+    });
+  });
+
   it("emits status updates when generation state changes", async () => {
     const onStatusChanged = vi.fn();
     const { service } = await createFixture({ onStatusChanged });
@@ -373,5 +491,32 @@ describe("contextDocService", () => {
       reason: "legacy_run",
       finishedAt: "2026-03-05T09:30:00.000Z",
     });
+  });
+
+  it("repairs stale in-progress generation records", async () => {
+    const { db, service } = await createFixture();
+
+    db.setJson("context:docs:generationStatus.v1", {
+      state: "running",
+      requestedAt: "2026-03-05T11:40:00.000Z",
+      startedAt: "2026-03-05T11:40:00.000Z",
+      finishedAt: "2026-03-05T11:30:00.000Z",
+      error: null,
+      source: "auto",
+      event: "pr_create",
+      reason: "stale_run",
+      provider: "unified",
+      modelId: null,
+      reasoningEffort: null,
+    });
+
+    expect(service.getStatus().generation).toMatchObject({
+      state: "failed",
+      source: "auto",
+      event: "pr_create",
+      reason: "stale_run",
+      provider: "unified",
+    });
+    expect(service.getStatus().generation.error).toContain("did not finish");
   });
 });

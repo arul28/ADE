@@ -123,7 +123,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -136,7 +136,7 @@ jobs:
             apps/mcp-server/node_modules
             apps/web/node_modules
           key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
-      - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/5
+      - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
   test-mcp:
     needs: install

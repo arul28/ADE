@@ -155,12 +155,14 @@ describe("GitHubTab", () => {
     const user = userEvent.setup();
     const { onSelectPr } = renderTab({ selectedPrId: "pr-merged" });
 
-    await screen.findByText("Merged PR");
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-merged");
+    });
 
     await user.click(screen.getByRole("button", { name: /^open/i }));
 
     await waitFor(() => expect(onSelectPr).toHaveBeenLastCalledWith(null));
-    expect(screen.queryByText("Merged PR")).toBeNull();
+    expect(screen.queryByTestId("pr-detail-pane")).toBeNull();
   });
 
   it("opens the linked queue from a queue-tagged GitHub row", async () => {

@@ -42,6 +42,103 @@ type CommitMessageAiState = {
 type ResponsiveMode = "narrow" | "medium" | "wide";
 
 const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
+type LaneGitActionRuntimeState = {
+  version: number;
+  busyAction: string | null;
+  notice: string | null;
+  error: string | null;
+};
+
+const EMPTY_LANE_GIT_ACTION_RUNTIME_STATE: LaneGitActionRuntimeState = {
+  version: 0,
+  busyAction: null,
+  notice: null,
+  error: null,
+};
+
+const laneGitActionRuntimeByLaneId = new Map<string, LaneGitActionRuntimeState>();
+const laneGitActionRuntimeListeners = new Set<() => void>();
+
+function emitLaneGitActionRuntimeChange(): void {
+  for (const listener of laneGitActionRuntimeListeners) {
+    listener();
+  }
+}
+
+function readLaneGitActionRuntimeState(laneId: string | null): LaneGitActionRuntimeState {
+  if (!laneId) return EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
+  return laneGitActionRuntimeByLaneId.get(laneId) ?? EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
+}
+
+function writeLaneGitActionRuntimeState(
+  laneId: string | null,
+  next: LaneGitActionRuntimeState,
+): LaneGitActionRuntimeState {
+  if (!laneId) return EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
+  if (!next.busyAction && !next.notice && !next.error) {
+    laneGitActionRuntimeByLaneId.delete(laneId);
+  } else {
+    laneGitActionRuntimeByLaneId.set(laneId, next);
+  }
+  emitLaneGitActionRuntimeChange();
+  return next;
+}
+
+function patchLaneGitActionRuntimeState(
+  laneId: string | null,
+  patch: Partial<LaneGitActionRuntimeState>,
+): LaneGitActionRuntimeState {
+  const prev = readLaneGitActionRuntimeState(laneId);
+  return writeLaneGitActionRuntimeState(laneId, { ...prev, ...patch });
+}
+
+function beginLaneGitActionRuntime(
+  laneId: string | null,
+  patch: Pick<LaneGitActionRuntimeState, "busyAction" | "notice" | "error">,
+): number {
+  const nextVersion = readLaneGitActionRuntimeState(laneId).version + 1;
+  writeLaneGitActionRuntimeState(laneId, { ...patch, version: nextVersion });
+  return nextVersion;
+}
+
+function patchLaneGitActionRuntimeStateIfCurrent(
+  laneId: string | null,
+  version: number,
+  patch: Partial<LaneGitActionRuntimeState>,
+): LaneGitActionRuntimeState {
+  const current = readLaneGitActionRuntimeState(laneId);
+  if (current.version !== version) return current;
+  return writeLaneGitActionRuntimeState(laneId, { ...current, ...patch, version });
+}
+
+function scheduleLaneGitActionRuntimeClear(
+  laneId: string | null,
+  version: number,
+  delayMs: number,
+  patch: Partial<LaneGitActionRuntimeState>,
+): void {
+  window.setTimeout(() => {
+    patchLaneGitActionRuntimeStateIfCurrent(laneId, version, patch);
+  }, delayMs);
+}
+
+function useLaneGitActionRuntimeState(laneId: string | null): LaneGitActionRuntimeState {
+  return React.useSyncExternalStore(
+    (listener) => {
+      laneGitActionRuntimeListeners.add(listener);
+      return () => {
+        laneGitActionRuntimeListeners.delete(listener);
+      };
+    },
+    () => readLaneGitActionRuntimeState(laneId),
+    () => EMPTY_LANE_GIT_ACTION_RUNTIME_STATE,
+  );
+}
+
+export function __resetLaneGitActionRuntimeForTests(): void {
+  laneGitActionRuntimeByLaneId.clear();
+  emitLaneGitActionRuntimeChange();
+}
 
 function formatRelativeTime(ts: string | null): string {
   if (!ts) return "unknown time";
@@ -339,6 +436,7 @@ export function LaneGitActionsPane({
   }, [lane, parentLane]);
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const currentLaneIdRef = useRef<string | null>(laneId);
   const [paneWidth, setPaneWidth] = useState(1024);
 
   const [loading, setLoading] = useState(false);
@@ -349,9 +447,6 @@ export function LaneGitActionsPane({
   const [stashes, setStashes] = useState<GitStashSummary[]>([]);
   const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(null);
   const [forcePushSuggested, setForcePushSuggested] = useState(false);
-  const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [textPrompt, setTextPrompt] = useState<LaneTextPromptState | null>(null);
   const [textPromptError, setTextPromptError] = useState<string | null>(null);
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
@@ -360,6 +455,10 @@ export function LaneGitActionsPane({
   const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(null);
   const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(null);
+  const laneGitActionRuntime = useLaneGitActionRuntimeState(laneId);
+  const busyAction = laneGitActionRuntime.busyAction;
+  const notice = laneGitActionRuntime.notice;
+  const error = laneGitActionRuntime.error;
 
   const stagedCount = changes.staged.length;
   const hasStaged = stagedCount > 0;
@@ -368,6 +467,9 @@ export function LaneGitActionsPane({
   const maxVisibleStashes = responsiveMode === "wide" ? 2 : 3;
   const actionGridColumns =
     responsiveMode === "wide" ? "repeat(3, minmax(0, 1fr))" : responsiveMode === "medium" ? "repeat(2, minmax(0, 1fr))" : "1fr";
+  currentLaneIdRef.current = laneId;
+
+  const isViewingLane = useCallback((targetLaneId: string | null) => currentLaneIdRef.current === targetLaneId, []);
 
   useEffect(() => {
     if (typeof ResizeObserver === "undefined") {
@@ -433,24 +535,30 @@ export function LaneGitActionsPane({
     });
   }, []);
 
-  const refreshChanges = async () => {
-    if (!laneId) return;
-    setLoading(true);
+  const refreshChanges = async (targetLaneId: string | null = laneId) => {
+    if (!targetLaneId) return;
+    if (isViewingLane(targetLaneId)) setLoading(true);
     try {
-      const next = await window.ade.diff.getChanges({ laneId });
-      setChanges(next);
+      const next = await window.ade.diff.getChanges({ laneId: targetLaneId });
+      if (isViewingLane(targetLaneId)) {
+        setChanges(next);
+      }
     } finally {
-      setLoading(false);
+      if (isViewingLane(targetLaneId)) {
+        setLoading(false);
+      }
     }
   };
 
-  const refreshGitMeta = async () => {
-    if (!laneId) return;
+  const refreshGitMeta = async (targetLaneId: string | null = laneId) => {
+    if (!targetLaneId) return;
     const [stashesResult, syncStatusResult, conflictResult] = await Promise.allSettled([
-      window.ade.git.stashList({ laneId }),
-      window.ade.git.getSyncStatus({ laneId }),
-      window.ade.git.getConflictState(laneId)
+      window.ade.git.stashList({ laneId: targetLaneId }),
+      window.ade.git.getSyncStatus({ laneId: targetLaneId }),
+      window.ade.git.getConflictState(targetLaneId)
     ]);
+
+    if (!isViewingLane(targetLaneId)) return;
 
     if (stashesResult.status === "fulfilled") setStashes(stashesResult.value);
     if (syncStatusResult.status === "fulfilled") {
@@ -468,30 +576,38 @@ export function LaneGitActionsPane({
     }
   };
 
-  const refreshAll = async (options?: { fetchRemote?: boolean }) => {
-    if (laneId && options?.fetchRemote) {
+  const refreshAll = async (options?: { fetchRemote?: boolean }, targetLaneId: string | null = laneId) => {
+    if (targetLaneId && options?.fetchRemote) {
       try {
-        await window.ade.git.fetch({ laneId });
+        await window.ade.git.fetch({ laneId: targetLaneId });
       } catch {
         // best effort
       }
     }
-    await Promise.all([refreshChanges(), refreshLanes(), refreshGitMeta()]);
-    setCommitTimelineKey((prev) => prev + 1);
+    await Promise.all([refreshChanges(targetLaneId), refreshLanes(), refreshGitMeta(targetLaneId)]);
+    if (isViewingLane(targetLaneId)) {
+      setCommitTimelineKey((prev) => prev + 1);
+    }
   };
 
-  const refreshAutoRebaseStatus = useCallback(async () => {
-    if (!laneId) {
-      setAutoRebaseStatus(null);
+  const refreshAutoRebaseStatus = useCallback(async (targetLaneId: string | null = laneId) => {
+    if (!targetLaneId) {
+      if (isViewingLane(targetLaneId)) {
+        setAutoRebaseStatus(null);
+      }
       return;
     }
     try {
       const statuses = await window.ade.lanes.listAutoRebaseStatuses();
-      setAutoRebaseStatus(statuses.find((entry) => entry.laneId === laneId) ?? null);
+      if (isViewingLane(targetLaneId)) {
+        setAutoRebaseStatus(statuses.find((entry) => entry.laneId === targetLaneId) ?? null);
+      }
     } catch {
-      setAutoRebaseStatus(null);
+      if (isViewingLane(targetLaneId)) {
+        setAutoRebaseStatus(null);
+      }
     }
-  }, [laneId]);
+  }, [isViewingLane, laneId]);
 
   const refreshCommitMessageAiState = useCallback(async () => {
     try {
@@ -529,9 +645,13 @@ export function LaneGitActionsPane({
   }, [isNonFastForwardError]);
 
   const runAction = async (actionName: string, fn: () => Promise<void>) => {
-    setBusyAction(actionName);
-    setNotice(null);
-    setError(null);
+    const actionLaneId = laneId;
+    if (!actionLaneId) return;
+    const actionVersion = beginLaneGitActionRuntime(actionLaneId, {
+      busyAction: actionName,
+      notice: null,
+      error: null,
+    });
     try {
       await fn();
       const isRemoteAction =
@@ -541,30 +661,47 @@ export function LaneGitActionsPane({
         actionName === "force push" ||
         actionName === "rebase" ||
         actionName === "rebase and push";
-      await refreshAll({ fetchRemote: isRemoteAction });
-      if (isRemoteAction) {
+      await refreshAll({ fetchRemote: isRemoteAction }, actionLaneId);
+      if (isRemoteAction && isViewingLane(actionLaneId)) {
         setForcePushSuggested(false);
       }
-      setNotice(`${actionName} completed`);
-      setTimeout(() => setNotice(null), 3000);
+      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+        busyAction: null,
+        notice: `${actionName} completed`,
+        error: null,
+      });
+      scheduleLaneGitActionRuntimeClear(actionLaneId, actionVersion, 3_000, {
+        notice: null,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message === "__ade_cancelled__") return;
-      if (actionName === "push" && isNonFastForwardError(message)) {
+      if (message === "__ade_cancelled__") {
+        patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+          busyAction: null,
+          notice: null,
+          error: null,
+        });
+        return;
+      }
+      if (actionName === "push" && isNonFastForwardError(message) && isViewingLane(actionLaneId)) {
         setForcePushSuggested(true);
       }
-      setError(formatActionError(actionName, message));
-    } finally {
-      setBusyAction(null);
+      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+        busyAction: null,
+        notice: null,
+        error: formatActionError(actionName, message),
+      });
     }
   };
 
-  const completeCommitRefresh = useCallback(async () => {
-    await Promise.all([refreshChanges(), refreshLanes(), refreshGitMeta()]);
-    setCommitTimelineKey((prev) => prev + 1);
-    setCommitMessage("");
-    setAmendCommit(false);
-  }, [refreshChanges, refreshGitMeta, refreshLanes]);
+  const completeCommitRefresh = useCallback(async (targetLaneId: string) => {
+    await Promise.all([refreshChanges(targetLaneId), refreshLanes(), refreshGitMeta(targetLaneId)]);
+    if (isViewingLane(targetLaneId)) {
+      setCommitTimelineKey((prev) => prev + 1);
+      setCommitMessage("");
+      setAmendCommit(false);
+    }
+  }, [isViewingLane, refreshChanges, refreshGitMeta, refreshLanes]);
 
   const submitCommit = useCallback(async () => {
     if (!laneId || (!hasStaged && !amendCommit) || busyAction != null) return;
@@ -573,27 +710,39 @@ export function LaneGitActionsPane({
     if (message.length > 0) {
       void runAction(amendCommit ? "amend commit" : "commit", async () => {
         await window.ade.git.commit({ laneId, message, amend: amendCommit });
-        await completeCommitRefresh();
+        await completeCommitRefresh(laneId);
       });
       return;
     }
 
-    setBusyAction(AUTO_GENERATE_COMMIT_ACTION);
-    setNotice("Generating commit message...");
-    setError(null);
+    const actionLaneId = laneId;
+    const actionVersion = beginLaneGitActionRuntime(actionLaneId, {
+      busyAction: AUTO_GENERATE_COMMIT_ACTION,
+      notice: "Generating commit message...",
+      error: null,
+    });
     try {
-      const generated = await window.ade.git.generateCommitMessage({ laneId, amend: amendCommit });
-      setCommitMessage(generated.message);
-      await window.ade.git.commit({ laneId, message: generated.message, amend: amendCommit });
-      await completeCommitRefresh();
-      setNotice("commit completed");
-      window.setTimeout(() => setNotice(null), 3000);
+      const generated = await window.ade.git.generateCommitMessage({ laneId: actionLaneId, amend: amendCommit });
+      if (isViewingLane(actionLaneId)) {
+        setCommitMessage(generated.message);
+      }
+      await window.ade.git.commit({ laneId: actionLaneId, message: generated.message, amend: amendCommit });
+      await completeCommitRefresh(actionLaneId);
+      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+        busyAction: null,
+        notice: "commit completed",
+        error: null,
+      });
+      scheduleLaneGitActionRuntimeClear(actionLaneId, actionVersion, 3_000, {
+        notice: null,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setNotice(null);
-      setError(message);
-    } finally {
-      setBusyAction(null);
+      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+        busyAction: null,
+        notice: null,
+        error: message,
+      });
     }
   }, [
     amendCommit,
@@ -605,31 +754,44 @@ export function LaneGitActionsPane({
   ]);
 
   useEffect(() => {
+    setLoading(false);
     setChanges({ staged: [], unstaged: [] });
     setStashes([]);
     setSyncStatus(null);
     setForcePushSuggested(false);
-    setNotice(null);
-    setError(null);
     setAmendCommit(false);
     setCommitMessageAi({ enabled: false, modelId: null });
     setAutoRebaseStatus(null);
     setConflictState(null);
     setStuckRebase(null);
     if (!laneId) return;
-    refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
-    void refreshAutoRebaseStatus();
+    refreshAll(undefined, laneId).catch((err) => {
+      patchLaneGitActionRuntimeState(laneId, {
+        notice: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    void refreshAutoRebaseStatus(laneId);
     void refreshCommitMessageAiState();
   }, [laneId, lane?.branchRef, refreshAutoRebaseStatus, refreshCommitMessageAiState]);
 
   useEffect(() => {
     if (!laneId) return;
     let refreshTimer: number | null = null;
+    const effectLaneId = laneId;
     const refreshSyncStatus = () => {
       void window.ade.git
-        .getSyncStatus({ laneId })
-        .then((nextStatus) => setSyncStatus(nextStatus))
-        .catch(() => setSyncStatus(null));
+        .getSyncStatus({ laneId: effectLaneId })
+        .then((nextStatus) => {
+          if (isViewingLane(effectLaneId)) {
+            setSyncStatus(nextStatus);
+          }
+        })
+        .catch(() => {
+          if (isViewingLane(effectLaneId)) {
+            setSyncStatus(null);
+          }
+        });
     };
     const scheduleRefreshSyncStatus = (delayMs = 0) => {
       if (refreshTimer != null) return;
@@ -656,7 +818,7 @@ export function LaneGitActionsPane({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [laneId]);
+  }, [isViewingLane, laneId]);
 
   useEffect(() => {
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
@@ -738,16 +900,25 @@ export function LaneGitActionsPane({
   const moveUnstagedToNewLane = useCallback(async () => {
     if (!laneId || busyAction != null) return;
     if (hasStaged) {
-      setError("This lane has staged changes. Unstage all changes before moving unstaged work to a new lane.");
+      patchLaneGitActionRuntimeState(laneId, {
+        notice: null,
+        error: "This lane has staged changes. Unstage all changes before moving unstaged work to a new lane.",
+      });
       return;
     }
     if (!hasUnstaged) {
-      setError("This lane has no unstaged changes to move.");
+      patchLaneGitActionRuntimeState(laneId, {
+        notice: null,
+        error: "This lane has no unstaged changes to move.",
+      });
       return;
     }
     if (conflictState?.inProgress) {
       const kindLabel = conflictState.kind === "merge" ? "merge" : "rebase";
-      setError(`Finish the current ${kindLabel} before moving changes to a new lane.`);
+      patchLaneGitActionRuntimeState(laneId, {
+        notice: null,
+        error: `Finish the current ${kindLabel} before moving changes to a new lane.`,
+      });
       return;
     }
 
@@ -760,18 +931,28 @@ export function LaneGitActionsPane({
     });
     if (name == null) return;
 
-    setBusyAction("move unstaged");
-    setNotice(null);
-    setError(null);
+    const actionLaneId = laneId;
+    const actionVersion = beginLaneGitActionRuntime(actionLaneId, {
+      busyAction: "move unstaged",
+      notice: null,
+      error: null,
+    });
     try {
-      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: laneId, name });
+      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name });
+      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+        busyAction: null,
+        notice: null,
+        error: null,
+      });
       await refreshLanes();
       selectLane(created.id);
       navigate(`/lanes?laneId=${encodeURIComponent(created.id)}&focus=single`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyAction(null);
+      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+        busyAction: null,
+        notice: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }, [busyAction, conflictState, hasStaged, hasUnstaged, laneId, navigate, refreshLanes, requestTextInput, selectLane]);
 

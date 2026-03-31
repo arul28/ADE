@@ -828,6 +828,31 @@ function clearRunPhaseConfig(
   db.run(`update orchestrator_runs set metadata_json = ? where id = ?`, [JSON.stringify(metadata), runId]);
 }
 
+function readRunMissionLaneId(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  runId: string,
+): string | null {
+  const row = db.get<{ metadata_json: string | null }>(
+    `select metadata_json from orchestrator_runs where id = ? limit 1`,
+    [runId]
+  );
+  const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+  const direct = typeof metadata?.missionLaneId === "string" ? metadata.missionLaneId.trim() : "";
+  if (direct.length > 0) return direct;
+  const coordinatorLaneId =
+    metadata?.coordinator && typeof metadata.coordinator === "object" && !Array.isArray(metadata.coordinator)
+      && typeof metadata.coordinator.missionLaneId === "string"
+      ? metadata.coordinator.missionLaneId.trim()
+      : "";
+  if (coordinatorLaneId.length > 0) return coordinatorLaneId;
+  const teamRuntimeLaneId =
+    metadata?.teamRuntime && typeof metadata.teamRuntime === "object" && !Array.isArray(metadata.teamRuntime)
+      && typeof metadata.teamRuntime.missionLaneId === "string"
+      ? metadata.teamRuntime.missionLaneId.trim()
+      : "";
+  return teamRuntimeLaneId.length > 0 ? teamRuntimeLaneId : null;
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
@@ -868,6 +893,7 @@ function markRunStepValidationPassed(
 async function createFixture(args: {
   aiIntegrationService?: any;
   laneService?: any;
+  prService?: any;
   agentChatService?: any;
   missionMemoryLifecycleService?: any;
   orchestratorConfig?: Record<string, unknown>;
@@ -937,10 +963,60 @@ async function createFixture(args: {
   const missionService = createMissionService({ db, projectId });
   let defaultLaneCounter = 0;
   const defaultLaneService = {
-    list: vi.fn(async () => [
-      { id: laneId, laneType: "primary" }
-    ]),
-    createChild: vi.fn(async ({ name }: { name: string }) => {
+    list: vi.fn(async ({ includeArchived }: { includeArchived?: boolean } = {}) => db.all<{
+      id: string;
+      project_id: string;
+      name: string;
+      lane_type: string | null;
+      base_ref: string | null;
+      branch_ref: string | null;
+      worktree_path: string | null;
+      attached_root_path: string | null;
+      status: string | null;
+      archived_at: string | null;
+      mission_id: string | null;
+      lane_role: string | null;
+    }>(
+      `
+        select
+          id,
+          project_id,
+          name,
+          lane_type,
+          base_ref,
+          branch_ref,
+          worktree_path,
+          attached_root_path,
+          status,
+          archived_at,
+          mission_id,
+          lane_role
+        from lanes
+        where project_id = ?
+          and (? = 1 or archived_at is null)
+        order by created_at asc, id asc
+      `,
+      [projectId, includeArchived ? 1 : 0]
+    ).map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      laneType: row.lane_type === "primary" ? "primary" : "worktree",
+      baseRef: row.base_ref,
+      branchRef: row.branch_ref,
+      worktreePath: row.worktree_path,
+      attachedRootPath: row.attached_root_path,
+      status: row.archived_at ? "archived" : row.status === "archived" ? "archived" : "active",
+      missionId: row.mission_id,
+      laneRole: row.lane_role,
+      archivedAt: row.archived_at,
+    }))),
+    createChild: vi.fn(async ({ name, description, missionId, laneRole }: {
+      name: string;
+      description?: string | null;
+      missionId?: string | null;
+      laneRole?: string | null;
+    }) => {
       defaultLaneCounter += 1;
       const childId = `mission-lane-${defaultLaneCounter}`;
       const childNow = new Date().toISOString();
@@ -948,13 +1024,13 @@ async function createFixture(args: {
         `insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref,
           worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
-          color, icon, tags_json, status, created_at, archived_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          color, icon, tags_json, folder, mission_id, lane_role, status, created_at, archived_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           childId,
           projectId,
           name,
-          null,
+          description ?? null,
           "worktree",
           "main",
           `feature/${childId}`,
@@ -965,16 +1041,113 @@ async function createFixture(args: {
           null,
           null,
           null,
+          null,
+          missionId ?? null,
+          laneRole ?? null,
           "active",
           childNow,
           null,
         ]
       );
-      return { id: childId, name };
+      return {
+        id: childId,
+        name,
+        laneType: "worktree",
+        branchRef: `feature/${childId}`,
+        worktreePath: projectRoot,
+        missionId: missionId ?? null,
+        laneRole: laneRole ?? null,
+      };
     }),
-    archive: vi.fn(async () => undefined),
+    archive: vi.fn(async ({ laneId: targetLaneId }: { laneId: string }) => {
+      db.run(
+        `update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?`,
+        [new Date().toISOString(), targetLaneId, projectId]
+      );
+    }),
+    setMissionOwnership: vi.fn(async ({
+      laneId: targetLaneId,
+      missionId,
+      laneRole,
+    }: {
+      laneId: string;
+      missionId: string | null;
+      laneRole?: string | null;
+    }) => {
+      db.run(
+        `update lanes set mission_id = ?, lane_role = ? where id = ? and project_id = ?`,
+        [missionId, laneRole ?? null, targetLaneId, projectId]
+      );
+    }),
+    getLaneWorktreePath: vi.fn((targetLaneId: string) => {
+      const row = db.get<{ worktree_path: string | null }>(
+        `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+        [targetLaneId, projectId]
+      );
+      return row?.worktree_path ?? projectRoot;
+    }),
   };
   const laneService = args.laneService ?? defaultLaneService;
+  let defaultIntegrationLaneCounter = 0;
+  const defaultPrService = {
+    createIntegrationLane: vi.fn(async ({
+      sourceLaneIds,
+      integrationLaneName,
+      missionId,
+      laneRole,
+    }: {
+      sourceLaneIds: string[];
+      integrationLaneName: string;
+      missionId?: string | null;
+      laneRole?: string | null;
+    }) => {
+      defaultIntegrationLaneCounter += 1;
+      const integrationLaneId = `result-lane-${defaultIntegrationLaneCounter}`;
+      const createdAt = new Date().toISOString();
+      db.run(
+        `insert into lanes(
+          id, project_id, name, description, lane_type, base_ref, branch_ref,
+          worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
+          color, icon, tags_json, folder, mission_id, lane_role, status, created_at, archived_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          integrationLaneId,
+          projectId,
+          integrationLaneName,
+          null,
+          "worktree",
+          "main",
+          `integration/${integrationLaneId}`,
+          projectRoot,
+          null,
+          0,
+          laneId,
+          null,
+          null,
+          null,
+          null,
+          missionId ?? null,
+          laneRole ?? "result",
+          "active",
+          createdAt,
+          null,
+        ]
+      );
+      return {
+        integrationLane: {
+          id: integrationLaneId,
+          name: integrationLaneName,
+          laneType: "worktree",
+          branchRef: `integration/${integrationLaneId}`,
+          worktreePath: projectRoot,
+          missionId: missionId ?? null,
+          laneRole: laneRole ?? "result",
+        },
+        mergeResults: sourceLaneIds.map((sourceLaneId) => ({ laneId: sourceLaneId, success: true })),
+      };
+    }),
+  };
+  const prService = args.prService ?? defaultPrService;
   const aiIntegrationService = "aiIntegrationService" in args ? args.aiIntegrationService : createMockAiIntegrationService();
   const projectConfigService = {
     get: () => ({
@@ -1086,6 +1259,7 @@ async function createFixture(args: {
     laneService,
     projectConfigService,
     aiIntegrationService,
+    prService,
     missionMemoryLifecycleService: args.missionMemoryLifecycleService ?? null,
     projectRoot,
     hookCommandRunner: args.hookCommandRunner
@@ -1099,6 +1273,7 @@ async function createFixture(args: {
     missionService,
     orchestratorService,
     laneService,
+    prService,
     projectConfigService,
     aiIntegrationService,
     aiOrchestratorService,
@@ -4730,17 +4905,7 @@ describe("aiOrchestratorService", () => {
   });
 
   it("allocates distinct mission lanes when starting multiple runs for the same mission", async () => {
-    let laneCounter = 0;
-    const laneService = {
-      list: vi.fn(async () => [
-        { id: "lane-1", laneType: "primary" }
-      ]),
-      createChild: vi.fn(async () => {
-        laneCounter += 1;
-        return { id: `mission-lane-${laneCounter}`, name: `Mission Lane ${laneCounter}` };
-      }),
-    };
-    const fixture = await createFixture({ laneService });
+    const fixture = await createFixture();
     try {
       const mission = fixture.missionService.create({
         prompt: "Run mission with restart-safe lane reuse.",
@@ -4755,12 +4920,7 @@ describe("aiOrchestratorService", () => {
       expect(firstStart.started).toBeTruthy();
       const firstRunId = firstStart.started!.run.id;
 
-      const metadataRow = fixture.db.get<{ metadata_json: string | null }>(
-        `select metadata_json from orchestrator_runs where id = ? limit 1`,
-        [firstRunId]
-      );
-      const metadata = metadataRow?.metadata_json ? JSON.parse(metadataRow.metadata_json) : {};
-      expect(metadata.missionLaneId).toBe("mission-lane-1");
+      expect(readRunMissionLaneId(fixture.db, firstRunId)).toBe("mission-lane-1");
 
       const secondStart = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
@@ -4771,17 +4931,12 @@ describe("aiOrchestratorService", () => {
       const secondRunId = secondStart.started?.run.id;
       expect(secondRunId).toBeTruthy();
       expect(secondRunId).not.toBe(firstRunId);
-      expect(laneService.createChild).toHaveBeenCalledTimes(2);
+      expect(fixture.laneService.createChild).toHaveBeenCalledTimes(2);
       if (!secondRunId) {
         throw new Error("Expected second run id");
       }
 
-      const secondMetadataRow = fixture.db.get<{ metadata_json: string | null }>(
-        `select metadata_json from orchestrator_runs where id = ? limit 1`,
-        [secondRunId]
-      );
-      const secondMetadata = secondMetadataRow?.metadata_json ? JSON.parse(secondMetadataRow.metadata_json) : {};
-      expect(secondMetadata.missionLaneId).toBe("mission-lane-2");
+      expect(readRunMissionLaneId(fixture.db, secondRunId)).toBe("mission-lane-2");
     } finally {
       fixture.dispose();
     }
@@ -6586,38 +6741,58 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("completes multi-lane run and calls createIntegrationPr via prService", async () => {
-    const prServiceMock = {
-      createIntegrationPr: vi.fn().mockResolvedValue({
-        groupId: "group-1",
-        integrationLaneId: "int-lane-1",
-        pr: {
-          id: "pr-1",
-          laneId: "int-lane-1",
-          projectId: "proj-1",
-          repoOwner: "test",
-          repoName: "repo",
-          githubPrNumber: 42,
-          githubUrl: "https://github.com/test/repo/pull/42",
-          githubNodeId: null,
-          title: "[ADE] Integration: Test Mission",
-          state: "draft",
-          baseBranch: "main",
-          headBranch: "integration/test",
-          checksStatus: "none",
-          reviewStatus: "none",
-          additions: 0,
-          deletions: 0,
-          lastSyncedAt: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        },
-        mergeResults: []
-      })
-    } as any;
-
+  it("completes multi-lane run and assembles a result lane via prService", async () => {
     const fixture = await createFixture();
     try {
+      const prServiceMock = {
+        createIntegrationLane: vi.fn().mockImplementation(async () => {
+          const laneNow = new Date().toISOString();
+          fixture.db.run(
+            `insert or ignore into lanes(
+              id, project_id, name, description, lane_type, base_ref, branch_ref,
+              worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
+              color, icon, tags_json, folder, mission_id, lane_role, status, created_at, archived_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              "result-lane-1",
+              fixture.projectId,
+              "mission/build-feature-with-two-workers-result",
+              "Synthetic result lane for aiOrchestratorService.test.ts",
+              "worktree",
+              "main",
+              "integration/result-lane-1",
+              fixture.projectRoot,
+              null,
+              0,
+              fixture.laneId,
+              null,
+              null,
+              null,
+              null,
+              mission.id,
+              "result",
+              "active",
+              laneNow,
+              null,
+            ],
+          );
+          return {
+            integrationLane: {
+              id: "result-lane-1",
+              name: "mission/build-feature-with-two-workers-result",
+              laneType: "worktree",
+              branchRef: "integration/result-lane-1",
+              worktreePath: fixture.projectRoot,
+              missionId: mission.id,
+              laneRole: "result",
+            },
+            mergeResults: [
+              { laneId: "lane-a", success: true },
+              { laneId: "lane-b", success: true },
+            ],
+          };
+        }),
+      } as any;
       const defaultProfile = fixture.missionService.listPhaseProfiles().find((profile) => profile.isDefault);
       if (!defaultProfile) throw new Error("Expected default phase profile");
       // Create a mission with steps on different lanes
@@ -6636,7 +6811,7 @@ describe("aiOrchestratorService", () => {
         ]
       });
 
-      // Set integration PR policy on mission metadata
+      // Preserve a legacy metadata payload to verify closeout ignores it.
       const existingMeta = JSON.parse(
         fixture.db.get<{ metadata_json: string | null }>(
           `select metadata_json from missions where id = ? limit 1`,
@@ -6769,11 +6944,12 @@ describe("aiOrchestratorService", () => {
       const missionAfterSync = fixture.missionService.get(mission.id);
       expect(missionAfterSync?.status).toBe("completed");
 
-      // The prService.createIntegrationPr should have been called
-      expect(prServiceMock.createIntegrationPr).toHaveBeenCalled();
-      const prArgs = prServiceMock.createIntegrationPr.mock.calls[0]![0];
-      expect(prArgs.title).toContain("[ADE] Integration:");
-      expect(prArgs.draft).toBe(true);
+      expect(prServiceMock.createIntegrationLane).toHaveBeenCalledWith(expect.objectContaining({
+        sourceLaneIds: expect.arrayContaining(["lane-a", "lane-b"]),
+        missionId: mission.id,
+        laneRole: "result",
+      }));
+      expect(missionAfterSync?.resultLaneId).toBe("result-lane-1");
 
       aiOrchestratorWithPr.dispose();
     } finally {
@@ -6781,9 +6957,9 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("handles PR creation failure gracefully without crashing mission sync", async () => {
+  it("fails mission closeout when result-lane assembly throws", async () => {
     const prServiceMock = {
-      createIntegrationPr: vi.fn().mockRejectedValue(new Error("GitHub API rate limit exceeded"))
+      createIntegrationLane: vi.fn().mockRejectedValue(new Error("GitHub API rate limit exceeded"))
     } as any;
 
     const fixture = await createFixture();
@@ -6797,7 +6973,7 @@ describe("aiOrchestratorService", () => {
         ]
       });
 
-      // Set integration PR policy on mission metadata
+      // Preserve a legacy metadata payload to verify closeout ignores it.
       const existingMeta2 = JSON.parse(
         fixture.db.get<{ metadata_json: string | null }>(
           `select metadata_json from missions where id = ? limit 1`,
@@ -6895,7 +7071,7 @@ describe("aiOrchestratorService", () => {
 
       await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
 
-      // PR finalization failure should block successful mission completion
+      // Result-lane assembly failure should block mission completion.
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("failed");
 
@@ -6905,65 +7081,28 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("honors integration closing strategy for single-lane runs", async () => {
+  it("reuses the sole run lane as the result lane for single-lane runs", async () => {
     const prServiceMock = {
-      createIntegrationPr: vi.fn().mockResolvedValue({
-        groupId: "group-single",
-        integrationLaneId: "int-lane-single",
-        pr: {
-          id: "pr-single",
-          laneId: "int-lane-single",
-          projectId: "proj-1",
-          repoOwner: "test",
-          repoName: "repo",
-          githubPrNumber: 7,
-          githubUrl: "https://github.com/test/repo/pull/7",
-          githubNodeId: null,
-          title: "[ADE] Integration: Single lane mission",
-          state: "draft",
-          baseBranch: "main",
-          headBranch: "integration/single",
-          checksStatus: "none",
-          reviewStatus: "none",
-          additions: 0,
-          deletions: 0,
-          lastSyncedAt: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        },
-        mergeResults: []
-      })
+      createIntegrationLane: vi.fn(),
     } as any;
 
     const fixture = await createFixture();
     try {
+      const defaultProfile = fixture.missionService.listPhaseProfiles().find((profile) => profile.isDefault);
+      if (!defaultProfile) throw new Error("Expected default phase profile");
       const mission = fixture.missionService.create({
         prompt: "Single lane integration PR mission.",
         laneId: fixture.laneId,
+        phaseProfileId: defaultProfile.id,
+        phaseOverride: defaultProfile.phases.map((phase, index) => ({
+          ...phase,
+          position: index,
+          validationGate: { ...phase.validationGate, tier: "none", required: false, criteria: undefined, evidenceRequirements: undefined },
+        })),
         plannedSteps: [
           { index: 0, title: "Worker task", detail: "Task", kind: "implementation", metadata: { stepType: "implementation" } }
         ]
       });
-
-      const existingMeta = JSON.parse(
-        fixture.db.get<{ metadata_json: string | null }>(
-          `select metadata_json from missions where id = ? limit 1`,
-          [mission.id]
-        )?.metadata_json ?? "{}"
-      );
-      existingMeta.executionPolicy = {
-        ...existingMeta.executionPolicy,
-        prStrategy: { kind: "integration", targetBranch: "main", draft: true },
-        integrationPr: { enabled: true, draft: true, autoResolveConflicts: false }
-      };
-      existingMeta.missionLevelSettings = {
-        ...(existingMeta.missionLevelSettings ?? {}),
-        prStrategy: { kind: "integration", targetBranch: "main", draft: true },
-      };
-      fixture.db.run(
-        `update missions set metadata_json = ? where id = ?`,
-        [JSON.stringify(existingMeta), mission.id]
-      );
 
       const aiOrchestratorWithPr = createAiOrchestratorService({
         db: fixture.db,
@@ -6994,6 +7133,7 @@ describe("aiOrchestratorService", () => {
         `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
         [new Date().toISOString(), started.run.id],
       );
+      fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
       const runId = started.run.id;
 
       fixture.orchestratorService.tick({ runId });
@@ -7026,38 +7166,40 @@ describe("aiOrchestratorService", () => {
       expect(finalizeResult.finalized).toBe(true);
       await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
 
-      expect(prServiceMock.createIntegrationPr).toHaveBeenCalled();
-      const prArgs = prServiceMock.createIntegrationPr.mock.calls[0]![0];
-      expect(Array.isArray(prArgs.sourceLaneIds)).toBe(true);
-      expect(prArgs.sourceLaneIds).toContain(fixture.laneId);
+      const missionAfterSync = fixture.missionService.get(mission.id);
+      expect(missionAfterSync?.status).toBe("completed");
+      expect(missionAfterSync?.resultLaneId).toBe(fixture.laneId);
+      expect(prServiceMock.createIntegrationLane).not.toHaveBeenCalled();
       aiOrchestratorWithPr.dispose();
     } finally {
       fixture.dispose();
     }
   });
 
-  it("does not create integration PR for single-lane run", async () => {
+  it("does not assemble an integration lane for a single-lane run", async () => {
     const prServiceMock = {
-      createIntegrationPr: vi.fn().mockResolvedValue({
-        groupId: "group-1",
-        integrationLaneId: "int-lane-1",
-        pr: { githubPrNumber: 42, githubUrl: "https://github.com/test/repo/pull/42" },
-        mergeResults: []
-      })
+      createIntegrationLane: vi.fn()
     } as any;
 
     const fixture = await createFixture();
     try {
+      const defaultProfile = fixture.missionService.listPhaseProfiles().find((profile) => profile.isDefault);
+      if (!defaultProfile) throw new Error("Expected default phase profile");
       const mission = fixture.missionService.create({
         prompt: "Build feature.",
         laneId: fixture.laneId,
+        phaseProfileId: defaultProfile.id,
+        phaseOverride: defaultProfile.phases.map((phase, index) => ({
+          ...phase,
+          position: index,
+          validationGate: { ...phase.validationGate, tier: "none", required: false, criteria: undefined, evidenceRequirements: undefined },
+        })),
         plannedSteps: [
           { index: 0, title: "Step 1", detail: "A", kind: "implementation", metadata: { stepType: "implementation" } },
           { index: 1, title: "Step 2", detail: "B", kind: "test", metadata: { stepType: "test" } }
         ]
       });
 
-      // Set integration PR policy on mission metadata
       const existingMeta3 = JSON.parse(
         fixture.db.get<{ metadata_json: string | null }>(
           `select metadata_json from missions where id = ? limit 1`,
@@ -7096,6 +7238,7 @@ describe("aiOrchestratorService", () => {
         `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
         [new Date().toISOString(), started.run.id],
       );
+      fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
       const runId = started.run.id;
 
       // Complete all steps sequentially (single lane — no lane_id changes)
@@ -7120,176 +7263,16 @@ describe("aiOrchestratorService", () => {
         fixture.orchestratorService.tick({ runId });
       }
 
+      const finalizeResult = aiOrchestratorWithPr.finalizeRun({ runId });
+      expect(finalizeResult.finalized).toBe(true);
       await aiOrchestratorWithPr.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
 
-      // Single-lane run should NOT trigger integration PR
-      expect(prServiceMock.createIntegrationPr).not.toHaveBeenCalled();
+      const missionAfterSync = fixture.missionService.get(mission.id);
+      expect(missionAfterSync?.status).toBe("completed");
+      expect(missionAfterSync?.resultLaneId).toBe(fixture.laneId);
+      expect(prServiceMock.createIntegrationLane).not.toHaveBeenCalled();
 
       aiOrchestratorWithPr.dispose();
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it("keeps mission incomplete while queue auto-land finalization is still running", async () => {
-    const prServiceMock = {
-      createQueuePrs: vi.fn().mockResolvedValue({
-        groupId: "queue-group-1",
-        prs: [
-          { id: "pr-1", githubUrl: "https://github.com/test/repo/pull/101" },
-          { id: "pr-2", githubUrl: "https://github.com/test/repo/pull/102" },
-        ],
-        errors: [],
-      }),
-    } as any;
-    const queueLandingServiceMock = {
-      startQueue: vi.fn().mockResolvedValue({
-        queueId: "queue-1",
-        groupId: "queue-group-1",
-        groupName: "Queue Group 1",
-        targetBranch: "main",
-        state: "landing",
-        entries: [],
-        currentPosition: 0,
-        activePrId: "pr-1",
-        activeResolverRunId: null,
-        lastError: null,
-        waitReason: null,
-        config: {
-          method: "squash",
-          archiveLane: false,
-          autoResolve: true,
-          ciGating: true,
-          resolverProvider: "claude",
-          resolverModel: "anthropic/claude-sonnet-4-6",
-          reasoningEffort: "medium",
-          permissionMode: "guarded_edit",
-          confidenceThreshold: null,
-          originSurface: "mission",
-          originMissionId: null,
-          originRunId: null,
-          originLabel: null,
-        },
-        startedAt: new Date().toISOString(),
-        completedAt: null,
-        updatedAt: new Date().toISOString(),
-      }),
-    } as any;
-
-    const fixture = await createFixture();
-    try {
-      const mission = fixture.missionService.create({
-        prompt: "Queue mission.",
-        laneId: fixture.laneId,
-        plannedSteps: [
-          { index: 0, title: "Worker task", detail: "Task", kind: "implementation", metadata: { stepType: "implementation" } },
-        ],
-      });
-
-      const existingMeta = JSON.parse(
-        fixture.db.get<{ metadata_json: string | null }>(
-          `select metadata_json from missions where id = ? limit 1`,
-          [mission.id],
-        )?.metadata_json ?? "{}",
-      );
-      existingMeta.executionPolicy = {
-        ...existingMeta.executionPolicy,
-        prStrategy: {
-          kind: "queue",
-          targetBranch: "main",
-          autoLand: true,
-          autoResolveConflicts: true,
-          ciGating: true,
-          mergeMethod: "squash",
-        },
-      };
-      existingMeta.missionLevelSettings = {
-        ...(existingMeta.missionLevelSettings ?? {}),
-        prStrategy: {
-          kind: "queue",
-          targetBranch: "main",
-          autoLand: true,
-          autoResolveConflicts: true,
-          ciGating: true,
-          mergeMethod: "squash",
-        },
-      };
-      fixture.db.run(
-        `update missions set metadata_json = ? where id = ?`,
-        [JSON.stringify(existingMeta), mission.id],
-      );
-
-      const service = createAiOrchestratorService({
-        db: fixture.db,
-        logger: createLogger(),
-        missionService: fixture.missionService,
-        orchestratorService: fixture.orchestratorService,
-        laneService: fixture.laneService,
-        projectConfigService: fixture.projectConfigService,
-        aiIntegrationService: fixture.aiIntegrationService,
-        prService: prServiceMock,
-        queueLandingService: queueLandingServiceMock,
-        projectRoot: fixture.projectRoot,
-      });
-
-      const started = fixture.orchestratorService.startRun({
-        missionId: mission.id,
-        steps: [
-          {
-            stepKey: "worker-task",
-            title: "Worker task",
-            stepIndex: 0,
-            dependencyStepKeys: [],
-            executorKind: "manual",
-            metadata: { stepType: "implementation", instructions: "Do the work" },
-          },
-        ],
-      });
-      fixture.db.run(
-        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
-        [new Date().toISOString(), started.run.id],
-      );
-      const runId = started.run.id;
-
-      fixture.orchestratorService.tick({ runId });
-      const graph = fixture.orchestratorService.getRunGraph({ runId });
-      const readyStep = graph.steps.find((entry) => entry.status === "ready") ?? graph.steps[0];
-      if (!readyStep) throw new Error("Expected mission step");
-      const attempt = await fixture.orchestratorService.startAttempt({
-        runId,
-        stepId: readyStep.id,
-        ownerId: "test-owner",
-        executorKind: "manual",
-      });
-      await fixture.orchestratorService.completeAttempt({
-        attemptId: attempt.id,
-        status: "succeeded",
-        result: {
-          schema: "ade.orchestratorAttempt.v1",
-          success: true,
-          summary: "Done",
-          outputs: null,
-          warnings: [],
-          sessionId: null,
-          trackedSession: false,
-        },
-      });
-
-      fixture.orchestratorService.tick({ runId });
-      service.finalizeRun({ runId });
-      await service.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
-
-      expect(prServiceMock.createQueuePrs).toHaveBeenCalled();
-      expect(queueLandingServiceMock.startQueue).toHaveBeenCalledWith(expect.objectContaining({
-        groupId: "queue-group-1",
-        autoResolve: true,
-        originSurface: "mission",
-        originMissionId: mission.id,
-        originRunId: runId,
-      }));
-      expect(fixture.missionService.get(mission.id)?.status).not.toBe("completed");
-
-      service.dispose();
     } finally {
       fixture.dispose();
     }

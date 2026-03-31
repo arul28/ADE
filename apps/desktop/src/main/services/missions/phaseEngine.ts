@@ -53,13 +53,13 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       },
       askQuestions: {
         enabled: true,
-        maxQuestions: 5,
+        maxQuestions: null,
       },
       validationGate: {
         tier: "none",
         required: false,
       },
-      requiresApproval: false,
+      requiresApproval: true,
       isBuiltIn: true,
       isCustom: false,
       position: 0,

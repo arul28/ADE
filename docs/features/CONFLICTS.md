@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-24
+> Last updated: 2026-03-31
 
 ---
 
@@ -458,6 +458,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 | External resolver infrastructure | Run artifacts at `.ade/artifacts/packs/external-resolver-runs/<runId>/`, JSON run records (`ade.conflictExternalRun.v1`), pack ref building, context gap detection, commit workflow |
 | Rebase suggestion integration | `rebaseSuggestionService.ts` — detects parent-advanced children, dismiss/defer/emit lifecycle, integrated into Lanes and PR rebase workflows |
 | Queue-aware rebase | `queueRebase.ts` — rebase scans now fetch queue target tracking branches and resolve queue rebase overrides so queued PRs compare against the correct upstream ref rather than the lane's static base branch. The conflict service uses `resolveQueueRebaseOverride()` for both `scanRebaseNeeds` and `getRebaseNeed`, and `rebaseLane` targets the queue comparison ref when a queue override is present. Queue group context is propagated into the rebase need so the UI can display which queue the rebase relates to. |
+| Lane base resolution | The conflict service uses `shouldLaneTrackParent()` and `branchNameFromLaneRef()` from `src/shared/laneBaseResolution.ts` to determine the correct comparison ref for non-queued lanes. Parent tracking is only active when the parent is a non-primary lane. All parent-relative comparisons target `origin/<parent-branch>` for consistency with the lane service's rebase behavior. |
 | Phase 4/5 gap resolution | G3 (risk tooltip hover details), G4 (conflict file diff language detection), G5 (batch conflict assessment) — all resolved |
 
 ### Prediction Engine
@@ -634,7 +635,6 @@ Conflict resolution generation now defaults to **external local CLIs** (Codex or
 The Phase 3 missions overhaul changed how conflicts are managed:
 
 - **Merge Phase Removed**: The previous merge phase (which attempted automatic conflict resolution) has been completely removed from the mission lifecycle
-- **PR Strategy**: Conflicts are now handled at PR time, controlled by the selected PR strategy (integration/per-lane/queue/manual)
-- **Integration Phase**: For `integration` strategy, lanes merge into an integration branch where conflicts are surfaced for resolution
-- **Pre-Merge Checking**: The orchestrator performs dry-run merges to detect conflicts before PR creation, allowing proactive conflict resolution (shipped as part of the conflict prediction engine integration with the orchestrator)
+- **Result Lane Closeout**: Missions always end with a single result lane. Conflicts between worker lanes are resolved when the coordinator merges worker outputs into the result lane. The user opens PRs from the result lane at their discretion.
+- **Pre-Merge Checking**: The orchestrator performs dry-run merges to detect conflicts before consolidation, allowing proactive conflict resolution (shipped as part of the conflict prediction engine integration with the orchestrator)
 - **File Conflict Prevention**: During mission planning, the orchestrator assigns files to lanes to minimize overlap and reduce merge conflicts (shipped as part of the coordinator planning phase)

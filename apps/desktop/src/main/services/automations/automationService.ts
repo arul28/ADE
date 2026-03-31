@@ -1372,19 +1372,25 @@ export function createAutomationService({
     child.stderr?.on("data", (chunk) => onChunk(chunk, "stderr"));
     const timeoutMs = Math.max(1000, args.timeoutMs);
     const exitCode = await new Promise<number | null>((resolve, reject) => {
+      let settled = false;
       const timer = setTimeout(() => {
         try {
           child.kill("SIGKILL");
         } catch {
           // ignore
         }
+        settled = true;
         reject(new Error(`Command timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         reject(error);
       });
-      child.on("exit", (code) => {
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         resolve(code);
       });
