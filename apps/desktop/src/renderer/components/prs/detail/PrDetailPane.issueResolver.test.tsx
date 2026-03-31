@@ -263,9 +263,9 @@ describe("PrDetailPane issue resolver CTA", () => {
 
     await waitFor(() => {
       if (visible) {
-        expect(screen.getByRole("button", { name: /resolve issues with agent/i })).toBeTruthy();
+        expect(screen.getByRole("button", { name: /path to merge/i })).toBeTruthy();
       } else {
-        expect(screen.queryByRole("button", { name: /resolve issues with agent/i })).toBeNull();
+        expect(screen.queryByRole("button", { name: /path to merge/i })).toBeNull();
       }
     });
   });
@@ -280,7 +280,9 @@ describe("PrDetailPane issue resolver CTA", () => {
     await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
 
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: /resolve issues with agent/i }).length).toBeGreaterThanOrEqual(2);
+      // "Path to Merge" in header + "Resolve issues with agent" in ChecksTab
+      expect(screen.getByRole("button", { name: /path to merge/i })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /resolve issues with agent/i })).toBeTruthy();
     });
   });
 
@@ -341,6 +343,7 @@ describe("PrDetailPane issue resolver CTA", () => {
       onNavigate,
     });
 
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
     await user.click(await screen.findByRole("button", { name: /resolve issues with agent/i }));
     await user.click(screen.getByRole("button", { name: /launch resolver/i }));
 
@@ -365,6 +368,7 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(getReviewThreads).toHaveBeenCalledTimes(1);
     });
 
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
     await user.click(await screen.findByRole("button", { name: /resolve issues with agent/i }));
 
     await waitFor(() => {
@@ -379,6 +383,7 @@ describe("PrDetailPane issue resolver CTA", () => {
       reviewThreads: [],
     });
 
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
     await user.click(await screen.findByRole("button", { name: /resolve issues with agent/i }));
     await user.click(screen.getByRole("button", { name: /copy resolver prompt/i }));
 

@@ -205,6 +205,10 @@ import type {
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
+  IssueInventoryItem,
+  IssueInventorySnapshot,
+  ConvergenceStatus,
+  PipelineSettings,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -1442,6 +1446,28 @@ contextBridge.exposeInMainWorld("ade", {
     reopen: async (args: ReopenPrArgs): Promise<void> => ipcRenderer.invoke(IPC.prsReopen, args),
     rerunChecks: async (args: RerunPrChecksArgs): Promise<void> => ipcRenderer.invoke(IPC.prsRerunChecks, args),
     aiReviewSummary: async (args: AiReviewSummaryArgs): Promise<AiReviewSummary> => ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
+    issueInventorySync: async (prId: string): Promise<IssueInventorySnapshot> =>
+      ipcRenderer.invoke(IPC.prsIssueInventorySync, { prId }),
+    issueInventoryGet: async (prId: string): Promise<IssueInventorySnapshot> =>
+      ipcRenderer.invoke(IPC.prsIssueInventoryGet, { prId }),
+    issueInventoryGetNew: async (prId: string): Promise<IssueInventoryItem[]> =>
+      ipcRenderer.invoke(IPC.prsIssueInventoryGetNew, { prId }),
+    issueInventoryMarkFixed: async (prId: string, itemIds: string[]): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsIssueInventoryMarkFixed, { prId, itemIds }),
+    issueInventoryMarkDismissed: async (prId: string, itemIds: string[], reason: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsIssueInventoryMarkDismissed, { prId, itemIds, reason }),
+    issueInventoryMarkEscalated: async (prId: string, itemIds: string[]): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsIssueInventoryMarkEscalated, { prId, itemIds }),
+    issueInventoryGetConvergence: async (prId: string): Promise<ConvergenceStatus> =>
+      ipcRenderer.invoke(IPC.prsIssueInventoryGetConvergence, { prId }),
+    issueInventoryReset: async (prId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsIssueInventoryReset, { prId }),
+    pipelineSettingsGet: async (prId: string): Promise<PipelineSettings> =>
+      ipcRenderer.invoke(IPC.prsPipelineSettingsGet, { prId }),
+    pipelineSettingsSave: async (prId: string, settings: Partial<PipelineSettings>): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsPipelineSettingsSave, { prId, settings }),
+    pipelineSettingsDelete: async (prId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsPipelineSettingsDelete, { prId }),
     dismissIntegrationCleanup: async (args: DismissIntegrationCleanupArgs): Promise<IntegrationProposal> =>
       ipcRenderer.invoke(IPC.prsDismissIntegrationCleanup, args),
     cleanupIntegrationWorkflow: async (args: CleanupIntegrationWorkflowArgs): Promise<CleanupIntegrationWorkflowResult> =>

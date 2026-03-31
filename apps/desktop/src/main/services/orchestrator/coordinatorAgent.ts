@@ -75,7 +75,7 @@ export type CoordinatorUserRules = {
   laneStrategy?: string;
   customInstructions?: string;
   coordinatorModel?: string;
-  prStrategy?: string;
+  closeoutContract?: string;
   budgetLimitUsd?: number;
   budgetLimitTokens?: number;
   recoveryEnabled?: boolean;
@@ -1817,7 +1817,7 @@ export class CoordinatorAgent {
       if (rules.laneStrategy) ruleLines.push(`- Lane strategy: ${rules.laneStrategy}`);
       if (rules.customInstructions) ruleLines.push(`- Custom instructions: ${rules.customInstructions}`);
       if (rules.coordinatorModel) ruleLines.push(`- Coordinator model: ${rules.coordinatorModel} (your model — user selected this, do not change)`);
-      if (rules.prStrategy) ruleLines.push(`- PR strategy: ${rules.prStrategy} (${rules.prStrategy === "manual" ? "user will create PRs manually" : rules.prStrategy === "per-lane" ? "create a PR per lane" : "create an integration PR"})`);
+      if (rules.closeoutContract) ruleLines.push(`- Closeout contract: ${rules.closeoutContract}`);
       if (rules.budgetLimitUsd != null) ruleLines.push(`- Budget limit: $${rules.budgetLimitUsd.toFixed(2)} USD (HARD LIMIT — do not exceed)`);
       if (rules.budgetLimitTokens != null) ruleLines.push(`- Token budget limit: ${rules.budgetLimitTokens.toLocaleString()} tokens (HARD LIMIT)`);
       if (rules.recoveryEnabled != null) ruleLines.push(`- Recovery loops: ${rules.recoveryEnabled ? `enabled (max ${rules.recoveryMaxIterations ?? 3} iterations)` : "disabled — do not retry failed quality gates"}`);
@@ -1841,7 +1841,7 @@ export class CoordinatorAgent {
           if (p.validationGate.tier !== "none") parts.push(`   Validation: ${p.validationGate.tier.replace("-", " ")} ${p.validationGate.required ? "(required)" : "(optional)"}`);
           if (p.askQuestions.enabled) {
             parts.push(
-              `   Ask Questions: enabled (must ask at least one clarification or confirmation question before finalizing this phase, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions)`
+              `   Ask Questions: enabled (must ask at least one clarification or confirmation question before finalizing this phase${p.askQuestions.maxQuestions == null ? ", unlimited follow-up rounds allowed" : `, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions`})`
             );
           } else {
             parts.push("   Ask Questions: disabled");
@@ -1853,7 +1853,7 @@ export class CoordinatorAgent {
         });
       phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nQuestion rules per phase govern the ACTIVE PHASE OWNER for that phase:
 - If Ask Questions is enabled, the worker actively executing that phase may open blocking clarification questions with ask_user when needed.
-- Additional ask_user rounds are allowed up to the phase max question limit. Avoid trivial or low-value questions.
+- Additional ask_user rounds are allowed up to the phase max question limit, or without a cap when the planning phase is explicitly configured for unlimited clarifications. Avoid trivial or low-value questions.
 - If Ask Questions is disabled, do not ask questions in that phase; proceed with reasonable assumptions.
 - ask_user is transport/UI plumbing, not ownership. Coordinator should not ask planning, development, or validation questions on behalf of a worker unless there is no responsible phase worker yet and the mission cannot even be framed.
 - When using ask_user, bundle ALL related questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
@@ -1990,12 +1990,12 @@ You are autonomous WITHIN user-configured settings. This means:
 **You FOLLOW (user constraints — never override):**
 - Which execution phases are enabled (development, testing, validation, code review) — skip disabled phases, run enabled ones
 - Model selection — use the configured coordinator and worker models
-- PR strategy — create PRs according to the user's chosen strategy
+- Closeout contract — finish with a single result lane that contains the consolidated mission changes
 - Budget limits — hard caps on cost/tokens are guardrails, not suggestions
 - Model selection — use available model IDs as configured
 - Thinking budgets / reasoning effort — respect per-model settings
 
-If the user disabled testing, do NOT spawn test workers. If the user set a specific worker model, use THAT model. If the user chose manual PR strategy, do NOT create PRs automatically. You decide HOW to accomplish the mission — the user decides WHAT constraints you operate under.
+If the user disabled testing, do NOT spawn test workers. If the user set a specific worker model, use THAT model. Do not open or land PRs during mission closeout. You decide HOW to accomplish the mission — the user decides WHAT constraints you operate under.
 
 ## Scope Awareness — Right-Size Your Approach
 
@@ -2024,7 +2024,7 @@ Match your approach to the mission's actual complexity:
 - Use when tasks might touch overlapping files
 - Use for large, isolated workstreams that benefit from clean git history
 - Each lane is a fresh git worktree branching from the base — cheap to create
-- Lanes merge back via the configured PR strategy
+- Lanes merge back into a single mission result lane during closeout
 
 Do NOT overcomplicate simple tasks. A one-file bug fix does not need 3 workers, 5 milestones, and a validation gate. If planning is enabled and the task is tiny, default to one planning worker, one implementation worker on the mission lane, and one validator only if validation is enabled or the change is genuinely risky. Read the code, understand the scope, and scale your approach accordingly. The overhead of coordination should never exceed the cost of the work itself.
 

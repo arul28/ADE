@@ -58,8 +58,6 @@ import type {
   GetAggregatedUsageArgs,
   RecoveryLoopState,
   IntegrationPrPolicy,
-  QueueLandingState,
-  PrStrategy,
   OrchestratorRunStatus,
   OrchestratorTeamMember,
   OrchestratorTeamRuntimeState,
@@ -72,6 +70,7 @@ import type {
   MissionCloseoutRequirement,
   MissionCloseoutRequirementKey,
   MissionFinalizationPolicy,
+  MissionFinalizationPolicyKind,
   MissionFinalizationState,
   MissionCoordinatorAvailability,
   MissionStatePendingIntervention,
@@ -105,7 +104,6 @@ import {
 } from "./orchestratorConstants";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { modelConfigToServiceModel } from "../../../shared/modelProfiles";
-import { getModelById } from "../../../shared/modelRegistry";
 import { isWorkerBootstrapNoiseLine } from "../../../shared/workerRuntimeNoise";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -163,7 +161,6 @@ type CoordinatorLifecycleState =
 
 // ── Module imports (extracted from this file) ────────────────────
 import type {
-  PendingIntegrationContext,
   MissionRunStartArgs,
   MissionRunStartResult,
   OrchestratorHookCommandRunner,
@@ -790,8 +787,6 @@ export function createAiOrchestratorService(args: {
     projectConfigService,
     aiIntegrationService,
     prService,
-    conflictService,
-    queueLandingService,
     missionBudgetService,
     humanWorkDigestService,
     missionMemoryLifecycleService,
@@ -817,7 +812,6 @@ export function createAiOrchestratorService(args: {
   const workerDeliveryInterventionCooldowns = new Map<string, number>();
   const runTeamManifests = new Map<string, TeamManifest>();
   const runRecoveryLoopStates = new Map<string, RecoveryLoopState>();
-  const pendingIntegrations = new Map<string, PendingIntegrationContext>();
   const pendingCoordinatorEvals = new Map<string, NodeJS.Timeout>();
   const milestoneReadyNotificationSignatures = new Map<string, string>();
   const runWatchdogTimers = new Map<string, Set<NodeJS.Timeout>>();
@@ -886,7 +880,6 @@ export function createAiOrchestratorService(args: {
     aiTimeoutBudgetRunLocks: new Set(),
     aiRetryDecisionLocks: new Set(),
     coordinatorSessions: new Map(),
-    pendingIntegrations,
     coordinatorThinkingLoops: new Map(),
     pendingCoordinatorEvals,
     coordinatorAgents,
@@ -901,7 +894,6 @@ export function createAiOrchestratorService(args: {
   const purgeRunMaps = (runId: string): void => {
     runTeamManifests.delete(runId);
     runRecoveryLoopStates.delete(runId);
-    pendingIntegrations.delete(runId);
     teamRuntimeStates.delete(runId);
     coordinatorLifecycleStates.delete(runId);
     for (const key of milestoneReadyNotificationSignatures.keys()) {
@@ -2514,56 +2506,15 @@ Check all worker statuses and continue managing the mission from here. Read work
     reasoningEffort: null,
   } as const;
 
-  const resolveMissionFinalizationPolicy = (strategy: PrStrategy | null | undefined): MissionFinalizationPolicy => {
-    if (!strategy || strategy.kind === "manual") {
-      return {
-        ...NULL_FINALIZATION_FIELDS,
-        kind: "manual",
-        description: "Manual PR handling. Execution completion satisfies the mission contract."
-      };
-    }
-    if (strategy.kind === "integration") {
-      return {
-        ...NULL_FINALIZATION_FIELDS,
-        kind: "integration",
-        targetBranch: strategy.targetBranch ?? null,
-        draft: strategy.draft ?? true,
-        prDepth: strategy.prDepth ?? "resolve-conflicts",
-        description: "Create a single integration PR as part of mission completion."
-      };
-    }
-    if (strategy.kind === "per-lane") {
-      return {
-        ...NULL_FINALIZATION_FIELDS,
-        kind: "per-lane",
-        targetBranch: strategy.targetBranch ?? null,
-        draft: strategy.draft ?? true,
-        prDepth: strategy.prDepth ?? null,
-        description: "Create one PR per lane before the mission is considered complete."
-      };
-    }
-    const autoLand = strategy.autoLand ?? false;
-    const autoResolveConflicts = strategy.autoResolveConflicts ?? false;
-    return {
-      kind: "queue",
-      targetBranch: strategy.targetBranch ?? null,
-      draft: strategy.draft ?? true,
-      prDepth: strategy.prDepth ?? null,
-      autoRebase: strategy.autoRebase ?? true,
-      ciGating: strategy.ciGating ?? false,
-      autoLand,
-      autoResolveConflicts,
-      archiveLaneOnLand: strategy.archiveLaneOnLand ?? false,
-      mergeMethod: strategy.mergeMethod ?? "squash",
-      conflictResolverModel: strategy.conflictResolverModel ?? null,
-      reasoningEffort: strategy.reasoningEffort ?? null,
-      description: autoLand
-        ? autoResolveConflicts
-          ? "Create queue PRs, auto-resolve merge conflicts, and land the queue before the mission is considered complete."
-          : "Create queue PRs and land the queue before the mission is considered complete."
-        : "Create queue PRs before the mission is considered complete."
-    };
+  const RESULT_LANE_FINALIZATION_POLICY: MissionFinalizationPolicy = {
+    ...NULL_FINALIZATION_FIELDS,
+    kind: "result_lane",
+    description: "Assemble a single result lane for the mission and stop before PR creation."
   };
+
+  const resolveMissionFinalizationPolicyForMission = (
+    _missionId: string,
+  ): MissionFinalizationPolicy => RESULT_LANE_FINALIZATION_POLICY;
 
   const EVIDENCE_TO_CLOSEOUT_KEYS = new Set<string>([
     "planning_document", "research_summary", "changed_files_summary",
@@ -2715,7 +2666,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       source: validationRequired ? "runtime" : "waiver",
     });
 
-    if (args.policy.kind !== "manual" && args.policy.kind !== "disabled") {
+    if (args.policy.kind !== "manual" && args.policy.kind !== "disabled" && args.policy.kind !== "result_lane") {
       const reviewRequired = args.policy.prDepth === "open-and-comment";
       const proposalOnly = args.policy.prDepth === "propose-only";
       pushRequirement({
@@ -2817,6 +2768,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       detail: state.detail ?? previous?.detail ?? null,
       resolverJobId: state.resolverJobId ?? previous?.resolverJobId ?? null,
       integrationLaneId: state.integrationLaneId ?? previous?.integrationLaneId ?? null,
+      resultLaneId: state.resultLaneId ?? previous?.resultLaneId ?? null,
       queueGroupId: state.queueGroupId ?? previous?.queueGroupId ?? null,
       queueId: state.queueId ?? previous?.queueId ?? null,
       activePrId: state.activePrId ?? previous?.activePrId ?? null,
@@ -2890,135 +2842,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     options?: { graph?: OrchestratorRunGraph | null }
   ): void => {
     updateMissionStateDoc(runId, { coordinatorAvailability: availability }, options);
-  };
-
-  const onQueueLandingStateChanged = async (queueState: QueueLandingState): Promise<void> => {
-    const runId = queueState.config.originRunId ?? null;
-    const missionId = queueState.config.originMissionId ?? (runId ? getMissionIdForRun(runId) : null);
-    if (!runId || !missionId) return;
-
-    const mission = missionService.get(missionId);
-    if (!mission) return;
-
-    let graph: OrchestratorRunGraph;
-    try {
-      graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-    } catch {
-      return;
-    }
-
-    const prUrls = queueState.entries
-      .map((entry) => entry.githubUrl ?? null)
-      .filter((value): value is string => Boolean(value));
-
-    let status: MissionFinalizationState["status"] = "landing_queue";
-    let blocked = false;
-    let blockedReason: string | null = null;
-    let mergeReadiness: string | null = null;
-    let contractSatisfied = false;
-    let summary = "Queue finalization is still running.";
-    let detail = queueState.lastError ?? null;
-
-    if (queueState.state === "completed") {
-      status = "completed";
-      contractSatisfied = true;
-      mergeReadiness = "queue_landed";
-      summary = "Execution and queue landing completed.";
-      detail = `Queue ${queueState.groupName ?? queueState.groupId} landed ${queueState.entries.filter((entry) => entry.state === "landed").length} PR(s).`;
-    } else if (queueState.state === "landing") {
-      if (queueState.activeResolverRunId) {
-        status = "resolving_queue_conflicts";
-        summary = "Queue landing is resolving merge conflicts before continuing.";
-      } else {
-        status = "landing_queue";
-        summary = "Queue landing is progressing through queued PRs.";
-      }
-    } else if (queueState.state === "paused") {
-      if (queueState.waitReason === "ci") {
-        status = "waiting_for_green";
-        mergeReadiness = "waiting_for_green";
-        summary = "Queue landing is waiting for CI before it can continue.";
-      } else if (queueState.waitReason === "review") {
-        status = "awaiting_operator_review";
-        mergeReadiness = "operator_review_required";
-        summary = "Queue landing is waiting for operator review before it can continue.";
-      } else if (queueState.waitReason === "manual") {
-        status = "finalizing";
-        blocked = true;
-        blockedReason = queueState.lastError ?? "Queue finalization is paused and needs operator intervention.";
-        summary = "Queue finalization is paused pending operator intervention.";
-      } else {
-        status = "finalization_failed";
-        blocked = true;
-        blockedReason = queueState.lastError ?? "Queue finalization failed.";
-        summary = "Queue finalization failed.";
-      }
-    } else if (queueState.state === "cancelled") {
-      status = "finalization_failed";
-      blocked = true;
-      blockedReason = queueState.lastError ?? "Queue finalization was cancelled.";
-      summary = "Queue finalization was cancelled.";
-    }
-
-    const finalization = await updateMissionFinalizationState(runId, {
-      policy: resolveMissionFinalizationPolicy((resolveActivePhaseSettings(missionId).settings.prStrategy ?? { kind: "manual" }) as PrStrategy),
-      status,
-      executionComplete: true,
-      contractSatisfied,
-      blocked,
-      blockedReason,
-      summary,
-      detail,
-      resolverJobId: queueState.activeResolverRunId,
-      queueGroupId: queueState.groupId,
-      queueId: queueState.queueId,
-      activePrId: queueState.activePrId,
-      waitReason: queueState.waitReason,
-      prUrls,
-      mergeReadiness,
-      completedAt: contractSatisfied ? queueState.completedAt : null,
-      warnings: [],
-    }, { graph });
-
-    if (finalization) {
-      await updateMissionCompletionFromStateDoc({
-        runId,
-        graph,
-        mission,
-        finalization,
-      });
-    }
-
-    // Notify the coordinator agent when queue landing reaches a terminal state
-    if (queueState.state === "completed" || queueState.state === "cancelled") {
-      try {
-        orchestratorService.appendRuntimeEvent({
-          runId,
-          eventType: "finalization_queue_landed",
-          payload: {
-            queueState: queueState.state,
-            contractSatisfied,
-            summary,
-            detail,
-            queueGroupId: queueState.groupId,
-            prUrls,
-          },
-        });
-      } catch (eventError) {
-        logger.debug("ai_orchestrator.finalization_queue_landed_event_failed", {
-          runId,
-          error: eventError instanceof Error ? eventError.message : String(eventError),
-        });
-      }
-
-      const coordAgent = coordinatorAgents.get(runId);
-      if (coordAgent?.isAlive) {
-        const eventMessage = queueState.state === "completed"
-          ? `[finalization.queue_landed] Queue landing completed successfully. ${detail ?? ""} Call check_finalization_status for full details before deciding next steps.`
-          : `[finalization.queue_landed] Queue landing was cancelled. ${detail ?? ""} Call check_finalization_status to review the current state.`;
-        coordAgent.injectMessage(eventMessage);
-      }
-    }
   };
 
   const resolveMissionStateStepPhase = (step: OrchestratorStep): string => {
@@ -3203,7 +3026,7 @@ Check all worker statuses and continue managing the mission from here. Read work
    */
   const createLaneFromBase = async (
     name: string,
-    opts: { description?: string; folder?: string; missionId: string },
+    opts: { description?: string; folder?: string; missionId: string; laneRole?: "mission_root" | "worker" | "integration" | "result" | null },
   ): Promise<{ laneId: string; name: string } | null> => {
     if (!laneService) return null;
     const baseLaneId = await resolveMissionBaseLaneId(opts.missionId);
@@ -3216,7 +3039,18 @@ Check all worker statuses and continue managing the mission from here. Read work
       name,
       description: opts.description,
       folder: opts.folder,
+      missionId: opts.missionId,
+      laneRole: opts.laneRole ?? "worker",
     });
+    db.run(
+      `
+        update lanes
+        set mission_id = coalesce(mission_id, ?),
+            lane_role = coalesce(lane_role, ?)
+        where id = ?
+      `,
+      [opts.missionId, opts.laneRole ?? "worker", child.id],
+    );
     logger.info("ai_orchestrator.lane_created", {
       missionId: opts.missionId,
       laneId: child.id,
@@ -3234,8 +3068,11 @@ Check all worker statuses and continue managing the mission from here. Read work
       const laneName = missionTitle.trim().length > 0 ? missionTitle.trim() : `Mission ${missionId.slice(0, 6)}`;
       const result = await createLaneFromBase(
         laneName,
-        { description: `Mission lane for ${missionTitle}`, folder: `Mission: ${missionTitle}`, missionId },
+        { description: `Mission lane for ${missionTitle}`, folder: `Mission: ${missionTitle}`, missionId, laneRole: "mission_root" },
       );
+      if (result?.laneId) {
+        missionService.setMissionLane({ missionId, laneId: result.laneId });
+      }
       return result?.laneId ?? null;
     } catch (error) {
       logger.warn("ai_orchestrator.mission_lane_creation_failed", {
@@ -3301,17 +3138,207 @@ Check all worker statuses and continue managing the mission from here. Read work
     missionTitle: string;
     createIfMissing?: boolean;
   }): Promise<string | null> => {
+    const persistMissionLaneOwnership = async (laneId: string, laneRole: "mission_root" | "worker" | "integration" | "result"): Promise<void> => {
+      if (laneService?.setMissionOwnership) {
+        await laneService.setMissionOwnership({
+          laneId,
+          missionId: args.missionId,
+          laneRole,
+        });
+        return;
+      }
+      db.run(
+        `
+          update lanes
+          set mission_id = ?,
+              lane_role = ?
+          where id = ?
+        `,
+        [args.missionId, laneRole, laneId],
+      );
+    };
     const persistedLaneId = resolvePersistedMissionLaneIdForRun(args.runId);
     if (persistedLaneId) {
       persistMissionLaneIdForRun(args.runId, persistedLaneId);
+      missionService.setMissionLane({ missionId: args.missionId, laneId: persistedLaneId });
+      await persistMissionLaneOwnership(persistedLaneId, "mission_root");
       return persistedLaneId;
     }
     if (args.createIfMissing === false) return null;
     const createdLaneId = await createMissionLane(args.missionId, args.missionTitle);
     if (createdLaneId) {
       persistMissionLaneIdForRun(args.runId, createdLaneId);
+      await persistMissionLaneOwnership(createdLaneId, "mission_root");
     }
     return createdLaneId;
+  };
+
+  const archiveMissionIntermediateLanes = async (missionId: string, resultLaneId: string): Promise<void> => {
+    const missionOwned = db.all<{ id: string }>(
+      `
+        select id
+        from lanes
+        where mission_id = ?
+          and archived_at is null
+          and id <> ?
+      `,
+      [missionId, resultLaneId],
+    );
+    for (const lane of missionOwned) {
+      try {
+        if (typeof laneService.archive === "function") {
+          await laneService.archive({ laneId: lane.id });
+        } else {
+          db.run(
+            `
+              update lanes
+              set status = 'archived',
+                  archived_at = coalesce(archived_at, ?)
+              where id = ?
+            `,
+            [nowIso(), lane.id],
+          );
+        }
+      } catch (error) {
+        logger.warn("ai_orchestrator.archive_intermediate_mission_lane_failed", {
+          missionId,
+          laneId: lane.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
+
+  const finalizeMissionToResultLane = async (args: {
+    mission: MissionDetail;
+    runId: string;
+    missionBaseBranch: string;
+  }): Promise<{ resultLaneId: string; summary: string; detail: string; warnings: string[] }> => {
+    const missionLaneId = resolvePersistedMissionLaneIdForRun(args.runId) ?? toOptionalString(args.mission.missionLaneId);
+    const fallbackGraph = orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 0 });
+    const activeMissionLanes = db.all<{ id: string }>(
+      `
+        select id
+        from lanes
+        where mission_id = ?
+          and archived_at is null
+          and coalesce(lane_role, '') <> 'result'
+      `,
+      [args.mission.id],
+    );
+    const stepLaneIds = [...new Set(
+      fallbackGraph.steps
+        .map((step) => toOptionalString(step.laneId))
+        .filter((laneId): laneId is string => laneId != null)
+    )];
+    let sourceLaneIds = [...new Set([
+      ...activeMissionLanes.map((lane) => lane.id),
+      ...stepLaneIds,
+      ...(missionLaneId ? [missionLaneId] : []),
+    ].filter(Boolean))] as string[];
+    if (sourceLaneIds.length === 0) {
+      sourceLaneIds = [...new Set([
+        ...(missionLaneId ? [missionLaneId] : []),
+        ...stepLaneIds,
+      ])];
+    }
+    if (sourceLaneIds.length === 0) {
+      const missionBaseLaneId = toOptionalString(args.mission.laneId);
+      if (missionBaseLaneId) {
+        sourceLaneIds = [missionBaseLaneId];
+      }
+    }
+    if (sourceLaneIds.length === 0) {
+      throw new Error("No mission-owned lanes were available to assemble a result lane.");
+    }
+
+    if (sourceLaneIds.length === 1) {
+      const resultLaneId = sourceLaneIds[0]!;
+      missionService.setResultLane({ missionId: args.mission.id, laneId: resultLaneId });
+      if (laneService?.setMissionOwnership) {
+        await laneService.setMissionOwnership({
+          laneId: resultLaneId,
+          missionId: args.mission.id,
+          laneRole: "result",
+        });
+      } else {
+        db.run(
+          `
+            update lanes
+            set mission_id = ?,
+                lane_role = 'result'
+            where id = ?
+          `,
+          [args.mission.id, resultLaneId],
+        );
+      }
+      await archiveMissionIntermediateLanes(args.mission.id, resultLaneId);
+      return {
+        resultLaneId,
+        summary: "Execution completed. The mission result lane is ready.",
+        detail: `Result lane ${resultLaneId} now contains the mission output.`,
+        warnings: [],
+      };
+    }
+
+    if (!prService) {
+      throw new Error("Mission produced multiple lanes, but result-lane assembly is unavailable.");
+    }
+
+    const slug = args.mission.title
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || `mission-${args.mission.id.slice(0, 8)}`;
+    const assembly = await prService.createIntegrationLane({
+      sourceLaneIds,
+      integrationLaneName: `mission/${slug}-result`,
+      baseBranch: args.missionBaseBranch,
+      description: `Result lane for mission "${args.mission.title}"`,
+      missionId: args.mission.id,
+      laneRole: "result",
+    });
+
+    const resultLaneId = assembly.integrationLane.id;
+    missionService.setResultLane({ missionId: args.mission.id, laneId: resultLaneId });
+    if (laneService?.setMissionOwnership) {
+      await laneService.setMissionOwnership({
+        laneId: resultLaneId,
+        missionId: args.mission.id,
+        laneRole: "result",
+      });
+    } else {
+      db.run(
+        `
+          update lanes
+          set mission_id = ?,
+              lane_role = 'result'
+          where id = ?
+        `,
+        [args.mission.id, resultLaneId],
+      );
+    }
+
+    const failedMerges = assembly.mergeResults.filter((entry) => !entry.success);
+    if (failedMerges.length > 0) {
+      const detail = failedMerges
+        .map((entry) => `${entry.laneId}: ${entry.error ?? "merge failed"}`)
+        .join("\n");
+      return {
+        resultLaneId,
+        summary: "Result lane assembly is blocked by merge conflicts.",
+        detail,
+        warnings: failedMerges.map((entry) => `${entry.laneId}: ${entry.error ?? "merge failed"}`),
+      };
+    }
+
+    await archiveMissionIntermediateLanes(args.mission.id, resultLaneId);
+    return {
+      resultLaneId,
+      summary: "Execution completed. The mission result lane is ready.",
+      detail: `Result lane ${assembly.integrationLane.name} contains the merged mission output.`,
+      warnings: [],
+    };
   };
 
   const recordRuntimeEvent = (args: {
@@ -4953,8 +4980,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       retrospectiveGenerated: Boolean(retrospective)
     });
 
-    bestEffortCascadeCleanup(missionId, runId, "run_finalize");
-
     return finalized;
   };
 
@@ -6428,587 +6453,96 @@ Check all worker statuses and continue managing the mission from here. Read work
       const refreshed = missionService.get(mission.id) ?? mission;
       const nextMissionStatus = options?.nextMissionStatus ?? deriveMissionStatusFromRun(graph, refreshed);
       if (nextMissionStatus === "completed") {
-        // ── Post-resolution finalization ─────────────────────────────────────
-        // If we previously spawned conflict resolution worker steps, this second
-        // completion pass means the workers finished. Finalize the integration.
-        const pendingCtx = pendingIntegrations.get(runId);
-        let skipNormalPrCreation = false;
-
-        if (pendingCtx && prService) {
-          pendingIntegrations.delete(runId);
-          skipNormalPrCreation = true;
-          try {
-            // Check if all conflict resolution steps succeeded
-            const conflictSteps = graph.steps.filter((s) =>
-              pendingCtx.conflictStepKeys.includes(s.stepKey)
-            );
-            const allResolved = conflictSteps.every((s) => s.status === "succeeded");
-            const failedSteps = conflictSteps.filter((s) => s.status !== "succeeded");
-
-            if (!allResolved) {
-              const failedNames = failedSteps.map((s) => s.title || s.stepKey);
-              emitOrchestratorMessage(
-                pendingCtx.missionId,
-                `Conflict resolution partially failed. ${failedNames.length} worker(s) did not succeed: ${failedNames.join(", ")}. ` +
-                `The integration lane is available for manual resolution.`
-              );
-              logger.warn("ai_orchestrator.conflict_workers_partial_failure", {
-                missionId: pendingCtx.missionId,
-                runId,
-                totalWorkers: conflictSteps.length,
-                failed: failedSteps.length
-              });
-            } else {
-              // Verify all conflicts are truly resolved
-              const verifyResults: Array<{ laneId: string; clean: boolean }> = [];
-              for (const cStep of conflictSteps) {
-                const meta = cStep.metadata as Record<string, unknown> | null;
-                const sourceLaneId = meta?.sourceLaneId as string | undefined;
-                if (sourceLaneId) {
-                  const recheck = await prService.recheckIntegrationStep({
-                    proposalId: pendingCtx.proposalId,
-                    laneId: sourceLaneId
-                  });
-                  verifyResults.push({ laneId: sourceLaneId, clean: recheck.resolution === "resolved" || recheck.allResolved });
-                }
-              }
-
-              const allClean = verifyResults.every((r) => r.clean);
-
-              if (!allClean) {
-                emitOrchestratorMessage(
-                  pendingCtx.missionId,
-                  `Some conflicts remain after worker resolution. Manual intervention may be needed.`
-                );
-                logger.warn("ai_orchestrator.post_resolution_verify_failed", {
-                  missionId: pendingCtx.missionId,
-                  runId,
-                  results: verifyResults
-                });
-              } else {
-                // All clean — commit integration PR
-                emitOrchestratorMessage(pendingCtx.missionId, `All conflicts resolved. Creating integration PR...`);
-                const commitResult = await prService.commitIntegration({
-                  proposalId: pendingCtx.proposalId,
-                  integrationLaneName: pendingCtx.integrationLaneName,
-                  title: `[ADE] Integration: ${pendingCtx.missionTitle}`,
-                  body: `Automated integration PR for mission "${pendingCtx.missionTitle}".\n\n` +
-                        `Lanes: ${pendingCtx.laneIdArray.join(", ")}\n` +
-                        `Conflicts auto-resolved by AI workers.`,
-                  draft: pendingCtx.isDraft
-                });
-
-                emitOrchestratorMessage(
-                  pendingCtx.missionId,
-                  `Integration PR #${commitResult.pr.githubPrNumber} created (after worker resolution): ${commitResult.pr.githubUrl}`
-                );
-                logger.info("ai_orchestrator.integration_pr_created_after_workers", {
-                  missionId: pendingCtx.missionId,
-                  runId,
-                  prNumber: commitResult.pr.githubPrNumber,
-                  url: commitResult.pr.githubUrl
-                });
-
-                // ── open-and-comment: spawn a review worker ──
-                if (pendingCtx.prDepth === "open-and-comment") {
-                  try {
-                    const reviewStepKey = "pr-review-comment";
-                    const maxIdx = graph.steps.reduce((max, s) => Math.max(max, s.stepIndex), -1);
-
-                    const reviewSteps = orchestratorService.addPostCompletionSteps({
-                      runId,
-                      steps: [{
-                        stepKey: reviewStepKey,
-                        title: "Review and comment on integration PR",
-                        stepIndex: maxIdx + 1,
-                        laneId: pendingCtx.integrationLaneId,
-                        dependencyStepKeys: pendingCtx.conflictStepKeys,
-                        retryLimit: 1,
-                        metadata: {
-                          stepType: "pr-review",
-                          prUrl: commitResult.pr.githubUrl,
-                          prNumber: commitResult.pr.githubPrNumber,
-                          instructions: "Review the PR diff, write a comprehensive summary comment covering: " +
-                            "what changed, potential risks, test coverage, and deployment considerations. " +
-                            "Use `gh pr comment` to add the review. Do NOT merge or approve — only comment."
-                        }
-                      }]
-                    });
-
-                    // Store updated context for the review step completion
-                    pendingIntegrations.set(runId, {
-                      ...pendingCtx,
-                      reviewStepKey,
-                      conflictStepKeys: [] // No more conflict steps to track
-                    });
-
-                    emitOrchestratorMessage(
-                      pendingCtx.missionId,
-                      `PR created. Spawning review worker to add summary comment...`
-                    );
-                    logger.info("ai_orchestrator.pr_review_worker_spawned", {
-                      missionId: pendingCtx.missionId,
-                      runId,
-                      reviewStepId: reviewSteps[0]?.id
-                    });
-
-                    // Run reopened by addPostCompletionSteps — don't transition to completed
-                    return;
-                  } catch (reviewError) {
-                    // Review worker spawn failed — not critical, PR is already created
-                    logger.warn("ai_orchestrator.pr_review_worker_failed", {
-                      missionId: pendingCtx.missionId,
-                      runId,
-                      error: reviewError instanceof Error ? reviewError.message : String(reviewError)
-                    });
-                    emitOrchestratorMessage(
-                      pendingCtx.missionId,
-                      `PR created successfully but review comment worker could not be spawned: ${reviewError instanceof Error ? reviewError.message : String(reviewError)}`
-                    );
-                  }
-                }
-              }
-            }
-          } catch (finalizationError) {
-            logger.warn("ai_orchestrator.post_resolution_finalization_failed", {
-              missionId: pendingCtx.missionId,
-              runId,
-              error: finalizationError instanceof Error ? finalizationError.message : String(finalizationError)
-            });
-            emitOrchestratorMessage(
-              pendingCtx.missionId,
-              `Post-resolution finalization failed: ${finalizationError instanceof Error ? finalizationError.message : String(finalizationError)}. ` +
-              `The integration lane is available for manual resolution.`
-            );
-          }
-        }
-
-        // ── PR Creation at Run End (strategy-driven) ──────────────────────────
-        // Skip if we already handled integration via the post-resolution path above.
-        // The mission transition to "completed" is deferred until AFTER PR creation
-        // because the conflict pipeline may spawn workers that reopen the run.
         let workersSpawned = false;
-        const { settings: runPhaseSettings } = resolveActivePhaseSettings(mission.id);
-        const integrationPrPolicy = runPhaseSettings.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
-        const laneIdArrayBase = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
-        const missionLaneId = resolvePersistedMissionLaneIdForRun(runId) ?? toOptionalString(mission.laneId);
-        if (laneIdArrayBase.length === 0 && missionLaneId) laneIdArrayBase.push(missionLaneId);
-        const prStrategy: PrStrategy =
-          runPhaseSettings.prStrategy
-          ?? { kind: "manual" };
-        const finalizationPolicy = resolveMissionFinalizationPolicy(prStrategy);
+        const finalizationPolicy = resolveMissionFinalizationPolicyForMission(mission.id);
         const missionBaseBranch = await resolveMissionBaseBranch(mission.id);
 
-        if (skipNormalPrCreation) {
-          // Already handled via post-resolution path
-        } else try {
+        try {
           await updateMissionFinalizationState(runId, {
             policy: finalizationPolicy,
-            status: prStrategy.kind === "manual" ? "completed" : "finalizing",
+            status: "finalizing",
             executionComplete: true,
-            contractSatisfied: prStrategy.kind === "manual",
+            contractSatisfied: false,
             blocked: false,
-            summary: prStrategy.kind === "manual"
-              ? "Execution completed. PR handling is manual for this mission."
-              : "Execution completed. ADE is now running the selected finalization contract.",
+            summary: "Execution completed. ADE is assembling the mission result lane.",
             detail: finalizationPolicy.description,
             warnings: [],
-            completedAt: prStrategy.kind === "manual" ? nowIso() : null,
+            completedAt: null,
           }, { graph });
 
-          if (prStrategy.kind === "manual") {
-            logger.debug("ai_orchestrator.pr_strategy_manual", { missionId: mission.id, runId });
-          } else if (prStrategy.kind === "integration" && prService) {
+          await updateMissionFinalizationState(runId, {
+            policy: finalizationPolicy,
+            status: "finalizing",
+            executionComplete: true,
+            contractSatisfied: false,
+            blocked: false,
+            summary: "Execution finished. ADE is assembling the mission result lane.",
+            detail: `Base branch: ${missionBaseBranch ?? "main"}`,
+            warnings: [],
+          }, { graph });
+
+          const result = await finalizeMissionToResultLane({
+            mission,
+            runId,
+            missionBaseBranch: missionBaseBranch ?? "main",
+          });
+
+          if (result.warnings.length > 0) {
             await updateMissionFinalizationState(runId, {
               policy: finalizationPolicy,
-              status: "creating_pr",
+              status: "finalizing",
               executionComplete: true,
               contractSatisfied: false,
-              blocked: false,
-              summary: "Execution finished. Creating integration PR before mission completion.",
-              detail: `Base branch: ${prStrategy.targetBranch ?? missionBaseBranch ?? "main"}`,
-              warnings: [],
+              blocked: true,
+              blockedReason: result.detail,
+              resultLaneId: result.resultLaneId,
+              summary: result.summary,
+              detail: result.detail,
+              warnings: result.warnings,
             }, { graph });
-            try {
-              const laneIdArray = laneIdArrayBase;
-              const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
-              const baseBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
-              const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
-
-              const prResult = await prService.createIntegrationPr({
-                sourceLaneIds: laneIdArray,
-                integrationLaneName,
-                baseBranch,
-                title: `[ADE] Integration: ${mission.title}`,
-                body: `Automated integration PR for mission "${mission.title}".\n\nLanes: ${laneIdArray.join(", ")}`,
-                draft: isDraft
-              });
-
-              emitOrchestratorMessage(
-                mission.id,
-                `Integration PR #${prResult.pr.githubPrNumber} created: ${prResult.pr.githubUrl}`
-              );
-              logger.info("ai_orchestrator.integration_pr_created", {
-                missionId: mission.id,
-                runId,
-                prNumber: prResult.pr.githubPrNumber,
-                url: prResult.pr.githubUrl
-              });
-              await updateMissionFinalizationState(runId, {
-                policy: finalizationPolicy,
-                status: "completed",
-                executionComplete: true,
-                contractSatisfied: true,
-                blocked: false,
-                prUrls: [prResult.pr.githubUrl],
-                mergeReadiness: "operator_review_required",
-                summary: "Execution and integration PR creation completed.",
-                detail: `Integration PR ${prResult.pr.githubUrl} created.`,
-                warnings: [],
-                completedAt: nowIso(),
-              }, { graph });
-            } catch (prError) {
-              const prDepth = prStrategy.prDepth
-                ?? integrationPrPolicy.prDepth
-                ?? "resolve-conflicts";
-              const laneIdArray = laneIdArrayBase;
-              const baseBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
-              const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
-              const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
-
-              if (prDepth === "propose-only" || !conflictService || !laneService) {
-                throw prError;
-              }
-
-              const targetLane = (await laneService.list({ includeArchived: false })).find((lane) => {
-                const branchRef = normalizeBranchName(lane.branchRef);
-                const laneBaseRef = normalizeBranchName(lane.baseRef);
-                const desired = normalizeBranchName(baseBranch);
-                return lane.id === baseBranch || branchRef === desired || laneBaseRef === desired;
-              });
-              if (!targetLane) {
-                throw new Error(`No lane is available for base branch "${baseBranch}".`);
-              }
-
-              const resolverModelId = integrationPrPolicy.conflictResolverModel ?? null;
-              const resolverDescriptor = resolverModelId ? getModelById(resolverModelId) : null;
-              const resolverProvider = resolverDescriptor?.family === "openai" ? "codex" : "claude";
-
-              await updateMissionFinalizationState(runId, {
-                policy: resolveMissionFinalizationPolicy(prStrategy),
-                status: "resolving_integration_conflicts",
-                executionComplete: true,
-                contractSatisfied: false,
-                blocked: false,
-                summary: "Execution finished. ADE is resolving integration conflicts before closeout can complete.",
-                detail: prError instanceof Error ? prError.message : String(prError),
-                warnings: [],
-              }, { graph });
-              emitOrchestratorMessage(
-                mission.id,
-                `Integration PR creation hit conflicts. Launching shared resolver on integration lane "${integrationLaneName}" before finalization can complete.`
-              );
-
-              const resolverRun = await conflictService.runExternalResolver({
-                provider: resolverProvider,
-                targetLaneId: targetLane.id,
-                sourceLaneIds: laneIdArray,
-                integrationLaneName,
-              });
-              if (resolverRun.status !== "completed" || !resolverRun.integrationLaneId) {
-                throw new Error(resolverRun.error ?? "Shared conflict resolver did not complete successfully.");
-              }
-
-              await updateMissionFinalizationState(runId, {
-                policy: resolveMissionFinalizationPolicy(prStrategy),
-                status: "creating_pr",
-                executionComplete: true,
-                contractSatisfied: false,
-                blocked: false,
-                resolverJobId: resolverRun.runId,
-                integrationLaneId: resolverRun.integrationLaneId,
-                detail: resolverRun.summary ?? "Conflict resolution completed. Creating integration PR.",
-                warnings: resolverRun.warnings,
-              }, { graph });
-
-              const resolvedPr = await prService.createFromLane({
-                laneId: resolverRun.integrationLaneId,
-                title: `[ADE] Integration: ${mission.title}`,
-                body: `Automated integration PR for mission "${mission.title}".\n\nLanes: ${laneIdArray.join(", ")}\n\nResolved via the shared ADE conflict resolver job ${resolverRun.runId}.`,
-                draft: isDraft,
-                baseBranch,
-              });
-
-              if (prDepth === "open-and-comment") {
-                await updateMissionFinalizationState(runId, {
-                  policy: resolveMissionFinalizationPolicy(prStrategy),
-                  status: "posting_review_comment",
-                  executionComplete: true,
-                  contractSatisfied: false,
-                  blocked: false,
-                  resolverJobId: resolverRun.runId,
-                  integrationLaneId: resolverRun.integrationLaneId,
-                  prUrls: [resolvedPr.githubUrl],
-                }, { graph });
-                await prService.addComment({
-                  prId: resolvedPr.id,
-                  body: [
-                    `ADE finalization summary for mission "${mission.title}":`,
-                    "",
-                    `- Integration conflicts were resolved by shared resolver job \`${resolverRun.runId}\`.`,
-                    `- Changed files: ${resolverRun.changedFiles.length > 0 ? resolverRun.changedFiles.join(", ") : "not reported"}.`,
-                    `- Review this PR before landing. This mission is complete, but follow-up work should start as a continuation.`,
-                  ].join("\n"),
-                });
-              }
-
-              emitOrchestratorMessage(
-                mission.id,
-                `Integration PR #${resolvedPr.githubPrNumber} created after shared conflict resolution: ${resolvedPr.githubUrl}`
-              );
-              logger.info("ai_orchestrator.integration_pr_created_via_shared_resolver", {
-                missionId: mission.id,
-                runId,
-                resolverRunId: resolverRun.runId,
-                prNumber: resolvedPr.githubPrNumber,
-                url: resolvedPr.githubUrl
-              });
-              await updateMissionFinalizationState(runId, {
-                policy: resolveMissionFinalizationPolicy(prStrategy),
-                status: "completed",
-                executionComplete: true,
-                contractSatisfied: true,
-                blocked: false,
-                resolverJobId: resolverRun.runId,
-                integrationLaneId: resolverRun.integrationLaneId,
-                prUrls: [resolvedPr.githubUrl],
-                reviewStatus: prDepth === "open-and-comment" ? "comment_posted" : null,
-                mergeReadiness: "operator_review_required",
-                summary: "Execution and PR finalization completed.",
-                detail: `Integration PR ${resolvedPr.githubUrl} created via shared resolver job ${resolverRun.runId}.`,
-                warnings: resolverRun.warnings,
-                completedAt: nowIso(),
-              }, { graph });
-            }
-          } else if (prStrategy.kind === "per-lane" && prService) {
-            try {
-              const laneIdArray = laneIdArrayBase;
-              const baseBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
-              const isDraft = prStrategy.draft ?? true;
-              const createdPrUrls: string[] = [];
-              const laneFailures: string[] = [];
-
-              for (const laneId of laneIdArray) {
-                try {
-                  const prResult = await prService.createIntegrationPr({
-                    sourceLaneIds: [laneId],
-                    integrationLaneName: laneId,
-                    baseBranch,
-                    title: `[ADE] Lane ${laneId}: ${mission.title}`,
-                    body: `Per-lane PR for lane "${laneId}" of mission "${mission.title}".`,
-                    draft: isDraft
-                  });
-                  emitOrchestratorMessage(
-                    mission.id,
-                    `Per-lane PR #${prResult.pr.githubPrNumber} for ${laneId}: ${prResult.pr.githubUrl}`
-                  );
-                  logger.info("ai_orchestrator.per_lane_pr_created", {
-                    missionId: mission.id,
-                    runId,
-                    laneId,
-                    prNumber: prResult.pr.githubPrNumber,
-                    url: prResult.pr.githubUrl
-                  });
-                  createdPrUrls.push(prResult.pr.githubUrl);
-                } catch (lanePrError) {
-                  logger.warn("ai_orchestrator.per_lane_pr_failed", {
-                    missionId: mission.id,
-                    runId,
-                    laneId,
-                    error: lanePrError instanceof Error ? lanePrError.message : String(lanePrError)
-                  });
-                  emitOrchestratorMessage(
-                    mission.id,
-                    `Per-lane PR for ${laneId} failed: ${lanePrError instanceof Error ? lanePrError.message : String(lanePrError)}`
-                  );
-                  laneFailures.push(`${laneId}: ${lanePrError instanceof Error ? lanePrError.message : String(lanePrError)}`);
-                }
-              }
-              if (laneFailures.length > 0) {
-                await updateMissionFinalizationState(runId, {
-                  policy: finalizationPolicy,
-                  status: "finalization_failed",
-                  executionComplete: true,
-                  contractSatisfied: false,
-                  blocked: true,
-                  blockedReason: laneFailures.join("; "),
-                  prUrls: createdPrUrls,
-                  summary: "Per-lane PR finalization did not complete successfully.",
-                  detail: laneFailures.join("\n"),
-                  warnings: [],
-                }, { graph });
-              } else {
-                await updateMissionFinalizationState(runId, {
-                  policy: finalizationPolicy,
-                  status: "completed",
-                  executionComplete: true,
-                  contractSatisfied: true,
-                  blocked: false,
-                  prUrls: createdPrUrls,
-                  mergeReadiness: "operator_review_required",
-                  summary: "Execution and per-lane PR creation completed.",
-                  detail: `${createdPrUrls.length} PR(s) created.`,
-                  warnings: [],
-                  completedAt: nowIso(),
-                }, { graph });
-              }
-            } catch (perLaneError) {
-              logger.warn("ai_orchestrator.per_lane_pr_batch_failed", {
-                missionId: mission.id,
-                runId,
-                error: perLaneError instanceof Error ? perLaneError.message : String(perLaneError)
-              });
-              await updateMissionFinalizationState(runId, {
-                policy: finalizationPolicy,
-                status: "finalization_failed",
-                executionComplete: true,
-                contractSatisfied: false,
-                blocked: true,
-                blockedReason: perLaneError instanceof Error ? perLaneError.message : String(perLaneError),
-                summary: "Per-lane PR finalization failed.",
-                detail: perLaneError instanceof Error ? perLaneError.message : String(perLaneError),
-                warnings: [],
-              }, { graph });
-            }
-          } else if (prStrategy.kind === "queue" && prService) {
-            try {
-              const laneIdArray = laneIdArrayBase;
-              const targetBranch = prStrategy.targetBranch ?? missionBaseBranch ?? "main";
-              const autoLandQueue = prStrategy.autoLand ?? false;
-              const autoResolveQueueConflicts = prStrategy.autoResolveConflicts ?? false;
-              const queueMergeMethod = prStrategy.mergeMethod ?? "squash";
-              const resolverModelId = prStrategy.conflictResolverModel ?? integrationPrPolicy.conflictResolverModel ?? null;
-              const resolverDescriptor = resolverModelId ? getModelById(resolverModelId) : null;
-              const resolverProvider = resolverDescriptor?.family === "anthropic" ? "claude" : resolverModelId ? "codex" : null;
-
-              const queueResult = await prService.createQueuePrs({
-                laneIds: laneIdArray,
-                targetBranch,
-                draft: prStrategy.draft ?? true,
-                autoRebase: prStrategy.autoRebase ?? true,
-                ciGating: prStrategy.ciGating ?? false
-              });
-
-              for (const pr of queueResult.prs) {
-                emitOrchestratorMessage(
-                  mission.id,
-                  `Queue PR #${pr.githubPrNumber} created: ${pr.githubUrl}`
-                );
-              }
-              for (const err of queueResult.errors) {
-                emitOrchestratorMessage(
-                  mission.id,
-                  `Queue PR for ${err.laneId} failed: ${err.error}`
-                );
-              }
-              logger.info("ai_orchestrator.queue_prs_created", {
-                missionId: mission.id,
-                runId,
-                groupId: queueResult.groupId,
-                prCount: queueResult.prs.length,
-                errorCount: queueResult.errors.length
-              });
-              if (queueResult.errors.length > 0) {
-                await updateMissionFinalizationState(runId, {
-                  policy: finalizationPolicy,
-                  status: "finalization_failed",
-                  executionComplete: true,
-                  contractSatisfied: false,
-                  blocked: true,
-                  blockedReason: queueResult.errors.map((entry) => `${entry.laneId}: ${entry.error}`).join("; "),
-                  queueGroupId: queueResult.groupId,
-                  prUrls: queueResult.prs.map((entry) => entry.githubUrl),
-                  summary: "Queue PR finalization failed for one or more lanes.",
-                  detail: queueResult.errors.map((entry) => `${entry.laneId}: ${entry.error}`).join("\n"),
-                  warnings: [],
-                }, { graph });
-              } else if (autoLandQueue && queueLandingService) {
-                await updateMissionFinalizationState(runId, {
-                  policy: finalizationPolicy,
-                  status: "landing_queue",
-                  executionComplete: true,
-                  contractSatisfied: false,
-                  blocked: false,
-                  queueGroupId: queueResult.groupId,
-                  prUrls: queueResult.prs.map((entry) => entry.githubUrl),
-                  mergeReadiness: prStrategy.ciGating ? "waiting_for_green" : "queue_landing",
-                  summary: "Execution finished. Queue landing has started and must complete before the mission can close out.",
-                  detail: `Queue group ${queueResult.groupId} created with ${queueResult.prs.length} PR(s).`,
-                  warnings: [],
-                }, { graph });
-                await queueLandingService.startQueue({
-                  groupId: queueResult.groupId,
-                  method: queueMergeMethod,
-                  archiveLane: prStrategy.archiveLaneOnLand ?? false,
-                  autoResolve: autoResolveQueueConflicts,
-                  ciGating: prStrategy.ciGating ?? false,
-                  resolverProvider,
-                  resolverModel: resolverModelId,
-                  reasoningEffort: prStrategy.reasoningEffort ?? null,
-                  permissionMode: prStrategy.permissionMode ?? "guarded_edit",
-                  originSurface: "mission",
-                  originMissionId: mission.id,
-                  originRunId: runId,
-                  originLabel: mission.title,
-                });
-              } else {
-                await updateMissionFinalizationState(runId, {
-                  policy: finalizationPolicy,
-                  status: "completed",
-                  executionComplete: true,
-                  contractSatisfied: true,
-                  blocked: false,
-                  queueGroupId: queueResult.groupId,
-                  prUrls: queueResult.prs.map((entry) => entry.githubUrl),
-                  mergeReadiness: prStrategy.ciGating ? "waiting_for_green" : "operator_review_required",
-                  summary: "Execution and queue PR creation completed.",
-                  detail: `Queue group ${queueResult.groupId} created with ${queueResult.prs.length} PR(s). Queue landing remains operator-driven.`,
-                  warnings: [],
-                  completedAt: nowIso(),
-                }, { graph });
-              }
-            } catch (queueError) {
-              logger.warn("ai_orchestrator.queue_pr_creation_failed", {
-                missionId: mission.id,
-                runId,
-                error: queueError instanceof Error ? queueError.message : String(queueError)
-              });
-              emitOrchestratorMessage(
-                mission.id,
-                `Queue PR creation failed: ${queueError instanceof Error ? queueError.message : String(queueError)}`
-              );
-              await updateMissionFinalizationState(runId, {
-                policy: finalizationPolicy,
-                status: "finalization_failed",
-                executionComplete: true,
-                contractSatisfied: false,
-                blocked: true,
-                blockedReason: queueError instanceof Error ? queueError.message : String(queueError),
-                summary: "Queue PR finalization failed.",
-                detail: queueError instanceof Error ? queueError.message : String(queueError),
-                warnings: [],
-              }, { graph });
-            }
+            missionService.addIntervention({
+              missionId: mission.id,
+              interventionType: "conflict",
+              title: "Result lane merge conflict",
+              body: `ADE assembled a partial result lane but could not finish merging all mission lanes.\n\n${result.detail}`,
+              requestedAction: "Resolve the conflicts in the result lane, then continue from that lane or rerun finalization.",
+              laneId: result.resultLaneId,
+              metadata: {
+                resultLaneId: result.resultLaneId,
+                mergeWarnings: result.warnings,
+              },
+            });
+            emitOrchestratorMessage(
+              mission.id,
+              `Result lane blocked by merge conflicts: ${result.resultLaneId}`
+            );
+          } else {
+            emitOrchestratorMessage(
+              mission.id,
+              `Result lane ready: ${result.resultLaneId}`
+            );
+            await updateMissionFinalizationState(runId, {
+              policy: finalizationPolicy,
+              status: "completed",
+              executionComplete: true,
+              contractSatisfied: true,
+              blocked: false,
+              resultLaneId: result.resultLaneId,
+              summary: result.summary,
+              detail: result.detail,
+              warnings: result.warnings,
+              completedAt: nowIso(),
+            }, { graph });
           }
-        } catch (prStrategyError) {
-          const finalizationErrorMessage = prStrategyError instanceof Error ? prStrategyError.message : String(prStrategyError);
-          logger.debug("ai_orchestrator.pr_strategy_trigger_failed", {
+        } catch (finalizationError) {
+          const finalizationErrorMessage = finalizationError instanceof Error ? finalizationError.message : String(finalizationError);
+          logger.debug("ai_orchestrator.result_lane_finalization_failed", {
             runId,
             missionId: mission.id,
             error: finalizationErrorMessage
           });
           await updateMissionFinalizationState(runId, {
-            policy: resolveMissionFinalizationPolicy(resolveActivePhaseSettings(mission.id).settings.prStrategy ?? { kind: "manual" }),
+            policy: finalizationPolicy,
             status: "finalization_failed",
             executionComplete: true,
             contractSatisfied: false,
@@ -7059,11 +6593,11 @@ Check all worker statuses and continue managing the mission from here. Read work
               : stateDocAfterFinalization.finalization.detail,
             completedAt: unmetRequirements.length > 0 ? null : stateDocAfterFinalization.finalization.completedAt,
           }, { graph });
-          stateDocAfterFinalization = projectRoot
+            stateDocAfterFinalization = projectRoot
             ? await readMissionStateDocument({ projectRoot, runId }).catch(() => null)
             : stateDocAfterFinalization;
         }
-        const finalizationSatisfied = stateDocAfterFinalization?.finalization?.contractSatisfied ?? (prStrategy.kind === "manual");
+        const finalizationSatisfied = stateDocAfterFinalization?.finalization?.contractSatisfied ?? false;
         const finalizationFailed = stateDocAfterFinalization?.finalization?.status === "finalization_failed";
         if (finalizationFailed) {
           transitionMissionStatus(mission.id, "failed", {
@@ -7157,6 +6691,23 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!missionId.length) throw new Error("missionId is required.");
     const initialMission = missionService.get(missionId);
     if (!initialMission) throw new Error(`Mission not found: ${missionId}`);
+    const queueClaimToken = toOptionalString(args.queueClaimToken);
+    if (initialMission.status === "queued") {
+      const claimed = missionService.beginStart(missionId, queueClaimToken ?? null);
+      if (!claimed) {
+        logger.debug("ai_orchestrator.mission_start_claim_skipped", {
+          missionId,
+          queueClaimToken,
+          reason: "queued_claim_not_acquired",
+        });
+        return {
+          started: null,
+          mission: missionService.get(missionId),
+        };
+      }
+    } else if (queueClaimToken) {
+      missionService.clearQueueClaim(missionId, queueClaimToken);
+    }
 
     const missionGoal = initialMission.prompt || initialMission.title;
 
@@ -7406,6 +6957,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
       startupStage = "run_activate";
       const activatedRun = orchestratorService.activateRun(startedRunId);
+      persistMissionLaneIdForRun(startedRunId, missionLaneId);
       transitionMissionStatus(missionId, "in_progress");
       if (initialPhase?.phaseKey.trim().toLowerCase() !== "planning") {
         emitOrchestratorMessage(
@@ -7487,8 +7039,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (typeof launch.laneStrategy === "string") userRules.laneStrategy = launch.laneStrategy;
     if (typeof launch.customInstructions === "string") userRules.customInstructions = launch.customInstructions;
     if (args.defaultExecutorKind) userRules.providerPreference = args.defaultExecutorKind;
+    userRules.closeoutContract = "Promote or assemble one result lane at mission closeout. Never create a PR automatically.";
 
-    // Read phase-based settings and pass budget/recovery/PR/model fields directly into userRules
+    // Read phase-based settings and pass budget/recovery/model fields directly into userRules
     const { settings: phaseSettings } = resolveActivePhaseSettings(missionId);
     const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
     if (coordinatorModelConfig) userRules.coordinatorModel = modelConfigToServiceModel(coordinatorModelConfig);
@@ -7496,7 +7049,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       userRules.recoveryEnabled = phaseSettings.recoveryLoop.enabled;
       userRules.recoveryMaxIterations = phaseSettings.recoveryLoop.maxIterations;
     }
-    if (phaseSettings.prStrategy?.kind) userRules.prStrategy = phaseSettings.prStrategy.kind;
     // Pass budget limits if configured
     const budgetConfig = isRecord(launch.budgetConfig) ? launch.budgetConfig : null;
     if (budgetConfig) {
@@ -9341,7 +8893,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         ? buildMissionCloseoutRequirements({
             mission,
             graph,
-            policy: resolveMissionFinalizationPolicy(resolveActivePhaseSettings(mission.id).settings.prStrategy ?? { kind: "manual" }),
+            policy: resolveMissionFinalizationPolicyForMission(mission.id),
             finalization: stateDoc?.finalization ?? null,
             stateDoc,
           })
@@ -9955,7 +9507,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     startMissionRun,
     cancelRunGracefully,
     cleanupTeamResources,
-    onQueueLandingStateChanged,
 
     onOrchestratorRuntimeEvent(event: OrchestratorRuntimeEvent) {
       if (disposed) return;

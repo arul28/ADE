@@ -170,10 +170,11 @@ function buildNavigationSuggestion(args: {
     const search = new URLSearchParams();
     if (laneId) search.set("laneId", laneId);
     if (sessionId) search.set("sessionId", sessionId);
+    const query = search.toString();
     return {
       surface: "work",
       label: "Open in Work",
-      href: `/work${search.size ? `?${search.toString()}` : ""}`,
+      href: `/work${query ? `?${query}` : ""}`,
       laneId,
       sessionId,
     };
@@ -182,10 +183,11 @@ function buildNavigationSuggestion(args: {
     const search = new URLSearchParams();
     if (missionId) search.set("missionId", missionId);
     if (laneId) search.set("laneId", laneId);
+    const query = search.toString();
     return {
       surface: "missions",
       label: "Open mission",
-      href: `/missions${search.size ? `?${search.toString()}` : ""}`,
+      href: `/missions${query ? `?${query}` : ""}`,
       laneId,
       missionId,
     };
@@ -202,10 +204,11 @@ function buildNavigationSuggestion(args: {
   const search = new URLSearchParams();
   if (laneId) search.set("laneId", laneId);
   if (sessionId) search.set("sessionId", sessionId);
+  const query = search.toString();
   return {
     surface: "lanes",
     label: "Open lane",
-    href: `/lanes${search.size ? `?${search.toString()}` : ""}`,
+    href: `/lanes${query ? `?${query}` : ""}`,
     laneId,
     sessionId,
   };

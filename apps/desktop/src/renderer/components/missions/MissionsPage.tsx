@@ -4,7 +4,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { useSearchParams } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../state/appStore";
-import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT } from "../lanes/laneDesignTokens";
 
 /* ── Store & extracted components ── */
 import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
@@ -16,7 +16,7 @@ import { MissionSettingsDialog } from "./MissionSettingsDialog";
 import { useMissionPolling } from "./useMissionPolling";
 
 import type { CreateDraft, CreateMissionDefaults } from "./CreateMissionDialog";
-import { prewarmCreateMissionDialogCache } from "./CreateMissionDialog";
+import { buildMissionLaunchRequest, prewarmCreateMissionDialogCache } from "./CreateMissionDialog";
 import {
   hasFreshPhaseItems,
   hasFreshPhaseProfiles,
@@ -277,30 +277,14 @@ export default function MissionsPage() {
       const store = useMissionsStore.getState();
       const prompt = draft.prompt.trim();
       if (!prompt) { store.setError("Mission prompt is required."); return; }
-      const resolvedLaneId = draft.laneId.trim() || defaultCreateLaneId || "";
       try {
-        const created = await window.ade.missions.create({
-          title: draft.title.trim() || undefined,
-          prompt,
-          laneId: resolvedLaneId || undefined,
-          priority: draft.priority,
-          agentRuntime: draft.agentRuntime,
-          teamRuntime: draft.teamRuntime,
-          executionPolicy: {
-            prStrategy: draft.prStrategy,
-            ...(draft.teamRuntime ? { teamRuntime: draft.teamRuntime } : {}),
-          },
-          modelConfig: {
-            ...draft.modelConfig,
-            decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
-          },
-          phaseProfileId: draft.phaseProfileId,
-          phaseOverride: draft.phaseOverride,
-          permissionConfig: draft.permissionConfig,
-          computerUse: draft.computerUse,
-          autostart: true,
-          launchMode: "autopilot",
-        });
+        const created = await window.ade.missions.create(
+          buildMissionLaunchRequest({
+            draft,
+            activePhases: draft.phaseOverride,
+            defaultLaneId: defaultCreateLaneId,
+          }),
+        );
         store.setSelectedMissionId(created.id);
         await store.selectMission(created.id);
         await store.refreshMissionList({ preserveSelection: true, silent: true });

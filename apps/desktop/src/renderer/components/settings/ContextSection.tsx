@@ -203,10 +203,7 @@ export function ContextSection() {
 
       const fallbackWarnings = result.warnings.filter((w) =>
         w.code === "generator_failed"
-        || w.code.startsWith("generator_fallback_")
-        || w.code.startsWith("generator_preserved_previous_")
-        || w.code.startsWith("generator_invalid_")
-        || w.code === "generator_overlap_rejected"
+        || w.code.startsWith("generator_")
       );
       const sizeWarnings = result.warnings.filter((w) => w.code === "omitted_due_size");
 
@@ -242,7 +239,7 @@ export function ContextSection() {
               <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.info, padding: "8px 12px", borderRadius: 8, background: `${COLORS.info}08`, border: `1px solid ${COLORS.info}18` }}>
                 {docsStatus?.generation.state === "pending"
                   ? "Context doc generation is queued and will start shortly."
-                  : "Context docs are being generated. This may take a minute depending on your model and project size."}
+                  : "Context docs are being generated. This can take a while depending on your model and project size."}
                 {sourceNote ? ` ${sourceNote}` : ""}
               </div>
             );
@@ -284,7 +281,7 @@ export function ContextSection() {
                     style={outlineButton({ height: 26, padding: "0 10px", fontSize: 10, borderRadius: 8 })}
                     disabled={!canOpen}
                     onClick={() => {
-                      navigate("/files", { state: { openFilePath: doc.preferredPath } });
+                      navigate("/files", { state: { openFilePath: doc.preferredPath, preferPrimaryWorkspace: true } });
                     }}
                   >
                     {isGenerating ? "Generating..." : "Open"}
@@ -320,6 +317,11 @@ export function ContextSection() {
             />
             {loadingModels ? (
               <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted, marginTop: 4 }}>Detecting configured models...</div>
+            ) : null}
+            {!loadingModels && !modelId.trim() ? (
+              <div style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted, marginTop: 4 }}>
+                Auto-refresh stays idle until you select a model.
+              </div>
             ) : null}
           </div>
 
@@ -380,7 +382,7 @@ export function ContextSection() {
 
               {generating ? (
                 <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.info }}>
-                  Context docs are being generated. This may take a minute depending on your model.
+                  Context docs are being generated. This can take a while depending on your model.
                 </div>
               ) : null}
             </div>

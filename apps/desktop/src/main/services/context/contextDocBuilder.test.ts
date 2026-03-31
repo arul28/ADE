@@ -252,6 +252,127 @@ describe("contextDocBuilder", () => {
     expect(fs.readFileSync(path.join(fixture.projectRoot, ".ade", "context", "ARCHITECTURE.ade.md"), "utf8")).toBe(firstArch);
   });
 
+  it("compacts oversized docs instead of falling back", async () => {
+    const fixture = await createFixture();
+    cleanupRoots.push(fixture.projectRoot);
+    cleanupDbs.push(fixture.db);
+
+    const oversizedArchitecture = [
+      buildValidArchitectureDoc("ADE routes trusted repo mutation through Electron main-process services."),
+      "",
+      "## Extra detail",
+      "architecture ".repeat(1200),
+    ].join("\n");
+
+    const result = await runContextDocGeneration({
+      db: fixture.db,
+      logger: createLogger() as any,
+      projectRoot: fixture.projectRoot,
+      projectId: "project-1",
+      packsDir: fixture.packsDir,
+      laneService: {} as any,
+      projectConfigService: {} as any,
+      aiIntegrationService: createAiIntegrationService(JSON.stringify({
+        prd: buildValidPrdDoc("ADE gives operators a durable control plane for coding agents."),
+        architecture: oversizedArchitecture,
+      })) as any,
+    }, {
+      provider: "unified",
+    });
+
+    expect(result.degraded).toBe(false);
+    expect(result.docResults).toEqual([
+      expect.objectContaining({ id: "prd_ade", health: "ready", source: "ai" }),
+      expect.objectContaining({ id: "architecture_ade", health: "ready", source: "ai" }),
+    ]);
+
+    const prdBody = fs.readFileSync(path.join(fixture.projectRoot, ".ade", "context", "PRD.ade.md"), "utf8");
+    const archBody = fs.readFileSync(path.join(fixture.projectRoot, ".ade", "context", "ARCHITECTURE.ade.md"), "utf8");
+    expect(prdBody).toContain("durable control plane for coding agents");
+    expect(archBody).toContain("trusted repo mutation through Electron main-process services");
+    expect(archBody.length).toBeLessThanOrEqual(8_000);
+    expect(result.warnings.some((warning) => warning.code === "generator_invalid_architecture")).toBe(false);
+  });
+
+  it("keeps a valid doc when only its sibling is structurally invalid", async () => {
+    const fixture = await createFixture();
+    cleanupRoots.push(fixture.projectRoot);
+    cleanupDbs.push(fixture.db);
+
+    const invalidArchitecture = [
+      "# ARCHITECTURE.ade",
+      "",
+      "## System shape",
+      "ADE routes trusted repo mutation through Electron main-process services.",
+      "",
+      "## Core services",
+      "- Main process services own git, files, and process execution.",
+      "",
+      "## Data and state",
+      "- Project state lives under `.ade/`.",
+      "",
+      "## Integration points",
+      "- Renderer talks to trusted services over typed IPC.",
+      "",
+    ].join("\n");
+
+    const result = await runContextDocGeneration({
+      db: fixture.db,
+      logger: createLogger() as any,
+      projectRoot: fixture.projectRoot,
+      projectId: "project-1",
+      packsDir: fixture.packsDir,
+      laneService: {} as any,
+      projectConfigService: {} as any,
+      aiIntegrationService: createAiIntegrationService(JSON.stringify({
+        prd: buildValidPrdDoc("ADE gives operators a durable control plane for coding agents."),
+        architecture: invalidArchitecture,
+      })) as any,
+    }, {
+      provider: "unified",
+    });
+
+    expect(result.degraded).toBe(true);
+    expect(result.docResults).toEqual([
+      expect.objectContaining({ id: "prd_ade", health: "ready", source: "ai" }),
+      expect.objectContaining({ id: "architecture_ade", health: "fallback", source: "deterministic" }),
+    ]);
+    expect(result.warnings.some((warning) => warning.code === "generator_invalid_architecture")).toBe(true);
+    expect(result.warnings.some((warning) => warning.code === "generator_fallback_architecture")).toBe(true);
+    expect(result.warnings.some((warning) => warning.code === "generator_fallback_prd")).toBe(false);
+
+    const prdBody = fs.readFileSync(path.join(fixture.projectRoot, ".ade", "context", "PRD.ade.md"), "utf8");
+    const archBody = fs.readFileSync(path.join(fixture.projectRoot, ".ade", "context", "ARCHITECTURE.ade.md"), "utf8");
+    expect(prdBody).toContain("durable control plane for coding agents");
+    expect(archBody).toContain("Auto-generated from curated docs and code digests.");
+  });
+
+  it("records an explicit warning when the model returns narration instead of JSON", async () => {
+    const fixture = await createFixture();
+    cleanupRoots.push(fixture.projectRoot);
+    cleanupDbs.push(fixture.db);
+
+    const result = await runContextDocGeneration({
+      db: fixture.db,
+      logger: createLogger() as any,
+      projectRoot: fixture.projectRoot,
+      projectId: "project-1",
+      packsDir: fixture.packsDir,
+      laneService: {} as any,
+      projectConfigService: {} as any,
+      aiIntegrationService: createAiIntegrationService("Reading the key source docs and recent code changes to produce accurate bootstrap cards.") as any,
+    }, {
+      provider: "unified",
+    });
+
+    expect(result.degraded).toBe(true);
+    expect(result.warnings.some((warning) => warning.code === "generator_unstructured_output")).toBe(true);
+    expect(result.docResults).toEqual([
+      expect.objectContaining({ id: "prd_ade", health: "fallback", source: "deterministic" }),
+      expect.objectContaining({ id: "architecture_ade", health: "fallback", source: "deterministic" }),
+    ]);
+  });
+
   it("rejects overlapping docs and falls back to compact deterministic cards", async () => {
     const fixture = await createFixture();
     cleanupRoots.push(fixture.projectRoot);

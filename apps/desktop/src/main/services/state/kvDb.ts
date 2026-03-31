@@ -489,16 +489,23 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       icon text,
       tags_json text,
       folder text,
+      mission_id text,
+      lane_role text,
       status text not null,
       created_at text not null,
       archived_at text,
       foreign key(project_id) references projects(id),
-      foreign key(parent_lane_id) references lanes(id)
+      foreign key(parent_lane_id) references lanes(id),
+      foreign key(mission_id) references missions(id) on delete cascade on delete set null
     )
   `);
+  try { db.run("alter table lanes add column mission_id text"); } catch {}
+  try { db.run("alter table lanes add column lane_role text"); } catch {}
   db.run("create index if not exists idx_lanes_project_id on lanes(project_id)");
   db.run("create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)");
   db.run("create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)");
+  db.run("create index if not exists idx_lanes_project_mission on lanes(project_id, mission_id)");
+  db.run("create index if not exists idx_lanes_project_role on lanes(project_id, lane_role)");
 
   db.run(`
     create table if not exists lane_state_snapshots (
@@ -1051,12 +1058,16 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       id text primary key,
       project_id text not null,
       lane_id text,
+      mission_lane_id text,
+      result_lane_id text,
       title text not null,
       prompt text not null,
       status text not null,
       priority text not null default 'normal',
       execution_mode text not null default 'local',
       target_machine_id text,
+      queue_claim_token text,
+      queue_claimed_at text,
       outcome_summary text,
       last_error text,
       metadata_json text,
@@ -1064,13 +1075,25 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       updated_at text not null,
       started_at text,
       completed_at text,
+      archived_at text,
       foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id)
+      foreign key(lane_id) references lanes(id),
+      foreign key(mission_lane_id) references lanes(id) on delete set null,
+      foreign key(result_lane_id) references lanes(id) on delete set null
     )
   `);
+  try { db.run("alter table missions add column mission_lane_id text"); } catch {}
+  try { db.run("alter table missions add column result_lane_id text"); } catch {}
+  try { db.run("alter table missions add column queue_claim_token text"); } catch {}
+  try { db.run("alter table missions add column queue_claimed_at text"); } catch {}
+  try { db.run("alter table missions add column archived_at text"); } catch {}
   db.run("create index if not exists idx_missions_project_updated on missions(project_id, updated_at)");
   db.run("create index if not exists idx_missions_project_status on missions(project_id, status)");
   db.run("create index if not exists idx_missions_project_lane on missions(project_id, lane_id)");
+  db.run("create index if not exists idx_missions_project_mission_lane on missions(project_id, mission_lane_id)");
+  db.run("create index if not exists idx_missions_project_result_lane on missions(project_id, result_lane_id)");
+  db.run("drop index if exists idx_missions_queue_claim_token");
+  db.run("create index if not exists idx_missions_project_queue_claim on missions(project_id, queue_claim_token)");
 
   db.run(`
     create table if not exists mission_steps (
@@ -1088,7 +1111,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       updated_at text not null,
       started_at text,
       completed_at text,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id),
       foreign key(lane_id) references lanes(id)
     )
@@ -1106,7 +1129,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       summary text not null,
       payload_json text,
       created_at text not null,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id)
     )
   `);
@@ -1166,7 +1189,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       created_at text not null,
       updated_at text not null,
       created_by text not null,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id),
       foreign key(lane_id) references lanes(id)
     )
@@ -1190,7 +1213,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       created_at text not null,
       updated_at text not null,
       resolved_at text,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id),
       foreign key(lane_id) references lanes(id)
     )
@@ -1251,7 +1274,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       phases_json text not null,
       created_at text not null,
       updated_at text not null,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id),
       foreign key(profile_id) references phase_profiles(id)
     )
@@ -1276,7 +1299,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       started_at text,
       completed_at text,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id)
+      foreign key(mission_id) references missions(id) on delete cascade
     )
   `);
   db.run("create index if not exists idx_orchestrator_runs_project_status on orchestrator_runs(project_id, status)");
@@ -1455,7 +1478,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       payload_json text not null,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(mission_step_id) references mission_steps(id),
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
@@ -1521,7 +1544,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       created_at text not null,
       updated_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id),
@@ -1553,7 +1576,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       metadata_json text,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(thread_id) references orchestrator_chat_threads(id),
       foreign key(attempt_id) references orchestrator_attempts(id),
       foreign key(lane_id) references lanes(id),
@@ -1587,7 +1610,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       suggested_next_actions_json text not null,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id),
@@ -1614,7 +1637,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       declared integer not null default 0,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id)
@@ -1635,7 +1658,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       source_json text not null,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id)
     )
   `);
@@ -1656,7 +1679,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       created_at text not null,
       updated_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id)
@@ -1682,7 +1705,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       metadata_json text,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(lane_id) references lanes(id)
@@ -1716,7 +1739,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       completion_tokens integer,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(step_id) references orchestrator_steps(id),
       foreign key(attempt_id) references orchestrator_attempts(id)
@@ -1734,7 +1757,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       project_id text not null,
       toggles_json text not null,
       updated_at text not null,
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(project_id) references projects(id)
     )
   `);
@@ -1753,7 +1776,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       metadata_json text,
       created_at text not null,
       foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id),
+      foreign key(mission_id) references missions(id) on delete cascade,
       foreign key(run_id) references orchestrator_runs(id),
       foreign key(attempt_id) references orchestrator_attempts(id)
     )
@@ -2184,7 +2207,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       created_at text not null,
       updated_at text not null,
       foreign key(run_id) references orchestrator_runs(id),
-      foreign key(mission_id) references missions(id)
+      foreign key(mission_id) references missions(id) on delete cascade
     )
   `);
   db.run("create index if not exists idx_orchestrator_team_members_run on orchestrator_team_members(run_id)");
@@ -2751,6 +2774,44 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   db.run("create index if not exists idx_budget_usage_records_scope_week on budget_usage_records(scope, scope_id, week_key)");
   db.run("create index if not exists idx_budget_usage_records_week on budget_usage_records(week_key)");
   db.run("create index if not exists idx_budget_usage_records_provider_week on budget_usage_records(provider, week_key)");
+
+  // PR convergence loop: issue inventory tracking
+  db.run(`
+    create table if not exists pr_issue_inventory (
+      id text primary key,
+      pr_id text not null,
+      source text not null,
+      type text not null,
+      external_id text not null,
+      state text not null default 'new',
+      round integer not null default 0,
+      file_path text,
+      line integer,
+      severity text,
+      headline text not null,
+      body text,
+      author text,
+      url text,
+      dismiss_reason text,
+      agent_session_id text,
+      created_at text not null,
+      updated_at text not null,
+      unique(pr_id, external_id)
+    )
+  `);
+  db.run("create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state)");
+
+  // PR pipeline settings: per-PR auto-converge / auto-merge configuration
+  db.run(`
+    create table if not exists pr_pipeline_settings (
+      pr_id text primary key,
+      auto_merge integer not null default 0,
+      merge_method text not null default 'repo_default',
+      max_rounds integer not null default 5,
+      on_rebase_needed text not null default 'pause',
+      updated_at text not null
+    )
+  `);
 }
 
 

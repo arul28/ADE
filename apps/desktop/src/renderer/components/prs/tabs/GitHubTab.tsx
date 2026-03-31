@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import type { GitHubPrListItem, GitHubPrSnapshot, LaneSummary, MergeMethod, PrSummary } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { isMissionResultLane } from "../../lanes/laneUtils";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatters";
 import { PrCiRunningIndicator } from "../shared/prVisuals";
@@ -160,7 +161,7 @@ function GitHubReadOnlyPane({
   onLink: () => Promise<void>;
 }) {
   const linkableLanes = React.useMemo(
-    () => lanes.filter((lane) => !lane.archivedAt && lane.laneType !== "primary"),
+    () => lanes.filter((lane) => !lane.archivedAt && lane.laneType !== "primary" && isMissionResultLane(lane)),
     [lanes],
   );
 
@@ -242,6 +243,7 @@ function GitHubReadOnlyPane({
                 <select
                   value={linkLaneId}
                   onChange={(event) => onLinkLaneChange(event.target.value)}
+                  aria-label="Select result lane to link"
                   style={{
                     flex: 1,
                     height: 34,
@@ -265,6 +267,7 @@ function GitHubReadOnlyPane({
                   type="button"
                   disabled={!linkLaneId || linkingBusy}
                   onClick={() => void onLink()}
+                  aria-label={linkingBusy ? "Linking result lane to pull request" : "Link selected result lane to pull request"}
                   style={primaryButton({ opacity: !linkLaneId || linkingBusy ? 0.5 : 1, borderRadius: 8 })}
                 >
                   <Link size={14} /> {linkingBusy ? "Linking..." : "Link"}

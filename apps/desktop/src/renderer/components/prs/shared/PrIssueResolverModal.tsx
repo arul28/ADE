@@ -183,7 +183,7 @@ export function PrIssueResolverModal({
         justifyContent: "center",
         zIndex: 140,
         overflowY: "auto",
-        padding: "20px 24px 28px",
+        padding: "40px 24px",
       }}
       onClick={() => { if (!modalLocked) onOpenChange(false); }}
     >
@@ -195,7 +195,7 @@ export function PrIssueResolverModal({
         onClick={(event) => event.stopPropagation()}
         style={{
           width: "min(1040px, calc(100vw - 32px))",
-          maxHeight: "calc(100vh - 48px)",
+          maxHeight: "calc(100vh - 80px)",
           overflow: "auto",
           margin: "0 auto",
           background: COLORS.cardBgSolid,

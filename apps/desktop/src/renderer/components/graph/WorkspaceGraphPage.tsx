@@ -56,6 +56,7 @@ import {
 } from "../../lib/integrationLanes";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { isRunOwnedSession } from "../../lib/sessions";
+import { laneMatchesFilter } from "../lanes/laneUtils";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
@@ -577,11 +578,7 @@ function GraphInner() {
         const descendants = collectDescendants(lanes, filters.rootLaneId);
         if (!descendants.has(lane.id) && lane.id !== filters.rootLaneId) return false;
       }
-      if (filters.search.trim().length > 0) {
-        const needle = filters.search.trim().toLowerCase();
-        const hay = `${lane.name} ${lane.branchRef} ${lane.tags.join(" ")}`.toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
+      if (!laneMatchesFilter(lane, false, filters.search)) return false;
       return true;
     },
     [filters, lanes, statusByLane]

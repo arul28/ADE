@@ -1727,7 +1727,7 @@ export function createCoordinatorToolSet(deps: {
     phase: PhaseCard | null;
     phaseKey: string;
     enabled: boolean;
-    maxQuestions: number;
+    maxQuestions: number | null;
     isPlanning: boolean;
   } {
     const phases = resolveMissionPhases(g);
@@ -1739,7 +1739,9 @@ export function createCoordinatorToolSet(deps: {
       phase: current ?? null,
       phaseKey: current?.phaseKey ?? current?.name ?? "",
       enabled: current?.askQuestions.enabled === true,
-      maxQuestions: Math.max(1, Math.min(10, Number(current?.askQuestions.maxQuestions ?? 5) || 5)),
+      maxQuestions: inPlanning && current?.askQuestions.maxQuestions == null
+        ? null
+        : Math.max(1, Math.min(10, Number(current?.askQuestions.maxQuestions ?? 5) || 5)),
       isPlanning: inPlanning,
     };
   }
@@ -1748,7 +1750,7 @@ export function createCoordinatorToolSet(deps: {
     phase: PhaseCard | null;
     phaseKey: string;
     enabled: boolean;
-    maxQuestions: number;
+    maxQuestions: number | null;
   } {
     const policy = resolveCurrentPhaseQuestionPolicy(g);
     return {
@@ -5956,7 +5958,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         // VAL-PLAN-006: Multi-round deliberation — when phase has canLoop=true,
         // bypass the maxQuestions ceiling to allow unbounded ask_user + re-plan cycles.
         const phaseCanLoop = policy.phase?.orderingConstraints?.canLoop === true;
-        if (!phaseCanLoop && priorInterventions.length >= policy.maxQuestions) {
+        if (!phaseCanLoop && policy.maxQuestions != null && priorInterventions.length >= policy.maxQuestions) {
           return {
             ok: false as const,
             error: `This Planning phase already reached its Ask Questions limit (${policy.maxQuestions}). Continue with the best grounded assumptions you can.`,

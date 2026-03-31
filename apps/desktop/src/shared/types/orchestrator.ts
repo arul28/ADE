@@ -683,7 +683,7 @@ export type MissionCloseoutRequirement = {
   source: "declared" | "discovered" | "runtime" | "waiver";
 };
 
-export type MissionFinalizationPolicyKind = "disabled" | "manual" | "integration" | "per-lane" | "queue";
+export type MissionFinalizationPolicyKind = "disabled" | "manual" | "integration" | "per-lane" | "queue" | "result_lane";
 
 export type MissionFinalizationStatus =
   | "idle"
@@ -725,6 +725,7 @@ export type MissionFinalizationState = {
   detail: string | null;
   resolverJobId: string | null;
   integrationLaneId: string | null;
+  resultLaneId: string | null;
   queueGroupId: string | null;
   queueId: string | null;
   activePrId: string | null;

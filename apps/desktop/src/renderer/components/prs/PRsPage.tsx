@@ -9,6 +9,7 @@ import { useAppStore } from "../../state/appStore";
 import { GitHubTab } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
+import { isMissionLaneHiddenByDefault } from "../lanes/laneUtils";
 import { buildPrsRouteSearch, parsePrsRouteState } from "./prsRouteState";
 
 type SurfaceMode = "github" | "workflows";
@@ -37,6 +38,10 @@ function PRsPageInner() {
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
   const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>("integration");
   const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
+  const visibleLanes = React.useMemo(
+    () => lanes.filter((lane) => !isMissionLaneHiddenByDefault(lane)),
+    [lanes],
+  );
 
   React.useEffect(() => {
     if (activeTab !== "normal") {
@@ -289,7 +294,7 @@ function PRsPageInner() {
       <div className="min-h-0 flex-1">
         {activeMode === "github" ? (
           <GitHubTab
-            lanes={lanes}
+            lanes={visibleLanes}
             mergeMethod={mergeMethod}
             selectedPrId={selectedPrId}
             onSelectPr={setSelectedPrId}

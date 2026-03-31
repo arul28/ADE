@@ -367,35 +367,7 @@ export function createMissionPreflightService(args: {
         else capabilityWarnings.push(message);
       }
     }
-
-    const selectedPrStrategy = launch.executionPolicy?.prStrategy;
     const activeLanes = await laneService.list({ includeArchived: false }).catch(() => []);
-    const needsCliConflictResolver =
-      (
-        selectedPrStrategy?.kind === "integration"
-        && (selectedPrStrategy.prDepth ?? "resolve-conflicts") !== "propose-only"
-      )
-      || (
-        selectedPrStrategy?.kind === "queue"
-        && selectedPrStrategy.autoLand === true
-        && selectedPrStrategy.autoResolveConflicts === true
-      );
-    if (needsCliConflictResolver) {
-      const hasCliResolverModel = [
-        ...selected.phases.map((phase) => phase.model.modelId),
-        orchestratorModelId ?? "",
-        selectedPrStrategy?.kind === "queue" ? selectedPrStrategy.conflictResolverModel ?? "" : "",
-      ]
-        .map((modelId) => getModelById(modelId) ?? resolveModelAlias(modelId))
-        .some((d) => d?.isCliWrapped && (d.family === "anthropic" || d.family === "openai"));
-      if (!hasCliResolverModel) {
-        capabilityIssues.push(
-          selectedPrStrategy?.kind === "queue"
-            ? "Queue auto-land is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
-            : "Integration finalization is configured to resolve conflicts automatically, but no compatible Claude/Codex CLI resolver model is configured on the mission."
-        );
-      }
-    }
 
     checklist.push(
       requiredComputerUseKinds.length === 0
@@ -439,8 +411,8 @@ export function createMissionPreflightService(args: {
             id: "capabilities",
             severity: "pass",
             title: "Capability contracts",
-            summary: "Configured evidence and finalization contracts have matching runtime capabilities.",
-            details: ["No blocking capability gaps detected in the selected phase or finalization contract."],
+            summary: "Configured evidence contracts have matching runtime capabilities.",
+            details: ["No blocking capability gaps detected in the selected phase configuration."],
           })
         : toChecklistItem({
             id: "capabilities",
@@ -450,7 +422,7 @@ export function createMissionPreflightService(args: {
               ? "One or more required capabilities are missing for the selected mission contract."
               : "Some optional capability-backed evidence may require fallback or operator review.",
             details: [...capabilityIssues, ...capabilityWarnings],
-            fixHint: "Switch to models that support the required evidence/finalization flow, or relax the phase/finalization contract before launch.",
+            fixHint: "Switch to models that support the required evidence flow, or relax the phase contract before launch.",
           }),
     );
 
@@ -767,11 +739,7 @@ export function createMissionPreflightService(args: {
         worktreeItem.severity === "warning"
           ? "Parallel fan-out may be reduced because available worktrees are below the ideal concurrency target."
           : "ADE can provision or reuse enough active lanes for the expected worker fan-out.",
-        selectedPrStrategy?.kind === "queue"
-          ? "Queue finalization will respect the configured auto-land settings and surface blocked queue steps for operator follow-up."
-          : selectedPrStrategy?.kind === "integration"
-            ? "Integration finalization will open or land PRs using the configured PR depth and conflict policy."
-            : "Mission will complete without a special PR/queue finalization contract.",
+        "Mission closeout always ends with a result lane that contains the consolidated changes. ADE will not auto-open a PR during mission finalization.",
       ],
       knownBlockers: checklist
         .filter((item) => item.severity === "fail")

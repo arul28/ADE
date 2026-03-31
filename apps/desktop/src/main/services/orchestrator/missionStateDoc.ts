@@ -199,7 +199,7 @@ function normalizeFinalizationPolicy(value: unknown): MissionFinalizationPolicy 
   const raw = isRecord(value) ? value : null;
   if (!raw) return null;
   const kind =
-    raw.kind === "disabled" || raw.kind === "manual" || raw.kind === "integration" || raw.kind === "per-lane" || raw.kind === "queue"
+    raw.kind === "disabled" || raw.kind === "manual" || raw.kind === "integration" || raw.kind === "per-lane" || raw.kind === "queue" || raw.kind === "result_lane"
       ? raw.kind
       : null;
   if (!kind) return null;
@@ -255,6 +255,7 @@ function normalizeFinalizationState(value: unknown): MissionFinalizationState | 
     detail: nullableString(raw.detail),
     resolverJobId: nullableString(raw.resolverJobId),
     integrationLaneId: nullableString(raw.integrationLaneId),
+    resultLaneId: nullableString(raw.resultLaneId),
     queueGroupId: nullableString(raw.queueGroupId),
     queueId: nullableString(raw.queueId),
     activePrId: nullableString(raw.activePrId),

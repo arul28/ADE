@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { PaperPlaneTilt, CaretDown, Robot, TerminalWindow, ChatCircle, Hash, Crown, Wrench, UsersThree } from "@phosphor-icons/react";
 import type {
   OrchestratorChatThread,
@@ -33,6 +34,7 @@ const SECTION_HEADER_STYLE: React.CSSProperties = {
   letterSpacing: "1px",
   fontFamily: "var(--font-sans)",
 };
+const MESSAGE_PAGE_SIZE = 80;
 
 function ChannelSection({
   label,
@@ -69,11 +71,22 @@ function ChannelSection({
 export const AgentChannels = React.memo(function AgentChannels({ missionId, threads, onSendMessage }: AgentChannelsProps) {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<OrchestratorChatMessage[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesLoadingMore, setMessagesLoadingMore] = useState(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const selectedThreadIdRef = useRef<string | null>(null);
+  const latestMessagesRequestRef = useRef(0);
+  const prependingMessagesRef = useRef(false);
+
+  useEffect(() => {
+    selectedThreadIdRef.current = selectedThreadId;
+  }, [selectedThreadId]);
 
   // Auto-select first thread (coordinator) if nothing selected
   useEffect(() => {
@@ -113,22 +126,54 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
   }, [threads]);
 
   // Fetch messages for selected thread
-  const refreshMessages = useCallback(async (threadId: string | null) => {
+  const refreshMessages = useCallback(async (
+    threadId: string | null,
+    mode: "replace" | "append-older" = "replace",
+  ) => {
     if (!threadId) {
       setMessages([]);
+      setMessagesError(null);
+      setHasOlderMessages(false);
+      setMessagesLoading(false);
+      setMessagesLoadingMore(false);
       return;
+    }
+    const requestId = latestMessagesRequestRef.current + 1;
+    latestMessagesRequestRef.current = requestId;
+    const before = mode === "append-older" ? messages[0]?.timestamp ?? null : null;
+    if (mode === "replace") {
+      setMessagesLoading(true);
+      setMessagesError(null);
+    } else {
+      prependingMessagesRef.current = true;
+      setMessagesLoadingMore(true);
     }
     try {
       const msgs = await window.ade.orchestrator.getThreadMessages({
         missionId,
         threadId,
-        limit: 200
+        limit: MESSAGE_PAGE_SIZE,
+        before,
       });
-      setMessages(msgs);
-    } catch {
-      // ignore
+      if (latestMessagesRequestRef.current !== requestId) return;
+      setMessages((current) => {
+        if (mode === "append-older") {
+          const seen = new Set(current.map((entry) => entry.id));
+          return [...msgs.filter((entry) => !seen.has(entry.id)), ...current];
+        }
+        return msgs;
+      });
+      setHasOlderMessages(msgs.length >= MESSAGE_PAGE_SIZE);
+    } catch (error) {
+      if (latestMessagesRequestRef.current !== requestId) return;
+      setMessagesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (latestMessagesRequestRef.current === requestId) {
+        setMessagesLoading(false);
+        setMessagesLoadingMore(false);
+      }
     }
-  }, [missionId]);
+  }, [messages, missionId]);
 
   // Initial load when thread changes
   useEffect(() => {
@@ -139,8 +184,8 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
   // Only poll for active threads — closed/completed threads won't receive new messages.
   const isActiveThread = !selectedThread || selectedThread.status === "active";
   const pollMessages = useCallback(() => {
-    void refreshMessages(selectedThreadId);
-  }, [refreshMessages, selectedThreadId]);
+    void refreshMessages(selectedThreadIdRef.current);
+  }, [refreshMessages]);
 
   useMissionPolling(pollMessages, 6_000, isActiveThread && !!selectedThreadId);
 
@@ -158,6 +203,10 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
 
   // Auto-scroll
   useEffect(() => {
+    if (prependingMessagesRef.current) {
+      prependingMessagesRef.current = false;
+      return;
+    }
     if (scrollRef.current && !showJumpToLatest) {
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     }
@@ -189,6 +238,20 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
       setSending(false);
     }
   }, [selectedThreadId, input, sending, onSendMessage, refreshMessages]);
+
+  const loadOlderMessages = useCallback(() => {
+    if (!selectedThreadId || !hasOlderMessages || messagesLoadingMore) return;
+    void refreshMessages(selectedThreadId, "append-older");
+  }, [hasOlderMessages, messagesLoadingMore, refreshMessages, selectedThreadId]);
+
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => scrollRef.current,
+    initialRect: { width: 0, height: 480 },
+    estimateSize: () => 92,
+    overscan: 8,
+  });
+  const shouldVirtualize = messages.length > 40;
 
   const channelName = selectedThread
     ? selectedThread.threadType === "coordinator"
@@ -262,24 +325,84 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
           onScroll={handleScroll}
           className="flex-1 overflow-y-auto px-4 py-3 space-y-2 relative"
         >
+          {selectedThread && hasOlderMessages ? (
+            <div className="sticky top-0 z-10 flex justify-center pb-2">
+              <button
+                type="button"
+                onClick={loadOlderMessages}
+                disabled={messagesLoadingMore}
+                aria-label={messagesLoadingMore ? "Loading older thread messages" : "Load older thread messages"}
+                className="px-3 py-1 text-[10px] font-bold uppercase tracking-[1px] transition-opacity disabled:opacity-50"
+                style={{
+                  background: "#13101A",
+                  border: "1px solid #27272A",
+                  color: "#A78BFA",
+                  fontFamily: "var(--font-sans)",
+                }}
+              >
+                {messagesLoadingMore ? "Loading older messages..." : "Load older messages"}
+              </button>
+            </div>
+          ) : null}
+          {messagesLoading ? (
+            <div className="flex items-center justify-center h-32 text-xs" style={{ color: "#71717A" }}>
+              Loading channel messages...
+            </div>
+          ) : null}
+          {!messagesLoading && messagesError ? (
+            <div className="flex h-32 flex-col items-center justify-center gap-3 text-xs" style={{ color: "#A1A1AA" }}>
+              <span>{messagesError}</span>
+              <Button variant="outline" size="sm" onClick={() => void refreshMessages(selectedThreadId)}>
+                Retry
+              </Button>
+            </div>
+          ) : null}
           {!selectedThread && (
             <div className="flex items-center justify-center h-full text-xs" style={{ color: "#71717A" }}>
               Select a channel to view messages
             </div>
           )}
-          {selectedThread && messages.length === 0 && (
+          {selectedThread && !messagesLoading && !messagesError && messages.length === 0 && (
             <div className="flex items-center justify-center h-32 text-xs" style={{ color: "#71717A" }}>
               No messages yet in this channel.
             </div>
           )}
-          {messages.map((msg) => (
-            <MessageBubble key={msg.id} msg={msg} attemptNameMap={attemptNameMap} />
-          ))}
+          {!messagesLoading && !messagesError && messages.length > 0 && shouldVirtualize ? (
+            <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+              {virtualizer.getVirtualItems().map((virtualRow) => {
+                const msg = messages[virtualRow.index]!;
+                return (
+                  <div
+                    key={msg.id}
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <MessageBubble msg={msg} attemptNameMap={attemptNameMap} />
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+          {!messagesLoading && !messagesError && messages.length > 0 && !shouldVirtualize ? (
+            <>
+              {messages.map((msg) => (
+                <MessageBubble key={msg.id} msg={msg} attemptNameMap={attemptNameMap} />
+              ))}
+            </>
+          ) : null}
 
           {/* Jump to latest */}
           {showJumpToLatest && (
             <button
               onClick={jumpToLatest}
+              aria-label="Jump to the latest channel message"
               className="sticky bottom-2 left-1/2 -translate-x-1/2 px-3 py-1 font-bold shadow-lg hover:opacity-90 transition-opacity flex items-center gap-1"
               style={{
                 background: "#A78BFA",
