@@ -22,7 +22,7 @@ import { getToolMeta } from "./chatToolAppearance";
 import { ChatStatusGlyph, chatStatusTextClass } from "./chatStatusVisuals";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 
-const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
+const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 const RECESSED_BLOCK_CLASS =
   "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09090b] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
 
