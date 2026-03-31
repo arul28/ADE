@@ -22,6 +22,7 @@ import { normalizeBranchName } from "../shared/prHelpers";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "../shared/dirtyWorktree";
 import { deriveIntegrationPrLiveModel } from "../shared/integrationPrModel";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
+import { findLaneBaseNeed, findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 
 /* ---- Outcome dot with design-system colors ---- */
 
@@ -560,7 +561,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     [selectedMergeContext, selectedPr],
   );
   const rebaseNeedByLaneId = React.useMemo(
-    () => new Map(rebaseNeeds.filter((need) => need.behindBy > 0 && !need.dismissedAt).map((need) => [need.laneId, need] as const)),
+    () => new Map(
+      rebaseNeeds
+        .filter((need) => need.kind === "lane_base" && need.behindBy > 0 && !need.dismissedAt)
+        .map((need) => [need.laneId, need] as const),
+    ),
     [rebaseNeeds],
   );
 
@@ -1501,7 +1506,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {mergeSourcesResolved.map((s) => (
           <div key={s.laneId} style={{ marginBottom: 12 }}>
             <PrRebaseBanner laneId={s.laneId} rebaseNeeds={rebaseNeeds} autoRebaseStatuses={autoRebaseStatuses} onTabChange={(tab) => {
-              if (tab === "rebase") setSelectedRebaseItemId(s.laneId);
+              if (tab === "rebase") {
+                const need = findLaneBaseNeed(rebaseNeeds, s.laneId);
+                setSelectedRebaseItemId(need ? rebaseNeedItemKey(need) : null);
+              }
               setActiveTab(tab as "normal" | "queue" | "integration" | "rebase");
             }} />
           </div>
@@ -1852,7 +1860,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 window.location.hash = path.startsWith("/") ? `#${path}` : path;
               }}
               onOpenRebaseTab={(laneId) => {
-                if (laneId) setSelectedRebaseItemId(laneId);
+                if (laneId) {
+                  const need = findMatchingRebaseNeed({
+                    rebaseNeeds,
+                    laneId,
+                    baseBranch: selectedPr.baseBranch,
+                    prId: selectedPr.id,
+                  });
+                  setSelectedRebaseItemId(need ? rebaseNeedItemKey(need) : null);
+                }
                 setActiveTab("rebase");
               }}
               onShowInGraph={(laneId) => {

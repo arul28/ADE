@@ -50,11 +50,24 @@ const CtoPage = React.lazy(() =>
 
 import { useAppStore } from "../../state/appStore";
 
-const GuardLoadingFallback = (
-  <div className="flex h-full w-full items-center justify-center">
-    <div className="text-xs text-muted-fg/60">Loading...</div>
+const StartupSplashScreen = (
+  <div className="flex h-full w-full flex-col items-center justify-center relative overflow-hidden" style={{ background: "var(--color-bg)" }}>
+    {/* Background glow */}
+    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60vw] h-[60vw] max-w-[600px] max-h-[600px] rounded-full opacity-20 blur-[100px] pointer-events-none" style={{ background: "var(--color-accent)" }} />
+    <div className="relative z-10 flex flex-col items-center animate-fade-in-up">
+      <div className="flex items-center justify-center mb-6" style={{ animation: "pulse-glow 2.5s infinite ease-in-out" }}>
+        <img src="./logo.png" alt="ADE Logo" className="w-64 h-64 object-contain" />
+      </div>
+      <div className="flex flex-col items-center gap-2">
+        <div className="text-xl font-bold tracking-tight text-fg">Starting ADE</div>
+        <div className="text-[12px] font-mono text-muted-fg/70 animate-pulse">Initializing local workspace...</div>
+      </div>
+    </div>
   </div>
 );
+
+/** Used by React.lazy Suspense boundaries while route chunks load. */
+const GuardLoadingFallback = StartupSplashScreen;
 
 /* ---------- Per-route error boundary ---------- */
 

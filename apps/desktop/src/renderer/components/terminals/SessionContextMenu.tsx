@@ -85,6 +85,7 @@ export function SessionContextMenu({
             <input
               ref={inputRef}
               type="text"
+              aria-label="Rename session"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {

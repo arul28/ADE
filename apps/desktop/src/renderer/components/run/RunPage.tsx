@@ -9,6 +9,7 @@ import { LaneRuntimeBar } from "./LaneRuntimeBar";
 import { RunNetworkPanel } from "./RunNetworkPanel";
 import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
 import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
+import { toRelativeTime } from "../graph/graphHelpers";
 import type {
   ProcessDefinition,
   ProcessRuntime,
@@ -47,7 +48,7 @@ function envToText(env: Record<string, string> | undefined): string {
 function WelcomeScreen() {
   const openRepo = useAppStore((s) => s.openRepo);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
-  const [recentProjects, setRecentProjects] = useState<Array<{ rootPath: string; displayName: string; exists: boolean }>>([]);
+  const [recentProjects, setRecentProjects] = useState<Array<{ rootPath: string; displayName: string; exists: boolean; lastOpenedAt?: string; laneCount?: number }>>([]);
 
   useEffect(() => {
     window.ade.project.listRecent().then(setRecentProjects).catch(() => {});
@@ -63,61 +64,50 @@ function WelcomeScreen() {
         alignItems: "center",
         justifyContent: "center",
         height: "100%",
-        background: COLORS.pageBg,
+        background: `radial-gradient(circle at 50% 30%, ${COLORS.accent}15 0%, ${COLORS.pageBg} 40%)`,
         gap: 32,
         padding: 48,
       }}
     >
-      <div style={{ textAlign: "center", maxWidth: 480 }}>
+      <div style={{ textAlign: "center", maxWidth: 520 }}>
         <div style={{
           display: "inline-flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 64,
-          height: 64,
-          background: `${COLORS.accent}18`,
-          border: `1px solid ${COLORS.accent}30`,
-          marginBottom: 24,
+          marginBottom: 16,
+          animation: "pulse-glow 3s infinite",
         }}>
-          <Rocket size={32} weight="duotone" style={{ color: COLORS.accent }} />
+          <img src="./logo.png" alt="ADE Logo" style={{ width: 280, height: 280, objectFit: "contain" }} />
         </div>
-        <h1 style={{
-          fontFamily: SANS_FONT,
-          fontSize: 24,
-          fontWeight: 700,
-          color: COLORS.textPrimary,
-          margin: "0 0 8px",
-        }}>
-          Welcome to ADE
-        </h1>
-        <p style={{
-          fontFamily: MONO_FONT,
-          fontSize: 12,
-          color: COLORS.textMuted,
-          margin: 0,
-          lineHeight: 1.6,
-        }}>
-          Open a project folder to get started. ADE will detect your stack,
-          set up lanes, and provide AI-powered context for your development workflow.
-        </p>
       </div>
 
       <button
         type="button"
         onClick={() => void openRepo()}
         style={{
-          ...primaryButton({ height: 44, padding: "0 28px", fontSize: 13 }),
-          gap: 10,
+          ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
+          gap: 12,
+          boxShadow: `0 4px 20px ${COLORS.accent}40`,
+          transition: "transform 0.2s ease, box-shadow 0.2s ease",
+          marginTop: -16, // pull closer to logo
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.transform = "translateY(-2px)";
+          e.currentTarget.style.boxShadow = `0 6px 24px ${COLORS.accent}60`;
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.transform = "none";
+          e.currentTarget.style.boxShadow = `0 4px 20px ${COLORS.accent}40`;
         }}
       >
-        <FolderOpen size={18} weight="regular" />
+        <FolderOpen size={20} weight="regular" />
         OPEN PROJECT
       </button>
 
       {realProjects.length > 0 && (
-        <div style={{ width: "100%", maxWidth: 400 }}>
-          <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>RECENT PROJECTS</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <div style={{ width: "100%", maxWidth: 440, marginTop: 8 }}>
+          <div style={{ ...LABEL_STYLE, marginBottom: 12, textAlign: "center", color: COLORS.textMuted }}>RECENT PROJECTS</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {realProjects.map((rp) => (
               <button
                 key={rp.rootPath}
@@ -126,32 +116,67 @@ function WelcomeScreen() {
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 10,
-                  padding: "10px 14px",
-                  background: COLORS.cardBg,
+                  gap: 12,
+                  padding: "12px 16px",
+                  background: "rgba(255,255,255,0.02)",
                   border: `1px solid ${COLORS.border}`,
+                  borderRadius: 12,
                   color: COLORS.textPrimary,
                   fontFamily: MONO_FONT,
                   fontSize: 12,
                   cursor: "pointer",
                   textAlign: "left",
-                  transition: "border-color 150ms ease, background 150ms ease",
+                  transition: "all 0.2s ease",
+                  backdropFilter: "blur(10px)",
                 }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.borderColor = COLORS.accent + "60";
-                  e.currentTarget.style.background = COLORS.hoverBg;
+                  e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+                  e.currentTarget.style.transform = "scale(1.01)";
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.borderColor = COLORS.border;
-                  e.currentTarget.style.background = COLORS.cardBg;
+                  e.currentTarget.style.background = "rgba(255,255,255,0.02)";
+                  e.currentTarget.style.transform = "none";
                 }}
               >
-                <Folder size={14} weight="regular" style={{ color: COLORS.accent, flexShrink: 0 }} />
-                <div style={{ overflow: "hidden" }}>
-                  <div style={{ fontWeight: 600 }}>{rp.displayName}</div>
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 32,
+                  height: 32,
+                  borderRadius: 8,
+                  background: `${COLORS.accent}15`,
+                  color: COLORS.accent,
+                  flexShrink: 0,
+                }}>
+                  <Folder size={16} weight="regular" />
+                </div>
+                <div style={{ overflow: "hidden", flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{rp.displayName}</div>
                   <div style={{ fontSize: 10, color: COLORS.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {rp.rootPath}
                   </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+                  {rp.laneCount !== undefined && (
+                    <span style={{
+                      fontSize: 10,
+                      background: `${COLORS.accent}20`,
+                      color: COLORS.accent,
+                      padding: "2px 6px",
+                      borderRadius: 10,
+                      fontWeight: 600,
+                    }}>
+                      {rp.laneCount} lane{rp.laneCount !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  {rp.lastOpenedAt && (
+                    <span style={{ fontSize: 9, color: COLORS.textDim }}>
+                      {toRelativeTime(rp.lastOpenedAt)}
+                    </span>
+                  )}
                 </div>
               </button>
             ))}

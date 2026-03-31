@@ -271,8 +271,10 @@ cd apps/desktop && npx vitest run [affected existing test files]
 
 ### 6a. Check vitest workspace config
 
-Read `apps/desktop/vitest.workspace.ts` and verify every new test file matches an include pattern:
-- Unit: `src/**/*.test.{ts,tsx}`
+Read `apps/desktop/vitest.workspace.ts` and verify every new test file matches one of the three workspace project include patterns:
+- `unit-main`: `src/main/**/*.test.{ts,tsx}`
+- `unit-renderer`: `src/renderer/**/*.test.{ts,tsx}`
+- `unit-shared`: `src/shared/**/*.test.{ts,tsx}` and `src/preload/**/*.test.{ts,tsx}`
 
 If a test file does NOT match, update the workspace config.
 

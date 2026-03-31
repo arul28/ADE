@@ -322,6 +322,48 @@ describe("prService.createFromLane", () => {
     expect(result.baseBranch).toBe("main");
   });
 
+  it("uses the lane baseRef when legacy primary parent metadata disagrees with the current primary branch", async () => {
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("stop after payload capture")),
+    });
+    const laneService = makeLaneService([
+      makeFakeLane({
+        parentLaneId: "lane-primary",
+        baseRef: "refs/heads/main",
+      }),
+      makeFakeLane({
+        id: "lane-primary",
+        name: "Primary",
+        laneType: "primary",
+        baseRef: "refs/heads/release/2026",
+        branchRef: "refs/heads/release/2026",
+        parentLaneId: null,
+      }),
+    ]);
+
+    const { service } = buildService({ githubService: ghService, laneService });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "description",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow('Failed to create pull request for "my-feature" → "main": stop after payload capture');
+
+    expect(ghService.apiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        body: expect.objectContaining({
+          head: "my-feature",
+          base: "main",
+        }),
+      }),
+    );
+  });
+
   it("throws when GitHub returns an invalid PR number", async () => {
     const ghService = makeGithubService({
       apiRequest: vi.fn().mockResolvedValue({

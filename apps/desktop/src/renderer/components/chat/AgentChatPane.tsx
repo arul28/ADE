@@ -103,7 +103,7 @@ export type PendingSteerEntry = {
   text: string;
 };
 
-function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
+export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   turnActive: boolean;
   pendingInputs: DerivedPendingInput[];
   pendingSteers: PendingSteerEntry[];
@@ -479,6 +479,7 @@ export function AgentChatPane({
   modelSelectionLocked = false,
   permissionModeLocked = false,
   presentation,
+  embeddedWorkLayout = false,
   onSessionCreated,
 }: {
   laneId: string | null;
@@ -493,6 +494,8 @@ export function AgentChatPane({
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
   presentation?: ChatSurfacePresentation;
+  /** Work tab draft: flatter shell, no duplicate header chrome above the composer. */
+  embeddedWorkLayout?: boolean;
   onSessionCreated?: (sessionId: string) => void | Promise<void>;
 }) {
   const navigate = useNavigate();
@@ -1773,14 +1776,14 @@ export function AgentChatPane({
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          {laneId && laneDisplayLabel ? (
+          {laneId && laneDisplayLabel && laneDisplayLabel !== laneId ? (
             <button
               type="button"
               className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] px-2 py-1 font-sans text-[11px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg/70"
               title={`Go to lane: ${laneDisplayLabel}`}
               onClick={() => {
                 selectLane(laneId);
-                navigate("/lanes");
+                navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
               }}
             >
               <GitBranch size={11} weight="regular" />
@@ -1938,12 +1941,14 @@ export function AgentChatPane({
     </div>
   );
 
+  const embedDraft = embeddedWorkLayout && forceDraft;
   return (
     <>
       <ChatSurfaceShell
         mode={surfaceMode}
         accentColor={presentation?.accentColor ?? draftAccent}
-        header={shellHeader}
+        className={embedDraft ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
+        header={embedDraft ? undefined : shellHeader}
         footer={
           <AgentChatComposer
             surfaceMode={surfaceMode}
@@ -2072,7 +2077,7 @@ export function AgentChatPane({
             }}
             promptSuggestion={promptSuggestion}
             subagentSnapshots={selectedSubagentSnapshots}
-            chatHasMessages={selectedEvents.length > 0}
+            chatHasMessages={selectedEvents.some(env => env.event.type === "user_message" || env.event.type === "text")}
             pendingSteers={pendingSteers}
             onCancelSteer={(steerId) => {
               if (selectedSessionId) {

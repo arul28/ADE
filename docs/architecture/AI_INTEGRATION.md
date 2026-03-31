@@ -410,6 +410,12 @@ The launch resolver checks candidates in order: bundled proxy path (from `proces
 | `get_lane_status` | Get current status of a specific lane | No |
 | `list_lanes` | List all active lanes with summary status | No |
 | `commit_changes` | Stage and commit changes in a lane | Yes |
+| `pr_get_checks` | Get current CI checks for a pull request | No |
+| `pr_get_review_comments` | Fetch actionable review comments, reviews, and check status | No |
+| `pr_refresh_issue_inventory` | Refresh the PR issue inventory (checks, threads, comments) | No |
+| `pr_rerun_failed_checks` | Rerun failed CI checks for a pull request | Yes |
+| `pr_reply_to_review_thread` | Reply to a GitHub PR review thread | Yes |
+| `pr_resolve_review_thread` | Resolve a GitHub PR review thread | Yes |
 
 #### Resource Providers
 
@@ -1521,6 +1527,8 @@ type ChatEvent =
   | { type: "approval_request"; itemId: string; kind: "command" | "file_change"; description: string; detail: unknown }
   | { type: "system_notice"; noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error"; message: string; detail?: string | AgentChatNoticeDetail; steerId?: string }
   | { type: "status"; turnStatus: "started" | "completed" | "interrupted" | "failed"; error?: string }
+  | { type: "subagent_started"; taskId: string; description: string; turnId?: string }
+  | { type: "subagent_result"; taskId: string; status: "completed" | "stopped" | "failed"; summary: string; turnId?: string }
   | { type: "error"; message: string; errorInfo?: string }
   | { type: "done"; turnId: string; status: "completed" | "interrupted" | "failed"; model: string; modelId?: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number }; costUsd?: number };
 
@@ -1577,10 +1585,10 @@ send({ method: "initialized", params: {} });
 |---|---|---|
 | `createSession()` | `thread/start` | Params: `model`, `cwd` (lane worktree), `approvalPolicy`, `sandbox` |
 | `sendMessage()` | `turn/start` | Input array: `[{ type: "text", text }, ...attachments]` |
-| `steer()` | `turn/steer` | Appends to in-flight turn; cannot change model/sandbox. Each steer is assigned a `steerId` and queued if the turn is busy (up to 10). |
-| `cancelSteer()` | N/A | Removes a queued steer by `steerId`. Codex steers are delivered immediately so cancel is only relevant for Claude/unified queues. |
-| `editSteer()` | N/A | Updates the text of a queued steer in place by `steerId`. |
-| `interrupt()` | `turn/interrupt` | Turn completes with `status: "interrupted"` |
+| `steer()` | `turn/steer` | Appends to in-flight turn; cannot change model/sandbox |
+| `cancelSteer()` | N/A | Cancel a pending steer before it is delivered |
+| `editSteer()` | N/A | Replace pending steer text before it is delivered |
+| `interrupt()` | `turn/interrupt` | Turn completes with `status: "interrupted"`. Idempotent — second call is a no-op. Claude/unified runtimes emit `subagent_result` "stopped" for active subagents. |
 | `resumeSession()` | `thread/resume` | Params: `threadId`, optional `personality` |
 | `listSessions()` | `thread/list` | Filter by `cwd` to scope to lane |
 | `approveToolUse()` | Response to `requestApproval` | Payload: `accept`/`acceptForSession`/`decline`/`cancel` |

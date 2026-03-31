@@ -578,7 +578,7 @@ function GraphInner() {
         const descendants = collectDescendants(lanes, filters.rootLaneId);
         if (!descendants.has(lane.id) && lane.id !== filters.rootLaneId) return false;
       }
-      if (!laneMatchesFilter(lane, false, filters.search)) return false;
+      if (!laneMatchesFilter(lane, /* isPinned */ false, filters.search)) return false;
       return true;
     },
     [filters, lanes, statusByLane]
@@ -2553,13 +2553,10 @@ function GraphInner() {
   ]), []);
 
   const matchingSearchNodes = React.useMemo(() => {
-    const needle = filters.search.trim().toLowerCase();
-    if (!needle) return [];
-    return nodes.filter((node) => {
-      const lane = node.data.lane;
-      const hay = `${lane.name} ${lane.branchRef} ${lane.tags.join(" ")}`.toLowerCase();
-      return hay.includes(needle);
-    });
+    if (!filters.search.trim()) return [];
+    return nodes.filter((node) =>
+      laneMatchesFilter(node.data.lane, /* isPinned */ false, filters.search)
+    );
   }, [filters.search, nodes]);
 
   const focusSearchResults = React.useCallback(() => {

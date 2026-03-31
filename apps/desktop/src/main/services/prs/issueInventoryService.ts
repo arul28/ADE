@@ -13,6 +13,7 @@ import type {
   PrReviewThread,
 } from "../../../shared/types";
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../shared/types";
+import { isNoisyIssueComment } from "./resolverUtils";
 import { nowIso } from "../shared/utils";
 
 // ---------------------------------------------------------------------------
@@ -152,19 +153,7 @@ function rowToItem(row: InventoryRow): IssueInventoryItem {
 
 const DEFAULT_MAX_ROUNDS = 5;
 
-const NOISY_AUTHORS = new Set(["vercel", "vercel[bot]", "mintlify", "mintlify[bot]"]);
-const NOISY_COMMENT_PATTERNS = [
-  /\[vc\]:/i,
-  /mintlify-preview/i,
-  /this is an auto-generated comment/i,
-  /pre-merge checks/i,
-  /thanks for using \[coderabbit\]/i,
-  /<!-- internal state/i,
-  /walkthrough/i,
-  /@codex review/i,
-];
-
-function computeConvergenceStatus(items: IssueInventoryItem[]): ConvergenceStatus {
+function computeConvergenceStatus(items: IssueInventoryItem[], maxRounds: number = DEFAULT_MAX_ROUNDS): ConvergenceStatus {
   let totalNew = 0;
   let totalFixed = 0;
   let totalDismissed = 0;
@@ -174,31 +163,35 @@ function computeConvergenceStatus(items: IssueInventoryItem[]): ConvergenceStatu
 
   const roundMap = new Map<number, ConvergenceRoundStat>();
   for (const item of items) {
-    if (item.state === "new") totalNew++;
-    else if (item.state === "fixed") totalFixed++;
-    else if (item.state === "dismissed") totalDismissed++;
-    else if (item.state === "escalated") totalEscalated++;
-    else if (item.state === "sent_to_agent") totalSentToAgent++;
+    switch (item.state) {
+      case "new": totalNew++; break;
+      case "fixed": totalFixed++; break;
+      case "dismissed": totalDismissed++; break;
+      case "escalated": totalEscalated++; break;
+      case "sent_to_agent": totalSentToAgent++; break;
+    }
 
     if (item.round > currentRound) currentRound = item.round;
 
     if (item.round > 0) {
       const stat = roundMap.get(item.round) ?? { round: item.round, newCount: 0, fixedCount: 0, dismissedCount: 0 };
-      if (item.state === "sent_to_agent" || item.state === "new") stat.newCount++;
-      if (item.state === "fixed") stat.fixedCount++;
-      if (item.state === "dismissed") stat.dismissedCount++;
+      switch (item.state) {
+        case "new": case "sent_to_agent": stat.newCount++; break;
+        case "fixed": stat.fixedCount++; break;
+        case "dismissed": stat.dismissedCount++; break;
+      }
       roundMap.set(item.round, stat);
     }
   }
 
   const issuesPerRound = Array.from(roundMap.values()).sort((a, b) => a.round - b.round);
-  const lastRoundStat = issuesPerRound[issuesPerRound.length - 1];
-  const isConverging = lastRoundStat ? (lastRoundStat.fixedCount + lastRoundStat.dismissedCount) > 0 : false;
-  const canAutoAdvance = totalNew > 0 && currentRound < DEFAULT_MAX_ROUNDS;
+  const lastRoundStat = issuesPerRound.at(-1);
+  const isConverging = lastRoundStat != null && (lastRoundStat.fixedCount + lastRoundStat.dismissedCount) > 0;
+  const canAutoAdvance = totalNew > 0 && currentRound < maxRounds;
 
   return {
     currentRound,
-    maxRounds: DEFAULT_MAX_ROUNDS,
+    maxRounds,
     issuesPerRound,
     totalNew,
     totalFixed,
@@ -230,6 +223,23 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       [prId, state],
     ).map(rowToItem);
   }
+
+  function readPipelineSettings(prId: string): PipelineSettings {
+    const row = db.get<{
+      auto_merge: number;
+      merge_method: string;
+      max_rounds: number;
+      on_rebase_needed: string;
+    }>("select auto_merge, merge_method, max_rounds, on_rebase_needed from pr_pipeline_settings where pr_id = ?", [prId]);
+    if (!row) return { ...DEFAULT_PIPELINE_SETTINGS };
+    return {
+      autoMerge: row.auto_merge === 1,
+      mergeMethod: row.merge_method as PipelineSettings["mergeMethod"],
+      maxRounds: row.max_rounds,
+      onRebaseNeeded: row.on_rebase_needed as PipelineSettings["onRebaseNeeded"],
+    };
+  }
+
 
   function upsertItem(
     prId: string,
@@ -277,10 +287,11 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
 
   function buildSnapshot(prId: string): IssueInventorySnapshot {
     const items = getAllRows(prId).map(rowToItem);
+    const { maxRounds } = readPipelineSettings(prId);
     return {
       prId,
       items,
-      convergence: computeConvergenceStatus(items),
+      convergence: computeConvergenceStatus(items, maxRounds),
     };
   }
 
@@ -328,11 +339,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
 
       for (const comment of comments) {
         if (comment.source !== "issue") continue;
+        if (isNoisyIssueComment(comment)) continue;
         const body = comment.body ?? "";
-        if (!body.trim()) continue;
-        const authorLower = (comment.author ?? "").trim().toLowerCase();
-        if (NOISY_AUTHORS.has(authorLower)) continue;
-        if (NOISY_COMMENT_PATTERNS.some((p) => p.test(body))) continue;
         upsertItem(prId, `comment:${comment.id}`, {
           source: detectSource(comment.author),
           type: "issue_comment",
@@ -401,7 +409,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
 
     getConvergenceStatus(prId: string): ConvergenceStatus {
       const items = getAllRows(prId).map(rowToItem);
-      return computeConvergenceStatus(items);
+      const { maxRounds } = readPipelineSettings(prId);
+      return computeConvergenceStatus(items, maxRounds);
     },
 
     resetInventory(prId: string): void {
@@ -411,23 +420,11 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
     // ----- Pipeline settings (auto-converge / auto-merge) -----
 
     getPipelineSettings(prId: string): PipelineSettings {
-      const row = db.get<{
-        auto_merge: number;
-        merge_method: string;
-        max_rounds: number;
-        on_rebase_needed: string;
-      }>("select auto_merge, merge_method, max_rounds, on_rebase_needed from pr_pipeline_settings where pr_id = ?", [prId]);
-      if (!row) return { ...DEFAULT_PIPELINE_SETTINGS };
-      return {
-        autoMerge: row.auto_merge === 1,
-        mergeMethod: row.merge_method as PipelineSettings["mergeMethod"],
-        maxRounds: row.max_rounds,
-        onRebaseNeeded: row.on_rebase_needed as PipelineSettings["onRebaseNeeded"],
-      };
+      return readPipelineSettings(prId);
     },
 
     savePipelineSettings(prId: string, settings: Partial<PipelineSettings>): void {
-      const current = this.getPipelineSettings(prId);
+      const current = readPipelineSettings(prId);
       const merged = { ...current, ...settings };
       const now = nowIso();
       db.run(

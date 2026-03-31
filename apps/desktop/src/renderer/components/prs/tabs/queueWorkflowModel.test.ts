@@ -92,6 +92,7 @@ describe("queueWorkflowModel", () => {
     const nextRebaseNeed: RebaseNeed = {
       laneId: "lane-next",
       laneName: "Next Lane",
+      kind: "lane_base",
       baseBranch: "main",
       behindBy: 2,
       conflictPredicted: false,

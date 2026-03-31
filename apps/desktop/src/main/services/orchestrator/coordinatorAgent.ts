@@ -1841,7 +1841,7 @@ export class CoordinatorAgent {
           if (p.validationGate.tier !== "none") parts.push(`   Validation: ${p.validationGate.tier.replace("-", " ")} ${p.validationGate.required ? "(required)" : "(optional)"}`);
           if (p.askQuestions.enabled) {
             parts.push(
-              `   Ask Questions: enabled (must ask at least one clarification or confirmation question before finalizing this phase${p.askQuestions.maxQuestions == null ? ", unlimited follow-up rounds allowed" : `, max ${Math.max(1, Math.min(10, Number(p.askQuestions.maxQuestions ?? 5) || 5))} questions`})`
+              `   Ask Questions: enabled (must ask at least one clarification or confirmation question before finalizing this phase${p.askQuestions.maxQuestions == null ? ", unlimited follow-up rounds allowed" : `, max ${Math.max(0, Math.min(10, Number.isFinite(Number(p.askQuestions.maxQuestions)) ? Number(p.askQuestions.maxQuestions) : 5))} questions`})`
             );
           } else {
             parts.push("   Ask Questions: disabled");

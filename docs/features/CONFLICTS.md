@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-24
+> Last updated: 2026-03-31
 
 ---
 
@@ -458,6 +458,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 | External resolver infrastructure | Run artifacts at `.ade/artifacts/packs/external-resolver-runs/<runId>/`, JSON run records (`ade.conflictExternalRun.v1`), pack ref building, context gap detection, commit workflow |
 | Rebase suggestion integration | `rebaseSuggestionService.ts` — detects parent-advanced children, dismiss/defer/emit lifecycle, integrated into Lanes and PR rebase workflows |
 | Queue-aware rebase | `queueRebase.ts` — rebase scans now fetch queue target tracking branches and resolve queue rebase overrides so queued PRs compare against the correct upstream ref rather than the lane's static base branch. The conflict service uses `resolveQueueRebaseOverride()` for both `scanRebaseNeeds` and `getRebaseNeed`, and `rebaseLane` targets the queue comparison ref when a queue override is present. Queue group context is propagated into the rebase need so the UI can display which queue the rebase relates to. |
+| Lane base resolution | The conflict service uses `shouldLaneTrackParent()` and `branchNameFromLaneRef()` from `src/shared/laneBaseResolution.ts` to determine the correct comparison ref for non-queued lanes. Parent tracking is only active when the parent is a non-primary lane. All parent-relative comparisons target `origin/<parent-branch>` for consistency with the lane service's rebase behavior. |
 | Phase 4/5 gap resolution | G3 (risk tooltip hover details), G4 (conflict file diff language detection), G5 (batch conflict assessment) — all resolved |
 
 ### Prediction Engine

@@ -68,7 +68,7 @@ describe("CommitTimeline", () => {
       delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
     }
     if (originalAde === undefined) {
-      delete (globalThis.window as typeof globalThis.window & { ade?: unknown }).ade;
+      delete (globalThis.window as any).ade;
     } else {
       globalThis.window.ade = originalAde;
     }

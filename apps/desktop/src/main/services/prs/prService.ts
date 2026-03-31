@@ -103,6 +103,7 @@ import { buildIntegrationPreflight } from "./integrationPlanning";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
 import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 
 type PullRequestRow = {
   id: string;
@@ -180,9 +181,7 @@ type PrGroupMemberLookupRow = {
 };
 
 function branchNameFromRef(ref: string): string {
-  const trimmed = ref.trim();
-  if (trimmed.startsWith("refs/heads/")) return trimmed.slice("refs/heads/".length);
-  return trimmed;
+  return branchNameFromLaneRef(ref);
 }
 
 function normalizeGroupMemberRole(raw: string): PrGroupMemberRole {
@@ -796,6 +795,7 @@ export function createPrService({
     }
 
     const successorBaseBranch = branchNameFromRef(successorParent.branchRef);
+    const successorParentLaneId = successorParent.laneType === "primary" ? null : successorParent.id;
     const updatedLaneIds: string[] = [];
     const failedLaneIds: string[] = [];
 
@@ -818,7 +818,7 @@ export function createPrService({
         });
         const refreshedChild = {
           ...(allLanesById.get(child.id) ?? child),
-          parentLaneId: successorParent.id,
+          parentLaneId: successorParentLaneId,
           baseRef: successorParent.branchRef,
         };
         allLanesById.set(child.id, refreshedChild);
@@ -838,7 +838,7 @@ export function createPrService({
             failedLaneIds.push(child.id);
             await recordAttentionStatusSafely({
               laneId: child.id,
-              parentLaneId: successorParent.id,
+              parentLaneId: successorParentLaneId,
               parentHeadSha: null,
               state: "rebaseFailed",
               conflictCount: 0,
@@ -849,7 +849,7 @@ export function createPrService({
         }
         const recorded = await recordAttentionStatusSafely({
           laneId: child.id,
-          parentLaneId: successorParent.id,
+          parentLaneId: successorParentLaneId,
           parentHeadSha: null,
           state: "autoRebased",
           conflictCount: 0,
@@ -1941,8 +1941,12 @@ export function createPrService({
     const headBranch = branchNameFromRef(lane.branchRef);
     const parentLane = lane.parentLaneId ? allLanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
     const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
-    const inferredBaseRef = parentLane?.branchRef ?? lane.baseRef ?? primaryLane?.branchRef ?? "main";
-    const baseBranch = (args.baseBranch ?? branchNameFromRef(inferredBaseRef)).trim();
+    const defaultBaseBranch = resolveStableLaneBaseBranch({
+      lane,
+      parent: parentLane,
+      primaryBranchRef: primaryLane?.branchRef ?? null,
+    });
+    const baseBranch = (args.baseBranch ?? defaultBaseBranch).trim();
 
     // Push the branch to remote before creating the PR
     const upstreamCheck = await runGit(
@@ -2726,9 +2730,7 @@ export function createPrService({
       const normalized = normalizeBranchName(rawBranch);
       if (!normalized) return null;
       const byBranch = lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalized);
-      if (byBranch) return byBranch.id;
-      const byBase = lanes.find((lane) => normalizeBranchName(lane.baseRef) === normalized);
-      return byBase?.id ?? null;
+      return byBranch?.id ?? null;
     };
 
     const fallbackTargetLaneId = findLaneIdByBranch(row.base_branch);

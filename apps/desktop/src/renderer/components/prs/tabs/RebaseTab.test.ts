@@ -1,20 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { LaneSummary, RebaseNeed } from "../../../../shared/types";
-import { branchNameFromRef, resolveLaneBaseBranch } from "../shared/laneBranchTargets";
-
-function isPrTargetNeed(need: RebaseNeed, lane: LaneSummary): boolean {
-  const laneBaseBranch = branchNameFromRef(resolveLaneBaseBranch({
-    lane,
-    lanes: [lane],
-    primaryBranchRef: null,
-  }));
-  return Boolean(need.prId) && laneBaseBranch !== branchNameFromRef(need.baseBranch);
-}
+import type { RebaseNeed } from "../../../../shared/types";
+import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 
 function makeNeed(overrides: Partial<RebaseNeed> = {}): RebaseNeed {
   return {
     laneId: "lane-1",
     laneName: "Feature Lane",
+    kind: "lane_base",
     baseBranch: "main",
     behindBy: 3,
     conflictPredicted: false,
@@ -27,41 +19,15 @@ function makeNeed(overrides: Partial<RebaseNeed> = {}): RebaseNeed {
   };
 }
 
-function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
-  return {
-    id: "lane-1",
-    name: "Feature Lane",
-    description: null,
-    laneType: "worktree",
-    baseRef: "release-9",
-    branchRef: "feature/lane",
-    worktreePath: "/tmp/lane",
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
-    isEditProtected: false,
-    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-    color: null,
-    icon: null,
-    tags: [],
-    folder: null,
-    createdAt: "2026-03-30T00:00:00.000Z",
-    archivedAt: null,
-    ...overrides,
-  };
-}
-
 describe("RebaseTab grouping helpers", () => {
-  it("treats a linked PR on a different branch as a PR-target need", () => {
-    expect(isPrTargetNeed(makeNeed({ prId: "pr-1", baseBranch: "main" }), makeLane({ baseRef: "release-9" }))).toBe(true);
+  it("keeps lane-base and PR-target items distinct", () => {
+    expect(makeNeed({ kind: "lane_base" }).kind).toBe("lane_base");
+    expect(makeNeed({ kind: "pr_target", prId: "pr-1" }).kind).toBe("pr_target");
   });
 
-  it("treats a matching linked PR as a lane-base need", () => {
-    expect(isPrTargetNeed(makeNeed({ prId: "pr-1", baseBranch: "release-9" }), makeLane({ baseRef: "release-9" }))).toBe(false);
-  });
-
-  it("treats non-PR suggestions as lane-base needs", () => {
-    expect(isPrTargetNeed(makeNeed({ prId: null, baseBranch: "main" }), makeLane({ baseRef: "release-9" }))).toBe(false);
+  it("uses a stable key that distinguishes item kind", () => {
+    const laneBase = makeNeed({ kind: "lane_base", prId: null, baseBranch: "main" });
+    const prTarget = makeNeed({ kind: "pr_target", prId: "pr-1", baseBranch: "main" });
+    expect(rebaseNeedItemKey(laneBase)).not.toBe(rebaseNeedItemKey(prTarget));
   });
 });

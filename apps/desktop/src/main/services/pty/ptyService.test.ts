@@ -124,7 +124,7 @@ vi.mock("../../utils/terminalSessionSignals", () => ({
   runtimeStateFromOsc133Chunk: mocks.runtimeStateFromOsc133Chunk,
 }));
 
-import { createPtyService } from "./ptyService";
+import { createPtyService, PTY_AI_TITLE_DEBOUNCE_MS } from "./ptyService";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -207,6 +207,7 @@ function createHarness(overrides: {
   const service = createPtyService({
     projectRoot: "/tmp/test-project",
     transcriptsDir: "/tmp/transcripts",
+    chatSessionsDir: "/tmp/chat-sessions",
     laneService: laneService as any,
     sessionService: sessionService as any,
     ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
@@ -448,7 +449,7 @@ describe("ptyService", () => {
           getMode: vi.fn(() => "subscription"),
           summarizeTerminal: vi.fn(async () => ({ text: "Bound title" })),
         };
-        const { service, mockPty, laneService } = createHarness({ aiIntegrationService });
+        const { service, mockPty, laneService, sessionService } = createHarness({ aiIntegrationService });
         await service.create({
           laneId: "lane-1",
           cwd: "/tmp/test-worktree/subdir",
@@ -457,6 +458,11 @@ describe("ptyService", () => {
           rows: 24,
           toolType: "claude",
         });
+        // Mark the metadata file as non-existent so readPersistedChatManuallyNamed returns false
+        const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+        if (createdSessionId) {
+          mocks.existsSyncResults.set(`/tmp/chat-sessions/${createdSessionId}.json`, false);
+        }
 
         laneService.getLaneBaseAndBranch.mockReturnValue({
           worktreePath: "/tmp/other-worktree",
@@ -465,7 +471,7 @@ describe("ptyService", () => {
         });
 
         mockPty._emitter.emit("data", "generated enough output for a better title");
-        await vi.advanceTimersByTimeAsync(6000);
+        await vi.advanceTimersByTimeAsync(PTY_AI_TITLE_DEBOUNCE_MS);
 
         expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
           expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
@@ -684,7 +690,7 @@ describe("ptyService", () => {
         const { service, mockPty } = createHarness();
         await service.create({ laneId: "lane-1", title: "Claude", cols: 80, rows: 24, toolType: "claude" });
 
-        await vi.advanceTimersByTimeAsync(6000);
+        await vi.advanceTimersByTimeAsync(PTY_AI_TITLE_DEBOUNCE_MS);
         mockPty._emitter.emit("data", "\u001b]133;A\u0007");
         await vi.advanceTimersByTimeAsync(2000);
 
@@ -707,7 +713,7 @@ describe("ptyService", () => {
           toolType: "claude-orchestrated",
         });
 
-        await vi.advanceTimersByTimeAsync(6000);
+        await vi.advanceTimersByTimeAsync(PTY_AI_TITLE_DEBOUNCE_MS);
         mockPty._emitter.emit("data", "\u001b]133;A\u0007");
         await vi.advanceTimersByTimeAsync(1499);
         expect(mockPty.kill).not.toHaveBeenCalled();

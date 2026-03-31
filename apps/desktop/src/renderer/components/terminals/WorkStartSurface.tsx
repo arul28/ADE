@@ -1,8 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChatCircleDots,
-  Code,
-  Lightning,
   Terminal,
   ArrowRight,
 } from "@phosphor-icons/react";
@@ -11,7 +9,8 @@ import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { LaneCombobox } from "./LaneCombobox";
+import { COLORS } from "../lanes/laneDesignTokens";
 import { buildTrackedCliStartupCommand, type CliProvider } from "./cliLaunch";
 import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 
@@ -28,87 +27,6 @@ type WorkStartSurfaceProps = {
   }) => Promise<unknown>;
 };
 
-function LaunchModeHero({
-  kind,
-  title,
-  body,
-}: {
-  kind: WorkDraftKind;
-  title: string;
-  body: string;
-}) {
-  const config = {
-    chat: { icon: ChatCircleDots, color: COLORS.accent },
-    cli: { icon: Code, color: COLORS.warning },
-    shell: { icon: Terminal, color: COLORS.success },
-  }[kind];
-  const Icon = config.icon;
-
-  return (
-    <div className="flex items-center gap-3 px-5 py-3.5" style={{ borderBottom: "1px solid rgba(255,255,255, 0.04)" }}>
-      <div
-        className="flex h-8 w-8 shrink-0 items-center justify-center"
-        style={{
-          background: `${config.color}0C`,
-          borderRadius: 8,
-        }}
-      >
-        <Icon size={15} weight="regular" style={{ color: config.color }} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, fontFamily: SANS_FONT, letterSpacing: "-0.01em" }}>{title}</span>
-        </div>
-        <div className="mt-0.5 max-w-2xl" style={{ fontSize: 12, lineHeight: 1.5, color: COLORS.textMuted, fontFamily: SANS_FONT }}>{body}</div>
-      </div>
-    </div>
-  );
-}
-
-function LanePicker({
-  lanes,
-  value,
-  onChange,
-}: {
-  lanes: LaneSummary[];
-  value: string;
-  onChange: (laneId: string) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span style={{ fontSize: 11, fontWeight: 500, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-        Lane
-      </span>
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-none pb-0.5">
-        {lanes.map((lane) => {
-          const isActive = lane.id === value;
-          const laneColor = lane.color ?? COLORS.accent;
-          return (
-            <button
-              key={lane.id}
-              type="button"
-              className="inline-flex shrink-0 items-center gap-2 px-3 py-1.5 transition-colors"
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                fontWeight: isActive ? 500 : 400,
-                border: "1px solid transparent",
-                background: isActive ? "rgba(255,255,255, 0.06)" : "transparent",
-                color: isActive ? COLORS.textPrimary : COLORS.textMuted,
-                borderRadius: 6,
-              }}
-              onClick={() => onChange(lane.id)}
-            >
-              <span className="h-1.5 w-1.5 rounded-full" style={{ background: laneColor }} />
-              <span className="truncate">{lane.name}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 export function WorkStartSurface({
   draftKind,
   lanes,
@@ -116,6 +34,7 @@ export function WorkStartSurface({
   onLaunchPtySession,
 }: WorkStartSurfaceProps) {
   const globallySelectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const selectLaneGlobal = useAppStore((s) => s.selectLane);
   const [selectedLaneId, setSelectedLaneId] = useState<string>(() => {
     if (globallySelectedLaneId && lanes.some((lane) => lane.id === globallySelectedLaneId)) {
       return globallySelectedLaneId;
@@ -129,24 +48,33 @@ export function WorkStartSurface({
     () => lanes.find((lane) => lane.id === selectedLaneId) ?? lanes[0] ?? null,
     [lanes, selectedLaneId],
   );
+
+  const setLaneAndSync = useCallback((laneId: string) => {
+    setSelectedLaneId(laneId);
+    selectLaneGlobal(laneId);
+  }, [selectLaneGlobal]);
+
   useEffect(() => {
     if (!lanes.length) {
       setSelectedLaneId("");
       return;
     }
     if (!selectedLaneId || !lanes.some((lane) => lane.id === selectedLaneId)) {
-      const fallbackLaneId = globallySelectedLaneId && lanes.some((lane) => lane.id === globallySelectedLaneId)
-        ? globallySelectedLaneId
-        : lanes[0]!.id;
+      const fallbackLaneId =
+        globallySelectedLaneId && lanes.some((lane) => lane.id === globallySelectedLaneId)
+          ? globallySelectedLaneId
+          : lanes[0]!.id;
       setSelectedLaneId(fallbackLaneId);
+      selectLaneGlobal(fallbackLaneId);
     }
-  }, [globallySelectedLaneId, lanes, selectedLaneId]);
+  }, [globallySelectedLaneId, lanes, selectedLaneId, selectLaneGlobal]);
 
   const cliPermissionOptions = useMemo(
-    () => getPermissionOptions({
-      family: cliProvider === "claude" ? "anthropic" : "openai",
-      isCliWrapped: true,
-    }),
+    () =>
+      getPermissionOptions({
+        family: cliProvider === "claude" ? "anthropic" : "openai",
+        isCliWrapped: true,
+      }),
     [cliProvider],
   );
 
@@ -192,9 +120,9 @@ export function WorkStartSurface({
   if (!lanes.length) {
     return (
       <div className="flex h-full items-center justify-center px-6" style={{ background: "var(--color-bg)" }}>
-        <div style={{ background: "rgba(255,255,255, 0.03)", padding: "20px 24px", textAlign: "center", borderRadius: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 500, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>No lanes available</div>
-          <div className="mt-2" style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+        <div className="rounded-lg p-5 text-center" style={{ background: "rgba(255,255,255,0.03)" }}>
+          <div className="text-[12px] font-medium text-fg">No lanes available</div>
+          <div className="mt-1.5 text-[11px] text-muted-fg">
             Create or reopen a lane before starting work.
           </div>
         </div>
@@ -202,25 +130,25 @@ export function WorkStartSurface({
     );
   }
 
+  /* ---- Chat draft ---- */
   if (draftKind === "chat") {
     return (
       <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
-        <div style={{ background: "var(--color-bg)", borderBottom: "1px solid rgba(255,255,255, 0.04)" }}>
-          <LaunchModeHero
-            kind="chat"
-            title="New chat"
-            body="Choose the lane, then send the opening prompt."
-          />
-          <div className="px-5 py-3" style={{ borderTop: "1px solid rgba(255,255,255, 0.04)" }}>
-            <LanePicker lanes={lanes} value={selectedLaneId} onChange={setSelectedLaneId} />
-          </div>
+        <div
+          className="flex shrink-0 items-center gap-2.5 px-3 py-1.5"
+          style={{ borderBottom: "1px solid var(--work-pane-border)" }}
+        >
+          <ChatCircleDots size={13} weight="regular" style={{ color: "var(--color-accent)", flexShrink: 0 }} />
+          <span className="text-[11px] font-medium text-muted-fg shrink-0">New chat</span>
+          <LaneCombobox lanes={lanes} value={selectedLaneId} onChange={setLaneAndSync} compact />
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-hidden px-1 pb-1">
           <AgentChatPane
             laneId={selectedLaneId}
             laneLabel={selectedLane?.name ?? selectedLaneId}
             hideSessionTabs
             forceDraftMode
+            embeddedWorkLayout
             onSessionCreated={onOpenChatSession}
           />
         </div>
@@ -228,168 +156,138 @@ export function WorkStartSurface({
     );
   }
 
+  /* ---- CLI draft ---- */
   if (draftKind === "cli") {
     return (
-      <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
-        <div style={{ background: "var(--color-bg)" }}>
-          <LaunchModeHero
-            kind="cli"
-            title="New CLI Tool"
-            body="Launch Claude Code or Codex CLI in a lane. Model selection happens inside the tool."
-          />
-        </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-4 px-5 py-5">
-          <div style={{ padding: 16 }}>
-            <LanePicker lanes={lanes} value={selectedLaneId} onChange={setSelectedLaneId} />
-
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              {[
-                { id: "claude" as const, label: "Claude Code", color: COLORS.warning },
-                { id: "codex" as const, label: "Codex CLI", color: COLORS.info },
-              ].map((option) => {
-                const active = cliProvider === option.id;
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className="inline-flex items-center gap-2 px-3 py-2 transition-colors"
-                    style={{
-                      fontFamily: SANS_FONT,
-                      fontSize: 12,
-                      fontWeight: active ? 500 : 400,
-                      border: "1px solid transparent",
-                      background: active ? "rgba(255,255,255, 0.06)" : "transparent",
-                      color: active ? COLORS.textPrimary : COLORS.textMuted,
-                      borderRadius: 8,
-                    }}
-                    onClick={() => setCliProvider(option.id)}
-                  >
-                    {option.id === "claude"
-                      ? <ClaudeLogo size={14} />
-                      : <CodexLogo size={14} />}
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              {cliPermissionOptions.map((option) => {
-                const active = cliPermissionMode === option.value;
-                const colors = safetyColors(option.safety);
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`inline-flex items-center gap-2 px-3 py-2 transition-colors ${active ? colors.activeBg : ""}`}
-                    style={{
-                      fontFamily: SANS_FONT,
-                      fontSize: 12,
-                      fontWeight: active ? 500 : 400,
-                      border: "1px solid transparent",
-                      background: active ? "rgba(255,255,255, 0.06)" : "transparent",
-                      color: active ? COLORS.textPrimary : COLORS.textMuted,
-                      borderRadius: 8,
-                    }}
-                    onClick={() => setCliPermissionMode(option.value)}
-                    title={option.detail}
-                  >
-                    <Lightning size={11} weight="regular" />
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
+      <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
+        <div
+          className="flex w-full max-w-sm flex-col gap-4 rounded-lg p-5"
+          style={{
+            background: "var(--color-surface)",
+            border: "1px solid var(--work-pane-border)",
+          }}
+        >
+          {/* Lane */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-muted-fg/60 shrink-0">Lane</span>
+            <LaneCombobox lanes={lanes} value={selectedLaneId} onChange={setLaneAndSync} />
           </div>
 
-          <div className="mt-auto flex items-center justify-between gap-3" style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255, 0.04)" }}>
-            <div className="min-w-0">
-              <div style={{ fontSize: 13, fontWeight: 500, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-                {cliProvider === "claude" ? "Claude Code" : "Codex CLI"}
-              </div>
-              <div className="mt-0.5" style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                {lanes.find((lane) => lane.id === selectedLaneId)?.name ?? selectedLaneId}
-              </div>
-            </div>
-            <button
-              type="button"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                height: 32,
-                padding: "0 16px",
-                fontSize: 12,
-                fontWeight: 500,
-                fontFamily: SANS_FONT,
-                color: COLORS.pageBg,
-                background: "var(--color-fg)",
-                border: "none",
-                cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
-                opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
-                borderRadius: 8,
-              }}
-              disabled={!selectedLaneId || launchBusy}
-              onClick={() => void launchCli()}
-            >
-              Open CLI
-              <ArrowRight size={12} weight="regular" />
-            </button>
+          {/* Provider toggle */}
+          <div className="flex items-center gap-1">
+            {([
+              { id: "claude" as const, label: "Claude Code", Logo: ClaudeLogo },
+              { id: "codex" as const, label: "Codex CLI", Logo: CodexLogo },
+            ] as const).map((opt) => {
+              const active = cliProvider === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-md py-2 transition-colors"
+                  style={{
+                    fontSize: 11,
+                    fontWeight: active ? 500 : 400,
+                    border: active ? "1px solid var(--color-accent-muted)" : "1px solid transparent",
+                    background: active ? "var(--color-accent-muted)" : "transparent",
+                    color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => setCliProvider(opt.id)}
+                >
+                  <opt.Logo size={14} />
+                  {opt.label}
+                </button>
+              );
+            })}
           </div>
+
+          {/* Permission pills */}
+          <div className="flex flex-wrap gap-1">
+            {cliPermissionOptions.map((option) => {
+              const active = cliPermissionMode === option.value;
+              const colors = safetyColors(option.safety);
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`ade-work-segmented-item ${active ? colors.activeBg : ""}`}
+                  data-active={active ? "true" : undefined}
+                  onClick={() => setCliPermissionMode(option.value)}
+                  title={option.detail}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Launch */}
+          <button
+            type="button"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-md py-2 text-[11px] font-medium transition-colors"
+            style={{
+              background: "var(--color-fg)",
+              color: "var(--color-bg)",
+              cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
+              opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
+            }}
+            disabled={!selectedLaneId || launchBusy}
+            onClick={() => void launchCli()}
+          >
+            Open {cliProvider === "claude" ? "Claude Code" : "Codex CLI"}
+            <ArrowRight size={12} weight="regular" />
+          </button>
         </div>
       </div>
     );
   }
 
+  /* ---- Shell draft ---- */
   return (
-    <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
-      <div style={{ background: "var(--color-bg)" }}>
-        <LaunchModeHero
-          kind="shell"
-          title="New shell"
-          body="Open a terminal in any lane. No agent wrapper — just a clean shell."
-        />
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-4 px-5 py-5">
-        <div style={{ padding: 16 }}>
-          <LanePicker lanes={lanes} value={selectedLaneId} onChange={setSelectedLaneId} />
-          <div className="mt-4" style={{ background: "rgba(255,255,255, 0.02)", padding: "12px 16px", borderRadius: 10 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>Blank shell session</div>
-            <div className="mt-1" style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              Starts a regular terminal with lane context for manual commands, scripts, or debugging.
+    <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
+      <div
+        className="flex w-full max-w-sm flex-col gap-4 rounded-lg p-5"
+        style={{
+          background: "var(--color-surface)",
+          border: "1px solid var(--work-pane-border)",
+        }}
+      >
+        {/* Lane */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-muted-fg/60 shrink-0">Lane</span>
+          <LaneCombobox lanes={lanes} value={selectedLaneId} onChange={setLaneAndSync} />
+        </div>
+
+        {/* Description */}
+        <div className="rounded-md px-3 py-2.5" style={{ background: "rgba(255,255,255,0.02)" }}>
+          <div className="flex items-center gap-2">
+            <Terminal size={14} weight="regular" className="text-muted-fg/50 shrink-0" />
+            <div>
+              <div className="text-[11px] font-medium text-fg">Shell session</div>
+              <div className="mt-0.5 text-[10px] text-muted-fg/70 leading-relaxed">
+                Terminal with lane context for commands and debugging.
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="mt-auto flex items-center justify-between gap-3" style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255, 0.04)" }}>
-          <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-            {lanes.find((lane) => lane.id === selectedLaneId)?.name ?? selectedLaneId}
-          </div>
-          <button
-            type="button"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              height: 32,
-              padding: "0 16px",
-              fontSize: 12,
-              fontWeight: 500,
-              fontFamily: SANS_FONT,
-              color: COLORS.pageBg,
-              background: "var(--color-fg)",
-              border: "none",
-              cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
-              opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
-              borderRadius: 8,
-            }}
-            disabled={!selectedLaneId || launchBusy}
-            onClick={() => void launchShell()}
-          >
-            Open Shell
-            <ArrowRight size={12} weight="regular" />
-          </button>
-        </div>
+        {/* Launch */}
+        <button
+          type="button"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-md py-2 text-[11px] font-medium transition-colors"
+          style={{
+            background: "var(--color-fg)",
+            color: "var(--color-bg)",
+            cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
+            opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
+          }}
+          disabled={!selectedLaneId || launchBusy}
+          onClick={() => void launchShell()}
+        >
+          Open Shell
+          <ArrowRight size={12} weight="regular" />
+        </button>
       </div>
     </div>
   );

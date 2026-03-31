@@ -161,6 +161,18 @@
 
   --shell-status-running: #34d399;
   --shell-status-attention: #fbbf24;
+
+  /* Work tab (sessions + view panes) */
+  --work-pane-border: rgba(255, 255, 255, 0.06);
+  --work-pane-header-bg: rgba(255, 255, 255, 0.03);
+  --work-sidebar-bg: rgba(255, 255, 255, 0.025);
+
+  /* Work tab combobox / popover */
+  --work-popover-bg: rgba(20, 17, 29, 0.96);
+  --work-popover-border: rgba(255, 255, 255, 0.10);
+  --work-popover-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.08);
+  --work-popover-item-hover: rgba(255, 255, 255, 0.06);
+  --work-popover-item-active: rgba(167, 139, 250, 0.12);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -265,6 +277,16 @@
 
   --shell-status-running: #10b981;
   --shell-status-attention: #d97706;
+
+  --work-pane-border: color-mix(in srgb, var(--color-border) 70%, transparent);
+  --work-pane-header-bg: color-mix(in srgb, var(--color-card) 88%, transparent);
+  --work-sidebar-bg: color-mix(in srgb, var(--color-card) 60%, var(--color-bg));
+
+  --work-popover-bg: color-mix(in srgb, var(--color-card) 96%, white);
+  --work-popover-border: color-mix(in srgb, var(--color-border) 90%, transparent);
+  --work-popover-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(4, 144, 104, 0.06);
+  --work-popover-item-hover: color-mix(in srgb, var(--color-muted) 70%, transparent);
+  --work-popover-item-active: color-mix(in srgb, var(--color-accent) 12%, transparent);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1069,6 +1091,186 @@ h6 {
   width: 12px;
   height: 12px;
   cursor: sw-resize;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Work Tab — Edge-to-Edge Surface Override
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-work-surface.ade-tiling-surface {
+  padding: 0;
+  background: var(--color-bg);
+}
+
+.ade-work-surface .ade-floating-pane {
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.ade-work-surface .ade-floating-pane:hover,
+.ade-work-surface .ade-floating-pane:focus-within {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.ade-work-surface .ade-floating-pane-header {
+  background: transparent;
+  border-bottom: 1px solid var(--work-pane-border);
+  min-height: 28px;
+  padding: 0 8px;
+}
+
+.ade-work-surface .ade-floating-pane-header .ade-pane-title {
+  text-transform: none;
+  letter-spacing: -0.01em;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-muted-fg);
+}
+
+/* Hide drag dots, minimize caret, icon, and meta in Work surface pane headers */
+.ade-work-surface .ade-floating-pane-header .cursor-grab {
+  display: none;
+}
+.ade-work-surface .ade-floating-pane-header button[title="Minimize pane"],
+.ade-work-surface .ade-floating-pane-header button[title="Expand pane"] {
+  display: none;
+}
+.ade-work-surface .ade-floating-pane-header .ade-pane-title + .font-mono {
+  display: none;
+}
+.ade-work-surface .ade-floating-pane-header svg.shrink-0:not(.ade-status-dot) {
+  display: none;
+}
+
+/* Hide the view pane header entirely — no title, no chrome */
+.ade-work-surface [data-pane-id="view"] > .ade-floating-pane-header {
+  display: none;
+}
+
+/* Vertical separator between sessions and view pane */
+.ade-work-surface [data-pane-id="sessions"] {
+  border-right: 1px solid var(--work-pane-border);
+}
+
+/* Lane Combobox Popover */
+
+.ade-lane-popover {
+  position: fixed;
+  z-index: 9999;
+  min-width: 200px;
+  max-width: 280px;
+  max-height: 320px;
+  background: var(--work-popover-bg);
+  border: 1px solid var(--work-popover-border);
+  border-radius: 10px;
+  box-shadow: var(--work-popover-shadow);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: ade-popover-in 120ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ade-lane-popover-search {
+  height: 32px;
+  border: none;
+  border-bottom: 1px solid var(--work-pane-border);
+  background: transparent;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--color-fg);
+  outline: none;
+  width: 100%;
+}
+
+.ade-lane-popover-search::placeholder {
+  color: var(--color-muted-fg);
+  opacity: 0.6;
+}
+
+.ade-lane-popover-list {
+  overflow-y: auto;
+  padding: 4px;
+  flex: 1;
+  min-height: 0;
+}
+
+.ade-lane-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-fg);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  transition: background 80ms ease;
+}
+
+.ade-lane-popover-item:hover,
+.ade-lane-popover-item[data-highlighted="true"] {
+  background: var(--work-popover-item-hover);
+}
+
+.ade-lane-popover-item[data-selected="true"] {
+  background: var(--work-popover-item-active);
+  font-weight: 500;
+}
+
+.ade-lane-popover-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Segmented Control for Work tab */
+
+.ade-work-segmented {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--work-pane-border);
+}
+
+.ade-work-segmented-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 100ms ease, background 100ms ease;
+  outline: none;
+}
+
+.ade-work-segmented-item:hover {
+  color: var(--color-fg);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ade-work-segmented-item[data-active="true"] {
+  color: var(--color-accent);
+  background: var(--color-accent-muted);
+  font-weight: 500;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2447,4 +2649,17 @@ button:active, [role="button"]:active {
 }
 .pull-btn-flash {
   animation: pull-btn-flash 2s ease-in-out infinite;
+}
+
+@keyframes animate-fade-in-up {
+  0% { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up {
+  animation: animate-fade-in-up 0.5s ease-out forwards;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { filter: drop-shadow(0 0 18px var(--color-accent)) drop-shadow(0 0 40px var(--color-accent)); }
+  50% { filter: drop-shadow(0 0 40px var(--color-accent)) drop-shadow(0 0 80px var(--color-accent)); }
 }

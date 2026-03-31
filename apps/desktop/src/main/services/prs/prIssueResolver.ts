@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { getModelById } from "../../../shared/modelRegistry";
 import type {
+  AgentChatExecutionMode,
   IssueInventoryItem,
   LaneSummary,
   PrActionRun,
@@ -22,7 +23,7 @@ import type { createPrService } from "./prService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createIssueInventoryService } from "./issueInventoryService";
-import { mapPermissionMode, readRecentCommits } from "./resolverUtils";
+import { isNoisyIssueComment, mapPermissionMode, readRecentCommits } from "./resolverUtils";
 
 type PreviouslyHandledSummary = {
   fixedCount: number;
@@ -50,6 +51,21 @@ type IssueResolutionPromptArgs = {
   previouslyHandled?: PreviouslyHandledSummary | null;
   /** When provided, use these inventory items instead of raw threads/checks for the issue sections. */
   inventoryItems?: IssueInventoryItem[] | null;
+  runtimeCapabilities?: PrIssueResolutionRuntimeCapabilities | null;
+  detailedIssueContext?: boolean;
+};
+
+type PrIssueResolutionToolSurface = "workflow_tools" | "ade_mcp" | "prompt_only";
+
+type PrIssueResolutionRuntimeCapabilities = {
+  runtimeLabel: string;
+  toolSurface: PrIssueResolutionToolSurface;
+  refreshInventoryTool: string | null;
+  getReviewCommentsTool: string | null;
+  rerunChecksTool: string | null;
+  replyThreadTool: string | null;
+  resolveThreadTool: string | null;
+  executionMode: AgentChatExecutionMode | null;
 };
 
 export type PrIssueResolutionLaunchDeps = {
@@ -69,6 +85,8 @@ type PreparedIssueResolutionPrompt = {
   inventoryNewItems?: IssueInventoryItem[];
   /** The round number assigned (for marking items). */
   roundNumber?: number;
+  /** Resolved runtime capabilities — avoids duplicate resolution in the caller. */
+  runtimeCapabilities: PrIssueResolutionRuntimeCapabilities;
 };
 
 function truncateText(value: string, max: number): string {
@@ -146,26 +164,6 @@ function summarizePrBody(value: string | null | undefined): string | null {
   return truncateText(plain, 420);
 }
 
-const NOISY_BOT_AUTHORS = new Set(["vercel", "vercel[bot]", "mintlify", "mintlify[bot]"]);
-
-const NOISY_BODY_PATTERNS = [
-  /\[vc\]:/i,
-  /mintlify-preview-comment/i,
-  /this is an auto-generated comment: summarize by coderabbit/i,
-  /this is an auto-generated comment: release notes by coderabbit/i,
-  /pre-merge checks/i,
-  /thanks for using \[coderabbit\]/i,
-  /<!-- internal state start -->/i,
-];
-
-function isNoisyIssueComment(comment: PrComment): boolean {
-  const author = comment.author.trim().toLowerCase();
-  const body = (comment.body ?? "").trim();
-  if (!body) return true;
-  if (NOISY_BOT_AUTHORS.has(author)) return true;
-  return NOISY_BODY_PATTERNS.some((pattern) => pattern.test(body));
-}
-
 function formatChecksSummary(checks: PrCheck[], actionRuns: PrActionRun[]): string {
   const failingChecks = checks.filter((check) => check.conclusion === "failure");
   if (failingChecks.length === 0) return "- No actionable failing checks.";
@@ -215,16 +213,54 @@ function formatReviewThreadsSummary(reviewThreads: PrReviewThread[]): string {
   }).join("\n");
 }
 
-function formatIssueCommentsSummary(issueComments: PrComment[]): string {
-  const advisory = issueComments
-    .filter((comment) => comment.source === "issue")
-    .filter((comment) => !isNoisyIssueComment(comment))
+function normalizeCommentBodyForPrompt(value: string | null | undefined, max = 700): string {
+  const normalized = stripMarkupNoise(value ?? "");
+  if (!normalized) return "(no comment body)";
+  return truncateText(normalized, max);
+}
+
+function formatReviewThreadsDetailed(reviewThreads: PrReviewThread[]): string {
+  const actionableThreads = reviewThreads.filter((thread) => !thread.isResolved && !thread.isOutdated);
+  if (actionableThreads.length === 0) return "- No actionable unresolved review threads.";
+
+  return actionableThreads.map((thread, index) => {
+    const location = thread.path
+      ? `${thread.path}${thread.line != null ? `:${thread.line}` : ""}`
+      : "unknown location";
+    const comments = thread.comments.length > 0
+      ? thread.comments.map((comment, commentIndex) => {
+        const author = comment.author?.trim() || "unknown";
+        return `   ${commentIndex + 1}. ${author}\n      ${normalizeCommentBodyForPrompt(comment.body, 800)}${comment.url ? `\n      Comment URL: ${comment.url}` : ""}`;
+      }).join("\n")
+      : "   1. (no comments returned)";
+    return `${index + 1}. Thread ${thread.id} at ${location}${thread.url ? `\n   Thread URL: ${thread.url}` : ""}\n${comments}`;
+  }).join("\n");
+}
+
+function getAdvisoryIssueComments(issueComments: PrComment[]): PrComment[] {
+  return issueComments
+    .filter((comment) => comment.source === "issue" && !isNoisyIssueComment(comment))
     .slice(0, 5);
+}
+
+function formatIssueCommentsSummary(issueComments: PrComment[]): string {
+  const advisory = getAdvisoryIssueComments(issueComments);
   if (advisory.length === 0) return "- No advisory top-level issue comments.";
   return advisory
     .map((comment, index) => {
       const body = truncateText(stripMarkupNoise(comment.body ?? ""), 220);
       return `${index + 1}. ${comment.author}${comment.url ? ` — ${comment.url}` : ""}\n   ${body}`;
+    })
+    .join("\n");
+}
+
+function formatIssueCommentsDetailed(issueComments: PrComment[]): string {
+  const advisory = getAdvisoryIssueComments(issueComments);
+  if (advisory.length === 0) return "- No advisory top-level issue comments.";
+  return advisory
+    .map((comment, index) => {
+      const author = comment.author?.trim() || "unknown";
+      return `${index + 1}. ${author}${comment.url ? ` — ${comment.url}` : ""}\n   ${normalizeCommentBodyForPrompt(comment.body, 700)}`;
     })
     .join("\n");
 }
@@ -287,6 +323,54 @@ function buildSelectedScopeDescription(scope: PrIssueResolutionScope): string {
   return "checks";
 }
 
+function defaultPrIssueResolutionRuntimeCapabilities(): PrIssueResolutionRuntimeCapabilities {
+  return {
+    runtimeLabel: "Unified/API chat with ADE workflow tools",
+    toolSurface: "workflow_tools",
+    refreshInventoryTool: "prRefreshIssueInventory",
+    getReviewCommentsTool: "prGetReviewComments",
+    rerunChecksTool: "prRerunFailedChecks",
+    replyThreadTool: "prReplyToReviewThread",
+    resolveThreadTool: "prResolveReviewThread",
+    executionMode: null,
+  };
+}
+
+function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | undefined): PrIssueResolutionRuntimeCapabilities {
+  const descriptor = modelId ? getModelById(modelId) : null;
+  if (!descriptor || !descriptor.isCliWrapped) {
+    return defaultPrIssueResolutionRuntimeCapabilities();
+  }
+
+  const MCP_TOOLS = {
+    refreshInventoryTool: "pr_refresh_issue_inventory",
+    getReviewCommentsTool: "pr_get_review_comments",
+    rerunChecksTool: "pr_rerun_failed_checks",
+    replyThreadTool: "pr_reply_to_review_thread",
+    resolveThreadTool: "pr_resolve_review_thread",
+  } as const;
+
+  if (descriptor.family === "openai") {
+    return {
+      ...MCP_TOOLS,
+      runtimeLabel: "Codex chat via ADE MCP",
+      toolSurface: "ade_mcp",
+      executionMode: "parallel",
+    };
+  }
+
+  if (descriptor.family === "anthropic") {
+    return {
+      ...MCP_TOOLS,
+      runtimeLabel: "Claude SDK chat via ADE MCP",
+      toolSurface: "ade_mcp",
+      executionMode: "subagents",
+    };
+  }
+
+  return defaultPrIssueResolutionRuntimeCapabilities();
+}
+
 export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): string {
   const actionableThreads = args.reviewThreads.filter((thread) => !thread.isResolved && !thread.isOutdated);
   const availability = getPrIssueResolutionAvailability(args.checks, args.reviewThreads);
@@ -301,11 +385,15 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
   const roundNumber = args.round ?? null;
   const previouslyHandled = args.previouslyHandled ?? null;
   const useInventory = args.inventoryItems != null && args.inventoryItems.length > 0;
+  const runtimeCapabilities = args.runtimeCapabilities ?? defaultPrIssueResolutionRuntimeCapabilities();
+  const detailedIssueContext = args.detailedIssueContext === true;
 
   const promptSections = [
     "You are resolving issues on an existing GitHub pull request inside ADE.",
     "Address every valid issue in the selected scope without asking the user to enumerate them again.",
-    "The issue references below are intentionally compact summaries. Use the linked GitHub thread/check URLs or refresh the issue inventory when you need full detail.",
+    detailedIssueContext
+      ? "The issue sections below include detailed comment bodies fetched from ADE at launch time. Refresh the issue inventory if PR state may have changed since launch."
+      : "The issue references below are intentionally compact summaries. Use the linked GitHub thread/check URLs or refresh the issue inventory when you need full detail.",
     "",
     "PR context",
     `- ADE PR id (for ADE tools): ${args.pr.id}`,
@@ -314,6 +402,7 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     `- Base -> head: ${args.pr.baseBranch} -> ${args.pr.headBranch}`,
     `- Lane: ${args.lane.name}`,
     `- Worktree: ${args.lane.worktreePath}`,
+    `- Runtime: ${runtimeCapabilities.runtimeLabel}`,
     `- Selected scope: ${scopeLabel}`,
   ];
   if (roundNumber != null) {
@@ -344,16 +433,30 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
       formatInventoryItemsSummary(args.inventoryItems!),
     );
   } else {
+    const threadsHeading = detailedIssueContext
+      ? "Current unresolved review threads (detailed context)"
+      : "Current unresolved review threads (summaries + references)";
+    const threadsBody = detailedIssueContext
+      ? formatReviewThreadsDetailed(args.reviewThreads)
+      : formatReviewThreadsSummary(args.reviewThreads);
+    const commentsHeading = detailedIssueContext
+      ? "Advisory top-level issue comments (detailed)"
+      : "Advisory top-level issue comments (filtered)";
+    const commentsBody = detailedIssueContext
+      ? formatIssueCommentsDetailed(args.issueComments)
+      : formatIssueCommentsSummary(args.issueComments);
+
+
     promptSections.push(
       "",
       "Current failing checks",
       formatChecksSummary(args.checks, args.actionRuns),
       "",
-      "Current unresolved review threads (summaries + references)",
-      formatReviewThreadsSummary(args.reviewThreads),
+      threadsHeading,
+      threadsBody,
       "",
-      "Advisory top-level issue comments (filtered)",
-      formatIssueCommentsSummary(args.issueComments),
+      commentsHeading,
+      commentsBody,
     );
   }
 
@@ -396,12 +499,35 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     "",
     "Requirements",
     "- Fix all valid issues in the selected scope, not just the first one.",
-    "- Start by refreshing the PR issue inventory if ADE tools are available, especially if CI or review state may have changed.",
+  );
+
+  if (runtimeCapabilities.toolSurface === "prompt_only") {
+    promptSections.push(
+      "- No live ADE PR tools are available in this session. Use the detailed issue context in this prompt plus the linked GitHub thread/check URLs.",
+      "- If you need fresher PR state than this prompt provides, fetch it manually before making changes.",
+    );
+  } else {
+    const surfaceLabel = runtimeCapabilities.toolSurface === "ade_mcp" ? "ADE MCP tool" : "ADE workflow tool";
+    const toolList = [
+      runtimeCapabilities.refreshInventoryTool,
+      runtimeCapabilities.getReviewCommentsTool,
+      runtimeCapabilities.rerunChecksTool,
+      runtimeCapabilities.replyThreadTool,
+      runtimeCapabilities.resolveThreadTool,
+    ].filter(Boolean).map((t) => `\`${t}\``).join(", ");
+    promptSections.push(
+      `- Start by refreshing the PR issue inventory with ${surfaceLabel} \`${runtimeCapabilities.refreshInventoryTool}\`, especially if CI or review state may have changed.`,
+      `- Use ${surfaceLabel}s instead of assuming GitHub CLI access. Relevant tools include ${toolList}.`,
+    );
+  }
+
+  promptSections.push(
     "- Verify review comments before changing code. Some comments may be stale, incorrect, or already addressed.",
     "- If you work on review comments, reply on the review thread when useful and resolve the thread only after the fix is truly in place or the thread is clearly outdated/invalid.",
-    "- If you are running inside ADE, use ADE-backed PR tools instead of assuming gh auth. The relevant tools include prRefreshIssueInventory, prRerunFailedChecks, prReplyToReviewThread, and prResolveReviewThread.",
     "- If you are running outside ADE, use the linked GitHub thread/check URLs together with your local git and CI tooling.",
-    "- Use parallel agents when they will materially speed up independent fixes.",
+    runtimeCapabilities.executionMode
+      ? "- Use parallel agents or subagents when they will materially speed up independent fixes."
+      : "- Stay focused unless the runtime clearly supports parallel delegation for this session.",
     "- After each set of changes, run the smallest relevant local validation first.",
     "- Before you push, rerun the complete failing test files or suites locally, not just the specific failing test names. Test runners and sharded CI can hide additional failures behind the first error in a file.",
     "- Treat newly added or heavily modified test files as likely regression hotspots, even if CI only surfaced a different failure first.",
@@ -426,6 +552,9 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
 async function preparePrIssueResolutionPrompt(
   deps: PrIssueResolutionLaunchDeps,
   args: PrIssueResolutionStartArgs | PrIssueResolutionPromptPreviewArgs,
+  options: {
+    detailLevel?: "preview" | "launch";
+  } = {},
 ): Promise<PreparedIssueResolutionPrompt> {
   const pr = deps.prService.listAll().find((entry) => entry.id === args.prId) ?? null;
   if (!pr) throw new Error(`PR not found: ${args.prId}`);
@@ -464,6 +593,7 @@ async function preparePrIssueResolutionPrompt(
   let previouslyHandled: PreviouslyHandledSummary | null = null;
   let roundNumber: number | null = null;
   let inventoryNewItems: IssueInventoryItem[] | undefined;
+  const runtimeCapabilities = resolvePrIssueResolutionRuntimeCapabilities(args.modelId);
 
   if (inventoryService) {
     // Sync the inventory with fresh GitHub data
@@ -506,12 +636,15 @@ async function preparePrIssueResolutionPrompt(
       round: roundNumber,
       previouslyHandled,
       inventoryItems: inventoryNewItems ?? null,
+      runtimeCapabilities,
+      detailedIssueContext: options.detailLevel === "launch",
     }),
     title: roundNumber != null && roundNumber > 1
       ? `Resolve PR #${pr.githubPrNumber} issues (round ${roundNumber})`
       : `Resolve PR #${pr.githubPrNumber} issues`,
     inventoryNewItems,
     roundNumber: roundNumber ?? undefined,
+    runtimeCapabilities,
   };
 }
 
@@ -519,7 +652,7 @@ export async function previewPrIssueResolutionPrompt(
   deps: PrIssueResolutionLaunchDeps,
   args: PrIssueResolutionPromptPreviewArgs,
 ): Promise<PrIssueResolutionPromptPreviewResult> {
-  const prepared = await preparePrIssueResolutionPrompt(deps, args);
+  const prepared = await preparePrIssueResolutionPrompt(deps, args, { detailLevel: "preview" });
   return {
     title: prepared.title,
     prompt: prepared.prompt,
@@ -534,7 +667,7 @@ export async function launchPrIssueResolutionChat(
   if (!descriptor) {
     throw new Error(`Unknown model '${args.modelId}'.`);
   }
-  const prepared = await preparePrIssueResolutionPrompt(deps, args);
+  const prepared = await preparePrIssueResolutionPrompt(deps, args, { detailLevel: "launch" });
   const reasoningEffort = args.reasoning?.trim() || undefined;
 
   const session = await deps.agentChatService.createSession({
@@ -555,6 +688,7 @@ export async function launchPrIssueResolutionChat(
     text: prepared.prompt,
     displayText: prepared.title,
     ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(prepared.runtimeCapabilities.executionMode ? { executionMode: prepared.runtimeCapabilities.executionMode } : {}),
   });
 
   // Mark inventory items as sent to agent for this round

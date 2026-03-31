@@ -41,6 +41,7 @@ export type RecentProjectSummary = {
   displayName: string;
   lastOpenedAt: string;
   exists: boolean;
+  laneCount?: number;
 };
 
 export type ProviderMode = "guest" | "subscription";

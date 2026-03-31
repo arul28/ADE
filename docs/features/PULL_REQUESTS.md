@@ -183,7 +183,18 @@ The PR service exposes review thread data through a dedicated GraphQL-backed `ge
 
 Rebase suggestions for queued PRs are now queue-aware. The conflict service calls `fetchQueueTargetTrackingBranches()` before scanning rebase needs, then uses `resolveQueueRebaseOverride()` per lane to determine the correct comparison ref. When a lane belongs to an active merge queue, the rebase targets the queue's tracking branch rather than the lane's static base branch. Queue group context is propagated into the rebase need for display in the rebase UI. AI-assisted rebase (`rebaseLane`) also respects the queue override, and the rebase request accepts `modelId` and `reasoningEffort` parameters for finer control over the AI rebase agent. Permission is set via provider-native fields (`unifiedPermissionMode`).
 
-For non-queued stacked lanes, the conflict service now uses `resolveLaneRebaseTarget()` to determine the comparison ref. When the parent lane is a primary lane, the comparison ref resolves to `origin/<branch>` (the remote tracking branch) rather than the local HEAD. This keeps conflict prediction and rebase suggestions consistent with the lane service's own rebase behavior, which targets the remote tracking branch for primary parents.
+For non-queued stacked lanes, the conflict service uses `resolveLaneRebaseTarget()` combined with the shared `shouldLaneTrackParent()` logic to determine the comparison ref. When the parent is a non-primary lane, the comparison ref resolves to `origin/<parent-branch>`. When the parent is a primary lane (or absent), the lane falls back to its own `baseRef`. This keeps conflict prediction and rebase suggestions consistent with the lane service's own rebase behavior.
+
+### Rebase need kinds
+
+Each `RebaseNeed` now carries a `kind` field distinguishing the source of the rebase suggestion:
+
+- `lane_base` -- the lane is behind its base branch or parent lane.
+- `pr_target` -- the lane's open PR targets a different branch than the lane's computed base, and the lane is behind that PR target.
+
+Both kinds can coexist for the same lane. The renderer-side `rebaseNeedUtils.ts` provides helpers (`rebaseNeedItemKey`, `findLaneBaseNeed`, `findMatchingRebaseNeed`) for deduplication and lookup by kind, PR id, or base branch.
+
+The rebase request also accepts a `forcePushAfterRebase` flag, allowing callers to opt into force-push after a successful rebase when the upstream requires it (e.g., when resolving a PR-target rebase need).
 
 ---
 

@@ -171,10 +171,11 @@ describe("CreatePrModal queue workflow", () => {
     const comboboxes = screen.getAllByRole("combobox");
     await user.selectOptions(comboboxes[0]!, "lane-1");
 
-    // Wait for branches to load, then select a different target branch
+    // Wait for branches to load, then type a different target branch
     await waitFor(() => expect(screen.getByDisplayValue("main")).toBeTruthy());
-    const targetSelect = screen.getByDisplayValue("main");
-    await user.selectOptions(targetSelect, "release-9");
+    const targetInput = screen.getByDisplayValue("main");
+    await user.clear(targetInput);
+    await user.type(targetInput, "release-9");
 
     await user.click(screen.getByRole("button", { name: /next step/i }));
     await user.click(screen.getByRole("button", { name: /create pr/i }));
@@ -196,10 +197,11 @@ describe("CreatePrModal queue workflow", () => {
     const comboboxes = screen.getAllByRole("combobox");
     await user.selectOptions(comboboxes[0]!, "lane-1");
 
-    // Wait for branches to load, then select a different target branch
+    // Wait for branches to load, then type a different target branch
     await waitFor(() => expect(screen.getByDisplayValue("main")).toBeTruthy());
-    const targetSelect = screen.getByDisplayValue("main");
-    await user.selectOptions(targetSelect, "release-9");
+    const targetInput = screen.getByDisplayValue("main");
+    await user.clear(targetInput);
+    await user.type(targetInput, "release-9");
 
     expect(screen.getByText("Lane Needs Attention")).toBeTruthy();
     expect(screen.getByText(/targets release-9, but this lane currently tracks main/i)).toBeTruthy();
@@ -213,10 +215,11 @@ describe("CreatePrModal queue workflow", () => {
     await user.click(screen.getAllByRole("button", { name: /queue workflow/i })[0]!);
     await user.click(screen.getByRole("checkbox", { name: /01 queue lane/i }));
 
-    // Wait for branches to load, then select a different target branch
+    // Wait for branches to load, then type a different target branch
     await waitFor(() => expect(screen.getByDisplayValue("main")).toBeTruthy());
-    const targetSelect = screen.getByDisplayValue("main");
-    await user.selectOptions(targetSelect, "release-9");
+    const targetInput = screen.getByDisplayValue("main");
+    await user.clear(targetInput);
+    await user.type(targetInput, "release-9");
 
     await user.click(screen.getByRole("button", { name: /next step/i }));
     await user.click(screen.getByRole("button", { name: /create pr/i }));

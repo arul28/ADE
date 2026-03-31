@@ -173,6 +173,24 @@ That keeps missions aware of stale project knowledge without forcing the entire 
 
 ---
 
+## Mission queue deduplication
+
+When multiple missions are queued, the runtime uses a claim-token mechanism to prevent duplicate starts from stale orchestrator events. `claimQueuedMissionStart()` acquires an exclusive token under a `BEGIN IMMEDIATE` transaction. A claim is considered stale after 2 minutes, at which point another orchestrator cycle can reclaim the mission. The `queue_claim_token` and `queue_claimed_at` columns on the missions table support this deduplication. Missions with `autostart: false` in their launch metadata are excluded from automatic queue processing.
+
+---
+
+## Mission event pagination
+
+Mission events are paginated via cursor-based loading. `getMissionEvents({ missionId, limit?, before? })` returns a `MissionEventsPage` containing the event slice, a `nextCursor` for the next page, a `hasMore` flag, and any `warnings` generated during deserialization. The default page size is 200 events. The cursor encodes `createdAt::id` for stable ordering. The mission detail view uses this to load recent events eagerly and older events on demand.
+
+---
+
+## Mission detail warnings
+
+When loading a mission detail, the service tracks and surfaces deserialization warnings (`MissionDetailWarning`) for records with invalid JSON in metadata fields. Each warning includes a `code` (`invalid_json` or `truncated_events`), the `source` entity type (mission, step, event, artifact, intervention), the affected `field`, and a human-readable `message`. Warnings are returned alongside the mission detail so the UI can surface data integrity issues without silently dropping records.
+
+---
+
 ## Context and persistence
 
 Mission persistence still includes:
@@ -183,6 +201,7 @@ Mission persistence still includes:
 - artifacts and outcomes
 - mission-pack updates
 - mission lane ownership (lanes track `missionId` and `laneRole` for mission-scoped filtering)
+- mission lane id and result lane id (tracked on the mission record itself)
 
 Mission context remains task-centric rather than identity-centric:
 

@@ -3,6 +3,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
 import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload } from "../../../shared/types";
+import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { fetchQueueTargetTrackingBranches, fetchRemoteTrackingBranch, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { isRecord, nowIso } from "../shared/utils";
 
@@ -133,10 +134,10 @@ export function createRebaseSuggestionService(args: {
 
     if (lane.parentLaneId) {
       const parent = laneById.get(lane.parentLaneId);
-      if (parent) {
+      if (parent && shouldLaneTrackParent({ lane, parent })) {
         let parentHeadSha: string | null;
         if (parent.laneType === "primary") {
-          const parentBranch = parent.branchRef.trim();
+          const parentBranch = branchNameFromLaneRef(parent.branchRef);
           if (!parentBranch) return null;
           if (primaryParentHeadByBranch.has(parentBranch)) {
             parentHeadSha = primaryParentHeadByBranch.get(parentBranch) ?? null;
@@ -164,12 +165,16 @@ export function createRebaseSuggestionService(args: {
       }
     }
 
-    // No parent lane — fall back to baseRef (e.g. "main") for parentless imported lanes.
+    // No parent lane — fall back to baseRef (e.g. "main" or "origin/main") for parentless imported lanes.
     const baseRef = lane.baseRef?.trim();
     if (!baseRef) return null;
     if (lane.laneType === "primary") return null;
-    await fetchRemoteTrackingBranch({ projectRoot, targetBranch: baseRef }).catch(() => {});
-    const baseHeadSha = await readRefHeadSha(`origin/${baseRef}`) ?? await readRefHeadSha(baseRef);
+    const fetchTargetName = baseRef.replace(/^origin\//, "");
+    await fetchRemoteTrackingBranch({ projectRoot, targetBranch: fetchTargetName }).catch(() => {});
+    const comparisonRef = baseRef.startsWith("origin/") ? baseRef : `origin/${fetchTargetName}`;
+    const baseHeadSha =
+      (await readRefHeadSha(comparisonRef))
+      ?? (await readRefHeadSha(fetchTargetName));
     if (!baseHeadSha) return null;
     return {
       parentLaneId: `base:${baseRef}`,

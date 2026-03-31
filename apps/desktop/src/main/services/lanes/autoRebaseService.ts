@@ -6,6 +6,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createLaneService } from "./laneService";
 import type { AutoRebaseEventPayload, AutoRebaseLaneState, AutoRebaseLaneStatus, LaneSummary, RebaseNeed } from "../../../shared/types";
 import { isRecord, nowIso } from "../shared/utils";
+import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 
 type StoredStatus = AutoRebaseLaneStatus & {
   source?: "auto" | "manual";
@@ -92,10 +93,11 @@ function resolveAffectedChainLaneId(
   while (!visited.has(current)) {
     visited.add(current);
     const lane = laneById.get(current);
-    if (!lane?.parentLaneId || !affectedLaneIds.has(lane.parentLaneId)) {
+    const parent = lane?.parentLaneId ? laneById.get(lane.parentLaneId) ?? null : null;
+    if (!lane || !parent || !shouldLaneTrackParent({ lane, parent }) || !affectedLaneIds.has(parent.id)) {
       return current;
     }
-    current = lane.parentLaneId;
+    current = parent.id;
   }
   return laneId;
 }
@@ -169,6 +171,14 @@ export function createAutoRebaseService(args: {
       });
       return null;
     }
+  };
+
+  const resolveTrackedParent = (
+    lane: LaneSummary,
+    laneById: Map<string, LaneSummary>,
+  ): LaneSummary | null => {
+    const parent = lane.parentLaneId ? laneById.get(lane.parentLaneId) ?? null : null;
+    return shouldLaneTrackParent({ lane, parent }) ? parent : null;
   };
 
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
@@ -291,12 +301,14 @@ export function createAutoRebaseService(args: {
   };
 
   const collectDescendantsDepthFirst = (rootLaneId: string, lanes: LaneSummary[]): string[] => {
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const childrenByParent = new Map<string, LaneSummary[]>();
     for (const lane of lanes) {
-      if (!lane.parentLaneId) continue;
-      const children = childrenByParent.get(lane.parentLaneId) ?? [];
+      const parent = resolveTrackedParent(lane, laneById);
+      if (!parent) continue;
+      const children = childrenByParent.get(parent.id) ?? [];
       children.push(lane);
-      childrenByParent.set(lane.parentLaneId, children);
+      childrenByParent.set(parent.id, children);
     }
     for (const [parent, children] of childrenByParent.entries()) {
       childrenByParent.set(parent, [...children].sort(byCreatedAtAsc));
@@ -341,8 +353,8 @@ export function createAutoRebaseService(args: {
       let baseBranchOverride: string | undefined;
       let parent: LaneSummary | null = null;
       if (lane.parentLaneId) {
-        parent = laneById.get(lane.parentLaneId) ?? null;
-        if (!parent) {
+        const rawParent = laneById.get(lane.parentLaneId) ?? null;
+        if (!rawParent) {
           setStatus({
             laneId: lane.id,
             parentLaneId: lane.parentLaneId,
@@ -355,9 +367,12 @@ export function createAutoRebaseService(args: {
           blockedLaneId = lane.id;
           continue;
         }
-        parentHeadSha = await safeGetHeadSha(parent.worktreePath);
-        if (disposed) return;
-        targetLabel = parent.name;
+        if (shouldLaneTrackParent({ lane, parent: rawParent })) {
+          parent = rawParent;
+          parentHeadSha = await safeGetHeadSha(parent.worktreePath);
+          if (disposed) return;
+          targetLabel = parent.name;
+        }
       }
 
       if (blocked) {
@@ -366,7 +381,7 @@ export function createAutoRebaseService(args: {
         }
         setStatus({
           laneId: lane.id,
-          parentLaneId: lane.parentLaneId,
+          parentLaneId: parent?.id ?? null,
           parentHeadSha: null,
           state: "rebasePending",
           conflictCount: 0,
@@ -404,7 +419,7 @@ export function createAutoRebaseService(args: {
         blockedLaneId = lane.id;
         setStatus({
           laneId: lane.id,
-          parentLaneId: lane.parentLaneId,
+          parentLaneId: parent?.id ?? null,
           parentHeadSha,
           state: "rebaseConflict",
           conflictCount: Math.max(1, need.conflictingFiles.length),
@@ -413,7 +428,7 @@ export function createAutoRebaseService(args: {
         continue;
       }
 
-      if (!lane.parentLaneId) {
+      if (!parent) {
         baseBranchOverride = need.baseBranch;
         targetLabel = need.baseBranch || lane.baseRef || lane.branchRef || lane.name;
       }
@@ -433,7 +448,7 @@ export function createAutoRebaseService(args: {
         const conflictHint = /conflict|could not apply|resolve/i.test(rebaseRun.run.error);
         setStatus({
           laneId: lane.id,
-          parentLaneId: lane.parentLaneId,
+          parentLaneId: parent?.id ?? null,
           parentHeadSha,
           state: conflictHint ? "rebaseConflict" : "rebaseFailed",
           conflictCount: conflictHint ? 1 : 0,
@@ -457,11 +472,11 @@ export function createAutoRebaseService(args: {
 
         setStatus({
           laneId: lane.id,
-          parentLaneId: lane.parentLaneId,
+          parentLaneId: parent?.id ?? null,
           parentHeadSha,
           state: "autoRebased",
           conflictCount: 0,
-          message: lane.parentLaneId
+          message: parent
             ? `Rebased and pushed automatically after '${targetLabel}' advanced.`
             : `Rebased and pushed automatically onto '${targetLabel}'.`
         });
@@ -485,7 +500,7 @@ export function createAutoRebaseService(args: {
         const pushError = error instanceof Error ? error.message : String(error);
         setStatus({
           laneId: lane.id,
-          parentLaneId: lane.parentLaneId,
+          parentLaneId: parent?.id ?? null,
           parentHeadSha,
           state: "rebaseFailed",
           conflictCount: 0,

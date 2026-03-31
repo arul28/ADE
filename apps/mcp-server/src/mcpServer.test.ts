@@ -207,7 +207,110 @@ function createRuntime() {
       createQueuePrs: vi.fn(async () => ({ groupId: "group-1", prs: [] })),
       createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
       getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
-      landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" }))
+      landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" })),
+      getChecks: vi.fn(async () => [
+        {
+          name: "ci / unit",
+          status: "completed",
+          conclusion: "success",
+          detailsUrl: "https://example.com/check/1",
+          startedAt: null,
+          completedAt: null,
+        },
+      ]),
+      getComments: vi.fn(async () => [
+        {
+          id: "comment-1",
+          author: "reviewer",
+          authorAvatarUrl: null,
+          body: "Please fix the loading state.",
+          source: "issue",
+          url: "https://example.com/comments/1",
+          path: null,
+          line: null,
+          createdAt: "2026-03-17T19:00:00.000Z",
+          updatedAt: "2026-03-17T19:00:00.000Z",
+        },
+      ]),
+      getReviews: vi.fn(async () => [
+        {
+          reviewer: "reviewer",
+          reviewerAvatarUrl: null,
+          state: "changes_requested",
+          body: "Needs work.",
+          submittedAt: "2026-03-17T19:00:00.000Z",
+        },
+      ]),
+      getActionRuns: vi.fn(async () => [
+        {
+          id: 71,
+          name: "CI",
+          status: "completed",
+          conclusion: "failure",
+          headSha: "abc123",
+          htmlUrl: "https://example.com/run/71",
+          createdAt: "2026-03-17T19:00:00.000Z",
+          updatedAt: "2026-03-17T19:10:00.000Z",
+          jobs: [
+            {
+              id: 81,
+              name: "test",
+              status: "completed",
+              conclusion: "failure",
+              startedAt: null,
+              completedAt: null,
+              steps: [
+                {
+                  name: "vitest",
+                  status: "completed",
+                  conclusion: "failure",
+                  number: 1,
+                  startedAt: null,
+                  completedAt: null,
+                },
+              ],
+            },
+          ],
+        },
+      ]),
+      getReviewThreads: vi.fn(async () => [
+        {
+          id: "thread-1",
+          isResolved: false,
+          isOutdated: false,
+          path: "src/index.ts",
+          line: 12,
+          originalLine: 12,
+          startLine: null,
+          originalStartLine: null,
+          diffSide: "RIGHT",
+          url: "https://example.com/thread/1",
+          createdAt: "2026-03-17T19:00:00.000Z",
+          updatedAt: "2026-03-17T19:00:00.000Z",
+          comments: [
+            {
+              id: "thread-comment-1",
+              author: "reviewer",
+              authorAvatarUrl: null,
+              body: "Please handle the loading state.",
+              url: "https://example.com/thread-comment/1",
+              createdAt: "2026-03-17T19:00:00.000Z",
+              updatedAt: "2026-03-17T19:00:00.000Z",
+            },
+          ],
+        },
+      ]),
+      rerunChecks: vi.fn(async () => undefined),
+      replyToReviewThread: vi.fn(async ({ threadId }: { threadId: string }) => ({
+        id: "reply-1",
+        author: "bot",
+        authorAvatarUrl: null,
+        body: `Reply to ${threadId}`,
+        url: "https://example.com/reply/1",
+        createdAt: "2026-03-17T19:00:00.000Z",
+        updatedAt: "2026-03-17T19:00:00.000Z",
+      })),
+      resolveReviewThread: vi.fn(async () => undefined),
     },
     agentChatService: {
       listSessions: vi.fn(async () => [
@@ -858,6 +961,13 @@ describe("mcpServer", () => {
         "spawnChat",
         "getChatStatus",
         "readChatTranscript",
+        "get_pr_health",
+        "pr_get_checks",
+        "pr_get_review_comments",
+        "pr_refresh_issue_inventory",
+        "pr_rerun_failed_checks",
+        "pr_reply_to_review_thread",
+        "pr_resolve_review_thread",
         "listLinearWorkflows",
         "getLinearRunStatus",
         "getLinearSyncDashboard",
@@ -2774,6 +2884,139 @@ describe("mcpServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(response.structuredContent.prId).toBe("pr-123");
     expect(fixture.runtime.prService.getPrHealth).toHaveBeenCalledWith("pr-123");
+  });
+
+  it("routes pr_get_checks as a read-only tool", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "pr_get_checks", { prId: "pr-123" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent).toEqual(
+      expect.objectContaining({
+        success: true,
+        prId: "pr-123",
+      }),
+    );
+    expect(response.structuredContent.checks[0]).toEqual(
+      expect.objectContaining({
+        name: "ci / unit",
+        status: "completed",
+        conclusion: "success",
+      }),
+    );
+    expect(fixture.runtime.prService.getChecks).toHaveBeenCalledWith("pr-123");
+  });
+
+  it("routes pr_get_review_comments with actionable review context", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "pr_get_review_comments", { prId: "pr-123" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.summary).toEqual(
+      expect.objectContaining({
+        totalComments: 1,
+        actionableComments: 1,
+        reviewsRequiringChanges: 1,
+        checksStatus: "passing",
+      }),
+    );
+    expect(response.structuredContent.comments[0]).toEqual(
+      expect.objectContaining({
+        author: "reviewer",
+        body: "Please fix the loading state.",
+      }),
+    );
+    expect(fixture.runtime.prService.getComments).toHaveBeenCalledWith("pr-123");
+    expect(fixture.runtime.prService.getReviews).toHaveBeenCalledWith("pr-123");
+    expect(fixture.runtime.prService.getChecks).toHaveBeenCalledWith("pr-123");
+  });
+
+  it("routes pr_refresh_issue_inventory with checks, review threads, and issue comments", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "pr_refresh_issue_inventory", { prId: "pr-123" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.summary).toEqual(
+      expect.objectContaining({
+        failingCheckCount: 0,
+        pendingCheckCount: 0,
+        actionableReviewThreadCount: 1,
+        hasActionableChecks: false,
+        hasActionableComments: true,
+      }),
+    );
+    expect(response.structuredContent.failingWorkflowRuns).toHaveLength(1);
+    expect(response.structuredContent.reviewThreads[0]).toEqual(
+      expect.objectContaining({
+        id: "thread-1",
+        path: "src/index.ts",
+        line: 12,
+      }),
+    );
+    expect(response.structuredContent.issueComments[0]).toEqual(
+      expect.objectContaining({
+        author: "reviewer",
+        body: "Please fix the loading state.",
+      }),
+    );
+    expect(fixture.runtime.prService.getChecks).toHaveBeenCalledWith("pr-123");
+    expect(fixture.runtime.prService.getActionRuns).toHaveBeenCalledWith("pr-123");
+    expect(fixture.runtime.prService.getReviewThreads).toHaveBeenCalledWith("pr-123");
+    expect(fixture.runtime.prService.getComments).toHaveBeenCalledWith("pr-123");
+  });
+
+  it("routes pr_rerun_failed_checks, pr_reply_to_review_thread, and pr_resolve_review_thread", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+
+    const rerunResponse = await callTool(handler, "pr_rerun_failed_checks", { prId: "pr-123" });
+    expect(rerunResponse?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.rerunChecks).toHaveBeenCalledWith({ prId: "pr-123" });
+
+    const replyResponse = await callTool(handler, "pr_reply_to_review_thread", {
+      prId: "pr-123",
+      threadId: "thread-1",
+      body: "Fixed.",
+    });
+    expect(replyResponse?.isError).toBeUndefined();
+    expect(replyResponse.structuredContent.comment).toEqual(
+      expect.objectContaining({
+        body: "Reply to thread-1",
+      }),
+    );
+    expect(fixture.runtime.prService.replyToReviewThread).toHaveBeenCalledWith({
+      prId: "pr-123",
+      threadId: "thread-1",
+      body: "Fixed.",
+    });
+
+    const resolveResponse = await callTool(handler, "pr_resolve_review_thread", {
+      prId: "pr-123",
+      threadId: "thread-1",
+    });
+    expect(resolveResponse?.isError).toBeUndefined();
+    expect(resolveResponse.structuredContent).toEqual(
+      expect.objectContaining({
+        success: true,
+        prId: "pr-123",
+        threadId: "thread-1",
+      }),
+    );
+    expect(fixture.runtime.prService.resolveReviewThread).toHaveBeenCalledWith({
+      prId: "pr-123",
+      threadId: "thread-1",
+    });
   });
 
   it("routes land_queue_next with authorization", async () => {

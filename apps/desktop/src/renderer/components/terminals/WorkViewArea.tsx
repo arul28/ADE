@@ -6,14 +6,8 @@ import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { WorkStartSurface } from "./WorkStartSurface";
-import { MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSessionLabel } from "../../lib/sessions";
 import { sessionStatusDot } from "../../lib/terminalAttention";
-
-const THEME_CARD = "var(--color-card)";
-const THEME_BORDER = "var(--color-border)";
-const THEME_FG = "var(--color-fg)";
-const THEME_MUTED = "var(--color-muted-fg)";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -51,23 +45,8 @@ function SessionSurface({
   }
 
   return (
-    <div
-      className="flex h-full w-full items-center justify-center px-5"
-      style={{
-        background: THEME_CARD,
-      }}
-    >
-      <div
-        style={{
-          background: "rgba(255,255,255, 0.03)",
-          padding: "8px 14px",
-          fontFamily: SANS_FONT,
-          fontSize: 12,
-          fontWeight: 400,
-          color: THEME_MUTED,
-          borderRadius: 8,
-        }}
-      >
+    <div className="flex h-full w-full items-center justify-center px-5" style={{ background: "var(--color-card)" }}>
+      <div className="rounded-md px-3 py-2 text-[11px] text-muted-fg" style={{ background: "rgba(255,255,255,0.03)" }}>
         Session ended
       </div>
     </div>
@@ -114,13 +93,6 @@ export function WorkViewArea({
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
-  const laneColorById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const lane of lanes) {
-      map.set(lane.id, lane.color ?? "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.95)");
-    }
-    return map;
-  }, [lanes]);
 
   const displaySessions = visibleSessions;
   const activeSession = activeItemId
@@ -140,33 +112,11 @@ export function WorkViewArea({
       <div className="flex h-full flex-col">
         <div
           className="flex items-center gap-3 px-3 py-1.5"
-          style={{ borderBottom: "1px solid rgba(255,255,255, 0.04)" }}
+          style={{ borderBottom: "1px solid var(--work-pane-border)", background: "transparent" }}
         >
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
-          <span
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 11,
-              fontWeight: 500,
-              color: "var(--color-muted-fg)",
-            }}
-          >
-            Grid
-          </span>
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              padding: "1px 7px",
-              fontSize: 11,
-              fontWeight: 400,
-              fontFamily: SANS_FONT,
-              color: "var(--color-muted-fg)",
-              background: "rgba(255,255,255, 0.05)",
-              border: "none",
-              borderRadius: 4,
-            }}
-          >
+          <span className="text-[11px] font-medium text-muted-fg">Grid</span>
+          <span className="inline-flex items-center px-1.5 text-[10px] text-muted-fg/60 rounded" style={{ background: "rgba(255,255,255,0.04)" }}>
             {displaySessions.length}
           </span>
         </div>
@@ -188,28 +138,25 @@ export function WorkViewArea({
                 const isActive = activeSession?.id === session.id;
                 const dot = sessionStatusDot(session);
                 const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-                const laneColor = laneColorById.get(session.laneId) ?? "rgba(var(--tab-tint-rgb, 113, 113, 122), 0.95)";
                 const primary = primarySessionLabel(session);
                 const secondary = secondarySessionLabel(session);
                 return (
                   <div
                     key={session.id}
-                    className="flex min-h-[260px] flex-col overflow-hidden"
+                    className="flex min-h-0 flex-col overflow-hidden rounded-md"
                     onContextMenu={(e) => handleContextMenu(session, e)}
                     style={{
                       border: isActive
-                        ? "1px solid rgba(255,255,255, 0.08)"
-                        : "1px solid rgba(255,255,255, 0.04)",
+                        ? "1px solid rgba(255,255,255,0.08)"
+                        : "1px solid rgba(255,255,255,0.04)",
                       background: "transparent",
-                      borderRadius: 10,
-                      minHeight: 0,
                     }}
                   >
                     <div
                       className="flex items-center gap-2 px-2 py-1.5"
                       style={{
-                        borderBottom: "1px solid rgba(255,255,255, 0.04)",
-                        background: isActive ? "rgba(255,255,255, 0.02)" : "transparent",
+                        borderBottom: "1px solid rgba(255,255,255,0.04)",
+                        background: isActive ? "rgba(255,255,255,0.02)" : "transparent",
                       }}
                     >
                       <button
@@ -217,32 +164,22 @@ export function WorkViewArea({
                         className="min-w-0 flex-1 text-left"
                         onClick={() => onSelectItem(session.id)}
                       >
-                        <span className="flex items-center gap-2" style={{ fontFamily: SANS_FONT, fontSize: 12 }}>
+                        <span className="flex items-center gap-2 text-[11px]">
                           <span
                             title={dot.label}
-                            className={`${dot.cls} h-2.5 w-2.5 shrink-0 ${dot.spinning ? " animate-spin" : ""}`}
+                            className={`${dot.cls} h-2 w-2 shrink-0${dot.spinning ? " animate-spin" : ""}`}
                           />
-                          <ToolLogo toolType={session.toolType} size={12} />
-                          <span className="truncate" style={{ color: THEME_FG }}>
+                          <ToolLogo toolType={session.toolType} size={11} />
+                          <span className="truncate text-fg">
                             {truncateSessionLabel(primary)}
                           </span>
                         </span>
-                        <span className="mt-1 flex items-center gap-2 pl-[22px]">
-                          <span
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              padding: "1px 6px",
-                              fontSize: 10,
-                              fontWeight: 400,
-                              fontFamily: SANS_FONT,
-                              color: "var(--color-muted-fg)",
-                            }}
-                          >
+                        <span className="mt-0.5 flex items-center gap-2 pl-[18px]">
+                          <span className="text-[10px] text-muted-fg/50">
                             {session.laneName}
                           </span>
                           {secondary ? (
-                            <span className="truncate" style={{ color: "var(--color-muted-fg)", fontSize: 10 }}>
+                            <span className="truncate text-[10px] text-muted-fg/60">
                               {truncateSessionLabel(secondary, 36)}
                             </span>
                           ) : null}
@@ -253,20 +190,15 @@ export function WorkViewArea({
                         onClick={() => onCloseItem(session.id)}
                         title={isBusy ? "Closing..." : "Close"}
                         disabled={isBusy}
+                        className="inline-flex items-center justify-center w-5 h-5 text-muted-fg/50 hover:text-fg transition-colors"
                         style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          width: 18,
-                          height: 18,
                           border: "none",
-                          cursor: isBusy ? "default" : "pointer",
-                          opacity: isBusy ? 0.5 : 0.85,
-                          color: "var(--color-muted-fg)",
                           background: "transparent",
+                          cursor: isBusy ? "default" : "pointer",
+                          opacity: isBusy ? 0.4 : 1,
                         }}
                       >
-                        <X size={11} />
+                        <X size={10} />
                       </button>
                     </div>
                     <div className="min-h-0 flex-1 overflow-auto">
@@ -282,23 +214,21 @@ export function WorkViewArea({
     );
   }
 
+  /* ---- Tab view ---- */
   return (
     <div className="flex h-full flex-col">
-        <div
-          className="flex items-center gap-0 px-0.5"
-          style={{
-            borderBottom: "1px solid rgba(255,255,255, 0.04)",
-            background: THEME_CARD,
-            height: 28,
-            minHeight: 28,
-            maxHeight: 28,
-          }}
-        >
+      <div
+        className="flex items-center gap-0 px-0.5"
+        style={{
+          borderBottom: "1px solid var(--work-pane-border)",
+          background: "transparent",
+          height: 28,
+          minHeight: 28,
+          maxHeight: 28,
+        }}
+      >
         <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
-          <div
-            className="mx-1"
-            style={{ width: 1, height: 14, background: "rgba(255,255,255, 0.06)" }}
-          />
+        <div className="mx-1" style={{ width: 1, height: 14, background: "var(--work-pane-border)" }} />
         <div className="flex-1 flex items-center gap-0 overflow-x-auto scrollbar-none min-w-0">
           {displaySessions.map((session) => {
             const isActive = activeSession?.id === session.id;
@@ -313,11 +243,10 @@ export function WorkViewArea({
                 style={{
                   padding: "0 8px",
                   height: 28,
-                  fontFamily: SANS_FONT,
                   fontSize: 11,
                   fontWeight: isActive ? 500 : 400,
                   background: "transparent",
-                  color: isActive ? THEME_FG : "var(--color-muted-fg)",
+                  color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
                   cursor: "pointer",
                   border: "none",
                   borderBottom: isActive ? "2px solid var(--color-accent)" : "2px solid transparent",
@@ -367,7 +296,7 @@ export function WorkViewArea({
         </div>
       </div>
 
-      <div className="relative min-h-0 flex-1" style={{ background: THEME_CARD }}>
+      <div className="relative min-h-0 flex-1" style={{ background: "var(--color-card)" }}>
         {activeRunningTerminalSession ? (
           <TerminalView
             key={activeRunningTerminalSession.id}
@@ -414,7 +343,7 @@ function ViewModeToggle({
           border: "none",
           cursor: "pointer",
           background: "transparent",
-          color: viewMode === "tabs" ? THEME_FG : "var(--color-muted-fg)",
+          color: viewMode === "tabs" ? "var(--color-fg)" : "var(--color-muted-fg)",
           opacity: viewMode === "tabs" ? 0.8 : 0.3,
         }}
         title="Tab View"
@@ -429,7 +358,7 @@ function ViewModeToggle({
           border: "none",
           cursor: "pointer",
           background: "transparent",
-          color: viewMode === "grid" ? THEME_FG : "var(--color-muted-fg)",
+          color: viewMode === "grid" ? "var(--color-fg)" : "var(--color-muted-fg)",
           opacity: viewMode === "grid" ? 0.8 : 0.3,
         }}
         title="Grid View"

@@ -464,17 +464,17 @@ const MOCK_STATUS_BY_PR: Record<string, any> = {
 // ── Rebase Needs (all urgency categories) ─────────────────────
 const MOCK_REBASE_NEEDS: any[] = [
   // Attention: behind + conflicts predicted
-  { laneId: "lane-dashboard", laneName: "feature/dashboard-v2", baseBranch: "main", behindBy: 12, conflictPredicted: true, conflictingFiles: ["src/components/Dashboard.tsx", "src/lib/metrics.ts", "src/styles/dashboard.css"], prId: "pr-2", groupContext: null, dismissedAt: null, deferredUntil: null },
-  { laneId: "lane-i18n", laneName: "feature/i18n", baseBranch: "main", behindBy: 8, conflictPredicted: true, conflictingFiles: ["src/i18n/translations.json", "src/App.tsx"], prId: "pr-i2", groupContext: "integration-i18n-a11y", dismissedAt: null, deferredUntil: null },
+  { laneId: "lane-dashboard", laneName: "feature/dashboard-v2", kind: "lane_base", baseBranch: "main", behindBy: 12, conflictPredicted: true, conflictingFiles: ["src/components/Dashboard.tsx", "src/lib/metrics.ts", "src/styles/dashboard.css"], prId: "pr-2", groupContext: null, dismissedAt: null, deferredUntil: null },
+  { laneId: "lane-i18n", laneName: "feature/i18n", kind: "lane_base", baseBranch: "main", behindBy: 8, conflictPredicted: true, conflictingFiles: ["src/i18n/translations.json", "src/App.tsx"], prId: "pr-i2", groupContext: "integration-i18n-a11y", dismissedAt: null, deferredUntil: null },
   // Clean rebase: behind but no conflicts
-  { laneId: "lane-api", laneName: "feature/api-refactor", baseBranch: "main", behindBy: 7, conflictPredicted: false, conflictingFiles: [], prId: "pr-3", groupContext: null, dismissedAt: null, deferredUntil: null },
-  { laneId: "lane-onboard", laneName: "feature/onboarding-wizard", baseBranch: "main", behindBy: 3, conflictPredicted: false, conflictingFiles: [], prId: "pr-5", groupContext: null, dismissedAt: null, deferredUntil: null },
+  { laneId: "lane-api", laneName: "feature/api-refactor", kind: "lane_base", baseBranch: "main", behindBy: 7, conflictPredicted: false, conflictingFiles: [], prId: "pr-3", groupContext: null, dismissedAt: null, deferredUntil: null },
+  { laneId: "lane-onboard", laneName: "feature/onboarding-wizard", kind: "lane_base", baseBranch: "main", behindBy: 3, conflictPredicted: false, conflictingFiles: [], prId: "pr-5", groupContext: null, dismissedAt: null, deferredUntil: null },
   // Up to date (behind 0)
-  { laneId: "lane-auth", laneName: "feature/auth-flow", baseBranch: "main", behindBy: 0, conflictPredicted: false, conflictingFiles: [], prId: "pr-1", groupContext: null, dismissedAt: null, deferredUntil: null },
+  { laneId: "lane-auth", laneName: "feature/auth-flow", kind: "lane_base", baseBranch: "main", behindBy: 0, conflictPredicted: false, conflictingFiles: [], prId: "pr-1", groupContext: null, dismissedAt: null, deferredUntil: null },
   // Deferred (still behind but snoozed — categorized as upToDate)
-  { laneId: "lane-search", laneName: "feature/search-v2", baseBranch: "main", behindBy: 5, conflictPredicted: false, conflictingFiles: [], prId: "pr-i1", groupContext: "integration-search-analytics", dismissedAt: null, deferredUntil: fourHoursFromNow },
+  { laneId: "lane-search", laneName: "feature/search-v2", kind: "lane_base", baseBranch: "main", behindBy: 5, conflictPredicted: false, conflictingFiles: [], prId: "pr-i1", groupContext: "integration-search-analytics", dismissedAt: null, deferredUntil: fourHoursFromNow },
   // Dismissed
-  { laneId: "lane-checkout", laneName: "feature/checkout-flow", baseBranch: "main", behindBy: 2, conflictPredicted: false, conflictingFiles: [], prId: "pr-q2", groupContext: "queue-commerce-v3", dismissedAt: yesterday, deferredUntil: null },
+  { laneId: "lane-checkout", laneName: "feature/checkout-flow", kind: "lane_base", baseBranch: "main", behindBy: 2, conflictPredicted: false, conflictingFiles: [], prId: "pr-q2", groupContext: "queue-commerce-v3", dismissedAt: yesterday, deferredUntil: null },
 ];
 
 // ── Queue Landing State ───────────────────────────────────────

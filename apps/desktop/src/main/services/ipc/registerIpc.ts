@@ -758,11 +758,29 @@ function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
 }
 
 function toRecentProjectSummary(entry: { rootPath: string; displayName: string; lastOpenedAt: string }): RecentProjectSummary {
+  let laneCount: number | undefined;
+  try {
+    const gitPath = path.join(entry.rootPath, ".git");
+    const worktreesPath = path.join(gitPath, "worktrees");
+    if (fs.existsSync(gitPath)) {
+      laneCount = 1; // Primary lane
+      if (fs.existsSync(worktreesPath)) {
+        const wtCount = fs.readdirSync(worktreesPath, { withFileTypes: true })
+          .filter((dirent) => dirent.isDirectory())
+          .length;
+        laneCount += wtCount;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   return {
     rootPath: entry.rootPath,
     displayName: entry.displayName,
     lastOpenedAt: entry.lastOpenedAt,
-    exists: fs.existsSync(entry.rootPath)
+    exists: fs.existsSync(entry.rootPath),
+    laneCount,
   };
 }
 
@@ -3972,7 +3990,8 @@ export function registerIpc({
       const buf = await fs.promises.readFile(canonical);
       const ext = path.extname(canonical).replace(/^\./, "").toLowerCase();
       const mimeMap: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", bmp: "image/bmp", svg: "image/svg+xml" };
-      const mime = mimeMap[ext] ?? "image/png";
+      const mime = mimeMap[ext];
+      if (!mime) return null;
       return `data:${mime};base64,${buf.toString("base64")}`;
     } catch {
       return null;

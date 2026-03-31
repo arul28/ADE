@@ -225,6 +225,13 @@ function parentDirOfPath(filePath: string): string {
   return normalized.slice(0, idx);
 }
 
+function hasHiddenPathSegment(filePath: string): boolean {
+  return filePath
+    .replace(/\\/g, "/")
+    .split("/")
+    .some((segment) => segment.startsWith(".") && segment !== "." && segment !== "..");
+}
+
 const FILE_ICON_COLORS = {
   code: "#38BDF8",       // sky-400
   json: "#34D399",       // emerald-400
@@ -347,6 +354,8 @@ export function FilesPage() {
     queuedParents: new Set<string>()
   });
   const watcherRefreshTimerRef = useRef<number | null>(null);
+  const refreshTreeRef = useRef<((parentPath?: string) => Promise<void>) | null>(null);
+  const scheduleTreeRefreshRef = useRef<((parentPath?: string, delayMs?: number) => void) | null>(null);
 
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => initialSession?.openTabs.map((tab) => ({ ...tab })) ?? []);
   const [activeTabPath, setActiveTabPath] = useState<string | null>(initialSession?.activeTabPath ?? null);
@@ -527,7 +536,6 @@ export function FilesPage() {
     setSelectedNodePath(null);
   }, [workspaceId, hasUnsavedTabs]);
 
-  const activeContextPath = contextMenu?.nodePath ?? selectedNodePath ?? activeTabPath;
   const nodeByPath = useMemo(() => {
     const out = new Map<string, FileTreeNode>();
     const walk = (nodes: FileTreeNode[]) => {
@@ -539,6 +547,11 @@ export function FilesPage() {
     walk(tree);
     return out;
   }, [tree]);
+  const selectedTreeNodePath = useMemo(() => {
+    if (!selectedNodePath) return null;
+    return nodeByPath.has(selectedNodePath) ? selectedNodePath : null;
+  }, [nodeByPath, selectedNodePath]);
+  const activeContextPath = contextMenu?.nodePath ?? selectedTreeNodePath ?? activeTabPath;
   const activeContextNodeType = contextMenu?.nodeType ?? (activeContextPath ? nodeByPath.get(activeContextPath)?.type : undefined);
   const laneWorkspaces = useMemo(() => workspaces.filter((ws) => ws.kind !== "primary"), [workspaces]);
   const suggestedLaneWorkspace = useMemo(() => {
@@ -644,6 +657,14 @@ export function FilesPage() {
     }, delayMs);
   }, [refreshTree]);
 
+  useEffect(() => {
+    refreshTreeRef.current = refreshTree;
+  }, [refreshTree]);
+
+  useEffect(() => {
+    scheduleTreeRefreshRef.current = scheduleTreeRefresh;
+  }, [scheduleTreeRefresh]);
+
   const openFile = useCallback(async (filePath: string, options: { forceReload?: boolean; preserveMode?: boolean } = {}) => {
     if (!workspaceId) return;
     try {
@@ -706,10 +727,13 @@ export function FilesPage() {
     }
     if (!workspaceId) return;
 
+    if (!showHidden && hasHiddenPathSegment(pending.filePath)) {
+      setShowHidden(true);
+    }
     openFile(pending.filePath).catch(() => {});
     pendingOpenRef.current = null;
     navigate(location.pathname, { replace: true, state: null });
-  }, [workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname]);
+  }, [workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname, showHidden]);
 
   const closeTab = useCallback((filePath: string) => {
     setOpenTabs((prev) => {
@@ -877,17 +901,17 @@ export function FilesPage() {
       window.clearTimeout(watcherRefreshTimerRef.current);
       watcherRefreshTimerRef.current = null;
     }
-    refreshTree().catch(() => {});
+    refreshTreeRef.current?.().catch(() => {});
     window.ade.files.watchChanges({ workspaceId }).catch(() => {});
 
     const unsub = window.ade.files.onChange((ev) => {
       if (ev.workspaceId !== workspaceId) return;
       if (ev.type === "renamed") {
-        scheduleTreeRefresh(parentPathOf(ev.oldPath ?? ""));
-        scheduleTreeRefresh(parentPathOf(ev.path));
+        scheduleTreeRefreshRef.current?.(parentPathOf(ev.oldPath ?? ""));
+        scheduleTreeRefreshRef.current?.(parentPathOf(ev.path));
         return;
       }
-      scheduleTreeRefresh(parentPathOf(ev.path));
+      scheduleTreeRefreshRef.current?.(parentPathOf(ev.path));
     });
 
     return () => {
@@ -898,7 +922,7 @@ export function FilesPage() {
       }
       window.ade.files.stopWatching({ workspaceId }).catch(() => {});
     };
-  }, [workspaceId, refreshTree, scheduleTreeRefresh]);
+  }, [workspaceId]);
 
   useEffect(() => {
     if (workspaceId) refreshTree().catch(() => {});
@@ -1106,7 +1130,7 @@ export function FilesPage() {
     modelKeyRef.current = modelKey;
     editor.setModel(modelRef.current);
     editor.updateOptions({ readOnly: !canEdit || activeTab.isBinary });
-  }, [activeTab?.path, activeTab?.languageId, activeTab?.isBinary, mode, canEdit]);
+  }, [activeTab?.path, activeTab?.languageId, activeTab?.isBinary, mode, canEdit, editorStatus]);
 
   useEffect(() => {
     if (!activeTab || !editorRef.current || mode !== "edit") return;
@@ -1125,7 +1149,7 @@ export function FilesPage() {
     <div>
       {nodes.map((node) => {
         const isExpanded = expanded.has(node.path);
-        const isActive = activeTabPath === node.path || selectedNodePath === node.path;
+        const isActive = activeTabPath === node.path || selectedTreeNodePath === node.path;
         const statusColor = changeStatusColor(node.changeStatus ?? null);
         const fileIcon = node.type === "file" ? getFileIcon(node.name) : null;
         const FileIcon = fileIcon?.icon;
