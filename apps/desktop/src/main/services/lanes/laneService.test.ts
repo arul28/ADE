@@ -2126,7 +2126,12 @@ describe("laneService missionId and laneRole", () => {
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-summary-map", repoRoot });
 
-    // Set mission fields directly in DB
+    // Insert mission row so FK constraint is satisfied, then set mission fields
+    db.run(
+      `insert into missions(id, project_id, title, prompt, status, priority, execution_mode, created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["mission-map-test", "proj-summary-map", "Test Mission", "test", "active", "medium", "background", new Date().toISOString(), new Date().toISOString()]
+    );
     db.run("update lanes set mission_id = ?, lane_role = ? where id = ?", ["mission-map-test", "integration", "lane-parent"]);
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
