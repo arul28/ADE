@@ -11,7 +11,8 @@ import type {
   ComputerUsePolicy,
 } from "../../shared/types";
 
-const NEW_SESSION_KEY = "__new__";
+const NEW_SESSION_KEY = "\0new";
+const SEP = "\0";
 
 export interface ComposerDraftSnapshot {
   draft: string;
@@ -31,7 +32,7 @@ export interface ComposerDraftSnapshot {
 }
 
 function snapshotKey(laneId: string, sessionId: string | null): string {
-  return `${laneId}::${sessionId ?? NEW_SESSION_KEY}`;
+  return `${laneId}${SEP}${sessionId ?? NEW_SESSION_KEY}`;
 }
 
 interface ChatDraftState {
