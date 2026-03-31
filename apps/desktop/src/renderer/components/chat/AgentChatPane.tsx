@@ -1421,11 +1421,11 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = false;
       touchSession(created.id);
       setSelectedSessionId(created.id);
-      // Fire-and-forget: don't block session creation on the parent opening the tab.
-      // Blocking here caused a race where work.refresh() would re-resolve selection
-      // before the new session was indexed, routing the user to an old chat.
-      void onSessionCreated?.(created.id);
-      void refreshSessions().catch(() => {});
+      // Await tab navigation and session-list refresh before returning so the
+      // caller doesn't send the first message while the user is still on the
+      // blank "new chat" screen.
+      await onSessionCreated?.(created.id);
+      await refreshSessions().catch(() => {});
       return created.id;
     })();
     createSessionPromiseRef.current = createPromise;

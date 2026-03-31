@@ -618,9 +618,11 @@ export function useWorkSessions() {
         startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
       });
       selectLane(args.laneId);
+      // Refresh the session list before activating the tab so the new
+      // session is in sessionsById when the UI resolves activeSession.
+      await refresh();
       focusSession(result.sessionId);
       openSessionTab(result.sessionId);
-      await refresh();
       return result;
     },
     [focusSession, openSessionTab, refresh, selectLane],

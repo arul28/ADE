@@ -55,8 +55,9 @@ export function TerminalsPage() {
 
   const handleOpenChatSession = useCallback(
     async (sessionId: string) => {
-      work.openSessionTab(sessionId);
+      // Refresh first so the session is in the list before activating the tab.
       await work.refresh({ showLoading: false });
+      work.openSessionTab(sessionId);
     },
     [work],
   );

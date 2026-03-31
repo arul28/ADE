@@ -403,9 +403,13 @@ export function useLaneWorkSessions(laneId: string | null) {
         startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
       });
       selectLane(args.laneId);
+      // Refresh the session list *before* activating the tab so the new
+      // session exists in sessionsById when the UI resolves activeSession.
+      // Without this, activeItemId points to an unknown ID and the view
+      // falls back to the most recent session for several seconds.
+      await refresh({ showLoading: false, force: true });
       focusSession(result.sessionId);
       openSessionTab(result.sessionId);
-      await refresh({ showLoading: false, force: true });
       return result;
     },
     [focusSession, openSessionTab, refresh, selectLane],
@@ -414,9 +418,10 @@ export function useLaneWorkSessions(laneId: string | null) {
   const handleOpenChatSession = useCallback(async (sessionId: string) => {
     if (!laneId) return;
     selectLane(laneId);
+    // Refresh first so the session is in the list before we activate the tab.
+    await refresh({ showLoading: false, force: true });
     focusSession(sessionId);
     openSessionTab(sessionId);
-    await refresh({ showLoading: false, force: true });
   }, [focusSession, laneId, openSessionTab, refresh, selectLane]);
 
   const closePtySession = useCallback(async (ptyId: string) => {
