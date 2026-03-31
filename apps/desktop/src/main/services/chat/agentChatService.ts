@@ -2225,6 +2225,12 @@ export function createAgentChatService(args: {
       // approval UI — the user opted out of all permission gates.
       const effectiveAccess = managed.session.claudePermissionMode ?? managed.session.permissionMode;
       if (effectiveAccess === "bypassPermissions" || managed.session.permissionMode === "full-auto") {
+        // Still transition out of plan mode so UI reflects the change.
+        if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
+          managed.session.permissionMode = "edit";
+          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+          persistChatState(managed);
+        }
         return { behavior: "allow" };
       }
 
@@ -8165,6 +8171,13 @@ export function createAgentChatService(args: {
             } catch { /* ignore */ }
           }
           if (msg.type === "result") break;
+        }
+
+        // If warmup was cancelled during streaming, clean up and exit early.
+        if (runtime.v2WarmupCancelled) {
+          try { runtime.v2Session?.close(); } catch { /* ignore */ }
+          runtime.v2Session = null;
+          return;
         }
 
         persistChatState(managed);

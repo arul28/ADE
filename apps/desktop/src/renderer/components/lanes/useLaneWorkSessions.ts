@@ -53,6 +53,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef<{ showLoading: boolean; force: boolean } | null>(null);
+  const refreshInFlightPromiseRef = useRef<Promise<void> | null>(null);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const hasActiveSessionsRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
@@ -86,7 +87,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   );
 
   const refresh = useCallback(
-    async (options: { showLoading?: boolean; force?: boolean } = {}) => {
+    async (options: { showLoading?: boolean; force?: boolean } = {}): Promise<void> => {
       if (!laneId) {
         setSessions([]);
         hasLoadedOnceRef.current = true;
@@ -98,28 +99,40 @@ export function useLaneWorkSessions(laneId: string | null) {
           showLoading: (refreshQueuedRef.current?.showLoading ?? false) || showLoading,
           force: (refreshQueuedRef.current?.force ?? false) || Boolean(options.force),
         };
+        // Wait for the in-flight refresh (and any queued work) to complete
+        // so callers that depend on fresh data don't race tab activation.
+        if (refreshInFlightPromiseRef.current) {
+          await refreshInFlightPromiseRef.current;
+        }
         return;
       }
       refreshInFlightRef.current = true;
       if (showLoading) setLoading(true);
-      try {
-        const rows = await listSessionsCached(
-          { laneId, limit: 200 },
-          options.force ? { force: true } : undefined,
-        );
-        setSessions(rows.filter((session) => !isRunOwnedSession(session)));
-        hasLoadedOnceRef.current = true;
-      } catch (err) {
-        console.warn("[useLaneWorkSessions] Failed to refresh sessions:", err);
-      } finally {
-        if (showLoading) setLoading(false);
-        refreshInFlightRef.current = false;
-        const queued = refreshQueuedRef.current;
-        refreshQueuedRef.current = null;
-        if (queued) {
-          void refresh(queued);
+
+      const doRefresh = async (): Promise<void> => {
+        try {
+          const rows = await listSessionsCached(
+            { laneId, limit: 200 },
+            options.force ? { force: true } : undefined,
+          );
+          setSessions(rows.filter((session) => !isRunOwnedSession(session)));
+          hasLoadedOnceRef.current = true;
+        } catch (err) {
+          console.warn("[useLaneWorkSessions] Failed to refresh sessions:", err);
+        } finally {
+          if (showLoading) setLoading(false);
+          refreshInFlightRef.current = false;
+          const queued = refreshQueuedRef.current;
+          refreshQueuedRef.current = null;
+          if (queued) {
+            await refresh(queued);
+          }
         }
-      }
+      };
+
+      refreshInFlightPromiseRef.current = doRefresh();
+      await refreshInFlightPromiseRef.current;
+      refreshInFlightPromiseRef.current = null;
     },
     [laneId],
   );
