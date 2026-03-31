@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { At, Image, Paperclip, Square, X, PaperPlaneTilt, Cube, BookOpen } from "@phosphor-icons/react";
+import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -132,6 +132,106 @@ const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode;
 
 
 
+/** Inline display of a single pending (queued) steer message with cancel and edit controls. */
+function PendingSteerItem({
+  steer,
+  onCancel,
+  onEdit,
+}: {
+  steer: { steerId: string; text: string };
+  onCancel: () => void;
+  onEdit: (text: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(steer.text);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setEditText(steer.text);
+  };
+
+  const commitEdit = () => {
+    const trimmed = editText.trim();
+    if (trimmed.length && trimmed !== steer.text) {
+      onEdit(trimmed);
+    }
+    setEditing(false);
+  };
+
+  return (
+    <div className="group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5">
+      <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+      {editing ? (
+        <div className="flex-1 min-w-0">
+          <textarea
+            ref={inputRef}
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                commitEdit();
+              } else if (e.key === "Escape") {
+                cancelEdit();
+              }
+            }}
+            className="w-full resize-none rounded border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-[12px] leading-[1.5] text-fg/82 outline-none focus:border-[var(--chat-accent)]/30"
+            rows={1}
+          />
+          <div className="mt-1 flex gap-1">
+            <button
+              type="button"
+              onClick={commitEdit}
+              className="inline-flex h-5 items-center gap-0.5 rounded border border-[var(--chat-accent)]/20 bg-[var(--chat-accent)]/8 px-1.5 text-[9px] font-medium text-[var(--chat-accent)] hover:bg-[var(--chat-accent)]/14"
+            >
+              <Check size={9} weight="bold" /> Save
+            </button>
+            <button
+              type="button"
+              onClick={cancelEdit}
+              className="inline-flex h-5 items-center rounded border border-white/[0.06] px-1.5 text-[9px] text-fg/40 hover:text-fg/60"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <span className="flex-1 min-w-0 truncate text-[12px] leading-[1.5] text-fg/62">
+          {steer.text}
+        </span>
+      )}
+      {!editing ? (
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-white/[0.06] hover:text-fg/60"
+            title="Edit message"
+          >
+            <PencilSimple size={11} />
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-red-500/10 hover:text-red-400/70"
+            title="Remove from queue"
+          >
+            <X size={11} weight="bold" />
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function AgentChatComposer({
   surfaceMode = "standard",
   sdkSlashCommands = [],
@@ -187,6 +287,9 @@ export function AgentChatComposer({
   promptSuggestion,
   subagentSnapshots = [],
   chatHasMessages = false,
+  pendingSteers = [],
+  onCancelSteer,
+  onEditSteer,
 }: {
   surfaceMode?: ChatSurfaceMode;
   sdkSlashCommands?: AgentChatSlashCommand[];
@@ -246,6 +349,9 @@ export function AgentChatComposer({
   promptSuggestion?: string | null;
   subagentSnapshots?: ChatSubagentSnapshot[];
   chatHasMessages?: boolean;
+  pendingSteers?: Array<{ steerId: string; text: string }>;
+  onCancelSteer?: (steerId: string) => void;
+  onEditSteer?: (steerId: string, text: string) => void;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -1017,6 +1123,23 @@ export function AgentChatComposer({
         </div>
       }
     >
+      {/* Pending steers queue — shows queued messages above the input */}
+      {pendingSteers.length > 0 ? (
+        <div className="border-b border-white/[0.06] px-3 py-2 space-y-1.5">
+          <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg/30">
+            Pending {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
+          </div>
+          {pendingSteers.map((steer) => (
+            <PendingSteerItem
+              key={steer.steerId}
+              steer={steer}
+              onCancel={() => onCancelSteer?.(steer.steerId)}
+              onEdit={(text) => onEditSteer?.(steer.steerId, text)}
+            />
+          ))}
+        </div>
+      ) : null}
+
       <div
         className="relative"
         onDragOver={handleDragOver}

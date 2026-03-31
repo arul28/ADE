@@ -810,12 +810,24 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
 function resolveModelLabel(modelId?: string, model?: string): string | null {
   if (modelId) {
     const desc = getModelById(modelId);
-    if (desc) return `${desc.displayName} (${modelId})`;
+    if (desc) {
+      const normalizedModel = model?.trim().toLowerCase() ?? "";
+      const canonicalRefs = new Set([
+        desc.id.toLowerCase(),
+        desc.shortId.toLowerCase(),
+        desc.sdkModelId.toLowerCase(),
+      ]);
+      if (normalizedModel && !canonicalRefs.has(normalizedModel)) {
+        return `${desc.displayName} (${model?.trim()})`;
+      }
+      return `${desc.displayName} (${modelId})`;
+    }
     return modelId;
   }
   if (model) {
-    const desc = getModelById(model);
-    return desc?.displayName ?? model;
+    const desc = resolveModelDescriptor(model);
+    if (desc) return `${desc.displayName} (${desc.id})`;
+    return model;
   }
   return null;
 }
@@ -1993,7 +2005,7 @@ function renderEvent(
     const costLabel = typeof event.costUsd === "number" && event.costUsd > 0
       ? `$${event.costUsd < 0.01 ? event.costUsd.toFixed(4) : event.costUsd.toFixed(2)}`
       : null;
-    if (event.status === "completed" && !inputTokens && !outputTokens) {
+    if (event.status === "completed" && !inputTokens && !outputTokens && !cacheRead && !cacheCreation && !costLabel && !modelLabel) {
       return null;
     }
     const statusTone = event.status === "completed"
@@ -2079,9 +2091,13 @@ type TurnSummary = {
   totalDeletions: number;
   backgroundAgentCount: number;
   activeBackgroundAgentCount: number;
+  turnModel: { label: string; modelId?: string; model?: string } | null;
 };
 
-function deriveTurnSummary(events: AgentChatEventEnvelope[]): TurnSummary | null {
+function deriveTurnSummary(
+  events: AgentChatEventEnvelope[],
+  turnModelState: DerivedTurnModelState | null,
+): TurnSummary | null {
   const latestTurnId = [...events]
     .reverse()
     .map((envelope) => getEventTurnId(envelope.event))
@@ -2177,6 +2193,7 @@ function deriveTurnSummary(events: AgentChatEventEnvelope[]): TurnSummary | null
     totalDeletions,
     backgroundAgentCount,
     activeBackgroundAgentCount,
+    turnModel: turnModelState?.map.get(latestTurnId) ?? turnModelState?.lastModel ?? null,
   };
 }
 
@@ -2206,6 +2223,12 @@ function TurnSummaryCard({
               ? `${completedCount} of ${totalCount} tasks completed`
               : filesLabel ?? agentsLabel ?? "Turn summary"}
           </span>
+          {summary.turnModel?.label ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] text-fg/45">
+              <ModelGlyph modelId={summary.turnModel.modelId} model={summary.turnModel.model} size={10} className="text-fg/35" />
+              <span>{summary.turnModel.label}</span>
+            </span>
+          ) : null}
           {onReviewChanges && summary.files.length > 0 ? (
             <button
               type="button"
@@ -2544,7 +2567,6 @@ export function AgentChatMessageList({
   const groupedRows = useMemo(() => groupConsecutiveWorkLogRows(rows), [rows]);
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
-  const turnSummary = useMemo(() => deriveTurnSummary(events), [events]);
 
   const currentLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
     ? (location.state as { laneId: string }).laneId
@@ -2601,12 +2623,6 @@ export function AgentChatMessageList({
     onOpenWorkspacePath?.(target.openFilePath, target.laneId);
   }, [currentLaneId, filesWorkspaces, navigate, onOpenWorkspacePath]);
 
-  const handleReviewChanges = useCallback(() => {
-    if (!turnSummary?.files.length) return;
-    const state = currentLaneId ? { laneId: currentLaneId } : undefined;
-    navigate("/files", state ? { state } : undefined);
-  }, [currentLaneId, navigate, turnSummary?.files.length]);
-
   const handleNavigateSuggestion = useCallback((suggestion: OperatorNavigationSuggestion) => {
     navigate(suggestion.href);
   }, [navigate]);
@@ -2617,6 +2633,13 @@ export function AgentChatMessageList({
     turnModelStateRef.current = nextState;
     return nextState;
   }, [events]);
+  const turnSummary = useMemo(() => deriveTurnSummary(events, turnModelState), [events, turnModelState]);
+
+  const handleReviewChanges = useCallback(() => {
+    if (!turnSummary?.files.length) return;
+    const state = currentLaneId ? { laneId: currentLaneId } : undefined;
+    navigate("/files", state ? { state } : undefined);
+  }, [currentLaneId, navigate, turnSummary]);
 
   useEffect(() => {
     stickToBottomRef.current = stickToBottom;

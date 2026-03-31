@@ -162,6 +162,24 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("what are you doing?")).toBeTruthy();
   });
 
+  it("keeps the done summary visible when only the model attribution is available", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          modelId: "anthropic/claude-sonnet-4-6",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Usage")).toBeTruthy();
+    expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThan(0);
+  });
+
   it("renders memory system notices as compact pills in the transcript", () => {
     renderMessageList([
       {
@@ -694,6 +712,52 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("Workbench")).toBeTruthy();
   });
 
+  it("renders detailed Claude labels when the turn only reports a CLI alias", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: "Fast response",
+          itemId: "text-1",
+          turnId: "turn-claude",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-claude",
+          status: "interrupted",
+          model: "sonnet",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Claude")).toBeTruthy();
+    expect(screen.getAllByText("Claude Sonnet 4.6 (anthropic/claude-sonnet-4-6)").length).toBeGreaterThan(0);
+  });
+
+  it("shows the SDK-reported Claude model name when it differs from the registry id", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-claude-runtime",
+          status: "failed",
+          model: "claude-haiku-4-5",
+          modelId: "anthropic/claude-haiku-4-5",
+        },
+      },
+    ]);
+
+    expect(screen.getAllByText("Claude Haiku 4.5 (claude-haiku-4-5)").length).toBeGreaterThan(0);
+  });
+
   it("surfaces the latest turn task summary with review changes near the composer", () => {
     renderMessageList(
       [
@@ -760,6 +824,35 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByTestId("location").textContent).toBe(
       "/files::{\"laneId\":\"lane-123\"}",
     );
+  });
+
+  it("shows the active Claude model on the latest turn summary card", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "todo_update",
+          turnId: "turn-9",
+          items: [
+            { id: "task-1", description: "Investigate Claude turn status", status: "completed" },
+          ],
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-9",
+          status: "completed",
+          modelId: "anthropic/claude-sonnet-4-6",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("1 of 1 tasks completed")).toBeTruthy();
+    expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThanOrEqual(1);
   });
 
   it("keeps reasoning blocks separated across Claude tool boundaries", () => {
