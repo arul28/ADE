@@ -38,7 +38,7 @@ describes when and how ADE should act on an issue:
   `mission`, `employee_session`, `worker_run`, `pr_resolution`, and
   `review_gate`. Each target specifies an executor kind (`cto`,
   `employee`, `worker`), run mode (`autopilot`, `assisted`, `manual`),
-  PR strategy, lane selection (`primary`, `fresh_issue_lane`, or
+  closeout contract, lane selection (`primary`, `fresh_issue_lane`, or
   `operator_prompt`), and session reuse policy. Targets can chain
   through `downstreamTarget` for multi-stage execution (e.g., a
   worker run followed by a review gate).
@@ -123,8 +123,8 @@ The v1 closeout addressed four dispatcher reliability issues:
    delegation UI in LinearSyncPanel.
 
 3. **PR null-check**: The condition for skipping PR creation now
-   correctly checks for explicit `manual` mode in `prStrategy.kind`,
-   rather than incorrectly skipping when `prStrategy` is absent.
+   correctly checks the closeout contract configuration,
+   rather than incorrectly skipping when the contract is absent.
 
 4. **Closure notifications**: When `finalizeRun` completes, a message
    is sent to the linked agent chat session informing it that the

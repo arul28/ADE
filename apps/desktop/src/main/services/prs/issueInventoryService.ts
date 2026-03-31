@@ -152,32 +152,48 @@ function rowToItem(row: InventoryRow): IssueInventoryItem {
 
 const DEFAULT_MAX_ROUNDS = 5;
 
+const NOISY_AUTHORS = new Set(["vercel", "vercel[bot]", "mintlify", "mintlify[bot]"]);
+const NOISY_COMMENT_PATTERNS = [
+  /\[vc\]:/i,
+  /mintlify-preview/i,
+  /this is an auto-generated comment/i,
+  /pre-merge checks/i,
+  /thanks for using \[coderabbit\]/i,
+  /<!-- internal state/i,
+  /walkthrough/i,
+  /@codex review/i,
+];
+
 function computeConvergenceStatus(items: IssueInventoryItem[]): ConvergenceStatus {
-  const totalNew = items.filter((i) => i.state === "new").length;
-  const totalFixed = items.filter((i) => i.state === "fixed").length;
-  const totalDismissed = items.filter((i) => i.state === "dismissed").length;
-  const totalEscalated = items.filter((i) => i.state === "escalated").length;
-  const totalSentToAgent = items.filter((i) => i.state === "sent_to_agent").length;
+  let totalNew = 0;
+  let totalFixed = 0;
+  let totalDismissed = 0;
+  let totalEscalated = 0;
+  let totalSentToAgent = 0;
+  let currentRound = 0;
 
-  // Determine current round from max round value across all items
-  const currentRound = items.reduce((max, item) => Math.max(max, item.round), 0);
-
-  // Build per-round stats
   const roundMap = new Map<number, ConvergenceRoundStat>();
   for (const item of items) {
-    if (item.round === 0) continue;
-    const stat = roundMap.get(item.round) ?? { round: item.round, newCount: 0, fixedCount: 0, dismissedCount: 0 };
-    if (item.state === "sent_to_agent" || item.state === "new") stat.newCount++;
-    if (item.state === "fixed") stat.fixedCount++;
-    if (item.state === "dismissed") stat.dismissedCount++;
-    roundMap.set(item.round, stat);
-  }
-  const issuesPerRound = Array.from(roundMap.values()).sort((a, b) => a.round - b.round);
+    if (item.state === "new") totalNew++;
+    else if (item.state === "fixed") totalFixed++;
+    else if (item.state === "dismissed") totalDismissed++;
+    else if (item.state === "escalated") totalEscalated++;
+    else if (item.state === "sent_to_agent") totalSentToAgent++;
 
-  // Determine if we're converging — progress was made in the last round
+    if (item.round > currentRound) currentRound = item.round;
+
+    if (item.round > 0) {
+      const stat = roundMap.get(item.round) ?? { round: item.round, newCount: 0, fixedCount: 0, dismissedCount: 0 };
+      if (item.state === "sent_to_agent" || item.state === "new") stat.newCount++;
+      if (item.state === "fixed") stat.fixedCount++;
+      if (item.state === "dismissed") stat.dismissedCount++;
+      roundMap.set(item.round, stat);
+    }
+  }
+
+  const issuesPerRound = Array.from(roundMap.values()).sort((a, b) => a.round - b.round);
   const lastRoundStat = issuesPerRound[issuesPerRound.length - 1];
   const isConverging = lastRoundStat ? (lastRoundStat.fixedCount + lastRoundStat.dismissedCount) > 0 : false;
-
   const canAutoAdvance = totalNew > 0 && currentRound < DEFAULT_MAX_ROUNDS;
 
   return {
@@ -310,26 +326,13 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         });
       }
 
-      // Sync issue comments (top-level PR comments, not review-thread comments)
-      // Filter out noisy bot comments that aren't actionable
-      const NOISY_AUTHORS = new Set(["vercel", "vercel[bot]", "mintlify", "mintlify[bot]"]);
-      const NOISY_PATTERNS = [
-        /\[vc\]:/i,
-        /mintlify-preview/i,
-        /this is an auto-generated comment/i,
-        /pre-merge checks/i,
-        /thanks for using \[coderabbit\]/i,
-        /<!-- internal state/i,
-        /walkthrough/i,
-        /@codex review/i,
-      ];
       for (const comment of comments) {
         if (comment.source !== "issue") continue;
         const body = comment.body ?? "";
         if (!body.trim()) continue;
         const authorLower = (comment.author ?? "").trim().toLowerCase();
         if (NOISY_AUTHORS.has(authorLower)) continue;
-        if (NOISY_PATTERNS.some((p) => p.test(body))) continue;
+        if (NOISY_COMMENT_PATTERNS.some((p) => p.test(body))) continue;
         upsertItem(prId, `comment:${comment.id}`, {
           source: detectSource(comment.author),
           type: "issue_comment",

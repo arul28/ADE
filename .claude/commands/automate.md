@@ -66,11 +66,24 @@ Copy their patterns exactly for: imports, setup/teardown, mocking, assertions, d
 **Desktop app:**
 - Vitest workspace config: `apps/desktop/vitest.workspace.ts`
 - Test setup file: `apps/desktop/src/test/setup.ts`
-- Environment: `node` for unit tests
+- Environment: `node` for all projects
 - Pool: forks (maxForks: 4)
 - Timeout: 20s for tests and hooks
 - File naming: colocated `*.test.ts` / `*.test.tsx` next to source files
-- Run command: `cd apps/desktop && npx vitest run [file]`
+
+**Workspace projects (3 projects):**
+- `unit-main`: `src/main/**/*.test.{ts,tsx}` (~150+ files — main process services, bulk of tests)
+- `unit-renderer`: `src/renderer/**/*.test.{ts,tsx}` (~85+ files — components, lib)
+- `unit-shared`: `src/shared/**/*.test.{ts,tsx}` + `src/preload/**/*.test.{ts,tsx}` (~7 files)
+
+**Run commands — match CI exactly:**
+- Run a single file: `cd apps/desktop && npx vitest run [file]`
+- Run a specific project: `cd apps/desktop && npx vitest run --project unit-main`
+- Run sharded (as CI does): `cd apps/desktop && npx vitest run --shard=1/8`
+- Run all desktop tests: `cd apps/desktop && npx vitest run`
+
+**CI runs desktop tests sharded 8-way:** `npx vitest run --shard=${{ matrix.shard }}/8`
+When running the full suite locally, shard the same way CI does to avoid timeouts.
 
 **MCP server:**
 - Vitest config: `apps/mcp-server/vitest.config.ts`
@@ -128,7 +141,7 @@ RULES:
 4. NEVER write silent null guards (if (!x) return). Tests must FAIL LOUDLY.
 5. NEVER mock the thing you're testing.
 6. Run each test file as you write it:
-   cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run {file}
+   cd apps/desktop && npx vitest run {file}
 7. Fix until passing before moving to the next file.
 8. Use vi.mock() for external dependencies, not for the module under test.
 9. For renderer tests, use node environment (not jsdom) unless the test genuinely needs DOM.
@@ -148,7 +161,7 @@ RULES:
 1. Read existing tests (apps/mcp-server/src/mcpServer.test.ts, transport.test.ts) for patterns.
 2. File naming: colocated `{module}.test.ts` beside source.
 3. Run each test file as you write it:
-   cd /Users/admin/Projects/ADE/apps/mcp-server && npx vitest run {file}
+   cd apps/mcp-server && npx vitest run {file}
 4. Fix until passing before moving to the next file.
 
 When ALL tests pass, report back with a summary.
@@ -204,22 +217,47 @@ After reality check passes, run ALL created tests to confirm everything passes t
 
 ### 5a. Desktop tests (all new test files)
 
-```bash
-cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run [space-separated list of all new test files]
-```
-
-### 5b. MCP server tests (if applicable)
+Run new test files together first:
 
 ```bash
-cd /Users/admin/Projects/ADE/apps/mcp-server && npm test
+cd apps/desktop && npx vitest run [space-separated list of all new test files]
 ```
 
-### 5c. Run affected existing tests
+### 5b. Desktop tests (full sharded run — match CI)
+
+Run the full suite the same way CI does — sharded 8-way. Run all 8 shards in parallel:
+
+```bash
+cd apps/desktop && npx vitest run --shard=1/8
+cd apps/desktop && npx vitest run --shard=2/8
+cd apps/desktop && npx vitest run --shard=3/8
+cd apps/desktop && npx vitest run --shard=4/8
+cd apps/desktop && npx vitest run --shard=5/8
+cd apps/desktop && npx vitest run --shard=6/8
+cd apps/desktop && npx vitest run --shard=7/8
+cd apps/desktop && npx vitest run --shard=8/8
+```
+
+Or run a specific workspace project:
+
+```bash
+cd apps/desktop && npx vitest run --project unit-main
+cd apps/desktop && npx vitest run --project unit-renderer
+cd apps/desktop && npx vitest run --project unit-shared
+```
+
+### 5c. MCP server tests (if applicable)
+
+```bash
+cd apps/mcp-server && npm test
+```
+
+### 5d. Run affected existing tests
 
 If code changes could break existing tests (e.g., changed a service function's signature), run those existing test files too:
 
 ```bash
-cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run [affected existing test files]
+cd apps/desktop && npx vitest run [affected existing test files]
 ```
 
 **If tests fail:**
@@ -242,9 +280,10 @@ If a test file does NOT match, update the workspace config.
 
 Read `.github/workflows/ci.yml`. Verify:
 
-1. The `test-desktop` job runs `npx vitest run --shard=${{ matrix.shard }}/3` — this catches all `*.test.{ts,tsx}` files in `apps/desktop/src/`, so new colocated tests are automatically included.
+1. The `test-desktop` job runs `npx vitest run --shard=${{ matrix.shard }}/8` (8 shards) — this catches all `*.test.{ts,tsx}` files across all 3 workspace projects (`unit-main`, `unit-renderer`, `unit-shared`), so new colocated tests are automatically included.
 2. The `test-mcp` job runs `npm test` in `apps/mcp-server/` — this catches all tests there.
 3. No new test patterns were introduced that fall outside these globs.
+4. The shard count in ci.yml matches what agents use locally (currently 8).
 
 ### 6c. CI Coverage Checklist
 

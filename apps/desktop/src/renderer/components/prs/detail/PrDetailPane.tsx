@@ -718,9 +718,8 @@ export function PrDetailPane({
   const mapConvergenceStatus = React.useCallback((snapshot: IssueInventorySnapshot | null): PanelConvergence => {
     if (!snapshot) return { state: "not_started", currentRound: 1, maxRounds: 5 };
     const c = snapshot.convergence;
+    const displayRound = Math.max(1, c.currentRound);
     let state: PanelConvergence["state"] = "not_started";
-    // Display round is 1-based: show next round to run (currentRound + 1) unless already complete
-    const displayRound = Math.max(1, c.currentRound > 0 ? c.currentRound : 1);
     if (c.currentRound > 0) {
       if (c.totalNew === 0 && c.totalSentToAgent === 0) {
         state = "complete";
@@ -910,6 +909,13 @@ export function PrDetailPane({
     };
   }, [stopAutoConvergePoller]);
 
+  const resolveIssueScope = React.useCallback((): "both" | "checks" | "comments" => {
+    const a = issueResolutionAvailability;
+    if (a.hasActionableChecks && a.hasActionableComments) return "both";
+    if (a.hasActionableChecks) return "checks";
+    return "comments";
+  }, [issueResolutionAvailability]);
+
   const handleRunNextRound = React.useCallback(async (additionalInstructions: string) => {
     setConvergenceBusy(true);
     setActionError(null);
@@ -922,18 +928,9 @@ export function PrDetailPane({
         return;
       }
 
-      // Determine scope dynamically based on what's actually actionable
-      const availability = issueResolutionAvailability;
-      let scope: "both" | "checks" | "comments" = "comments";
-      if (availability.hasActionableChecks && availability.hasActionableComments) {
-        scope = "both";
-      } else if (availability.hasActionableChecks) {
-        scope = "checks";
-      }
-
       const result = await window.ade.prs.issueResolutionStart({
         prId: pr.id,
-        scope,
+        scope: resolveIssueScope(),
         modelId: resolverModel,
         reasoning: resolverReasoningLevel || null,
         permissionMode: resolverPermissionMode,
@@ -946,24 +943,16 @@ export function PrDetailPane({
       setActionError(err instanceof Error ? err.message : "Failed to launch agent");
       setConvergenceBusy(false);
     }
-  }, [pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, syncInventory, issueResolutionAvailability]);
+  }, [pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, syncInventory, resolveIssueScope]);
 
   // Keep ref in sync for the auto-converge poller
   handleRunNextRoundRef.current = handleRunNextRound;
 
   const handleConvergenceCopyPrompt = React.useCallback(async (additionalInstructions: string) => {
     try {
-      const availability = issueResolutionAvailability;
-      let scope: "both" | "checks" | "comments" = "comments";
-      if (availability.hasActionableChecks && availability.hasActionableComments) {
-        scope = "both";
-      } else if (availability.hasActionableChecks) {
-        scope = "checks";
-      }
-
       const preview = await window.ade.prs.issueResolutionPreviewPrompt({
         prId: pr.id,
-        scope,
+        scope: resolveIssueScope(),
         modelId: resolverModel,
         reasoning: resolverReasoningLevel || null,
         permissionMode: resolverPermissionMode,
@@ -975,7 +964,7 @@ export function PrDetailPane({
     } catch {
       // silently fail
     }
-  }, [pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, issueResolutionAvailability]);
+  }, [pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope]);
 
   const handleAutoConvergeToggle = React.useCallback((enabled: boolean) => {
     setAutoConverge(enabled);
@@ -2666,9 +2655,10 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
         body: c.body, timestamp: c.createdAt ?? "", metadata: { path: c.path, line: c.line },
       });
     }
-    for (const r of reviews) {
+    for (let ri = 0; ri < reviews.length; ri++) {
+      const r = reviews[ri];
       events.push({
-        id: `review-${r.reviewer}-${r.submittedAt}`, type: "review", author: r.reviewer, avatarUrl: r.reviewerAvatarUrl || null,
+        id: `review-${r.reviewer}-${r.submittedAt}-${ri}`, type: "review", author: r.reviewer, avatarUrl: r.reviewerAvatarUrl || null,
         body: r.body, timestamp: r.submittedAt ?? "", metadata: { state: r.state },
       });
     }

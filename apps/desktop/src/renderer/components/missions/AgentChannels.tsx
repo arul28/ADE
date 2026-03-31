@@ -367,35 +367,36 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
               No messages yet in this channel.
             </div>
           )}
-          {!messagesLoading && !messagesError && messages.length > 0 && shouldVirtualize ? (
-            <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
-              {virtualizer.getVirtualItems().map((virtualRow) => {
-                const msg = messages[virtualRow.index]!;
-                return (
-                  <div
-                    key={msg.id}
-                    data-index={virtualRow.index}
-                    ref={virtualizer.measureElement}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
-                      transform: `translateY(${virtualRow.start}px)`,
-                    }}
-                  >
-                    <MessageBubble msg={msg} attemptNameMap={attemptNameMap} />
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-          {!messagesLoading && !messagesError && messages.length > 0 && !shouldVirtualize ? (
-            <>
-              {messages.map((msg) => (
-                <MessageBubble key={msg.id} msg={msg} attemptNameMap={attemptNameMap} />
-              ))}
-            </>
+          {!messagesLoading && !messagesError && messages.length > 0 ? (
+            shouldVirtualize ? (
+              <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+                {virtualizer.getVirtualItems().map((virtualRow) => {
+                  const msg = messages[virtualRow.index]!;
+                  return (
+                    <div
+                      key={msg.id}
+                      data-index={virtualRow.index}
+                      ref={virtualizer.measureElement}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <MessageBubble msg={msg} attemptNameMap={attemptNameMap} />
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <>
+                {messages.map((msg) => (
+                  <MessageBubble key={msg.id} msg={msg} attemptNameMap={attemptNameMap} />
+                ))}
+              </>
+            )
           ) : null}
 
           {/* Jump to latest */}

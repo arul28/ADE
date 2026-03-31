@@ -1,9 +1,12 @@
-const platformValue =
-  typeof navigator !== "undefined" && typeof navigator.platform === "string"
-    ? navigator.platform
-    : typeof process !== "undefined" && typeof process.platform === "string"
-      ? process.platform
-      : "";
+function getPlatformValue(): string {
+  if (typeof navigator !== "undefined" && typeof navigator.platform === "string") {
+    return navigator.platform;
+  }
+  if (typeof process !== "undefined" && typeof process.platform === "string") {
+    return process.platform;
+  }
+  return "";
+}
 
-const isMac = platformValue.toLowerCase().includes("mac") || platformValue === "darwin";
+const isMac = /mac|darwin/i.test(getPlatformValue());
 export const revealLabel = isMac ? "Reveal in Finder" : "Reveal in File Explorer";

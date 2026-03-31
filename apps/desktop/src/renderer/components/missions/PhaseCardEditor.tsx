@@ -350,11 +350,12 @@ export function PhaseCardEditor({
                 Enabled
               </label>
               <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                {phase.askQuestions.enabled
-                  ? phase.askQuestions.maxQuestions == null
-                    ? `${phase.name || "Active phase"} worker may ask blocking clarification questions without a preset limit.`
-                    : `${phase.name || "Active phase"} worker may ask blocking clarification questions when needed.`
-                  : `${phase.name || "Active phase"} will proceed without asking questions.`}
+                {(() => {
+                  const name = phase.name || "Active phase";
+                  if (!phase.askQuestions.enabled) return `${name} will proceed without asking questions.`;
+                  if (phase.askQuestions.maxQuestions == null) return `${name} worker may ask blocking clarification questions without a preset limit.`;
+                  return `${name} worker may ask blocking clarification questions when needed.`;
+                })()}
               </div>
               {isPlanningPhase ? (
                 <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>

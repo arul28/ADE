@@ -112,7 +112,7 @@ Step 3: Update docs
 - Do NOT create new doc files unless absolutely necessary
 
 Step 4: Run doc validation
-  node /Users/admin/Projects/ADE/scripts/validate-docs.mjs
+  node scripts/validate-docs.mjs
 
 Report what docs were updated and what was changed.
 ```
@@ -135,9 +135,9 @@ Read `.github/workflows/ci.yml` and verify:
 Run in parallel — ensures lock files are in sync with package.json (mirrors CI's `npm ci`):
 
 ```bash
-cd /Users/admin/Projects/ADE/apps/desktop && npm install
-cd /Users/admin/Projects/ADE/apps/mcp-server && npm install
-cd /Users/admin/Projects/ADE/apps/web && npm install
+cd apps/desktop && npm install
+cd apps/mcp-server && npm install
+cd apps/web && npm install
 ```
 
 After install, check for uncommitted lock file changes — if any lock file is dirty, it means package.json was modified without regenerating the lock file, which will break CI's `npm ci`:
@@ -153,47 +153,58 @@ If lock files changed, warn and include them in the commit.
 Run in parallel to match CI jobs (`typecheck-desktop`, `typecheck-mcp`, `typecheck-web`):
 
 ```bash
-cd /Users/admin/Projects/ADE/apps/desktop && npm run typecheck
-cd /Users/admin/Projects/ADE/apps/mcp-server && npm run typecheck
-cd /Users/admin/Projects/ADE/apps/web && npm run typecheck
+cd apps/desktop && npm run typecheck
+cd apps/mcp-server && npm run typecheck
+cd apps/web && npm run typecheck
 ```
 
 ### 3d. Lint desktop
 
 ```bash
-cd /Users/admin/Projects/ADE/apps/desktop && npm run lint
+cd apps/desktop && npm run lint
 ```
 
-### 3e. Desktop tests (sharded)
+### 3e. Desktop tests (sharded — match CI exactly)
 
-Shard like CI (5 shards in parallel) to avoid timeout:
+Shard like CI (8 shards in parallel) to avoid timeout. The workspace has 3 projects (`unit-main`, `unit-renderer`, `unit-shared`) — sharding runs across all of them automatically:
 
 ```bash
-cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --shard=1/5
-cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --shard=2/5
-cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --shard=3/5
-cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --shard=4/5
-cd /Users/admin/Projects/ADE/apps/desktop && npx vitest run --shard=5/5
+cd apps/desktop && npx vitest run --shard=1/8
+cd apps/desktop && npx vitest run --shard=2/8
+cd apps/desktop && npx vitest run --shard=3/8
+cd apps/desktop && npx vitest run --shard=4/8
+cd apps/desktop && npx vitest run --shard=5/8
+cd apps/desktop && npx vitest run --shard=6/8
+cd apps/desktop && npx vitest run --shard=7/8
+cd apps/desktop && npx vitest run --shard=8/8
+```
+
+Or run specific projects when you only need a subset:
+
+```bash
+cd apps/desktop && npx vitest run --project unit-main       # ~150+ main-process tests
+cd apps/desktop && npx vitest run --project unit-renderer    # ~85+ renderer tests
+cd apps/desktop && npx vitest run --project unit-shared      # ~7 shared/preload tests
 ```
 
 ### 3f. MCP server tests
 
 ```bash
-cd /Users/admin/Projects/ADE/apps/mcp-server && npm test
+cd apps/mcp-server && npm test
 ```
 
 ### 3g. Build all apps
 
 ```bash
-cd /Users/admin/Projects/ADE/apps/desktop && npm run build
-cd /Users/admin/Projects/ADE/apps/mcp-server && npm run build
-cd /Users/admin/Projects/ADE/apps/web && npm run build
+cd apps/desktop && npm run build
+cd apps/mcp-server && npm run build
+cd apps/web && npm run build
 ```
 
 ### 3h. Validate docs
 
 ```bash
-node /Users/admin/Projects/ADE/scripts/validate-docs.mjs
+node scripts/validate-docs.mjs
 ```
 
 All checks must pass. If any fail, fix and re-run only the failed step.
@@ -220,7 +231,7 @@ All checks must pass. If any fail, fix and re-run only the failed step.
 - Typecheck (mcp-server): PASS
 - Typecheck (web): PASS
 - Lint (desktop): PASS
-- Tests (desktop): PASS (X tests across 5 shards)
+- Tests (desktop): PASS (X tests across 8 shards)
 - Tests (mcp-server): PASS (X tests)
 - Build (all apps): PASS
 - Doc validation: PASS
@@ -239,6 +250,6 @@ Before marking complete:
 - [ ] Lock files in sync (no dirty lock files after install)
 - [ ] Typecheck passed (desktop + mcp-server + web)
 - [ ] Lint passed (desktop)
-- [ ] All tests passed (desktop sharded 5-way + mcp-server)
+- [ ] All tests passed (desktop sharded 8-way + mcp-server)
 - [ ] All apps build successfully
 - [ ] Doc validation passed

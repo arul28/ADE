@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 >
-> Last updated: 2026-03-24
+> Last updated: 2026-03-31
 
 ADE's PR surface manages lane-backed pull requests, queue workflows, integration proposals, and GitHub inspection. The current implementation still centers on local git truth for simulation and merge planning, but the UI data-loading model is now much lighter than the earlier eager version.
 
@@ -215,3 +215,37 @@ The PR service's conflict marker parser (`parseConflictMarkers`) now handles `\r
 ## Workflow tool checks status logic
 
 The `prRefreshIssueInventory` workflow tool now evaluates checks status with a failure-first priority: if any check has `conclusion === "failure"`, the status is `"failing"` regardless of other check states. Previously, a mix of passing and failing checks could incorrectly report `"passing"` when all-success was checked first.
+
+---
+
+## Issue inventory and convergence loop
+
+ADE tracks PR issues (failing CI checks, unresolved review threads, and issue comments) in a structured inventory backed by the `pr_issue_inventory` table. The `issueInventoryService` syncs from live GitHub data, classifies issues by source (CodeRabbit, Codex, Copilot, human, ADE), extracts severity from comment text and emoji patterns, and computes a round-based convergence status.
+
+### Convergence model
+
+The inventory operates in rounds. Each round:
+
+1. Sync the current checks, review threads, and comments into the inventory.
+2. Send unresolved items to an agent for resolution.
+3. After the agent completes, re-sync to see what was fixed and what is new.
+4. Repeat until all issues are resolved, the round cap is reached, or convergence stalls.
+
+The `ConvergenceStatus` tracks per-round statistics (new, fixed, dismissed counts), whether progress is being made (`isConverging`), and whether auto-advance is possible (`canAutoAdvance`). The default maximum is 5 rounds.
+
+### Pipeline settings
+
+The `PipelineSettings` type configures the auto-converge pipeline per PR:
+
+- `autoMerge` -- whether to auto-merge after convergence completes
+- `mergeMethod` -- merge commit, squash, rebase, or repo default
+- `maxRounds` -- convergence round cap
+- `onRebaseNeeded` -- pause convergence or auto-rebase when the branch falls behind
+
+Settings are persisted per PR in the key-value store and editable from the convergence panel.
+
+### Convergence panel
+
+The `PrConvergencePanel` is a slide-over panel in the PR detail pane. It displays the issue inventory grouped by severity, convergence progress (round indicator, fix/dismiss/escalate counts), an embedded agent chat pane for the active resolution session, and pipeline settings controls.
+
+The auto-converge mode polls GitHub after each agent session completes. It waits for CI checks to finish and comment counts to stabilize (2 consecutive polls with the same count) before triggering the next round. A pause reason banner surfaces when convergence is blocked by rebase needs or round limits.

@@ -427,12 +427,11 @@ function compactGeneratedContextDoc(id: ContextDocId, content: string): string {
   }
 
   const sectionBodies = spec.requiredHeadings.map((heading, index) => {
-    const sectionStart = normalized.indexOf(heading);
-    const bodyStart = sectionStart + heading.length;
-    const nextHeading = index + 1 < spec.requiredHeadings.length
-      ? normalized.indexOf(spec.requiredHeadings[index + 1], bodyStart)
+    const bodyStart = headingOffsets[index] + heading.length;
+    const sectionEnd = index + 1 < headingOffsets.length
+      ? headingOffsets[index + 1]
       : normalized.length;
-    return normalized.slice(bodyStart, nextHeading).trim();
+    return normalized.slice(bodyStart, sectionEnd).trim();
   });
 
   const scaffoldLines = [

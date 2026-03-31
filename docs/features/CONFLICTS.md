@@ -634,7 +634,6 @@ Conflict resolution generation now defaults to **external local CLIs** (Codex or
 The Phase 3 missions overhaul changed how conflicts are managed:
 
 - **Merge Phase Removed**: The previous merge phase (which attempted automatic conflict resolution) has been completely removed from the mission lifecycle
-- **PR Strategy**: Conflicts are now handled at PR time, controlled by the selected PR strategy (integration/per-lane/queue/manual)
-- **Integration Phase**: For `integration` strategy, lanes merge into an integration branch where conflicts are surfaced for resolution
-- **Pre-Merge Checking**: The orchestrator performs dry-run merges to detect conflicts before PR creation, allowing proactive conflict resolution (shipped as part of the conflict prediction engine integration with the orchestrator)
+- **Result Lane Closeout**: Missions always end with a single result lane. Conflicts between worker lanes are resolved when the coordinator merges worker outputs into the result lane. The user opens PRs from the result lane at their discretion.
+- **Pre-Merge Checking**: The orchestrator performs dry-run merges to detect conflicts before consolidation, allowing proactive conflict resolution (shipped as part of the conflict prediction engine integration with the orchestrator)
 - **File Conflict Prevention**: During mission planning, the orchestrator assigns files to lanes to minimize overlap and reduce merge conflicts (shipped as part of the coordinator planning phase)

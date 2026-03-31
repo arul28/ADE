@@ -496,7 +496,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       archived_at text,
       foreign key(project_id) references projects(id),
       foreign key(parent_lane_id) references lanes(id),
-      foreign key(mission_id) references missions(id) on delete cascade on delete set null
+      foreign key(mission_id) references missions(id) on delete set null
     )
   `);
   try { db.run("alter table lanes add column mission_id text"); } catch {}

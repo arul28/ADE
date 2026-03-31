@@ -198,9 +198,9 @@ The missions UI has been further decomposed through the M3/M4 UI overhaul. The c
 | `MissionTabContainer.tsx` | — | Tab content rendering |
 | `InterventionPanel.tsx` | — | Dedicated intervention display and resolve UI |
 | `missionHelpers.ts` | ~520 | `STATUS_CONFIG`, `classifyErrorSource`, `computeProgress`, `collapseFeedMessages`, `getAvailableLifecycleActions`, `usagePercentColor`, `formatResetCountdown` |
-| `CreateMissionDialog.tsx` | ~1,500 | Full mission creation wizard with model selection, budget, PR strategy |
+| `CreateMissionDialog.tsx` | ~1,250 | Mission creation wizard with model selection, budget, result-lane closeout |
 | `MissionSettingsDialog.tsx` | ~590 | Runtime settings adjustment for active missions |
-| `PlanTab.tsx` | ~190 | Plan DAG visualization tab |
+| `PlanTab.tsx` | ~400 | Plan tab with planner review summary, DAG visualization, and phase-grouped step list |
 | `WorkTab.tsx` | ~210 | Worker runtime inspection, transcript-oriented follow mode, and validator lineage tab |
 | `StepDetailPanel.tsx` | ~270 | Sidebar panel for step inspection and attempt history |
 | `ActivityNarrativeHeader.tsx` | ~150 | Run narrative header for the Activity tab |

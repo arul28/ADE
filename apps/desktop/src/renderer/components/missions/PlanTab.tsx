@@ -121,6 +121,8 @@ function derivePlannerReview(mission: MissionDetail | null, runGraph: Orchestrat
     ) ?? null,
   );
   const parallelismCap = Number(missionSummary?.parallelismCap ?? Number.NaN);
+  const assumptions = toStringArray(plannerPlan?.assumptions);
+  const risks = toStringArray(plannerPlan?.risks);
 
   return {
     title: toText(mission?.title) ?? "Mission plan",
@@ -130,12 +132,8 @@ function derivePlannerReview(mission: MissionDetail | null, runGraph: Orchestrat
     strategy: toText(missionSummary?.strategy) ?? artifactFallback?.strategy ?? null,
     parallelismCap: Number.isFinite(parallelismCap) && parallelismCap > 0 ? Math.floor(parallelismCap) : null,
     parallelismRationale: toText(missionSummary?.parallelismRationale),
-    assumptions: toStringArray(plannerPlan?.assumptions).length > 0
-      ? toStringArray(plannerPlan?.assumptions)
-      : (artifactFallback?.assumptions ?? []),
-    risks: toStringArray(plannerPlan?.risks).length > 0
-      ? toStringArray(plannerPlan?.risks)
-      : (artifactFallback?.risks ?? []),
+    assumptions: assumptions.length > 0 ? assumptions : (artifactFallback?.assumptions ?? []),
+    risks: risks.length > 0 ? risks : (artifactFallback?.risks ?? []),
   };
 }
 
@@ -149,7 +147,9 @@ function derivePlanGroups(steps: OrchestratorStep[]): PlanGroup[] {
     const milestoneLabel = explicitMilestone
       ?? ((typeof meta.stepType === "string" && meta.stepType === "milestone") ? step.title : null);
     const phase = resolvePhase(step);
-    const kind: PlanGroup["kind"] = featureLabel ? "feature" : milestoneLabel ? "milestone" : "phase";
+    let kind: PlanGroup["kind"] = "phase";
+    if (featureLabel) kind = "feature";
+    else if (milestoneLabel) kind = "milestone";
     const label = featureLabel ?? milestoneLabel ?? phase.name;
     const key = `${kind}:${label.toLowerCase()}`;
     const existing = groups.get(key) ?? { key, label, kind, steps: [] };

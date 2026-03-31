@@ -36,6 +36,13 @@ import { useMissionsStore } from "./useMissionsStore";
 const BG_PAGE = COLORS.pageBg;
 const THREAD_MESSAGE_PAGE_SIZE = 100;
 
+function threadStatusLabel(loading: boolean, error: string | null, hasMore: boolean): string {
+  if (loading) return "Loading thread messages...";
+  if (error) return error;
+  if (hasMore) return "Older messages are available.";
+  return "Showing the full hydrated thread.";
+}
+
 function resolveMissionPhaseAccent(phaseLabel: string | null): string {
   const normalized = (phaseLabel ?? "").trim().toLowerCase();
   if (!normalized.length) return "#38BDF8";
@@ -628,13 +635,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
                 }}
               >
                 <div>
-                  {threadMessagesLoading
-                    ? "Loading thread messages..."
-                    : threadMessagesError
-                      ? threadMessagesError
-                      : threadMessagesHasMore
-                        ? "Older messages are available."
-                        : "Showing the full hydrated thread."}
+                  {threadStatusLabel(threadMessagesLoading, threadMessagesError, threadMessagesHasMore)}
                 </div>
                 <div className="flex items-center gap-2">
                   {threadMessagesError ? (

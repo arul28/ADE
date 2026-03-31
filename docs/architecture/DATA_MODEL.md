@@ -80,7 +80,7 @@ src/shared/types/
 ├── git.ts            # Git status, diff, stash, log, branch types
 ├── lanes.ts          # Lane, LaneOverlay, lane filter/creation types
 ├── conflicts.ts      # Conflict predictions, proposals, resolution, risk matrix types
-├── prs.ts            # Pull request, PrStrategy, PrDepth, review/check status types
+├── prs.ts            # Pull request, PrStrategy, PrDepth, review/check status, issue inventory, pipeline settings types
 ├── files.ts          # Workspace file tree, file status, diff stat types
 ├── sessions.ts       # Terminal session, session delta, agent chat session types
 ├── chat.ts           # Agent chat messages, envelopes, tool types
@@ -93,7 +93,7 @@ src/shared/types/
 └── usage.ts          # Token usage, cost breakdown, model utilization
 ```
 
-Each module owns a single domain and imports from sibling modules only when necessary (for example, `missions.ts` imports `ModelConfig` from `./models` and `PrStrategy` from `./prs`). Cross-module imports are kept minimal to avoid circular dependencies.
+Each module owns a single domain and imports from sibling modules only when necessary (for example, `missions.ts` imports `ModelConfig` from `./models` and types from `./prs` and `./orchestrator`). Cross-module imports are kept minimal to avoid circular dependencies.
 
 During the split, 16 dead or unused types were identified and deleted rather than migrated. The barrel re-export in `index.ts` ensures full backward compatibility: every consumer that previously imported from `../shared/types` or `../../shared/types` works unchanged.
 
@@ -533,6 +533,33 @@ CREATE INDEX IF NOT EXISTS idx_pull_requests_project_id ON pull_requests(project
 ```
 
 Maps lanes to GitHub pull requests. Each lane can have at most one linked PR. The PR state and check/review statuses are synced periodically by the PR polling service.
+
+#### PR Issue Inventory
+
+```sql
+CREATE TABLE IF NOT EXISTS pr_issue_inventory (
+  id                TEXT PRIMARY KEY,
+  pr_id             TEXT NOT NULL,
+  source            TEXT NOT NULL,       -- 'coderabbit' | 'codex' | 'copilot' | 'human' | 'ade' | 'unknown'
+  type              TEXT NOT NULL,       -- 'review_thread' | 'check_failure' | 'issue_comment'
+  external_id       TEXT NOT NULL,
+  state             TEXT NOT NULL,       -- 'new' | 'sent_to_agent' | 'fixed' | 'dismissed' | 'escalated'
+  round             INTEGER NOT NULL DEFAULT 0,
+  file_path         TEXT,
+  line              INTEGER,
+  severity          TEXT,                -- 'critical' | 'major' | 'minor' | null
+  headline          TEXT NOT NULL,
+  body              TEXT,
+  author            TEXT,
+  url               TEXT,
+  dismiss_reason    TEXT,
+  agent_session_id  TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+```
+
+Tracks individual PR issues (failing checks, unresolved review threads, issue comments) for the convergence loop. The `issueInventoryService` syncs from live GitHub data and classifies issues by source and severity. The `round` field tracks which convergence round surfaced the issue. The `state` field progresses through the convergence lifecycle (`new` -> `sent_to_agent` -> `fixed`/`dismissed`/`escalated`).
 
 #### Checkpoints (Phase 8)
 

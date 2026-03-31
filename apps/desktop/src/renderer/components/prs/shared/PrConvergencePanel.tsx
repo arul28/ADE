@@ -233,11 +233,9 @@ function RoundIndicator({ current, max }: { current: number; max: number }) {
         {Array.from({ length: max }, (_, i) => {
           const isCurrent = i + 1 === current;
           const isComplete = i + 1 < current;
-          const dotColor = isComplete
-            ? COLORS.success
-            : isCurrent
-              ? COLORS.accent
-              : "rgba(255,255,255,0.12)";
+          let dotColor = "rgba(255,255,255,0.12)";
+          if (isComplete) dotColor = COLORS.success;
+          else if (isCurrent) dotColor = COLORS.accent;
           return (
             <div
               key={i}
@@ -410,11 +408,10 @@ function IssueRow({
   item: IssueInventoryItem;
   showAgent?: boolean;
 }) {
-  const location = item.filePath
-    ? item.line != null
-      ? `${item.filePath}:${item.line}`
-      : item.filePath
-    : null;
+  let location: string | null = null;
+  if (item.filePath) {
+    location = item.line != null ? `${item.filePath}:${item.line}` : item.filePath;
+  }
 
   return (
     <div
@@ -571,13 +568,10 @@ function CheckRow({ check }: { check: PrCheck }) {
   const isPassing = check.conclusion === "success";
   const isFailing = check.conclusion === "failure";
   const isRunning = check.status === "in_progress";
-  const statusColor = isPassing
-    ? COLORS.success
-    : isFailing
-      ? COLORS.danger
-      : isRunning
-        ? COLORS.warning
-        : COLORS.textDim;
+  let statusColor: string = COLORS.textDim;
+  if (isPassing) statusColor = COLORS.success;
+  else if (isFailing) statusColor = COLORS.danger;
+  else if (isRunning) statusColor = COLORS.warning;
 
   return (
     <div

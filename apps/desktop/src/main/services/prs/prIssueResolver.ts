@@ -358,7 +358,8 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
   }
 
   // Insert "Previous rounds" section when running incremental rounds
-  if (previouslyHandled && (previouslyHandled.fixedCount > 0 || previouslyHandled.dismissedCount > 0 || previouslyHandled.escalatedCount > 0)) {
+  const hadPriorWork = previouslyHandled && (previouslyHandled.fixedCount + previouslyHandled.dismissedCount + previouslyHandled.escalatedCount > 0);
+  if (hadPriorWork) {
     promptSections.push(
       "",
       "Previous rounds",
@@ -557,16 +558,13 @@ export async function launchPrIssueResolutionChat(
   });
 
   // Mark inventory items as sent to agent for this round
-  if (deps.issueInventoryService && prepared.inventoryNewItems && prepared.roundNumber != null) {
-    const itemIds = prepared.inventoryNewItems.map((item) => item.id);
-    if (itemIds.length > 0) {
-      deps.issueInventoryService.markSentToAgent(
-        prepared.pr.id,
-        itemIds,
-        session.id,
-        prepared.roundNumber,
-      );
-    }
+  if (deps.issueInventoryService && prepared.inventoryNewItems?.length && prepared.roundNumber != null) {
+    deps.issueInventoryService.markSentToAgent(
+      prepared.pr.id,
+      prepared.inventoryNewItems.map((item) => item.id),
+      session.id,
+      prepared.roundNumber,
+    );
   }
 
   return {
