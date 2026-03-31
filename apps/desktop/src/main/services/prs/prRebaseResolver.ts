@@ -141,7 +141,7 @@ export async function launchRebaseResolutionChat(
     model: descriptor.id,
     modelId: descriptor.id,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    unifiedPermissionMode: mapPermissionMode(args.permissionMode) as import("../../../shared/types").AgentChatUnifiedPermissionMode,
+    permissionMode: mapPermissionMode(args.permissionMode),
     surface: "work",
     sessionProfile: "workflow",
     requestedCwd: lane.worktreePath,
