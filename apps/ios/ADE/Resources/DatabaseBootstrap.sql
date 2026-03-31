@@ -2319,7 +2319,8 @@ create table if not exists pr_issue_inventory (
       agent_session_id text,
       created_at text not null,
       updated_at text not null,
-      unique(pr_id, external_id)
+      unique(pr_id, external_id),
+      foreign key(pr_id) references pull_requests(id) on delete cascade
     );
 
 create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state);
@@ -2330,5 +2331,6 @@ create table if not exists pr_pipeline_settings (
       merge_method text not null default 'repo_default',
       max_rounds integer not null default 5,
       on_rebase_needed text not null default 'pause',
-      updated_at text not null
+      updated_at text not null,
+      foreign key(pr_id) references pull_requests(id) on delete cascade
     );

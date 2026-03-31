@@ -707,6 +707,7 @@ export type RecheckIntegrationStepResult = {
 export type RebaseNeed = {
   laneId: string;
   laneName: string;
+  kind: "lane_base" | "pr_target";
   baseBranch: string;
   behindBy: number;
   conflictPredicted: boolean;

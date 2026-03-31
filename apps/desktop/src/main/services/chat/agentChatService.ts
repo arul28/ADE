@@ -196,6 +196,8 @@ type PersistedChatState = {
   lastLaneDirectiveKey?: string | null;
   manuallyNamed?: boolean;
   requestedCwd?: string | null;
+  /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
+  approvalOverrides?: string[];
   updatedAt: string;
 };
 
@@ -791,6 +793,15 @@ function sessionSupportsReasoning(session: AgentChatSession): boolean {
   return resolveSessionModelDescriptor(session)?.capabilities.reasoning ?? true;
 }
 
+function initialTurnActivity(session: AgentChatSession): {
+  activity: Extract<AgentChatEvent, { type: "activity" }>["activity"];
+  detail: string;
+} {
+  return sessionSupportsReasoning(session)
+    ? { activity: "thinking", detail: REASONING_ACTIVITY_DETAIL }
+    : { activity: "working", detail: WORKING_ACTIVITY_DETAIL };
+}
+
 function normalizeUsagePayload(
   value: unknown
 ): { inputTokens?: number | null; outputTokens?: number | null } | undefined {
@@ -1174,6 +1185,15 @@ function buildExecutionModeDirective(
       "[ADE launch directive]",
       "Use Codex parallel delegation for independent subtasks when it improves latency or coverage.",
       "Split bounded work into parallel subagents, keep each delegate narrowly scoped, then reconcile results before the final answer.",
+      "If the task is tightly coupled, stay focused instead of forcing delegation.",
+    ].join("\n");
+  }
+
+  if (provider === "claude" && (mode === "subagents" || mode === "parallel")) {
+    return [
+      "[ADE launch directive]",
+      "Use Claude subagents for independent subtasks when they will materially improve latency or coverage.",
+      "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
     ].join("\n");
   }
@@ -2057,12 +2077,15 @@ export function createAgentChatService(args: {
     "webfetch", "websearch",
   ]);
 
+  const normalizeToolNameForApproval = (toolName: string): string =>
+    toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+
   const claudeToolNeedsApproval = (
     toolName: string,
     input: Record<string, unknown>,
     permissionMode: string,
   ): boolean => {
-    const normalized = toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    const normalized = normalizeToolNameForApproval(toolName);
     // bypassPermissions → never prompt
     if (permissionMode === "bypassPermissions") return false;
     // plan mode → handled elsewhere (deny writes entirely)
@@ -2088,25 +2111,30 @@ export function createAgentChatService(args: {
     input: Record<string, unknown>,
     sdkOptions?: { blockedPath?: string; decisionReason?: string },
   ): string => {
-    const parts: string[] = [];
+    const lowerName = toolName.toLowerCase();
+    let headline: string;
     if (sdkOptions?.decisionReason) {
-      parts.push(sdkOptions.decisionReason);
-    } else if (toolName.toLowerCase().includes("bash")) {
-      const cmd = typeof input.command === "string" ? input.command : typeof input.cmd === "string" ? input.cmd : null;
-      parts.push(cmd ? `Run command: ${cmd.length > 120 ? cmd.slice(0, 117) + "..." : cmd}` : `Run a shell command`);
-    } else if (toolName.toLowerCase().includes("write")) {
+      headline = sdkOptions.decisionReason;
+    } else if (lowerName.includes("bash")) {
+      const cmd = typeof input.command === "string" ? input.command
+        : typeof input.cmd === "string" ? input.cmd
+        : null;
+      headline = cmd
+        ? `Run command: ${cmd.length > 120 ? cmd.slice(0, 117) + "..." : cmd}`
+        : "Run a shell command";
+    } else if (lowerName.includes("write")) {
       const filePath = typeof input.file_path === "string" ? input.file_path : null;
-      parts.push(filePath ? `Write file: ${filePath}` : `Write a file`);
-    } else if (toolName.toLowerCase().includes("edit")) {
+      headline = filePath ? `Write file: ${filePath}` : "Write a file";
+    } else if (lowerName.includes("edit")) {
       const filePath = typeof input.file_path === "string" ? input.file_path : null;
-      parts.push(filePath ? `Edit file: ${filePath}` : `Edit a file`);
+      headline = filePath ? `Edit file: ${filePath}` : "Edit a file";
     } else {
-      parts.push(`Use tool: ${toolName}`);
+      headline = `Use tool: ${toolName}`;
     }
     if (sdkOptions?.blockedPath) {
-      parts.push(`Path: ${sdkOptions.blockedPath}`);
+      return `${headline}\nPath: ${sdkOptions.blockedPath}`;
     }
-    return parts.join("\n");
+    return headline;
   };
 
   const buildClaudeCanUseTool = (
@@ -2160,10 +2188,14 @@ export function createAgentChatService(args: {
       });
 
       // Block until the user responds via the approval UI.
-      const response = await new Promise<{ decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }>((resolve) => {
-        runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-      });
-      runtime.approvals.delete(approvalItemId);
+      let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
+      try {
+        response = await new Promise<typeof response>((resolve) => {
+          runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+        });
+      } finally {
+        runtime.approvals.delete(approvalItemId);
+      }
 
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
       if (approved) {
@@ -2201,7 +2233,7 @@ export function createAgentChatService(args: {
     const effectivePermMode = managed.session.claudePermissionMode ?? "default";
     if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
       // Check session-wide overrides — user already said "Allow for Session" for this tool
-      const normalizedForOverride = toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+      const normalizedForOverride = normalizeToolNameForApproval(toolName);
       if (runtime.approvalOverrides.has(normalizedForOverride)) {
         return { behavior: "allow" };
       }
@@ -2246,10 +2278,14 @@ export function createAgentChatService(args: {
         detail: { tool: toolName, ...(sdkOptions?.blockedPath ? { blockedPath: sdkOptions.blockedPath } : {}) },
       });
 
-      const response = await new Promise<{ decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }>((resolve) => {
-        runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-      });
-      runtime.approvals.delete(approvalItemId);
+      let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
+      try {
+        response = await new Promise<typeof response>((resolve) => {
+          runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+        });
+      } finally {
+        runtime.approvals.delete(approvalItemId);
+      }
 
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
       if (response.decision === "accept_for_session") {
@@ -3344,6 +3380,9 @@ export function createAgentChatService(args: {
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined } : {}),
+      ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
+        ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
+        : {}),
       ...(managed.runtime?.kind === "unified"
         ? { messages: managed.runtime.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })) }
         : {}),
@@ -3435,6 +3474,9 @@ export function createAgentChatService(args: {
             .slice(-12)
         : undefined;
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length ? record.sdkSessionId.trim() : undefined;
+      const approvalOverrides = Array.isArray(record.approvalOverrides)
+        ? record.approvalOverrides.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+        : undefined;
       const hydrated: PersistedChatState = {
         version: 2,
         sessionId,
@@ -3467,6 +3509,7 @@ export function createAgentChatService(args: {
           ? { threadId: record.threadId.trim() }
           : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
+        ...(approvalOverrides?.length ? { approvalOverrides } : {}),
         ...(messages?.length ? { messages } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
         ...(typeof record.continuitySummary === "string" && record.continuitySummary.trim().length
@@ -4413,17 +4456,23 @@ export function createAgentChatService(args: {
       _rootPath: managed.laneWorktreePath,
     }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    managed.session.status = "active";
+    emitPreparedUserMessage(managed, {
+      text: displayText,
+      attachments,
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "started" });
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+    });
     const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, attachments);
     const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
 
     // Intercept /review command — route to review/start RPC instead of turn/start
     if (args.promptText.trim().startsWith("/review")) {
-      emitPreparedUserMessage(managed, {
-        text: displayText,
-        attachments,
-        laneDirectiveKey: args.laneDirectiveKey,
-        onDispatched: args.onDispatched,
-      });
       const reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
         threadId: managed.session.threadId,
         target: "uncommittedChanges",
@@ -4473,13 +4522,6 @@ export function createAgentChatService(args: {
       input.push({ type: "mention", name, path: stagedPath });
     }
 
-    managed.session.status = "active";
-    emitPreparedUserMessage(managed, {
-      text: displayText,
-      attachments,
-      laneDirectiveKey: args.laneDirectiveKey,
-      onDispatched: args.onDispatched,
-    });
     if (autoMemoryNotice) {
       emitChatEvent(managed, {
         type: "system_notice",
@@ -4500,9 +4542,6 @@ export function createAgentChatService(args: {
     if (turnId) {
       managed.runtime.activeTurnId = turnId;
       if (managed.runtime.startedTurnId !== turnId) {
-        const reasoningActivity = sessionSupportsReasoning(managed.session)
-          ? { activity: "thinking" as const, detail: REASONING_ACTIVITY_DETAIL }
-          : { activity: "working" as const, detail: WORKING_ACTIVITY_DETAIL };
         managed.runtime.startedTurnId = turnId;
         emitChatEvent(managed, {
           type: "status",
@@ -4511,7 +4550,7 @@ export function createAgentChatService(args: {
         });
         emitChatEvent(managed, {
           type: "activity",
-          ...reasoningActivity,
+          ...initialTurnActivity(managed.session),
           turnId,
         });
       }
@@ -4638,6 +4677,11 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+      turnId,
+    });
 
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
@@ -4649,6 +4693,14 @@ export function createAgentChatService(args: {
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
     const emittedClaudeTodoIds = new Set<string>();
+    const maybeEmitTodoUpdate = (toolName: string, input: unknown, itemId: string): void => {
+      if (toolName !== "TodoWrite") return;
+      if (emittedClaudeTodoIds.has(itemId)) return;
+      const todoItems = normalizeClaudeTodoItems(input ?? {});
+      if (!todoItems) return;
+      emittedClaudeTodoIds.add(itemId);
+      emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
+    };
     const markFirstStreamEvent = (kind: string): void => {
       if (firstStreamEventLogged) return;
       firstStreamEventLogged = true;
@@ -5036,15 +5088,7 @@ export function createAgentChatService(args: {
                     itemId,
                     turnId,
                   });
-                  const todoItems = toolName === "TodoWrite" ? normalizeClaudeTodoItems(block.input ?? {}) : null;
-                  if (todoItems && !emittedClaudeTodoIds.has(itemId)) {
-                    emittedClaudeTodoIds.add(itemId);
-                    emitChatEvent(managed, {
-                      type: "todo_update",
-                      items: todoItems,
-                      turnId,
-                    });
-                  }
+                  maybeEmitTodoUpdate(toolName, block.input, itemId);
                   // Synthesize a tool_result for the proof observer since the
                   // Claude V2 SDK never surfaces tool results in the stream.
                   const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
@@ -5488,6 +5532,11 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+      turnId,
+    });
 
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
@@ -6666,9 +6715,6 @@ export function createAgentChatService(args: {
       runtime.recentNotificationKeys.clear();
       managed.session.status = "active";
       if (!turnId || runtime.startedTurnId !== turnId) {
-        const reasoningActivity = sessionSupportsReasoning(managed.session)
-          ? { activity: "thinking" as const, detail: REASONING_ACTIVITY_DETAIL }
-          : { activity: "working" as const, detail: WORKING_ACTIVITY_DETAIL };
         runtime.startedTurnId = turnId;
         emitChatEvent(managed, {
           type: "status",
@@ -6677,7 +6723,7 @@ export function createAgentChatService(args: {
         });
         emitChatEvent(managed, {
           type: "activity",
-          ...reasoningActivity,
+          ...initialTurnActivity(managed.session),
           ...(turnId ? { turnId } : {})
         });
       }
@@ -7506,7 +7552,14 @@ export function createAgentChatService(args: {
 
         if (elicitReq.mode === "url" && elicitReq.url) {
           // URL mode: open browser and wait for elicitation_complete stream event
-          try { require("electron").shell.openExternal(elicitReq.url); } catch { /* best effort */ }
+          try {
+            const parsed = new URL(elicitReq.url);
+            if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+              require("electron").shell.openExternal(elicitReq.url);
+            } else {
+              logger.warn("agent_chat.blocked_open_external", { protocol: parsed.protocol });
+            }
+          } catch { /* best effort */ }
 
           const request: PendingInputRequest = {
             requestId: approvalItemId,
@@ -7544,14 +7597,18 @@ export function createAgentChatService(args: {
               runtime.pendingElicitations.set(elicitReq.elicitationId!, resolve);
             });
             // Race: user clicks "Done" OR elicitation_complete arrives
-            const userResponse = await Promise.race([
-              new Promise<{ decision?: AgentChatApprovalDecision }>((resolve) => {
-                runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-              }),
-              waitForComplete.then(() => ({ decision: "accept" as AgentChatApprovalDecision })),
-            ]);
-            runtime.approvals.delete(approvalItemId);
-            runtime.pendingElicitations.delete(elicitReq.elicitationId);
+            let userResponse: { decision?: AgentChatApprovalDecision };
+            try {
+              userResponse = await Promise.race([
+                new Promise<{ decision?: AgentChatApprovalDecision }>((resolve) => {
+                  runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+                }),
+                waitForComplete.then(() => ({ decision: "accept" as AgentChatApprovalDecision })),
+              ]);
+            } finally {
+              runtime.approvals.delete(approvalItemId);
+              runtime.pendingElicitations.delete(elicitReq.elicitationId);
+            }
             if (userResponse.decision === "cancel" || userResponse.decision === "decline") {
               return { action: "cancel" };
             }
@@ -7559,11 +7616,15 @@ export function createAgentChatService(args: {
           }
 
           // No elicitationId — just wait for user click
-          const response = await new Promise<{ decision?: AgentChatApprovalDecision }>((resolve) => {
-            runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-          });
-          runtime.approvals.delete(approvalItemId);
-          return response.decision === "cancel" || response.decision === "decline"
+          let elicitResponse: { decision?: AgentChatApprovalDecision };
+          try {
+            elicitResponse = await new Promise<typeof elicitResponse>((resolve) => {
+              runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+            });
+          } finally {
+            runtime.approvals.delete(approvalItemId);
+          }
+          return elicitResponse.decision === "cancel" || elicitResponse.decision === "decline"
             ? { action: "cancel" }
             : { action: "accept" };
         }
@@ -7614,19 +7675,23 @@ export function createAgentChatService(args: {
           detail: { serverName: elicitReq.serverName },
         });
 
-        const response = await new Promise<{ decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }>((resolve) => {
-          runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-        });
-        runtime.approvals.delete(approvalItemId);
+        let formResponse: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
+        try {
+          formResponse = await new Promise<typeof formResponse>((resolve) => {
+            runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+          });
+        } finally {
+          runtime.approvals.delete(approvalItemId);
+        }
 
-        if (response.decision === "cancel" || response.decision === "decline") {
+        if (formResponse.decision === "cancel" || formResponse.decision === "decline") {
           return { action: "decline" };
         }
 
         // Map answers to the expected content shape
         const content: Record<string, string | number | boolean | string[]> = {};
-        if (response.answers) {
-          for (const [key, value] of Object.entries(response.answers)) {
+        if (formResponse.answers) {
+          for (const [key, value] of Object.entries(formResponse.answers)) {
             content[key] = value;
           }
         }
@@ -7887,7 +7952,7 @@ export function createAgentChatService(args: {
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
       turnMemoryPolicyState: null,
-      approvalOverrides: new Set<string>(),
+      approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
       pendingElicitations: new Map<string, () => void>(),
     };
     managed.runtime = runtime;
@@ -8920,7 +8985,12 @@ export function createAgentChatService(args: {
     runtime.interrupted = true;
     cancelClaudeWarmup(managed, runtime, "interrupt");
     runtime.activeQuery?.interrupt().catch(() => {});
-    // Close the V2 session — it will be recreated on the next turn.
+    // Drain pending approvals so their promises settle instead of hanging forever
+    for (const pending of runtime.approvals.values()) {
+      pending.resolve({ decision: "cancel" });
+    }
+    runtime.approvals.clear();
+    // Close the V2 session on interrupt — it will be recreated on the next turn
     try { runtime.v2Session?.close(); } catch { /* ignore */ }
     runtime.v2Session = null;
     runtime.v2StreamGen = null;

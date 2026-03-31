@@ -97,12 +97,7 @@ function beginLaneGitActionRuntime(
   patch: Pick<LaneGitActionRuntimeState, "busyAction" | "notice" | "error">,
 ): number {
   const nextVersion = readLaneGitActionRuntimeState(laneId).version + 1;
-  writeLaneGitActionRuntimeState(laneId, {
-    version: nextVersion,
-    busyAction: patch.busyAction,
-    notice: patch.notice,
-    error: patch.error,
-  });
+  writeLaneGitActionRuntimeState(laneId, { ...patch, version: nextVersion });
   return nextVersion;
 }
 

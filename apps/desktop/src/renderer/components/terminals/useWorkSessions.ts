@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
-import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkStatusFilter, type WorkViewMode } from "../../state/appStore";
+import {
+  useAppStore,
+  type WorkDraftKind,
+  type WorkProjectViewState,
+  type WorkSessionListOrganization,
+  type WorkStatusFilter,
+  type WorkViewMode,
+} from "../../state/appStore";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
 import { isChatToolType, isRunOwnedSession } from "../../lib/sessions";
@@ -17,6 +24,9 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   laneFilter: "all",
   statusFilter: "all",
   search: "",
+  sessionListOrganization: "all-lanes-by-status",
+  workCollapsedLaneIds: [],
+  workFocusSessionsHidden: false,
 };
 
 function inferToolFromResumeCommand(command: string): string | null {
@@ -92,6 +102,10 @@ export function useWorkSessions() {
   const filterLaneId = projectViewState.laneFilter;
   const filterStatus = projectViewState.statusFilter;
   const q = projectViewState.search;
+  const sessionListOrganization: WorkSessionListOrganization =
+    projectViewState.sessionListOrganization ?? "all-lanes-by-status";
+  const workCollapsedLaneIds = projectViewState.workCollapsedLaneIds ?? [];
+  const workFocusSessionsHidden = projectViewState.workFocusSessionsHidden ?? false;
 
   const setViewMode = useCallback(
     (nextMode: WorkViewMode) => {
@@ -123,6 +137,34 @@ export function useWorkSessions() {
   const setFilterStatus = useCallback(
     (status: WorkStatusFilter) => {
       setProjectViewState({ statusFilter: status });
+    },
+    [setProjectViewState],
+  );
+
+  const setSessionListOrganization = useCallback(
+    (org: WorkSessionListOrganization) => {
+      setProjectViewState({ sessionListOrganization: org });
+    },
+    [setProjectViewState],
+  );
+
+  const toggleWorkLaneCollapsed = useCallback(
+    (laneId: string) => {
+      setProjectViewState((prev) => {
+        const cur = prev.workCollapsedLaneIds ?? [];
+        const has = cur.includes(laneId);
+        return {
+          ...prev,
+          workCollapsedLaneIds: has ? cur.filter((id) => id !== laneId) : [...cur, laneId],
+        };
+      });
+    },
+    [setProjectViewState],
+  );
+
+  const setWorkFocusSessionsHidden = useCallback(
+    (hidden: boolean) => {
+      setProjectViewState({ workFocusSessionsHidden: hidden });
     },
     [setProjectViewState],
   );
@@ -267,6 +309,24 @@ export function useWorkSessions() {
     }));
   }, [lanes, searchParams, setProjectViewState]);
 
+  // Migrate legacy org modes to the two supported modes
+  useEffect(() => {
+    if (
+      sessionListOrganization !== "all-lanes-by-status" &&
+      sessionListOrganization !== "by-lane"
+    ) {
+      setProjectViewState({ sessionListOrganization: "all-lanes-by-status" });
+    }
+  }, [sessionListOrganization, setProjectViewState]);
+
+  // Reset stale lane filter when the selected lane no longer exists
+  useEffect(() => {
+    if (filterLaneId === "all" || lanes.length === 0) return;
+    if (!lanes.some((l) => l.id === filterLaneId)) {
+      setProjectViewState({ laneFilter: "all" });
+    }
+  }, [filterLaneId, lanes, setProjectViewState]);
+
   useEffect(() => {
     const sessionParam = (searchParams.get("sessionId") ?? "").trim();
     if (!sessionParam) {
@@ -341,18 +401,6 @@ export function useWorkSessions() {
     const needle = q.trim().toLowerCase();
     return sessions.filter((session) => {
       if (filterLaneId !== "all" && session.laneId !== filterLaneId) return false;
-      if (
-        !sessionMatchesStatusFilter(
-          {
-            status: session.status,
-            lastOutputPreview: session.lastOutputPreview,
-            runtimeState: session.runtimeState,
-          },
-          filterStatus,
-        )
-      ) {
-        return false;
-      }
       if (!needle) return true;
 
       if (needle.startsWith("lane:")) {
@@ -379,7 +427,7 @@ export function useWorkSessions() {
         (session.resumeCommand ?? "").toLowerCase().includes(needle)
       );
     });
-  }, [sessions, filterLaneId, filterStatus, q]);
+  }, [sessions, filterLaneId, q]);
 
   const runningFiltered = useMemo(
     () =>
@@ -419,6 +467,17 @@ export function useWorkSessions() {
       ),
     [filtered],
   );
+
+  const sessionsGroupedByLane = useMemo(() => {
+    if (sessionListOrganization !== "by-lane") return null;
+    const map = new Map<string, TerminalSessionSummary[]>();
+    for (const s of filtered) {
+      const list = map.get(s.laneId) ?? [];
+      list.push(s);
+      map.set(s.laneId, list);
+    }
+    return map;
+  }, [sessionListOrganization, filtered]);
 
   const runningSessions = useMemo(
     () => sessions.filter((session) => session.status === "running"),
@@ -644,6 +703,15 @@ export function useWorkSessions() {
     setFilterStatus,
     q,
     setQ,
+
+    sessionListOrganization,
+    setSessionListOrganization,
+    workCollapsedLaneIds,
+    toggleWorkLaneCollapsed,
+    sessionsGroupedByLane,
+
+    workFocusSessionsHidden,
+    setWorkFocusSessionsHidden,
 
     selectedSessionId,
     setSelectedSessionId,

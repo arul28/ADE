@@ -3313,4 +3313,133 @@ describe("createAgentChatService", () => {
       expect(updated?.unifiedPermissionMode).toBe("edit");
     });
   });
+
+  it("emits immediate startup activity before unified stream output arrives", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "unified",
+      model: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const startedEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+      } => event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const startupActivity = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "activity" }>;
+      } =>
+        event.event.type === "activity"
+        && event.event.turnId === startedEvent.event.turnId
+        && (event.event.activity === "thinking" || event.event.activity === "working"),
+    );
+
+    expect(startupActivity.event.detail).toBeTruthy();
+
+    releaseStream();
+    await sendPromise;
+  });
+
+  it("emits immediate startup activity before Claude SDK stream output arrives", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-1",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      await streamGate;
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-1",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const startedEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+      } => event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const startupActivity = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "activity" }>;
+      } =>
+        event.event.type === "activity"
+        && event.event.turnId === startedEvent.event.turnId
+        && (event.event.activity === "thinking" || event.event.activity === "working"),
+    );
+
+    expect(startupActivity.event.detail).toBeTruthy();
+
+    releaseStream();
+    await sendPromise;
+  });
 });

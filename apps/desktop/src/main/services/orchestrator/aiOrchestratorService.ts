@@ -6402,6 +6402,45 @@ Check all worker statuses and continue managing the mission from here. Read work
         const finalizationPolicy = resolveMissionFinalizationPolicyForMission(mission.id);
         const missionBaseBranch = await resolveMissionBaseBranch(mission.id);
 
+        // ── Guard: skip duplicate finalization ──────────────────────
+        // If a previous sync already completed finalization or is actively
+        // finalizing with a result lane, bail out to avoid creating
+        // duplicate result lanes from concurrent sync calls.
+        let skipFinalization = false;
+        const existingStateDoc = projectRoot
+          ? await readMissionStateDocument({ projectRoot, runId }).catch(() => null)
+          : null;
+        const existingFinalization = existingStateDoc?.finalization ?? null;
+        if (existingFinalization) {
+          const alreadyCompleted = existingFinalization.status === "completed";
+          const alreadyFinalizingWithResult =
+            existingFinalization.status === "finalizing" && !!existingFinalization.resultLaneId;
+          if (alreadyCompleted || alreadyFinalizingWithResult) {
+            skipFinalization = true;
+            logger.debug("ai_orchestrator.finalization_skipped_already_terminal", {
+              runId,
+              missionId: mission.id,
+              existingStatus: existingFinalization.status,
+              existingResultLaneId: existingFinalization.resultLaneId,
+            });
+            emitOrchestratorMessage(
+              mission.id,
+              alreadyCompleted
+                ? `Finalization already completed (result lane: ${existingFinalization.resultLaneId ?? "none"}).`
+                : `Finalization already in progress (result lane: ${existingFinalization.resultLaneId}).`
+            );
+            // Still transition mission status so the sync path completes
+            // consistently – the closeout check below handles it.
+            if (alreadyCompleted && existingFinalization.contractSatisfied) {
+              transitionMissionStatus(mission.id, "completed", {
+                outcomeSummary: refreshed.outcomeSummary ?? buildOutcomeSummary(graph),
+                lastError: null,
+              });
+            }
+          }
+        }
+
+        if (!skipFinalization) {
         try {
           await updateMissionFinalizationState(runId, {
             policy: finalizationPolicy,
@@ -6453,9 +6492,15 @@ Check all worker statuses and continue managing the mission from here. Read work
               requestedAction: "Resolve the conflicts in the result lane, then continue from that lane or rerun finalization.",
               laneId: result.resultLaneId,
               metadata: {
+                runId,
                 resultLaneId: result.resultLaneId,
                 mergeWarnings: result.warnings,
               },
+            });
+            // Transition mission to intervention_required so the conflict
+            // surfaces in getScopedOpenIntervention / getRunView.
+            transitionMissionStatus(mission.id, "intervention_required", {
+              lastError: `Result lane merge conflict: ${result.resultLaneId}`,
             });
             emitOrchestratorMessage(
               mission.id,
@@ -6501,6 +6546,8 @@ Check all worker statuses and continue managing the mission from here. Read work
             lastError: finalizationErrorMessage,
           });
         }
+
+        } // end if (!skipFinalization)
 
         // Deferred mission completion: only transition to "completed" if no
         // conflict resolution workers were spawned. When workers ARE spawned,
@@ -6637,6 +6684,11 @@ Check all worker statuses and continue managing the mission from here. Read work
     const initialMission = missionService.get(missionId);
     if (!initialMission) throw new Error(`Mission not found: ${missionId}`);
     const queueClaimToken = toOptionalString(args.queueClaimToken);
+    // Track whether we acquired the queue claim so we can release it on
+    // failure.  The claim is only meaningful while the mission is still in
+    // the "queued" status – once transitioned to "in_progress" (line 6816)
+    // the claim is irrelevant and clearing it is a harmless no-op.
+    let queueClaimAcquired = false;
     if (initialMission.status === "queued") {
       const claimed = missionService.beginStart(missionId, queueClaimToken ?? null);
       if (!claimed) {
@@ -6650,6 +6702,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           mission: missionService.get(missionId),
         };
       }
+      queueClaimAcquired = true;
     } else if (queueClaimToken) {
       missionService.clearQueueClaim(missionId, queueClaimToken);
     }
@@ -6958,6 +7011,20 @@ Check all worker statuses and continue managing the mission from here. Read work
         throw toMissionLaunchFailureError(error, launchFailureMetadata);
       }
       throw error;
+    } finally {
+      // If we acquired the queue claim but the mission never left "queued"
+      // (e.g. an exception before `transitionMissionStatus` or an early
+      // return), release the claim so another caller can retry.
+      if (queueClaimAcquired && queueClaimToken) {
+        const currentMission = missionService.get(missionId);
+        if (currentMission?.status === "queued") {
+          try {
+            missionService.clearQueueClaim(missionId, queueClaimToken);
+          } catch {
+            // Best-effort cleanup – don't mask the original error.
+          }
+        }
+      }
     }
   };
 

@@ -83,10 +83,15 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
   const selectedThreadIdRef = useRef<string | null>(null);
   const latestMessagesRequestRef = useRef(0);
   const prependingMessagesRef = useRef(false);
+  const messagesRef = useRef<OrchestratorChatMessage[]>([]);
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
   }, [selectedThreadId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // Auto-select first thread (coordinator) if nothing selected
   useEffect(() => {
@@ -140,7 +145,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
     }
     const requestId = latestMessagesRequestRef.current + 1;
     latestMessagesRequestRef.current = requestId;
-    const before = mode === "append-older" ? messages[0]?.timestamp ?? null : null;
+    const before = mode === "append-older" ? messagesRef.current[0]?.timestamp ?? null : null;
     if (mode === "replace") {
       setMessagesLoading(true);
       setMessagesError(null);
@@ -173,7 +178,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
         setMessagesLoadingMore(false);
       }
     }
-  }, [messages, missionId]);
+  }, [missionId]);
 
   // Initial load when thread changes
   useEffect(() => {

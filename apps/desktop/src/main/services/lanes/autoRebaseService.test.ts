@@ -43,10 +43,10 @@ function makeLane(id: string, overrides: Partial<LaneSummary> = {}): LaneSummary
     id,
     name: overrides.name ?? `Lane ${id}`,
     description: null,
-    laneType: "worktree",
-    baseRef: "main",
-    branchRef: `refs/heads/feature/${id}`,
-    worktreePath: `/tmp/${id}`,
+    laneType: overrides.laneType ?? "worktree",
+    baseRef: overrides.baseRef ?? "main",
+    branchRef: overrides.branchRef ?? `refs/heads/feature/${id}`,
+    worktreePath: overrides.worktreePath ?? `/tmp/${id}`,
     attachedRootPath: null,
     parentLaneId: overrides.parentLaneId ?? null,
     childCount: overrides.childCount ?? 0,
@@ -73,6 +73,7 @@ function makeRebaseNeed(lane: LaneSummary, overrides: Partial<RebaseNeed> = {}):
   return {
     laneId: lane.id,
     laneName: overrides.laneName ?? lane.name,
+    kind: overrides.kind ?? "lane_base",
     baseBranch: overrides.baseBranch ?? "main",
     behindBy: overrides.behindBy ?? Math.max(1, lane.status.behind),
     conflictPredicted: overrides.conflictPredicted ?? false,
@@ -878,6 +879,35 @@ describe("autoRebaseService", () => {
           reason: "auto_rebase",
         }),
       );
+    });
+
+    it("skips legacy parent links when the lane baseRef no longer matches the parent branch", async () => {
+      const service = createService();
+      const root = makeLane("root", {
+        laneType: "primary",
+        baseRef: "refs/heads/release/2026",
+        branchRef: "refs/heads/release/2026",
+      });
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        baseRef: "refs/heads/main",
+        status: { dirty: false, ahead: 1, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-1", { behindBy: 4, conflictPredicted: false, conflictingFiles: [] });
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "user_commit",
+      });
+
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(laneService.rebaseStart).not.toHaveBeenCalled();
+      expect(db.getJson("auto_rebase:status:child-1")).toBeNull();
     });
 
     it("auto-pushes a successful automatic rebase and marks the lane autoRebased", async () => {

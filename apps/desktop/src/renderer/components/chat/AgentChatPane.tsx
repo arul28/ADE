@@ -458,6 +458,7 @@ export function AgentChatPane({
   modelSelectionLocked = false,
   permissionModeLocked = false,
   presentation,
+  embeddedWorkLayout = false,
   onSessionCreated,
 }: {
   laneId: string | null;
@@ -472,6 +473,8 @@ export function AgentChatPane({
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
   presentation?: ChatSurfacePresentation;
+  /** Work tab draft: flatter shell, no duplicate header chrome above the composer. */
+  embeddedWorkLayout?: boolean;
   onSessionCreated?: (sessionId: string) => void | Promise<void>;
 }) {
   const navigate = useNavigate();
@@ -1910,12 +1913,14 @@ export function AgentChatPane({
     </div>
   );
 
+  const embedDraft = embeddedWorkLayout && forceDraft;
   return (
     <>
       <ChatSurfaceShell
         mode={surfaceMode}
         accentColor={presentation?.accentColor ?? draftAccent}
-        header={shellHeader}
+        className={embedDraft ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
+        header={embedDraft ? undefined : shellHeader}
         footer={
           <AgentChatComposer
             surfaceMode={surfaceMode}

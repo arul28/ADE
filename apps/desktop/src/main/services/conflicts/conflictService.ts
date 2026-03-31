@@ -63,6 +63,7 @@ import type {
 } from "../../../shared/types";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -287,13 +288,9 @@ function resolveLaneRebaseTarget(args: {
   }
 
   const parent = args.lane.parentLaneId ? args.lanesById.get(args.lane.parentLaneId) ?? null : null;
-  const parentBranchRef = parent?.branchRef?.trim() ?? "";
-  if (parentBranchRef) {
-    // For primary lanes, prefer the remote tracking ref (origin/<branch>) to stay
-    // consistent with laneService.resolveParentRebaseTarget which rebases against
-    // the remote tracking ref rather than the local HEAD. Fall back to the local
-    // branch ref when the remote ref is unavailable (e.g. before first fetch).
-    const comparisonRef = parent?.laneType === "primary" ? `origin/${parentBranchRef}` : parentBranchRef;
+  const parentBranchRef = branchNameFromLaneRef(parent?.branchRef);
+  if (parentBranchRef && shouldLaneTrackParent({ lane: args.lane, parent })) {
+    const comparisonRef = `origin/${parentBranchRef}`;
     return {
       comparisonRef,
       fallbackRef: parentBranchRef,
@@ -4268,6 +4265,7 @@ export function createConflictService({
         needs.push({
           laneId: lane.id,
           laneName: lane.name,
+          kind: "lane_base",
           baseBranch: displayBaseBranch,
           behindBy,
           conflictPredicted: conflictingFiles.length > 0,
@@ -4300,9 +4298,12 @@ export function createConflictService({
     const seenPrTargetNeeds = new Set<string>();
     for (const row of openPrRows) {
       const lane = lanesById.get(String(row.lane_id ?? "").trim());
-      if (!lane || lane.laneType === "primary" || lane.parentLaneId) continue;
+      if (!lane || lane.laneType === "primary") continue;
       const prBaseBranch = normalizeBranchName(String(row.base_branch ?? "").trim());
-      const laneBaseBranch = normalizeBranchName(String(lane.baseRef ?? "").trim());
+      const parent = lane.parentLaneId ? lanesById.get(lane.parentLaneId) ?? null : null;
+      const laneBaseBranch = normalizeBranchName(branchNameFromLaneRef(
+        shouldLaneTrackParent({ lane, parent }) ? parent?.branchRef : lane.baseRef,
+      ));
       if (!prBaseBranch || prBaseBranch === laneBaseBranch) continue;
       const dedupeKey = `${lane.id}:${prBaseBranch}`;
       if (seenPrTargetNeeds.has(dedupeKey)) continue;
@@ -4336,6 +4337,7 @@ export function createConflictService({
         needs.push({
           laneId: lane.id,
           laneName: lane.name,
+          kind: "pr_target",
           baseBranch: prBaseBranch,
           behindBy,
           conflictPredicted: merge.conflicts.length > 0,
@@ -4414,6 +4416,7 @@ export function createConflictService({
       return {
         laneId: lane.id,
         laneName: lane.name,
+        kind: "lane_base",
         baseBranch: displayBaseBranch,
         behindBy,
         conflictPredicted: conflictingFiles.length > 0,

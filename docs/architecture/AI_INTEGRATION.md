@@ -410,6 +410,12 @@ The launch resolver checks candidates in order: bundled proxy path (from `proces
 | `get_lane_status` | Get current status of a specific lane | No |
 | `list_lanes` | List all active lanes with summary status | No |
 | `commit_changes` | Stage and commit changes in a lane | Yes |
+| `pr_get_checks` | Get current CI checks for a pull request | No |
+| `pr_get_review_comments` | Fetch actionable review comments, reviews, and check status | No |
+| `pr_refresh_issue_inventory` | Refresh the PR issue inventory (checks, threads, comments) | No |
+| `pr_rerun_failed_checks` | Rerun failed CI checks for a pull request | Yes |
+| `pr_reply_to_review_thread` | Reply to a GitHub PR review thread | Yes |
+| `pr_resolve_review_thread` | Resolve a GitHub PR review thread | Yes |
 
 #### Resource Providers
 

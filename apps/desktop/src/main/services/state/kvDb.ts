@@ -208,6 +208,163 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
   return changed;
 }
 
+/**
+ * Desired foreign key constraints with ON DELETE actions.
+ *
+ * Keyed by `"table:column"`.  `references` is the target (e.g. `"missions(id)"`),
+ * `action` is the ON DELETE clause (e.g. `"on delete cascade"`).
+ *
+ * When a database was created before these clauses were added to the CREATE
+ * TABLE statements the stored schema in `sqlite_master` will be missing them;
+ * this map drives a one-time table-rebuild migration that adds the correct
+ * referential actions.
+ */
+const FK_CONSTRAINTS: Record<string, { references: string; action: string }> = {
+  // lanes
+  "lanes:mission_id": { references: "missions(id)", action: "on delete set null" },
+  // missions
+  "missions:mission_lane_id": { references: "lanes(id)", action: "on delete set null" },
+  "missions:result_lane_id": { references: "lanes(id)", action: "on delete set null" },
+  // mission child tables
+  "mission_steps:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "mission_events:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "mission_artifacts:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "mission_interventions:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "mission_phase_overrides:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "mission_step_handoffs:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "mission_metrics_config:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  // orchestrator tables
+  "orchestrator_runs:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_chat_threads:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_chat_messages:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_worker_digests:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_artifacts:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_context_checkpoints:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_worker_checkpoints:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_lane_decisions:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_ai_decisions:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_metrics_samples:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  "orchestrator_team_members:mission_id": { references: "missions(id)", action: "on delete cascade" },
+  // PR convergence loop tables
+  "pr_issue_inventory:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
+  "pr_pipeline_settings:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
+};
+
+/**
+ * Retrofit existing tables whose stored CREATE TABLE SQL is missing the
+ * desired ON DELETE CASCADE / SET NULL clauses.
+ *
+ * This mirrors the approach of `retrofitLegacyPrimaryKeyNotNullSchema`:
+ * disable FK enforcement, recreate affected tables with the corrected
+ * schema via a temp-table swap, then re-enable FK enforcement.
+ *
+ * Returns `true` if any table was rebuilt.
+ */
+function retrofitForeignKeyCascadeActions(db: DatabaseSyncType, crsqliteEnabled: boolean): boolean {
+  const tables = allRows<{ name: string; sql: string }>(
+    db,
+    `select name, sql
+       from sqlite_master
+      where type = 'table'
+        and sql is not null
+        and name not like 'sqlite_%'
+        and name not like 'crsql_%'
+        and name not like '%__crsql_clock'
+        and name not like '%__crsql_pks'
+        and name not like 'unified_memories_fts%'`
+  );
+
+  // Build a lookup: tableName -> list of { column, references, action }
+  const desiredByTable = new Map<string, Array<{ column: string; references: string; action: string }>>();
+  for (const [key, constraint] of Object.entries(FK_CONSTRAINTS)) {
+    const [tableName, column] = key.split(":");
+    if (!desiredByTable.has(tableName)) {
+      desiredByTable.set(tableName, []);
+    }
+    desiredByTable.get(tableName)!.push({ column, ...constraint });
+  }
+
+  let changed = false;
+  runStatement(db, "pragma foreign_keys = off");
+  try {
+    for (const table of tables) {
+      const desired = desiredByTable.get(table.name);
+      if (!desired) continue;
+
+      // CRR tables must not carry checked FK constraints — cr-sqlite strips
+      // them during crsql_as_crr() and they must stay stripped.  Skip tables
+      // that already are CRR-managed or will become CRR-eligible when the
+      // extension is loaded.
+      if (rawHasTable(db, `${table.name}__crsql_clock`)) continue;
+      if (crsqliteEnabled) continue;
+
+      let nextSql = table.sql;
+      let needsRebuild = false;
+
+      for (const { column, references, action } of desired) {
+        // Match a foreign key constraint line for this column, e.g.:
+        //   foreign key(mission_id) references missions(id)
+        // Optionally already carrying an ON DELETE clause.
+        const fkPattern = new RegExp(
+          `(foreign\\s+key\\s*\\(\\s*${escapeRegExp(column)}\\s*\\)\\s+references\\s+\\w+\\s*\\([^)]+\\))` +
+          `(\\s+on\\s+delete\\s+\\w+(?:\\s+\\w+)?)?`,
+          "i",
+        );
+        const match = nextSql.match(fkPattern);
+        if (!match) {
+          // FK line not present at all (e.g. stripped by previous migration or
+          // table was created before the FK was added).  We need to add it.
+          // Find the closing paren of the CREATE TABLE body and insert before it.
+          const colPattern = new RegExp(`\\b${escapeRegExp(column)}\\b\\s+\\w+`, "i");
+          if (colPattern.test(nextSql)) {
+            const closingParenIdx = nextSql.lastIndexOf(")");
+            if (closingParenIdx > 0) {
+              const fkLine = `foreign key(${column}) references ${references} ${action}`;
+              nextSql = nextSql.slice(0, closingParenIdx).trimEnd() +
+                `,\n      ${fkLine}\n    ` +
+                nextSql.slice(closingParenIdx);
+              needsRebuild = true;
+            }
+          }
+          continue;
+        }
+
+        const existingAction = (match[2] ?? "").trim().toLowerCase();
+        if (existingAction === action) continue;
+
+        // Replace the FK constraint with the corrected version
+        const corrected = `${match[1]} ${action}`;
+        nextSql = nextSql.replace(match[0], corrected);
+        needsRebuild = true;
+      }
+
+      if (!needsRebuild) continue;
+
+      const tableInfo = allRows<{ name: string }>(
+        db,
+        `pragma table_info('${table.name.replace(/'/g, "''")}')`
+      );
+
+      const repairName = `__ade_fk_repair_${table.name}`;
+      const rewrittenSql = rewriteCreateTableName(nextSql, table.name, repairName);
+      const columnsSql = tableInfo.map((col) => quoteIdentifier(col.name)).join(", ");
+
+      runStatement(db, rewrittenSql);
+      runStatement(
+        db,
+        `insert into ${quoteIdentifier(repairName)} (${columnsSql}) select ${columnsSql} from ${quoteIdentifier(table.name)}`,
+      );
+      runStatement(db, `drop table ${quoteIdentifier(table.name)}`);
+      runStatement(db, `alter table ${quoteIdentifier(repairName)} rename to ${quoteIdentifier(table.name)}`);
+      changed = true;
+    }
+  } finally {
+    runStatement(db, "pragma foreign_keys = on");
+  }
+
+  return changed;
+}
+
 function writeMigrationBackupIfNeeded(dbPath: string): void {
   if (!fs.existsSync(dbPath)) return;
   const backupPath = `${dbPath}.pre-crsqlite-w1.bak`;
@@ -551,6 +708,9 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   db.run("create index if not exists idx_terminal_sessions_status on terminal_sessions(status)");
   db.run("create index if not exists idx_terminal_sessions_started_at on terminal_sessions(started_at desc)");
   db.run("create index if not exists idx_terminal_sessions_lane_started_at on terminal_sessions(lane_id, started_at desc)");
+
+  // Migration: add resume_command to existing databases that pre-date this column.
+  try { db.run("alter table terminal_sessions add column resume_command text"); } catch {}
 
   // Phase 2 process/test config and history tables.
   db.run(`
@@ -2796,7 +2956,8 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       agent_session_id text,
       created_at text not null,
       updated_at text not null,
-      unique(pr_id, external_id)
+      unique(pr_id, external_id),
+      foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
   db.run("create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state)");
@@ -2809,7 +2970,8 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       merge_method text not null default 'repo_default',
       max_rounds integer not null default 5,
       on_rebase_needed text not null default 'pause',
-      updated_at text not null
+      updated_at text not null,
+      foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
 }
@@ -2844,6 +3006,19 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     }
 
     if (retrofitLegacyPrimaryKeyNotNullSchema(db)) {
+      db.close();
+      db = openRawDatabase(dbPath);
+      if (hadCrsqlMetadata && hasCrsqlite) {
+        loadCrsqlite(db, extensionPath);
+      }
+      migrate({
+        run: (sql: string, params: SqlValue[] = []) => {
+          runStatement(db, sql, params);
+        },
+      });
+    }
+
+    if (retrofitForeignKeyCascadeActions(db, hasCrsqlite)) {
       db.close();
       db = openRawDatabase(dbPath);
       if (hadCrsqlMetadata && hasCrsqlite) {

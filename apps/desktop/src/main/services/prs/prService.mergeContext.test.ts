@@ -234,4 +234,50 @@ describe("prService.getMergeContext", () => {
       integrationLaneId: null,
     });
   });
+
+  it("does not infer a target lane from baseRef-only matches", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pr-merge-context-base-ref-only-"));
+    const db = await openKvDb(path.join(root, ".ade.db"), createLogger());
+    const projectId = "proj-merge-context-base-ref-only";
+
+    const sourceLane = makeLane("lane-auth", "feature/auth", "refs/heads/feature/auth");
+    const siblingLane = makeLane("lane-other", "feature/other", "refs/heads/feature/other", {
+      baseRef: "refs/heads/main",
+    });
+
+    await seedProject(db, projectId, root);
+    await seedLane(db, projectId, sourceLane);
+    await seedLane(db, projectId, siblingLane);
+    await seedPr(db, {
+      prId: "pr-normal",
+      projectId,
+      laneId: sourceLane.id,
+      baseBranch: "main",
+      headBranch: "feature/auth",
+      title: "Normal PR",
+    });
+
+    const service = createPrService({
+      db,
+      logger: createLogger() as any,
+      projectId,
+      projectRoot: root,
+      laneService: {
+        list: async () => [sourceLane, siblingLane],
+      } as any,
+      operationService: {} as any,
+      githubService: { apiRequest: async () => ({ data: {} }) } as any,
+      aiIntegrationService: undefined,
+      projectConfigService: {} as any,
+      conflictService: undefined,
+      openExternal: async () => {},
+    });
+
+    await expect(service.getMergeContext("pr-normal")).resolves.toMatchObject({
+      prId: "pr-normal",
+      sourceLaneIds: ["lane-auth"],
+      targetLaneId: null,
+      integrationLaneId: null,
+    });
+  });
 });

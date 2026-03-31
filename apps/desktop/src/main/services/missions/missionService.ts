@@ -265,10 +265,6 @@ function safeParseArray(raw: string | null): unknown[] {
   return Array.isArray(parsed) ? parsed : [];
 }
 
-function quoteIdentifier(value: string): string {
-  return `"${value.replace(/"/g, "\"\"")}"`;
-}
-
 function parseMissionCursor(cursor: string | null | undefined): { createdAt: string; id: string } | null {
   if (typeof cursor !== "string") return null;
   const trimmed = cursor.trim();
@@ -810,92 +806,9 @@ export function createMissionService({
 
   ensureMissionSchemaCompatibility();
 
-  const rebuildTable = (tableName: string, createSql: string) => {
-    const columns = db.all<{ name: string }>(`pragma table_info('${tableName.replace(/'/g, "''")}')`);
-    if (!columns.length) return;
-    const indexes = db.all<{ sql: string | null }>(
-      `
-        select sql
-        from sqlite_master
-        where type = 'index'
-          and tbl_name = ?
-          and sql is not null
-        order by name asc
-      `,
-      [tableName]
-    );
-    const backupName = `__ade_mission_fk_${tableName}`;
-    const columnsSql = columns.map((column) => quoteIdentifier(column.name)).join(", ");
-    db.run("pragma foreign_keys = off");
-    db.run("begin immediate");
-    try {
-      db.run(`alter table ${quoteIdentifier(tableName)} rename to ${quoteIdentifier(backupName)}`);
-      db.run(createSql);
-      db.run(
-        `insert into ${quoteIdentifier(tableName)} (${columnsSql}) select ${columnsSql} from ${quoteIdentifier(backupName)}`
-      );
-      for (const index of indexes) {
-        if (typeof index.sql === "string" && index.sql.trim().length > 0) {
-          db.run(index.sql);
-        }
-      }
-      db.run(`drop table ${quoteIdentifier(backupName)}`);
-      db.run("commit");
-    } catch (error) {
-      try {
-        db.run("rollback");
-      } catch {
-        // Ignore rollback failures after a failed rebuild.
-      }
-      throw error;
-    } finally {
-      db.run("pragma foreign_keys = on");
-    }
-  };
-
-  const ensureMissionCascadeForeignKeys = () => {
-    const missionOwnedTables = [
-      "mission_steps",
-      "mission_events",
-      "mission_artifacts",
-      "mission_interventions",
-      "mission_phase_overrides",
-      "orchestrator_runs",
-      "mission_step_handoffs",
-      "orchestrator_chat_threads",
-      "orchestrator_chat_messages",
-      "orchestrator_worker_digests",
-      "orchestrator_artifacts",
-      "orchestrator_context_checkpoints",
-      "orchestrator_worker_checkpoints",
-      "orchestrator_lane_decisions",
-      "orchestrator_ai_decisions",
-      "mission_metrics_config",
-      "orchestrator_metrics_samples",
-      "orchestrator_team_members",
-    ];
-    for (const tableName of missionOwnedTables) {
-      const foreignKeys = db.all<{ from: string; on_delete: string }>(
-        `pragma foreign_key_list('${tableName.replace(/'/g, "''")}')`
-      );
-      const missionForeignKey = foreignKeys.find((row) => row.from === "mission_id");
-      if (!missionForeignKey || String(missionForeignKey.on_delete ?? "").toUpperCase() === "CASCADE") {
-        continue;
-      }
-      const createRow = db.get<{ sql: string | null }>(
-        "select sql from sqlite_master where type = 'table' and name = ? limit 1",
-        [tableName]
-      );
-      const createSql = createRow?.sql?.replace(
-        /foreign key\s*\(\s*mission_id\s*\)\s*references\s+missions\s*\(\s*id\s*\)/i,
-        "foreign key(mission_id) references missions(id) on delete cascade"
-      );
-      if (!createSql) continue;
-      rebuildTable(tableName, createSql);
-    }
-  };
-
-  ensureMissionCascadeForeignKeys();
+  // Note: ON DELETE CASCADE foreign key migrations are handled centrally by
+  // kvDb's retrofitForeignKeyCascadeActions() which runs at database open time,
+  // before any service is created. No per-service FK migration is needed here.
 
   // Late-bound reference to the service object for use in internal helpers.
   // Assigned after the return object is created. Uses a minimal interface
@@ -3458,6 +3371,7 @@ export function createMissionService({
       if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
       const laneId = coerceNullableString(args.laneId);
       assertLaneExists(laneId);
+      assertMissionLaunchLaneAvailable(laneId, missionId);
       db.run(
         `
           update missions
@@ -3477,6 +3391,7 @@ export function createMissionService({
       if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
       const laneId = coerceNullableString(args.laneId);
       assertLaneExists(laneId);
+      assertMissionLaunchLaneAvailable(laneId, missionId);
       db.run(
         `
           update missions

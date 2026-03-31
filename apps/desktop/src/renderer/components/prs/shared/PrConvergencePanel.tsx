@@ -404,9 +404,13 @@ function SourceTag({ source }: { source: IssueItemSource }) {
 function IssueRow({
   item,
   showAgent,
+  onDismiss,
+  onEscalate,
 }: {
   item: IssueInventoryItem;
   showAgent?: boolean;
+  onDismiss?: (itemId: string) => void;
+  onEscalate?: (itemId: string) => void;
 }) {
   let location: string | null = null;
   if (item.filePath) {
@@ -477,6 +481,54 @@ function IssueRow({
       ) : null}
       {item.state === "fixed" ? (
         <CheckCircle size={15} weight="fill" style={{ color: COLORS.success, flexShrink: 0 }} />
+      ) : null}
+      {onDismiss && item.state !== "fixed" && item.state !== "dismissed" ? (
+        <button
+          type="button"
+          title="Dismiss"
+          onClick={() => onDismiss(item.id)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: 4,
+            border: `1px solid ${COLORS.border}`,
+            background: "rgba(255,255,255,0.03)",
+            cursor: "pointer",
+            color: COLORS.textDim,
+            padding: 0,
+            flexShrink: 0,
+            transition: "all 0.15s ease",
+          }}
+        >
+          <Trash size={11} />
+        </button>
+      ) : null}
+      {onEscalate && item.state !== "escalated" && item.state !== "fixed" && item.state !== "dismissed" ? (
+        <button
+          type="button"
+          title="Escalate"
+          onClick={() => onEscalate(item.id)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: 4,
+            border: `1px solid ${COLORS.border}`,
+            background: "rgba(255,255,255,0.03)",
+            cursor: "pointer",
+            color: "#F97316",
+            padding: 0,
+            flexShrink: 0,
+            transition: "all 0.15s ease",
+          }}
+        >
+          <ArrowUp size={11} weight="bold" />
+        </button>
       ) : null}
       <SourceTag source={item.source} />
     </div>
@@ -721,9 +773,9 @@ export function PrConvergencePanel({
   onRunNextRound,
   onAutoConvergeChange,
   onCopyPrompt,
-  onMarkDismissed: _onMarkDismissed,
-  onMarkEscalated: _onMarkEscalated,
-  onResetInventory: _onResetInventory,
+  onMarkDismissed,
+  onMarkEscalated,
+  onResetInventory,
   pauseReason,
   onResumePause,
   onDismissPause,
@@ -732,6 +784,7 @@ export function PrConvergencePanel({
 }: PrConvergencePanelProps) {
   const [additionalInstructions, setAdditionalInstructions] = React.useState("");
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const previousFocusRef = React.useRef<Element | null>(null);
 
   React.useEffect(() => {
     ensureKeyframes();
@@ -742,6 +795,40 @@ export function PrConvergencePanel({
       setAdditionalInstructions("");
     }
   }, [open]);
+
+  // Focus management: capture previously focused element and focus the dialog
+  React.useEffect(() => {
+    if (!open) return;
+
+    previousFocusRef.current = document.activeElement;
+
+    // Focus the dialog container on next frame so the ref is attached
+    requestAnimationFrame(() => {
+      scrollRef.current?.focus();
+    });
+
+    return () => {
+      // Restore focus to the previously focused element on unmount
+      if (previousFocusRef.current instanceof HTMLElement) {
+        previousFocusRef.current.focus();
+      }
+    };
+  }, [open]);
+
+  // Escape key handler
+  React.useEffect(() => {
+    if (!open) return;
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && !busy) {
+        e.stopPropagation();
+        onOpenChange(false);
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [open, busy, onOpenChange]);
 
   if (!open) return null;
 
@@ -798,6 +885,7 @@ export function PrConvergencePanel({
         role="dialog"
         aria-modal="true"
         aria-label="Path to Merge"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "min(1200px, calc(100vw - 40px))",
@@ -810,6 +898,7 @@ export function PrConvergencePanel({
           boxShadow: "0 40px 120px rgba(0,0,0,0.7), 0 0 1px rgba(255,255,255,0.08) inset",
           overflow: "hidden",
           animation: "convergeFadeIn 0.2s ease-out",
+          outline: "none",
         }}
       >
         {/* ---- Header ---- */}
@@ -899,6 +988,7 @@ export function PrConvergencePanel({
 
           <button
             type="button"
+            aria-label="Close"
             onClick={() => onOpenChange(false)}
             disabled={busy}
             style={{
@@ -979,6 +1069,32 @@ export function PrConvergencePanel({
               >
                 {reviewCommentItems.length}
               </span>
+              {reviewCommentItems.length > 0 ? (
+                <button
+                  type="button"
+                  title="Reset inventory"
+                  onClick={onResetInventory}
+                  disabled={busy}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 24,
+                    height: 24,
+                    borderRadius: 6,
+                    border: `1px solid ${COLORS.border}`,
+                    background: "rgba(255,255,255,0.03)",
+                    cursor: busy ? "not-allowed" : "pointer",
+                    color: COLORS.textDim,
+                    padding: 0,
+                    flexShrink: 0,
+                    opacity: busy ? 0.45 : 1,
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  <ArrowsClockwise size={11} />
+                </button>
+              ) : null}
             </div>
             <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
               {reviewCommentItems.length > 0 ? (
@@ -1036,7 +1152,15 @@ export function PrConvergencePanel({
                           {stateItems.map((item) => {
                             if (state === "fixed") return <FixedRow key={item.id} item={item} />;
                             if (state === "dismissed") return <DismissedRow key={item.id} item={item} />;
-                            return <IssueRow key={item.id} item={item} showAgent={state === "in_progress"} />;
+                            return (
+                              <IssueRow
+                                key={item.id}
+                                item={item}
+                                showAgent={state === "in_progress"}
+                                onDismiss={(id) => onMarkDismissed([id], "Dismissed from UI")}
+                                onEscalate={(id) => onMarkEscalated([id])}
+                              />
+                            );
                           })}
                         </div>
                       </div>

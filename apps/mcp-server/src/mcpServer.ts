@@ -17,6 +17,7 @@ import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
+import { getPrIssueResolutionAvailability } from "../../desktop/src/shared/prIssueResolution";
 import {
   createDefaultComputerUsePolicy,
   isComputerUseModeEnabled,
@@ -26,6 +27,7 @@ import {
   type ComputerUsePolicy,
   type MergeMethod,
 } from "../../desktop/src/shared/types";
+import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import type { AdeMcpRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
@@ -569,6 +571,81 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         prId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "pr_get_checks",
+    description: "Get the current CI checks for a pull request.",
+    inputSchema: {
+      type: "object",
+      required: ["prId"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "pr_get_review_comments",
+    description: "Fetch actionable review comments, reviews, and current check status for a pull request.",
+    inputSchema: {
+      type: "object",
+      required: ["prId"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "pr_refresh_issue_inventory",
+    description: "Refresh the current PR issue inventory, including checks, failing workflow runs, unresolved review threads, and advisory issue comments.",
+    inputSchema: {
+      type: "object",
+      required: ["prId"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "pr_rerun_failed_checks",
+    description: "Rerun failed CI checks for a pull request.",
+    inputSchema: {
+      type: "object",
+      required: ["prId"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "pr_reply_to_review_thread",
+    description: "Reply to a GitHub pull request review thread.",
+    inputSchema: {
+      type: "object",
+      required: ["prId", "threadId", "body"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 },
+        threadId: { type: "string", minLength: 1 },
+        body: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "pr_resolve_review_thread",
+    description: "Resolve a GitHub pull request review thread.",
+    inputSchema: {
+      type: "object",
+      required: ["prId", "threadId"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 },
+        threadId: { type: "string", minLength: 1 }
       }
     }
   },
@@ -1336,6 +1413,9 @@ const READ_ONLY_TOOLS = new Set([
   "list_lanes",
   "simulate_integration",
   "get_pr_health",
+  "pr_get_checks",
+  "pr_get_review_comments",
+  "pr_refresh_issue_inventory",
   "memory_search",
   "get_cto_state",
   "listChats",
@@ -1364,6 +1444,9 @@ const MUTATION_TOOLS = new Set([
   "create_integration",
   "rebase_lane",
   "land_queue_next",
+  "pr_rerun_failed_checks",
+  "pr_reply_to_review_thread",
+  "pr_resolve_review_thread",
   "memory_add",
   "memory_pin",
   "memory_update_core",
@@ -1654,6 +1737,118 @@ function requirePrService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["pr
     throw new JsonRpcError(JsonRpcErrorCode.internalError, "prService is not available in this MCP runtime configuration");
   }
   return runtime.prService;
+}
+
+function isBotAuthor(author: string): boolean {
+  const normalized = author.trim().toLowerCase();
+  return normalized.includes("[bot]") || normalized.includes("github-actions");
+}
+
+function summarizePrChecks(checks: PrCheck[]): { overall: "failing" | "pending" | "passing"; counts: { passing: number; failing: number; pending: number; total: number } } {
+  const passing = checks.filter((check) => check.conclusion === "success").length;
+  const failing = checks.filter((check) => check.conclusion === "failure").length;
+  const pending = checks.filter((check) => check.status !== "completed").length;
+
+  let overall: "failing" | "pending" | "passing" = "passing";
+  if (failing > 0) overall = "failing";
+  else if (pending > 0) overall = "pending";
+
+  return { overall, counts: { passing, failing, pending, total: checks.length } };
+}
+
+function mapCheckToSummary(check: PrCheck): { name: string; status: string; conclusion: string | null; url: string | null } {
+  return { name: check.name, status: check.status, conclusion: check.conclusion, url: check.detailsUrl };
+}
+
+function summarizePrReviewComments(prId: string, comments: PrComment[], reviews: Array<{ reviewer: string; reviewerAvatarUrl: string | null; state: string; body: string | null; submittedAt: string | null }>, checks: PrCheck[]) {
+  const actionableComments = comments.filter((comment) => Boolean(comment.body?.trim()) && !isBotAuthor(comment.author));
+  const pendingReviews = reviews.filter((review) => review.state === "changes_requested" || review.state === "commented");
+  const checkSummary = summarizePrChecks(checks);
+  return {
+    success: true,
+    prId,
+    summary: {
+      totalComments: comments.length,
+      actionableComments: actionableComments.length,
+      reviewsRequiringChanges: pendingReviews.filter((review) => review.state === "changes_requested").length,
+      checksStatus: checkSummary.overall,
+    },
+    comments: actionableComments.map((comment) => ({
+      id: comment.id,
+      author: comment.author,
+      body: comment.body,
+      source: comment.source,
+      path: comment.path,
+      line: comment.line,
+      url: comment.url,
+      createdAt: comment.createdAt,
+    })),
+    reviews: pendingReviews.map((review) => ({
+      reviewer: review.reviewer,
+      state: review.state,
+      body: review.body,
+      submittedAt: review.submittedAt,
+    })),
+    checks: checks.map(mapCheckToSummary),
+  };
+}
+
+function summarizePrIssueInventory(args: {
+  checks: PrCheck[];
+  actionRuns: PrActionRun[];
+  reviewThreads: PrReviewThread[];
+  comments: PrComment[];
+}) {
+  const availability = getPrIssueResolutionAvailability(args.checks, args.reviewThreads);
+  const failingRuns = args.actionRuns
+    .filter((run) => run.conclusion === "failure" || run.conclusion === "timed_out" || run.conclusion === "action_required")
+    .map((run) => ({
+      id: run.id,
+      name: run.name,
+      status: run.status,
+      conclusion: run.conclusion,
+      url: run.htmlUrl,
+      failingJobs: run.jobs
+        .filter((job) => job.conclusion === "failure" || job.status === "in_progress")
+        .map((job) => ({
+          id: job.id,
+          name: job.name,
+          status: job.status,
+          conclusion: job.conclusion,
+          failingSteps: job.steps
+            .filter((step) => step.conclusion === "failure" || step.status === "in_progress")
+            .map((step) => step.name),
+        })),
+    }));
+
+  return {
+    success: true,
+    summary: availability,
+    checks: args.checks.map(mapCheckToSummary),
+    failingWorkflowRuns: failingRuns,
+    reviewThreads: args.reviewThreads
+      .filter((thread) => !thread.isResolved && !thread.isOutdated)
+      .map((thread) => ({
+        id: thread.id,
+        path: thread.path,
+        line: thread.line,
+        url: thread.url,
+        comments: thread.comments.map((comment) => ({
+          id: comment.id,
+          author: comment.author,
+          body: comment.body,
+          url: comment.url,
+        })),
+      })),
+    issueComments: args.comments
+      .filter((comment) => comment.source === "issue")
+      .map((comment) => ({
+        id: comment.id,
+        author: comment.author,
+        body: comment.body,
+        url: comment.url,
+      })),
+  };
 }
 
 function requireAgentChatService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["agentChatService"]> {
@@ -4157,6 +4352,83 @@ async function runTool(args: {
     const prSvc = requirePrService(runtime);
     const result = await prSvc.getPrHealth(prId);
     return result;
+  }
+
+  if (name === "pr_get_checks") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const prSvc = requirePrService(runtime);
+    const checks = await prSvc.getChecks(prId);
+    return {
+      success: true,
+      prId,
+      checks: checks.map(mapCheckToSummary),
+    };
+  }
+
+  if (name === "pr_get_review_comments") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const prSvc = requirePrService(runtime);
+    const [comments, reviews, checks] = await Promise.all([
+      prSvc.getComments(prId),
+      prSvc.getReviews(prId),
+      prSvc.getChecks(prId),
+    ]);
+    return summarizePrReviewComments(prId, comments, reviews, checks);
+  }
+
+  if (name === "pr_refresh_issue_inventory") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const prSvc = requirePrService(runtime);
+    const [checks, actionRuns, reviewThreads, comments] = await Promise.all([
+      prSvc.getChecks(prId),
+      prSvc.getActionRuns(prId),
+      prSvc.getReviewThreads(prId),
+      prSvc.getComments(prId),
+    ]);
+    return summarizePrIssueInventory({
+      checks,
+      actionRuns,
+      reviewThreads,
+      comments,
+    });
+  }
+
+  if (name === "pr_rerun_failed_checks") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    await requirePrService(runtime).rerunChecks({ prId });
+    return {
+      success: true,
+      prId,
+    };
+  }
+
+  if (name === "pr_reply_to_review_thread") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const threadId = assertNonEmptyString(toolArgs.threadId, "threadId");
+    const body = assertNonEmptyString(toolArgs.body, "body");
+    const comment = await requirePrService(runtime).replyToReviewThread({
+      prId,
+      threadId,
+      body,
+    });
+    return {
+      success: true,
+      comment,
+    };
+  }
+
+  if (name === "pr_resolve_review_thread") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const threadId = assertNonEmptyString(toolArgs.threadId, "threadId");
+    await requirePrService(runtime).resolveReviewThread({
+      prId,
+      threadId,
+    });
+    return {
+      success: true,
+      prId,
+      threadId,
+    };
   }
 
   if (name === "land_queue_next") {

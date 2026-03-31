@@ -940,20 +940,32 @@ describe("conflictService conflict context integrity", () => {
     });
 
     const needs = await service.scanRebaseNeeds();
-    expect(needs).toHaveLength(1);
-    expect(needs[0]).toMatchObject({
-      laneId: "lane-2",
-      baseBranch: "main",
-      groupContext: "Queue A",
-    });
-    expect((needs[0]?.behindBy ?? 0) > 0).toBe(true);
+    expect(needs).toHaveLength(2);
+    expect(needs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          laneId: "lane-2",
+          kind: "lane_base",
+          baseBranch: "main",
+          groupContext: "Queue A",
+        }),
+        expect.objectContaining({
+          laneId: "lane-2",
+          kind: "pr_target",
+          baseBranch: "main",
+          prId: "pr-2",
+          groupContext: "Queue A",
+        }),
+      ]),
+    );
+    expect(needs.every((need) => need.behindBy > 0)).toBe(true);
 
     const rebased = await service.rebaseLane({ laneId: "lane-2" });
     expect(rebased.success).toBe(true);
     expect(git(repoRoot, ["rev-list", "--count", "HEAD..main"])).toBe("0");
   });
 
-  it("prefers the current parent lane branch when baseRef is stale", async () => {
+  it("uses lane.baseRef when a primary parent branch diverges from the stored base", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-parent-branch-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const projectId = randomUUID();
@@ -1016,8 +1028,20 @@ describe("conflictService conflict context integrity", () => {
         } as any,
       });
 
-      expect(await service.scanRebaseNeeds()).toEqual([]);
-      expect(await service.getRebaseNeed("lane-child")).toBeNull();
+      expect(await service.scanRebaseNeeds()).toEqual([
+        expect.objectContaining({
+          laneId: "lane-child",
+          kind: "lane_base",
+          baseBranch: "main",
+        }),
+      ]);
+      expect(await service.getRebaseNeed("lane-child")).toEqual(
+        expect.objectContaining({
+          laneId: "lane-child",
+          kind: "lane_base",
+          baseBranch: "main",
+        }),
+      );
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
@@ -1112,7 +1136,7 @@ describe("conflictService conflict context integrity", () => {
     }
   });
 
-  it("falls back to local branchRef when origin/ remote ref is unavailable for primary parent", async () => {
+  it("does not treat a primary parent as the live base when the lane is anchored elsewhere", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-primary-fallback-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const projectId = randomUUID();
@@ -1176,15 +1200,9 @@ describe("conflictService conflict context integrity", () => {
         } as any,
       });
 
-      // origin/feature/primary-local doesn't exist, but the fallback to local
-      // feature/primary-local should still detect the child is behind.
       const needs = await service.scanRebaseNeeds();
-      expect(needs).toHaveLength(1);
-      expect(needs[0]).toMatchObject({
-        laneId: "lane-child-primary",
-        baseBranch: "feature/primary-local",
-      });
-      expect(needs[0]!.behindBy).toBeGreaterThan(0);
+      expect(needs).toEqual([]);
+      expect(await service.getRebaseNeed("lane-child-primary")).toBeNull();
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });

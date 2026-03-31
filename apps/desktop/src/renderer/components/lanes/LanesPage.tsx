@@ -1103,10 +1103,13 @@ export function LanesPage() {
         .then((branches) => {
           if (!branches) return;
           setCreateBranches(branches);
-          // Only auto-select the current branch if the user hasn't already picked one.
+          // Default new root lanes to the project's base branch. Users can still
+          // pick the current primary checkout explicitly when they want that.
           if (!createBaseBranchUserPickedRef.current) {
-            const current = branches.find((b) => b.isCurrent && !b.isRemote);
-            if (current) setCreateBaseBranch(current.name);
+            const defaultBranch = branches.find((b) => !b.isRemote && b.name === primary.baseRef)
+              ?? branches.find((b) => b.isCurrent && !b.isRemote)
+              ?? branches.find((b) => !b.isRemote);
+            if (defaultBranch) setCreateBaseBranch(defaultBranch.name);
           }
         })
         .catch(() => {});

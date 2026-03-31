@@ -758,11 +758,29 @@ function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
 }
 
 function toRecentProjectSummary(entry: { rootPath: string; displayName: string; lastOpenedAt: string }): RecentProjectSummary {
+  let laneCount: number | undefined;
+  try {
+    const gitPath = path.join(entry.rootPath, ".git");
+    const worktreesPath = path.join(gitPath, "worktrees");
+    if (fs.existsSync(gitPath)) {
+      laneCount = 1; // Primary lane
+      if (fs.existsSync(worktreesPath)) {
+        const wtCount = fs.readdirSync(worktreesPath, { withFileTypes: true })
+          .filter((dirent) => dirent.isDirectory())
+          .length;
+        laneCount += wtCount;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   return {
     rootPath: entry.rootPath,
     displayName: entry.displayName,
     lastOpenedAt: entry.lastOpenedAt,
-    exists: fs.existsSync(entry.rootPath)
+    exists: fs.existsSync(entry.rootPath),
+    laneCount,
   };
 }
 

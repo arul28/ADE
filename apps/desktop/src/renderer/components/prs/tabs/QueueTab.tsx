@@ -31,6 +31,7 @@ import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
 import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
 import { formatError } from "../shared/prFormatters";
+import { findLaneBaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import {
   buildManualLandWarnings,
   findQueueMemberSelection,
@@ -404,7 +405,7 @@ export function QueueTab({
   }, [selectedGroup?.landingState?.entries]);
 
   const visibleRebaseNeeds = React.useMemo(
-    () => rebaseNeeds.filter((need) => need.behindBy > 0),
+    () => rebaseNeeds.filter((need) => need.kind === "lane_base" && need.behindBy > 0),
     [rebaseNeeds],
   );
   const rebaseNeedByLaneId = React.useMemo(
@@ -465,9 +466,10 @@ export function QueueTab({
   }, [setActiveTab, setSelectedPrId]);
 
   const openRebaseTab = React.useCallback((laneId: string) => {
-    setSelectedRebaseItemId(laneId);
+    const need = findLaneBaseNeed(visibleRebaseNeeds, laneId);
+    setSelectedRebaseItemId(need ? rebaseNeedItemKey(need) : null);
     setActiveTab("rebase");
-  }, [setActiveTab, setSelectedRebaseItemId]);
+  }, [setActiveTab, setSelectedRebaseItemId, visibleRebaseNeeds]);
 
   const handleLandCurrentPr = React.useCallback(async () => {
     if (!selectedGroup) return;

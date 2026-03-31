@@ -255,7 +255,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
   it("keeps the generating commit state when leaving and returning to the lane", async () => {
     const user = userEvent.setup();
-    let resolveGeneratedMessage: ((value: { message: string; model: string | null }) => void) | null = null;
+    let resolveGeneratedMessage: ((value: { message: string; model: string | null }) => void) | undefined;
     const generatedMessagePromise = new Promise<{ message: string; model: string | null }>((resolve) => {
       resolveGeneratedMessage = resolve;
     });
@@ -340,7 +340,7 @@ describe("LaneGitActionsPane rescue action", () => {
       </MemoryRouter>,
     );
 
-    resolveGeneratedMessage?.({ message: "feat: auto", model: "openai/gpt-5.4-mini" });
+    resolveGeneratedMessage!({ message: "feat: auto", model: "openai/gpt-5.4-mini" });
     await waitFor(() => {
       expect(window.ade.git.commit).toHaveBeenCalledWith({ laneId: "lane-1", message: "feat: auto", amend: false });
     });

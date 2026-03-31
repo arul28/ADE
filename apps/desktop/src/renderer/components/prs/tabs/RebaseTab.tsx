@@ -6,7 +6,8 @@ import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
-import { branchNameFromRef, resolveLaneBaseBranch } from "../shared/laneBranchTargets";
+import { branchNameFromRef } from "../shared/laneBranchTargets";
+import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { StatusDot } from "../shared/StatusDot";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
@@ -27,10 +28,6 @@ type RebaseTabProps = {
 };
 
 type RebaseSectionKey = "lane_base" | "pr_target";
-
-function rebaseNeedKey(need: RebaseNeed): string {
-  return `${need.laneId}:${need.prId ?? "base"}:${need.baseBranch}`;
-}
 
 function rebaseRunKey(args: { laneId: string; baseBranch?: string | null }): string {
   return `${args.laneId}:${branchNameFromRef(args.baseBranch)}`;
@@ -102,37 +99,22 @@ export function RebaseTab({
     pr_target: false,
   });
 
-  const getLaneBaseBranch = React.useCallback((laneId: string): string => {
-    const lane = laneById.get(laneId) ?? null;
-    return resolveLaneBaseBranch({
-      lane,
-      lanes,
-      primaryBranchRef: null,
-    });
-  }, [laneById, lanes]);
-
-  const isPrTargetNeed = React.useCallback((need: RebaseNeed): boolean => {
-    if (!need.prId) return false;
-    const laneBaseBranch = branchNameFromRef(getLaneBaseBranch(need.laneId));
-    return laneBaseBranch.length > 0 && laneBaseBranch !== branchNameFromRef(need.baseBranch);
-  }, [getLaneBaseBranch]);
-
   const grouped = React.useMemo(() => {
     const groups: Record<RebaseSectionKey, RebaseNeed[]> = {
       lane_base: [],
       pr_target: [],
     };
     for (const need of rebaseNeeds) {
-      groups[isPrTargetNeed(need) ? "pr_target" : "lane_base"].push(need);
+      groups[need.kind].push(need);
     }
     groups.lane_base.sort((a, b) => b.behindBy - a.behindBy);
     groups.pr_target.sort((a, b) => b.behindBy - a.behindBy);
     return groups;
-  }, [isPrTargetNeed, rebaseNeeds]);
+  }, [rebaseNeeds]);
 
   const selectedNeed = React.useMemo(() => {
     if (!selectedItemId) return null;
-    return rebaseNeeds.find((need) => rebaseNeedKey(need) === selectedItemId) ?? null;
+    return rebaseNeeds.find((need) => rebaseNeedItemKey(need) === selectedItemId) ?? null;
   }, [rebaseNeeds, selectedItemId]);
 
   const selectedNeedRunKey = React.useMemo(
@@ -146,10 +128,7 @@ export function RebaseTab({
   );
 
   const hasChildren = (selectedLane?.childCount ?? 0) > 0;
-  const selectedNeedIsPrTarget = React.useMemo(
-    () => (selectedNeed ? isPrTargetNeed(selectedNeed) : false),
-    [isPrTargetNeed, selectedNeed],
-  );
+  const selectedNeedIsPrTarget = selectedNeed?.kind === "pr_target";
 
   const activeRunKeyRef = React.useRef<string | null>(null);
 
@@ -178,9 +157,9 @@ export function RebaseTab({
   // Auto-select first item in highest-urgency group
   React.useEffect(() => {
     if (rebaseNeeds.length === 0 && selectedItemId === null) return;
-    if (selectedItemId && rebaseNeeds.some((need) => rebaseNeedKey(need) === selectedItemId)) return;
+    if (selectedItemId && rebaseNeeds.some((need) => rebaseNeedItemKey(need) === selectedItemId)) return;
     const first = grouped.lane_base[0] ?? grouped.pr_target[0];
-    onSelectItem(first ? rebaseNeedKey(first) : null);
+    onSelectItem(first ? rebaseNeedItemKey(first) : null);
   }, [rebaseNeeds, selectedItemId, grouped, onSelectItem]);
 
   React.useEffect(() => {
@@ -231,13 +210,10 @@ export function RebaseTab({
   // Fetch drift commits when selected need changes
   const driftSourceLaneId = React.useMemo(() => {
     if (!selectedNeed || selectedNeed.behindBy === 0) return null;
-    if (selectedNeedIsPrTarget) {
-      const baseBranch = branchNameFromRef(selectedNeed.baseBranch);
-      if (!baseBranch) return null;
-      return lanes.find((lane) => branchNameFromRef(lane.branchRef) === baseBranch)?.id ?? null;
-    }
-    return selectedLane?.parentLaneId ? (laneById.get(selectedLane.parentLaneId)?.id ?? null) : null;
-  }, [laneById, lanes, selectedLane?.parentLaneId, selectedNeed, selectedNeedIsPrTarget]);
+    const baseBranch = branchNameFromRef(selectedNeed.baseBranch);
+    if (!baseBranch) return null;
+    return lanes.find((lane) => branchNameFromRef(lane.branchRef) === baseBranch)?.id ?? null;
+  }, [lanes, selectedNeed]);
 
   React.useEffect(() => {
     if (!selectedNeed || selectedNeed.behindBy === 0) {
@@ -442,10 +418,10 @@ export function RebaseTab({
   };
 
   const renderNeedItem = (need: RebaseNeed) => {
-    const itemKey = rebaseNeedKey(need);
+    const itemKey = rebaseNeedItemKey(need);
     const isSelected = itemKey === selectedItemId;
     const laneName = laneById.get(need.laneId)?.name ?? need.laneId;
-    const kindLabel = isPrTargetNeed(need) ? "PR TARGET" : "LANE BASE";
+    const kindLabel = need.kind === "pr_target" ? "PR TARGET" : "LANE BASE";
     return (
       <button
         key={itemKey}
@@ -834,7 +810,7 @@ export function RebaseTab({
                         </div>
                       ) : driftCommits.length === 0 ? (
                         <div style={{ padding: "12px 20px", fontSize: 11, color: S.textMuted }} className="font-mono">
-                          No commit details available. The parent lane may not be tracked locally.
+                          No commit details available. The base branch may not be tracked locally.
                         </div>
                       ) : (
                         <div style={{ display: "flex", flexDirection: "column" }}>
@@ -1492,6 +1468,7 @@ export function RebaseTab({
       rebaseBusy,
       rebaseError,
       resolverLaunching,
+      forcePushAfterRebase,
       resolverExpanded,
       runScope,
       activeRun,

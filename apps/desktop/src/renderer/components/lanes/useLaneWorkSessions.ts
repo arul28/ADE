@@ -16,6 +16,9 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   laneFilter: "all",
   statusFilter: "all",
   search: "",
+  sessionListOrganization: "all-lanes-by-status",
+  workCollapsedLaneIds: [],
+  workFocusSessionsHidden: false,
 };
 
 function arraysEqual(a: string[], b: string[]): boolean {

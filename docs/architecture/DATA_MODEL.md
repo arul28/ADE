@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-15
+> Last updated: 2026-03-31
 
 ---
 
@@ -183,11 +183,15 @@ CREATE TABLE IF NOT EXISTS lanes (
   color             TEXT,               -- UI color hint
   icon              TEXT,               -- UI icon hint
   tags_json         TEXT,               -- JSON array of string tags
+  folder            TEXT,               -- Optional organizational folder
+  mission_id        TEXT,               -- Mission that owns this lane (nullable)
+  lane_role         TEXT,               -- Mission lane role: 'mission_root' | 'worker' | 'integration' | 'result'
   status            TEXT NOT NULL,      -- 'active' | 'archived'
   created_at        TEXT NOT NULL,
   archived_at       TEXT,
   FOREIGN KEY(project_id) REFERENCES projects(id),
-  FOREIGN KEY(parent_lane_id) REFERENCES lanes(id)
+  FOREIGN KEY(parent_lane_id) REFERENCES lanes(id),
+  FOREIGN KEY(mission_id) REFERENCES missions(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_lanes_project_id     ON lanes(project_id);
 CREATE INDEX IF NOT EXISTS idx_lanes_project_type   ON lanes(project_id, lane_type);
@@ -199,7 +203,7 @@ Each lane represents a unit of parallel development work. Lanes have three types
 - `worktree`: Standard ADE worktree-backed lanes under `.ade/worktrees/`.
 - `attached`: External directories attached as lanes (e.g., existing checkouts).
 
-The `parent_lane_id` enables stacked lane hierarchies. The `color`, `icon`, and `tags_json` fields provide UI customization. `is_edit_protected` prevents accidental modifications to protected lanes (e.g., production branches).
+The `parent_lane_id` enables stacked lane hierarchies. The `color`, `icon`, and `tags_json` fields provide UI customization. `is_edit_protected` prevents accidental modifications to protected lanes (e.g., production branches). The `mission_id` and `lane_role` fields link lanes to missions, enabling mission-scoped filtering and lifecycle management. When a mission is deleted, `mission_id` is set to null via the ON DELETE SET NULL foreign key action.
 
 #### Terminal Sessions
 
@@ -561,6 +565,22 @@ CREATE TABLE IF NOT EXISTS pr_issue_inventory (
 
 Tracks individual PR issues (failing checks, unresolved review threads, issue comments) for the convergence loop. The `issueInventoryService` syncs from live GitHub data and classifies issues by source and severity. The `round` field tracks which convergence round surfaced the issue. The `state` field progresses through the convergence lifecycle (`new` -> `sent_to_agent` -> `fixed`/`dismissed`/`escalated`).
 
+#### PR Pipeline Settings
+
+```sql
+CREATE TABLE IF NOT EXISTS pr_pipeline_settings (
+  pr_id             TEXT PRIMARY KEY,
+  auto_merge        INTEGER NOT NULL DEFAULT 0,
+  merge_method      TEXT NOT NULL DEFAULT 'repo_default',  -- 'merge' | 'squash' | 'rebase' | 'repo_default'
+  max_rounds        INTEGER NOT NULL DEFAULT 5,
+  on_rebase_needed  TEXT NOT NULL DEFAULT 'pause',         -- 'pause' | 'auto_rebase'
+  updated_at        TEXT NOT NULL,
+  FOREIGN KEY(pr_id) REFERENCES pull_requests(id) ON DELETE CASCADE
+);
+```
+
+Per-PR configuration for the auto-converge pipeline. Controls whether to auto-merge after convergence completes, the merge method, the maximum number of convergence rounds, and the rebase policy when the branch falls behind its target.
+
 #### Checkpoints (Phase 8)
 
 ```sql
@@ -689,13 +709,17 @@ Per-execution-step results within an automation run. Each step in a rule's execu
 CREATE TABLE IF NOT EXISTS missions (
   id                TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL,
-  lane_id           TEXT,
+  lane_id           TEXT,                -- Launch lane (where the mission was started from)
+  mission_lane_id   TEXT,                -- Mission workspace lane (coordinator operates here)
+  result_lane_id    TEXT,                -- Result lane (consolidated mission output)
   title             TEXT NOT NULL,
   prompt            TEXT NOT NULL,
   status            TEXT NOT NULL,        -- 'queued' | 'in_progress' | 'intervention_required' | 'completed' | 'failed' | 'canceled'
   priority          TEXT NOT NULL DEFAULT 'normal',
   execution_mode    TEXT NOT NULL DEFAULT 'local',
   target_machine_id TEXT,
+  queue_claim_token TEXT,                -- Token for mission queue claim deduplication
+  queue_claimed_at  TEXT,                -- Timestamp when the queue slot was claimed
   outcome_summary   TEXT,
   last_error        TEXT,
   metadata_json     TEXT,
@@ -703,15 +727,18 @@ CREATE TABLE IF NOT EXISTS missions (
   updated_at        TEXT NOT NULL,
   started_at        TEXT,
   completed_at      TEXT,
+  archived_at       TEXT,
   FOREIGN KEY(project_id) REFERENCES projects(id),
-  FOREIGN KEY(lane_id) REFERENCES lanes(id)
+  FOREIGN KEY(lane_id) REFERENCES lanes(id),
+  FOREIGN KEY(mission_lane_id) REFERENCES lanes(id) ON DELETE SET NULL,
+  FOREIGN KEY(result_lane_id) REFERENCES lanes(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_missions_project_updated ON missions(project_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_missions_project_status  ON missions(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_missions_project_lane    ON missions(project_id, lane_id);
 ```
 
-Top-level mission goal records. These rows store intake prompt, lifecycle status, priority, execution mode (`local`/`relay`), and target machine metadata for future relay routing.
+Top-level mission goal records. These rows store intake prompt, lifecycle status, priority, execution mode (`local`/`relay`), and target machine metadata for future relay routing. The `mission_lane_id` and `result_lane_id` columns track the coordinator workspace lane and the consolidated output lane respectively. The `queue_claim_token` and `queue_claimed_at` columns support mission queue claim deduplication, preventing duplicate starts from stale events. The `archived_at` column enables soft-deletion of missions.
 
 #### Mission Steps (Phase 1)
 

@@ -119,11 +119,12 @@ export async function launchRebaseResolutionChat(
   }
 
   // Get recent commits on both the lane and the parent
-  const parentLane = lane.parentLaneId ? lanes.find((l) => l.id === lane.parentLaneId) ?? null : null;
-  const [laneCommits, baseCommits] = await Promise.all([
+  const [laneCommits, remoteBaseCommits, localBaseCommits] = await Promise.all([
     readRecentCommits(lane.worktreePath, 8),
-    parentLane?.worktreePath ? readRecentCommits(parentLane.worktreePath, rebaseNeed.behindBy) : Promise.resolve([]),
+    readRecentCommits(lane.worktreePath, rebaseNeed.behindBy, `origin/${rebaseNeed.baseBranch}`),
+    readRecentCommits(lane.worktreePath, rebaseNeed.behindBy, rebaseNeed.baseBranch),
   ]);
+  const baseCommits = remoteBaseCommits.length > 0 ? remoteBaseCommits : localBaseCommits;
 
   const prompt = buildRebaseResolutionPrompt({
     lane,

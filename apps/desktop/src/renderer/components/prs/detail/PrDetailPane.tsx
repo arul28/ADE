@@ -26,6 +26,7 @@ import type { IssueInventoryItem as PanelIssueItem, ConvergenceStatus as PanelCo
 import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
 import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
 import { describePrTargetDiff } from "../shared/laneBranchTargets";
+import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { usePrs } from "../state/PrsContext";
 
 // ---- Sub-tab type ----
@@ -400,6 +401,7 @@ export function PrDetailPane({
   onOpenQueueView,
 }: PrDetailPaneProps) {
   const {
+    rebaseNeeds,
     resolverModel,
     resolverReasoningLevel,
     resolverPermissionMode,
@@ -614,6 +616,15 @@ export function PrDetailPane({
     () => lanes.find((lane) => lane.id === pr.laneId && !lane.archivedAt) ?? null,
     [lanes, pr.laneId],
   );
+  const matchingRebaseItemId = React.useMemo(() => {
+    const need = findMatchingRebaseNeed({
+      rebaseNeeds,
+      laneId: pr.laneId,
+      baseBranch: pr.baseBranch,
+      prId: pr.id,
+    });
+    return need ? rebaseNeedItemKey(need) : null;
+  }, [pr.baseBranch, pr.id, pr.laneId, rebaseNeeds]);
   const issueResolutionAvailability = React.useMemo(() => {
     const availability = getPrIssueResolutionAvailability(checks, reviewThreads);
     if (laneForPr) return availability;
@@ -978,13 +989,21 @@ export function PrDetailPane({
   }, [stopAutoConvergePoller]);
 
   const handleMarkDismissed = React.useCallback(async (itemIds: string[], reason: string) => {
-    await window.ade.prs.issueInventoryMarkDismissed(pr.id, itemIds, reason);
-    void syncInventory();
+    try {
+      await window.ade.prs.issueInventoryMarkDismissed(pr.id, itemIds, reason);
+      void syncInventory();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    }
   }, [pr.id, syncInventory]);
 
   const handleMarkEscalated = React.useCallback(async (itemIds: string[]) => {
-    await window.ade.prs.issueInventoryMarkEscalated(pr.id, itemIds);
-    void syncInventory();
+    try {
+      await window.ade.prs.issueInventoryMarkEscalated(pr.id, itemIds);
+      void syncInventory();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    }
   }, [pr.id, syncInventory]);
 
   const handleResetInventory = React.useCallback(async () => {
@@ -1212,6 +1231,7 @@ export function PrDetailPane({
             onAiSummary={handleAiSummary}
             onNavigate={onNavigate}
             onOpenRebaseTab={onOpenRebaseTab}
+            matchingRebaseItemId={matchingRebaseItemId}
             localBehindCount={localBehindCount}
             activity={activity}
             lanes={lanes}
@@ -1530,6 +1550,7 @@ type OverviewTabProps = {
   onAiSummary: () => void;
   onNavigate: (path: string) => void;
   onOpenRebaseTab?: (laneId?: string) => void;
+  matchingRebaseItemId: string | null;
   localBehindCount: number;
   activity: PrActivityEvent[];
   lanes: LaneSummary[];
@@ -1643,10 +1664,10 @@ function OverviewTab(props: OverviewTabProps) {
                     {targetDiffMessage}
                   </span>
                 </div>
-                {props.onOpenRebaseTab && (
+                {props.onOpenRebaseTab && props.matchingRebaseItemId && (
                   <button
                     type="button"
-                    onClick={() => props.onOpenRebaseTab?.(pr.laneId)}
+                    onClick={() => props.onOpenRebaseTab?.(props.matchingRebaseItemId ?? undefined)}
                     style={outlineButton({
                       height: 30, padding: "0 14px",
                       color: COLORS.info,
@@ -1688,10 +1709,10 @@ function OverviewTab(props: OverviewTabProps) {
                     {hasConflicts ? "Rebase required to resolve conflicts" : "Rebase recommended before merging"}
                   </span>
                 </div>
-                {props.onOpenRebaseTab && (
+                {props.onOpenRebaseTab && props.matchingRebaseItemId && (
                   <button
                     type="button"
-                    onClick={() => props.onOpenRebaseTab?.(pr.laneId)}
+                    onClick={() => props.onOpenRebaseTab?.(props.matchingRebaseItemId ?? undefined)}
                     style={outlineButton({
                       height: 30, padding: "0 14px",
                       color: hasConflicts ? COLORS.danger : COLORS.warning,

@@ -19,6 +19,7 @@ import type { Logger } from "../logging/logger";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createLaneService } from "../lanes/laneService";
 import { runGit, runGitOrThrow } from "../git/git";
+import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import { getErrorMessage, normalizeBranchName, nowIso } from "../shared/utils";
 
 type QueueLandingRow = {
@@ -307,9 +308,8 @@ export function createQueueLandingService({
     if (!normalizedTarget) return null;
     const lanes = await laneService.list({ includeArchived: false });
     const match = lanes.find((lane) => {
-      const branch = normalizeBranchName(lane.branchRef);
-      const base = normalizeBranchName(lane.baseRef);
-      return lane.id === normalizedTarget || branch === normalizedTarget || base === normalizedTarget;
+      const branch = normalizeBranchName(branchNameFromLaneRef(lane.branchRef));
+      return lane.id === normalizedTarget || branch === normalizedTarget;
     });
     return match?.id ?? null;
   };

@@ -23,6 +23,7 @@ import { formatTimestampShort } from "../shared/prFormatters";
 import { QueueTab } from "./QueueTab";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
+import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { usePrs } from "../state/PrsContext";
 import { getQueueWorkflowBucket } from "./queueWorkflowModel";
 
@@ -675,6 +676,19 @@ export function WorkflowsTab({
     active: rebaseNeeds.filter((need) => !need.dismissedAt && !(need.deferredUntil && new Date(need.deferredUntil) > new Date()) && need.behindBy > 0),
     history: rebaseNeeds.filter((need) => need.dismissedAt || (need.deferredUntil && new Date(need.deferredUntil) > new Date()) || need.behindBy === 0),
   }), [rebaseNeeds]);
+
+  React.useEffect(() => {
+    if (activeCategory !== "rebase" || !selectedRebaseItemId) return;
+    const activeKeys = new Set(rebaseByView.active.map(rebaseNeedItemKey));
+    if (activeKeys.has(selectedRebaseItemId)) {
+      if (view !== "active") setView("active");
+      return;
+    }
+    const historyKeys = new Set(rebaseByView.history.map(rebaseNeedItemKey));
+    if (historyKeys.has(selectedRebaseItemId) && view !== "history") {
+      setView("history");
+    }
+  }, [activeCategory, rebaseByView.active, rebaseByView.history, selectedRebaseItemId, view]);
 
   const counts = {
     integration: integrationByView[view].length,
