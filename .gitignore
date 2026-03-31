@@ -46,7 +46,6 @@ xcuserdata/
 *.xcuserstate
 
 # Tool configs (personal)
-.claude/
 .factory/
 .codex/
 .pnpm-store/
