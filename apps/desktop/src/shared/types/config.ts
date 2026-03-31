@@ -208,6 +208,45 @@ export type ConfigLaneOverlayPolicy = {
   overrides?: LaneOverlayOverrides;
 };
 
+// --- Lane Setup Script types ---
+
+/** Platform-specific setup script configuration for lane initialization. */
+export type LaneSetupScriptConfig = {
+  /** Generic setup commands (fallback for all platforms) */
+  commands?: string[];
+  /** Unix-specific setup commands (takes precedence on macOS/Linux) */
+  unixCommands?: string[];
+  /** Windows-specific setup commands (takes precedence on Windows) */
+  windowsCommands?: string[];
+  /** Path to a script file relative to project root (fallback) */
+  scriptPath?: string;
+  /** Path to a Unix-specific script file (takes precedence on macOS/Linux) */
+  unixScriptPath?: string;
+  /** Path to a Windows-specific script file (takes precedence on Windows) */
+  windowsScriptPath?: string;
+  /**
+   * When true, $PRIMARY_WORKTREE_PATH (or %PRIMARY_WORKTREE_PATH%) is available
+   * in commands/scripts, referencing the primary lane's worktree root.
+   */
+  injectPrimaryPath?: boolean;
+};
+
+// --- Lane Cleanup / Lifecycle types ---
+
+/** Auto-cleanup policy for stale lanes. */
+export type LaneCleanupConfig = {
+  /** Maximum number of active (non-archived) lanes. Oldest by access time are auto-archived. 0 = unlimited. */
+  maxActiveLanes?: number;
+  /** How often (in hours) to scan for stale lanes and run cleanup. 0 = disabled. */
+  cleanupIntervalHours?: number;
+  /** Auto-archive lanes that have been inactive for this many hours. 0 = never. */
+  autoArchiveAfterHours?: number;
+  /** Auto-delete archived lanes after this many hours. 0 = never. */
+  autoDeleteArchivedAfterHours?: number;
+  /** Also delete the remote branch when auto-deleting. */
+  deleteRemoteBranchOnCleanup?: boolean;
+};
+
 // --- Lane Template types (Phase 5 W2) ---
 
 /** A reusable lane initialization recipe stored in project config (local.yaml / ade.yaml). */
@@ -229,6 +268,8 @@ export type LaneTemplate = {
   portRange?: { start: number; end: number };
   /** Extra environment variables to set */
   envVars?: Record<string, string>;
+  /** Post-creation setup script (runs after env init, supports $PRIMARY_WORKTREE_PATH) */
+  setupScript?: LaneSetupScriptConfig;
 };
 
 /** Lenient version of LaneTemplate for YAML config parsing. */
@@ -243,6 +284,7 @@ export type ConfigLaneTemplate = {
   copyPaths?: LaneCopyPathConfig[];
   portRange?: { start: number; end: number };
   envVars?: Record<string, string>;
+  setupScript?: LaneSetupScriptConfig;
 };
 
 /**
@@ -1036,6 +1078,8 @@ export type ProjectConfigFile = {
   laneTemplates?: ConfigLaneTemplate[];
   /** Default lane template ID applied to new lanes */
   defaultLaneTemplate?: string;
+  /** Lane lifecycle & cleanup configuration */
+  laneCleanup?: LaneCleanupConfig;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
   /** Event-based checklist for context doc auto-regeneration */
@@ -1068,6 +1112,8 @@ export type EffectiveProjectConfig = {
   laneTemplates?: LaneTemplate[];
   /** Default lane template ID */
   defaultLaneTemplate?: string;
+  /** Lane lifecycle & cleanup configuration */
+  laneCleanup?: LaneCleanupConfig;
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;

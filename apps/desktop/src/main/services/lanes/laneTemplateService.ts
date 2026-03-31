@@ -7,6 +7,12 @@ import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
 
+type ResolvedSetupScript = {
+  commands: string[];
+  scriptPath?: string;
+  injectPrimaryPath: boolean;
+};
+
 export function createLaneTemplateService({
   projectConfigService,
   logger,
@@ -58,6 +64,34 @@ export function createLaneTemplateService({
     };
   }
 
+  /**
+   * Resolves the platform-appropriate setup script commands from a template.
+   * Returns null if no setup script is configured.
+   */
+  function resolveSetupScript(template: LaneTemplate): ResolvedSetupScript | null {
+    const cfg = template.setupScript;
+    if (!cfg) return null;
+
+    const isWindows = process.platform === "win32";
+
+    // Platform-specific commands take precedence
+    const commands = isWindows
+      ? (cfg.windowsCommands ?? cfg.commands ?? [])
+      : (cfg.unixCommands ?? cfg.commands ?? []);
+
+    const scriptPath = isWindows
+      ? (cfg.windowsScriptPath ?? cfg.scriptPath)
+      : (cfg.unixScriptPath ?? cfg.scriptPath);
+
+    if (commands.length === 0 && !scriptPath) return null;
+
+    return {
+      commands,
+      scriptPath,
+      injectPrimaryPath: cfg.injectPrimaryPath ?? false,
+    };
+  }
+
   function saveTemplate(template: LaneTemplate): void {
     const snapshot = projectConfigService.get();
     const existing = [...(snapshot.local.laneTemplates ?? [])];
@@ -97,6 +131,7 @@ export function createLaneTemplateService({
     getDefaultTemplateId,
     setDefaultTemplateId,
     resolveTemplateAsEnvInit,
+    resolveSetupScript,
     saveTemplate,
     deleteTemplate,
   };
