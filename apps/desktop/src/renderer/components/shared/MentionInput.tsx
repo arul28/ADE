@@ -320,7 +320,7 @@ export function MentionInput({
               fontFamily: MONO_FONT,
               color: "#FAFAFA",
               lineHeight: "1.55",
-              minHeight: 60,
+              minHeight: 72,
               maxHeight: 160,
             }}
           />

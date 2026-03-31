@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
+import { GitBranch, Plus } from "@phosphor-icons/react";
 import {
   createDefaultComputerUsePolicy,
   inferAttachmentType,
@@ -45,6 +46,7 @@ import { deriveChatSubagentSnapshots } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { useClickOutside } from "../../hooks/useClickOutside";
+import { useAppStore } from "../../state/appStore";
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
@@ -472,6 +474,8 @@ export function AgentChatPane({
   presentation?: ChatSurfacePresentation;
   onSessionCreated?: (sessionId: string) => void | Promise<void>;
 }) {
+  const navigate = useNavigate();
+  const selectLane = useAppStore((s) => s.selectLane);
   const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs && initialSessionSummary);
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
@@ -611,7 +615,7 @@ export function AgentChatPane({
   }, [computerUsePolicy, selectedSession?.computerUse]);
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
-    || (surfaceMode === "resolver" ? "AI Resolver" : laneDisplayLabel?.trim() || "Chat");
+    || (surfaceMode === "resolver" ? "AI Resolver" : selectedSession ? chatSessionTitle(selectedSession) : "New chat");
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
   const messagePlaceholder = presentation?.messagePlaceholder?.trim()
@@ -1741,6 +1745,20 @@ export function AgentChatPane({
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {laneId && laneDisplayLabel ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] px-2 py-1 font-sans text-[11px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg/70"
+              title={`Go to lane: ${laneDisplayLabel}`}
+              onClick={() => {
+                selectLane(laneId);
+                navigate("/lanes");
+              }}
+            >
+              <GitBranch size={11} weight="regular" />
+              <span className="max-w-[140px] truncate">{laneDisplayLabel}</span>
+            </button>
+          ) : null}
           {canShowHandoff ? (
             <div ref={handoffRef} className="relative">
               <button
