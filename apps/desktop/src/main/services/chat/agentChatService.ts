@@ -194,6 +194,7 @@ type PersistedChatState = {
   preferredExecutionLaneId?: string | null;
   selectedExecutionLaneId?: string | null;
   lastLaneDirectiveKey?: string | null;
+  manuallyNamed?: boolean;
   updatedAt: string;
 };
 
@@ -2911,6 +2912,8 @@ export function createAgentChatService(args: {
           titleContext.join("\n"),
         ].join("\n\n"),
       });
+      // Re-check after async — user may have manually renamed while the request was in flight.
+      if (managed.manuallyNamed) return;
       const nextTitle = setManagedSessionTitle(managed, result.text);
       if (!nextTitle) return;
       managed.autoTitleStage = args.stage;
@@ -3180,6 +3183,7 @@ export function createAgentChatService(args: {
       ...(managed.preferredExecutionLaneId ? { preferredExecutionLaneId: managed.preferredExecutionLaneId } : {}),
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
       ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
+      ...(managed.manuallyNamed ? { manuallyNamed: true } : {}),
       updatedAt: nowIso()
     };
 
@@ -3295,6 +3299,7 @@ export function createAgentChatService(args: {
         ...(typeof record.lastLaneDirectiveKey === "string" && record.lastLaneDirectiveKey.trim().length
           ? { lastLaneDirectiveKey: record.lastLaneDirectiveKey.trim() }
           : {}),
+        ...(record.manuallyNamed === true ? { manuallyNamed: true } : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
@@ -4123,7 +4128,7 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
-      manuallyNamed: false,
+      manuallyNamed: persisted?.manuallyNamed === true,
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
       continuitySummaryUpdatedAt: persisted?.continuitySummaryUpdatedAt ?? null,

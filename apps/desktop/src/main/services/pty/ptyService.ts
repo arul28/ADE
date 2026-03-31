@@ -349,72 +349,74 @@ export function createPtyService({
         sessionService.setSummary(sessionId, summary);
 
         const si = getSessionIntelligence();
-        if (si?.summaries?.enabled === false) return;
-        if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
+        const hasAi = Boolean(aiIntegrationService && aiIntegrationService.getMode() !== "guest");
 
-        const prompt = [
-          "You are ADE's terminal summary assistant.",
-          "Rewrite this terminal session into a concise 1-3 sentence summary with outcome and next action.",
-          "Do not invent commands or outcomes.",
-          "",
-          "Deterministic summary:",
-          summary,
-          "",
-          "Terminal transcript tail:",
-          transcript.slice(-18_000)
-        ].join("\n");
+        // AI-enhanced summary (only when summaries are enabled and AI is available)
+        if (si?.summaries?.enabled !== false && hasAi) {
+          const prompt = [
+            "You are ADE's terminal summary assistant.",
+            "Rewrite this terminal session into a concise 1-3 sentence summary with outcome and next action.",
+            "Do not invent commands or outcomes.",
+            "",
+            "Deterministic summary:",
+            summary,
+            "",
+            "Terminal transcript tail:",
+            transcript.slice(-18_000)
+          ].join("\n");
 
-        const summaryModelId = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
-          ? si.summaries.modelId.trim()
-          : undefined;
+          const summaryModelId = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
+            ? si.summaries.modelId.trim()
+            : undefined;
 
-        const aiSummary = await aiIntegrationService.summarizeTerminal({
-          cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
-          prompt,
-          ...(summaryModelId ? { model: summaryModelId } : {}),
-        });
-        const text = aiSummary.text.trim();
-        if (text.length) {
-          sessionService.setSummary(sessionId, text);
+          const aiSummary = await aiIntegrationService!.summarizeTerminal({
+            cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
+            prompt,
+            ...(summaryModelId ? { model: summaryModelId } : {}),
+          });
+          const text = aiSummary.text.trim();
+          if (text.length) {
+            sessionService.setSummary(sessionId, text);
+          }
         }
 
-        // Refresh title on complete if enabled
-        // Note: aiIntegrationService availability and non-guest mode were already
-        // checked above (early return at the top of this block).
-        const refreshOnComplete = getSessionIntelligence()?.titles?.refreshOnComplete
-          ?? (projectConfigService?.get().effective.ai?.chat as any)?.autoTitleRefreshOnComplete
-          ?? true;
-        if (refreshOnComplete && isTitleGenerationEnabled()) {
-          try {
-            const titlePrompt = [
-              "Generate a concise final title for this completed terminal session.",
-              "Return only plain text, max 80 characters, no punctuation at the end.",
-              "",
-              `Session type: ${session.toolType ?? "terminal"}`,
-              `Initial title: ${session.title}`,
-              session.goal ? `Current goal: ${session.goal}` : null,
-              `Exit code: ${session.exitCode ?? "unknown"}`,
-              "",
-              "Terminal transcript tail:",
-              transcript.slice(-2000),
-            ].filter(Boolean).join("\n");
+        // Refresh title on complete — runs independently of AI summaries toggle
+        if (hasAi) {
+          const refreshOnComplete = getSessionIntelligence()?.titles?.refreshOnComplete
+            ?? (projectConfigService?.get().effective.ai?.chat as any)?.autoTitleRefreshOnComplete
+            ?? true;
+          if (refreshOnComplete && isTitleGenerationEnabled()) {
+            try {
+              const titlePrompt = [
+                "Generate a concise final title for this completed terminal session.",
+                "Return only plain text, max 80 characters, no punctuation at the end.",
+                "",
+                `Session type: ${session.toolType ?? "terminal"}`,
+                `Initial title: ${session.title}`,
+                session.goal ? `Current goal: ${session.goal}` : null,
+                `Exit code: ${session.exitCode ?? "unknown"}`,
+                "",
+                "Terminal transcript tail:",
+                transcript.slice(-2000),
+              ].filter(Boolean).join("\n");
 
-            const titleModelId = resolveTitleModelId();
-            const titleResult = await aiIntegrationService.summarizeTerminal({
-              cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
-              prompt: titlePrompt,
-              timeoutMs: 8_000,
-              ...(titleModelId ? { model: titleModelId } : {}),
-            });
-            const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
-            if (finalTitle) {
-              sessionService.updateMeta({ sessionId, title: finalTitle });
+              const titleModelId = resolveTitleModelId();
+              const titleResult = await aiIntegrationService!.summarizeTerminal({
+                cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
+                prompt: titlePrompt,
+                timeoutMs: 8_000,
+                ...(titleModelId ? { model: titleModelId } : {}),
+              });
+              const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
+              if (finalTitle) {
+                sessionService.updateMeta({ sessionId, title: finalTitle });
+              }
+            } catch (err) {
+              logger.warn("pty.session_title_refresh_failed", {
+                sessionId,
+                error: err instanceof Error ? err.message : String(err),
+              });
             }
-          } catch (err) {
-            logger.warn("pty.session_title_refresh_failed", {
-              sessionId,
-              error: err instanceof Error ? err.message : String(err),
-            });
           }
         }
       })

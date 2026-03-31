@@ -83,9 +83,9 @@ describe("hasInspectableProcessOutput", () => {
     ).toBe(true);
   });
 
-  it("returns true for stopped process with lastExitCode of 0", () => {
+  it("returns true for stopped process with non-zero lastExitCode", () => {
     expect(
-      hasInspectableProcessOutput(makeRuntime({ status: "stopped", lastExitCode: 0 })),
+      hasInspectableProcessOutput(makeRuntime({ status: "stopped", lastExitCode: 1 })),
     ).toBe(true);
   });
 });

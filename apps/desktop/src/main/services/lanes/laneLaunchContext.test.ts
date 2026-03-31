@@ -298,15 +298,15 @@ describe("resolveLaneLaunchContext", () => {
     it("trims laneId whitespace", () => {
       setupDirectoryExists("/real/lane/root");
 
+      const laneService = makeLaneService("/projects/my-lane");
       resolveLaneLaunchContext({
-        laneService: makeLaneService("/projects/my-lane"),
+        laneService,
         laneId: "  lane-1  ",
         purpose: "test",
       });
 
-      const laneService = makeLaneService("/projects/my-lane");
-      // Verify getLaneBaseAndBranch was called — the function trims before passing
-      expect(laneService.getLaneBaseAndBranch).not.toHaveBeenCalled();
+      // Verify getLaneBaseAndBranch was called with the trimmed laneId
+      expect(laneService.getLaneBaseAndBranch).toHaveBeenCalledWith("lane-1");
     });
 
     it("uses 'launch work' as default purpose when purpose is empty", () => {

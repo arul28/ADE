@@ -384,6 +384,7 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("codexConfigSource" in value) parsed.codexConfigSource = value.codexConfigSource == null ? undefined : asTrimmedString(value.codexConfigSource) as AgentChatUpdateSessionArgs["codexConfigSource"];
   if ("unifiedPermissionMode" in value) parsed.unifiedPermissionMode = value.unifiedPermissionMode == null ? undefined : asTrimmedString(value.unifiedPermissionMode) as AgentChatUpdateSessionArgs["unifiedPermissionMode"];
   if ("computerUse" in value) parsed.computerUse = value.computerUse == null ? null : value.computerUse as AgentChatUpdateSessionArgs["computerUse"];
+  if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
   return parsed;
 }
 

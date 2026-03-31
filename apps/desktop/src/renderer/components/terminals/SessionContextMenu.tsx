@@ -56,7 +56,10 @@ export function SessionContextMenu({
   const isChat = isChatToolType(session.toolType);
   const canResume = !isRunning && Boolean(session.resumeCommand);
 
+  const cancelledRef = useRef(false);
+
   const commitRename = () => {
+    if (cancelledRef.current) return;
     const trimmed = draft.trim();
     if (trimmed.length > 0) {
       onRename(session.id, trimmed);
@@ -85,7 +88,7 @@ export function SessionContextMenu({
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") { e.preventDefault(); commitRename(); }
-                if (e.key === "Escape") { e.preventDefault(); onClose(); }
+                if (e.key === "Escape") { e.preventDefault(); cancelledRef.current = true; onClose(); }
               }}
               onBlur={commitRename}
               className="w-full rounded border border-border/30 bg-transparent px-2 py-1 text-xs text-[--color-fg] outline-none focus:border-[--color-accent]"
