@@ -217,7 +217,11 @@ export function TerminalsPage() {
         onRename={(sessionId, newTitle) => {
           setRenameError(null);
           window.ade.agentChat.updateSession({ sessionId, title: newTitle, manuallyNamed: true })
-            .then(() => work.refresh({ showLoading: false }))
+            .then(() => {
+              work.refresh({ showLoading: false }).catch((refreshErr: unknown) => {
+                console.error("[TerminalsPage] refresh after rename failed", { sessionId, refreshErr });
+              });
+            })
             .catch((err: unknown) => {
               const message = err instanceof Error ? err.message : String(err);
               console.error("[TerminalsPage] rename session failed", { sessionId, err });

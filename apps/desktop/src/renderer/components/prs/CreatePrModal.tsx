@@ -553,22 +553,19 @@ export function CreatePrModal({
   const normalBranchSelectOptions = React.useMemo(() => {
     const v = normalBaseBranch.trim();
     if (!v.length) return targetBranchOptions;
-    if (targetBranchOptions.includes(v)) return targetBranchOptions;
-    return [v, ...targetBranchOptions];
+    return [v, ...targetBranchOptions.filter((b) => b !== v)];
   }, [targetBranchOptions, normalBaseBranch]);
 
   const queueBranchSelectOptions = React.useMemo(() => {
     const v = queueTargetBranch.trim();
     if (!v.length) return targetBranchOptions;
-    if (targetBranchOptions.includes(v)) return targetBranchOptions;
-    return [v, ...targetBranchOptions];
+    return [v, ...targetBranchOptions.filter((b) => b !== v)];
   }, [targetBranchOptions, queueTargetBranch]);
 
   const integrationBranchSelectOptions = React.useMemo(() => {
     const v = integrationBaseBranch.trim();
     if (!v.length) return targetBranchOptions;
-    if (targetBranchOptions.includes(v)) return targetBranchOptions;
-    return [v, ...targetBranchOptions];
+    return [v, ...targetBranchOptions.filter((b) => b !== v)];
   }, [targetBranchOptions, integrationBaseBranch]);
 
   const handleDraftAI = async (laneId: string) => {
@@ -1015,7 +1012,7 @@ export function CreatePrModal({
           <Stepper currentStep={numericStep} />
 
           {branchLoadError ? (
-            <div style={{ padding: "8px 24px", fontSize: 11, color: C.error, background: `${C.error}10` }}>
+            <div role="alert" style={{ padding: "8px 24px", fontSize: 11, color: C.error, background: `${C.error}10` }}>
               Could not load branch list: {branchLoadError}
             </div>
           ) : null}

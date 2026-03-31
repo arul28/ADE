@@ -24,7 +24,8 @@ function toPreviewSrc(uri: string): string | null {
   }
   // For relative paths, we can't resolve here — the protocol handler in main will need the project root.
   // But artifacts stored by the broker are typically absolute or relative to project root.
-  return `ade-artifact://${filePath.startsWith("/") ? "" : "/"}${encodeURI(filePath)}`;
+  const encoded = new URL(filePath, "file://").pathname;
+  return `ade-artifact://${encoded.startsWith("/") ? "" : "/"}${encoded}`;
 }
 
 function fileUriToFsPath(uri: string): string {
@@ -41,18 +42,11 @@ function fileUriToFsPath(uri: string): string {
   }
 }
 
-function normalizeToFsPath(uri: string): string {
-  if (uri.startsWith("file://")) {
-    try { return decodeURIComponent(new URL(uri).pathname); } catch { return uri.replace(/^file:\/\//i, ""); }
-  }
-  return uri;
-}
-
 function openInSystemPlayer(uri: string) {
   if (/^https?:\/\//i.test(uri)) {
     void window.ade.app.openExternal(uri);
   } else {
-    const fsPath = normalizeToFsPath(uri);
+    const fsPath = fileUriToFsPath(uri);
     window.ade.app.openPath(fsPath).catch((err: unknown) => {
       console.error("[ChatComputerUsePanel] Failed to open local path:", fsPath, err);
     });

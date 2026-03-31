@@ -229,7 +229,8 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     `frame-src 'none'`,
     `script-src ${cspSources} 'unsafe-inline'`,
     `style-src ${cspSources} 'unsafe-inline'`,
-    `img-src ${cspImageSources} data: blob:`,
+    `img-src ${cspImageSources} ade-artifact: data: blob:`,
+    `media-src ade-artifact:`,
     `font-src ${cspSources} data:`,
     `connect-src ${cspSources}${cspWsSources} https:`,
     `worker-src 'self' blob:`,
@@ -398,7 +399,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
 // Register custom protocol for serving local artifact files (images, videos) to the renderer.
 // Must be called before app.whenReady().
 protocol.registerSchemesAsPrivileged([
-  { scheme: "ade-artifact", privileges: { standard: false, supportFetchAPI: true, stream: true, bypassCSP: true } },
+  { scheme: "ade-artifact", privileges: { standard: false, supportFetchAPI: true, stream: true } },
 ]);
 
 app.whenReady().then(async () => {

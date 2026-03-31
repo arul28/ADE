@@ -433,10 +433,7 @@ export function createPtyService({
               });
               const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (finalTitle) {
-                const current = sessionService.get(sessionId);
                 if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
-                  logger.info("pty.session_title_refresh_skipped_manual_name", { sessionId });
-                } else if (current && current.title !== session.title) {
                   logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
                 } else {
                   sessionService.updateMeta({ sessionId, title: finalTitle });
@@ -891,10 +888,7 @@ export function createPtyService({
             .then((result) => {
               const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (title) {
-                const current = sessionService.get(sessionId);
                 if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
-                  logger.info("pty.session_title_skipped_manual_name", { sessionId });
-                } else if (current && current.title !== session.title) {
                   logger.info("pty.session_title_skipped_user_renamed", { sessionId });
                 } else {
                   sessionService.updateMeta({ sessionId, title });

@@ -718,6 +718,7 @@ export function LaneGitActionsPane({
 
   const discardAll = () => {
     if (!laneId) return;
+    if (busyAction) return;
     const ok = window.confirm(`Discard ALL unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})? This cannot be undone.`);
     if (!ok) return;
     void runAction("discard all", async () => {

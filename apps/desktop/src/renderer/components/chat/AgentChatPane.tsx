@@ -1752,7 +1752,7 @@ export function AgentChatPane({
               title={`Go to lane: ${laneDisplayLabel}`}
               onClick={() => {
                 selectLane(laneId);
-                navigate("/lanes");
+                navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
               }}
             >
               <GitBranch size={11} weight="regular" />

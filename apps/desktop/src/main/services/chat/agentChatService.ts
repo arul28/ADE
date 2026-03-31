@@ -3184,7 +3184,8 @@ export function createAgentChatService(args: {
       ...(managed.preferredExecutionLaneId ? { preferredExecutionLaneId: managed.preferredExecutionLaneId } : {}),
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
       ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
-      manuallyNamed: Boolean(managed.manuallyNamed),
+      manuallyNamed: Boolean(managed.manuallyNamed)
+        || (String(sessionService.get(managed.session.id)?.title || "").trim().length > 0),
       ...(managed.session.requestedCwd != null && String(managed.session.requestedCwd).trim().length
         ? { requestedCwd: String(managed.session.requestedCwd).trim() }
         : {}),
@@ -4138,7 +4139,8 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
-      manuallyNamed: persisted?.manuallyNamed === true,
+      manuallyNamed: persisted?.manuallyNamed === true
+        || (String(row.title || "").trim().length > 0),
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
       continuitySummaryUpdatedAt: persisted?.continuitySummaryUpdatedAt ?? null,
@@ -8201,10 +8203,16 @@ export function createAgentChatService(args: {
       // Re-sync permission mode so mid-session changes take effect on this turn.
       if (managed.runtime?.kind === "unified") {
         const chatConfig = resolveChatConfig();
+        const previousPermissionMode = managed.runtime.permissionMode;
         managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
           managed.session,
           chatConfig.unifiedPermissionMode,
         );
+        // When permission mode becomes stricter, clear accept_for_session approvals
+        // so old overrides cannot auto-approve actions under the new policy.
+        if (managed.runtime.permissionMode !== previousPermissionMode) {
+          managed.runtime.approvalOverrides = new Set();
+        }
       }
       await runTurn(managed, {
         promptText,

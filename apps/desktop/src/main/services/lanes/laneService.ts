@@ -1529,6 +1529,15 @@ export function createLaneService({
           } catch (cleanupError) {
             try {
               fs.rmSync(worktreePath, { recursive: true, force: true });
+              // Directory removed but git metadata may be orphaned; prune to clean up
+              try {
+                await runGitOrThrow(["worktree", "prune"], {
+                  cwd: projectRoot,
+                  timeoutMs: 60_000,
+                });
+              } catch (pruneError) {
+                cleanupErrors.push(`worktree prune failed: ${pruneError instanceof Error ? pruneError.message : String(pruneError)}`);
+              }
             } catch {
               cleanupErrors.push(`remove worktree failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
             }
