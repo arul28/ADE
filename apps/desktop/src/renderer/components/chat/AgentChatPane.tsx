@@ -2026,6 +2026,7 @@ export function AgentChatPane({
             }}
             promptSuggestion={promptSuggestion}
             subagentSnapshots={selectedSubagentSnapshots}
+            chatHasMessages={selectedEvents.length > 0}
           />
         }
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
@@ -2080,9 +2081,7 @@ export function AgentChatPane({
                   </div>
                   <div className="max-h-[48vh] overflow-auto px-4 pb-4">
                     <ChatComputerUsePanel
-                      laneId={laneId}
                       sessionId={selectedSessionId}
-                      policy={computerUsePolicy}
                       snapshot={computerUseSnapshot}
                       onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
                     />

@@ -6,9 +6,10 @@ describe("resolveCreateLaneRequest", () => {
     expect(
       resolveCreateLaneRequest({
         name: "git actions fixes",
-        createAsChild: false,
+        createMode: "primary",
         createParentLaneId: "lane-primary",
         createBaseBranch: "main",
+        createImportBranch: "",
       }),
     ).toEqual({
       kind: "root",
@@ -19,19 +20,38 @@ describe("resolveCreateLaneRequest", () => {
     });
   });
 
-  it("creates a stacked child lane only when child mode is selected", () => {
+  it("creates a stacked child lane when child mode is selected", () => {
     expect(
       resolveCreateLaneRequest({
         name: "git actions fixes",
-        createAsChild: true,
+        createMode: "child",
         createParentLaneId: "lane-primary",
         createBaseBranch: "main",
+        createImportBranch: "",
       }),
     ).toEqual({
       kind: "child",
       args: {
         name: "git actions fixes",
         parentLaneId: "lane-primary",
+      },
+    });
+  });
+
+  it("imports an existing branch as a lane when existing mode is selected", () => {
+    expect(
+      resolveCreateLaneRequest({
+        name: "git actions fixes",
+        createMode: "existing",
+        createParentLaneId: "",
+        createBaseBranch: "release-10",
+        createImportBranch: "origin/ade/git-actions-fixes-5144fe89",
+      }),
+    ).toEqual({
+      kind: "import",
+      args: {
+        branchRef: "origin/ade/git-actions-fixes-5144fe89",
+        name: "git actions fixes",
       },
     });
   });

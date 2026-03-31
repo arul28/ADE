@@ -1,4 +1,4 @@
-import { GitBranch, Plus, StackSimple } from "@phosphor-icons/react";
+import { GitBranch, GitFork, Plus, StackSimple } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import type { LaneSummary, LaneEnvInitProgress, LaneTemplate } from "../../../shared/types";
 import type { LaneBranchOption } from "./laneUtils";
@@ -6,9 +6,19 @@ import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { SECTION_CLASS_NAME, LABEL_CLASS_NAME, INPUT_CLASS_NAME, SELECT_CLASS_NAME } from "./laneDialogTokens";
 
-function buttonLabel(busy: boolean | undefined, createAsChild: boolean, parentLaneId: string, baseBranch: string): string {
-  if (busy) return "Setting up lane...";
-  if (createAsChild && parentLaneId) return "Create child lane";
+export type CreateLaneMode = "primary" | "existing" | "child";
+
+const MODE_META: Record<CreateLaneMode, { icon: typeof GitBranch; label: string }> = {
+  primary:  { icon: GitBranch,    label: "From primary" },
+  existing: { icon: GitFork,      label: "Existing branch" },
+  child:    { icon: StackSimple,  label: "Child lane" },
+};
+
+function submitLabel(busy: boolean | undefined, mode: CreateLaneMode, baseBranch: string, laneCreated: boolean | undefined): string {
+  if (busy) return "Setting up lane\u2026";
+  if (laneCreated) return "Retry environment setup";
+  if (mode === "child") return "Create child lane";
+  if (mode === "existing") return "Import as lane";
   return `Create from ${baseBranch || "primary"}`;
 }
 
@@ -17,18 +27,21 @@ export function CreateLaneDialog({
   onOpenChange,
   createLaneName,
   setCreateLaneName,
-  createAsChild,
-  setCreateAsChild,
+  createMode,
+  setCreateMode,
   createParentLaneId,
   setCreateParentLaneId,
   createBaseBranch,
   setCreateBaseBranch,
+  createImportBranch,
+  setCreateImportBranch,
   createBranches,
   lanes,
   onSubmit,
   busy,
   error,
   envInitProgress,
+  laneCreated,
   templates,
   selectedTemplateId,
   setSelectedTemplateId,
@@ -38,70 +51,198 @@ export function CreateLaneDialog({
   onOpenChange: (open: boolean) => void;
   createLaneName: string;
   setCreateLaneName: (v: string) => void;
-  createAsChild: boolean;
-  setCreateAsChild: (v: boolean) => void;
+  createMode: CreateLaneMode;
+  setCreateMode: (v: CreateLaneMode) => void;
   createParentLaneId: string;
   setCreateParentLaneId: (v: string) => void;
   createBaseBranch: string;
   setCreateBaseBranch: (v: string) => void;
+  createImportBranch: string;
+  setCreateImportBranch: (v: string) => void;
   createBranches: LaneBranchOption[];
   lanes: LaneSummary[];
   onSubmit: () => void;
   busy?: boolean;
   error?: string | null;
   envInitProgress?: LaneEnvInitProgress | null;
+  /** When true, the lane has already been created and the CTA only retries env setup. */
+  laneCreated?: boolean;
   templates: LaneTemplate[];
   selectedTemplateId: string;
   setSelectedTemplateId: (id: string) => void;
   onNavigateToTemplates?: () => void;
 }) {
-  const localBranches = createBranches.filter((branch) => !branch.isRemote);
-  const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? null;
+  const localBranches = createBranches.filter((b) => !b.isRemote);
+  const allBranches = createBranches;
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? null;
+
+  // When the lane already exists, the CTA only retries env setup — no form
+  // validation needed beyond not being busy.
+  const isSubmitDisabled = laneCreated
+    ? !!busy
+    : (busy
+      || !createLaneName.trim()
+      || (createMode === "child" && !createParentLaneId)
+      || (createMode === "primary" && !createBaseBranch)
+      || (createMode === "existing" && !createImportBranch));
 
   return (
     <LaneDialogShell
       open={open}
       onOpenChange={onOpenChange}
       title="Create lane"
-      description="Start a fresh lane from primary or branch from an existing lane. Templates can install deps, copy files, and preconfigure the lane."
       icon={Plus}
-      widthClassName="w-[min(720px,calc(100vw-24px))]"
+      widthClassName="w-[min(560px,calc(100vw-24px))]"
       busy={busy}
     >
-      <div className="space-y-4">
+      <div className="space-y-3">
+        {/* Lane name */}
         <section className={SECTION_CLASS_NAME}>
           <label className="block">
             <span className={LABEL_CLASS_NAME}>Lane name</span>
             <input
               value={createLaneName}
-              onChange={(event) => setCreateLaneName(event.target.value)}
+              onChange={(e) => setCreateLaneName(e.target.value)}
               placeholder="e.g. feature/auth-refresh"
               className={INPUT_CLASS_NAME}
               autoFocus
-              disabled={busy}
+              disabled={busy || laneCreated}
             />
           </label>
         </section>
 
+        {/* Starting point — mode picker + contextual field */}
         <section className={SECTION_CLASS_NAME}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className={LABEL_CLASS_NAME}>Template</div>
-              <div className="mt-1 text-sm text-muted-fg">
-                Optional automation for dependency install, file copy, and lane setup.
-              </div>
-            </div>
+          <span className={LABEL_CLASS_NAME}>Starting point</span>
+
+          {/* Compact pill tabs */}
+          <div className="mt-2 inline-flex rounded-lg border border-white/[0.06] bg-white/[0.02] p-0.5">
+            {(["primary", "existing", "child"] as const).map((mode) => {
+              const meta = MODE_META[mode];
+              const Icon = meta.icon;
+              const active = createMode === mode;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={active}
+                  disabled={busy || laneCreated}
+                  onClick={() => {
+                    setCreateMode(mode);
+                    if (mode !== "child") setCreateParentLaneId("");
+                  }}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                    active
+                      ? "bg-accent/15 text-accent shadow-sm"
+                      : "text-muted-fg hover:text-fg"
+                  }`}
+                >
+                  <Icon size={12} />
+                  {meta.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Contextual field for selected mode */}
+          <div className="mt-3">
+            {createMode === "primary" ? (
+              localBranches.length > 0 ? (
+                <>
+                  <select
+                    value={createBaseBranch}
+                    onChange={(e) => setCreateBaseBranch(e.target.value)}
+                    className={SELECT_CLASS_NAME + " !mt-0"}
+                    disabled={busy || laneCreated}
+                    aria-label="Base branch"
+                  >
+                    {localBranches.map((b) => (
+                      <option key={b.name} value={b.name}>
+                        {b.name}{b.isCurrent ? " (current)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {createBaseBranch ? (
+                    <div className="mt-1.5 text-[11px] text-muted-fg/60">
+                      Base: {createBaseBranch} — rebase suggestions will track this branch
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
+                  No local branches found.
+                </div>
+              )
+            ) : null}
+
+            {createMode === "existing" ? (
+              allBranches.length > 0 ? (
+                <>
+                  <select
+                    value={createImportBranch}
+                    onChange={(e) => setCreateImportBranch(e.target.value)}
+                    className={SELECT_CLASS_NAME + " !mt-0"}
+                    disabled={busy || laneCreated}
+                    aria-label="Import branch"
+                  >
+                    <option value="">Select a branch\u2026</option>
+                    {allBranches.map((b) => (
+                      <option key={b.name} value={b.name}>
+                        {b.name}{b.isRemote ? " (remote)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {createImportBranch ? (
+                    <div className="mt-1.5 text-[11px] text-muted-fg/60">
+                      Base will be auto-detected from git history
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
+                  No branches found.
+                </div>
+              )
+            ) : null}
+
+            {createMode === "child" ? (
+              <>
+                <select
+                  value={createParentLaneId}
+                  onChange={(e) => setCreateParentLaneId(e.target.value)}
+                  className={SELECT_CLASS_NAME + " !mt-0"}
+                  disabled={busy || laneCreated}
+                  aria-label="Parent lane"
+                >
+                  <option value="">Select parent lane\u2026</option>
+                  {lanes.map((lane) => (
+                    <option key={lane.id} value={lane.id}>
+                      {lane.name} ({lane.branchRef})
+                    </option>
+                  ))}
+                </select>
+                {createParentLaneId ? (
+                  <div className="mt-1.5 text-[11px] text-muted-fg/60">
+                    Base: {lanes.find((l) => l.id === createParentLaneId)?.branchRef ?? "unknown"} — rebase suggestions will track parent lane
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        </section>
+
+        {/* Template — compact row, not a big section */}
+        <section className={SECTION_CLASS_NAME}>
+          <div className="flex items-center justify-between gap-3">
+            <span className={LABEL_CLASS_NAME}>Template</span>
             {onNavigateToTemplates ? (
               <button
                 type="button"
-                className="inline-flex h-8 items-center rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 text-[11px] font-medium text-fg transition-colors hover:border-accent/30 hover:text-accent"
-                disabled={busy}
-                onClick={() => {
-                  onOpenChange(false);
-                  onNavigateToTemplates();
-                }}
+                className="text-[10px] font-medium text-muted-fg/60 transition-colors hover:text-accent"
+                disabled={busy || laneCreated}
+                onClick={() => { onOpenChange(false); onNavigateToTemplates(); }}
               >
-                {templates.length > 0 ? "Manage templates" : "Create template"}
+                {templates.length > 0 ? "Manage" : "Create template"}
               </button>
             ) : null}
           </div>
@@ -109,120 +250,27 @@ export function CreateLaneDialog({
             <>
               <select
                 value={selectedTemplateId}
-                onChange={(event) => setSelectedTemplateId(event.target.value)}
+                onChange={(e) => setSelectedTemplateId(e.target.value)}
                 className={SELECT_CLASS_NAME}
-                disabled={busy}
+                disabled={busy || laneCreated}
+                aria-label="Template"
               >
-                <option value="">No template</option>
-                {templates.map((template) => (
-                  <option key={template.id} value={template.id}>
-                    {template.name}
-                    {template.description ? ` — ${template.description}` : ""}
+                <option value="">None</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}{t.description ? ` — ${t.description}` : ""}
                   </option>
                 ))}
               </select>
-              <div className="mt-2 text-xs text-muted-fg/80">
-                {selectedTemplate?.description ?? "Create a lane with the default environment setup."}
-              </div>
+              {selectedTemplate?.description ? (
+                <div className="mt-1.5 text-[11px] text-muted-fg/60">{selectedTemplate.description}</div>
+              ) : null}
             </>
           ) : (
-            <div className="mt-3 rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-3 text-sm text-muted-fg">
-              No templates yet. Create one to copy folders, install dependencies, and configure lanes automatically.
+            <div className="mt-2 text-xs text-muted-fg/50">
+              No templates yet.
             </div>
           )}
-        </section>
-
-        <section className={SECTION_CLASS_NAME}>
-          <div className="flex items-start gap-3">
-            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-accent">
-              {createAsChild ? <StackSimple size={16} /> : <GitBranch size={16} />}
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className={LABEL_CLASS_NAME}>Starting point</div>
-              <div className="mt-1 text-sm text-muted-fg">
-                Choose whether the new lane starts as its own branch from primary or stacks under another lane.
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
-                    !createAsChild
-                      ? "border-accent/35 bg-accent/10 text-fg"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg hover:text-fg"
-                  }`}
-                  disabled={busy}
-                  onClick={() => {
-                    setCreateAsChild(false);
-                    setCreateParentLaneId("");
-                  }}
-                >
-                  <div className="font-medium">From primary</div>
-                  <div className="mt-1 text-xs text-muted-fg">Create an independent lane from the selected branch on primary.</div>
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
-                    createAsChild
-                      ? "border-accent/35 bg-accent/10 text-fg"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg hover:text-fg"
-                  }`}
-                  disabled={busy}
-                  onClick={() => setCreateAsChild(true)}
-                >
-                  <div className="font-medium">Child lane</div>
-                  <div className="mt-1 text-xs text-muted-fg">Stack the lane under an existing lane and follow that parent for rebases.</div>
-                </button>
-              </div>
-
-              {createAsChild ? (
-                <label className="mt-4 block">
-                  <span className={LABEL_CLASS_NAME}>Parent lane</span>
-                  <select
-                    value={createParentLaneId}
-                    onChange={(event) => setCreateParentLaneId(event.target.value)}
-                    className={SELECT_CLASS_NAME}
-                    disabled={busy}
-                  >
-                    <option value="">Select a parent lane...</option>
-                    {lanes.map((lane) => (
-                      <option key={lane.id} value={lane.id}>
-                        {lane.name} ({lane.branchRef})
-                      </option>
-                    ))}
-                  </select>
-                  <div className="mt-2 text-xs text-muted-fg/80">
-                    The new lane will be created as a child of the selected lane.
-                  </div>
-                </label>
-              ) : (
-                <label className="mt-4 block">
-                  <span className={LABEL_CLASS_NAME}>Base branch on primary</span>
-                  {localBranches.length > 0 ? (
-                    <select
-                      value={createBaseBranch}
-                      onChange={(event) => setCreateBaseBranch(event.target.value)}
-                      className={SELECT_CLASS_NAME}
-                      disabled={busy}
-                    >
-                      {localBranches.map((branch) => (
-                        <option key={branch.name} value={branch.name}>
-                          {branch.name}
-                          {branch.isCurrent ? " (current)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <div className="mt-1 rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-sm text-muted-fg">
-                      No local branches found.
-                    </div>
-                  )}
-                  <div className="mt-2 text-xs text-muted-fg/80">
-                    Lane will be created from primary/{createBaseBranch || "..."} as its own lane, not stacked under Primary.
-                  </div>
-                </label>
-              )}
-            </div>
-          </div>
         </section>
 
         {error ? (
@@ -231,7 +279,7 @@ export function CreateLaneDialog({
           </div>
         ) : null}
 
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center justify-end gap-2 pt-1">
           <Button
             variant="outline"
             disabled={busy}
@@ -239,18 +287,15 @@ export function CreateLaneDialog({
               onOpenChange(false);
               setCreateLaneName("");
               setCreateParentLaneId("");
-              setCreateAsChild(false);
+              setCreateMode("primary");
               setCreateBaseBranch("");
+              setCreateImportBranch("");
             }}
           >
             Cancel
           </Button>
-          <Button
-            variant="primary"
-            disabled={busy || !createLaneName.trim() || (createAsChild ? !createParentLaneId : !createBaseBranch)}
-            onClick={onSubmit}
-          >
-            {buttonLabel(busy, createAsChild, createParentLaneId, createBaseBranch)}
+          <Button variant="primary" disabled={isSubmitDisabled} onClick={onSubmit}>
+            {submitLabel(busy, createMode, createBaseBranch, laneCreated)}
           </Button>
         </div>
 

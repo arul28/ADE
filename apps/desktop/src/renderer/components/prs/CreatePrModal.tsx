@@ -9,6 +9,7 @@ import type {
   IntegrationProposalStep,
   CreateIntegrationPrResult,
   GitUpstreamSyncStatus,
+  GitBranchSummary,
   LaneSummary,
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
@@ -70,6 +71,17 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 0,
   outline: "none",
   transition: "border-color 0.15s",
+};
+
+const selectStyle: React.CSSProperties = {
+  ...inputStyle,
+  paddingLeft: 32,
+  appearance: "none",
+  WebkitAppearance: "none",
+  cursor: "pointer",
+  backgroundImage: `url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2371717A' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
+  backgroundRepeat: "no-repeat",
+  backgroundPosition: "right 12px center",
 };
 
 const textareaStyle: React.CSSProperties = {
@@ -500,6 +512,37 @@ export function CreatePrModal({
 
   const [draftError, setDraftError] = React.useState<string | null>(null);
 
+  // Available branches for target-branch dropdowns
+  const [availableBranches, setAvailableBranches] = React.useState<GitBranchSummary[]>([]);
+
+  React.useEffect(() => {
+    if (!open || !primaryLane) return;
+    let cancelled = false;
+    window.ade.git.listBranches({ laneId: primaryLane.id })
+      .then((branches) => {
+        if (!cancelled) setAvailableBranches(branches);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [open, primaryLane?.id]);
+
+  /** Deduplicated list of branch names suitable for a target-branch dropdown. */
+  const targetBranchOptions = React.useMemo(() => {
+    const seen = new Set<string>();
+    const options: string[] = [];
+    for (const b of availableBranches) {
+      // For remote branches like "origin/main", strip the remote prefix
+      const name = b.isRemote
+        ? b.name.replace(/^[^/]+\//, "")
+        : b.name;
+      if (!seen.has(name)) {
+        seen.add(name);
+        options.push(name);
+      }
+    }
+    return options.sort((a, b) => a.localeCompare(b));
+  }, [availableBranches]);
+
   const handleDraftAI = async (laneId: string) => {
     setDrafting(true);
     setDraftError(null);
@@ -564,6 +607,7 @@ export function CreatePrModal({
       setIntegrationProgress(null);
       setIntegrationBranchError(null);
       setQueueErrors([]);
+      setAvailableBranches([]);
     }, 200);
     return () => clearTimeout(id);
   }, [open]);
@@ -1069,14 +1113,21 @@ export function CreatePrModal({
                             transform: "translateY(-50%)",
                             color: C.textMuted,
                             pointerEvents: "none",
+                            zIndex: 1,
                           }}
                         />
-                        <input
+                        <select
                           value={normalBaseBranch}
                           onChange={(e) => setNormalBaseBranch(e.target.value)}
-                          style={{ ...inputStyle, paddingLeft: 32 }}
-                          placeholder={branchNameFromRef(primaryLane?.branchRef ?? "main")}
-                        />
+                          aria-label="Target branch"
+                          style={selectStyle}
+                          onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
+                          onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
+                        >
+                          {targetBranchOptions.map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
                       </div>
                     </div>
 
@@ -1333,14 +1384,21 @@ export function CreatePrModal({
                             transform: "translateY(-50%)",
                             color: C.textMuted,
                             pointerEvents: "none",
+                            zIndex: 1,
                           }}
                         />
-                        <input
+                        <select
                           value={queueTargetBranch}
                           onChange={(e) => setQueueTargetBranch(e.target.value)}
-                          style={{ ...inputStyle, paddingLeft: 32 }}
-                          placeholder={branchNameFromRef(primaryLane?.branchRef ?? "main")}
-                        />
+                          aria-label="Target branch"
+                          style={selectStyle}
+                          onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
+                          onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
+                        >
+                          {targetBranchOptions.map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
                       </div>
                     </div>
                   </div>
@@ -1362,14 +1420,24 @@ export function CreatePrModal({
                             transform: "translateY(-50%)",
                             color: C.textMuted,
                             pointerEvents: "none",
+                            zIndex: 1,
                           }}
                         />
-                        <input
+                        <select
                           value={integrationBaseBranch}
-                          onChange={(e) => setIntegrationBaseBranch(e.target.value)}
-                          style={{ ...inputStyle, paddingLeft: 32 }}
-                          placeholder={branchNameFromRef(primaryLane?.branchRef ?? "main")}
-                        />
+                          onChange={(e) => {
+                            setIntegrationBaseBranch(e.target.value);
+                            setProposal(null);
+                          }}
+                          aria-label="Target branch"
+                          style={selectStyle}
+                          onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
+                          onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
+                        >
+                          {targetBranchOptions.map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
                       </div>
                     </div>
 

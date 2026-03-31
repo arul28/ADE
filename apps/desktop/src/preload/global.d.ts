@@ -560,6 +560,7 @@ declare global {
         getProject: () => Promise<ProjectInfo | null>;
         openExternal: (url: string) => Promise<void>;
         revealPath: (path: string) => Promise<void>;
+        openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
         openPathInEditor: (args: {
           rootPath: string;
@@ -850,6 +851,7 @@ declare global {
         getOwnerSnapshot: (args: ComputerUseOwnerSnapshotArgs) => Promise<ComputerUseOwnerSnapshot>;
         routeArtifact: (args: ComputerUseArtifactRouteArgs) => Promise<ComputerUseArtifactView>;
         updateArtifactReview: (args: ComputerUseArtifactReviewArgs) => Promise<ComputerUseArtifactView>;
+        readArtifactPreview: (args: { uri: string }) => Promise<string | null>;
         onEvent: (cb: (ev: ComputerUseEventPayload) => void) => () => void;
       };
       pty: {

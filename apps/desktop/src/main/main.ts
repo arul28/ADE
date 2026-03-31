@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeImage, shell } from "electron";
+import { app, BrowserWindow, nativeImage, protocol, shell } from "electron";
 import path from "node:path";
 type NodePtyType = typeof import("node-pty");
 import { registerIpc } from "./services/ipc/registerIpc";
@@ -394,7 +394,82 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   return win;
 }
 
+// Register custom protocol for serving local artifact files (images, videos) to the renderer.
+// Must be called before app.whenReady().
+protocol.registerSchemesAsPrivileged([
+  { scheme: "ade-artifact", privileges: { standard: false, supportFetchAPI: true, stream: true, bypassCSP: true } },
+]);
+
 app.whenReady().then(async () => {
+  // Handle ade-artifact:// requests — serves local files for proof drawer previews.
+  // Path is encoded in the URL: ade-artifact:///absolute/path/to/file.png
+  protocol.handle("ade-artifact", (request) => {
+    const url = new URL(request.url);
+    let filePath = decodeURIComponent(url.pathname);
+    // On Windows, pathname starts with /C:/... — strip leading slash
+    if (process.platform === "win32" && /^\/[a-zA-Z]:/.test(filePath)) {
+      filePath = filePath.slice(1);
+    }
+    try {
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile()) return new Response("Not found", { status: 404 });
+      const fileSize = stat.size;
+      const ext = path.extname(filePath).replace(/^\./, "").toLowerCase();
+      const mimeMap: Record<string, string> = {
+        png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp",
+        gif: "image/gif", bmp: "image/bmp", svg: "image/svg+xml",
+        mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime", avi: "video/x-msvideo", mkv: "video/x-matroska",
+      };
+      const mime = mimeMap[ext] ?? "application/octet-stream";
+
+      // Support Range requests — required for <video> playback and seeking
+      const rangeHeader = request.headers.get("Range");
+      if (rangeHeader) {
+        const match = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
+        const start = match ? parseInt(match[1], 10) : 0;
+        const end = match && match[2] ? parseInt(match[2], 10) : fileSize - 1;
+        const chunkSize = end - start + 1;
+        const fileStream = fs.createReadStream(filePath, { start, end });
+        const webStream = new ReadableStream({
+          start(controller) {
+            fileStream.on("data", (chunk) => controller.enqueue(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
+            fileStream.on("end", () => controller.close());
+            fileStream.on("error", () => controller.close());
+          },
+          cancel() { fileStream.destroy(); },
+        });
+        return new Response(webStream, {
+          status: 206,
+          headers: {
+            "Content-Type": mime,
+            "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+            "Content-Length": String(chunkSize),
+            "Accept-Ranges": "bytes",
+          },
+        });
+      }
+
+      // Full file response (images, small files)
+      const fileStream = fs.createReadStream(filePath);
+      const webStream = new ReadableStream({
+        start(controller) {
+          fileStream.on("data", (chunk) => controller.enqueue(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
+          fileStream.on("end", () => controller.close());
+          fileStream.on("error", () => controller.close());
+        },
+        cancel() { fileStream.destroy(); },
+      });
+      return new Response(webStream, {
+        headers: {
+          "Content-Type": mime,
+          "Content-Length": String(fileSize),
+          "Accept-Ranges": "bytes",
+        },
+      });
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
+  });
   console.log("[info] app.hardware_acceleration", {
     enabled: !disableHardwareAcceleration,
     reason: disableHardwareAcceleration

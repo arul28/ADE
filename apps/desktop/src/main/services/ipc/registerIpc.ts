@@ -551,6 +551,7 @@ import type { createSyncService } from "../sync/syncService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 export type AppContext = {
   db: AdeDb;
@@ -1663,6 +1664,28 @@ export function registerIpc({
       throw new Error("Path is outside allowed directories.");
     }
     shell.showItemInFolder(normalized);
+  });
+
+  ipcMain.handle(IPC.appOpenPath, async (_event, arg: { path: string }): Promise<void> => {
+    const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
+    if (!raw) return;
+    const normalized = path.resolve(raw);
+    const allowedDirs = getAllowedDirs(getCtx);
+    const allowed = allowedDirs.some((dir) => {
+      try {
+        resolvePathWithinRoot(dir, normalized);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (!allowed) {
+      throw new Error("Path is outside allowed directories.");
+    }
+    const errorMessage = await shell.openPath(normalized);
+    if (errorMessage) {
+      throw new Error(`Failed to open path: ${errorMessage}`);
+    }
   });
 
   ipcMain.handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
@@ -3900,6 +3923,50 @@ export function registerIpc({
   ipcMain.handle(IPC.computerUseUpdateArtifactReview, async (_event, arg: ComputerUseArtifactReviewArgs): Promise<ComputerUseArtifactView> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.updateArtifactReview(arg);
+  });
+
+  ipcMain.handle(IPC.computerUseReadArtifactPreview, async (_event, arg: { uri: string }): Promise<string | null> => {
+    const ctx = getCtx();
+    const projectRoot = ctx.project.rootPath;
+    const layout = resolveAdeLayout(projectRoot);
+    // Only allow files under artifactsDir — consistent with the ade-artifact:// protocol
+    // handler in main.ts which validates exclusively against currentArtifactsDir.
+    const allowedRoots = [layout.artifactsDir];
+
+    let filePath = arg.uri;
+    if (filePath.startsWith("file://")) {
+      const { fileURLToPath } = await import("node:url");
+      try { filePath = fileURLToPath(filePath); } catch { filePath = decodeURIComponent(filePath.replace(/^file:\/\//i, "")); }
+    }
+    if (!path.isAbsolute(filePath)) {
+      filePath = path.resolve(projectRoot, filePath);
+    }
+    // Canonicalize and verify the resolved path is inside an allowed artifact root.
+    const canonical = path.normalize(path.resolve(filePath));
+    const inside = allowedRoots.some((root) => {
+      try {
+        resolvePathWithinRoot(root, canonical);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (!inside) return null;
+
+    // Cap preview size to 10 MB to avoid loading arbitrarily large files into memory.
+    const PREVIEW_SIZE_CAP = 10 * 1024 * 1024;
+    try {
+      const stat = await fs.promises.stat(canonical);
+      if (!stat.isFile()) return null;
+      if (stat.size > PREVIEW_SIZE_CAP) return null;
+      const buf = await fs.promises.readFile(canonical);
+      const ext = path.extname(canonical).replace(/^\./, "").toLowerCase();
+      const mimeMap: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", bmp: "image/bmp", svg: "image/svg+xml" };
+      const mime = mimeMap[ext] ?? "image/png";
+      return `data:${mime};base64,${buf.toString("base64")}`;
+    } catch {
+      return null;
+    }
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

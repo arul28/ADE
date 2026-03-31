@@ -556,6 +556,7 @@ contextBridge.exposeInMainWorld("ade", {
     getProject: async (): Promise<ProjectInfo | null> => ipcRenderer.invoke(IPC.appGetProject),
     openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url }),
     revealPath: async (path: string): Promise<void> => ipcRenderer.invoke(IPC.appRevealPath, { path }),
+    openPath: async (path: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenPath, { path }),
     writeClipboardText: async (text: string): Promise<void> => ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
     openPathInEditor: async (args: {
       rootPath: string;
@@ -1169,6 +1170,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.computerUseRouteArtifact, args),
     updateArtifactReview: async (args: ComputerUseArtifactReviewArgs): Promise<ComputerUseArtifactView> =>
       ipcRenderer.invoke(IPC.computerUseUpdateArtifactReview, args),
+    readArtifactPreview: async (args: { uri: string }): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
     onEvent: (cb: (ev: ComputerUseEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ComputerUseEventPayload) => cb(payload);
       ipcRenderer.on(IPC.computerUseEvent, listener);

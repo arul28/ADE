@@ -16,7 +16,7 @@ import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneDiffPane } from "./LaneDiffPane";
 import { LaneWorkPane } from "./LaneWorkPane";
-import { CreateLaneDialog } from "./CreateLaneDialog";
+import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { ManageLaneDialog } from "./ManageLaneDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
@@ -82,20 +82,32 @@ const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
-  | { kind: "root"; args: { name: string; baseBranch: string } };
+  | { kind: "root"; args: { name: string; baseBranch: string } }
+  | { kind: "import"; args: { branchRef: string; name: string; baseBranch?: string } };
 
 export function resolveCreateLaneRequest(args: {
   name: string;
-  createAsChild: boolean;
+  createMode: CreateLaneMode;
   createParentLaneId: string;
   createBaseBranch: string;
+  createImportBranch: string;
 }): CreateLaneRequest {
-  if (args.createAsChild) {
+  if (args.createMode === "child") {
     return {
       kind: "child",
       args: {
         name: args.name,
         parentLaneId: args.createParentLaneId,
+      },
+    };
+  }
+
+  if (args.createMode === "existing") {
+    return {
+      kind: "import",
+      args: {
+        branchRef: args.createImportBranch,
+        name: args.name,
       },
     };
   }
@@ -132,13 +144,16 @@ export function LanesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createLaneName, setCreateLaneName] = useState("");
   const [createParentLaneId, setCreateParentLaneId] = useState<string>("");
-  const [createAsChild, setCreateAsChild] = useState(false);
+  const [createMode, setCreateMode] = useState<CreateLaneMode>("primary");
   const [createBaseBranch, setCreateBaseBranch] = useState("");
+  const [createImportBranch, setCreateImportBranch] = useState("");
   const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createEnvInitProgress, setCreateEnvInitProgress] = useState<LaneEnvInitProgress | null>(null);
+  const [laneCreated, setLaneCreated] = useState(false);
   const createEnvInitLaneIdRef = useRef<string | null>(null);
+  const createBaseBranchUserPickedRef = useRef(false);
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [attachOpen, setAttachOpen] = useState(false);
@@ -1057,10 +1072,13 @@ export function LanesPage() {
 
   const resetCreateDialogState = useCallback(() => {
     createEnvInitLaneIdRef.current = null;
+    createBaseBranchUserPickedRef.current = false;
+    setLaneCreated(false);
     setCreateLaneName("");
     setCreateParentLaneId("");
-    setCreateAsChild(false);
+    setCreateMode("primary");
     setCreateBaseBranch("");
+    setCreateImportBranch("");
     setCreateBusy(false);
     setCreateError(null);
     setCreateEnvInitProgress(null);
@@ -1070,15 +1088,26 @@ export function LanesPage() {
   const prepareCreateDialog = useCallback(() => {
     setCreateLaneName("");
     setCreateParentLaneId("");
-    setCreateAsChild(false);
+    setCreateMode("primary");
     setCreateBaseBranch("");
+    setCreateImportBranch("");
+    setCreateBranches([]);
+    setLaneCreated(false);
+    createBaseBranchUserPickedRef.current = false;
     const primary = lanes.find((l) => l.laneType === "primary");
     if (primary) {
-      window.ade.git.listBranches({ laneId: primary.id })
+      // Fetch remotes first so remote-only branches (pushed from other machines) appear.
+      window.ade.git.fetch({ laneId: primary.id })
+        .catch(() => {})
+        .then(() => window.ade.git.listBranches({ laneId: primary.id }))
         .then((branches) => {
+          if (!branches) return;
           setCreateBranches(branches);
-          const current = branches.find((b) => b.isCurrent && !b.isRemote);
-          if (current) setCreateBaseBranch(current.name);
+          // Only auto-select the current branch if the user hasn't already picked one.
+          if (!createBaseBranchUserPickedRef.current) {
+            const current = branches.find((b) => b.isCurrent && !b.isRemote);
+            if (current) setCreateBaseBranch(current.name);
+          }
         })
         .catch(() => {});
     }
@@ -1102,41 +1131,28 @@ export function LanesPage() {
     setCreateOpen(open);
   }, [createBusy, resetCreateDialogState]);
 
-  const handleCreateSubmit = useCallback(async () => {
-    const name = createLaneName.trim();
-    if (!name || createBusy || (createAsChild && !createParentLaneId) || (!createAsChild && !createBaseBranch)) return;
-    if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
-      setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
-      return;
-    }
+  /** Wraps setCreateBaseBranch so we can track user-driven selections and avoid
+   *  the async branch-list fetch from overwriting a value the user already picked. */
+  const handleSetCreateBaseBranch = useCallback((v: string) => {
+    createBaseBranchUserPickedRef.current = true;
+    setCreateBaseBranch(v);
+  }, []);
 
+  /** Run only the environment-setup phase (applyTemplate / initEnv) for a lane
+   *  that has already been created.  Used as the retry path when env setup fails. */
+  const runEnvSetupForCreatedLane = useCallback(async (laneId: string) => {
     setCreateBusy(true);
     setCreateError(null);
     setCreateEnvInitProgress(null);
-    createEnvInitLaneIdRef.current = null;
 
     try {
-      const request = resolveCreateLaneRequest({
-        name,
-        createAsChild,
-        createParentLaneId,
-        createBaseBranch,
-      });
-      const lane = request.kind === "child"
-        ? await window.ade.lanes.createChild(request.args)
-        : await window.ade.lanes.create(request.args);
-
-      await refreshLanes();
-      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
-
-      createEnvInitLaneIdRef.current = lane.id;
       const envProgress = selectedTemplateId
-        ? await window.ade.lanes.applyTemplate({ laneId: lane.id, templateId: selectedTemplateId })
-        : await window.ade.lanes.initEnv({ laneId: lane.id });
+        ? await window.ade.lanes.applyTemplate({ laneId, templateId: selectedTemplateId })
+        : await window.ade.lanes.initEnv({ laneId });
       setCreateEnvInitProgress(envProgress);
 
       if (envProgress.overallStatus === "failed") {
-        setCreateError("Lane was created, but environment setup failed. Review the progress log and retry manually if needed.");
+        setCreateError("Environment setup failed. Review the progress log and retry.");
         return;
       }
 
@@ -1147,7 +1163,61 @@ export function LanesPage() {
     } finally {
       setCreateBusy(false);
     }
-  }, [createLaneName, createAsChild, createParentLaneId, createBusy, lanes, navigate, refreshLanes, resetCreateDialogState, selectedTemplateId, templates]);
+  }, [selectedTemplateId, resetCreateDialogState]);
+
+  const handleCreateSubmit = useCallback(async () => {
+    // If the lane was already created (e.g. env-setup failed on a previous
+    // attempt), retry only the environment setup — never re-run creation.
+    if (createEnvInitLaneIdRef.current) {
+      await runEnvSetupForCreatedLane(createEnvInitLaneIdRef.current);
+      return;
+    }
+
+    const name = createLaneName.trim();
+    if (!name || createBusy) return;
+    if (createMode === "child" && !createParentLaneId) return;
+    if (createMode === "primary" && !createBaseBranch) return;
+    if (createMode === "existing" && !createImportBranch) return;
+    if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
+      setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
+      return;
+    }
+
+    setCreateBusy(true);
+    setCreateError(null);
+    setCreateEnvInitProgress(null);
+
+    try {
+      const request = resolveCreateLaneRequest({
+        name,
+        createMode,
+        createParentLaneId,
+        createBaseBranch,
+        createImportBranch,
+      });
+      let lane: LaneSummary;
+      if (request.kind === "import") {
+        lane = await window.ade.lanes.importBranch(request.args);
+      } else if (request.kind === "child") {
+        lane = await window.ade.lanes.createChild(request.args);
+      } else {
+        lane = await window.ade.lanes.create(request.args);
+      }
+
+      // Lane created successfully — record its id so retries skip creation.
+      createEnvInitLaneIdRef.current = lane.id;
+      setLaneCreated(true);
+
+      await refreshLanes();
+      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
+
+      // Now run environment setup as a separate phase.
+      await runEnvSetupForCreatedLane(lane.id);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : String(err));
+      setCreateBusy(false);
+    }
+  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -1927,18 +1997,21 @@ export function LanesPage() {
         onOpenChange={handleCreateDialogOpenChange}
         createLaneName={createLaneName}
         setCreateLaneName={setCreateLaneName}
-        createAsChild={createAsChild}
-        setCreateAsChild={setCreateAsChild}
+        createMode={createMode}
+        setCreateMode={setCreateMode}
         createParentLaneId={createParentLaneId}
         setCreateParentLaneId={setCreateParentLaneId}
         createBaseBranch={createBaseBranch}
-        setCreateBaseBranch={setCreateBaseBranch}
+        setCreateBaseBranch={handleSetCreateBaseBranch}
+        createImportBranch={createImportBranch}
+        setCreateImportBranch={setCreateImportBranch}
         createBranches={createBranches}
         lanes={lanes}
         onSubmit={handleCreateSubmit}
         busy={createBusy}
         error={createError}
         envInitProgress={createEnvInitProgress}
+        laneCreated={laneCreated}
         templates={templates}
         selectedTemplateId={selectedTemplateId}
         setSelectedTemplateId={setSelectedTemplateId}
