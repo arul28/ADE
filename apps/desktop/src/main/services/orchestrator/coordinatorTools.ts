@@ -5961,7 +5961,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         if (!phaseCanLoop && policy.maxQuestions != null && priorInterventions.length >= policy.maxQuestions) {
           return {
             ok: false as const,
-            error: `This Planning phase already reached its Ask Questions limit (${policy.maxQuestions}). Continue with the best grounded assumptions you can.`,
+            error: `This phase already reached its Ask Questions limit (${policy.maxQuestions}). Continue with the best grounded assumptions you can.`,
           };
         }
         const firstQuestion = questions[0].question.trim();

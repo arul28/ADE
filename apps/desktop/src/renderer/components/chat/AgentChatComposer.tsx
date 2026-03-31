@@ -151,6 +151,12 @@ function PendingSteerItem({
     }
   }, [editing]);
 
+  useEffect(() => {
+    if (!editing) {
+      setEditText(steer.text);
+    }
+  }, [editing, steer.text]);
+
   function cancelEdit(): void {
     setEditing(false);
     setEditText(steer.text);
@@ -207,11 +213,11 @@ function PendingSteerItem({
         </span>
       )}
       {!editing ? (
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           <button
             type="button"
             onClick={() => setEditing(true)}
-            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-white/[0.06] hover:text-fg/60"
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-white/[0.06] hover:text-fg/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
             title="Edit message"
           >
             <PencilSimple size={11} />
@@ -219,7 +225,7 @@ function PendingSteerItem({
           <button
             type="button"
             onClick={onCancel}
-            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-red-500/10 hover:text-red-400/70"
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-red-500/10 hover:text-red-400/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
             title="Remove from queue"
           >
             <X size={11} weight="bold" />

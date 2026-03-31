@@ -2554,10 +2554,8 @@ function GraphInner() {
 
   const matchingSearchNodes = React.useMemo(() => {
     if (!filters.search.trim()) return [];
-    return nodes.filter((node) =>
-      laneMatchesFilter(node.data.lane, /* isPinned */ false, filters.search)
-    );
-  }, [filters.search, nodes]);
+    return nodes.filter((node) => baseGraph.visibleNodeIds.has(node.id));
+  }, [baseGraph.visibleNodeIds, filters.search, nodes]);
 
   const focusSearchResults = React.useCallback(() => {
     if (matchingSearchNodes.length === 0) return;

@@ -679,7 +679,12 @@ export function useWorkSessions() {
       selectLane(args.laneId);
       // Refresh the session list before activating the tab so the new
       // session is in sessionsById when the UI resolves activeSession.
-      await refresh();
+      try {
+        await refresh();
+      } catch {
+        // Best-effort: if refresh fails the session was still created,
+        // so proceed to focus/open it.
+      }
       focusSession(result.sessionId);
       openSessionTab(result.sessionId);
       return result;

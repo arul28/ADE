@@ -53,6 +53,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef<{ showLoading: boolean; force: boolean } | null>(null);
+  const refreshWaitersRef = useRef<Array<() => void>>([]);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const hasActiveSessionsRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
@@ -98,7 +99,11 @@ export function useLaneWorkSessions(laneId: string | null) {
           showLoading: (refreshQueuedRef.current?.showLoading ?? false) || showLoading,
           force: (refreshQueuedRef.current?.force ?? false) || Boolean(options.force),
         };
-        return;
+        // Return a promise that resolves when the in-flight refresh completes,
+        // so callers who `await refresh()` get reliable timing.
+        return new Promise<void>((resolve) => {
+          refreshWaitersRef.current.push(resolve);
+        });
       }
       refreshInFlightRef.current = true;
       if (showLoading) setLoading(true);
@@ -114,6 +119,12 @@ export function useLaneWorkSessions(laneId: string | null) {
       } finally {
         if (showLoading) setLoading(false);
         refreshInFlightRef.current = false;
+
+        // Resolve all callers that were waiting on this in-flight refresh.
+        const waiters = refreshWaitersRef.current;
+        refreshWaitersRef.current = [];
+        for (const resolve of waiters) resolve();
+
         const queued = refreshQueuedRef.current;
         refreshQueuedRef.current = null;
         if (queued) {

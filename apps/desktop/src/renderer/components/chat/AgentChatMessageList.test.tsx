@@ -269,6 +269,9 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(screen.getByText("Work log (2)")).toBeTruthy();
 
+    // Only the most recent entry is visible by default; expand to reveal the older one
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 more" }));
+
     fireEvent.click(findButtonByTextContent(/npm test/i));
     fireEvent.click(findButtonByTextContent(/npm run lint/i));
 
@@ -308,6 +311,9 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(screen.getByText("Work log (2)")).toBeTruthy();
 
+    // Only the most recent entry is visible by default; expand to reveal the older one
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 more" }));
+
     fireEvent.click(findButtonByTextContent(/foo\.ts/i));
     fireEvent.click(findButtonByTextContent(/bar\.ts/i));
 
@@ -316,7 +322,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(body).toContain("bar.ts");
   });
 
-  it("shows the newest six work-log entries by default and expands overflow on demand", () => {
+  it("shows only the most recent work-log entry by default and expands overflow on demand", () => {
     renderMessageList(
       Array.from({ length: 7 }, (_, index) => ({
         sessionId: "session-1",
@@ -335,11 +341,11 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
 
     expect(screen.getByText("Work log (7)")).toBeTruthy();
-    expect(screen.getByText("Show 1 more")).toBeTruthy();
+    expect(screen.getByText("Show 6 more")).toBeTruthy();
     expect(screen.queryByText(/Shell - echo 1/i)).toBeNull();
     expect(findButtonByTextContent(/echo 7/i)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show 1 more" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 6 more" }));
 
     expect(findButtonByTextContent(/echo 1/i)).toBeTruthy();
   });

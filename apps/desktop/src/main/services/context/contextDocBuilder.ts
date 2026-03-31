@@ -956,6 +956,7 @@ export async function runContextDocGeneration(
   const lastRunRaw = deps.db.getJson<PersistedContextDocRun>(CONTEXT_DOC_LAST_RUN_KEY);
   const lastGeneratedAt = typeof lastRunRaw?.generatedAt === "string" ? lastRunRaw.generatedAt : null;
   const persistedDocResults = readPersistedDocResults(lastRunRaw);
+  const generationStartedAt = nowIso();
   const existingPrdFile = readContextDocFile(deps.projectRoot, ADE_DOC_PRD_REL);
   const existingArchFile = readContextDocFile(deps.projectRoot, ADE_DOC_ARCH_REL);
   const bundle = await buildHybridSourceBundle(deps.projectRoot, lastGeneratedAt);
@@ -1179,9 +1180,8 @@ export async function runContextDocGeneration(
     });
   }
 
-  const generatedAt = nowIso();
   deps.db.setJson(CONTEXT_DOC_LAST_RUN_KEY, {
-    generatedAt,
+    generatedAt: generationStartedAt,
     provider,
     trigger,
     modelId,
@@ -1208,7 +1208,7 @@ export async function runContextDocGeneration(
 
   return {
     provider,
-    generatedAt,
+    generatedAt: generationStartedAt,
     prdPath: prdWrite.writtenPath,
     architecturePath: archWrite.writtenPath,
     usedFallbackPath: prdWrite.usedFallback || archWrite.usedFallback,

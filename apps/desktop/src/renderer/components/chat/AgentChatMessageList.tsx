@@ -2202,7 +2202,7 @@ function deriveTurnSummary(
     totalDeletions,
     backgroundAgentCount,
     activeBackgroundAgentCount,
-    turnModel: turnModelState?.map.get(latestTurnId) ?? turnModelState?.lastModel ?? null,
+    turnModel: turnModelState?.map.get(latestTurnId) ?? null,
   };
 }
 

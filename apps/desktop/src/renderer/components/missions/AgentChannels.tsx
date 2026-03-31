@@ -178,7 +178,7 @@ export const AgentChannels = React.memo(function AgentChannels({ missionId, thre
         setMessagesLoadingMore(false);
       }
     }
-  }, [messages, missionId]);
+  }, [missionId]);
 
   // Initial load when thread changes
   useEffect(() => {

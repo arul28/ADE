@@ -2225,6 +2225,13 @@ export function createAgentChatService(args: {
       // approval UI — the user opted out of all permission gates.
       const effectiveAccess = managed.session.claudePermissionMode ?? managed.session.permissionMode;
       if (effectiveAccess === "bypassPermissions" || managed.session.permissionMode === "full-auto") {
+        // Transition out of plan mode so the UI reflects the change,
+        // matching the state update performed after manual approval.
+        if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
+          managed.session.permissionMode = "edit";
+          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+          persistChatState(managed);
+        }
         return { behavior: "allow" };
       }
 
@@ -4843,6 +4850,7 @@ export function createAgentChatService(args: {
       });
       cancelClaudeWarmup(managed, runtime, "timeout");
       try { runtime.v2Session?.close(); } catch { /* ignore */ }
+      runtime.sdkSessionId = null;
     };
     const bumpClaudeIdleDeadline = (): void => {
       if (idleTimeout) {
@@ -7945,6 +7953,7 @@ export function createAgentChatService(args: {
         try { runtime.v2Session?.close(); } catch { /* ignore */ }
         runtime.v2Session = null;
         runtime.v2WarmupDone = null;
+        runtime.sdkSessionId = null;
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
@@ -8165,6 +8174,13 @@ export function createAgentChatService(args: {
             } catch { /* ignore */ }
           }
           if (msg.type === "result") break;
+        }
+
+        if (runtime.v2WarmupCancelled) {
+          // Warmup was cancelled during streaming — clean up and bail
+          try { runtime.v2Session?.close(); } catch { /* ignore */ }
+          runtime.v2Session = null;
+          return;
         }
 
         persistChatState(managed);
@@ -9221,10 +9237,23 @@ export function createAgentChatService(args: {
     const runtime = managed.runtime;
     if (!runtime || runtime.kind === "codex") return;
 
-    const entry = runtime.pendingSteers.find((s) => s.steerId === steerId);
-    if (!entry) return;
+    const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
+    if (idx === -1) return;
 
-    entry.text = trimmed;
+    if (!trimmed.length) {
+      runtime.pendingSteers.splice(idx, 1);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Queued message cancelled (empty edit).",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      return;
+    }
+
+    runtime.pendingSteers[idx].text = trimmed;
     emitChatEvent(managed, {
       type: "user_message",
       text: trimmed,
@@ -9281,6 +9310,7 @@ export function createAgentChatService(args: {
       pending.resolve({ decision: "cancel" });
     }
     runtime.approvals.clear();
+    runtime.pendingElicitations.clear();
     // Close the V2 session on interrupt — it will be recreated on the next turn
     try { runtime.v2Session?.close(); } catch { /* ignore */ }
     runtime.v2Session = null;

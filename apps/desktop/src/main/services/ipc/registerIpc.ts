@@ -3599,7 +3599,7 @@ export function registerIpc({
     if (typeof record.steerId !== "string" || !record.steerId.trim()) {
       throw new Error("Agent chat cancel steer steerId must be a non-empty string");
     }
-    return { sessionId: record.sessionId, steerId: record.steerId };
+    return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim() };
   };
 
   const parseAgentChatEditSteerArgs = (
@@ -3615,7 +3615,7 @@ export function registerIpc({
     if (typeof record.text !== "string") {
       throw new Error("Agent chat edit steer text must be a string");
     }
-    return { sessionId: record.sessionId, steerId: record.steerId, text: record.text };
+    return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), text: record.text };
   };
 
   ipcMain.handle(IPC.lanesOAuthGetStatus, async () => {
