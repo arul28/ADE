@@ -254,6 +254,7 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
   const ptyService = createPtyService({
     projectRoot,
     transcriptsDir: paths.transcriptsDir,
+    chatSessionsDir: paths.chatSessionsDir,
     laneService,
     sessionService,
     logger,

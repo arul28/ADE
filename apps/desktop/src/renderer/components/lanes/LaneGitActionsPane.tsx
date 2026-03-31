@@ -708,6 +708,7 @@ export function LaneGitActionsPane({
 
   const discardFile = (path: string) => {
     if (!laneId) return;
+    if (busyAction) return;
     const ok = window.confirm(`Discard all changes to ${path}? This cannot be undone.`);
     if (!ok) return;
     void runAction("discard file", async () => {
@@ -717,6 +718,7 @@ export function LaneGitActionsPane({
 
   const discardAll = () => {
     if (!laneId) return;
+    if (busyAction) return;
     const ok = window.confirm(`Discard ALL unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})? This cannot be undone.`);
     if (!ok) return;
     void runAction("discard all", async () => {
@@ -891,13 +893,6 @@ export function LaneGitActionsPane({
         detail: `${syncStatus.ahead} local commit${syncStatus.ahead === 1 ? "" : "s"} are ready to send to remote.`
       };
     }
-    if (syncStatus.recommendedAction === "force_push_lease") {
-      return {
-        action: "force_push_lease",
-        label: "Force push (lease)",
-        detail: "Local history was rewritten (e.g. after a rebase). Force push to update the remote branch."
-      };
-    }
     if (syncStatus.recommendedAction === "pull") {
       if (syncStatus.diverged) {
         return {
@@ -1003,6 +998,7 @@ export function LaneGitActionsPane({
             onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
             onFocus={(e) => { e.currentTarget.style.color = COLORS.danger; }}
             onBlur={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+            disabled={!!busyAction}
             onClick={(event) => {
               event.stopPropagation();
               void discardFile(file.path);
@@ -1368,7 +1364,17 @@ export function LaneGitActionsPane({
                 ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
               }}
               disabled={!laneId || busyAction != null}
-              onClick={() => runPush(nextActionHint?.action === "force_push_lease")}
+              onClick={() => {
+                if (nextActionHint?.action === "force_push_lease") {
+                  const ok = window.confirm(
+                    "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
+                  );
+                  if (!ok) return;
+                  runPush(true);
+                } else {
+                  runPush(false);
+                }
+              }}
               title={nextActionHint?.action === "force_push_lease" ? "Force push (lease) — history was rewritten" : getPushSummary(syncStatus)}
             >
               <Upload size={12} weight="bold" style={{ marginRight: 4 }} />

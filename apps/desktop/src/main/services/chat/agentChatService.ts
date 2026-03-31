@@ -195,6 +195,7 @@ type PersistedChatState = {
   selectedExecutionLaneId?: string | null;
   lastLaneDirectiveKey?: string | null;
   manuallyNamed?: boolean;
+  requestedCwd?: string | null;
   updatedAt: string;
 };
 
@@ -966,6 +967,8 @@ function defaultChatSessionTitle(provider: AgentChatProvider): string {
   if (provider === "claude") return "Claude Chat";
   return "AI Chat";
 }
+
+const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat"]);
 
 function hasCustomChatSessionTitle(title: string | null | undefined, provider: AgentChatProvider): boolean {
   const normalized = String(title ?? "").trim();
@@ -3116,7 +3119,7 @@ export function createAgentChatService(args: {
   ): LaneLaunchContext & { laneId: string; laneDirectiveKey: string | null } => {
     const launchContext = resolveManagedExecutionContext(managed, {
       purpose: args.purpose ?? "continue this chat",
-      requestedCwd: args.requestedCwd,
+      requestedCwd: args.requestedCwd !== undefined ? args.requestedCwd : managed.session.requestedCwd,
     });
     const laneWorktreeChanged = managed.laneWorktreePath !== launchContext.laneWorktreePath;
     managed.laneWorktreePath = launchContext.laneWorktreePath;
@@ -3183,7 +3186,14 @@ export function createAgentChatService(args: {
       ...(managed.preferredExecutionLaneId ? { preferredExecutionLaneId: managed.preferredExecutionLaneId } : {}),
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
       ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
-      manuallyNamed: Boolean(managed.manuallyNamed),
+      manuallyNamed: Boolean(managed.manuallyNamed)
+        || (() => {
+          const trimmedTitle = String(sessionService.get(managed.session.id)?.title || "").trim();
+          return trimmedTitle.length > 0 && !DEFAULT_SESSION_TITLES.has(trimmedTitle);
+        })(),
+      ...(managed.session.requestedCwd != null && String(managed.session.requestedCwd).trim().length
+        ? { requestedCwd: String(managed.session.requestedCwd).trim() }
+        : {}),
       updatedAt: nowIso()
     };
 
@@ -3300,6 +3310,9 @@ export function createAgentChatService(args: {
           ? { lastLaneDirectiveKey: record.lastLaneDirectiveKey.trim() }
           : {}),
         ...(record.manuallyNamed === true ? { manuallyNamed: true } : {}),
+        ...(typeof record.requestedCwd === "string" && record.requestedCwd.trim().length
+          ? { requestedCwd: record.requestedCwd.trim() }
+          : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
@@ -4111,6 +4124,9 @@ export function createAgentChatService(args: {
         completion: persisted?.completion ?? null,
         status: mapTerminalStatusToChatStatus(row.status),
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
+        ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
+          ? { requestedCwd: String(persisted.requestedCwd).trim() }
+          : {}),
         createdAt: row.startedAt,
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
       },
@@ -4128,7 +4144,11 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
-      manuallyNamed: persisted?.manuallyNamed === true,
+      manuallyNamed: persisted?.manuallyNamed === true
+        || (() => {
+          const trimmedTitle = String(row.title || "").trim();
+          return trimmedTitle.length > 0 && !DEFAULT_SESSION_TITLES.has(trimmedTitle);
+        })(),
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
       continuitySummaryUpdatedAt: persisted?.continuitySummaryUpdatedAt ?? null,
@@ -4450,6 +4470,9 @@ export function createAgentChatService(args: {
     const turnStartedAt = Date.now();
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
+    const emittedSyntheticItemIds = new Set<string>();
+    const toolInputJsonByContentIndex = new Map<number, string>();
+    const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
     const markFirstStreamEvent = (kind: string): void => {
       if (firstStreamEventLogged) return;
       firstStreamEventLogged = true;
@@ -4807,7 +4830,8 @@ export function createAgentChatService(args: {
                   // Synthesize a tool_result for the proof observer since the
                   // Claude V2 SDK never surfaces tool results in the stream.
                   const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
-                  if (syntheticResult) {
+                  if (syntheticResult && !emittedSyntheticItemIds.has(itemId)) {
+                    emittedSyntheticItemIds.add(itemId);
                     emitChatEvent(managed, syntheticResult);
                   }
                 }
@@ -4857,7 +4881,17 @@ export function createAgentChatService(args: {
                 });
               }
             } else if (delta?.type === "input_json_delta") {
-              // Tool input streaming — just emit activity
+              const idx =
+                typeof event.index === "number"
+                  ? event.index
+                  : typeof contentIndex === "number"
+                    ? contentIndex
+                    : null;
+              const partial = typeof delta.partial_json === "string" ? delta.partial_json : "";
+              if (idx != null && partial.length) {
+                const prev = toolInputJsonByContentIndex.get(idx) ?? "";
+                toolInputJsonByContentIndex.set(idx, prev + partial);
+              }
               emitChatEvent(managed, {
                 type: "activity",
                 activity: "tool_calling",
@@ -4908,10 +4942,35 @@ export function createAgentChatService(args: {
                   itemId,
                   turnId,
                 });
-                // Synthesize a tool_result for the proof observer since the
-                // Claude V2 SDK never surfaces tool results in the stream.
-                const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
-                if (syntheticResult) {
+                if (typeof contentIndex === "number") {
+                  const initial =
+                    block.input != null && typeof block.input === "object" && Object.keys(block.input as object).length
+                      ? JSON.stringify(block.input)
+                      : "";
+                  toolInputJsonByContentIndex.set(contentIndex, initial);
+                  toolUseMetaByContentIndex.set(contentIndex, { toolName, itemId });
+                }
+              }
+            }
+          } else if (event.type === "content_block_stop") {
+            const stopIndex = typeof event.index === "number" ? event.index : contentIndex;
+            if (typeof stopIndex === "number") {
+              const meta = toolUseMetaByContentIndex.get(stopIndex);
+              if (meta) {
+                toolUseMetaByContentIndex.delete(stopIndex);
+                const raw = toolInputJsonByContentIndex.get(stopIndex) ?? "";
+                toolInputJsonByContentIndex.delete(stopIndex);
+                let parsed: unknown = {};
+                if (raw.trim().length) {
+                  try {
+                    parsed = JSON.parse(raw);
+                  } catch {
+                    parsed = {};
+                  }
+                }
+                const syntheticResult = maybeSyntheticToolResult(meta.toolName, parsed, meta.itemId, turnId);
+                if (syntheticResult && !emittedSyntheticItemIds.has(meta.itemId)) {
+                  emittedSyntheticItemIds.add(meta.itemId);
                   emitChatEvent(managed, syntheticResult);
                 }
               }
@@ -5561,6 +5620,7 @@ export function createAgentChatService(args: {
       // ── Stream processing loop ──
       const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
       for await (const part of stream.fullStream as AsyncIterable<any>) {
+        if (runtime.interrupted) break;
         if (!part || typeof part !== "object") continue;
         markFirstStreamEvent(String(part.type ?? "unknown"));
 
@@ -5725,51 +5785,67 @@ export function createAgentChatService(args: {
       // ── Shared turn completion ──
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       clearTimeout(turnTimeout);
-      if (assistantText.trim().length) {
-        runtime.messages.push({ role: "assistant", content: assistantText });
-      }
-
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-      runtime.abortController = null;
-      managed.session.status = "idle";
-
-      emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
-      emitChatEvent(managed, {
-        type: "done",
-        turnId,
-        status: "completed",
-        model: managed.session.model,
-        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-        ...(usage ? { usage } : {})
-      });
-
-      if (assistantText.trim().length > 0) {
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: assistantText,
+      if (runtime.interrupted) {
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+        runtime.abortController = null;
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "interrupted",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
-      }
+        persistChatState(managed);
+      } else {
+        if (assistantText.trim().length) {
+          runtime.messages.push({ role: "assistant", content: assistantText });
+        }
 
-      const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
-      if (endSha) {
-        sessionService.setHeadShaEnd(managed.session.id, endSha);
-      }
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+        runtime.abortController = null;
+        managed.session.status = "idle";
 
-      persistChatState(managed);
+        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "completed",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          ...(usage ? { usage } : {})
+        });
 
-      // Process queued steers (skip if session was disposed during execution)
-      if (!managed.closed && runtime.pendingSteers.length) {
-        const steerText = runtime.pendingSteers.shift() ?? "";
-        if (steerText.trim().length) {
-          const preparedSteer = prepareSendMessage({
-            sessionId: managed.session.id,
-            text: steerText,
-            displayText: steerText,
-            attachments: [],
+        if (assistantText.trim().length > 0) {
+          appendWorkerActivityToCto(managed, {
+            activityType: "chat_turn",
+            summary: assistantText,
           });
-          if (preparedSteer) {
-            await executePreparedSendMessage(preparedSteer);
+        }
+
+        const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
+        if (endSha) {
+          sessionService.setHeadShaEnd(managed.session.id, endSha);
+        }
+
+        persistChatState(managed);
+
+        // Process queued steers (skip if session was disposed during execution)
+        if (!managed.closed && runtime.pendingSteers.length) {
+          const steerText = runtime.pendingSteers.shift() ?? "";
+          if (steerText.trim().length) {
+            const preparedSteer = prepareSendMessage({
+              sessionId: managed.session.id,
+              text: steerText,
+              displayText: steerText,
+              attachments: [],
+            });
+            if (preparedSteer) {
+              await executePreparedSendMessage(preparedSteer);
+            }
           }
         }
       }
@@ -7765,7 +7841,10 @@ export function createAgentChatService(args: {
         completion: null,
         status: "idle",
         createdAt: startedAt,
-        lastActivityAt: startedAt
+        lastActivityAt: startedAt,
+        ...(typeof requestedCwd === "string" && requestedCwd.trim().length
+          ? { requestedCwd: requestedCwd.trim() }
+          : {}),
       },
       transcriptPath,
       transcriptBytesWritten: fileSizeOrZero(transcriptPath),
@@ -8135,10 +8214,16 @@ export function createAgentChatService(args: {
       // Re-sync permission mode so mid-session changes take effect on this turn.
       if (managed.runtime?.kind === "unified") {
         const chatConfig = resolveChatConfig();
+        const previousPermissionMode = managed.runtime.permissionMode;
         managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
           managed.session,
           chatConfig.unifiedPermissionMode,
         );
+        // When permission mode becomes stricter, clear accept_for_session approvals
+        // so old overrides cannot auto-approve actions under the new policy.
+        if (managed.runtime.permissionMode !== previousPermissionMode) {
+          managed.runtime.approvalOverrides = new Set();
+        }
       }
       await runTurn(managed, {
         promptText,
@@ -8424,6 +8509,7 @@ export function createAgentChatService(args: {
 
     // Unified runtime interrupt — auto-decline pending approvals to prevent orphans
     if (managed.runtime?.kind === "unified") {
+      if (managed.runtime.interrupted) return;
       managed.runtime.interrupted = true;
       managed.runtime.abortController?.abort();
       for (const [itemId, approval] of managed.runtime.pendingApprovals) {
@@ -8444,6 +8530,8 @@ export function createAgentChatService(args: {
     }
 
     const runtime = ensureClaudeSessionRuntime(managed);
+    // Idempotency guard: skip if already interrupted (e.g. rapid cancel clicks)
+    if (runtime.interrupted) return;
     logger.info("agent_chat.turn_interrupt_requested", {
       sessionId,
       provider: "claude",
@@ -8451,13 +8539,28 @@ export function createAgentChatService(args: {
       busy: runtime.busy,
       warmupInFlight: Boolean(runtime.v2WarmupDone),
     });
+    // Set interrupted before closing the session so the streaming loop sees it
+    // and breaks cleanly rather than throwing from a closed session.
     runtime.interrupted = true;
     cancelClaudeWarmup(managed, runtime, "interrupt");
     runtime.activeQuery?.interrupt().catch(() => {});
-    // Close the V2 session on interrupt — it will be recreated on the next turn
+    // Close the V2 session — it will be recreated on the next turn.
     try { runtime.v2Session?.close(); } catch { /* ignore */ }
     runtime.v2Session = null;
     runtime.v2StreamGen = null;
+
+    // Emit subagent_result "stopped" for every active subagent so the UI
+    // properly transitions them from "running" → "stopped" (matching Claude Code CLI behaviour).
+    const turnId = runtime.activeTurnId ?? undefined;
+    for (const { taskId } of runtime.activeSubagents.values()) {
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId,
+        status: "stopped",
+        summary: "Interrupted by user",
+        turnId,
+      });
+    }
     runtime.activeSubagents.clear();
     logger.info("agent_chat.turn_interrupt_completed", {
       sessionId,
@@ -9221,7 +9324,9 @@ export function createAgentChatService(args: {
       });
       if (manuallyNamed !== undefined) {
         managed.manuallyNamed = manuallyNamed && hasExplicitTitle;
-      } else if (!hasExplicitTitle) {
+      } else if (hasExplicitTitle) {
+        managed.manuallyNamed = true;
+      } else {
         managed.manuallyNamed = false;
       }
     }

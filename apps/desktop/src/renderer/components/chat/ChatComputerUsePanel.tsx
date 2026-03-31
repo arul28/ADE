@@ -14,10 +14,9 @@ function kindLabel(kind: string): string {
   return kind.replace(/_/g, " ");
 }
 
-/** Convert an artifact URI to an ade-artifact:// URL that Electron's custom protocol can serve. */
-function toPreviewSrc(uri: string): string {
-  // Already a remote URL — use directly
-  if (/^https?:\/\//i.test(uri)) return uri;
+/** Convert an artifact URI to an ade-artifact:// URL that Electron's custom protocol can serve. Remote http(s) URLs return null (no automatic preview / no renderer fetch). */
+function toPreviewSrc(uri: string): string | null {
+  if (/^https?:\/\//i.test(uri)) return null;
   // Strip file:// prefix if present
   let filePath = uri;
   if (filePath.startsWith("file://")) {
@@ -25,21 +24,29 @@ function toPreviewSrc(uri: string): string {
   }
   // For relative paths, we can't resolve here — the protocol handler in main will need the project root.
   // But artifacts stored by the broker are typically absolute or relative to project root.
-  return `ade-artifact://${filePath.startsWith("/") ? "" : "/"}${encodeURI(filePath)}`;
+  const encoded = new URL(filePath, "file://").pathname;
+  return `ade-artifact://${encoded.startsWith("/") ? "" : "/"}${encoded}`;
 }
 
-function normalizeToFsPath(uri: string): string {
-  if (uri.startsWith("file://")) {
-    try { return decodeURIComponent(new URL(uri).pathname); } catch { return uri.replace(/^file:\/\//i, ""); }
+function fileUriToFsPath(uri: string): string {
+  if (!uri.startsWith("file://")) return uri;
+  try {
+    const u = new URL(uri);
+    let p = decodeURIComponent(u.pathname);
+    if (/^\/[a-zA-Z]:/.test(p)) {
+      p = p.slice(1);
+    }
+    return p;
+  } catch {
+    return uri.replace(/^file:\/\//i, "");
   }
-  return uri;
 }
 
 function openInSystemPlayer(uri: string) {
   if (/^https?:\/\//i.test(uri)) {
     void window.ade.app.openExternal(uri);
   } else {
-    const fsPath = normalizeToFsPath(uri);
+    const fsPath = fileUriToFsPath(uri);
     window.ade.app.openPath(fsPath).catch((err: unknown) => {
       console.error("[ChatComputerUsePanel] Failed to open local path:", fsPath, err);
     });
@@ -69,7 +76,7 @@ function PreviewFallback({
   );
 }
 
-function VideoPreview({ artifact, src }: { artifact: ComputerUseArtifactView; src: string }) {
+function VideoPreview({ artifact, src }: { artifact: ComputerUseArtifactView; src: string | null }) {
   const [canPlay, setCanPlay] = useState(true);
   const stalledTimeoutRef = useRef<number | null>(null);
 
@@ -103,6 +110,16 @@ function VideoPreview({ artifact, src }: { artifact: ComputerUseArtifactView; sr
     }, 3000);
   }, [clearStalledTimeout]);
 
+  if (!src) {
+    return (
+      <PreviewFallback
+        message="Video preview unavailable for this URI."
+        actionLabel="Open in system player"
+        onOpen={() => artifact.uri && openInSystemPlayer(artifact.uri)}
+      />
+    );
+  }
+
   if (!canPlay) {
     return (
       <PreviewFallback
@@ -126,12 +143,22 @@ function VideoPreview({ artifact, src }: { artifact: ComputerUseArtifactView; sr
   );
 }
 
-function ImagePreview({ artifact, src }: { artifact: ComputerUseArtifactView; src: string }) {
+function ImagePreview({ artifact, src }: { artifact: ComputerUseArtifactView; src: string | null }) {
   const [imageError, setImageError] = useState(false);
 
   useEffect(() => {
     setImageError(false);
   }, [src]);
+
+  if (!src) {
+    return (
+      <PreviewFallback
+        message="Image preview unavailable for this URI."
+        actionLabel="Open in system viewer"
+        onOpen={() => artifact.uri && openInSystemPlayer(artifact.uri)}
+      />
+    );
+  }
 
   if (imageError) {
     return (
@@ -155,6 +182,16 @@ function ImagePreview({ artifact, src }: { artifact: ComputerUseArtifactView; sr
 
 function ArtifactPreview({ artifact }: { artifact: ComputerUseArtifactView }) {
   if (!artifact.uri) return null;
+
+  if (/^https?:\/\//i.test(artifact.uri)) {
+    return (
+      <PreviewFallback
+        message="Remote artifact — preview disabled. Open to view in your browser."
+        actionLabel="Open"
+        onOpen={() => openInSystemPlayer(artifact.uri!)}
+      />
+    );
+  }
 
   const src = toPreviewSrc(artifact.uri);
 
@@ -198,12 +235,17 @@ export function ChatComputerUsePanel({
   const handleReveal = useCallback(() => {
     if (!selected?.uri) return;
     if (/^https?:\/\//i.test(selected.uri)) {
-      void window.ade.app.openExternal(selected.uri);
+      window.ade.app.openExternal(selected.uri).catch((err: unknown) => {
+        console.error("[ChatComputerUsePanel] Failed to open external URL:", selected.uri, err);
+      });
+    } else if (selected.uri.startsWith("file://")) {
+      window.ade.app.revealPath(fileUriToFsPath(selected.uri)).catch((err: unknown) => {
+        console.error("[ChatComputerUsePanel] Failed to reveal path:", selected.uri, err);
+      });
     } else {
-      const path = selected.uri.startsWith("/")
-        ? selected.uri
-        : selected.uri;
-      void window.ade.app.revealPath(path);
+      window.ade.app.revealPath(selected.uri).catch((err: unknown) => {
+        console.error("[ChatComputerUsePanel] Failed to reveal path:", selected.uri, err);
+      });
     }
   }, [selected]);
 

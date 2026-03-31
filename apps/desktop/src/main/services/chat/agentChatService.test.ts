@@ -2807,6 +2807,306 @@ describe("createAgentChatService", () => {
         service.interrupt({ sessionId: "unknown-session-id" }),
       ).rejects.toThrow(/not found/i);
     });
+
+    it("emits subagent_result stopped for active subagents on claude interrupt", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+
+      // The stream function is called multiple times: once for warmup, once for the actual turn.
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          // Warmup stream — init + result to complete prewarm
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-interrupt-sub-1",
+            slash_commands: [],
+          };
+          // Set before final yield: prewarm breaks the stream on `result` without draining further.
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Actual turn stream — emit two task_started events, then hang
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "sub-task-1",
+          description: "Subagent A",
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "sub-task-2",
+          description: "Subagent B",
+        };
+        // Hang until test resolves the promise (simulating a long-running turn)
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-interrupt-sub-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      // Start the turn (don't await — it will hang)
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Do something with subagents",
+      });
+
+      // Wait for the subagent_started events to appear
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_started" && (e.event as any).taskId === "sub-task-2",
+      );
+
+      // Now interrupt — should emit subagent_result "stopped" for both
+      await service.interrupt({ sessionId: session.id });
+
+      const stoppedEvents = events.filter(
+        (e) => e.event.type === "subagent_result" && (e.event as any).status === "stopped",
+      );
+      expect(stoppedEvents).toHaveLength(2);
+
+      const stoppedTaskIds = stoppedEvents.map((e) => (e.event as any).taskId).sort();
+      expect(stoppedTaskIds).toEqual(["sub-task-1", "sub-task-2"]);
+
+      // After interrupt, listSubagents should reflect the stopped status
+      const subagents = service.listSubagents({ sessionId: session.id });
+      const stoppedSubagents = subagents.filter((s: any) => s.status === "stopped");
+      expect(stoppedSubagents).toHaveLength(2);
+
+      // Clean up: unblock the hanging stream so sendPromise resolves
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("claude interrupt idempotency — second call is a no-op", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-idem-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "working" },
+          },
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-idem-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Hello",
+      });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope => e.event.type === "text",
+      );
+
+      await service.interrupt({ sessionId: session.id });
+      const eventsAfterFirst = events.length;
+
+      await service.interrupt({ sessionId: session.id });
+      const newEvents = events.slice(eventsAfterFirst);
+      expect(newEvents).toHaveLength(0);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("claude interrupt with no active subagents emits no subagent events", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-no-sub-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "tick" },
+          },
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-no-sub-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Hello",
+      });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope => e.event.type === "text",
+      );
+
+      await service.interrupt({ sessionId: session.id });
+
+      const subagentResultEvents = events.filter(
+        (e) => e.event.type === "subagent_result",
+      );
+      expect(subagentResultEvents).toHaveLength(0);
+
+      const eventsAfterFirst = events.length;
+      await service.interrupt({ sessionId: session.id });
+      const newEvents = events.slice(eventsAfterFirst);
+      expect(newEvents).toHaveLength(0);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("unified interrupt idempotency — second call is a no-op", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+
+      // Mock streamText to create a stream that hangs, giving us a unified
+      // runtime in a busy state so we can interrupt it.
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "start-step", stepNumber: 0 };
+          yield { type: "text-delta", textDelta: "Thinking..." };
+          // Hang until resolved
+          await hangPromise;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "anthropic/claude-sonnet-4-6-api",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+        permissionMode: "edit",
+      });
+
+      // Start a turn so the unified runtime gets created
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Do something",
+      });
+
+      // Wait for the text event to confirm the stream is running
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope => e.event.type === "text",
+      );
+
+      // First interrupt — sets runtime.interrupted = true
+      await service.interrupt({ sessionId: session.id });
+      const eventsAfterFirst = events.length;
+
+      // Second interrupt — should be a no-op due to idempotency guard
+      await service.interrupt({ sessionId: session.id });
+      const newEvents = events.slice(eventsAfterFirst);
+
+      // The second interrupt should have produced no new events at all
+      expect(newEvents).toHaveLength(0);
+
+      // Clean up
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
   });
 
   // --------------------------------------------------------------------------

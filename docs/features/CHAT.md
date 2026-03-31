@@ -73,6 +73,31 @@ for entering a new title (max 48 characters). Renaming a session sets a
 further auto-title generation for that session. This ensures a
 user-chosen name is never overwritten by the AI.
 
+## Turn Interruption
+
+Users can interrupt an in-flight turn via `interrupt()`. The behavior
+is provider-specific:
+
+- **Claude**: The runtime's `interrupted` flag is set, the warmup is
+  cancelled, the active query is interrupted, and the V2 session is
+  closed (it will be recreated on the next turn). The streaming loop
+  checks the `interrupted` flag on each iteration and breaks cleanly
+  rather than throwing from a closed session. All active subagents are
+  transitioned from "running" to "stopped" by emitting a
+  `subagent_result` event with `status: "stopped"` for each one,
+  matching Claude Code CLI behaviour. The `activeSubagents` map is
+  then cleared.
+- **Codex**: The interrupt is forwarded to the app-server via the
+  `turn/interrupt` JSON-RPC method. The turn completes with
+  `status: "interrupted"`.
+- **Unified**: The abort controller is signalled and all pending
+  approval promises are auto-declined to prevent orphaned
+  human-in-the-loop requests.
+
+All providers implement an **idempotency guard**: if the runtime is
+already interrupted, a second `interrupt()` call is a no-op. This
+prevents duplicate side-effects from rapid cancel clicks.
+
 ### Text Batching
 
 Streaming assistant text events from Codex and unified providers are

@@ -1745,14 +1745,14 @@ export function AgentChatPane({
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          {laneId && laneDisplayLabel ? (
+          {laneId && laneDisplayLabel && laneDisplayLabel !== laneId ? (
             <button
               type="button"
               className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] px-2 py-1 font-sans text-[11px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg/70"
               title={`Go to lane: ${laneDisplayLabel}`}
               onClick={() => {
                 selectLane(laneId);
-                navigate("/lanes");
+                navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
               }}
             >
               <GitBranch size={11} weight="regular" />
@@ -2044,7 +2044,7 @@ export function AgentChatPane({
             }}
             promptSuggestion={promptSuggestion}
             subagentSnapshots={selectedSubagentSnapshots}
-            chatHasMessages={selectedEvents.length > 0}
+            chatHasMessages={selectedEvents.some(env => env.event.type === "user_message" || env.event.type === "text")}
           />
         }
         bodyClassName="flex min-h-0 flex-col overflow-hidden"

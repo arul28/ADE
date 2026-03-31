@@ -10,12 +10,40 @@
  * builds a synthetic `tool_result` event that the proof observer can process.
  */
 
+import path from "node:path";
 import type { AgentChatEvent } from "../../../shared/types/chat";
 
-// Matches absolute file paths ending with known artifact extensions.
-// The leading group catches a boundary char (or start) before the path.
-const ARTIFACT_PATH_RE =
-  /(?:^|[\s"'=:,])(\/?(?:[\w.~-]+\/)*[\w.~-]+\.(?:png|jpe?g|webp|gif|bmp|tiff|svg|mp4|webm|mov|avi|mkv|zip|trace|log|txt|ndjson|jsonl))\b/gi;
+const ARTIFACT_EXT =
+  "png|jpe?g|webp|gif|bmp|tiff|svg|mp4|webm|mov|avi|mkv|zip|trace|log|txt|ndjson|jsonl";
+
+/** Broad match for POSIX, Windows, and quoted paths ending with known artifact extensions. */
+const ARTIFACT_PATH_RE = new RegExp(
+  [
+    "(?:^|[\\s\"'=:,])(",
+    "(?:\"(?:[^\"\\\\]|\\\\.)+\"|'(?:[^'\\\\]|\\\\.)+'|",
+    "(?:[a-zA-Z]:[\\\\/]|\\\\\\\\|/)[^\\n\\r\\s\"'<>|*?]+|",
+    "(?:/[\\w.~\\-\\[\\] ]+/)+[\\w.~-]+)",
+    `\\.(?:${ARTIFACT_EXT})`,
+    ")(?:\\b|$)",
+  ].join(""),
+  "gi",
+);
+
+function stripQuotes(raw: string): string {
+  const t = raw.trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    return t.slice(1, -1).replace(/\\(.)/g, "$1");
+  }
+  return t;
+}
+
+function isAbsoluteArtifactPath(candidate: string): boolean {
+  const p = stripQuotes(candidate).trim();
+  if (!p.length) return false;
+  if (path.posix.isAbsolute(p)) return true;
+  if (path.win32.isAbsolute(p)) return true;
+  return /^\\\\/.test(p);
+}
 
 /**
  * Extract file paths that look like artifacts from an arbitrary args value.
@@ -30,8 +58,10 @@ export function extractArtifactPathsFromArgs(args: unknown): string[] {
       ARTIFACT_PATH_RE.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = ARTIFACT_PATH_RE.exec(value)) !== null) {
-        const p = match[1].trim();
-        if (p.startsWith("/")) paths.add(p);
+        const raw = match[1]?.trim();
+        if (!raw) continue;
+        const p = stripQuotes(raw);
+        if (isAbsoluteArtifactPath(p)) paths.add(p);
       }
       return;
     }

@@ -30,6 +30,7 @@ export function TerminalsPage() {
   /* Floating overlays */
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const handleSelectSession = useCallback(
     (id: string) => {
@@ -133,6 +134,15 @@ export function TerminalsPage() {
 
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)", fontFamily: SANS_FONT }}>
+      {renameError ? (
+        <div
+          className="shrink-0 border-b border-red-500/25 px-4 py-2 text-[12px] text-red-300/95"
+          style={{ background: "rgba(239, 68, 68, 0.08)" }}
+          role="status"
+        >
+          {renameError}
+        </div>
+      ) : null}
       {/* Header */}
       <div
         style={{
@@ -205,9 +215,19 @@ export function TerminalsPage() {
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onRename={(sessionId, newTitle) => {
+          setRenameError(null);
           window.ade.agentChat.updateSession({ sessionId, title: newTitle, manuallyNamed: true })
-            .then(() => work.refresh({ showLoading: false }))
-            .catch(() => {});
+            .then(() => {
+              work.refresh({ showLoading: false }).catch((refreshErr: unknown) => {
+                console.error("[TerminalsPage] refresh after rename failed", { sessionId, refreshErr });
+              });
+            })
+            .catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error("[TerminalsPage] rename session failed", { sessionId, err });
+              setRenameError(`Rename failed: ${message}`);
+              window.setTimeout(() => setRenameError(null), 6000);
+            });
         }}
       />
 
