@@ -164,7 +164,11 @@ function PendingSteerItem({
 
   function commitEdit(): void {
     const trimmed = editText.trim();
-    if (trimmed.length && trimmed !== steer.text) {
+    if (!trimmed.length) {
+      onCancel();
+      return;
+    }
+    if (trimmed !== steer.text) {
       onEdit(trimmed);
     }
     setEditing(false);
@@ -219,6 +223,7 @@ function PendingSteerItem({
             onClick={() => setEditing(true)}
             className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-white/[0.06] hover:text-fg/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
             title="Edit message"
+            aria-label="Edit message"
           >
             <PencilSimple size={11} />
           </button>
@@ -227,6 +232,7 @@ function PendingSteerItem({
             onClick={onCancel}
             className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-red-500/10 hover:text-red-400/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
             title="Remove from queue"
+            aria-label="Remove from queue"
           >
             <X size={11} weight="bold" />
           </button>

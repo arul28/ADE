@@ -51,7 +51,11 @@ export function TerminalsPage() {
   const handleOpenChatSession = useCallback(
     async (sessionId: string) => {
       // Refresh first so the session is in the list before activating the tab.
-      await work.refresh({ showLoading: false });
+      try {
+        await work.refresh({ showLoading: false });
+      } catch {
+        // Best-effort: proceed to open the tab even if refresh fails
+      }
       work.openSessionTab(sessionId);
     },
     [work],

@@ -5624,9 +5624,7 @@ export function createAgentChatService(args: {
       }
 
       persistChatState(managed);
-      if (runtime.pendingSteers.length) {
-        await deliverNextQueuedSteer(managed, runtime);
-      }
+      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
       return;
     }
   };
@@ -6320,9 +6318,7 @@ export function createAgentChatService(args: {
       }
 
       persistChatState(managed);
-      if (runtime.pendingSteers.length) {
-        await deliverNextQueuedSteer(managed, runtime);
-      }
+      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
       return;
     }
   };
@@ -9272,6 +9268,7 @@ export function createAgentChatService(args: {
       if (managed.runtime.interrupted) return;
       managed.runtime.interrupted = true;
       managed.runtime.abortController?.abort();
+      cancelQueuedSteers(managed, managed.runtime, "interrupted");
       persistChatState(managed);
       for (const [itemId, approval] of managed.runtime.pendingApprovals) {
         approval.resolve({ decision: "decline" });
@@ -9304,6 +9301,7 @@ export function createAgentChatService(args: {
     // and breaks cleanly rather than throwing from a closed session.
     runtime.interrupted = true;
     cancelClaudeWarmup(managed, runtime, "interrupt");
+    cancelQueuedSteers(managed, runtime, "interrupted");
     runtime.activeQuery?.interrupt().catch(() => {});
     // Drain pending approvals so their promises settle instead of hanging forever
     for (const pending of runtime.approvals.values()) {

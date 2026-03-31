@@ -620,7 +620,7 @@ function TemplateEditor({
                         style={{ ...textareaStyle, minHeight: 48 }}
                         value={setupUnixCommands}
                         onChange={(e) => setSetupUnixCommands(e.target.value)}
-                        placeholder="chmod +x scripts/setup.sh&#10;./scripts/setup.sh"
+                        placeholder={"chmod +x scripts/setup.sh\n./scripts/setup.sh"}
                         rows={2}
                       />
                       <div style={{ marginTop: 6 }}>
