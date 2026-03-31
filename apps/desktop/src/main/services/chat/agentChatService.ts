@@ -268,6 +268,10 @@ type ClaudeRuntime = {
   /** Set when a reasoning effort change is requested mid-turn; flushed when idle. */
   pendingSessionReset?: boolean;
   turnMemoryPolicyState: TurnMemoryPolicyState | null;
+  /** Tool names the user has approved for the session via "Allow for Session". */
+  approvalOverrides: Set<string>;
+  /** Pending MCP elicitation resolvers keyed by elicitation_id. */
+  pendingElicitations: Map<string, () => void>;
 };
 
 type PendingUnifiedApproval = {
@@ -2048,10 +2052,67 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  const CLAUDE_READ_ONLY_TOOLS = new Set([
+    "read", "glob", "grep", "toolsearch", "tasklist", "taskget",
+    "webfetch", "websearch",
+  ]);
+
+  const claudeToolNeedsApproval = (
+    toolName: string,
+    input: Record<string, unknown>,
+    permissionMode: string,
+  ): boolean => {
+    const normalized = toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    // bypassPermissions → never prompt
+    if (permissionMode === "bypassPermissions") return false;
+    // plan mode → handled elsewhere (deny writes entirely)
+    if (permissionMode === "plan") return false;
+    // Read-only tools never need approval
+    if (CLAUDE_READ_ONLY_TOOLS.has(normalized)) return false;
+    // acceptEdits → only prompt for Bash
+    if (permissionMode === "acceptEdits") {
+      return normalized.includes("bash");
+    }
+    // default → prompt for mutating tools (Bash, Write, Edit, NotebookEdit, Agent, etc.)
+    if (normalized.includes("bash") || normalized.includes("write") || normalized.includes("edit")
+      || normalized.includes("agent") || normalized.includes("notebookedit")) {
+      return true;
+    }
+    // MCP tools → prompt
+    if (normalized.startsWith("mcp_") || normalized.startsWith("mcp__")) return true;
+    return false;
+  };
+
+  const buildClaudeToolApprovalDescription = (
+    toolName: string,
+    input: Record<string, unknown>,
+    sdkOptions?: { blockedPath?: string; decisionReason?: string },
+  ): string => {
+    const parts: string[] = [];
+    if (sdkOptions?.decisionReason) {
+      parts.push(sdkOptions.decisionReason);
+    } else if (toolName.toLowerCase().includes("bash")) {
+      const cmd = typeof input.command === "string" ? input.command : typeof input.cmd === "string" ? input.cmd : null;
+      parts.push(cmd ? `Run command: ${cmd.length > 120 ? cmd.slice(0, 117) + "..." : cmd}` : `Run a shell command`);
+    } else if (toolName.toLowerCase().includes("write")) {
+      const filePath = typeof input.file_path === "string" ? input.file_path : null;
+      parts.push(filePath ? `Write file: ${filePath}` : `Write a file`);
+    } else if (toolName.toLowerCase().includes("edit")) {
+      const filePath = typeof input.file_path === "string" ? input.file_path : null;
+      parts.push(filePath ? `Edit file: ${filePath}` : `Edit a file`);
+    } else {
+      parts.push(`Use tool: ${toolName}`);
+    }
+    if (sdkOptions?.blockedPath) {
+      parts.push(`Path: ${sdkOptions.blockedPath}`);
+    }
+    return parts.join("\n");
+  };
+
   const buildClaudeCanUseTool = (
     runtime: ClaudeRuntime,
     managed: ManagedChatSession,
-  ): ClaudeSDKOptions["canUseTool"] => async (toolName, input): Promise<ClaudePermissionResult> => {
+  ): ClaudeSDKOptions["canUseTool"] => async (toolName, input, sdkOptions): Promise<ClaudePermissionResult> => {
     // ── ExitPlanMode interception ──
     // Intercept ExitPlanMode to show a plan approval UI instead of letting the
     // SDK handle it natively (which just collapses into the work log).
@@ -2121,22 +2182,97 @@ export function createAgentChatService(args: {
       };
     }
 
+    // ── Memory orientation guard ──
     const state = runtime.turnMemoryPolicyState;
     if (isMemorySearchToolName(toolName) && state) {
       state.explicitSearchPerformed = true;
       state.orientationSatisfied = true;
       return { behavior: "allow" };
     }
-    if (!state || state.classification !== "required" || state.orientationSatisfied || state.explicitSearchPerformed) {
-      return { behavior: "allow" };
+    if (state && state.classification === "required" && !state.orientationSatisfied && !state.explicitSearchPerformed) {
+      if (isClaudeMutatingToolCall(toolName, input)) {
+        return { behavior: "deny", message: CHAT_MEMORY_GUARD_MESSAGE };
+      }
     }
-    if (!isClaudeMutatingToolCall(toolName, input)) {
-      return { behavior: "allow" };
+
+    // ── Tool permission prompts ──
+    // Surface approval prompts for non-bypass permission modes so the user can
+    // allow or deny individual tool calls (matching the unified runtime pattern).
+    const effectivePermMode = managed.session.claudePermissionMode ?? "default";
+    if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
+      // Check session-wide overrides — user already said "Allow for Session" for this tool
+      const normalizedForOverride = toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+      if (runtime.approvalOverrides.has(normalizedForOverride)) {
+        return { behavior: "allow" };
+      }
+
+      const approvalItemId = randomUUID();
+      const turnId = runtime.activeTurnId ?? undefined;
+      const description = buildClaudeToolApprovalDescription(toolName, input, sdkOptions);
+      const request: PendingInputRequest = {
+        requestId: approvalItemId,
+        itemId: approvalItemId,
+        source: "claude",
+        kind: "approval",
+        title: `Allow ${toolName}?`,
+        description,
+        questions: [{
+          id: "tool_decision",
+          header: toolName,
+          question: description,
+          options: [
+            { label: "Allow", value: "allow", recommended: true },
+            { label: "Allow for Session", value: "allow_session" },
+            { label: "Deny", value: "deny" },
+          ],
+          allowsFreeform: true,
+        }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          tool: toolName,
+          input,
+          ...(sdkOptions?.blockedPath ? { blockedPath: sdkOptions.blockedPath } : {}),
+          ...(sdkOptions?.decisionReason ? { decisionReason: sdkOptions.decisionReason } : {}),
+          ...(sdkOptions?.toolUseID ? { toolUseID: sdkOptions.toolUseID } : {}),
+        },
+        turnId: turnId ?? null,
+      };
+
+      emitPendingInputRequest(managed, request, {
+        kind: normalizedForOverride.includes("bash") ? "command" : "file_change",
+        description,
+        detail: { tool: toolName, ...(sdkOptions?.blockedPath ? { blockedPath: sdkOptions.blockedPath } : {}) },
+      });
+
+      const response = await new Promise<{ decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }>((resolve) => {
+        runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+      });
+      runtime.approvals.delete(approvalItemId);
+
+      const approved = response.decision === "accept" || response.decision === "accept_for_session";
+      if (response.decision === "accept_for_session") {
+        runtime.approvalOverrides.add(normalizedForOverride);
+      }
+      if (approved) {
+        return {
+          behavior: "allow",
+          ...(response.decision === "accept_for_session" && sdkOptions?.suggestions?.length
+            ? { updatedPermissions: sdkOptions.suggestions }
+            : {}),
+        };
+      }
+      const feedback = typeof response.responseText === "string" ? response.responseText.trim() : "";
+      return {
+        behavior: "deny",
+        message: feedback.length > 0
+          ? `User denied this tool call: ${feedback}`
+          : "User denied this tool call.",
+      };
     }
-    return {
-      behavior: "deny",
-      message: CHAT_MEMORY_GUARD_MESSAGE,
-    };
+
+    return { behavior: "allow" };
   };
 
   const clearSubagentSnapshots = (sessionId: string): void => {
@@ -4735,6 +4871,39 @@ export function createAgentChatService(args: {
           continue;
         }
 
+        // system:elicitation_complete — MCP URL-mode authentication finished
+        if (msg.type === "system" && (msg as any).subtype === "elicitation_complete") {
+          const elicitMsg = msg as any;
+          const elicitationId = typeof elicitMsg.elicitation_id === "string" ? elicitMsg.elicitation_id : "";
+          const serverName = typeof elicitMsg.mcp_server_name === "string" ? elicitMsg.mcp_server_name : "MCP server";
+          // Resolve any pending URL-mode elicitation promise
+          if (elicitationId && runtime.pendingElicitations.has(elicitationId)) {
+            runtime.pendingElicitations.get(elicitationId)!();
+            runtime.pendingElicitations.delete(elicitationId);
+          }
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: `MCP authentication complete: ${serverName}`,
+            turnId,
+          });
+          continue;
+        }
+
+        // system:local_command_output — output from local slash commands (/voice, /cost, etc.)
+        if (msg.type === "system" && (msg as any).subtype === "local_command_output") {
+          const cmdMsg = msg as any;
+          const content = typeof cmdMsg.content === "string" ? cmdMsg.content.trim() : "";
+          if (content.length > 0) {
+            emitChatEvent(managed, {
+              type: "text",
+              text: content,
+              turnId,
+            });
+          }
+          continue;
+        }
+
         // auth_status — authentication events
         if (msg.type === "auth_status") {
           const authMsg = msg as any;
@@ -5087,6 +5256,16 @@ export function createAgentChatService(args: {
                 turnId,
               });
             }
+          }
+          if (Array.isArray(resultMsg.permission_denials) && resultMsg.permission_denials.length > 0) {
+            const denials = resultMsg.permission_denials as Array<{ tool_name: string; tool_use_id?: string }>;
+            const denialSummary = denials.map((d) => d.tool_name).join(", ");
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              message: `${denials.length} tool call${denials.length === 1 ? " was" : "s were"} denied this turn: ${denialSummary}`,
+              turnId,
+            });
           }
           continue;
         }
@@ -7317,6 +7496,143 @@ export function createAgentChatService(args: {
       ) as any;
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
 
+      // Handle MCP elicitation requests (form input or OAuth URL flows).
+      (opts as any).onElicitation = async (
+        elicitReq: { serverName: string; message: string; mode?: "form" | "url"; url?: string; elicitationId?: string; requestedSchema?: Record<string, unknown> },
+        elicitOpts: { signal: AbortSignal },
+      ): Promise<{ action: "accept" | "decline" | "cancel"; content?: Record<string, string | number | boolean | string[]> }> => {
+        const approvalItemId = randomUUID();
+        const turnId = runtime.activeTurnId ?? undefined;
+
+        if (elicitReq.mode === "url" && elicitReq.url) {
+          // URL mode: open browser and wait for elicitation_complete stream event
+          try { require("electron").shell.openExternal(elicitReq.url); } catch { /* best effort */ }
+
+          const request: PendingInputRequest = {
+            requestId: approvalItemId,
+            itemId: approvalItemId,
+            source: "claude",
+            kind: "question",
+            title: `Authentication: ${elicitReq.serverName}`,
+            description: `${elicitReq.message}\n\nA browser window has been opened for authentication. Click "Done" once you have completed the authentication flow.`,
+            questions: [{
+              id: "auth_action",
+              header: elicitReq.serverName,
+              question: elicitReq.message,
+              options: [
+                { label: "Done", value: "done", recommended: true },
+                { label: "Cancel", value: "cancel" },
+              ],
+              allowsFreeform: false,
+            }],
+            allowsFreeform: false,
+            blocking: true,
+            canProceedWithoutAnswer: false,
+            providerMetadata: { serverName: elicitReq.serverName, mode: "url", elicitationId: elicitReq.elicitationId },
+            turnId: turnId ?? null,
+          };
+
+          emitPendingInputRequest(managed, request, {
+            kind: "tool_call",
+            description: `MCP authentication: ${elicitReq.serverName}`,
+            detail: { serverName: elicitReq.serverName },
+          });
+
+          // Also register a resolver that the elicitation_complete stream event can trigger
+          if (elicitReq.elicitationId) {
+            const waitForComplete = new Promise<void>((resolve) => {
+              runtime.pendingElicitations.set(elicitReq.elicitationId!, resolve);
+            });
+            // Race: user clicks "Done" OR elicitation_complete arrives
+            const userResponse = await Promise.race([
+              new Promise<{ decision?: AgentChatApprovalDecision }>((resolve) => {
+                runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+              }),
+              waitForComplete.then(() => ({ decision: "accept" as AgentChatApprovalDecision })),
+            ]);
+            runtime.approvals.delete(approvalItemId);
+            runtime.pendingElicitations.delete(elicitReq.elicitationId);
+            if (userResponse.decision === "cancel" || userResponse.decision === "decline") {
+              return { action: "cancel" };
+            }
+            return { action: "accept" };
+          }
+
+          // No elicitationId — just wait for user click
+          const response = await new Promise<{ decision?: AgentChatApprovalDecision }>((resolve) => {
+            runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+          });
+          runtime.approvals.delete(approvalItemId);
+          return response.decision === "cancel" || response.decision === "decline"
+            ? { action: "cancel" }
+            : { action: "accept" };
+        }
+
+        // Form mode: map requestedSchema to structured questions
+        const questions: PendingInputRequest["questions"] = [];
+        const schema = elicitReq.requestedSchema ?? {};
+        const properties = (schema as any).properties as Record<string, { type?: string; description?: string; enum?: string[] }> | undefined;
+        if (properties) {
+          for (const [key, prop] of Object.entries(properties)) {
+            questions.push({
+              id: key,
+              header: key,
+              question: prop.description ?? key,
+              ...(prop.enum ? { options: prop.enum.map((v) => ({ label: v, value: v })) } : {}),
+              allowsFreeform: !prop.enum,
+              isSecret: key.toLowerCase().includes("password") || key.toLowerCase().includes("secret") || key.toLowerCase().includes("token"),
+            });
+          }
+        }
+        if (questions.length === 0) {
+          questions.push({
+            id: "input",
+            header: elicitReq.serverName,
+            question: elicitReq.message,
+            allowsFreeform: true,
+          });
+        }
+
+        const request: PendingInputRequest = {
+          requestId: approvalItemId,
+          itemId: approvalItemId,
+          source: "claude",
+          kind: "structured_question",
+          title: `Input requested: ${elicitReq.serverName}`,
+          description: elicitReq.message,
+          questions,
+          allowsFreeform: true,
+          blocking: true,
+          canProceedWithoutAnswer: false,
+          providerMetadata: { serverName: elicitReq.serverName, mode: "form" },
+          turnId: turnId ?? null,
+        };
+
+        emitPendingInputRequest(managed, request, {
+          kind: "tool_call",
+          description: `MCP input: ${elicitReq.serverName}`,
+          detail: { serverName: elicitReq.serverName },
+        });
+
+        const response = await new Promise<{ decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }>((resolve) => {
+          runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
+        });
+        runtime.approvals.delete(approvalItemId);
+
+        if (response.decision === "cancel" || response.decision === "decline") {
+          return { action: "decline" };
+        }
+
+        // Map answers to the expected content shape
+        const content: Record<string, string | number | boolean | string[]> = {};
+        if (response.answers) {
+          for (const [key, value] of Object.entries(response.answers)) {
+            content[key] = value;
+          }
+        }
+        return { action: "accept", content };
+      };
+
       // Enable MCP tool search for sessions with many MCP tools.
       // When enabled, the SDK defers tool definitions and loads them on-demand
       // via the ToolSearch tool, keeping the context window lean.
@@ -7571,6 +7887,8 @@ export function createAgentChatService(args: {
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
       turnMemoryPolicyState: null,
+      approvalOverrides: new Set<string>(),
+      pendingElicitations: new Map<string, () => void>(),
     };
     managed.runtime = runtime;
 
@@ -7809,7 +8127,7 @@ export function createAgentChatService(args: {
         );
       }
       effectiveProvider = resolved;
-      normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.shortId : resolvedDescriptor.id;
+      normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.sdkModelId : resolvedDescriptor.id;
     }
 
     const rawEffort = effectiveProvider === "codex"
@@ -8003,7 +8321,7 @@ export function createAgentChatService(args: {
     }
 
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
-    const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.shortId : targetDescriptor.id;
+    const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.sdkModelId : targetDescriptor.id;
     const targetReasoningEffort = pickHandoffReasoningEffort(
       targetDescriptor,
       managed.session.reasoningEffort ?? sourceSession.reasoningEffort,

@@ -608,11 +608,33 @@ export function createGitOperationsService({
       } else if (normalizedBehind > 0 && normalizedAhead === 0) {
         recommendedAction = "pull";
       } else if (diverged) {
-        // True divergence (ahead>0 and behind>0) means the remote has commits not
-        // in HEAD, so upstream cannot be a strict ancestor of HEAD; merge-base
-        // --is-ancestor upstream HEAD is therefore never satisfied here. Default
-        // to a non-destructive merge/rebase via pull.
-        recommendedAction = "pull";
+        // Check if local HEAD contains the upstream tip.  When both sides have
+        // unique commits, the upstream tip is almost never an ancestor of HEAD
+        // (that only happens after a local rebase that replayed upstream), so
+        // the safest default for genuine divergence is "pull" (merge upstream
+        // into local).  We only suggest force-push when we can confirm the
+        // upstream tip IS already an ancestor — meaning the local branch was
+        // rebased on top of upstream and only needs a force-push to publish.
+        const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
+          cwd: lane.worktreePath,
+          timeoutMs: 5_000
+        });
+        if (mergeBaseRes.exitCode === 0) {
+          recommendedAction = "force_push_lease";
+        } else {
+          // The --is-ancestor check fails when the lane was rebased onto a
+          // *base branch* (parent) rather than onto its own upstream, because
+          // all local commits get rewritten with new parents.  Fall back to
+          // checking the reflog for a recent rebase — if one happened, the
+          // divergence is expected and a force-push is the right next step.
+          const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+            cwd: lane.worktreePath,
+            timeoutMs: 5_000
+          });
+          const hasRecentRebase = reflogRes.exitCode === 0 &&
+            reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
+          recommendedAction = hasRecentRebase ? "force_push_lease" : "pull";
+        }
       }
 
       return {
