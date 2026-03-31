@@ -194,6 +194,7 @@ type PersistedChatState = {
   preferredExecutionLaneId?: string | null;
   selectedExecutionLaneId?: string | null;
   lastLaneDirectiveKey?: string | null;
+  manuallyNamed?: boolean;
   updatedAt: string;
 };
 
@@ -566,6 +567,7 @@ type ManagedChatSession = {
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
+  manuallyNamed: boolean;
   summaryInFlight: boolean;
   activeAssistantMessageId: string | null;
   lastActivitySignature: string | null;
@@ -2844,6 +2846,7 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     const config = resolveChatConfig();
     if (!config.autoTitleEnabled) return;
+    if (managed.manuallyNamed) return;
     if (managed.autoTitleInFlight) return;
     if (args.stage === "initial" && managed.autoTitleStage !== "none") return;
     if (args.stage === "final") {
@@ -2909,6 +2912,8 @@ export function createAgentChatService(args: {
           titleContext.join("\n"),
         ].join("\n\n"),
       });
+      // Re-check after async — user may have manually renamed while the request was in flight.
+      if (managed.manuallyNamed) return;
       const nextTitle = setManagedSessionTitle(managed, result.text);
       if (!nextTitle) return;
       managed.autoTitleStage = args.stage;
@@ -3178,6 +3183,7 @@ export function createAgentChatService(args: {
       ...(managed.preferredExecutionLaneId ? { preferredExecutionLaneId: managed.preferredExecutionLaneId } : {}),
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
       ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
+      manuallyNamed: Boolean(managed.manuallyNamed),
       updatedAt: nowIso()
     };
 
@@ -3293,6 +3299,7 @@ export function createAgentChatService(args: {
         ...(typeof record.lastLaneDirectiveKey === "string" && record.lastLaneDirectiveKey.trim().length
           ? { lastLaneDirectiveKey: record.lastLaneDirectiveKey.trim() }
           : {}),
+        ...(record.manuallyNamed === true ? { manuallyNamed: true } : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
@@ -4121,6 +4128,7 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
+      manuallyNamed: persisted?.manuallyNamed === true,
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
       continuitySummaryUpdatedAt: persisted?.continuitySummaryUpdatedAt ?? null,
@@ -7303,6 +7311,13 @@ export function createAgentChatService(args: {
           return;
         }
 
+        // Apply permission mode before the first interaction so the session
+        // starts with the correct approval behaviour selected in the rebase tab.
+        const initialPermissionMode = resolveClaudeTurnPermissionMode(managed);
+        if (typeof runtime.v2Session.setPermissionMode === "function") {
+          await runtime.v2Session.setPermissionMode(initialPermissionMode);
+        }
+
         await runtime.v2Session.send("System initialization check. Respond with only the word READY.");
         for await (const msg of runtime.v2Session.stream()) {
           if (runtime.v2WarmupCancelled) break;
@@ -7456,6 +7471,7 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
+      manuallyNamed: false,
       summaryInFlight: false,
       continuitySummary: null,
       continuitySummaryUpdatedAt: null,
@@ -7613,11 +7629,13 @@ export function createAgentChatService(args: {
     automationId,
     automationRunId,
     computerUse,
+    requestedCwd,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
       laneService,
       laneId,
       purpose: "start this chat",
+      requestedCwd,
     });
     const sessionId = randomUUID();
     const startedAt = nowIso();
@@ -7763,6 +7781,7 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
+      manuallyNamed: false,
       summaryInFlight: false,
       continuitySummary: null,
       continuitySummaryUpdatedAt: null,
@@ -8113,6 +8132,14 @@ export function createAgentChatService(args: {
       if (reasoningEffort) {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
       }
+      // Re-sync permission mode so mid-session changes take effect on this turn.
+      if (managed.runtime?.kind === "unified") {
+        const chatConfig = resolveChatConfig();
+        managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
+          managed.session,
+          chatConfig.unifiedPermissionMode,
+        );
+      }
       await runTurn(managed, {
         promptText,
         displayText: visibleText,
@@ -8131,6 +8158,20 @@ export function createAgentChatService(args: {
         managed.session.reasoningEffort = nextReasoningEffort;
       } else if (!managed.session.reasoningEffort) {
         managed.session.reasoningEffort = DEFAULT_REASONING_EFFORT;
+      }
+
+      // Re-sync codex approval policy so mid-session changes take effect on this turn.
+      if (runtime.threadResumed) {
+        const prevApproval = managed.session.codexApprovalPolicy;
+        const prevSandbox = managed.session.codexSandbox;
+        resolveCodexThreadParams(managed);
+        if (
+          managed.session.codexApprovalPolicy !== prevApproval
+          || managed.session.codexSandbox !== prevSandbox
+        ) {
+          // Policy drifted — force a re-resume so the codex server picks up the new settings.
+          runtime.threadResumed = false;
+        }
       }
 
       if (!runtime.threadResumed) {
@@ -8487,6 +8528,11 @@ export function createAgentChatService(args: {
           await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
         }
       }
+      // Re-sync codex approval policy from persisted/config settings
+      managed.session.codexApprovalPolicy = persisted?.codexApprovalPolicy ?? managed.session.codexApprovalPolicy;
+      managed.session.codexSandbox = persisted?.codexSandbox ?? managed.session.codexSandbox;
+      managed.session.codexConfigSource = persisted?.codexConfigSource ?? managed.session.codexConfigSource;
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     } else if (managed.runtime?.kind === "unified" || (managed.session.modelId && !providerResolver.isModelCliWrapped(managed.session.modelId))) {
       // Unified runtime resume — re-resolve the model
       const result = await startUnifiedSession(managed);
@@ -8509,11 +8555,21 @@ export function createAgentChatService(args: {
         }
         // Fallthrough to Claude — SDK manages history via sdkSessionId
         ensureClaudeSessionRuntime(managed);
+        // Re-sync permission mode from persisted/config settings
+        const fallbackPermMode = resolveClaudeTurnPermissionMode(managed);
+        if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && typeof managed.runtime.v2Session.setPermissionMode === "function") {
+          await managed.runtime.v2Session.setPermissionMode(fallbackPermMode);
+        }
         sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
       }
     } else {
       // Claude — SDK manages history via sdkSessionId
       ensureClaudeSessionRuntime(managed);
+      // Re-sync permission mode from persisted/config settings
+      const claudePermMode = resolveClaudeTurnPermissionMode(managed);
+      if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && typeof managed.runtime.v2Session.setPermissionMode === "function") {
+        await managed.runtime.v2Session.setPermissionMode(claudePermMode);
+      }
       sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
     }
 
@@ -8948,6 +9004,7 @@ export function createAgentChatService(args: {
   const updateSession = async ({
     sessionId,
     title,
+    manuallyNamed,
     modelId,
     reasoningEffort,
     interactionMode,
@@ -9157,10 +9214,20 @@ export function createAgentChatService(args: {
 
     if (title !== undefined) {
       const normalizedTitle = String(title ?? "").trim();
+      const hasExplicitTitle = normalizedTitle.length > 0;
       sessionService.updateMeta({
         sessionId,
-        title: normalizedTitle.length ? normalizedTitle : defaultChatSessionTitle(managed.session.provider),
+        title: hasExplicitTitle ? normalizedTitle : defaultChatSessionTitle(managed.session.provider),
       });
+      if (manuallyNamed !== undefined) {
+        managed.manuallyNamed = manuallyNamed && hasExplicitTitle;
+      } else if (!hasExplicitTitle) {
+        managed.manuallyNamed = false;
+      }
+    }
+    // Allow resetting manuallyNamed independently when no title change is provided
+    if (manuallyNamed !== undefined && title === undefined) {
+      managed.manuallyNamed = manuallyNamed;
     }
 
     persistChatState(managed);

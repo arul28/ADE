@@ -44,6 +44,35 @@ the abort infrastructure. When a turn exceeds this limit, an error event
 is emitted and the turn is terminated, preventing a single stalled
 provider call from blocking the session indefinitely.
 
+### Auto-Title Generation
+
+Chat sessions support automatic AI-generated titles. The feature
+progresses through two stages:
+
+- **initial** -- Generated early in the conversation from the first
+  user message. Provides an immediate label while the session is still
+  brief.
+- **final** -- Generated after sufficient conversation context has
+  accumulated, producing a more accurate title.
+
+Auto-title generation is enabled by default (`ai.chat.autoTitleEnabled`
+defaults to `true`) and runs for any AI mode that is not `guest`.
+Reasoning effort for title generation is configurable via
+`ai.chat.autoTitleReasoningEffort`.
+
+When a session is refreshed on completion, a final title can also be
+generated if `ai.chat.autoTitleRefreshOnComplete` is enabled (default:
+`true`).
+
+### Manual Rename
+
+Users can rename a chat session through the right-click context menu on
+any chat session card. The context menu provides an inline text input
+for entering a new title (max 48 characters). Renaming a session sets a
+`manuallyNamed` flag on the session, which permanently suppresses
+further auto-title generation for that session. This ensures a
+user-chosen name is never overwritten by the AI.
+
 ### Text Batching
 
 Streaming assistant text events from Codex and unified providers are
@@ -170,7 +199,9 @@ Codex sessions have two independent controls:
 
 The unified orchestrator adapter translates abstract permission modes (`plan`, `edit`, `full-auto`) into the correct provider-native fields via `mapPermissionModeToNativeFields()`. For Claude this maps to `claudePermissionMode`, for Codex to `codexApprovalPolicy`/`codexSandbox`, and for unified to `unifiedPermissionMode`. Chat sessions still persist an abstract `permissionMode` field alongside the provider-native controls so the UI can summarize session state and legacy flows can be normalized consistently.
 
-All controls can be changed mid-session via `updateSession`.
+All controls can be changed mid-session via `updateSession`. The
+`updateSession` API also accepts a `manuallyNamed` flag to mark a
+session as user-renamed, suppressing future auto-title generation.
 
 ## Pending Input System (Human-in-the-Loop)
 

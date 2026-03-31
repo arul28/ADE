@@ -87,6 +87,7 @@ export function WorkViewArea({
   onOpenChatSession,
   onLaunchPtySession,
   closingPtyIds,
+  onContextMenu,
 }: {
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
@@ -106,6 +107,7 @@ export function WorkViewArea({
     tracked?: boolean;
   }) => Promise<unknown>;
   closingPtyIds: Set<string>;
+  onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
 }) {
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
@@ -189,6 +191,7 @@ export function WorkViewArea({
                   <div
                     key={session.id}
                     className="flex min-h-[260px] flex-col overflow-hidden"
+                    onContextMenu={(e) => { if (onContextMenu) { e.preventDefault(); onContextMenu(session, e); } }}
                     style={{
                       border: isActive
                         ? "1px solid rgba(255,255,255, 0.08)"
@@ -317,6 +320,7 @@ export function WorkViewArea({
                   opacity: isActive ? 1 : 0.5,
                 }}
                 onClick={() => onSelectItem(session.id)}
+                onContextMenu={(e) => { if (onContextMenu) { e.preventDefault(); onContextMenu(session, e); } }}
               >
                 <ToolLogo toolType={session.toolType} size={10} />
                 <span className="max-w-[120px] truncate">

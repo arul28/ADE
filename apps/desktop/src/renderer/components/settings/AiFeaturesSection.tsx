@@ -146,7 +146,7 @@ export function AiFeaturesSection() {
         || normalizeModelSetting(effectiveAi?.featureModelOverrides?.terminal_summaries)
         || "",
       );
-      setChatAutoTitleEnabled(effectiveAi?.chat?.autoTitleEnabled === true);
+      setChatAutoTitleEnabled(effectiveAi?.chat?.autoTitleEnabled !== false);
       setChatAutoTitleRefresh(effectiveAi?.chat?.autoTitleRefreshOnComplete !== false);
       setChatAutoTitleReasoning(effectiveAi?.chat?.autoTitleReasoningEffort ?? null);
 

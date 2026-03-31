@@ -608,7 +608,18 @@ export function createGitOperationsService({
       } else if (normalizedBehind > 0 && normalizedAhead === 0) {
         recommendedAction = "pull";
       } else if (diverged) {
-        recommendedAction = "pull";
+        // Check if local HEAD contains the upstream tip.  When both sides have
+        // unique commits, the upstream tip is almost never an ancestor of HEAD
+        // (that only happens after a local rebase that replayed upstream), so
+        // the safest default for genuine divergence is "pull" (merge upstream
+        // into local).  We only suggest force-push when we can confirm the
+        // upstream tip IS already an ancestor — meaning the local branch was
+        // rebased on top of upstream and only needs a force-push to publish.
+        const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
+          cwd: lane.worktreePath,
+          timeoutMs: 5_000
+        });
+        recommendedAction = mergeBaseRes.exitCode === 0 ? "force_push_lease" : "pull";
       }
 
       return {

@@ -891,6 +891,13 @@ export function LaneGitActionsPane({
         detail: `${syncStatus.ahead} local commit${syncStatus.ahead === 1 ? "" : "s"} are ready to send to remote.`
       };
     }
+    if (syncStatus.recommendedAction === "force_push_lease") {
+      return {
+        action: "force_push_lease",
+        label: "Force push (lease)",
+        detail: "Local history was rewritten (e.g. after a rebase). Force push to update the remote branch."
+      };
+    }
     if (syncStatus.recommendedAction === "pull") {
       if (syncStatus.diverged) {
         return {
@@ -1358,14 +1365,14 @@ export function LaneGitActionsPane({
               type="button"
               style={{
                 ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                ...(nextActionHint?.action === "push" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+                ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
               }}
               disabled={!laneId || busyAction != null}
-              onClick={() => runPush(false)}
-              title={getPushSummary(syncStatus)}
+              onClick={() => runPush(nextActionHint?.action === "force_push_lease")}
+              title={nextActionHint?.action === "force_push_lease" ? "Force push (lease) — history was rewritten" : getPushSummary(syncStatus)}
             >
               <Upload size={12} weight="bold" style={{ marginRight: 4 }} />
-              {syncStatus?.hasUpstream === false ? "PUBLISH" : "PUSH"}
+              {syncStatus?.hasUpstream === false ? "PUBLISH" : nextActionHint?.action === "force_push_lease" ? "FORCE PUSH" : "PUSH"}
             </button>
             {lane?.parentLaneId ? (
               <button

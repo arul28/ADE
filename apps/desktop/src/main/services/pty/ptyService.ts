@@ -239,6 +239,18 @@ export function createPtyService({
     return ai?.sessionIntelligence;
   };
 
+  const isTitleGenerationEnabled = (): boolean => {
+    const si = getSessionIntelligence();
+    const ai = projectConfigService?.get().effective.ai;
+    return si?.titles?.enabled ?? (ai?.chat as any)?.autoTitleEnabled ?? true;
+  };
+
+  const resolveTitleModelId = (): string | undefined => {
+    const si = getSessionIntelligence();
+    const raw = si?.titles?.modelId;
+    return typeof raw === "string" && raw.trim().length ? raw.trim() : undefined;
+  };
+
   /** Only orchestrated worker sessions auto-close after the wrapped CLI exits back to shell. */
   const TOOL_TYPES_WITH_AUTO_CLOSE = new Set<TerminalToolType>([
     "claude-orchestrated",
@@ -337,33 +349,88 @@ export function createPtyService({
         sessionService.setSummary(sessionId, summary);
 
         const si = getSessionIntelligence();
-        if (si?.summaries?.enabled === false) return;
-        if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
+        const hasAi = Boolean(aiIntegrationService && aiIntegrationService.getMode() !== "guest");
 
-        const prompt = [
-          "You are ADE's terminal summary assistant.",
-          "Rewrite this terminal session into a concise 1-3 sentence summary with outcome and next action.",
-          "Do not invent commands or outcomes.",
-          "",
-          "Deterministic summary:",
-          summary,
-          "",
-          "Terminal transcript tail:",
-          transcript.slice(-18_000)
-        ].join("\n");
+        // AI-enhanced summary (only when summaries are enabled and AI is available)
+        if (si?.summaries?.enabled !== false && hasAi) {
+          try {
+            const prompt = [
+              "You are ADE's terminal summary assistant.",
+              "Rewrite this terminal session into a concise 1-3 sentence summary with outcome and next action.",
+              "Do not invent commands or outcomes.",
+              "",
+              "Deterministic summary:",
+              summary,
+              "",
+              "Terminal transcript tail:",
+              transcript.slice(-18_000)
+            ].join("\n");
 
-        const summaryModelId = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
-          ? si.summaries.modelId.trim()
-          : undefined;
+            const summaryModelId = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
+              ? si.summaries.modelId.trim()
+              : undefined;
 
-        const aiSummary = await aiIntegrationService.summarizeTerminal({
-          cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
-          prompt,
-          ...(summaryModelId ? { model: summaryModelId } : {}),
-        });
-        const text = aiSummary.text.trim();
-        if (text.length) {
-          sessionService.setSummary(sessionId, text);
+            const aiSummary = await aiIntegrationService!.summarizeTerminal({
+              cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
+              prompt,
+              ...(summaryModelId ? { model: summaryModelId } : {}),
+            });
+            const text = aiSummary.text.trim();
+            if (text.length) {
+              sessionService.setSummary(sessionId, text);
+            }
+          } catch (err) {
+            logger.warn("pty.ai_summary_failed", {
+              sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
+        // Refresh title on complete — runs independently of AI summaries toggle
+        if (hasAi) {
+          const refreshOnComplete = getSessionIntelligence()?.titles?.refreshOnComplete
+            ?? (projectConfigService?.get().effective.ai?.chat as any)?.autoTitleRefreshOnComplete
+            ?? true;
+          if (refreshOnComplete && isTitleGenerationEnabled()) {
+            try {
+              const titlePrompt = [
+                "Generate a concise final title for this completed terminal session.",
+                "Return only plain text, max 80 characters, no punctuation at the end.",
+                "",
+                `Session type: ${session.toolType ?? "terminal"}`,
+                `Initial title: ${session.title}`,
+                session.goal ? `Current goal: ${session.goal}` : null,
+                `Exit code: ${session.exitCode ?? "unknown"}`,
+                "",
+                "Terminal transcript tail:",
+                transcript.slice(-2000),
+              ].filter(Boolean).join("\n");
+
+              const titleModelId = resolveTitleModelId();
+              const titleResult = await aiIntegrationService!.summarizeTerminal({
+                cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
+                prompt: titlePrompt,
+                timeoutMs: 8_000,
+                ...(titleModelId ? { model: titleModelId } : {}),
+              });
+              const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
+              if (finalTitle) {
+                // Guard: skip if user renamed the session while the AI call was in-flight
+                const current = sessionService.get(sessionId);
+                if (current && current.title !== session.title) {
+                  logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
+                } else {
+                  sessionService.updateMeta({ sessionId, title: finalTitle });
+                }
+              }
+            } catch (err) {
+              logger.warn("pty.session_title_refresh_failed", {
+                sessionId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
         }
       })
       .catch(() => {
@@ -741,7 +808,7 @@ export function createPtyService({
         // Accumulate initial output for session title generation
         if (!titleBufferFull) {
           titleOutputBuffer += data;
-          if (titleOutputBuffer.length >= 500) {
+          if (titleOutputBuffer.length >= 800) {
             titleBufferFull = true;
           }
         }
@@ -770,14 +837,13 @@ export function createPtyService({
         }
       }
 
-      // Fire-and-forget: after 4s, attempt AI title generation for non-shell sessions
-      if (aiIntegrationService && aiIntegrationService.getMode() === "subscription") {
+      // Fire-and-forget: after 6s, attempt AI title generation for non-shell sessions
+      if (aiIntegrationService && aiIntegrationService.getMode() !== "guest") {
         const capturedAi = aiIntegrationService;
         setTimeout(() => {
           if (entry.disposed) return;
 
-          const si = getSessionIntelligence();
-          if (si?.titles?.enabled === false) return;
+          if (!isTitleGenerationEnabled()) return;
 
           const strippedOutput = stripAnsi(titleOutputBuffer).trim();
           if (strippedOutput.length < 10) return;
@@ -793,13 +859,10 @@ export function createPtyService({
             "Return only plain text, max 80 characters, no punctuation at the end.",
             "",
             "Initial output:",
-            strippedOutput.slice(0, 500)
+            strippedOutput.slice(0, 800)
           ].join("\n");
 
-          const titleModelId = typeof si?.titles?.modelId === "string" && si.titles.modelId.trim().length
-            ? si.titles.modelId.trim()
-            : undefined;
-
+          const titleModelId = resolveTitleModelId();
           capturedAi
             .summarizeTerminal({
               cwd: entry.boundCwd || entry.laneWorktreePath,
@@ -810,7 +873,13 @@ export function createPtyService({
             .then((result) => {
               const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (title) {
-                sessionService.updateMeta({ sessionId, goal: title });
+                // Guard: skip if user renamed the session while the AI call was in-flight
+                const current = sessionService.get(sessionId);
+                if (current && current.title !== session.title) {
+                  logger.info("pty.session_title_skipped_user_renamed", { sessionId });
+                } else {
+                  sessionService.updateMeta({ sessionId, title });
+                }
               }
             })
             .catch((err) => {
@@ -819,7 +888,7 @@ export function createPtyService({
                 error: err instanceof Error ? err.message : String(err)
               });
             });
-        }, 4000);
+        }, 6000);
       }
 
       logger.info("pty.create", { ptyId, sessionId, laneId, cwd, shell: selectedShell?.file ?? "unknown" });

@@ -1,8 +1,6 @@
 # Terminals and sessions
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
->
-> Last updated: 2026-03-13
 
 ADE treats PTY sessions and agent chat sessions as tracked execution surfaces with shared session metadata, delta computation, transcript persistence, and lane associations.
 
@@ -72,6 +70,38 @@ This keeps session visibility current without leaving zero-row polling loops run
 
 ---
 
+## AI-Generated Session Titles
+
+PTY sessions support automatic AI-generated titles when an AI provider
+is available (any mode other than `guest`). Title generation happens at
+two points:
+
+1. **Shortly after launch** -- After a 6-second delay, the service
+   collects up to 800 characters of initial terminal output, strips ANSI
+   escape sequences, and sends the cleaned text to the AI integration
+   service with a prompt requesting a concise title (max 80 characters).
+   This gives non-shell sessions (build commands, test runs, dev
+   servers) a descriptive name based on their early output.
+
+2. **On session completion** -- When a PTY session exits and
+   `refreshOnComplete` is enabled (default: `true`), the service
+   generates a final title from the transcript tail (last 2000
+   characters). The prompt includes the session type, initial title,
+   current goal, and exit code, producing a title that reflects the
+   outcome of the completed session.
+
+Title generation is gated by the `sessionIntelligence.titles.enabled`
+config (falling back to `ai.chat.autoTitleEnabled`, default `true`).
+The model used for title generation can be overridden via
+`sessionIntelligence.titles.modelId`. The refresh-on-complete behavior
+is controlled by `sessionIntelligence.titles.refreshOnComplete` (falling
+back to `ai.chat.autoTitleRefreshOnComplete`, default `true`).
+
+Title generation failures are logged as warnings and do not affect
+session lifecycle.
+
+---
+
 ## Session lifecycle
 
 The lifecycle model remains the same:
@@ -93,6 +123,23 @@ This pattern applies across all session-creation and session-opening paths:
 - `useWorkSessions` and `useLaneWorkSessions`: `refresh()` is called and awaited before `focusSession()` and `openSessionTab()`.
 - `TerminalsPage`: `work.refresh()` is awaited before `work.openSessionTab()`.
 - `AgentChatPane`: The `onSessionCreated` and `refreshSessions` callbacks are awaited (not fire-and-forget) so that the parent surface navigates the user to the chat tab before the first agent turn begins.
+
+---
+
+## Session context menu
+
+Right-clicking a session card in the Work view opens a context menu with
+actions appropriate to the session type and state:
+
+- **Chat sessions**: Rename (inline text input), stop, resume, go to
+  lane, copy session ID.
+- **PTY sessions**: Stop (sends SIGHUP), go to lane, copy session ID,
+  copy resume command (when available).
+
+The context menu is available on both the expanded session cards and the
+compact tab bar at the bottom of the Work view. Renaming a chat session
+through the context menu marks it as manually named, preventing
+auto-title from overwriting the user's choice.
 
 ---
 
