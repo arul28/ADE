@@ -3451,7 +3451,7 @@ describe("createAgentChatService", () => {
       expect(deliveredSteer).toBeUndefined();
     });
 
-    it("editSteer updates the queued steer text and delivers the updated text", async () => {
+    it("editSteer updates the queued steer text and cancels on interrupt", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -3560,32 +3560,27 @@ describe("createAgentChatService", () => {
       );
       expect(editedEvent).toBeDefined();
 
-      // Interrupt the turn to let pending steers get delivered
+      // Interrupt the turn — queued steers should be cancelled, not delivered
       await service.interrupt({ sessionId: session.id });
       await activeTurn;
 
-      // Wait for the delivery notice and the follow-up done
+      // Wait for the cancellation notice for the queued steer
       await waitForEvent(
         events,
         (event): event is AgentChatEventEnvelope =>
           event.event.type === "system_notice"
-          && (event.event as any).message === "Delivering your queued message...",
+          && (event.event as any).steerId === steerId
+          && /cancelled/i.test((event.event as any).message),
       );
 
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "done",
-      );
-
-      // Verify that `send` was called with text containing "updated text"
+      // The steer should NOT have been delivered via send
       const sendCalls = send.mock.calls.map((c: any[]) => c[0]);
       const deliveredWithUpdatedText = sendCalls.find(
         (arg: any) =>
           (typeof arg === "string" && arg.includes("updated text"))
           || (typeof arg === "object" && JSON.stringify(arg).includes("updated text")),
       );
-      expect(deliveredWithUpdatedText).toBeDefined();
+      expect(deliveredWithUpdatedText).toBeUndefined();
     });
   });
 
