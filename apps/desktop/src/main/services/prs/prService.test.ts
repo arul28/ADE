@@ -36,6 +36,7 @@ vi.mock("../shared/queueRebase", () => ({
   fetchRemoteTrackingBranch: vi.fn(),
 }));
 
+import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createPrService } from "./prService";
 
 // ---------------------------------------------------------------------------
@@ -356,5 +357,485 @@ describe("prService.createFromLane", () => {
         draft: false,
       }),
     ).rejects.toThrow("Lane not found: nonexistent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createIntegrationLane
+// ---------------------------------------------------------------------------
+
+describe("prService.createIntegrationLane", () => {
+  const BASE_LANE_ID = "lane-base";
+  const SOURCE_LANE_A_ID = "lane-a";
+  const SOURCE_LANE_B_ID = "lane-b";
+
+  const baseLane = makeFakeLane({
+    id: BASE_LANE_ID,
+    name: "main",
+    laneType: "primary",
+    branchRef: "refs/heads/main",
+    worktreePath: "/tmp/lane-base-wt",
+  });
+
+  const sourceLaneA = makeFakeLane({
+    id: SOURCE_LANE_A_ID,
+    name: "feature-a",
+    branchRef: "refs/heads/feature-a",
+    worktreePath: "/tmp/lane-a-wt",
+    status: { dirty: false },
+  });
+
+  const sourceLaneB = makeFakeLane({
+    id: SOURCE_LANE_B_ID,
+    name: "feature-b",
+    branchRef: "refs/heads/feature-b",
+    worktreePath: "/tmp/lane-b-wt",
+    status: { dirty: false },
+  });
+
+  const integrationLane = makeFakeLane({
+    id: "lane-integration",
+    name: "integration/test",
+    branchRef: "refs/heads/integration/test",
+    worktreePath: "/tmp/lane-integration-wt",
+  });
+
+  function makeIntegrationLaneService(lanes?: unknown[]) {
+    return {
+      list: vi.fn(async () => lanes ?? [baseLane, sourceLaneA, sourceLaneB]),
+      getLaneBaseAndBranch: vi.fn(),
+      createChild: vi.fn(async () => integrationLane),
+      archive: vi.fn(async () => {}),
+    } as any;
+  }
+
+  function buildIntegrationService(opts: { laneService?: any; db?: any } = {}) {
+    const db = opts.db ?? makeMockDb();
+    const laneService = opts.laneService ?? makeIntegrationLaneService();
+
+    mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+
+    const service = createPrService({
+      db,
+      logger: makeLogger(),
+      projectId: "proj-1",
+      projectRoot: "/tmp/test-project",
+      laneService,
+      operationService: makeOperationService(),
+      githubService: makeGithubService(),
+      projectConfigService: makeProjectConfigService(),
+      openExternal: vi.fn(async () => {}),
+    });
+
+    return { service, db, laneService };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("throws when sourceLaneIds is empty", async () => {
+    const { service } = buildIntegrationService();
+
+    await expect(
+      service.createIntegrationLane({
+        sourceLaneIds: [],
+        integrationLaneName: "integration/test",
+        baseBranch: "main",
+      }),
+    ).rejects.toThrow("At least one source lane is required");
+  });
+
+  it("throws when integrationLaneName is empty or whitespace", async () => {
+    const { service } = buildIntegrationService();
+
+    await expect(
+      service.createIntegrationLane({
+        sourceLaneIds: [SOURCE_LANE_A_ID],
+        integrationLaneName: "   ",
+        baseBranch: "main",
+      }),
+    ).rejects.toThrow("Integration lane name is required");
+  });
+
+  it("throws when preflight reports no valid source lanes", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+
+    const { service } = buildIntegrationService();
+
+    await expect(
+      service.createIntegrationLane({
+        sourceLaneIds: [SOURCE_LANE_A_ID],
+        integrationLaneName: "integration/test",
+        baseBranch: "main",
+      }),
+    ).rejects.toThrow("At least one valid source lane is required");
+  });
+
+  it("throws when preflight reports duplicate source lanes", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [SOURCE_LANE_A_ID],
+      missingSourceLaneIds: [],
+    });
+
+    const { service } = buildIntegrationService();
+
+    await expect(
+      service.createIntegrationLane({
+        sourceLaneIds: [SOURCE_LANE_A_ID, SOURCE_LANE_A_ID],
+        integrationLaneName: "integration/test",
+        baseBranch: "main",
+      }),
+    ).rejects.toThrow("Duplicate source lanes selected");
+  });
+
+  it("throws when preflight reports missing source lanes", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID, "missing-lane"],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: ["missing-lane"],
+    });
+
+    const { service } = buildIntegrationService();
+
+    await expect(
+      service.createIntegrationLane({
+        sourceLaneIds: [SOURCE_LANE_A_ID, "missing-lane"],
+        integrationLaneName: "integration/test",
+        baseBranch: "main",
+      }),
+    ).rejects.toThrow("Source lanes not found: missing-lane");
+  });
+
+  it("throws when base lane cannot be resolved", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: null,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+
+    const { service } = buildIntegrationService();
+
+    await expect(
+      service.createIntegrationLane({
+        sourceLaneIds: [SOURCE_LANE_A_ID],
+        integrationLaneName: "integration/test",
+        baseBranch: "nonexistent-base",
+      }),
+    ).rejects.toThrow('Could not map base branch "nonexistent-base" to an active lane');
+  });
+
+  it("creates integration lane and merges all source branches successfully", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID, SOURCE_LANE_B_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+    mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    const laneService = makeIntegrationLaneService();
+    const { service } = buildIntegrationService({ laneService });
+
+    const result = await service.createIntegrationLane({
+      sourceLaneIds: [SOURCE_LANE_A_ID, SOURCE_LANE_B_ID],
+      integrationLaneName: "integration/test",
+      baseBranch: "main",
+      allowDirtyWorktree: true,
+    });
+
+    // Lane was created as child of base lane
+    expect(laneService.createChild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentLaneId: BASE_LANE_ID,
+        name: "integration/test",
+        laneRole: "integration",
+      }),
+    );
+
+    // Both merges succeeded
+    expect(result.integrationLane.id).toBe("lane-integration");
+    expect(result.mergeResults).toHaveLength(2);
+    expect(result.mergeResults[0]).toEqual({ laneId: SOURCE_LANE_A_ID, success: true });
+    expect(result.mergeResults[1]).toEqual({ laneId: SOURCE_LANE_B_ID, success: true });
+
+    // Git merge was called for each source lane
+    const mergeCalls = mockGit.runGit.mock.calls.filter(
+      (call: unknown[]) => Array.isArray(call[0]) && (call[0] as string[])[0] === "merge",
+    );
+    expect(mergeCalls.length).toBe(2);
+  });
+
+  it("records merge failure and aborts when a source branch fails to merge", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID, SOURCE_LANE_B_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+
+    const laneService = makeIntegrationLaneService();
+    const { service } = buildIntegrationService({ laneService });
+
+    // Set mockImplementation AFTER buildIntegrationService (which sets mockResolvedValue)
+    let mergeCallCount = 0;
+    mockGit.runGit.mockImplementation(async (gitArgs: string[]) => {
+      if (gitArgs[0] === "merge" && gitArgs[1] === "--no-ff") {
+        mergeCallCount++;
+        if (mergeCallCount === 1) {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        // Second merge fails
+        return { exitCode: 1, stdout: "", stderr: "CONFLICT (content): Merge conflict" };
+      }
+      // merge --abort
+      if (gitArgs[0] === "merge" && gitArgs[1] === "--abort") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+
+    const result = await service.createIntegrationLane({
+      sourceLaneIds: [SOURCE_LANE_A_ID, SOURCE_LANE_B_ID],
+      integrationLaneName: "integration/test",
+      baseBranch: "main",
+      allowDirtyWorktree: true,
+    });
+
+    expect(result.mergeResults[0]).toEqual({ laneId: SOURCE_LANE_A_ID, success: true });
+    expect(result.mergeResults[1]).toEqual({
+      laneId: SOURCE_LANE_B_ID,
+      success: false,
+      error: "CONFLICT (content): Merge conflict",
+    });
+
+    // merge --abort was called after the failure
+    const abortCalls = mockGit.runGit.mock.calls.filter(
+      (call: unknown[]) => Array.isArray(call[0]) && (call[0] as string[])[0] === "merge" && (call[0] as string[])[1] === "--abort",
+    );
+    expect(abortCalls.length).toBe(1);
+  });
+
+  it("uses 'Merge failed' when stderr is empty on merge failure", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+
+    const laneService = makeIntegrationLaneService();
+    const { service } = buildIntegrationService({ laneService });
+
+    // Set mockImplementation AFTER buildIntegrationService
+    mockGit.runGit.mockImplementation(async (gitArgs: string[]) => {
+      if (gitArgs[0] === "merge" && gitArgs[1] === "--no-ff") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+
+    const result = await service.createIntegrationLane({
+      sourceLaneIds: [SOURCE_LANE_A_ID],
+      integrationLaneName: "integration/test",
+      baseBranch: "main",
+      allowDirtyWorktree: true,
+    });
+
+    expect(result.mergeResults[0]).toEqual({
+      laneId: SOURCE_LANE_A_ID,
+      success: false,
+      error: "Merge failed",
+    });
+  });
+
+  it("uses custom description when provided", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+    mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    const laneService = makeIntegrationLaneService();
+    const { service } = buildIntegrationService({ laneService });
+
+    await service.createIntegrationLane({
+      sourceLaneIds: [SOURCE_LANE_A_ID],
+      integrationLaneName: "integration/test",
+      baseBranch: "main",
+      description: "Custom description for testing",
+      allowDirtyWorktree: true,
+    });
+
+    expect(laneService.createChild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: "Custom description for testing",
+      }),
+    );
+  });
+
+  it("generates default description from source lane names when no description given", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID, SOURCE_LANE_B_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+    mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    const laneService = makeIntegrationLaneService();
+    const { service } = buildIntegrationService({ laneService });
+
+    await service.createIntegrationLane({
+      sourceLaneIds: [SOURCE_LANE_A_ID, SOURCE_LANE_B_ID],
+      integrationLaneName: "integration/test",
+      baseBranch: "main",
+      allowDirtyWorktree: true,
+    });
+
+    expect(laneService.createChild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: "Integration lane for merging: feature-a, feature-b",
+      }),
+    );
+  });
+
+  it("archives integration lane on error during merge loop", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+
+    const laneService = makeIntegrationLaneService();
+    const { service } = buildIntegrationService({ laneService });
+
+    // Set mock AFTER buildIntegrationService — createChild succeeds, but merge throws
+    mockGit.runGit.mockRejectedValue(new Error("unexpected git failure"));
+
+    await expect(
+      service.createIntegrationLane({
+        sourceLaneIds: [SOURCE_LANE_A_ID],
+        integrationLaneName: "integration/test",
+        baseBranch: "main",
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow("unexpected git failure");
+
+    // Should have attempted to archive the integration lane
+    expect(laneService.archive).toHaveBeenCalledWith({ laneId: "lane-integration" });
+  });
+
+  it("still throws the original error if archive cleanup also fails", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+
+    const laneService = makeIntegrationLaneService();
+    laneService.archive.mockRejectedValue(new Error("archive failed too"));
+    const { service } = buildIntegrationService({ laneService });
+
+    // Set mock AFTER buildIntegrationService
+    mockGit.runGit.mockRejectedValue(new Error("git merge crashed"));
+
+    await expect(
+      service.createIntegrationLane({
+        sourceLaneIds: [SOURCE_LANE_A_ID],
+        integrationLaneName: "integration/test",
+        baseBranch: "main",
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow("git merge crashed");
+  });
+
+  it("passes custom laneRole through to createChild", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+    mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    const laneService = makeIntegrationLaneService();
+    const { service } = buildIntegrationService({ laneService });
+
+    await service.createIntegrationLane({
+      sourceLaneIds: [SOURCE_LANE_A_ID],
+      integrationLaneName: "integration/test",
+      baseBranch: "main",
+      laneRole: "result",
+      allowDirtyWorktree: true,
+    });
+
+    expect(laneService.createChild).toHaveBeenCalledWith(
+      expect.objectContaining({ laneRole: "result" }),
+    );
+  });
+
+  it("defaults laneRole to 'integration' when not specified", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+    mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    const laneService = makeIntegrationLaneService();
+    const { service } = buildIntegrationService({ laneService });
+
+    await service.createIntegrationLane({
+      sourceLaneIds: [SOURCE_LANE_A_ID],
+      integrationLaneName: "integration/test",
+      baseBranch: "main",
+      allowDirtyWorktree: true,
+    });
+
+    expect(laneService.createChild).toHaveBeenCalledWith(
+      expect.objectContaining({ laneRole: "integration" }),
+    );
+  });
+
+  it("throws when dirty worktrees are detected without allowDirtyWorktree", async () => {
+    const dirtyLaneA = {
+      ...sourceLaneA,
+      status: { dirty: true },
+    };
+
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+
+    const laneService = makeIntegrationLaneService([baseLane, dirtyLaneA, sourceLaneB]);
+    const { service } = buildIntegrationService({ laneService });
+
+    await expect(
+      service.createIntegrationLane({
+        sourceLaneIds: [SOURCE_LANE_A_ID],
+        integrationLaneName: "integration/test",
+        baseBranch: "main",
+        // allowDirtyWorktree intentionally omitted
+      }),
+    ).rejects.toThrow(/Uncommitted changes/);
   });
 });

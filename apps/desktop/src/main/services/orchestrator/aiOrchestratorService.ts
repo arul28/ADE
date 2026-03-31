@@ -3042,15 +3042,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       missionId: opts.missionId,
       laneRole: opts.laneRole ?? "worker",
     });
-    db.run(
-      `
-        update lanes
-        set mission_id = coalesce(mission_id, ?),
-            lane_role = coalesce(lane_role, ?)
-        where id = ?
-      `,
-      [opts.missionId, opts.laneRole ?? "worker", child.id],
-    );
     logger.info("ai_orchestrator.lane_created", {
       missionId: opts.missionId,
       laneId: child.id,
@@ -3138,37 +3129,18 @@ Check all worker statuses and continue managing the mission from here. Read work
     missionTitle: string;
     createIfMissing?: boolean;
   }): Promise<string | null> => {
-    const persistMissionLaneOwnership = async (laneId: string, laneRole: "mission_root" | "worker" | "integration" | "result"): Promise<void> => {
-      if (laneService?.setMissionOwnership) {
-        await laneService.setMissionOwnership({
-          laneId,
-          missionId: args.missionId,
-          laneRole,
-        });
-        return;
-      }
-      db.run(
-        `
-          update lanes
-          set mission_id = ?,
-              lane_role = ?
-          where id = ?
-        `,
-        [args.missionId, laneRole, laneId],
-      );
-    };
     const persistedLaneId = resolvePersistedMissionLaneIdForRun(args.runId);
     if (persistedLaneId) {
       persistMissionLaneIdForRun(args.runId, persistedLaneId);
       missionService.setMissionLane({ missionId: args.missionId, laneId: persistedLaneId });
-      await persistMissionLaneOwnership(persistedLaneId, "mission_root");
+      await setLaneMissionOwnership(persistedLaneId, args.missionId, "mission_root");
       return persistedLaneId;
     }
     if (args.createIfMissing === false) return null;
     const createdLaneId = await createMissionLane(args.missionId, args.missionTitle);
     if (createdLaneId) {
       persistMissionLaneIdForRun(args.runId, createdLaneId);
-      await persistMissionLaneOwnership(createdLaneId, "mission_root");
+      await setLaneMissionOwnership(createdLaneId, args.missionId, "mission_root");
     }
     return createdLaneId;
   };
@@ -3186,8 +3158,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     );
     for (const lane of missionOwned) {
       try {
-        if (typeof laneService.archive === "function") {
-          await laneService.archive({ laneId: lane.id });
+        if (typeof laneService?.archive === "function") {
+          await laneService!.archive({ laneId: lane.id });
         } else {
           db.run(
             `
@@ -3206,6 +3178,17 @@ Check all worker statuses and continue managing the mission from here. Read work
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+  };
+
+  const setLaneMissionOwnership = async (laneId: string, missionId: string, laneRole: "mission_root" | "worker" | "integration" | "result"): Promise<void> => {
+    if (laneService?.setMissionOwnership) {
+      await laneService.setMissionOwnership({ laneId, missionId, laneRole });
+    } else {
+      db.run(
+        `update lanes set mission_id = ?, lane_role = ? where id = ?`,
+        [missionId, laneRole, laneId],
+      );
     }
   };
 
@@ -3237,12 +3220,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       ...(missionLaneId ? [missionLaneId] : []),
     ].filter(Boolean))] as string[];
     if (sourceLaneIds.length === 0) {
-      sourceLaneIds = [...new Set([
-        ...(missionLaneId ? [missionLaneId] : []),
-        ...stepLaneIds,
-      ])];
-    }
-    if (sourceLaneIds.length === 0) {
       const missionBaseLaneId = toOptionalString(args.mission.laneId);
       if (missionBaseLaneId) {
         sourceLaneIds = [missionBaseLaneId];
@@ -3255,23 +3232,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (sourceLaneIds.length === 1) {
       const resultLaneId = sourceLaneIds[0]!;
       missionService.setResultLane({ missionId: args.mission.id, laneId: resultLaneId });
-      if (laneService?.setMissionOwnership) {
-        await laneService.setMissionOwnership({
-          laneId: resultLaneId,
-          missionId: args.mission.id,
-          laneRole: "result",
-        });
-      } else {
-        db.run(
-          `
-            update lanes
-            set mission_id = ?,
-                lane_role = 'result'
-            where id = ?
-          `,
-          [args.mission.id, resultLaneId],
-        );
-      }
+      await setLaneMissionOwnership(resultLaneId, args.mission.id, "result");
       await archiveMissionIntermediateLanes(args.mission.id, resultLaneId);
       return {
         resultLaneId,
@@ -3301,23 +3262,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     const resultLaneId = assembly.integrationLane.id;
     missionService.setResultLane({ missionId: args.mission.id, laneId: resultLaneId });
-    if (laneService?.setMissionOwnership) {
-      await laneService.setMissionOwnership({
-        laneId: resultLaneId,
-        missionId: args.mission.id,
-        laneRole: "result",
-      });
-    } else {
-      db.run(
-        `
-          update lanes
-          set mission_id = ?,
-              lane_role = 'result'
-          where id = ?
-        `,
-        [args.mission.id, resultLaneId],
-      );
-    }
+    await setLaneMissionOwnership(resultLaneId, args.mission.id, "result");
 
     const failedMerges = assembly.mergeResults.filter((entry) => !entry.success);
     if (failedMerges.length > 0) {

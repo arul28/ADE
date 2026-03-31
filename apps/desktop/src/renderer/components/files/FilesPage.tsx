@@ -693,12 +693,12 @@ export function FilesPage() {
     if (!pending) return;
     if (!workspaces.length) return;
 
-    const desiredWorkspaceId =
-      pending.preferPrimaryWorkspace
-        ? workspaces.find((ws) => ws.kind === "primary")?.id ?? null
-        : pending.laneId != null
-        ? workspaces.find((ws) => ws.kind !== "primary" && ws.laneId === pending.laneId)?.id ?? null
-        : null;
+    let desiredWorkspaceId: string | null = null;
+    if (pending.preferPrimaryWorkspace) {
+      desiredWorkspaceId = workspaces.find((ws) => ws.kind === "primary")?.id ?? null;
+    } else if (pending.laneId != null) {
+      desiredWorkspaceId = workspaces.find((ws) => ws.kind !== "primary" && ws.laneId === pending.laneId)?.id ?? null;
+    }
     const targetWorkspaceId = desiredWorkspaceId ?? workspaceId;
     if (targetWorkspaceId && targetWorkspaceId !== workspaceId) {
       switchWorkspace(targetWorkspaceId);

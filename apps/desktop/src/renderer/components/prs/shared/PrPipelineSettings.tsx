@@ -407,21 +407,7 @@ export function PrPipelineSettings({
           </span>
         </div>
         <div style={{ position: "relative" }}>
-          {/* Filled track behind the range */}
-          <div
-            style={{
-              position: "absolute",
-              top: "50%",
-              left: 0,
-              height: TRACK_HEIGHT,
-              width: `${fillPct}%`,
-              borderRadius: 999,
-              background: `linear-gradient(90deg, ${COLORS.accent}80, ${COLORS.accent})`,
-              transform: "translateY(-50%)",
-              pointerEvents: "none",
-              zIndex: 0,
-            }}
-          />
+          {/* Base track */}
           <div
             style={{
               position: "absolute",
@@ -436,6 +422,7 @@ export function PrPipelineSettings({
               zIndex: 0,
             }}
           />
+          {/* Filled track */}
           <div
             style={{
               position: "absolute",

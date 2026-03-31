@@ -424,20 +424,19 @@ export function createContextDocService(args: {
     return activeGeneration;
   };
 
-  const generateDocs = async (docArgs: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
-    await (() => {
-      const modelId = toOptionalString(docArgs.modelId);
-      if (!modelId) {
-        throw new Error("Select a model before generating context docs.");
-      }
-      return generateDocsInternal(docArgs, {
-        source: "manual",
-        reason: "manual_generate",
-        provider: normalizeContextProvider(docArgs.provider),
-        modelId,
-        reasoningEffort: toOptionalString(docArgs.reasoningEffort),
-      });
-    })();
+  const generateDocs = async (docArgs: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
+    const modelId = toOptionalString(docArgs.modelId);
+    if (!modelId) {
+      throw new Error("Select a model before generating context docs.");
+    }
+    return generateDocsInternal(docArgs, {
+      source: "manual",
+      reason: "manual_generate",
+      provider: normalizeContextProvider(docArgs.provider),
+      modelId,
+      reasoningEffort: toOptionalString(docArgs.reasoningEffort),
+    });
+  };
 
   /**
    * Resolves which events are enabled, merging project config with stored prefs.

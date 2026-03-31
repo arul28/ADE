@@ -2558,9 +2558,7 @@ export function createPrService({
       integrationLane = await laneService.createChild({
         parentLaneId: preflight.baseLane.id,
         name: integrationLaneName,
-        description: args.description?.trim().length
-          ? args.description.trim()
-          : `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
+        description: args.description?.trim() || `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
         missionId: args.missionId ?? null,
         laneRole: args.laneRole ?? "integration",
       });

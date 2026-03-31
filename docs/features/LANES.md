@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-24
+> Last updated: 2026-03-31
 
 ---
 
@@ -64,6 +64,19 @@ ADE supports three types of lanes:
 | **Primary** | The main repository directory itself. No separate worktree is created. | `<repo-root>/` | Default lane for the main branch. Always exists. |
 | **Worktree** | A dedicated worktree created by ADE in a managed location. | `.ade/worktrees/<name>/` | Standard parallel development. Most lanes are this type. |
 | **Attached** | A pre-existing external worktree that the user links into ADE. | User-specified path | Integrating worktrees created outside ADE. |
+
+### Mission lane roles
+
+Lanes can be associated with a mission through two optional fields on the lane record: `missionId` and `laneRole`. The `MissionLaneRole` type defines four roles:
+
+| Role | Description |
+|------|-------------|
+| `mission_root` | The base lane the mission was launched from. |
+| `worker` | A lane created for an individual worker agent during execution. |
+| `integration` | A lane used for merging worker outputs (legacy, retained for compatibility). |
+| `result` | The single output lane containing the consolidated mission changes. |
+
+The lane service exposes `setMissionOwnership()` to tag or re-tag a lane's mission affiliation after creation. Child lane creation also accepts `missionId` and `laneRole` so worker and result lanes are tagged at birth.
 
 ### Lane Status
 

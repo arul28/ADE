@@ -1063,11 +1063,14 @@ function normalizeClaudeTodoItems(
     if (!description) return [];
 
     const rawStatus = typeof record.status === "string" ? record.status : "";
-    const status: Extract<AgentChatEvent, { type: "todo_update" }>["items"][number]["status"] = rawStatus === "completed"
-      ? "completed"
-      : rawStatus === "in_progress" || rawStatus === "inProgress"
-        ? "in_progress"
-        : "pending";
+    let status: Extract<AgentChatEvent, { type: "todo_update" }>["items"][number]["status"];
+    if (rawStatus === "completed") {
+      status = "completed";
+    } else if (rawStatus === "in_progress" || rawStatus === "inProgress") {
+      status = "in_progress";
+    } else {
+      status = "pending";
+    }
 
     const explicitId = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
     return [{
