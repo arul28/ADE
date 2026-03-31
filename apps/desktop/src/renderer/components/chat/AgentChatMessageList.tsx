@@ -811,13 +811,15 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
   if (modelId) {
     const desc = getModelById(modelId);
     if (desc) {
+      // When the runtime-reported model name differs from all known canonical
+      // identifiers, show it in the parenthetical so the user sees the exact
+      // model string the provider returned (e.g. a snapshot variant).
       const normalizedModel = model?.trim().toLowerCase() ?? "";
-      const canonicalRefs = new Set([
-        desc.id.toLowerCase(),
-        desc.shortId.toLowerCase(),
-        desc.sdkModelId.toLowerCase(),
-      ]);
-      if (normalizedModel && !canonicalRefs.has(normalizedModel)) {
+      const isNonCanonicalModel = normalizedModel.length > 0
+        && normalizedModel !== desc.id.toLowerCase()
+        && normalizedModel !== desc.shortId.toLowerCase()
+        && normalizedModel !== desc.sdkModelId.toLowerCase();
+      if (isNonCanonicalModel) {
         return `${desc.displayName} (${model?.trim()})`;
       }
       return `${desc.displayName} (${modelId})`;
@@ -2011,7 +2013,8 @@ function renderEvent(
     const costLabel = typeof event.costUsd === "number" && event.costUsd > 0
       ? `$${event.costUsd < 0.01 ? event.costUsd.toFixed(4) : event.costUsd.toFixed(2)}`
       : null;
-    if (event.status === "completed" && !inputTokens && !outputTokens && !cacheRead && !cacheCreation && !costLabel && !modelLabel) {
+    const hasUsageData = Boolean(inputTokens || outputTokens || cacheRead || cacheCreation || costLabel || modelLabel);
+    if (event.status === "completed" && !hasUsageData) {
       return null;
     }
     const statusTone = event.status === "completed"

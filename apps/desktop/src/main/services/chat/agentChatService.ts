@@ -1113,9 +1113,10 @@ function resolveClaudeTurnModelPayload(
     return { model: normalized };
   }
 
-  const fallback: { model: string; modelId?: string } = { model: session.model };
-  if (session.modelId) fallback.modelId = session.modelId;
-  return fallback;
+  return {
+    model: session.model,
+    ...(session.modelId ? { modelId: session.modelId } : {}),
+  };
 }
 
 function fallbackModelForProvider(provider: AgentChatProvider): string {
@@ -4795,6 +4796,12 @@ export function createAgentChatService(args: {
     let turnTimeout: ReturnType<typeof setTimeout> | undefined;
     let idleTimeout: ReturnType<typeof setTimeout> | undefined;
     let timeoutError: Error | null = null;
+    const buildDoneModelPayload = (): { model: string; modelId?: string } =>
+      resolveClaudeTurnModelPayload(managed.session, [
+        reportedAssistantModel,
+        ...(reportedUsageModels.size === 1 ? [...reportedUsageModels] : []),
+        reportedInitModel,
+      ]);
     const markFirstStreamEvent = (kind: string): void => {
       if (firstStreamEventLogged) return;
       firstStreamEventLogged = true;
@@ -5511,11 +5518,7 @@ export function createAgentChatService(args: {
         runtime.v2WarmupDone = null;
       }
 
-      const doneModel = resolveClaudeTurnModelPayload(managed.session, [
-        reportedAssistantModel,
-        ...(reportedUsageModels.size === 1 ? [...reportedUsageModels] : []),
-        reportedInitModel,
-      ]);
+      const doneModel = buildDoneModelPayload();
       const finalStatus = runtime.interrupted ? "interrupted" : "completed";
       emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
       emitChatEvent(managed, {
@@ -5557,11 +5560,7 @@ export function createAgentChatService(args: {
       runtime.v2Session = null;
       runtime.v2StreamGen = null;
       runtime.v2WarmupDone = null;
-      const doneModel = resolveClaudeTurnModelPayload(managed.session, [
-        reportedAssistantModel,
-        ...(reportedUsageModels.size === 1 ? [...reportedUsageModels] : []),
-        reportedInitModel,
-      ]);
+      const doneModel = buildDoneModelPayload();
 
       if (runtime.interrupted) {
         managed.session.status = "idle";
@@ -10079,9 +10078,6 @@ export function createAgentChatService(args: {
     }
     // Allow resetting manuallyNamed independently when no title change is provided
     if (manuallyNamed !== undefined && title === undefined) {
-      managed.manuallyNamed = manuallyNamed;
-    }
-    if (manuallyNamed !== undefined) {
       managed.manuallyNamed = manuallyNamed;
     }
 

@@ -130,8 +130,6 @@ const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode;
   { value: "full-auto", label: "Full auto" },
 ];
 
-
-
 /** Inline display of a single pending (queued) steer message with cancel and edit controls. */
 function PendingSteerItem({
   steer,
@@ -153,18 +151,18 @@ function PendingSteerItem({
     }
   }, [editing]);
 
-  const cancelEdit = () => {
+  function cancelEdit(): void {
     setEditing(false);
     setEditText(steer.text);
-  };
+  }
 
-  const commitEdit = () => {
+  function commitEdit(): void {
     const trimmed = editText.trim();
     if (trimmed.length && trimmed !== steer.text) {
       onEdit(trimmed);
     }
     setEditing(false);
-  };
+  }
 
   return (
     <div className="group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5">
