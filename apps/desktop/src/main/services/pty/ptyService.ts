@@ -42,8 +42,12 @@ function readPersistedChatManuallyNamed(chatSessionsDir: string, sessionId: stri
     const raw = fs.readFileSync(metadataPath, "utf8");
     const parsed = JSON.parse(raw) as { manuallyNamed?: boolean };
     return parsed.manuallyNamed === true;
-  } catch {
-    return false;
+  } catch (err: unknown) {
+    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
+      return false;
+    }
+    // Non-ENOENT errors (e.g. corrupt JSON, permission issues) — block auto-titling to be safe
+    return true;
   }
 }
 
@@ -411,6 +415,9 @@ export function createPtyService({
             ?? true;
           if (refreshOnComplete && isTitleGenerationEnabled()) {
             try {
+              if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
+                logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
+              } else {
               const titlePrompt = [
                 "Generate a concise final title for this completed terminal session.",
                 "Return only plain text, max 80 characters, no punctuation at the end.",
@@ -433,11 +440,13 @@ export function createPtyService({
               });
               const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (finalTitle) {
+                // Re-check in case user renamed during AI call
                 if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
                   logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
                 } else {
                   sessionService.updateMeta({ sessionId, title: finalTitle });
                 }
+              }
               }
             } catch (err) {
               logger.warn("pty.session_title_refresh_failed", {
@@ -860,6 +869,11 @@ export function createPtyService({
 
           if (!isTitleGenerationEnabled()) return;
 
+          if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
+            logger.info("pty.session_title_skipped_user_renamed", { sessionId });
+            return;
+          }
+
           const strippedOutput = stripAnsi(titleOutputBuffer).trim();
           if (strippedOutput.length < 10) return;
 
@@ -888,6 +902,7 @@ export function createPtyService({
             .then((result) => {
               const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (title) {
+                // Re-check in case user renamed during AI call
                 if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
                   logger.info("pty.session_title_skipped_user_renamed", { sessionId });
                 } else {

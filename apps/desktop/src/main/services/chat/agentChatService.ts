@@ -968,6 +968,8 @@ function defaultChatSessionTitle(provider: AgentChatProvider): string {
   return "AI Chat";
 }
 
+const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat"]);
+
 function hasCustomChatSessionTitle(title: string | null | undefined, provider: AgentChatProvider): boolean {
   const normalized = String(title ?? "").trim();
   return normalized.length > 0 && normalized !== defaultChatSessionTitle(provider);
@@ -3185,7 +3187,10 @@ export function createAgentChatService(args: {
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
       ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
       manuallyNamed: Boolean(managed.manuallyNamed)
-        || (String(sessionService.get(managed.session.id)?.title || "").trim().length > 0),
+        || (() => {
+          const trimmedTitle = String(sessionService.get(managed.session.id)?.title || "").trim();
+          return trimmedTitle.length > 0 && !DEFAULT_SESSION_TITLES.has(trimmedTitle);
+        })(),
       ...(managed.session.requestedCwd != null && String(managed.session.requestedCwd).trim().length
         ? { requestedCwd: String(managed.session.requestedCwd).trim() }
         : {}),
@@ -4140,7 +4145,10 @@ export function createAgentChatService(args: {
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
       manuallyNamed: persisted?.manuallyNamed === true
-        || (String(row.title || "").trim().length > 0),
+        || (() => {
+          const trimmedTitle = String(row.title || "").trim();
+          return trimmedTitle.length > 0 && !DEFAULT_SESSION_TITLES.has(trimmedTitle);
+        })(),
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
       continuitySummaryUpdatedAt: persisted?.continuitySummaryUpdatedAt ?? null,
@@ -4462,6 +4470,7 @@ export function createAgentChatService(args: {
     const turnStartedAt = Date.now();
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
+    const emittedSyntheticItemIds = new Set<string>();
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
     const markFirstStreamEvent = (kind: string): void => {
@@ -4821,7 +4830,8 @@ export function createAgentChatService(args: {
                   // Synthesize a tool_result for the proof observer since the
                   // Claude V2 SDK never surfaces tool results in the stream.
                   const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
-                  if (syntheticResult) {
+                  if (syntheticResult && !emittedSyntheticItemIds.has(itemId)) {
+                    emittedSyntheticItemIds.add(itemId);
                     emitChatEvent(managed, syntheticResult);
                   }
                 }
@@ -4959,7 +4969,8 @@ export function createAgentChatService(args: {
                   }
                 }
                 const syntheticResult = maybeSyntheticToolResult(meta.toolName, parsed, meta.itemId, turnId);
-                if (syntheticResult) {
+                if (syntheticResult && !emittedSyntheticItemIds.has(meta.itemId)) {
+                  emittedSyntheticItemIds.add(meta.itemId);
                   emitChatEvent(managed, syntheticResult);
                 }
               }

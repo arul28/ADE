@@ -449,7 +449,7 @@ describe("ptyService", () => {
           getMode: vi.fn(() => "subscription"),
           summarizeTerminal: vi.fn(async () => ({ text: "Bound title" })),
         };
-        const { service, mockPty, laneService } = createHarness({ aiIntegrationService });
+        const { service, mockPty, laneService, sessionService } = createHarness({ aiIntegrationService });
         await service.create({
           laneId: "lane-1",
           cwd: "/tmp/test-worktree/subdir",
@@ -458,6 +458,11 @@ describe("ptyService", () => {
           rows: 24,
           toolType: "claude",
         });
+        // Mark the metadata file as non-existent so readPersistedChatManuallyNamed returns false
+        const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+        if (createdSessionId) {
+          mocks.existsSyncResults.set(`/tmp/chat-sessions/${createdSessionId}.json`, false);
+        }
 
         laneService.getLaneBaseAndBranch.mockReturnValue({
           worktreePath: "/tmp/other-worktree",

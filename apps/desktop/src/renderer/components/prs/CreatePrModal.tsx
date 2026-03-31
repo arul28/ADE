@@ -1148,18 +1148,21 @@ export function CreatePrModal({
                             zIndex: 1,
                           }}
                         />
-                        <select
+                        <input
+                          list="normalBranchOptions"
                           value={normalBaseBranch}
                           onChange={(e) => setNormalBaseBranch(e.target.value)}
                           aria-label="Target branch"
+                          placeholder="Type or select a branch"
                           style={selectStyle}
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
-                        >
+                        />
+                        <datalist id="normalBranchOptions">
                           {normalBranchSelectOptions.map((name) => (
-                            <option key={name} value={name}>{name}</option>
+                            <option key={name} value={name} />
                           ))}
-                        </select>
+                        </datalist>
                       </div>
                     </div>
 
@@ -1419,18 +1422,21 @@ export function CreatePrModal({
                             zIndex: 1,
                           }}
                         />
-                        <select
+                        <input
+                          list="queueBranchOptions"
                           value={queueTargetBranch}
                           onChange={(e) => setQueueTargetBranch(e.target.value)}
                           aria-label="Target branch"
+                          placeholder="Type or select a branch"
                           style={selectStyle}
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
-                        >
+                        />
+                        <datalist id="queueBranchOptions">
                           {queueBranchSelectOptions.map((name) => (
-                            <option key={name} value={name}>{name}</option>
+                            <option key={name} value={name} />
                           ))}
-                        </select>
+                        </datalist>
                       </div>
                     </div>
                   </div>
@@ -1455,21 +1461,24 @@ export function CreatePrModal({
                             zIndex: 1,
                           }}
                         />
-                        <select
+                        <input
+                          list="integrationBranchOptions"
                           value={integrationBaseBranch}
                           onChange={(e) => {
                             setIntegrationBaseBranch(e.target.value);
                             setProposal(null);
                           }}
                           aria-label="Target branch"
+                          placeholder="Type or select a branch"
                           style={selectStyle}
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
-                        >
+                        />
+                        <datalist id="integrationBranchOptions">
                           {integrationBranchSelectOptions.map((name) => (
-                            <option key={name} value={name}>{name}</option>
+                            <option key={name} value={name} />
                           ))}
-                        </select>
+                        </datalist>
                       </div>
                     </div>
 

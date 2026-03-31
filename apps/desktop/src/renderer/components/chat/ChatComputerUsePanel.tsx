@@ -235,11 +235,17 @@ export function ChatComputerUsePanel({
   const handleReveal = useCallback(() => {
     if (!selected?.uri) return;
     if (/^https?:\/\//i.test(selected.uri)) {
-      void window.ade.app.openExternal(selected.uri);
+      window.ade.app.openExternal(selected.uri).catch((err: unknown) => {
+        console.error("[ChatComputerUsePanel] Failed to open external URL:", selected.uri, err);
+      });
     } else if (selected.uri.startsWith("file://")) {
-      void window.ade.app.revealPath(fileUriToFsPath(selected.uri));
+      window.ade.app.revealPath(fileUriToFsPath(selected.uri)).catch((err: unknown) => {
+        console.error("[ChatComputerUsePanel] Failed to reveal path:", selected.uri, err);
+      });
     } else {
-      void window.ade.app.revealPath(selected.uri);
+      window.ade.app.revealPath(selected.uri).catch((err: unknown) => {
+        console.error("[ChatComputerUsePanel] Failed to reveal path:", selected.uri, err);
+      });
     }
   }, [selected]);
 

@@ -893,13 +893,6 @@ export function LaneGitActionsPane({
         detail: `${syncStatus.ahead} local commit${syncStatus.ahead === 1 ? "" : "s"} are ready to send to remote.`
       };
     }
-    if (syncStatus.recommendedAction === "force_push_lease") {
-      return {
-        action: "force_push_lease",
-        label: "Force push (lease)",
-        detail: "Local history was rewritten (e.g. after a rebase). Force push to update the remote branch."
-      };
-    }
     if (syncStatus.recommendedAction === "pull") {
       if (syncStatus.diverged) {
         return {

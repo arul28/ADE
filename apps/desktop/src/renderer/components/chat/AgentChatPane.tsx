@@ -2044,7 +2044,7 @@ export function AgentChatPane({
             }}
             promptSuggestion={promptSuggestion}
             subagentSnapshots={selectedSubagentSnapshots}
-            chatHasMessages={selectedEvents.length > 0}
+            chatHasMessages={selectedEvents.some(env => env.event.type === "user_message" || env.event.type === "text")}
           />
         }
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
