@@ -3183,7 +3183,7 @@ export function createAgentChatService(args: {
       ...(managed.preferredExecutionLaneId ? { preferredExecutionLaneId: managed.preferredExecutionLaneId } : {}),
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
       ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
-      ...(managed.manuallyNamed ? { manuallyNamed: true } : {}),
+      manuallyNamed: Boolean(managed.manuallyNamed),
       updatedAt: nowIso()
     };
 

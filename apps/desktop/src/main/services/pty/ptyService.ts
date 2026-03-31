@@ -353,30 +353,37 @@ export function createPtyService({
 
         // AI-enhanced summary (only when summaries are enabled and AI is available)
         if (si?.summaries?.enabled !== false && hasAi) {
-          const prompt = [
-            "You are ADE's terminal summary assistant.",
-            "Rewrite this terminal session into a concise 1-3 sentence summary with outcome and next action.",
-            "Do not invent commands or outcomes.",
-            "",
-            "Deterministic summary:",
-            summary,
-            "",
-            "Terminal transcript tail:",
-            transcript.slice(-18_000)
-          ].join("\n");
+          try {
+            const prompt = [
+              "You are ADE's terminal summary assistant.",
+              "Rewrite this terminal session into a concise 1-3 sentence summary with outcome and next action.",
+              "Do not invent commands or outcomes.",
+              "",
+              "Deterministic summary:",
+              summary,
+              "",
+              "Terminal transcript tail:",
+              transcript.slice(-18_000)
+            ].join("\n");
 
-          const summaryModelId = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
-            ? si.summaries.modelId.trim()
-            : undefined;
+            const summaryModelId = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
+              ? si.summaries.modelId.trim()
+              : undefined;
 
-          const aiSummary = await aiIntegrationService!.summarizeTerminal({
-            cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
-            prompt,
-            ...(summaryModelId ? { model: summaryModelId } : {}),
-          });
-          const text = aiSummary.text.trim();
-          if (text.length) {
-            sessionService.setSummary(sessionId, text);
+            const aiSummary = await aiIntegrationService!.summarizeTerminal({
+              cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
+              prompt,
+              ...(summaryModelId ? { model: summaryModelId } : {}),
+            });
+            const text = aiSummary.text.trim();
+            if (text.length) {
+              sessionService.setSummary(sessionId, text);
+            }
+          } catch (err) {
+            logger.warn("pty.ai_summary_failed", {
+              sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         }
 
@@ -409,7 +416,13 @@ export function createPtyService({
               });
               const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (finalTitle) {
-                sessionService.updateMeta({ sessionId, title: finalTitle });
+                // Guard: skip if user renamed the session while the AI call was in-flight
+                const current = sessionService.get(sessionId);
+                if (current && current.title !== session.title) {
+                  logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
+                } else {
+                  sessionService.updateMeta({ sessionId, title: finalTitle });
+                }
               }
             } catch (err) {
               logger.warn("pty.session_title_refresh_failed", {
@@ -860,7 +873,13 @@ export function createPtyService({
             .then((result) => {
               const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (title) {
-                sessionService.updateMeta({ sessionId, title });
+                // Guard: skip if user renamed the session while the AI call was in-flight
+                const current = sessionService.get(sessionId);
+                if (current && current.title !== session.title) {
+                  logger.info("pty.session_title_skipped_user_renamed", { sessionId });
+                } else {
+                  sessionService.updateMeta({ sessionId, title });
+                }
               }
             })
             .catch((err) => {

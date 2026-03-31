@@ -34,11 +34,13 @@ export function SessionContextMenu({
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const finalizedRef = useRef(false);
 
   // Reset rename state when menu changes
   useEffect(() => {
     setRenaming(false);
     setDraft("");
+    finalizedRef.current = false;
   }, [menu]);
 
   // Focus input when entering rename mode
@@ -56,10 +58,9 @@ export function SessionContextMenu({
   const isChat = isChatToolType(session.toolType);
   const canResume = !isRunning && Boolean(session.resumeCommand);
 
-  const cancelledRef = useRef(false);
-
   const commitRename = () => {
-    if (cancelledRef.current) return;
+    if (finalizedRef.current) return;
+    finalizedRef.current = true;
     const trimmed = draft.trim();
     if (trimmed.length > 0) {
       onRename(session.id, trimmed);
@@ -88,7 +89,7 @@ export function SessionContextMenu({
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") { e.preventDefault(); commitRename(); }
-                if (e.key === "Escape") { e.preventDefault(); cancelledRef.current = true; onClose(); }
+                if (e.key === "Escape") { e.preventDefault(); finalizedRef.current = true; onClose(); }
               }}
               onBlur={commitRename}
               className="w-full rounded border border-border/30 bg-transparent px-2 py-1 text-xs text-[--color-fg] outline-none focus:border-[--color-accent]"
