@@ -9214,12 +9214,15 @@ export function createAgentChatService(args: {
 
     if (title !== undefined) {
       const normalizedTitle = String(title ?? "").trim();
+      const hasExplicitTitle = normalizedTitle.length > 0;
       sessionService.updateMeta({
         sessionId,
-        title: normalizedTitle.length ? normalizedTitle : defaultChatSessionTitle(managed.session.provider),
+        title: hasExplicitTitle ? normalizedTitle : defaultChatSessionTitle(managed.session.provider),
       });
-      if (manuallyNamed === true) {
-        managed.manuallyNamed = true;
+      if (manuallyNamed !== undefined) {
+        managed.manuallyNamed = manuallyNamed && hasExplicitTitle;
+      } else if (!hasExplicitTitle) {
+        managed.manuallyNamed = false;
       }
     }
     // Allow resetting manuallyNamed independently when no title change is provided
