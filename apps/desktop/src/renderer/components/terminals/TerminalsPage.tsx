@@ -184,7 +184,7 @@ export function TerminalsPage() {
   );
 
   return (
-    <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)", fontFamily: SANS_FONT }}>
+    <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)" }}>
       {renameError ? (
         <div
           className="shrink-0 border-b border-red-500/25 px-4 py-2 text-[12px] text-red-300/95"

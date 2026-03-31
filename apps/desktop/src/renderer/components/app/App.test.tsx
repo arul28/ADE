@@ -55,7 +55,7 @@ describe("RequireProject", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText("Loading...")).toBeTruthy();
+    expect(screen.getByText("Starting ADE")).toBeTruthy();
     expect(screen.queryByText("Run page")).toBeNull();
   });
 

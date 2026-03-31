@@ -1804,6 +1804,14 @@ describe("laneService missionId and laneRole", () => {
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
 
+    // Insert a mission row so the FK on lanes.mission_id is satisfied
+    const now = "2026-03-11T12:00:00.000Z";
+    db.run(
+      `insert into missions(id, project_id, title, prompt, status, priority, execution_mode, created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["mission-abc", "proj-child-mission", "Test mission", "do something", "pending", "normal", "local", now, now],
+    );
+
     const service = createLaneService({
       db,
       projectRoot: repoRoot,
@@ -1974,6 +1982,14 @@ describe("laneService missionId and laneRole", () => {
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
 
+    // Insert a mission row so the FK on lanes.mission_id is satisfied
+    const now = "2026-03-11T12:00:00.000Z";
+    db.run(
+      `insert into missions(id, project_id, title, prompt, status, priority, execution_mode, created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["mission-xyz", "proj-set-ownership", "Test mission", "do something", "pending", "normal", "local", now, now],
+    );
+
     const service = createLaneService({
       db,
       projectRoot: repoRoot,
@@ -2003,6 +2019,14 @@ describe("laneService missionId and laneRole", () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-clear-ownership-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-clear-ownership", repoRoot });
+
+    // Insert a mission row so the FK on lanes.mission_id is satisfied
+    const now = "2026-03-11T12:00:00.000Z";
+    db.run(
+      `insert into missions(id, project_id, title, prompt, status, priority, execution_mode, created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["mission-existing", "proj-clear-ownership", "Test mission", "do something", "pending", "normal", "local", now, now],
+    );
 
     // Manually set mission_id/lane_role in DB first
     db.run("update lanes set mission_id = ?, lane_role = ? where id = ?", ["mission-existing", "worker", "lane-parent"]);

@@ -940,23 +940,16 @@ describe("conflictService conflict context integrity", () => {
     });
 
     const needs = await service.scanRebaseNeeds();
-    expect(needs).toHaveLength(2);
-    expect(needs).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          laneId: "lane-2",
-          kind: "lane_base",
-          baseBranch: "main",
-          groupContext: "Queue A",
-        }),
-        expect.objectContaining({
-          laneId: "lane-2",
-          kind: "pr_target",
-          baseBranch: "main",
-          prId: "pr-2",
-          groupContext: "Queue A",
-        }),
-      ]),
+    // Dedup keeps only the pr_target need when both lane_base and pr_target exist for the same lane
+    expect(needs).toHaveLength(1);
+    expect(needs[0]).toEqual(
+      expect.objectContaining({
+        laneId: "lane-2",
+        kind: "pr_target",
+        baseBranch: "main",
+        prId: "pr-2",
+        groupContext: "Queue A",
+      }),
     );
     expect(needs.every((need) => need.behindBy > 0)).toBe(true);
 

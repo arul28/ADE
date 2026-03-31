@@ -100,6 +100,8 @@ create index if not exists idx_terminal_sessions_started_at on terminal_sessions
 
 create index if not exists idx_terminal_sessions_lane_started_at on terminal_sessions(lane_id, started_at desc);
 
+alter table terminal_sessions add column resume_command text;
+
 create table if not exists process_definitions (
       id text primary key,
       project_id text not null,
