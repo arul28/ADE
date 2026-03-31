@@ -164,12 +164,16 @@ export function createRebaseSuggestionService(args: {
       }
     }
 
-    // No parent lane — fall back to baseRef (e.g. "main") for parentless imported lanes.
+    // No parent lane — fall back to baseRef (e.g. "main" or "origin/main") for parentless imported lanes.
     const baseRef = lane.baseRef?.trim();
     if (!baseRef) return null;
     if (lane.laneType === "primary") return null;
-    await fetchRemoteTrackingBranch({ projectRoot, targetBranch: baseRef }).catch(() => {});
-    const baseHeadSha = await readRefHeadSha(`origin/${baseRef}`) ?? await readRefHeadSha(baseRef);
+    const fetchTargetName = baseRef.replace(/^origin\//, "");
+    await fetchRemoteTrackingBranch({ projectRoot, targetBranch: fetchTargetName }).catch(() => {});
+    const comparisonRef = baseRef.startsWith("origin/") ? baseRef : `origin/${fetchTargetName}`;
+    const baseHeadSha =
+      (await readRefHeadSha(comparisonRef))
+      ?? (await readRefHeadSha(fetchTargetName));
     if (!baseHeadSha) return null;
     return {
       parentLaneId: `base:${baseRef}`,

@@ -435,6 +435,8 @@ export type AgentChatSession = {
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
   threadId?: string;
+  /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
+  requestedCwd?: string | null;
   createdAt: string;
   lastActivityAt: string;
 };

@@ -1346,7 +1346,8 @@ export function createLaneService({
           if (importedHeadSha) {
             const activeRows = getAllLaneRows(false);
             let bestLaneId: string | null = null;
-            let bestDistance = Infinity;
+            let bestScore = Infinity;
+            let bestTieBreak: string | null = null;
 
             for (const row of activeRows) {
               // Skip the lane we are currently importing (same id won't exist yet,
@@ -1367,19 +1368,31 @@ export function createLaneService({
               const mergeBaseSha = mbResult.stdout.trim();
               if (!mergeBaseSha) continue;
 
-              // Count commits between merge-base and the imported branch HEAD.
-              // Fewer commits = closer ancestor = better parent candidate.
-              const countResult = await runGit(
+              const importedCountResult = await runGit(
                 ["rev-list", "--count", `${mergeBaseSha}..${importedHeadSha}`],
                 { cwd: projectRoot, timeoutMs: 10_000 },
               );
-              if (countResult.exitCode !== 0) continue;
-              const distance = parseInt(countResult.stdout.trim(), 10);
-              if (isNaN(distance)) continue;
+              if (importedCountResult.exitCode !== 0) continue;
+              const importedDistance = parseInt(importedCountResult.stdout.trim(), 10);
+              if (isNaN(importedDistance)) continue;
 
-              if (distance < bestDistance) {
-                bestDistance = distance;
+              const candidateCountResult = await runGit(
+                ["rev-list", "--count", `${mergeBaseSha}..${laneHeadSha}`],
+                { cwd: projectRoot, timeoutMs: 10_000 },
+              );
+              if (candidateCountResult.exitCode !== 0) continue;
+              const candidateDistance = parseInt(candidateCountResult.stdout.trim(), 10);
+              if (isNaN(candidateDistance)) continue;
+
+              const score = importedDistance + candidateDistance;
+              const tieBreak = `${row.id}\0${row.branch_ref}`;
+              if (
+                score < bestScore
+                || (score === bestScore && tieBreak.localeCompare(bestTieBreak ?? "") < 0)
+              ) {
+                bestScore = score;
                 bestLaneId = row.id;
+                bestTieBreak = tieBreak;
               }
             }
 
@@ -1472,7 +1485,39 @@ export function createLaneService({
           stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() })
         });
       } catch (error) {
-        if (laneInserted) throw error;
+        if (laneInserted) {
+          const persistedRow = getLaneRow(laneId);
+          if (!persistedRow) throw error;
+          const rowsById = getRowsById(true);
+          let status: Awaited<ReturnType<typeof computeLaneStatus>> | null = null;
+          let parentStatus: Awaited<ReturnType<typeof computeLaneStatus>> | null = null;
+          let stackDepth = 0;
+          try {
+            status = await computeLaneStatus(worktreePath, persistedRow.base_ref, branchRef);
+          } catch {
+            status = null;
+          }
+          try {
+            const parent = persistedRow.parent_lane_id ? getLaneRow(persistedRow.parent_lane_id) : null;
+            if (parent) {
+              parentStatus = await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref);
+            }
+          } catch {
+            parentStatus = null;
+          }
+          try {
+            stackDepth = computeStackDepth({ laneId, rowsById, memo: new Map() });
+          } catch {
+            stackDepth = 0;
+          }
+          return toLaneSummary({
+            row: persistedRow,
+            status: status ?? { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
+            parentStatus,
+            childCount: 0,
+            stackDepth,
+          });
+        }
 
         const cleanupErrors: string[] = [];
         if (worktreeAdded) {

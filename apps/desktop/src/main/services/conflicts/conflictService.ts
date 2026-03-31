@@ -4350,17 +4350,11 @@ export function createConflictService({
       }
     }
 
-    // Emit rebase-needs-updated so renderer gets notified
-    if (onEvent) {
-      onEvent({ type: "rebase-needs-updated", needs, timestamp: new Date().toISOString() });
-    }
-
     // Deduplicate: when a lane has both a lane-base need and a PR-target need,
     // keep only the PR-target need (PR target is the source of truth).
     const laneIdsWithPrNeeds = new Set(needs.filter(n => n.prId != null).map(n => n.laneId));
     const deduplicated = needs.filter(n => !(n.prId == null && laneIdsWithPrNeeds.has(n.laneId)));
 
-    // Emit rebase-needs-updated so renderer gets notified
     if (onEvent) {
       onEvent({ type: "rebase-needs-updated", needs: deduplicated, timestamp: new Date().toISOString() });
     }

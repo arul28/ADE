@@ -33,7 +33,7 @@ export function ChatSurfaceShell({
           {header}
         </div>
       ) : null}
-      <div className={cn("relative min-h-0 flex-1 overflow-hidden rounded-[var(--chat-radius-shell)] bg-[var(--chat-surface-bg)]", bodyClassName)}>
+      <div className={cn("relative min-h-0 flex-1 overflow-hidden bg-[var(--chat-surface-bg)]", bodyClassName)}>
         {children}
       </div>
       {footer ? (

@@ -514,15 +514,22 @@ export function CreatePrModal({
 
   // Available branches for target-branch dropdowns
   const [availableBranches, setAvailableBranches] = React.useState<GitBranchSummary[]>([]);
+  const [branchLoadError, setBranchLoadError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!open || !primaryLane) return;
     let cancelled = false;
+    setBranchLoadError(null);
     window.ade.git.listBranches({ laneId: primaryLane.id })
       .then((branches) => {
         if (!cancelled) setAvailableBranches(branches);
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        console.error("[CreatePrModal] listBranches failed", { laneId: primaryLane.id, err });
+        if (!cancelled) {
+          setBranchLoadError(err instanceof Error ? err.message : String(err));
+        }
+      });
     return () => { cancelled = true; };
   }, [open, primaryLane?.id]);
 
@@ -542,6 +549,27 @@ export function CreatePrModal({
     }
     return options.sort((a, b) => a.localeCompare(b));
   }, [availableBranches]);
+
+  const normalBranchSelectOptions = React.useMemo(() => {
+    const v = normalBaseBranch.trim();
+    if (!v.length) return targetBranchOptions;
+    if (targetBranchOptions.includes(v)) return targetBranchOptions;
+    return [v, ...targetBranchOptions];
+  }, [targetBranchOptions, normalBaseBranch]);
+
+  const queueBranchSelectOptions = React.useMemo(() => {
+    const v = queueTargetBranch.trim();
+    if (!v.length) return targetBranchOptions;
+    if (targetBranchOptions.includes(v)) return targetBranchOptions;
+    return [v, ...targetBranchOptions];
+  }, [targetBranchOptions, queueTargetBranch]);
+
+  const integrationBranchSelectOptions = React.useMemo(() => {
+    const v = integrationBaseBranch.trim();
+    if (!v.length) return targetBranchOptions;
+    if (targetBranchOptions.includes(v)) return targetBranchOptions;
+    return [v, ...targetBranchOptions];
+  }, [targetBranchOptions, integrationBaseBranch]);
 
   const handleDraftAI = async (laneId: string) => {
     setDrafting(true);
@@ -608,6 +636,7 @@ export function CreatePrModal({
       setIntegrationBranchError(null);
       setQueueErrors([]);
       setAvailableBranches([]);
+      setBranchLoadError(null);
     }, 200);
     return () => clearTimeout(id);
   }, [open]);
@@ -985,6 +1014,12 @@ export function CreatePrModal({
           {/* ── Stepper ─────────────────────────────────────────── */}
           <Stepper currentStep={numericStep} />
 
+          {branchLoadError ? (
+            <div style={{ padding: "8px 24px", fontSize: 11, color: C.error, background: `${C.error}10` }}>
+              Could not load branch list: {branchLoadError}
+            </div>
+          ) : null}
+
           {/* ── Scrollable Body ─────────────────────────────────── */}
           <div style={{
             flex: 1,
@@ -1124,7 +1159,7 @@ export function CreatePrModal({
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
                         >
-                          {targetBranchOptions.map((name) => (
+                          {normalBranchSelectOptions.map((name) => (
                             <option key={name} value={name}>{name}</option>
                           ))}
                         </select>
@@ -1395,7 +1430,7 @@ export function CreatePrModal({
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
                         >
-                          {targetBranchOptions.map((name) => (
+                          {queueBranchSelectOptions.map((name) => (
                             <option key={name} value={name}>{name}</option>
                           ))}
                         </select>
@@ -1434,7 +1469,7 @@ export function CreatePrModal({
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
                         >
-                          {targetBranchOptions.map((name) => (
+                          {integrationBranchSelectOptions.map((name) => (
                             <option key={name} value={name}>{name}</option>
                           ))}
                         </select>

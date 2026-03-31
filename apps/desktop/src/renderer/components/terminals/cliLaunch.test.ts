@@ -107,10 +107,12 @@ describe("buildTrackedCliStartupCommand", () => {
   });
 
   it("covers all AgentChatPermissionMode values for both providers", () => {
-    const modes: AgentChatPermissionMode[] = ["default", "plan", "edit", "full-auto", "config-toml"];
+    const modes = ["default", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
     for (const mode of modes) {
-      expect(typeof buildTrackedCliStartupCommand({ provider: "claude", permissionMode: mode })).toBe("string");
-      expect(typeof buildTrackedCliStartupCommand({ provider: "codex", permissionMode: mode })).toBe("string");
+      const claude = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: mode });
+      const codex = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: mode });
+      expect(claude.length).toBeGreaterThan(0);
+      expect(codex.length).toBeGreaterThan(0);
     }
   });
 });

@@ -38,6 +38,7 @@ import { detectDefaultBaseRef, resolveRepoRoot, toProjectInfo, upsertProjectRow 
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
+import { resolveAdeLayout } from "../shared/adeLayout";
 import type { PortLease, ProjectInfo } from "../shared/types";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
@@ -401,6 +402,25 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
+  /** Canonical artifacts dir for the active project; ade-artifact:// only serves under this path. */
+  let adeArtifactAllowedDir: string | null = null;
+
+  const isPathInsideArtifactAllowRoot = (resolvedFile: string, allowedDir: string): boolean => {
+    let allowed: string;
+    try {
+      allowed = fs.realpathSync(allowedDir);
+    } catch {
+      return false;
+    }
+    const normFile = path.normalize(resolvedFile);
+    const normAllowed = path.normalize(allowed);
+    if (process.platform === "win32") {
+      return normFile.toLowerCase().startsWith(normAllowed.toLowerCase() + path.sep)
+        || normFile.toLowerCase() === normAllowed.toLowerCase();
+    }
+    return normFile === normAllowed || normFile.startsWith(normAllowed + path.sep);
+  };
+
   // Handle ade-artifact:// requests — serves local files for proof drawer previews.
   // Path is encoded in the URL: ade-artifact:///absolute/path/to/file.png
   protocol.handle("ade-artifact", (request) => {
@@ -410,11 +430,24 @@ app.whenReady().then(async () => {
     if (process.platform === "win32" && /^\/[a-zA-Z]:/.test(filePath)) {
       filePath = filePath.slice(1);
     }
+    filePath = path.resolve(filePath);
+    let resolvedFile: string;
     try {
-      const stat = fs.statSync(filePath);
+      resolvedFile = fs.realpathSync(filePath);
+    } catch {
+      console.warn("[ade-artifact] realpath failed", { filePath });
+      return new Response("Not found", { status: 404 });
+    }
+    const allowedDir = adeArtifactAllowedDir;
+    if (!allowedDir || !isPathInsideArtifactAllowRoot(resolvedFile, allowedDir)) {
+      console.warn("[ade-artifact] rejected path outside artifacts dir", { resolvedFile, allowedDir });
+      return new Response("Not found", { status: 404 });
+    }
+    try {
+      const stat = fs.statSync(resolvedFile);
       if (!stat.isFile()) return new Response("Not found", { status: 404 });
       const fileSize = stat.size;
-      const ext = path.extname(filePath).replace(/^\./, "").toLowerCase();
+      const ext = path.extname(resolvedFile).replace(/^\./, "").toLowerCase();
       const mimeMap: Record<string, string> = {
         png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp",
         gif: "image/gif", bmp: "image/bmp", svg: "image/svg+xml",
@@ -426,15 +459,26 @@ app.whenReady().then(async () => {
       const rangeHeader = request.headers.get("Range");
       if (rangeHeader) {
         const match = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
-        const start = match ? parseInt(match[1], 10) : 0;
-        const end = match && match[2] ? parseInt(match[2], 10) : fileSize - 1;
+        let start = match ? parseInt(match[1], 10) : 0;
+        let end = match && match[2] !== undefined && match[2] !== "" ? parseInt(match[2], 10) : fileSize - 1;
+        if (!Number.isFinite(start) || start < 0) start = 0;
+        if (!Number.isFinite(end)) end = fileSize - 1;
+        if (end > fileSize - 1) end = fileSize - 1;
+        if (start >= fileSize || start > end) {
+          return new Response(null, {
+            status: 416,
+            headers: {
+              "Content-Range": `bytes */${fileSize}`,
+            },
+          });
+        }
         const chunkSize = end - start + 1;
-        const fileStream = fs.createReadStream(filePath, { start, end });
+        const fileStream = fs.createReadStream(resolvedFile, { start, end });
         const webStream = new ReadableStream({
           start(controller) {
             fileStream.on("data", (chunk) => controller.enqueue(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
             fileStream.on("end", () => controller.close());
-            fileStream.on("error", () => controller.close());
+            fileStream.on("error", (err) => controller.error(err));
           },
           cancel() { fileStream.destroy(); },
         });
@@ -450,12 +494,12 @@ app.whenReady().then(async () => {
       }
 
       // Full file response (images, small files)
-      const fileStream = fs.createReadStream(filePath);
+      const fileStream = fs.createReadStream(resolvedFile);
       const webStream = new ReadableStream({
         start(controller) {
           fileStream.on("data", (chunk) => controller.enqueue(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
           fileStream.on("end", () => controller.close());
-          fileStream.on("error", () => controller.close());
+          fileStream.on("error", (err) => controller.error(err));
         },
         cancel() { fileStream.destroy(); },
       });
@@ -560,6 +604,15 @@ app.whenReady().then(async () => {
 
   const setActiveProject = (projectRoot: string | null): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+    if (activeProjectRoot) {
+      try {
+        adeArtifactAllowedDir = resolveAdeLayout(activeProjectRoot).artifactsDir;
+      } catch {
+        adeArtifactAllowedDir = null;
+      }
+    } else {
+      adeArtifactAllowedDir = null;
+    }
   };
 
   const getActiveContext = (): AppContext => {
@@ -978,6 +1031,7 @@ app.whenReady().then(async () => {
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
+      chatSessionsDir: adePaths.chatSessionsDir,
       laneService,
       sessionService,
       aiIntegrationService,

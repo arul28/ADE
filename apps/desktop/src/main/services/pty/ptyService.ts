@@ -32,6 +32,21 @@ import {
   runtimeStateFromOsc133Chunk
 } from "../../utils/terminalSessionSignals";
 
+/** Delay before auto-generating a title from CLI output; keep in sync with tests. */
+export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
+
+function readPersistedChatManuallyNamed(chatSessionsDir: string, sessionId: string): boolean {
+  try {
+    const metadataPath = path.join(chatSessionsDir, `${sessionId}.json`);
+    if (!fs.existsSync(metadataPath)) return false;
+    const raw = fs.readFileSync(metadataPath, "utf8");
+    const parsed = JSON.parse(raw) as { manuallyNamed?: boolean };
+    return parsed.manuallyNamed === true;
+  } catch {
+    return false;
+  }
+}
+
 type PtyEntry = {
   pty: IPty;
   laneId: string;
@@ -199,6 +214,7 @@ function enrichStartupCommandForAdeMcp(args: {
 export function createPtyService({
   projectRoot,
   transcriptsDir,
+  chatSessionsDir,
   laneService,
   sessionService,
   aiIntegrationService,
@@ -212,6 +228,7 @@ export function createPtyService({
 }: {
   projectRoot: string;
   transcriptsDir: string;
+  chatSessionsDir: string;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
@@ -416,9 +433,10 @@ export function createPtyService({
               });
               const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (finalTitle) {
-                // Guard: skip if user renamed the session while the AI call was in-flight
                 const current = sessionService.get(sessionId);
-                if (current && current.title !== session.title) {
+                if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
+                  logger.info("pty.session_title_refresh_skipped_manual_name", { sessionId });
+                } else if (current && current.title !== session.title) {
                   logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
                 } else {
                   sessionService.updateMeta({ sessionId, title: finalTitle });
@@ -873,9 +891,10 @@ export function createPtyService({
             .then((result) => {
               const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (title) {
-                // Guard: skip if user renamed the session while the AI call was in-flight
                 const current = sessionService.get(sessionId);
-                if (current && current.title !== session.title) {
+                if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
+                  logger.info("pty.session_title_skipped_manual_name", { sessionId });
+                } else if (current && current.title !== session.title) {
                   logger.info("pty.session_title_skipped_user_renamed", { sessionId });
                 } else {
                   sessionService.updateMeta({ sessionId, title });
@@ -888,7 +907,7 @@ export function createPtyService({
                 error: err instanceof Error ? err.message : String(err)
               });
             });
-        }, 6000);
+        }, PTY_AI_TITLE_DEBOUNCE_MS);
       }
 
       logger.info("pty.create", { ptyId, sessionId, laneId, cwd, shell: selectedShell?.file ?? "unknown" });

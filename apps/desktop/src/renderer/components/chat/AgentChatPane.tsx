@@ -1745,7 +1745,7 @@ export function AgentChatPane({
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          {laneId && laneDisplayLabel ? (
+          {laneId && laneDisplayLabel && laneDisplayLabel !== laneId ? (
             <button
               type="button"
               className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] px-2 py-1 font-sans text-[11px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg/70"

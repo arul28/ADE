@@ -3962,7 +3962,8 @@ export function registerIpc({
       const buf = await fs.promises.readFile(canonical);
       const ext = path.extname(canonical).replace(/^\./, "").toLowerCase();
       const mimeMap: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", bmp: "image/bmp", svg: "image/svg+xml" };
-      const mime = mimeMap[ext] ?? "image/png";
+      const mime = mimeMap[ext];
+      if (!mime) return null;
       return `data:${mime};base64,${buf.toString("base64")}`;
     } catch {
       return null;

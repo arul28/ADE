@@ -195,6 +195,7 @@ type PersistedChatState = {
   selectedExecutionLaneId?: string | null;
   lastLaneDirectiveKey?: string | null;
   manuallyNamed?: boolean;
+  requestedCwd?: string | null;
   updatedAt: string;
 };
 
@@ -3116,7 +3117,7 @@ export function createAgentChatService(args: {
   ): LaneLaunchContext & { laneId: string; laneDirectiveKey: string | null } => {
     const launchContext = resolveManagedExecutionContext(managed, {
       purpose: args.purpose ?? "continue this chat",
-      requestedCwd: args.requestedCwd,
+      requestedCwd: args.requestedCwd !== undefined ? args.requestedCwd : managed.session.requestedCwd,
     });
     const laneWorktreeChanged = managed.laneWorktreePath !== launchContext.laneWorktreePath;
     managed.laneWorktreePath = launchContext.laneWorktreePath;
@@ -3184,6 +3185,9 @@ export function createAgentChatService(args: {
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
       ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
       manuallyNamed: Boolean(managed.manuallyNamed),
+      ...(managed.session.requestedCwd != null && String(managed.session.requestedCwd).trim().length
+        ? { requestedCwd: String(managed.session.requestedCwd).trim() }
+        : {}),
       updatedAt: nowIso()
     };
 
@@ -3300,6 +3304,9 @@ export function createAgentChatService(args: {
           ? { lastLaneDirectiveKey: record.lastLaneDirectiveKey.trim() }
           : {}),
         ...(record.manuallyNamed === true ? { manuallyNamed: true } : {}),
+        ...(typeof record.requestedCwd === "string" && record.requestedCwd.trim().length
+          ? { requestedCwd: record.requestedCwd.trim() }
+          : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
@@ -4111,6 +4118,9 @@ export function createAgentChatService(args: {
         completion: persisted?.completion ?? null,
         status: mapTerminalStatusToChatStatus(row.status),
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
+        ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
+          ? { requestedCwd: String(persisted.requestedCwd).trim() }
+          : {}),
         createdAt: row.startedAt,
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
       },
@@ -4450,6 +4460,8 @@ export function createAgentChatService(args: {
     const turnStartedAt = Date.now();
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
+    const toolInputJsonByContentIndex = new Map<number, string>();
+    const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
     const markFirstStreamEvent = (kind: string): void => {
       if (firstStreamEventLogged) return;
       firstStreamEventLogged = true;
@@ -4857,7 +4869,17 @@ export function createAgentChatService(args: {
                 });
               }
             } else if (delta?.type === "input_json_delta") {
-              // Tool input streaming — just emit activity
+              const idx =
+                typeof event.index === "number"
+                  ? event.index
+                  : typeof contentIndex === "number"
+                    ? contentIndex
+                    : null;
+              const partial = typeof delta.partial_json === "string" ? delta.partial_json : "";
+              if (idx != null && partial.length) {
+                const prev = toolInputJsonByContentIndex.get(idx) ?? "";
+                toolInputJsonByContentIndex.set(idx, prev + partial);
+              }
               emitChatEvent(managed, {
                 type: "activity",
                 activity: "tool_calling",
@@ -4908,9 +4930,33 @@ export function createAgentChatService(args: {
                   itemId,
                   turnId,
                 });
-                // Synthesize a tool_result for the proof observer since the
-                // Claude V2 SDK never surfaces tool results in the stream.
-                const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
+                if (typeof contentIndex === "number") {
+                  const initial =
+                    block.input != null && typeof block.input === "object" && Object.keys(block.input as object).length
+                      ? JSON.stringify(block.input)
+                      : "";
+                  toolInputJsonByContentIndex.set(contentIndex, initial);
+                  toolUseMetaByContentIndex.set(contentIndex, { toolName, itemId });
+                }
+              }
+            }
+          } else if (event.type === "content_block_stop") {
+            const stopIndex = typeof event.index === "number" ? event.index : contentIndex;
+            if (typeof stopIndex === "number") {
+              const meta = toolUseMetaByContentIndex.get(stopIndex);
+              if (meta) {
+                toolUseMetaByContentIndex.delete(stopIndex);
+                const raw = toolInputJsonByContentIndex.get(stopIndex) ?? "";
+                toolInputJsonByContentIndex.delete(stopIndex);
+                let parsed: unknown = {};
+                if (raw.trim().length) {
+                  try {
+                    parsed = JSON.parse(raw);
+                  } catch {
+                    parsed = {};
+                  }
+                }
+                const syntheticResult = maybeSyntheticToolResult(meta.toolName, parsed, meta.itemId, turnId);
                 if (syntheticResult) {
                   emitChatEvent(managed, syntheticResult);
                 }
@@ -5726,51 +5772,67 @@ export function createAgentChatService(args: {
       // ── Shared turn completion ──
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       clearTimeout(turnTimeout);
-      if (assistantText.trim().length) {
-        runtime.messages.push({ role: "assistant", content: assistantText });
-      }
-
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-      runtime.abortController = null;
-      managed.session.status = "idle";
-
-      emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
-      emitChatEvent(managed, {
-        type: "done",
-        turnId,
-        status: "completed",
-        model: managed.session.model,
-        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-        ...(usage ? { usage } : {})
-      });
-
-      if (assistantText.trim().length > 0) {
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: assistantText,
+      if (runtime.interrupted) {
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+        runtime.abortController = null;
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "interrupted",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
-      }
+        persistChatState(managed);
+      } else {
+        if (assistantText.trim().length) {
+          runtime.messages.push({ role: "assistant", content: assistantText });
+        }
 
-      const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
-      if (endSha) {
-        sessionService.setHeadShaEnd(managed.session.id, endSha);
-      }
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+        runtime.abortController = null;
+        managed.session.status = "idle";
 
-      persistChatState(managed);
+        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "completed",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          ...(usage ? { usage } : {})
+        });
 
-      // Process queued steers (skip if session was disposed during execution)
-      if (!managed.closed && runtime.pendingSteers.length) {
-        const steerText = runtime.pendingSteers.shift() ?? "";
-        if (steerText.trim().length) {
-          const preparedSteer = prepareSendMessage({
-            sessionId: managed.session.id,
-            text: steerText,
-            displayText: steerText,
-            attachments: [],
+        if (assistantText.trim().length > 0) {
+          appendWorkerActivityToCto(managed, {
+            activityType: "chat_turn",
+            summary: assistantText,
           });
-          if (preparedSteer) {
-            await executePreparedSendMessage(preparedSteer);
+        }
+
+        const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
+        if (endSha) {
+          sessionService.setHeadShaEnd(managed.session.id, endSha);
+        }
+
+        persistChatState(managed);
+
+        // Process queued steers (skip if session was disposed during execution)
+        if (!managed.closed && runtime.pendingSteers.length) {
+          const steerText = runtime.pendingSteers.shift() ?? "";
+          if (steerText.trim().length) {
+            const preparedSteer = prepareSendMessage({
+              sessionId: managed.session.id,
+              text: steerText,
+              displayText: steerText,
+              attachments: [],
+            });
+            if (preparedSteer) {
+              await executePreparedSendMessage(preparedSteer);
+            }
           }
         }
       }
@@ -7766,7 +7828,10 @@ export function createAgentChatService(args: {
         completion: null,
         status: "idle",
         createdAt: startedAt,
-        lastActivityAt: startedAt
+        lastActivityAt: startedAt,
+        ...(typeof requestedCwd === "string" && requestedCwd.trim().length
+          ? { requestedCwd: requestedCwd.trim() }
+          : {}),
       },
       transcriptPath,
       transcriptBytesWritten: fileSizeOrZero(transcriptPath),
@@ -9240,7 +9305,9 @@ export function createAgentChatService(args: {
       });
       if (manuallyNamed !== undefined) {
         managed.manuallyNamed = manuallyNamed && hasExplicitTitle;
-      } else if (!hasExplicitTitle) {
+      } else if (hasExplicitTitle) {
+        managed.manuallyNamed = true;
+      } else {
         managed.manuallyNamed = false;
       }
     }
