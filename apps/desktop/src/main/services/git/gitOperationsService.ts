@@ -619,7 +619,22 @@ export function createGitOperationsService({
           cwd: lane.worktreePath,
           timeoutMs: 5_000
         });
-        recommendedAction = mergeBaseRes.exitCode === 0 ? "force_push_lease" : "pull";
+        if (mergeBaseRes.exitCode === 0) {
+          recommendedAction = "force_push_lease";
+        } else {
+          // The --is-ancestor check fails when the lane was rebased onto a
+          // *base branch* (parent) rather than onto its own upstream, because
+          // all local commits get rewritten with new parents.  Fall back to
+          // checking the reflog for a recent rebase — if one happened, the
+          // divergence is expected and a force-push is the right next step.
+          const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+            cwd: lane.worktreePath,
+            timeoutMs: 5_000
+          });
+          const hasRecentRebase = reflogRes.exitCode === 0 &&
+            reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
+          recommendedAction = hasRecentRebase ? "force_push_lease" : "pull";
+        }
       }
 
       return {

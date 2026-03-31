@@ -628,6 +628,7 @@ export type RebaseResolutionStartArgs = {
   modelId: string;
   reasoning?: string | null;
   permissionMode?: AiPermissionMode;
+  forcePushAfterRebase?: boolean;
 };
 
 export type RebaseResolutionStartResult = {

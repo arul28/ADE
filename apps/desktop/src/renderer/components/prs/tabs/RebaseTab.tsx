@@ -75,6 +75,7 @@ export function RebaseTab({
   const [rebaseError, setRebaseError] = React.useState<string | null>(null);
   const [resolverLaunching, setResolverLaunching] = React.useState(false);
   const [resolverExpanded, setResolverExpanded] = React.useState(false);
+  const [forcePushAfterRebase, setForcePushAfterRebase] = React.useState(true);
   const [runScope, setRunScope] = React.useState<RebaseScope>("lane_only");
   const [activeRun, setActiveRun] = React.useState<RebaseRun | null>(null);
   const [runLogs, setRunLogs] = React.useState<string[]>([]);
@@ -311,6 +312,7 @@ export function RebaseTab({
           modelId: resolverModel,
           reasoning: resolverReasoningLevel || null,
           permissionMode: resolverPermissionMode,
+          forcePushAfterRebase,
         });
         onNavigate(result.href);
       } catch (err: unknown) {
@@ -1166,6 +1168,30 @@ export function RebaseTab({
                       onPermissionModeChange={onResolverPermissionChange}
                       disabled={resolverLaunching}
                     />
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 10,
+                        fontFamily: "var(--font-mono, monospace)",
+                        fontWeight: 600,
+                        letterSpacing: "0.5px",
+                        color: forcePushAfterRebase ? S.accent : S.textMuted,
+                        cursor: resolverLaunching ? "not-allowed" : "pointer",
+                        opacity: resolverLaunching ? 0.5 : 1,
+                        userSelect: "none",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={forcePushAfterRebase}
+                        onChange={(e) => setForcePushAfterRebase(e.target.checked)}
+                        disabled={resolverLaunching}
+                        style={{ accentColor: S.accent, cursor: "inherit" }}
+                      />
+                      FORCE PUSH AFTER REBASE
+                    </label>
                     <Button
                       size="sm"
                       variant="primary"
