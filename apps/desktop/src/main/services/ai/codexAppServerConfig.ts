@@ -6,6 +6,17 @@ function stringArrayOrUndefined(value: unknown): string[] | undefined {
   return normalized.length === value.length ? normalized : undefined;
 }
 
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value as Record<string, unknown>).every(
+    ([k, v]) => typeof k === "string" && typeof v === "string",
+  );
+}
+
 export function buildCodexAppServerMcpConfigOverrides(
   mcpServers?: Record<string, McpServerRecord>,
 ): Record<string, unknown> | undefined {
@@ -27,15 +38,15 @@ export function buildCodexAppServerMcpConfigOverrides(
     }
 
     const startupTimeoutSec =
-      (typeof server.startupTimeoutSec === "number" ? server.startupTimeoutSec : undefined)
-      ?? (typeof server.startup_timeout_sec === "number" ? server.startup_timeout_sec : undefined);
+      (isFiniteNonNegative(server.startupTimeoutSec) ? server.startupTimeoutSec : undefined)
+      ?? (isFiniteNonNegative(server.startup_timeout_sec) ? server.startup_timeout_sec : undefined);
     if (startupTimeoutSec !== undefined) {
       overrides[`${prefix}.startup_timeout_sec`] = startupTimeoutSec;
     }
 
     const toolTimeoutSec =
-      (typeof server.toolTimeoutSec === "number" ? server.toolTimeoutSec : undefined)
-      ?? (typeof server.tool_timeout_sec === "number" ? server.tool_timeout_sec : undefined);
+      (isFiniteNonNegative(server.toolTimeoutSec) ? server.toolTimeoutSec : undefined)
+      ?? (isFiniteNonNegative(server.tool_timeout_sec) ? server.tool_timeout_sec : undefined);
     if (toolTimeoutSec !== undefined) {
       overrides[`${prefix}.tool_timeout_sec`] = toolTimeoutSec;
     }
@@ -54,8 +65,9 @@ export function buildCodexAppServerMcpConfigOverrides(
 
     if (typeof server.command === "string" && server.command.trim().length > 0) {
       overrides[`${prefix}.command`] = server.command;
-      if (Array.isArray(server.args)) overrides[`${prefix}.args`] = server.args;
-      if (server.env && typeof server.env === "object") overrides[`${prefix}.env`] = server.env;
+      const args = stringArrayOrUndefined(server.args);
+      if (args !== undefined) overrides[`${prefix}.args`] = args;
+      if (isStringRecord(server.env)) overrides[`${prefix}.env`] = server.env;
       if (typeof server.cwd === "string" && server.cwd.trim().length > 0) overrides[`${prefix}.cwd`] = server.cwd;
       continue;
     }
@@ -66,10 +78,10 @@ export function buildCodexAppServerMcpConfigOverrides(
       if (typeof server.bearerTokenEnvVar === "string") {
         overrides[`${prefix}.bearer_token_env_var`] = server.bearerTokenEnvVar;
       }
-      if (server.httpHeaders && typeof server.httpHeaders === "object") {
+      if (isStringRecord(server.httpHeaders)) {
         overrides[`${prefix}.http_headers`] = server.httpHeaders;
       }
-      if (server.envHttpHeaders && typeof server.envHttpHeaders === "object") {
+      if (isStringRecord(server.envHttpHeaders)) {
         overrides[`${prefix}.env_http_headers`] = server.envHttpHeaders;
       }
     }

@@ -697,6 +697,16 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         const allowedPrIds = new Set(next.map((pr) => pr.id));
         setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
 
+        // Clear selection if the active PR was removed (mirrors refresh() guard).
+        const activePrIdForPrune = selectedPrIdRef.current;
+        if (activePrIdForPrune && !allowedPrIds.has(activePrIdForPrune)) {
+          setDetailStatus(null);
+          setDetailChecks([]);
+          setDetailReviews([]);
+          setDetailComments([]);
+          setSelectedPrId(null);
+        }
+
         if (changedPrIds.length > 0) {
           void refreshMergeContexts(changedPrIds);
           const affectedQueueGroupIds = new Set<string>();

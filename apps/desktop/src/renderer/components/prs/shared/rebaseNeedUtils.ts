@@ -70,7 +70,7 @@ export function buildUpstreamRebaseChain(args: {
   const rebaseNeeds = args.rebaseNeeds ?? [];
   const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
   const entries: UpstreamRebaseNeed[] = [];
-  const visited = new Set<string>();
+  const visited = new Set<string>([args.laneId]);
 
   let currentLane = laneById.get(args.laneId) ?? null;
   let parentLaneId = currentLane?.parentLaneId ?? null;

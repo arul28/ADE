@@ -48,8 +48,8 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasReportCompletion = toolNames.includes("reportCompletion");
   const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
   const normalizeToolName = (name: string): string => {
-    const match = name.match(/^mcp__[^_]+__(.+)$/);
-    return match?.[1] ?? name;
+    const match = name.match(/^mcp__(.+)__(.+)$/);
+    return match?.[2] ?? name;
   };
   const prIssueToolNames = toolNames.filter((name) => {
     const normalized = normalizeToolName(name);

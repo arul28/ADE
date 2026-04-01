@@ -747,14 +747,21 @@ export async function launchPrIssueResolutionChat(
     ...(prepared.runtimeCapabilities.executionMode ? { executionMode: prepared.runtimeCapabilities.executionMode } : {}),
   });
 
-  // Mark inventory items as sent to agent for this round
+  // Mark inventory items as sent to agent for this round (non-fatal — session is already live)
   if (prepared.inventoryNewItems?.length && prepared.roundNumber != null) {
-    deps.issueInventoryService.markSentToAgent(
-      prepared.pr.id,
-      prepared.inventoryNewItems.map((item) => item.id),
-      session.id,
-      prepared.roundNumber,
-    );
+    try {
+      deps.issueInventoryService.markSentToAgent(
+        prepared.pr.id,
+        prepared.inventoryNewItems.map((item) => item.id),
+        session.id,
+        prepared.roundNumber,
+      );
+    } catch (err) {
+      console.warn(
+        `[prIssueResolver] Failed to mark ${prepared.inventoryNewItems.length} inventory items as sent to agent for PR ${prepared.pr.id} round ${prepared.roundNumber}:`,
+        err,
+      );
+    }
   }
 
   return {

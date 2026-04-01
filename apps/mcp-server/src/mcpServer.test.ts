@@ -242,7 +242,7 @@ function createRuntime() {
             items: existingSnapshot?.items ?? [],
             convergence: {
               currentRound: typeof runtime.currentRound === "number" ? runtime.currentRound : 0,
-              maxRounds: defaultPipeline().maxRounds,
+              maxRounds: { ...defaultPipeline(), ...pipelineByPr.get(prId) }.maxRounds,
               issuesPerRound: [],
               totalNew: 0,
               totalFixed: 0,

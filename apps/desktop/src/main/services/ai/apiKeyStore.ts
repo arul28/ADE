@@ -11,8 +11,12 @@ let safeStorage: SafeStorage | null = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   safeStorage = require("electron").safeStorage;
-} catch {
+} catch (err) {
   // Not running inside Electron — secure storage unavailable.
+  // Log at debug level so silent failures don't hide useful diagnostics.
+  if (typeof process !== "undefined" && process.env.DEBUG) {
+    console.debug("[apiKeyStore] electron.safeStorage unavailable:", err);
+  }
 }
 
 type StoredKeys = Record<string, string>;

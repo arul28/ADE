@@ -14,7 +14,7 @@ export function HeroVisual() {
             aria-label="ADE product screenshots"
         >
             <motion.div
-                aria-hidden
+                aria-hidden="true"
                 animate={{
                     scale: [1, 1.15, 1],
                     opacity: [0.2, 0.4, 0.2],
@@ -24,7 +24,7 @@ export function HeroVisual() {
                 className="pointer-events-none absolute -right-16 top-1/4 h-80 w-80 rounded-full bg-accent/12 blur-[100px]"
             />
             <motion.div
-                aria-hidden
+                aria-hidden="true"
                 animate={{
                     scale: [1, 1.08, 1],
                     opacity: [0.2, 0.45, 0.2],

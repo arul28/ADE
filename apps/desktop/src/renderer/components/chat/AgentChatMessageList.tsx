@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -640,6 +640,7 @@ function CollapsibleCard({
   // Track whether the user explicitly collapsed while forceOpen is active
   const [userCollapsed, setUserCollapsed] = useState(false);
   const prevForceOpen = useRef(forceOpen);
+  const panelId = useId();
 
   useEffect(() => {
     // Auto-collapse when forceOpen transitions from true → falsy (turn finished)
@@ -660,6 +661,8 @@ function CollapsibleCard({
     <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={SURFACE_INLINE_CARD_STYLE}>
       <button
         type="button"
+        aria-expanded={isOpen}
+        aria-controls={panelId}
         className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-mono text-[11px]"
         onClick={() => {
           if (forceOpen === true) {
@@ -672,7 +675,7 @@ function CollapsibleCard({
         {isOpen ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {isOpen ? <div className="border-t border-white/[0.04] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
+      {isOpen ? <div id={panelId} className="border-t border-white/[0.04] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
     </div>
   );
 }
@@ -2723,8 +2726,11 @@ export function AgentChatMessageList({
 
   // Observe scrollHeight changes via MutationObserver so streaming content
   // (which grows existing rows without changing groupedRows identity) still
-  // triggers autoscroll.
+  // triggers autoscroll.  Scoped to the live-turn window: the observer is
+  // attached only while activeTurnId is non-null and tears down when the
+  // turn ends, avoiding unnecessary scroll-forcing after streaming finishes.
   useEffect(() => {
+    if (!activeTurnId) return;
     const el = scrollRef.current;
     if (!el || typeof MutationObserver === "undefined") return;
     let prevScrollHeight = el.scrollHeight;
@@ -2738,7 +2744,7 @@ export function AgentChatMessageList({
     });
     mo.observe(el, { childList: true, subtree: true, characterData: true });
     return () => mo.disconnect();
-  }, []);
+  }, [activeTurnId]);
 
   // Observe the scroll container's size so we know the viewport height.
   useEffect(() => {

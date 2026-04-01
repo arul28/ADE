@@ -441,6 +441,7 @@ export function PrDetailPane({
   const autoConvergeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const convergenceSessionPollerRef = React.useRef<number | null>(null);
   const convergenceLoadSeqRef = React.useRef(0);
+  const convergenceTabLoadSeqRef = React.useRef(0);
   const cachedConvergenceRuntimeRef = React.useRef<PrConvergenceState | null>(null);
   const behindCountRef = React.useRef<number>(0);
   const [autoConvergeWaitState, setAutoConvergeWaitState] = React.useState<AutoConvergeWaitState>({ phase: "idle" });
@@ -468,7 +469,10 @@ export function PrDetailPane({
     if (runtime.status === "paused") {
       return { phase: "paused", reason: runtime.pauseReason ?? "Auto-converge paused" };
     }
-    if (runtime.status === "failed" || runtime.status === "cancelled" || runtime.status === "stopped") {
+    if (runtime.status === "stopped") {
+      return { phase: "idle" };
+    }
+    if (runtime.status === "failed" || runtime.status === "cancelled") {
       return {
         phase: "paused",
         reason: runtime.errorMessage ?? runtime.pauseReason ?? `Auto-converge ${runtime.status}`,
@@ -892,14 +896,15 @@ export function PrDetailPane({
   // Sync inventory and load pipeline settings on convergence tab open
   React.useEffect(() => {
     if (activeTab === "convergence") {
+      const runId = ++convergenceTabLoadSeqRef.current;
       const capturedPrId = pr.id;
       void loadConvergenceState(capturedPrId, { force: true }).then((runtime) => {
-        if (pr.id !== capturedPrId) return; // stale
+        if (runId !== convergenceTabLoadSeqRef.current) return; // stale
         applyConvergenceRuntime(runtime);
       }).catch(() => undefined);
       void syncInventory();
       void window.ade.prs.pipelineSettingsGet(capturedPrId).then((s) => {
-        if (pr.id !== capturedPrId) return; // stale
+        if (runId !== convergenceTabLoadSeqRef.current) return; // stale
         setPipelineSettings(s);
         pipelineSettingsRef.current = s;
       }).catch(() => undefined);
@@ -1614,22 +1619,27 @@ export function PrDetailPane({
   }, [pr.id, syncInventory]);
 
   const handleResetInventory = React.useCallback(async () => {
-    await window.ade.prs.issueInventoryReset(pr.id);
-    await resetConvergenceState(pr.id);
-    setInventorySnapshot(null);
-    setConvergenceBusy(false);
-    setAutoConverge(false);
-    setConvergenceSessionId(null);
-    setConvergenceSessionHref(null);
-    setConvergenceMerged(false);
-    setConvergencePauseReason(null);
-    setAutoConvergeWaitState({ phase: "idle" });
-    if (autoConvergeTimerRef.current) {
-      clearTimeout(autoConvergeTimerRef.current);
-      autoConvergeTimerRef.current = null;
+    try {
+      await window.ade.prs.issueInventoryReset(pr.id);
+      await resetConvergenceState(pr.id);
+      setInventorySnapshot(null);
+      setConvergenceBusy(false);
+      setAutoConverge(false);
+      setConvergenceSessionId(null);
+      setConvergenceSessionHref(null);
+      setConvergenceMerged(false);
+      setConvergencePauseReason(null);
+      setAutoConvergeWaitState({ phase: "idle" });
+      await refreshDetailSurface({ includeInventory: true });
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (autoConvergeTimerRef.current) {
+        clearTimeout(autoConvergeTimerRef.current);
+        autoConvergeTimerRef.current = null;
+      }
+      stopAutoConvergePoller();
     }
-    stopAutoConvergePoller();
-    await refreshDetailSurface({ includeInventory: true });
   }, [pr.id, refreshDetailSurface, resetConvergenceState, stopAutoConvergePoller]);
 
   const localBehindCount = laneForPr?.status?.behind ?? 0;
@@ -1858,10 +1868,15 @@ export function PrDetailPane({
             pipelineSettings={pipelineSettings}
             waitState={autoConvergeWaitState}
             onPipelineSettingsChange={(partial) => {
+              const prev = pipelineSettings;
               const next = { ...pipelineSettings, ...partial };
               setPipelineSettings(next);
               pipelineSettingsRef.current = next;
-              void window.ade.prs.pipelineSettingsSave(pr.id, partial);
+              window.ade.prs.pipelineSettingsSave(pr.id, partial).catch((err: unknown) => {
+                setPipelineSettings(prev);
+                pipelineSettingsRef.current = prev;
+                setActionError(err instanceof Error ? err.message : String(err));
+              });
             }}
             onModelChange={setResolverModel}
             onReasoningEffortChange={setResolverReasoningLevel}

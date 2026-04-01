@@ -3009,12 +3009,28 @@ export function createAgentChatService(args: {
     return { client, transport };
   };
 
+  /** MCP tool names that are purely read-only and never need approval or memory-orientation gating. */
+  const MCP_READ_ONLY_PREFIX_RE = /^(?:get_|read_|search_|list_|memory_search)/;
+
   /**
    * Discover tools from an MCP client and convert each into an AI SDK `tool()`
    * so they can be merged with the universal tool set and passed to `streamText()`.
+   *
+   * When `guards` are provided the execute path enforces the same
+   * memory-orientation and plan/edit approval checks that in-process
+   * universal tools use, preventing MCP tools from bypassing those gates.
    */
   const buildMcpToolWrappers = async (
     mcpClient: McpSdkClient,
+    guards?: {
+      permissionMode: PermissionMode;
+      turnMemoryPolicyState?: TurnMemoryPolicyState;
+      onApprovalRequest?: (request: {
+        category: "write" | "bash";
+        description: string;
+        detail?: unknown;
+      }) => Promise<{ approved: boolean; decision?: AgentChatApprovalDecision; reason?: string | null }>;
+    },
   ): Promise<Record<string, AiTool>> => {
     const { tools: mcpTools } = await mcpClient.listTools();
     const wrapped: Record<string, AiTool> = {};
@@ -3026,10 +3042,39 @@ export function createAgentChatService(args: {
 
     for (const spec of mcpTools) {
       const toolName = `mcp__ade__${spec.name}`;
+      const isReadOnly = MCP_READ_ONLY_PREFIX_RE.test(spec.name);
       wrapped[toolName] = aiTool({
         description: spec.description ?? spec.name,
         inputSchema: aiJsonSchema(spec.inputSchema as any),
         execute: async (args) => {
+          // ── Guard: memory orientation ──
+          if (guards?.turnMemoryPolicyState && !isReadOnly) {
+            const mps = guards.turnMemoryPolicyState;
+            if (mps.classification === "required" && !mps.orientationSatisfied && !mps.explicitSearchPerformed) {
+              return "EXECUTION DENIED: Search memory before mutating files or running mutating commands for this turn.";
+            }
+          }
+
+          // ── Guard: plan/edit approval ──
+          if (guards && !isReadOnly) {
+            const mode = guards.permissionMode;
+            const needsApproval = mode === "plan" || mode === "edit";
+            if (needsApproval && guards.onApprovalRequest) {
+              try {
+                const result = await guards.onApprovalRequest({
+                  category: "write",
+                  description: `MCP tool: ${spec.name}`,
+                  detail: { tool: spec.name, arguments: args },
+                });
+                if (!result.approved) {
+                  return `EXECUTION DENIED: ${result.reason ?? "MCP tool call was not approved."}`;
+                }
+              } catch (err) {
+                return `EXECUTION DENIED: Approval request failed — ${err instanceof Error ? err.message : String(err)}`;
+              }
+            }
+          }
+
           const timeoutMs = resolveMcpToolTimeoutMs();
           let timeoutId: ReturnType<typeof setTimeout> | null = null;
           const callToolPromise = mcpClient.callTool({ name: spec.name, arguments: args as Record<string, unknown> });
@@ -4095,7 +4140,7 @@ export function createAgentChatService(args: {
         : prevPersisted?.sdkSessionId ? { sdkSessionId: prevPersisted.sdkSessionId } : {}),
       ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
         ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
-        : {}),
+        : prevPersisted?.approvalOverrides?.length ? { approvalOverrides: prevPersisted.approvalOverrides } : {}),
       ...(managed.runtime?.kind === "unified"
         ? { messages: managed.runtime.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })) }
         : prevPersisted?.messages?.length ? { messages: prevPersisted.messages } : {}),
@@ -6724,7 +6769,54 @@ export function createAgentChatService(args: {
       // same tooling surface as Claude / Codex sessions.
       if (!lightweight && runtime.mcpClient) {
         try {
-          const mcpTools = await buildMcpToolWrappers(runtime.mcpClient);
+          const mcpTools = await buildMcpToolWrappers(runtime.mcpClient, {
+            permissionMode: runtime.permissionMode,
+            turnMemoryPolicyState,
+            onApprovalRequest: async ({ category, description, detail }) => {
+              if (runtime.approvalOverrides.has(category as any)) {
+                return { approved: true, decision: "accept_for_session" as const, reason: "Already approved for this session." };
+              }
+
+              const approvalItemId = randomUUID();
+              const request: PendingInputRequest = {
+                requestId: approvalItemId,
+                itemId: approvalItemId,
+                source: "unified",
+                kind: "approval",
+                description,
+                questions: [],
+                allowsFreeform: false,
+                blocking: true,
+                canProceedWithoutAnswer: false,
+                providerMetadata: { category, detail },
+                turnId,
+              };
+              emitPendingInputRequest(managed, request, {
+                kind: "file_change",
+                description,
+                detail: detail && typeof detail === "object" && !Array.isArray(detail)
+                  ? { ...(detail as Record<string, unknown>) }
+                  : {},
+              });
+
+              const response = await new Promise<{ decision?: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
+                runtime.pendingApprovals.set(approvalItemId, { category: category as any, request, resolve });
+              });
+              runtime.pendingApprovals.delete(approvalItemId);
+
+              if (response.decision === "accept_for_session") {
+                runtime.approvalOverrides.add(category as any);
+              }
+
+              const approved = response.decision === "accept" || response.decision === "accept_for_session";
+              const trimmedReason = typeof response.responseText === "string" ? response.responseText.trim() : "";
+              return {
+                approved,
+                decision: response.decision,
+                reason: trimmedReason.length ? trimmedReason : approved ? "User approved the action." : "User denied the action.",
+              };
+            },
+          });
           Object.assign(tools, mcpTools);
         } catch (error) {
           logger.warn("agent_chat.unified_mcp_tools_failed", {

@@ -1043,7 +1043,7 @@ export function PrConvergencePanel({
 
   const hasNewItems = grouped.new.length > 0;
   const atMaxRounds = convergence.currentRound >= convergence.maxRounds;
-  const hasActiveWaitState = waitState.phase === "agent_running" || waitState.phase === "waiting_checks" || waitState.phase === "waiting_comments";
+  const hasActiveWaitState = waitState.phase === "agent_running" || waitState.phase === "waiting_checks" || waitState.phase === "waiting_comments" || waitState.phase === "paused";
   const canRunNext = hasNewItems && !atMaxRounds && !busy && !checksStillRunning && !hasActiveWaitState;
 
   const launchDisabledReason = !hasNewItems ? "No new issues to resolve"
@@ -1052,6 +1052,7 @@ export function PrConvergencePanel({
     : waitState.phase === "agent_running" ? "A convergence session is already running"
     : waitState.phase === "waiting_checks" ? "Waiting for CI checks to finish"
     : waitState.phase === "waiting_comments" ? "Waiting for review comments to settle"
+    : waitState.phase === "paused" ? "Convergence session is paused"
     : checksStillRunning ? "CI checks are still running"
     : null;
 

@@ -3025,10 +3025,11 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     // Build a CRR-aware run wrapper: when crsqlite is loaded and a table has
     // been converted to a CRR, ALTER TABLE statements must be wrapped with
     // crsql_begin_alter / crsql_commit_alter so the clock tables stay in sync.
+    let crsqliteLoaded = hadCrsqlMetadata && hasCrsqlite;
     const makeMigrateDb = () => ({
       run: (sql: string, params: SqlValue[] = []) => {
         const alterTable = parseAlterTableTarget(sql);
-        if (alterTable && rawHasTable(db, `${alterTable}__crsql_clock`)) {
+        if (alterTable && crsqliteLoaded && rawHasTable(db, `${alterTable}__crsql_clock`)) {
           getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
           try {
             runStatement(db, sql, params);

@@ -144,7 +144,7 @@ export function HomePage() {
   return (
     <Page>
       {/* ── HERO — Logo Equation + ADE ─────────── */}
-      <section className="relative overflow-visible">
+      <section className="relative overflow-x-hidden">
         {/* Background: gradient mesh + dot texture */}
         <div
           className="pointer-events-none absolute inset-0"
@@ -268,7 +268,7 @@ export function HomePage() {
             </p>
           </Reveal>
 
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {ALSO_BUILT_IN.map((cap, idx) => (
               <Reveal key={cap.label} delay={idx * 0.03}>
                 <div className="rounded-xl border border-border/70 bg-card/40 p-5 transition-colors hover:bg-card/60">

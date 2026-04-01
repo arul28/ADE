@@ -2287,7 +2287,7 @@ app.whenReady().then(async () => {
           conn.write(data);
         },
         close() {
-          if (!conn.destroyed) conn.end();
+          if (!conn.destroyed) conn.destroy();
         },
       };
       let stop: ReturnType<typeof startJsonRpcServer> | null = null;

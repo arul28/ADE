@@ -275,28 +275,33 @@ function renderPane(args: {
     recommendedAction: "none",
     ...args.syncStatus,
   } satisfies GitUpstreamSyncStatus);
-  const getSession = vi.fn().mockResolvedValue(args.sessionStatus ? {
-    id: "session-1",
-    laneId: "lane-1",
-    laneName: "feature/pr-80",
-    ptyId: null,
-    tracked: true,
-    pinned: false,
-    goal: null,
-    toolType: "codex-chat",
-    title: "Resolve PR #80 issues",
-    status: args.sessionStatus,
-    startedAt: "2026-03-23T12:00:00.000Z",
-    endedAt: args.sessionStatus === "running" ? null : "2026-03-23T12:30:00.000Z",
-    exitCode: args.sessionStatus === "completed" ? 0 : 1,
-    transcriptPath: "/tmp/transcript.log",
-    headShaStart: null,
-    headShaEnd: null,
-    lastOutputPreview: null,
-    summary: null,
-    runtimeState: args.sessionStatus === "running" ? "running" : "exited",
-    resumeCommand: null,
-  } : null);
+  const persistedSessionId = args.convergenceState?.activeSessionId ?? "session-1";
+  const getSession = vi.fn().mockImplementation(async (lookupId?: string) => {
+    if (!args.sessionStatus) return null;
+    const resolvedId = lookupId ?? persistedSessionId;
+    return {
+      id: resolvedId,
+      laneId: "lane-1",
+      laneName: "feature/pr-80",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "codex-chat",
+      title: "Resolve PR #80 issues",
+      status: args.sessionStatus,
+      startedAt: "2026-03-23T12:00:00.000Z",
+      endedAt: args.sessionStatus === "running" ? null : "2026-03-23T12:30:00.000Z",
+      exitCode: args.sessionStatus === "completed" ? 0 : 1,
+      transcriptPath: "/tmp/transcript.log",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: args.sessionStatus === "running" ? "running" : "exited",
+      resumeCommand: null,
+    };
+  });
   let aiResolutionListener: ((event: PrAiResolutionEventPayload) => void) | null = null;
   const onAiResolutionEvent = vi.fn((callback: (event: PrAiResolutionEventPayload) => void) => {
     aiResolutionListener = callback;
@@ -315,14 +320,20 @@ function renderPane(args: {
     error: null,
   });
   const onRefresh = vi.fn().mockResolvedValue(undefined);
-  const convergenceState = args.convergenceState ?? null;
-  const loadConvergenceState = vi.fn().mockResolvedValue(convergenceState);
-  const saveConvergenceState = vi.fn().mockImplementation(async (_prId: string, state: PrConvergenceStatePatch) => (
-    convergenceState ? { ...convergenceState, ...state } : makeConvergenceState(state)
-  ));
-  const resetConvergenceState = vi.fn().mockResolvedValue(undefined);
+  let currentConvergence: PrConvergenceState | null = args.convergenceState ?? null;
+  const loadConvergenceState = vi.fn().mockImplementation(async () => currentConvergence);
+  const saveConvergenceState = vi.fn().mockImplementation(async (_prId: string, patch: PrConvergenceStatePatch) => {
+    currentConvergence = currentConvergence
+      ? { ...currentConvergence, ...patch, updatedAt: new Date().toISOString() }
+      : makeConvergenceState(patch);
+    return currentConvergence;
+  });
+  const resetConvergenceState = vi.fn().mockImplementation(async () => {
+    currentConvergence = null;
+    return undefined;
+  });
   mockUsePrs.mockReturnValue({
-    convergenceStatesByPrId: convergenceState ? { "pr-80": convergenceState } : {},
+    convergenceStatesByPrId: currentConvergence ? { "pr-80": currentConvergence } : {},
     loadConvergenceState,
     saveConvergenceState,
     resetConvergenceState,

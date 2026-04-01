@@ -1535,19 +1535,32 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         laneId: "lane-dashboard",
         href: "/work?laneId=lane-dashboard&sessionId=mock-pr-issue-session",
       }),
-      convergenceStateGet: async (prId: string) => MOCK_CONVERGENCE_RUNTIME[prId] ?? createDefaultConvergenceRuntime(prId),
+      convergenceStateGet: async (prId: string) => {
+        const stored = MOCK_CONVERGENCE_RUNTIME[prId] ?? createDefaultConvergenceRuntime(prId);
+        return { ...stored };
+      },
       convergenceStateSave: async (prId: string, state: Record<string, any>) => {
         const nowIso = new Date().toISOString();
         const existing = MOCK_CONVERGENCE_RUNTIME[prId] ?? createDefaultConvergenceRuntime(prId);
+        // Only allow known ConvergenceRuntimeState keys (mirror real backend validation)
+        const allowedKeys = new Set([
+          "autoConvergeEnabled", "status", "pollerStatus", "currentRound",
+          "activeSessionId", "activeLaneId", "activeHref", "pauseReason",
+          "errorMessage", "lastStartedAt", "lastPolledAt", "lastPausedAt", "lastStoppedAt",
+        ]);
+        const filtered: Record<string, any> = {};
+        for (const key of Object.keys(state)) {
+          if (allowedKeys.has(key)) filtered[key] = state[key];
+        }
         const next = {
           ...existing,
-          ...state,
+          ...filtered,
           prId,
-          createdAt: existing.createdAt ?? new Date().toISOString(),
+          createdAt: existing.createdAt,
           updatedAt: nowIso,
         };
         MOCK_CONVERGENCE_RUNTIME[prId] = next;
-        return next;
+        return { ...next };
       },
       convergenceStateDelete: async (prId: string) => {
         delete MOCK_CONVERGENCE_RUNTIME[prId];

@@ -7,7 +7,7 @@ import { ADE_EASE_OUT } from "../lib/motion";
 
 /**
  * Product screenshots: `apps/web/public/images/features/`
- * Filenames match the assets under `/Users/arul/ADE/apps/web/public/images/features/`.
+ * Filenames match the assets under `apps/web/public/images/features/`.
  */
 type FeatureAsset = {
   /** Basename under `/images/features/` (may include spaces). */
@@ -79,12 +79,11 @@ function FeatureImage({ image, title }: { image: string; title: string }) {
     <div className="relative aspect-[16/10] w-full overflow-hidden rounded-xl border border-border/50 bg-[#0a0f1a]">
       <img
         src={featureSrc(image)}
-        alt=""
+        alt={title}
         className="absolute inset-0 h-full w-full object-cover object-top"
         loading="lazy"
         decoding="async"
       />
-      <span className="sr-only">{title}</span>
     </div>
   );
 }
