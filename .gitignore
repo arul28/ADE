@@ -9,6 +9,7 @@ node_modules/
 *_diff.txt
 *.png
 !docs/**/*.png
+!apps/web/public/**/*.png
 
 # Python cache
 __pycache__/
