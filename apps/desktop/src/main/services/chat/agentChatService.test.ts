@@ -444,41 +444,48 @@ function createMockProjectConfigService() {
 
 function createMockIssueInventoryService() {
   const now = new Date().toISOString();
+  const runtimeByPr = new Map<string, Record<string, unknown>>();
+
+  const defaultRuntime = (prId: string) => ({
+    prId,
+    autoConvergeEnabled: false,
+    status: "idle",
+    pollerStatus: "idle",
+    currentRound: 0,
+    activeSessionId: null,
+    activeLaneId: null,
+    activeHref: null,
+    pauseReason: null,
+    errorMessage: null,
+    lastStartedAt: null,
+    lastPolledAt: null,
+    lastPausedAt: null,
+    lastStoppedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
   return {
-    syncFromPrData: vi.fn((prId: string) => ({
-      prId,
-      items: [],
-      convergence: {
-        currentRound: 0,
-        maxRounds: 5,
-        issuesPerRound: [],
-        totalNew: 0,
-        totalFixed: 0,
-        totalDismissed: 0,
-        totalEscalated: 0,
-        totalSentToAgent: 0,
-        isConverging: false,
-        canAutoAdvance: false,
-      },
-      runtime: {
+    syncFromPrData: vi.fn((prId: string) => {
+      const runtime = { ...defaultRuntime(prId), ...runtimeByPr.get(prId) };
+      return {
         prId,
-        autoConvergeEnabled: false,
-        status: "idle",
-        pollerStatus: "idle",
-        currentRound: 0,
-        activeSessionId: null,
-        activeLaneId: null,
-        activeHref: null,
-        pauseReason: null,
-        errorMessage: null,
-        lastStartedAt: null,
-        lastPolledAt: null,
-        lastPausedAt: null,
-        lastStoppedAt: null,
-        createdAt: now,
-        updatedAt: now,
-      },
-    })),
+        items: [],
+        convergence: {
+          currentRound: typeof runtime.currentRound === "number" ? runtime.currentRound : 0,
+          maxRounds: 5,
+          issuesPerRound: [],
+          totalNew: 0,
+          totalFixed: 0,
+          totalDismissed: 0,
+          totalEscalated: 0,
+          totalSentToAgent: 0,
+          isConverging: false,
+          canAutoAdvance: false,
+        },
+        runtime,
+      };
+    }),
     getInventory: vi.fn(),
     getNewItems: vi.fn(() => []),
     markSentToAgent: vi.fn(),
@@ -499,43 +506,18 @@ function createMockIssueInventoryService() {
     })),
     resetInventory: vi.fn(),
     getConvergenceRuntime: vi.fn((prId: string) => ({
-      prId,
-      autoConvergeEnabled: false,
-      status: "idle",
-      pollerStatus: "idle",
-      currentRound: 0,
-      activeSessionId: null,
-      activeLaneId: null,
-      activeHref: null,
-      pauseReason: null,
-      errorMessage: null,
-      lastStartedAt: null,
-      lastPolledAt: null,
-      lastPausedAt: null,
-      lastStoppedAt: null,
-      createdAt: now,
-      updatedAt: now,
+      ...defaultRuntime(prId),
+      ...runtimeByPr.get(prId),
     })),
-    saveConvergenceRuntime: vi.fn((prId: string, state: Record<string, unknown>) => ({
-      prId,
-      autoConvergeEnabled: false,
-      status: "idle",
-      pollerStatus: "idle",
-      currentRound: 0,
-      activeSessionId: null,
-      activeLaneId: null,
-      activeHref: null,
-      pauseReason: null,
-      errorMessage: null,
-      lastStartedAt: null,
-      lastPolledAt: null,
-      lastPausedAt: null,
-      lastStoppedAt: null,
-      createdAt: now,
-      updatedAt: now,
-      ...state,
-    })),
-    resetConvergenceRuntime: vi.fn(),
+    saveConvergenceRuntime: vi.fn((prId: string, state: Record<string, unknown>) => {
+      const existing = runtimeByPr.get(prId) ?? {};
+      const merged = { ...defaultRuntime(prId), ...existing, ...state };
+      runtimeByPr.set(prId, merged);
+      return merged;
+    }),
+    resetConvergenceRuntime: vi.fn((prId: string) => {
+      runtimeByPr.delete(prId);
+    }),
     getPipelineSettings: vi.fn(() => ({
       maxRounds: 5,
       autoMerge: false,

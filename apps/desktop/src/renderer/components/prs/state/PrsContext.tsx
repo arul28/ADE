@@ -300,11 +300,12 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   const storeConvergenceState = useCallback((state: PrConvergenceState): PrConvergenceState => {
     // Guard against late IPC responses for PRs that have been pruned from the list.
-    // Only apply the guard when the PR list is non-empty — if no PRs are loaded yet
-    // (e.g. during startup or in contexts where the list resolves to []) the state
-    // should still be cached so that explicit loadConvergenceState/saveConvergenceState
-    // calls work correctly.
-    if (prsRef.current.length > 0 && !prsRef.current.some((pr) => pr.id === state.prId)) {
+    // Only apply the guard after the initial load has completed — before that the PR
+    // list is empty and states should still be cached so explicit load/save calls work.
+    // Using initialLoadDone (rather than prsRef.current.length > 0) ensures that once
+    // the list is known, stale responses for unknown PR ids are always rejected — even
+    // when the list becomes empty after pruning.
+    if (initialLoadDone.current && !prsRef.current.some((pr) => pr.id === state.prId)) {
       return state;
     }
     setConvergenceStatesByPrId((prev) => {

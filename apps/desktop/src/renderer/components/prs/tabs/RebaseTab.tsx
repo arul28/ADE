@@ -65,6 +65,27 @@ const S = {
   info: "#3B82F6",
 } as const;
 
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div
+      style={{
+        backgroundColor: "#EF44440A",
+        border: `1px solid #EF444430`,
+        padding: "10px 14px",
+        fontSize: 11,
+        color: "#FCA5A5",
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 8,
+      }}
+      className="font-mono"
+    >
+      <XCircle size={14} weight="fill" style={{ color: S.error, flexShrink: 0, marginTop: 1 }} />
+      {message}
+    </div>
+  );
+}
+
 function attentionStateVisuals(state: string): { label: string; color: string } {
   switch (state) {
     case "rebaseConflict": return { label: "CONFLICT", color: S.error };
@@ -76,9 +97,9 @@ function attentionStateVisuals(state: string): { label: string; color: string } 
 function attentionStatusBadgeVisuals(state: string): { label: string; color: string; bgColor: string; borderColor: string } {
   switch (state) {
     case "rebaseConflict":
-      return { label: "STACK CONFLICT", color: S.warning, bgColor: "#F59E0B18", borderColor: "1px solid #F59E0B30" };
+      return { label: "STACK CONFLICT", color: S.error, bgColor: "#EF444418", borderColor: "1px solid #EF444430" };
     case "rebaseFailed":
-      return { label: "STACK FAILED", color: S.error, bgColor: "#EF444418", borderColor: "1px solid #EF444430" };
+      return { label: "STACK FAILED", color: S.warning, bgColor: "#F59E0B18", borderColor: "1px solid #F59E0B30" };
     case "rebasePending":
       return { label: "STACK PENDING", color: S.info, bgColor: "#3B82F618", borderColor: "1px solid #3B82F630" };
     default:
@@ -1653,24 +1674,7 @@ export function RebaseTab({
             </div>
 
             {/* ── Error Banner ── */}
-            {rebaseError && (
-              <div
-                style={{
-                  backgroundColor: "#EF44440A",
-                  border: `1px solid #EF444430`,
-                  padding: "10px 14px",
-                  fontSize: 11,
-                  color: "#FCA5A5",
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 8,
-                }}
-                className="font-mono"
-              >
-                <XCircle size={14} weight="fill" style={{ color: S.error, flexShrink: 0, marginTop: 1 }} />
-                {rebaseError}
-              </div>
-            )}
+            {rebaseError && <ErrorBanner message={rebaseError} />}
 
           </div>
         ) : selectedAttentionStatus ? (
@@ -1758,24 +1762,7 @@ export function RebaseTab({
               </div>
             </div>
 
-            {rebaseError ? (
-              <div
-                style={{
-                  backgroundColor: "#EF44440A",
-                  border: `1px solid #EF444430`,
-                  padding: "10px 14px",
-                  fontSize: 11,
-                  color: "#FCA5A5",
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 8,
-                }}
-                className="font-mono"
-              >
-                <XCircle size={14} weight="fill" style={{ color: S.error, flexShrink: 0, marginTop: 1 }} />
-                {rebaseError}
-              </div>
-            ) : null}
+            {rebaseError ? <ErrorBanner message={rebaseError} /> : null}
           </div>
         ) : (
           <div
@@ -1788,7 +1775,6 @@ export function RebaseTab({
       },
     }),
     [
-      attentionStatuses,
       attentionItems,
       rebaseNeeds,
       selectedNeedUpstreamChain,

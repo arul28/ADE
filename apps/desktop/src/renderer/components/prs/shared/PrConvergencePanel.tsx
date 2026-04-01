@@ -750,7 +750,7 @@ function WaitingIndicator({
             weight="bold"
             style={{ animation: "convergeSpin 1s linear infinite", flexShrink: 0 }}
           />
-          <span>Agent working on round {convergence.currentRound}...</span>
+          <span>Agent working on round {convergence.currentRound + 1}...</span>
         </div>
         {onViewSession && (
           <button
@@ -1034,7 +1034,7 @@ export function PrConvergencePanel({
   const runningChecks = checks.filter((c) => c.status === "in_progress");
   const queuedChecks = checks.filter((c) => c.status === "queued");
   const checksStillRunning = queuedChecks.length > 0 || runningChecks.length > 0;
-  const allChecksPassing = failingChecks.length === 0 && !checksStillRunning;
+  const allChecksPassing = checks.length > 0 && checks.every((c) => c.conclusion === "success");
   const passingChecks = checks.filter((c) => c.conclusion === "success");
   const otherChecks = checks.filter(
     (c) => c.conclusion !== "failure" && c.conclusion !== "success" && c.status !== "in_progress",
@@ -1358,7 +1358,7 @@ export function PrConvergencePanel({
                     gap: 8,
                   }}
                 >
-                  <Play size={14} weight="fill" style={{ color: allChecksPassing ? COLORS.success : failingChecks.length > 0 ? COLORS.danger : COLORS.warning }} />
+                  <Play size={14} weight="fill" style={{ color: checks.length === 0 ? COLORS.textMuted : allChecksPassing ? COLORS.success : failingChecks.length > 0 ? COLORS.danger : COLORS.warning }} />
                   <span
                     style={{
                       fontFamily: SANS_FONT,
@@ -1376,18 +1376,20 @@ export function PrConvergencePanel({
                       marginLeft: "auto",
                       fontFamily: MONO_FONT,
                       fontSize: 10,
-                      color: allChecksPassing ? COLORS.success : failingChecks.length > 0 ? COLORS.danger : COLORS.warning,
+                      color: checks.length === 0 ? COLORS.textMuted : allChecksPassing ? COLORS.success : failingChecks.length > 0 ? COLORS.danger : COLORS.warning,
                     }}
                   >
-                    {allChecksPassing
-                      ? "all passing"
-                      : failingChecks.length > 0
-                        ? `${failingChecks.length} failing`
-                        : queuedChecks.length > 0 && runningChecks.length > 0
-                          ? `${queuedChecks.length} queued, ${runningChecks.length} running`
-                          : queuedChecks.length > 0
-                            ? `${queuedChecks.length} queued`
-                            : `${runningChecks.length} running`}
+                    {checks.length === 0
+                      ? "no checks found"
+                      : allChecksPassing
+                        ? "all passing"
+                        : failingChecks.length > 0
+                          ? `${failingChecks.length} failing`
+                          : queuedChecks.length > 0 && runningChecks.length > 0
+                            ? `${queuedChecks.length} queued, ${runningChecks.length} running`
+                            : queuedChecks.length > 0
+                              ? `${queuedChecks.length} queued`
+                              : `${runningChecks.length} running`}
                   </span>
                 </div>
                 <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
@@ -1512,7 +1514,7 @@ export function PrConvergencePanel({
       </div>
 
       {/* ---- Waiting indicator ---- */}
-      {mode === "auto-converge" && waitState.phase !== "idle" && (
+      {(mode === "auto-converge" || waitState.phase !== "idle") && (
         <WaitingIndicator
           waitState={waitState}
           convergence={convergence}
@@ -1539,7 +1541,7 @@ export function PrConvergencePanel({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {mode === "auto-converge" && waitState.phase !== "idle" && (
+          {(mode === "auto-converge" || waitState.phase !== "idle") && (
             <button
               type="button"
               onClick={onStopAutoConverge}

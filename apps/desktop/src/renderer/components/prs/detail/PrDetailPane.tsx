@@ -892,14 +892,17 @@ export function PrDetailPane({
   // Sync inventory and load pipeline settings on convergence tab open
   React.useEffect(() => {
     if (activeTab === "convergence") {
-      void loadConvergenceState(pr.id, { force: true }).then((runtime) => {
+      const capturedPrId = pr.id;
+      void loadConvergenceState(capturedPrId, { force: true }).then((runtime) => {
+        if (pr.id !== capturedPrId) return; // stale
         applyConvergenceRuntime(runtime);
       }).catch(() => undefined);
       void syncInventory();
-      void window.ade.prs.pipelineSettingsGet(pr.id).then((s) => {
+      void window.ade.prs.pipelineSettingsGet(capturedPrId).then((s) => {
+        if (pr.id !== capturedPrId) return; // stale
         setPipelineSettings(s);
         pipelineSettingsRef.current = s;
-      });
+      }).catch(() => undefined);
     }
   }, [activeTab, applyConvergenceRuntime, loadConvergenceState, syncInventory, pr.id]);
 
@@ -1326,7 +1329,7 @@ export function PrDetailPane({
           // Poll failed, schedule retry
           scheduleTick();
         }
-      }, 60_000); // Poll every 60 seconds
+      }, delayMs); // Poll every delayMs (default 60 s)
     };
 
     scheduleTick(0);
@@ -1900,6 +1903,7 @@ export function PrDetailPane({
                 status: "stopped",
                 pollerStatus: "stopped",
                 pauseReason: null,
+                errorMessage: null,
               });
             }}
             onDismissMerged={() => {

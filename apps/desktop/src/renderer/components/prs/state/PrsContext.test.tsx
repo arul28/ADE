@@ -233,12 +233,12 @@ describe("PrsContext convergence state", () => {
   let convergenceSaveMock: ReturnType<typeof vi.fn>;
   let convergenceDeleteMock: ReturnType<typeof vi.fn>;
 
-  const fakeState = makeFakeConvergenceState("pr-1");
-
   beforeEach(() => {
-    convergenceGetMock = vi.fn().mockResolvedValue(fakeState);
-    convergenceSaveMock = vi.fn().mockResolvedValue(
-      makeFakeConvergenceState("pr-1", { autoConvergeEnabled: true }),
+    convergenceGetMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(makeFakeConvergenceState("pr-1")),
+    );
+    convergenceSaveMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(makeFakeConvergenceState("pr-1", { autoConvergeEnabled: true })),
     );
     convergenceDeleteMock = vi.fn().mockResolvedValue(undefined);
 

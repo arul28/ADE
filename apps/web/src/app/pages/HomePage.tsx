@@ -1,12 +1,16 @@
 import {
   ArrowUpRight,
   BookOpen,
+  Bot,
   Download,
   Github,
+  GitMerge,
   Layers,
   MonitorCheck,
+  Package,
   Play,
-  Settings2,
+  Workflow,
+  Zap,
 } from "lucide-react";
 import { Fragment } from "react";
 import { Container } from "../../components/Container";
@@ -39,12 +43,48 @@ const COMPETITORS = [
   { name: "GitHub", logo: "/images/competitors/github.png" },
 ] as const;
 
-const CAPABILITIES = [
-  { icon: MonitorCheck, label: "Computer Use", detail: "Screenshot-based verification of agent output" },
-  { icon: Layers, label: "35+ MCP Tools", detail: "Built-in server for file ops, git, search, and more" },
-  { icon: Settings2, label: "Multi-Provider", detail: "Claude, Codex, Gemini, local models via BYOK" },
-  { icon: Play, label: "Process Monitor", detail: "Track every terminal command and its output" },
-];
+const ALSO_BUILT_IN = [
+  {
+    icon: Bot,
+    label: "CTO agent",
+    detail: "A long-lived lead for architecture and decisions, with memory and team workflows.",
+  },
+  {
+    icon: Workflow,
+    label: "Missions",
+    detail: "Coordinated multi-step runs with visibility across phases — planning, testing, and PRs.",
+  },
+  {
+    icon: Package,
+    label: "Unified memory",
+    detail: "Vector-indexed memory across projects and agents so work compounds instead of resetting.",
+  },
+  {
+    icon: Zap,
+    label: "Automations",
+    detail: "Event-driven agents on git events, PR activity, or schedules — with guardrails while you are away.",
+  },
+  {
+    icon: GitMerge,
+    label: "Merge conflicts",
+    detail: "Resolve conflicts with side-by-side diffs and a focused flow so you can land merges in one place.",
+  },
+  {
+    icon: MonitorCheck,
+    label: "Computer use",
+    detail: "Screenshot-based verification of agent output when you need proof, not just prose.",
+  },
+  {
+    icon: Layers,
+    label: "35+ MCP tools",
+    detail: "Built-in server for file ops, git, search, and more — desktop and headless paths.",
+  },
+  {
+    icon: Play,
+    label: "Process monitor",
+    detail: "Track every terminal command agents spawn and inspect output in one timeline.",
+  },
+] as const;
 
 /* ──────────────────────────────────────────────
    Quickstart copy command
@@ -104,7 +144,7 @@ export function HomePage() {
   return (
     <Page>
       {/* ── HERO — Logo Equation + ADE ─────────── */}
-      <section className="relative overflow-hidden">
+      <section className="relative overflow-visible">
         {/* Background: gradient mesh + dot texture */}
         <div
           className="pointer-events-none absolute inset-0"
@@ -207,8 +247,8 @@ export function HomePage() {
           </Reveal>
 
           {/* Hero app visual */}
-          <Reveal delay={0.26}>
-            <div className="mt-12 lg:mt-16 w-full flex justify-center">
+          <Reveal delay={0.26} className="overflow-visible">
+            <div className="relative left-1/2 mt-5 w-screen max-w-[100vw] -translate-x-1/2 sm:mt-6 lg:mt-7">
               <HeroVisual />
             </div>
           </Reveal>
@@ -222,11 +262,15 @@ export function HomePage() {
         <Container>
           <Reveal>
             <h2 className="text-2xl font-bold tracking-tight text-fg sm:text-3xl">Also built in</h2>
+            <p className="mt-2 max-w-2xl text-sm text-muted-fg sm:text-base">
+              Everything below ships in the same app; the gallery above highlights the visuals we are showcasing on
+              the site right now.
+            </p>
           </Reveal>
 
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {CAPABILITIES.map((cap, idx) => (
-              <Reveal key={cap.label} delay={idx * 0.04}>
+          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {ALSO_BUILT_IN.map((cap, idx) => (
+              <Reveal key={cap.label} delay={idx * 0.03}>
                 <div className="rounded-xl border border-border/70 bg-card/40 p-5 transition-colors hover:bg-card/60">
                   <cap.icon className="h-5 w-5 text-accent" />
                   <div className="mt-3 text-sm font-semibold text-fg">{cap.label}</div>

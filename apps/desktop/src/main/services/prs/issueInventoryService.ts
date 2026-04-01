@@ -380,6 +380,43 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
     );
   }
 
+  /**
+   * Returns the highest round number found among inventory items for the given
+   * PR.  Used by {@link computeEffectiveRuntime} to prevent the persisted
+   * `currentRound` from regressing below what the items imply.
+   */
+  function getMaxItemRound(prId: string): number {
+    const row = db.get<{ max_round: number | null }>(
+      "select max(round) as max_round from pr_issue_inventory where pr_id = ?",
+      [prId],
+    );
+    return row?.max_round ?? 0;
+  }
+
+  /**
+   * Merges a persisted (or default) runtime state with an optional patch,
+   * ensuring `currentRound` never regresses below the highest round implied
+   * by inventory items.  Without this floor the raw persisted value can be
+   * stale when items have been ingested at a higher round but the runtime row
+   * was not yet updated.
+   */
+  function computeEffectiveRuntime(
+    persisted: ConvergenceRuntimeState,
+    patch?: Partial<ConvergenceRuntimeState>,
+  ): ConvergenceRuntimeState {
+    const itemRound = getMaxItemRound(persisted.prId);
+    const candidateRound = Math.max(
+      persisted.currentRound,
+      itemRound,
+      patch?.currentRound ?? 0,
+    );
+    return {
+      ...persisted,
+      ...patch,
+      currentRound: candidateRound,
+    };
+  }
+
   function getItemsByState(prId: string, state: IssueInventoryState): IssueInventoryItem[] {
     return db.all<InventoryRow>(
       "select * from pr_issue_inventory where pr_id = ? and state = ? order by created_at asc",
@@ -534,9 +571,11 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
   function saveConvergenceRuntimeState(prId: string, state: Partial<ConvergenceRuntimeState>): ConvergenceRuntimeState {
     validateConvergenceRuntimeState(state);
     const existing = readConvergenceRuntime(prId);
+    // computeEffectiveRuntime ensures currentRound never regresses below the
+    // inventory-derived round, even if the incoming patch carries a stale value.
+    const effective = computeEffectiveRuntime(existing, state);
     const merged = sanitizeConvergenceRuntimeState(prId, {
-      ...existing,
-      ...state,
+      ...effective,
       prId,
       createdAt: existing.createdAt,
       updatedAt: nowIso(),
@@ -588,7 +627,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
 
   function readConvergenceRuntime(prId: string): ConvergenceRuntimeState {
     const row = getConvergenceRuntimeRow(prId);
-    return row ? rowToConvergenceRuntime(row) : buildDefaultRuntimeState(prId);
+    const persisted = row ? rowToConvergenceRuntime(row) : buildDefaultRuntimeState(prId);
+    return computeEffectiveRuntime(persisted);
   }
 
   function buildSnapshot(prId: string): IssueInventorySnapshot {

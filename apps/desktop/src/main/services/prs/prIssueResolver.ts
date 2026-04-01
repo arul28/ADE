@@ -455,7 +455,7 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
   if (useInventory) {
     promptSections.push(
       "",
-      "Current issues to address (from inventory — NEW items only)",
+      "Current issues to address (from inventory)",
       formatInventoryItemsSummary(args.inventoryItems!),
     );
   } else {
@@ -676,7 +676,7 @@ async function preparePrIssueResolutionPrompt(
       recentCommits: await readRecentCommits(lane.worktreePath),
       round: roundNumber,
       previouslyHandled,
-      inventoryItems: inventoryNewItems ?? null,
+      inventoryItems: scopedInventoryItems.length > 0 ? scopedInventoryItems : null,
       runtimeCapabilities,
       detailedIssueContext: options.detailLevel === "launch",
     }),

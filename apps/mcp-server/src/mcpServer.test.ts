@@ -237,11 +237,10 @@ function createRuntime() {
         syncFromPrData: vi.fn((prId: string) => {
           const runtime = { ...defaultRuntime(prId), ...runtimeByPr.get(prId) };
           const existingSnapshot = inventoryByPr.get(prId) ?? null;
-          const existingConvergence = existingSnapshot?.convergence ?? null;
           const snapshot = {
             prId,
-            items: [],
-            convergence: existingConvergence ?? {
+            items: existingSnapshot?.items ?? [],
+            convergence: {
               currentRound: typeof runtime.currentRound === "number" ? runtime.currentRound : 0,
               maxRounds: defaultPipeline().maxRounds,
               issuesPerRound: [],

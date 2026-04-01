@@ -364,7 +364,7 @@ function buildFallbackInventoryItems(args: {
     if (check.conclusion !== "failure") continue;
     const timestampValue = check.completedAt ?? check.startedAt ?? timestamp;
     items.push({
-      id: `transient-check-${check.name}`,
+      id: `transient-check-${check.name}-${timestampValue}`,
       prId: args.prId,
       source: "unknown",
       type: "check_failure",
@@ -1591,17 +1591,19 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         }
         await deps.interruptChat({ sessionId: activeSessionId });
 
-        const stoppedRuntime = deps.issueInventoryService?.saveConvergenceRuntime(prId, {
-          autoConvergeEnabled: false,
-          status: "stopped",
-          pollerStatus: "stopped",
-          activeSessionId: null,
-          activeLaneId: null,
-          activeHref: null,
-          pauseReason: reason?.trim() || null,
-          errorMessage: null,
-          lastStoppedAt: nowIso(),
-        }) ?? null;
+        const stoppedRuntime = currentRuntime?.activeSessionId === activeSessionId
+          ? deps.issueInventoryService?.saveConvergenceRuntime(prId, {
+              autoConvergeEnabled: false,
+              status: "stopped",
+              pollerStatus: "stopped",
+              activeSessionId: null,
+              activeLaneId: null,
+              activeHref: null,
+              pauseReason: reason?.trim() || null,
+              errorMessage: null,
+              lastStoppedAt: nowIso(),
+            }) ?? null
+          : currentRuntime;
 
         return {
           success: true,

@@ -5147,11 +5147,51 @@ export function registerIpc({
       "lastPausedAt",
       "lastStoppedAt",
     ]);
+    // Validate that args.state is a plain non-null object before iterating.
+    if (args.state == null || typeof args.state !== "object" || Array.isArray(args.state)) {
+      return getCtx().issueInventoryService.getConvergenceRuntime(args.prId);
+    }
+
+    const VALID_STATUS: ReadonlySet<string> = new Set([
+      "idle", "launching", "running", "polling", "paused", "converged", "merged", "failed", "cancelled", "stopped",
+    ]);
+    const VALID_POLLER_STATUS: ReadonlySet<string> = new Set([
+      "idle", "scheduled", "polling", "waiting_for_checks", "waiting_for_comments", "paused", "stopped",
+    ]);
+
+    const isStringOrNull = (v: unknown): boolean => v === null || typeof v === "string";
+
     const sanitized: PrConvergenceStatePatch = {};
     for (const key of Object.keys(args.state) as (keyof ConvergenceRuntimeState)[]) {
-      if (MUTABLE_FIELDS.has(key)) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-        (sanitized as any)[key] = (args.state as any)[key];
+      if (!MUTABLE_FIELDS.has(key)) continue;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+      const val = (args.state as any)[key];
+      switch (key) {
+        case "autoConvergeEnabled":
+          if (typeof val === "boolean") sanitized.autoConvergeEnabled = val;
+          break;
+        case "status":
+          if (typeof val === "string" && VALID_STATUS.has(val)) sanitized.status = val as ConvergenceRuntimeState["status"];
+          break;
+        case "pollerStatus":
+          if (typeof val === "string" && VALID_POLLER_STATUS.has(val)) sanitized.pollerStatus = val as ConvergenceRuntimeState["pollerStatus"];
+          break;
+        case "currentRound":
+          if (typeof val === "number" && Number.isFinite(val) && val >= 0) sanitized.currentRound = val;
+          break;
+        case "activeSessionId":
+        case "activeLaneId":
+        case "activeHref":
+        case "pauseReason":
+        case "errorMessage":
+        case "lastStartedAt":
+        case "lastPolledAt":
+        case "lastPausedAt":
+        case "lastStoppedAt":
+          if (isStringOrNull(val)) (sanitized as any)[key] = val;
+          break;
+        default:
+          break;
       }
     }
     return getCtx().issueInventoryService.saveConvergenceRuntime(args.prId, sanitized);

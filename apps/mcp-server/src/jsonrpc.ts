@@ -339,7 +339,12 @@ export type JsonRpcServerHandle = (() => void) & {
   notify: (method: string, params?: unknown) => void;
 };
 
-export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTransport): JsonRpcServerHandle {
+export interface JsonRpcServerOptions {
+  /** When true, oversized buffers close the connection instead of calling process.exit(1). */
+  nonFatal?: boolean;
+}
+
+export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTransport, options?: JsonRpcServerOptions): JsonRpcServerHandle {
   const writeFn = transport.write.bind(transport);
   let buffer: Buffer = Buffer.alloc(0);
   let stopped = false;
@@ -396,7 +401,9 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
       }, responseTransport ?? "framed", writeFn);
       stopped = true;
       transport.close();
-      process.nextTick(() => process.exit(1));
+      if (!options?.nonFatal) {
+        process.nextTick(() => process.exit(1));
+      }
       return;
     }
 

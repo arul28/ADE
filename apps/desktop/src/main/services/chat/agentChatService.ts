@@ -5613,7 +5613,22 @@ export function createAgentChatService(args: {
 
       const sessionControl = getClaudeV2SessionControl(runtime.v2Session);
       if (typeof sessionControl.setPermissionMode === "function") {
-        await sessionControl.setPermissionMode(turnPermissionMode);
+        try {
+          await sessionControl.setPermissionMode(turnPermissionMode);
+        } catch (permErr) {
+          // Invalidate the V2 session so it is recreated with the correct
+          // mode, then rethrow so the turn follows the normal failure path.
+          logger.warn("agent_chat.v2_set_permission_mode_failed", {
+            sessionId: managed.session.id,
+            turnPermissionMode,
+            error: String(permErr),
+          });
+          cancelClaudeWarmup(managed, runtime, "session_reset");
+          try { runtime.v2Session?.close(); } catch { /* ignore */ }
+          runtime.v2Session = null;
+          runtime.v2WarmupDone = null;
+          throw new Error(`Permission mode change to '${turnPermissionMode}' was rejected by the SDK. The session will be recreated on the next attempt.`);
+        }
       } else if (turnPermissionMode === "plan") {
         throw new Error("Claude plan mode is not available in this Claude SDK build.");
       }
@@ -8366,6 +8381,7 @@ export function createAgentChatService(args: {
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
       permissionMode: claudePermissionMode as any,
+      ...(claudePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } as any : {}),
       includePartialMessages: true,
       agentProgressSummaries: true,
       promptSuggestions: true,
@@ -11182,7 +11198,15 @@ export function createAgentChatService(args: {
         if (managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
           const control = getClaudeV2SessionControl(managed.runtime.v2Session);
           if (typeof control.setPermissionMode === "function") {
-            await control.setPermissionMode(fallbackPermMode);
+            try {
+              await control.setPermissionMode(fallbackPermMode);
+            } catch {
+              // Session was created without --dangerously-skip-permissions.
+              // Invalidate so it is recreated with the correct mode.
+              try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
+              managed.runtime.v2Session = null;
+              managed.runtime.v2WarmupDone = null;
+            }
           }
         }
         sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
@@ -11195,7 +11219,13 @@ export function createAgentChatService(args: {
       if (managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
         const control = getClaudeV2SessionControl(managed.runtime.v2Session);
         if (typeof control.setPermissionMode === "function") {
-          await control.setPermissionMode(claudePermMode);
+          try {
+            await control.setPermissionMode(claudePermMode);
+          } catch {
+            try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
+            managed.runtime.v2Session = null;
+            managed.runtime.v2WarmupDone = null;
+          }
         }
       }
       sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
@@ -11903,7 +11933,23 @@ export function createAgentChatService(args: {
         const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
         const control = getClaudeV2SessionControl(managed.runtime.v2Session);
         if (typeof control.setPermissionMode === "function") {
-          await control.setPermissionMode(turnPermissionMode);
+          try {
+            await control.setPermissionMode(turnPermissionMode);
+          } catch (permErr) {
+            // If the SDK rejects the mode change (e.g. escalating to
+            // bypassPermissions on a session not started with
+            // --dangerously-skip-permissions), invalidate the V2 session
+            // so it is recreated with the correct mode on the next turn.
+            logger.warn("agent_chat.v2_set_permission_mode_failed", {
+              sessionId: managed.session.id,
+              turnPermissionMode,
+              error: String(permErr),
+            });
+            cancelClaudeWarmup(managed, managed.runtime, "session_reset");
+            try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
+            managed.runtime.v2Session = null;
+            managed.runtime.v2WarmupDone = null;
+          }
         }
       }
       if (managed.runtime?.kind === "cursor" && !managed.runtime.busy) {

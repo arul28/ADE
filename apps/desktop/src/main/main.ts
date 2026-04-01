@@ -2298,7 +2298,7 @@ app.whenReady().then(async () => {
           stop?.notify("notifications/tools/list_changed", {});
         },
       });
-      stop = startJsonRpcServer(mcpHandler, transport);
+      stop = startJsonRpcServer(mcpHandler, transport, { nonFatal: true });
       const removeConnection = (): void => {
         activeMcpConnections.delete(conn);
       };
@@ -2498,6 +2498,22 @@ app.whenReady().then(async () => {
     const normalizedRoot = typeof ctx.project?.rootPath === "string" && ctx.project.rootPath.trim().length > 0
       ? normalizeProjectRoot(ctx.project.rootPath)
       : null;
+    // Tear down MCP socket BEFORE any service disposal so in-flight MCP requests
+    // do not race with services that are being shut down.
+    try {
+      if (normalizedRoot) {
+        mcpSocketCleanupByRoot.get(normalizedRoot)?.();
+        mcpSocketCleanupByRoot.delete(normalizedRoot);
+      }
+      ctx.mcpSocketServer?.close();
+    } catch {
+      // ignore
+    }
+    try {
+      if (ctx.mcpSocketPath) fs.unlinkSync(ctx.mcpSocketPath);
+    } catch {
+      // ignore
+    }
     // Flush DB before disposing services so that any pending writes are persisted.
     // Services may write during disposal, so we flush again at the end as a safety net.
     try {
@@ -2617,20 +2633,6 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.syncHostService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
-      if (normalizedRoot) {
-        mcpSocketCleanupByRoot.get(normalizedRoot)?.();
-        mcpSocketCleanupByRoot.delete(normalizedRoot);
-      }
-      ctx.mcpSocketServer?.close();
-    } catch {
-      // ignore
-    }
-    try {
-      if (ctx.mcpSocketPath) fs.unlinkSync(ctx.mcpSocketPath);
     } catch {
       // ignore
     }
