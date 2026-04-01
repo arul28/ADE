@@ -1,0 +1,141 @@
+---
+title: "PR Convergence Workflow"
+description: "End-to-end guide for using ADE's PR convergence loop — from manual issue resolution rounds to fully autonomous auto-converge with auto-merge."
+icon: "arrows-spin"
+---
+
+This guide walks through setting up and running the PR convergence workflow, from a single manual round to a fully autonomous auto-converge loop that merges the PR when it's ready.
+
+## Prerequisites
+
+- A lane with an open GitHub PR
+- At least one AI provider configured (Claude, Codex, or any supported model)
+- GitHub integration configured in **Settings > Integrations > GitHub**
+
+---
+
+## Quick Start: Manual Round
+
+The fastest way to try PR convergence is a single manual round.
+
+<Steps>
+  <Step title="Open the PR detail">
+    Go to the **PRs** tab and select a PR that has review comments or failing CI checks.
+  </Step>
+  <Step title="Open Path to Merge">
+    Click the **Path to Merge** tab (sparkle icon). ADE scans the PR and builds the issue inventory.
+  </Step>
+  <Step title="Run a round">
+    Leave the mode on **Manual**. Optionally type instructions like "Fix the type errors mentioned in the review." Click **Run Next Round**.
+  </Step>
+  <Step title="Watch the agent work">
+    ADE creates a new chat session in the PR's lane. The agent reads each issue, makes code changes, and commits. You can click **View Session** to watch in real time.
+  </Step>
+  <Step title="Check results">
+    When the round finishes, the issue inventory updates. Fixed issues show a green checkmark. Any new issues from fresh CI runs appear as **New**.
+  </Step>
+</Steps>
+
+---
+
+## Setting Up Auto-Converge
+
+Auto-converge runs the full loop without manual intervention.
+
+<Steps>
+  <Step title="Toggle to Auto-Converge">
+    In the Path to Merge panel, click the **Auto-Converge** toggle in the mode switcher at the top.
+  </Step>
+  <Step title="Configure pipeline settings">
+    Set your preferences:
+    - **Max Rounds** — how many rounds before auto-converge pauses (default: 5)
+    - **Merge Method** — squash, merge, rebase, or repo default
+    - **Auto-Merge** — toggle ON if you want ADE to merge the PR automatically when convergence completes
+    - **On Rebase Needed** — `pause` (ask you) or `auto_rebase` (handle automatically)
+  </Step>
+  <Step title="Configure AI settings">
+    Select the model, reasoning effort, and permission mode. For auto-converge, **Guarded Edit** is recommended for safety — or **Full Edit** if you trust the model on this codebase.
+  </Step>
+  <Step title="Let it run">
+    ADE starts the first round immediately. After each round, it waits for CI to finish, polls for new comments, and decides whether to launch another round or mark convergence as complete.
+  </Step>
+</Steps>
+
+---
+
+## Understanding Wait States
+
+During auto-converge, the panel shows what ADE is waiting for:
+
+| State | Banner Message | What's Happening |
+|-------|---------------|-----------------|
+| **Agent running** | "Agent working on round N..." | The agent is actively making changes. Click **View Session** to watch. |
+| **Waiting for checks** | "Waiting for CI checks (3 of 8 pending)" | CI is running after the agent's commits. ADE polls every ~60 seconds. |
+| **Waiting for comments** | "Stabilizing comments..." | CI passed. ADE is waiting for 2 stable polls with no new reviewer comments before proceeding. |
+| **Ready** | "Ready to launch next round" | New issues appeared and the next round is about to start. |
+| **Paused** | "Paused: [reason]" | Something needs attention — rebase required, max rounds reached, or manual pause. Click **Resume** to continue. |
+| **Complete** | "Convergence complete" | No new issues after the last round. If auto-merge is on, the PR will be merged. |
+| **Merged** | "PR merged" | Auto-merge completed successfully. |
+
+---
+
+## Managing the Issue Inventory
+
+Each item in the inventory can be managed individually:
+
+- **Dismiss** — Mark an issue as not actionable (e.g., a stylistic suggestion you disagree with). Click the trash icon.
+- **Escalate** — Flag an issue for human attention. Escalated issues are shown at the top with an orange indicator.
+- **Reset Inventory** — Re-scan the PR from scratch. Use this if the inventory seems stale or if many issues were resolved outside ADE.
+
+Issues from bot reviewers (CodeRabbit, Copilot, Codex) are automatically detected and attributed so you can filter or prioritize them differently from human review feedback.
+
+---
+
+## CTO-Driven Convergence
+
+The CTO agent can start and manage convergence autonomously. This is useful for workflows where the CTO monitors all PRs and drives them to merge without human interaction.
+
+Example CTO workflow:
+1. CTO detects new review comments on PR #42 via its heartbeat
+2. CTO calls `startPullRequestConvergenceRound` with scope "comments" and the project's default model
+3. Agent resolves the issues and commits
+4. CTO calls `getPullRequestConvergence` to check the result
+5. If issues remain, CTO starts another round
+6. When converged, CTO merges the PR (or notifies you, depending on settings)
+
+The CTO's PR convergence tools are available as MCP tools in the CTO chat session and in any worker session the CTO delegates to.
+
+---
+
+## Convergence with Stacked PRs
+
+When running convergence on a PR that is part of a stack:
+
+- ADE detects rebase needs when a parent PR merges and the base branch moves
+- If `onRebaseNeeded` is `auto_rebase`, ADE rebases automatically before continuing
+- If `onRebaseNeeded` is `pause`, auto-converge pauses with a "Rebase needed" message
+- After rebase, the poller resumes and waits for CI to re-run before starting the next round
+
+<Warning>If you are running auto-converge on multiple PRs in the same stack simultaneously, they may conflict with each other. It is recommended to converge stacked PRs from bottom to top, one at a time.</Warning>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Auto-converge paused unexpectedly" icon="pause">
+    Check the pause reason in the banner. Common causes:
+    - **Max rounds reached** — increase `maxRounds` in pipeline settings
+    - **Rebase needed** — the base branch moved; rebase the PR or set `onRebaseNeeded: auto_rebase`
+    - **Agent error** — the agent session failed; check the session transcript for details
+  </Accordion>
+  <Accordion title="Issues are not being detected" icon="circle-question">
+    Click **Reset Inventory** to force a full re-scan. If the PR has no review comments requesting changes and all CI checks pass, the inventory will be empty — this means the PR is already converged.
+  </Accordion>
+  <Accordion title="Agent is not fixing the right issues" icon="bullseye">
+    Use the **Additional Instructions** field to guide the agent. Be specific: "Address the SQL injection concern in the auth handler review comment" is more effective than "fix the issues."
+  </Accordion>
+  <Accordion title="Auto-merge did not trigger" icon="code-merge">
+    Verify that `autoMerge` is enabled in pipeline settings. Also check that all required GitHub branch protection rules are satisfied — ADE cannot override branch protection.
+  </Accordion>
+</AccordionGroup>

@@ -149,7 +149,7 @@ describe("PrConvergencePanel", () => {
     const props = renderPanel({
       autoConverge: true,
       items: [makeItem()],
-      convergence: makeConvergence({ state: "converging", currentRound: 2 }),
+      convergence: makeConvergence({ state: "converging", currentRound: 1 }),
       waitState: { phase: "agent_running", sessionId: "session-123" },
     });
 

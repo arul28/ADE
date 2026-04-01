@@ -1,0 +1,35 @@
+---
+title: "v1.0.3"
+description: "Release notes for ADE v1.0.3 — April 1, 2026"
+---
+
+## Added
+
+- **PR Convergence — Path to Merge tab** — Dedicated convergence workspace inside every PR detail view with issue inventory, manual and auto-converge modes, and pipeline settings
+- **Auto-Converge mode** — Fully autonomous convergence loop: launches resolution rounds, polls for CI completion and comment stabilization, and optionally auto-merges when all issues are resolved
+- **Issue Inventory** — Structured tracking of all PR blockers (review comments, CI failures, bot feedback) with state management (new, sent to agent, fixed, dismissed, escalated) and source attribution (human, CodeRabbit, Copilot, Codex)
+- **CTO PR convergence operator tools** — Five new MCP tools (`getPullRequestConvergence`, `updatePullRequestConvergencePipeline`, `updatePullRequestConvergenceRuntime`, `startPullRequestConvergenceRound`, `stopPullRequestConvergence`) enabling the CTO to drive PR convergence programmatically
+- **Pipeline settings** — Per-PR configuration for auto-merge, merge method, max rounds, and rebase policy with project-wide defaults in `.ade/ade.yaml`
+- **Unified model picker in convergence** — Select any configured AI model, reasoning effort, and permission mode for each convergence round
+- **ADE MCP tool namespacing** — PR issue resolution tools exposed with `ade:` prefix in agent sessions
+- **Codex MCP override mapping** — ADE server settings correctly forwarded to Codex MCP launches
+- **Reusable JSON-RPC server** — Refactored MCP socket handling into a shared server module
+
+## Changed
+
+- **PR detail tabs** — "Path to Merge" is now a permanent tab (with sparkle icon and issue count badge) alongside Overview, Files, CI/Checks, and Activity
+- **Chat sessions** — MCP tools are now wired into unified chat sessions with full model picker support across all configured providers
+- **Chat provider resolution** — Model descriptor-based provider and model selection replaces hardcoded provider switching
+- **Headless MCP** — Electron safeStorage guarded to support MCP server operation without a display
+- **MCP config hardening** — ADE query controls enforced across all MCP tool invocations
+- **Chat abort handling** — Aborts treated as interruptions that preserve chat state instead of clearing it
+- **Rebase route selection** — Active rebase needs now correctly resolved when selecting navigation routes
+
+## Fixed
+
+- **Convergence state guard** — `storeConvergenceState` correctly checks for existing state before overwriting
+- **MCP launch environment** — Removed `process.env` leak from MCP launch configuration
+- **MCP SDK test isolation** — Added proper mocks for MCP SDK dependencies in test suites
+- **Thinking indicator positioning** — Fixed CSS positioning of the thinking/reasoning indicator in chat messages
+- **Artifact URL handling** — Textual artifact URLs are now ignored (only real PR branch pushes trigger updates)
+- **projectRoot forwarding** — Codex MCP launches now correctly receive the project root path

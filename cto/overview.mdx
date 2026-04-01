@@ -22,6 +22,9 @@ The CTO ships with a rich default persona: a persistent technical lead who holds
   <Card title="Bidirectional Linear Sync" icon="arrow-right-arrow-left">
     Reads from and writes to Linear. Creates issues from code changes, updates issue status when PRs merge, and adds analysis comments automatically.
   </Card>
+  <Card title="PR Convergence" icon="arrows-spin">
+    Drives PRs to merge readiness autonomously — starts convergence rounds, monitors CI and review comments, and manages the full resolution loop via five dedicated operator tools.
+  </Card>
   <Card title="Deep Memory" icon="brain">
     Maintains multi-scope persistent memory across `project`, `identity`, `daily-log`, `run`, and `runtime-thread` scopes. The CTO remembers what happened yesterday.
   </Card>
@@ -39,7 +42,7 @@ Understanding how the CTO differs from the agents you spawn manually (in chat se
 | **Scope** | Entire project | Specific lane, task, or mission |
 | **Memory** | Accumulates over weeks/months | Within the current session or run |
 | **Triggers** | Heartbeat schedule + events + manual chat | Explicit user action or automation trigger |
-| **Authority** | Can spawn lanes, create missions, delegate to workers | Operates within its assigned lane/context |
+| **Authority** | Can spawn lanes, create missions, delegate to workers, drive PR convergence | Operates within its assigned lane/context |
 | **Linear access** | Full bidirectional sync (owner) | Read-only via MCP tools, if granted |
 | **Primary UI** | CTO tab | Lane terminal, Chat pane, Missions tab |
 
