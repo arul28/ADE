@@ -1,479 +1,635 @@
 import React from "react";
 import {
-  ArrowsClockwise,
-  ArrowSquareOut,
-  ArrowUp,
-  ChatText,
-  CheckCircle,
   CircleNotch,
-  CopySimple,
-  Eye,
-  GitBranch,
-  Play,
-  Sparkle,
-  Trash,
+  CheckCircle,
   Warning,
+  ChatText,
+  CopySimple,
+  ArrowsClockwise,
+  Eye,
+  Trash,
+  ArrowUp,
+  Play,
+  Stop,
 } from "@phosphor-icons/react";
-import type {
-  AiPermissionMode,
-  ConvergenceStatus,
-  IssueInventoryItem,
-  IssueInventorySnapshot,
-  IssueInventoryState,
-  PipelineSettings,
-  PrCheck,
-} from "../../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
+import type { AiPermissionMode, PipelineSettings, PrCheck } from "../../../../shared/types";
+import {
+  COLORS,
+  MONO_FONT,
+  SANS_FONT,
+  outlineButton,
+  primaryButton,
+} from "../../lanes/laneDesignTokens";
 import { PrPipelineSettings } from "./PrPipelineSettings";
-import { PrResolverLaunchControls } from "./PrResolverLaunchControls";
 
-export type PathToMergeRuntimeState = {
-  phase: "idle" | "launching" | "working" | "polling" | "paused" | "converged" | "merged" | "stopped" | "error";
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type IssueItemSeverity = "critical" | "major" | "minor";
+export type IssueItemSource = "coderabbit" | "codex" | "copilot" | "human" | "ade";
+export type IssueItemState = "new" | "in_progress" | "fixed" | "dismissed" | "escalated";
+
+export type IssueInventoryItem = {
+  id: string;
+  state: IssueItemState;
+  severity: IssueItemSeverity;
+  headline: string;
+  filePath: string | null;
+  line: number | null;
+  source: IssueItemSource;
+  dismissReason: string | null;
+  agentSessionId: string | null;
+};
+
+export type ConvergenceStatus = {
+  state: "not_started" | "converging" | "stalled" | "complete";
   currentRound: number;
   maxRounds: number;
-  autoConverge: boolean;
-  agentSessionId: string | null;
-  sessionHref: string | null;
-  sessionLaneId: string | null;
-  pauseReason: string | null;
-  pollerPhase: "idle" | "waiting_checks" | "waiting_comments" | "polling" | "paused";
 };
+
+export type AutoConvergeWaitState =
+  | { phase: "idle" }
+  | { phase: "agent_running"; sessionId: string }
+  | { phase: "waiting_checks"; pendingCount: number; totalCount: number }
+  | { phase: "waiting_comments"; stablePollCount: number }
+  | { phase: "ready" }
+  | { phase: "paused"; reason: string }
+  | { phase: "complete" }
+  | { phase: "merged" };
 
 export type PrConvergencePanelProps = {
   prNumber: number;
   prTitle: string;
   headBranch: string;
   baseBranch: string;
-  snapshot: IssueInventorySnapshot | null;
+  items: IssueInventoryItem[];
+  convergence: ConvergenceStatus;
   checks: PrCheck[];
-  runtime: PathToMergeRuntimeState;
   modelId: string;
   reasoningEffort: string;
   permissionMode: AiPermissionMode;
   busy: boolean;
-  additionalInstructions: string;
-  onAdditionalInstructionsChange: (value: string) => void;
+  autoConverge: boolean;
+  pipelineSettings: PipelineSettings;
+  waitState: AutoConvergeWaitState;
+  onPipelineSettingsChange: (settings: Partial<PipelineSettings>) => void;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (value: string) => void;
   onPermissionModeChange: (mode: AiPermissionMode) => void;
+  onRunNextRound: (additionalInstructions: string) => Promise<void>;
   onAutoConvergeChange: (enabled: boolean) => void;
-  onLaunchAgent: (additionalInstructions: string) => Promise<void>;
-  onStartNextRound: (additionalInstructions: string) => Promise<void>;
   onCopyPrompt: (additionalInstructions: string) => Promise<void>;
-  onStop: () => Promise<void> | void;
-  onViewSession?: (href: string) => void;
   onMarkDismissed: (itemIds: string[], reason: string) => void;
   onMarkEscalated: (itemIds: string[]) => void;
   onResetInventory: () => void;
-  pipelineSettings: PipelineSettings;
-  onPipelineSettingsChange: (settings: Partial<PipelineSettings>) => void;
+  onViewAgentSession?: (sessionId: string) => void;
+  onStopAutoConverge?: () => void;
+  onResumePause?: () => void;
+  onDismissPause?: () => void;
+  onDismissMerged?: () => void;
 };
 
-type ItemGroupKey = IssueInventoryState;
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-const SOURCE_META: Record<string, { label: string; color: string }> = {
-  coderabbit: { label: "CodeRabbit", color: "#22C55E" },
-  codex: { label: "Codex", color: "#3B82F6" },
-  copilot: { label: "Copilot", color: "#A855F7" },
+const SEVERITY_COLORS: Record<IssueItemSeverity, string> = {
+  critical: "#EF4444",
+  major: "#F59E0B",
+  minor: "#6B7280",
+};
+
+const SOURCE_META: Record<IssueItemSource, { label: string; color: string }> = {
+  coderabbit: { label: "CR", color: "#22C55E" },
+  codex: { label: "CX", color: "#3B82F6" },
+  copilot: { label: "CP", color: "#A855F7" },
+  human: { label: "HM", color: "#E5E7EB" },
   ade: { label: "ADE", color: "#A78BFA" },
-  human: { label: "Human", color: "#E5E7EB" },
-  unknown: { label: "Unknown", color: "#9CA3AF" },
 };
 
-const STATE_META: Record<ItemGroupKey, { label: string; accent: string; icon: React.ReactNode }> = {
-  new: { label: "New", accent: "#F59E0B", icon: <ChatText size={13} weight="fill" /> },
-  sent_to_agent: { label: "Working", accent: "#A78BFA", icon: <CircleNotch size={13} weight="bold" /> },
-  fixed: { label: "Fixed", accent: "#22C55E", icon: <CheckCircle size={13} weight="fill" /> },
-  dismissed: { label: "Dismissed", accent: "#6B7280", icon: <Trash size={13} /> },
-  escalated: { label: "Escalated", accent: "#F97316", icon: <ArrowUp size={13} weight="bold" /> },
+const STATE_META: Record<
+  IssueItemState,
+  { label: string; accent: string; defaultExpanded: boolean; icon: React.ReactNode }
+> = {
+  new: {
+    label: "Review Comments",
+    accent: "#F59E0B",
+    defaultExpanded: true,
+    icon: <ChatText size={13} weight="fill" />,
+  },
+  in_progress: {
+    label: "In Progress",
+    accent: "#A78BFA",
+    defaultExpanded: true,
+    icon: <CircleNotch size={13} weight="bold" />,
+  },
+  fixed: {
+    label: "Fixed",
+    accent: "#22C55E",
+    defaultExpanded: false,
+    icon: <CheckCircle size={13} weight="fill" />,
+  },
+  dismissed: {
+    label: "Dismissed",
+    accent: "#6B7280",
+    defaultExpanded: false,
+    icon: <Trash size={13} />,
+  },
+  escalated: {
+    label: "Escalated",
+    accent: "#F97316",
+    defaultExpanded: true,
+    icon: <ArrowUp size={13} weight="bold" />,
+  },
 };
 
-const STATE_ORDER: ItemGroupKey[] = ["escalated", "new", "sent_to_agent", "fixed", "dismissed"];
+const STATE_ORDER: IssueItemState[] = ["escalated", "new", "in_progress", "fixed", "dismissed"];
 
-const POLLER_PHASE_LABELS: Record<string, string> = {
-  waiting_checks: "Waiting for checks",
-  waiting_comments: "Waiting for comments",
-  paused: "Polling paused",
-  polling: "Polling",
+const CONVERGENCE_STATUS_STYLE: Record<
+  ConvergenceStatus["state"],
+  { bg: string; color: string; borderColor: string; label: string; pulse: boolean }
+> = {
+  not_started: {
+    bg: "rgba(107,114,128,0.12)",
+    color: "#9CA3AF",
+    borderColor: "rgba(107,114,128,0.25)",
+    label: "Not started",
+    pulse: false,
+  },
+  converging: {
+    bg: "rgba(34,197,94,0.10)",
+    color: "#4ADE80",
+    borderColor: "rgba(34,197,94,0.30)",
+    label: "Converging",
+    pulse: true,
+  },
+  stalled: {
+    bg: "rgba(245,158,11,0.10)",
+    color: "#FBBF24",
+    borderColor: "rgba(245,158,11,0.30)",
+    label: "Stalled",
+    pulse: false,
+  },
+  complete: {
+    bg: "rgba(34,197,94,0.14)",
+    color: "#22C55E",
+    borderColor: "rgba(34,197,94,0.35)",
+    label: "Complete",
+    pulse: false,
+  },
 };
 
-const STATUS_META: Record<PathToMergeRuntimeState["phase"], { label: string; color: string; background: string; border: string }> = {
-  idle: { label: "Idle", color: COLORS.textMuted, background: "rgba(255,255,255,0.03)", border: COLORS.border },
-  launching: { label: "Launching", color: COLORS.warning, background: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.25)" },
-  working: { label: "Agent working", color: COLORS.accent, background: `${COLORS.accent}10`, border: `${COLORS.accent}25` },
-  polling: { label: "Polling for replies", color: COLORS.warning, background: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.25)" },
-  paused: { label: "Paused", color: "#F59E0B", background: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.25)" },
-  converged: { label: "Converged", color: COLORS.success, background: "rgba(34,197,94,0.10)", border: "rgba(34,197,94,0.25)" },
-  merged: { label: "Merged", color: COLORS.success, background: "rgba(34,197,94,0.10)", border: "rgba(34,197,94,0.25)" },
-  stopped: { label: "Stopped", color: COLORS.textDim, background: "rgba(255,255,255,0.02)", border: COLORS.border },
-  error: { label: "Error", color: COLORS.danger, background: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.25)" },
-};
+// ---------------------------------------------------------------------------
+// Keyframes (injected once)
+// ---------------------------------------------------------------------------
 
-function groupItems(items: IssueInventoryItem[]): Record<ItemGroupKey, IssueInventoryItem[]> {
-  const grouped: Record<ItemGroupKey, IssueInventoryItem[]> = {
-    new: [],
-    sent_to_agent: [],
-    fixed: [],
-    dismissed: [],
-    escalated: [],
-  };
-  for (const item of items) {
-    grouped[item.state].push(item);
-  }
-  return grouped;
+const STYLE_ID = "pr-convergence-panel-keyframes";
+
+function ensureKeyframes() {
+  if (typeof document === "undefined") return;
+  if (document.getElementById(STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = STYLE_ID;
+  style.textContent = `
+    @keyframes convergePulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.55; }
+    }
+    @keyframes convergeSpin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    @keyframes convergeSlideDown {
+      from { opacity: 0; max-height: 0; }
+      to { opacity: 1; max-height: 2000px; }
+    }
+    @keyframes convergeFadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes convergeDotStep {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.35); }
+    }
+  `;
+  document.head.appendChild(style);
 }
 
-function formatLocation(item: IssueInventoryItem): string | null {
-  if (!item.filePath) return null;
-  return item.line != null ? `${item.filePath}:${item.line}` : item.filePath;
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function RoundIndicator({ current, max }: { current: number; max: number }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span
+        style={{
+          fontFamily: MONO_FONT,
+          fontSize: 10,
+          fontWeight: 700,
+          color: COLORS.textSecondary,
+          letterSpacing: "0.04em",
+          textTransform: "uppercase",
+        }}
+      >
+        Round {current} of {max}
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+        {Array.from({ length: max }, (_, i) => {
+          const isCurrent = i + 1 === current;
+          const isComplete = i + 1 < current;
+          let dotColor = "rgba(255,255,255,0.12)";
+          if (isComplete) dotColor = COLORS.success;
+          else if (isCurrent) dotColor = COLORS.accent;
+          return (
+            <div
+              key={i}
+              style={{
+                width: isCurrent ? 8 : 6,
+                height: isCurrent ? 8 : 6,
+                borderRadius: 999,
+                background: dotColor,
+                border: isCurrent ? `1.5px solid ${COLORS.accent}` : "none",
+                boxShadow: isCurrent ? `0 0 6px ${COLORS.accent}50` : "none",
+                transition: "all 0.3s ease",
+                animation: isCurrent ? "convergeDotStep 1.8s ease-in-out infinite" : "none",
+              }}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
-function bodyPreview(body: string | null): string | null {
-  const value = (body ?? "").trim();
-  if (!value) return null;
-  return value.replace(/\s+/g, " ");
-}
-
-function itemSummary(item: IssueInventoryItem): string {
-  const latestAuthor = item.threadLatestCommentAuthor ?? item.author;
-  if (!latestAuthor) return "Latest reply";
-  return `Latest reply by ${latestAuthor}`;
-}
-
-function sourceMeta(source: string | null | undefined): { label: string; color: string } {
-  if (!source) return SOURCE_META.unknown;
-  return SOURCE_META[source] ?? { label: source, color: COLORS.textMuted };
-}
-
-function displaySourceMeta(item: IssueInventoryItem): { label: string; color: string } {
-  if (item.source !== "unknown" && item.source !== "human") return sourceMeta(item.source);
-  const author = (item.threadLatestCommentAuthor ?? item.author ?? "").trim();
-  if (!author) return sourceMeta(item.source);
-  return {
-    label: author.replace(/\[bot\]$/i, ""),
-    color: item.source === "human" ? SOURCE_META.human.color : COLORS.textMuted,
-  };
-}
-
-function StatusPill({ phase }: { phase: PathToMergeRuntimeState["phase"] }) {
-  const meta = STATUS_META[phase];
+function ConvergenceStatusPill({ status }: { status: ConvergenceStatus["state"] }) {
+  const meta = CONVERGENCE_STATUS_STYLE[status];
   return (
     <span
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 6,
-        padding: "3px 8px",
-        borderRadius: 6,
-        border: `1px solid ${meta.border}`,
-        background: meta.background,
+        gap: 5,
+        padding: "3px 10px",
+        borderRadius: 999,
+        background: meta.bg,
+        border: `1px solid ${meta.borderColor}`,
         color: meta.color,
         fontFamily: MONO_FONT,
         fontSize: 10,
         fontWeight: 700,
+        letterSpacing: "0.03em",
         textTransform: "uppercase",
-        letterSpacing: "0.05em",
+        animation: meta.pulse ? "convergePulse 2s ease-in-out infinite" : "none",
       }}
     >
-      {phase === "working" || phase === "polling" || phase === "launching" ? (
-        <CircleNotch size={11} weight="bold" style={{ animation: "ptmSpin 1s linear infinite" }} />
+      {meta.pulse ? (
+        <span
+          style={{
+            width: 5,
+            height: 5,
+            borderRadius: 999,
+            background: meta.color,
+            boxShadow: `0 0 4px ${meta.color}`,
+          }}
+        />
       ) : null}
       {meta.label}
     </span>
   );
 }
 
-function RuntimeSummary({
-  runtime,
-  convergence,
-}: {
-  runtime: PathToMergeRuntimeState;
-  convergence: ConvergenceStatus | null;
-}) {
-  const currentRound = runtime.currentRound > 0 ? runtime.currentRound : convergence?.currentRound ?? 0;
-  const maxRounds = runtime.maxRounds > 0 ? runtime.maxRounds : convergence?.maxRounds ?? 5;
+function StatsBar({ items }: { items: IssueInventoryItem[] }) {
+  const counts: Record<IssueItemState, number> = { new: 0, in_progress: 0, fixed: 0, dismissed: 0, escalated: 0 };
+  for (const item of items) {
+    counts[item.state]++;
+  }
+
+  const stats: Array<{ label: string; count: number; color: string }> = [
+    { label: "new", count: counts.new, color: "#F59E0B" },
+    { label: "fixed", count: counts.fixed, color: "#22C55E" },
+    { label: "dismissed", count: counts.dismissed, color: "#6B7280" },
+    { label: "escalated", count: counts.escalated, color: "#F97316" },
+  ];
+
   return (
     <div
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 8,
-        flexWrap: "wrap",
-        padding: "10px 12px",
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: 10,
-        background: "rgba(255,255,255,0.02)",
+        gap: 16,
+        padding: "8px 16px",
+        background: "rgba(255,255,255,0.015)",
+        borderBottom: `1px solid ${COLORS.border}`,
       }}
     >
-      <span style={inlineBadge(COLORS.textSecondary, { background: "rgba(255,255,255,0.03)" })}>
-        Round {currentRound || 0} of {maxRounds}
-      </span>
-      <StatusPill phase={runtime.phase} />
-      {runtime.autoConverge ? (
-        <span style={inlineBadge(COLORS.accent, { background: `${COLORS.accent}10` })}>Auto-converge</span>
-      ) : (
-        <span style={inlineBadge(COLORS.textMuted, { background: "rgba(255,255,255,0.03)" })}>Manual launch</span>
-      )}
-      {runtime.pauseReason ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: "#F59E0B" }}>{runtime.pauseReason}</span>
-      ) : null}
-    </div>
-  );
-}
-
-function SummaryCounts({ items }: { items: IssueInventoryItem[] }) {
-  const grouped = groupItems(items);
-  const counts: Array<{ key: ItemGroupKey; color: string }> = [
-    { key: "new", color: "#F59E0B" },
-    { key: "sent_to_agent", color: "#A78BFA" },
-    { key: "fixed", color: "#22C55E" },
-    { key: "dismissed", color: "#6B7280" },
-    { key: "escalated", color: "#F97316" },
-  ];
-  return (
-    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-      {counts.map((entry) => (
-        <span
-          key={entry.key}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "5px 8px",
-            borderRadius: 6,
-            border: `1px solid ${COLORS.border}`,
-            background: "rgba(255,255,255,0.02)",
-            fontFamily: MONO_FONT,
-            fontSize: 10,
-            color: COLORS.textSecondary,
-          }}
-        >
+      {stats.map((stat) => (
+        <div key={stat.label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <span
             style={{
               width: 7,
               height: 7,
               borderRadius: 999,
-              background: entry.color,
-              opacity: grouped[entry.key].length > 0 ? 1 : 0.35,
+              background: stat.color,
+              opacity: stat.count > 0 ? 1 : 0.3,
             }}
           />
-          {STATE_META[entry.key].label}
-          <strong style={{ color: COLORS.textPrimary }}>{grouped[entry.key].length}</strong>
-        </span>
+          <span
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              fontWeight: 600,
+              color: stat.count > 0 ? COLORS.textPrimary : COLORS.textDim,
+            }}
+          >
+            {stat.count}
+          </span>
+          <span
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 10,
+              color: COLORS.textMuted,
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+            }}
+          >
+            {stat.label}
+          </span>
+        </div>
       ))}
     </div>
   );
 }
 
-function InventoryRow({
+function SeverityBadge({ severity }: { severity: IssueItemSeverity }) {
+  const color = SEVERITY_COLORS[severity];
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "2px 7px",
+        borderRadius: 4,
+        background: `${color}18`,
+        color,
+        fontFamily: MONO_FONT,
+        fontSize: 9,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+      }}
+    >
+      {severity}
+    </span>
+  );
+}
+
+function SourceTag({ source }: { source: IssueItemSource }) {
+  const meta = SOURCE_META[source];
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "2px 6px",
+        borderRadius: 4,
+        background: `${meta.color}14`,
+        color: meta.color,
+        fontFamily: MONO_FONT,
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+      }}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+function IssueRow({
   item,
-  busy,
+  showAgent,
   onDismiss,
   onEscalate,
 }: {
   item: IssueInventoryItem;
-  busy: boolean;
-  onDismiss: (itemId: string) => void;
-  onEscalate: (itemId: string) => void;
+  showAgent?: boolean;
+  onDismiss?: (itemId: string) => void;
+  onEscalate?: (itemId: string) => void;
 }) {
-  const meta = displaySourceMeta(item);
-  const preview = bodyPreview(item.body);
-  const location = formatLocation(item);
+  let location: string | null = null;
+  if (item.filePath) {
+    location = item.line != null ? `${item.filePath}:${item.line}` : item.filePath;
+  }
 
   return (
     <div
       style={{
         display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        padding: "10px 12px",
-        borderRadius: 10,
+        alignItems: "center",
+        gap: 10,
+        padding: "9px 12px",
+        borderRadius: 8,
         background: "rgba(255,255,255,0.02)",
         border: `1px solid ${COLORS.border}`,
+        animation: "convergeFadeIn 0.25s ease-out",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+      <SeverityBadge severity={item.severity} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            fontWeight: 600,
+            color: COLORS.textPrimary,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {item.headline}
+        </div>
+        {location ? (
+          <div
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: 10,
+              color: COLORS.textMuted,
+              marginTop: 2,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {location}
+          </div>
+        ) : null}
+      </div>
+      {showAgent && item.agentSessionId ? (
         <span
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: 6,
+            gap: 4,
             padding: "2px 7px",
-            borderRadius: 6,
-            background: `${meta.color}14`,
-            color: meta.color,
+            borderRadius: 4,
+            background: `${COLORS.accent}14`,
+            color: COLORS.accent,
             fontFamily: MONO_FONT,
             fontSize: 9,
-            fontWeight: 700,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            flexShrink: 0,
           }}
         >
-          {meta.label}
+          <CircleNotch size={10} weight="bold" style={{ animation: "convergeSpin 1s linear infinite" }} />
+          agent
         </span>
-        <div
-          style={{
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            color: COLORS.textPrimary,
-            fontWeight: 600,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            minWidth: 0,
-            flex: 1,
-          }}
-          title={item.headline}
-        >
-          {item.headline}
-        </div>
-        {item.state === "sent_to_agent" ? (
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              padding: "2px 7px",
-              borderRadius: 6,
-              background: `${COLORS.accent}10`,
-              color: COLORS.accent,
-              fontFamily: MONO_FONT,
-              fontSize: 9,
-              fontWeight: 700,
-            }}
-          >
-            <CircleNotch size={10} weight="bold" style={{ animation: "ptmSpin 1s linear infinite" }} />
-            working
-          </span>
-        ) : null}
-      </div>
-
-      {preview ? (
-        <div
-          style={{
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            lineHeight: 1.55,
-            color: COLORS.textSecondary,
-            display: "-webkit-box",
-            WebkitBoxOrient: "vertical",
-            WebkitLineClamp: 3,
-            overflow: "hidden",
-          }}
-        >
-          {preview}
-        </div>
       ) : null}
-
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>{itemSummary(item)}</span>
-        {location ? (
-          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>{location}</span>
-        ) : null}
-        {item.dismissReason ? (
-          <span
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 11,
-              color: COLORS.textMuted,
-              paddingLeft: 8,
-              borderLeft: `1px solid ${COLORS.border}`,
-            }}
-            title={item.dismissReason}
-          >
-            {item.dismissReason}
-          </span>
-        ) : null}
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      {item.state === "fixed" ? (
+        <CheckCircle size={15} weight="fill" style={{ color: COLORS.success, flexShrink: 0 }} />
+      ) : null}
+      {onDismiss && item.state !== "fixed" && item.state !== "dismissed" ? (
         <button
           type="button"
+          title="Dismiss"
           onClick={() => onDismiss(item.id)}
-          disabled={busy || item.state === "fixed" || item.state === "dismissed"}
-          style={outlineButton({
-            height: 28,
-            padding: "0 10px",
-            borderRadius: 8,
-            opacity: busy || item.state === "fixed" || item.state === "dismissed" ? 0.5 : 1,
-          })}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: 4,
+            border: `1px solid ${COLORS.border}`,
+            background: "rgba(255,255,255,0.03)",
+            cursor: "pointer",
+            color: COLORS.textDim,
+            padding: 0,
+            flexShrink: 0,
+            transition: "all 0.15s ease",
+          }}
         >
-          <Trash size={12} />
-          Dismiss
+          <Trash size={11} />
         </button>
+      ) : null}
+      {onEscalate && item.state !== "escalated" && item.state !== "fixed" && item.state !== "dismissed" ? (
         <button
           type="button"
+          title="Escalate"
           onClick={() => onEscalate(item.id)}
-          disabled={busy || item.state === "fixed" || item.state === "dismissed" || item.state === "escalated"}
-          style={outlineButton({
-            height: 28,
-            padding: "0 10px",
-            borderRadius: 8,
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: 4,
+            border: `1px solid ${COLORS.border}`,
+            background: "rgba(255,255,255,0.03)",
+            cursor: "pointer",
             color: "#F97316",
-            opacity: busy || item.state === "fixed" || item.state === "dismissed" || item.state === "escalated" ? 0.5 : 1,
-          })}
+            padding: 0,
+            flexShrink: 0,
+            transition: "all 0.15s ease",
+          }}
         >
-          <ArrowUp size={12} weight="bold" />
-          Escalate
+          <ArrowUp size={11} weight="bold" />
         </button>
-      </div>
+      ) : null}
+      <SourceTag source={item.source} />
     </div>
   );
 }
 
-function SectionHeader({
-  title,
-  count,
-  accent,
-  icon,
-}: {
-  title: string;
-  count: number;
-  accent: string;
-  icon: React.ReactNode;
-}) {
+function FixedRow({ item }: { item: IssueInventoryItem }) {
   return (
     <div
       style={{
         display: "flex",
         alignItems: "center",
         gap: 8,
-        padding: "6px 2px 8px",
-        borderBottom: `1px solid ${accent}22`,
-        marginBottom: 8,
+        padding: "6px 12px",
+        borderRadius: 6,
+        background: "rgba(255,255,255,0.01)",
       }}
     >
-      <span style={{ color: accent, display: "inline-flex", alignItems: "center" }}>{icon}</span>
+      <CheckCircle size={13} weight="fill" style={{ color: COLORS.success, flexShrink: 0 }} />
       <span
         style={{
           fontFamily: SANS_FONT,
-          fontSize: 10,
-          fontWeight: 700,
-          color: accent,
-          textTransform: "uppercase",
-          letterSpacing: "0.05em",
+          fontSize: 11,
+          color: COLORS.textSecondary,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          flex: 1,
+          minWidth: 0,
         }}
       >
-        {title}
+        {item.headline}
       </span>
-      <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: accent }}>{count}</span>
+      <SourceTag source={item.source} />
     </div>
   );
 }
 
-function checkColor(check: PrCheck): string {
-  if (check.conclusion === "success") return COLORS.success;
-  if (check.conclusion === "failure") return COLORS.danger;
-  if (check.status === "in_progress" || check.status === "queued") return COLORS.warning;
-  return COLORS.textDim;
+function DismissedRow({ item }: { item: IssueInventoryItem }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 12px",
+        borderRadius: 6,
+        background: "rgba(255,255,255,0.01)",
+        opacity: 0.65,
+      }}
+      title={item.dismissReason ?? undefined}
+    >
+      <Trash size={12} style={{ color: COLORS.textDim, flexShrink: 0 }} />
+      <span
+        style={{
+          fontFamily: SANS_FONT,
+          fontSize: 11,
+          color: COLORS.textMuted,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          flex: 1,
+          minWidth: 0,
+        }}
+      >
+        {item.headline}
+      </span>
+      {item.dismissReason ? (
+        <span
+          style={{
+            fontFamily: MONO_FONT,
+            fontSize: 9,
+            color: COLORS.textDim,
+            flexShrink: 0,
+            maxWidth: 140,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {item.dismissReason}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 function CheckRow({ check }: { check: PrCheck }) {
   const isPassing = check.conclusion === "success";
   const isFailing = check.conclusion === "failure";
-  const isRunning = check.status === "in_progress" || check.status === "queued";
-  const color = checkColor(check);
+  const isRunning = check.status === "in_progress";
+  let statusColor: string = COLORS.textDim;
+  if (isPassing) statusColor = COLORS.success;
+  else if (isFailing) statusColor = COLORS.danger;
+  else if (isRunning) statusColor = COLORS.warning;
 
   return (
     <div
@@ -481,41 +637,45 @@ function CheckRow({ check }: { check: PrCheck }) {
         display: "flex",
         alignItems: "center",
         gap: 8,
-        padding: "8px 10px",
-        borderRadius: 8,
-        background: "rgba(255,255,255,0.02)",
-        border: `1px solid ${COLORS.border}`,
+        padding: "7px 12px",
+        borderRadius: 6,
+        background: "rgba(255,255,255,0.015)",
       }}
     >
       {isRunning ? (
-        <CircleNotch size={13} weight="bold" style={{ color, animation: "ptmSpin 1s linear infinite", flexShrink: 0 }} />
+        <CircleNotch
+          size={13}
+          weight="bold"
+          style={{ color: statusColor, animation: "convergeSpin 1s linear infinite", flexShrink: 0 }}
+        />
       ) : isPassing ? (
-        <CheckCircle size={13} weight="fill" style={{ color, flexShrink: 0 }} />
+        <CheckCircle size={13} weight="fill" style={{ color: statusColor, flexShrink: 0 }} />
       ) : isFailing ? (
-        <Warning size={13} weight="fill" style={{ color, flexShrink: 0 }} />
+        <Warning size={13} weight="fill" style={{ color: statusColor, flexShrink: 0 }} />
       ) : (
-        <Eye size={13} style={{ color, flexShrink: 0 }} />
+        <Eye size={13} style={{ color: statusColor, flexShrink: 0 }} />
       )}
-      <div
+      <span
         style={{
+          fontFamily: SANS_FONT,
+          fontSize: 11,
+          fontWeight: 500,
+          color: COLORS.textPrimary,
           flex: 1,
           minWidth: 0,
-          fontFamily: SANS_FONT,
-          fontSize: 12,
-          color: COLORS.textPrimary,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
         }}
       >
         {check.name}
-      </div>
+      </span>
       <span
         style={{
           fontFamily: MONO_FONT,
           fontSize: 9,
           fontWeight: 700,
-          color,
+          color: statusColor,
           textTransform: "uppercase",
           letterSpacing: "0.05em",
         }}
@@ -526,340 +686,749 @@ function CheckRow({ check }: { check: PrCheck }) {
   );
 }
 
-function EmptyState({
-  title,
-  description,
+// ---------------------------------------------------------------------------
+// WaitingIndicator
+// ---------------------------------------------------------------------------
+
+function WaitingIndicator({
+  waitState,
+  convergence,
+  onViewSession,
+  onResumePause,
+  onDismissPause,
+  onDismissMerged,
+  onStop,
 }: {
-  title: string;
-  description: string;
+  waitState: AutoConvergeWaitState;
+  convergence: ConvergenceStatus;
+  onViewSession?: (sessionId: string) => void;
+  onResumePause?: () => void;
+  onDismissPause?: () => void;
+  onDismissMerged?: () => void;
+  onStop?: () => void;
 }) {
-  return (
-    <div
-      style={{
-        padding: "20px 16px",
-        border: `1px dashed ${COLORS.border}`,
-        borderRadius: 10,
-        background: "rgba(255,255,255,0.015)",
-      }}
-    >
-      <div style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary, marginBottom: 4 }}>{title}</div>
-      <div style={{ fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.55, color: COLORS.textMuted }}>{description}</div>
-    </div>
-  );
+  if (waitState.phase === "idle") return null;
+
+  const bannerBase: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "10px 20px",
+    fontFamily: SANS_FONT,
+    fontSize: 12,
+    lineHeight: 1.4,
+  };
+
+  const stopLink: React.CSSProperties = {
+    fontFamily: MONO_FONT,
+    fontSize: 10,
+    fontWeight: 600,
+    color: COLORS.textMuted,
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    padding: "2px 6px",
+    borderRadius: 4,
+    textDecoration: "underline",
+    textUnderlineOffset: "2px",
+  };
+
+  if (waitState.phase === "agent_running") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: `${COLORS.accent}0A`,
+          borderTop: `1px solid ${COLORS.accent}30`,
+          color: COLORS.accent,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CircleNotch
+            size={14}
+            weight="bold"
+            style={{ animation: "convergeSpin 1s linear infinite", flexShrink: 0 }}
+          />
+          <span>Agent working on round {convergence.currentRound}...</span>
+        </div>
+        {onViewSession && (
+          <button
+            type="button"
+            onClick={() => onViewSession(waitState.sessionId)}
+            style={{
+              ...stopLink,
+              color: COLORS.accent,
+              textDecoration: "none",
+              border: `1px solid ${COLORS.accent}30`,
+              padding: "4px 10px",
+              borderRadius: 6,
+              fontFamily: SANS_FONT,
+              fontSize: 11,
+              fontWeight: 600,
+            }}
+          >
+            View Session →
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (waitState.phase === "waiting_checks") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(245,158,11,0.08)",
+          borderTop: "1px solid rgba(245,158,11,0.25)",
+          color: "#F59E0B",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CircleNotch
+            size={14}
+            weight="bold"
+            style={{ animation: "convergeSpin 1s linear infinite", flexShrink: 0 }}
+          />
+          <span>
+            Waiting for {waitState.pendingCount} of {waitState.totalCount} CI checks to complete
+          </span>
+        </div>
+        {onStop && (
+          <button type="button" onClick={onStop} style={stopLink}>
+            Stop
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (waitState.phase === "waiting_comments") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(59,130,246,0.08)",
+          borderTop: "1px solid rgba(59,130,246,0.25)",
+          color: "#3B82F6",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 999,
+                background: "#3B82F6",
+                animation: "convergePulse 1.5s ease-in-out infinite",
+                flexShrink: 0,
+              }}
+            />
+            <span>Waiting for review comments to settle</span>
+          </div>
+          <span style={{ fontSize: 10, color: "rgba(59,130,246,0.7)", paddingLeft: 14 }}>
+            (poll {waitState.stablePollCount}/2 — comments must remain stable for ~2 min)
+          </span>
+        </div>
+        {onStop && (
+          <button type="button" onClick={onStop} style={stopLink}>
+            Stop
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (waitState.phase === "ready") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(34,197,94,0.08)",
+          borderTop: "1px solid rgba(34,197,94,0.25)",
+          color: "#22C55E",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: 999,
+              background: "#22C55E",
+              flexShrink: 0,
+            }}
+          />
+          <span>Ready to launch round {convergence.currentRound + 1}</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (waitState.phase === "paused") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(245,158,11,0.08)",
+          borderTop: "1px solid rgba(245,158,11,0.25)",
+          color: "#F59E0B",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+          <Warning size={16} weight="fill" style={{ flexShrink: 0 }} />
+          <span>Paused: {waitState.reason}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          {onResumePause && (
+            <button
+              type="button"
+              onClick={onResumePause}
+              style={outlineButton({
+                height: 28,
+                padding: "0 10px",
+                borderRadius: 6,
+                color: "#F59E0B",
+                borderColor: "rgba(245, 158, 11, 0.30)",
+                fontSize: 11,
+              })}
+            >
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Resume</span>
+            </button>
+          )}
+          {onDismissPause && (
+            <button
+              type="button"
+              onClick={onDismissPause}
+              style={outlineButton({
+                height: 28,
+                padding: "0 10px",
+                borderRadius: 6,
+                color: COLORS.textDim,
+                borderColor: `${COLORS.border}`,
+                fontSize: 11,
+              })}
+            >
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Dismiss</span>
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (waitState.phase === "complete") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(34,197,94,0.08)",
+          borderTop: "1px solid rgba(34,197,94,0.25)",
+          color: "#22C55E",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CheckCircle size={16} weight="fill" style={{ flexShrink: 0 }} />
+          <span>Convergence complete — all issues resolved</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (waitState.phase === "merged") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(34,197,94,0.08)",
+          borderTop: "1px solid rgba(34,197,94,0.25)",
+          color: "#22C55E",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+          <CheckCircle size={16} weight="bold" style={{ flexShrink: 0 }} />
+          <span style={{ fontWeight: 600 }}>Merged! PR was auto-merged after convergence.</span>
+        </div>
+        {onDismissMerged && (
+          <button
+            type="button"
+            onClick={onDismissMerged}
+            style={outlineButton({
+              height: 28,
+              padding: "0 10px",
+              borderRadius: 6,
+              color: COLORS.textDim,
+              borderColor: `${COLORS.border}`,
+              fontSize: 11,
+            })}
+          >
+            <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Dismiss</span>
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return null;
 }
 
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export function PrConvergencePanel({
-  prNumber,
-  prTitle,
-  headBranch,
-  baseBranch,
-  snapshot,
+  items,
+  convergence,
   checks,
-  runtime,
   modelId,
   reasoningEffort,
   permissionMode,
   busy,
-  additionalInstructions,
-  onAdditionalInstructionsChange,
+  autoConverge,
+  pipelineSettings,
+  waitState,
+  onPipelineSettingsChange,
   onModelChange,
   onReasoningEffortChange,
   onPermissionModeChange,
+  onRunNextRound,
   onAutoConvergeChange,
-  onLaunchAgent,
-  onStartNextRound,
   onCopyPrompt,
-  onStop,
-  onViewSession,
   onMarkDismissed,
   onMarkEscalated,
   onResetInventory,
-  pipelineSettings,
-  onPipelineSettingsChange,
+  onViewAgentSession,
+  onStopAutoConverge,
+  onResumePause,
+  onDismissPause,
+  onDismissMerged,
 }: PrConvergencePanelProps) {
+  const [additionalInstructions, setAdditionalInstructions] = React.useState("");
+  const [mode, setMode] = React.useState<"manual" | "auto-converge">(autoConverge ? "auto-converge" : "manual");
+
   React.useEffect(() => {
-    const styleId = "ptm-convergence-keyframes";
-    if (typeof document === "undefined" || document.getElementById(styleId)) return;
-    const style = document.createElement("style");
-    style.id = styleId;
-    style.textContent = `
-      @keyframes ptmSpin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-      }
-    `;
-    document.head.appendChild(style);
+    ensureKeyframes();
   }, []);
 
-  const items = snapshot?.items ?? [];
-  const grouped = React.useMemo(() => groupItems(items), [items]);
-  const convergence = snapshot?.convergence ?? null;
-  const failingChecks = checks.filter((check) => check.conclusion === "failure");
-  const pendingChecks = checks.filter((check) => check.status === "queued" || check.status === "in_progress");
-  const allChecksPassing = checks.length > 0 && failingChecks.length === 0 && pendingChecks.length === 0;
-  const hasNewItems = grouped.new.length > 0;
-  const sessionActive = runtime.phase === "launching" || runtime.phase === "working" || runtime.phase === "polling";
-  const actionDisabled = busy || sessionActive || !hasNewItems;
-  let actionLabel: string;
-  if (busy || sessionActive) {
-    actionLabel = runtime.phase === "launching" ? "Launching..." : "Working...";
-  } else if (runtime.autoConverge) {
-    actionLabel = "Start Next Round";
-  } else {
-    actionLabel = "Launch Agent";
+  React.useEffect(() => {
+    if (autoConverge && mode !== "auto-converge") setMode("auto-converge");
+    if (!autoConverge && mode === "auto-converge") setMode("manual");
+  }, [autoConverge]);
+
+  // Group items by state
+  const grouped: Record<IssueItemState, IssueInventoryItem[]> = {
+    new: [],
+    in_progress: [],
+    fixed: [],
+    dismissed: [],
+    escalated: [],
+  };
+  for (const item of items) {
+    grouped[item.state].push(item);
   }
-  const actionIcon = busy || sessionActive ? <CircleNotch size={13} weight="bold" style={{ animation: "ptmSpin 1s linear infinite" }} /> : <ArrowsClockwise size={13} weight="bold" />;
+
+  const reviewCommentItems = [...grouped.escalated, ...grouped.new, ...grouped.in_progress, ...grouped.fixed, ...grouped.dismissed];
+  const failingChecks = checks.filter((c) => c.conclusion === "failure");
+  const runningChecks = checks.filter((c) => c.status === "in_progress");
+  const allChecksPassing = failingChecks.length === 0 && runningChecks.length === 0;
+  const passingChecks = checks.filter((c) => c.conclusion === "success");
+  const otherChecks = checks.filter(
+    (c) => c.conclusion !== "failure" && c.conclusion !== "success" && c.status !== "in_progress",
+  );
+  const orderedChecks = [...failingChecks, ...runningChecks, ...otherChecks, ...passingChecks];
+
+  const hasNewItems = grouped.new.length > 0;
+  const atMaxRounds = convergence.currentRound >= convergence.maxRounds;
+  const checksStillRunning = checks.some(c => c.status === "queued" || c.status === "in_progress");
+  const canRunNext = hasNewItems && !atMaxRounds && !busy && !checksStillRunning;
+
+  const launchDisabledReason = !hasNewItems ? "No new issues to resolve"
+    : atMaxRounds ? "Maximum rounds reached"
+    : busy ? "Agent is currently running"
+    : checksStillRunning ? "CI checks are still running"
+    : null;
+
+  const isEmpty = items.length === 0 && checks.length === 0;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%", gap: 12, padding: 16 }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-              <span
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 13,
-                  color: COLORS.accent,
-                  fontWeight: 700,
-                }}
-              >
-                #{prNumber}
-              </span>
-              <span
-                style={{
-                  fontFamily: SANS_FONT,
-                  fontSize: 16,
-                  fontWeight: 700,
-                  color: COLORS.textPrimary,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {prTitle}
-              </span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
-                {headBranch}
-              </span>
-              <span style={{ color: COLORS.textDim }}>into</span>
-              <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
-                {baseBranch}
-              </span>
-            </div>
-          </div>
-          <SummaryCounts items={items} />
-        </div>
-
-        <RuntimeSummary runtime={runtime} convergence={convergence} />
-      </div>
-
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        background: COLORS.pageBg,
+        overflow: "hidden",
+      }}
+    >
+      {/* ---- Toolbar ---- */}
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1.3fr) minmax(320px, 0.9fr)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
           gap: 12,
-          minHeight: 0,
-          flex: 1,
+          padding: "10px 16px",
+          borderBottom: `1px solid ${COLORS.border}`,
+          flexShrink: 0,
         }}
       >
-        <div style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 10 }}>
-          <div style={cardStyle({ padding: 14, minHeight: 0, display: "flex", flexDirection: "column" })}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <ChatText size={14} weight="fill" style={{ color: "#F59E0B" }} />
-                <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  Review comments
-                </span>
-              </div>
+        {/* Left: Segmented control */}
+        <div
+          style={{
+            display: "inline-flex",
+            borderRadius: 8,
+            border: `1px solid ${COLORS.border}`,
+            background: "rgba(255,255,255,0.02)",
+            overflow: "hidden",
+          }}
+        >
+          {(["manual", "auto-converge"] as const).map((m) => {
+            const active = mode === m;
+            return (
               <button
+                key={m}
                 type="button"
-                onClick={onResetInventory}
-                disabled={busy || items.length === 0}
-                style={outlineButton({
-                  height: 28,
-                  padding: "0 10px",
-                  borderRadius: 8,
-                  opacity: busy || items.length === 0 ? 0.5 : 1,
-                })}
-              >
-                <ArrowsClockwise size={12} />
-                Reset
-              </button>
-            </div>
-
-            <div style={{ flex: 1, minHeight: 0, overflow: "auto", paddingRight: 2 }}>
-              {items.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  {STATE_ORDER.map((state) => {
-                    const stateItems = grouped[state];
-                    if (stateItems.length === 0) return null;
-                    const meta = STATE_META[state];
-                    return (
-                      <div key={state}>
-                        <SectionHeader title={meta.label} count={stateItems.length} accent={meta.accent} icon={meta.icon} />
-                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                          {stateItems.map((item) => (
-                            <InventoryRow
-                              key={item.id}
-                              item={item}
-                              busy={busy}
-                              onDismiss={(itemId) => onMarkDismissed([itemId], "Dismissed from Path to Merge")}
-                              onEscalate={(itemId) => onMarkEscalated([itemId])}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <EmptyState
-                  title="No inventory yet"
-                  description="Run the first pass to sync review comments and CI checks into the convergence loop."
-                />
-              )}
-            </div>
-          </div>
-
-          <div style={cardStyle({ padding: 14 })}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <GitBranch size={14} style={{ color: COLORS.info }} />
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                Working rules
-              </span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void onCopyPrompt(additionalInstructions)}
-                  style={outlineButton({
-                    height: 30,
-                    padding: "0 10px",
-                    borderRadius: 8,
-                    opacity: busy ? 0.5 : 1,
-                  })}
-                >
-                  <CopySimple size={12} />
-                  Copy prompt
-                </button>
-                {runtime.sessionHref ? (
-                  <button
-                    type="button"
-                    onClick={() => onViewSession?.(runtime.sessionHref ?? "")}
-                    style={outlineButton({
-                      height: 30,
-                      padding: "0 10px",
-                      borderRadius: 8,
-                      color: COLORS.accent,
-                      borderColor: `${COLORS.accent}30`,
-                    })}
-                  >
-                    <ArrowSquareOut size={12} />
-                    View agent session
-                  </button>
-                ) : null}
-                {runtime.agentSessionId ? (
-                  <button
-                    type="button"
-                    onClick={() => void onStop()}
-                    disabled={busy}
-                    style={dangerButton({
-                      height: 30,
-                      padding: "0 10px",
-                      borderRadius: 8,
-                      opacity: busy ? 0.5 : 1,
-                    })}
-                  >
-                    <Trash size={12} />
-                    Stop
-                  </button>
-                ) : null}
-              </div>
-              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.6 }}>
-                Keep the prompt narrow. The convergence loop only sends new issues to the agent, so the instruction box should add context, not repeat the full inventory.
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", minHeight: 0, gap: 10 }}>
-          <div style={cardStyle({ padding: 14, minHeight: 0, display: "flex", flexDirection: "column" })}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Play size={14} weight="fill" style={{ color: allChecksPassing ? COLORS.success : COLORS.danger }} />
-                <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  CI checks
-                </span>
-              </div>
-              <span
+                onClick={() => {
+                  setMode(m);
+                  onAutoConvergeChange(m === "auto-converge");
+                }}
                 style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 10,
-                  color: allChecksPassing ? COLORS.success : COLORS.warning,
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  fontWeight: active ? 700 : 500,
+                  color: active ? "#0F0D14" : COLORS.textSecondary,
+                  background: active ? COLORS.accent : "transparent",
+                  border: "none",
+                  padding: "6px 14px",
+                  cursor: "pointer",
+                  transition: "all 0.15s ease",
+                  letterSpacing: "0.02em",
                 }}
               >
-                {checks.length === 0 ? "No checks" : allChecksPassing ? "All passing" : `${failingChecks.length} failing`}
-              </span>
-            </div>
-            <div style={{ flex: 1, minHeight: 0, overflow: "auto", paddingRight: 2 }}>
-              {checks.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {checks.map((check, i) => <CheckRow key={`${check.name}-${i}`} check={check} />)}
-                </div>
-              ) : (
-                <EmptyState title="No checks found" description="When the PR has GitHub checks, they will appear here alongside the convergence state." />
-              )}
-            </div>
+                {m === "manual" ? "Manual" : "Auto-Converge"}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Right: Round indicator + status pill (auto-converge only) */}
+        {mode === "auto-converge" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <RoundIndicator current={convergence.currentRound} max={pipelineSettings.maxRounds} />
+            <ConvergenceStatusPill status={convergence.state} />
           </div>
+        )}
+      </div>
 
-          <div style={cardStyle({ padding: 14, minHeight: 0, display: "flex", flexDirection: "column", gap: 12 })}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Sparkle size={14} weight="fill" style={{ color: COLORS.accent }} />
-                <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  {runtime.autoConverge ? "Convergence settings" : "Manual launch"}
-                </span>
-              </div>
-              {!runtime.autoConverge ? (
-                <button
-                  type="button"
-                  onClick={() => onAutoConvergeChange(true)}
-                  disabled={busy}
-                  style={outlineButton({
-                    height: 28,
-                    padding: "0 10px",
-                    borderRadius: 8,
-                    color: COLORS.accent,
-                    borderColor: `${COLORS.accent}30`,
-                    opacity: busy ? 0.5 : 1,
-                  })}
+      {/* ---- Stats bar ---- */}
+      <StatsBar items={items} />
+
+      {/* ---- Scrollable content ---- */}
+      <div style={{ flex: 1, overflow: "auto", padding: "16px" }}>
+        {isEmpty ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "60px 20px",
+              textAlign: "center",
+              gap: 8,
+            }}
+          >
+            <span
+              style={{
+                fontFamily: SANS_FONT,
+                fontSize: 14,
+                fontWeight: 600,
+                color: COLORS.textSecondary,
+              }}
+            >
+              No issues inventoried yet.
+            </span>
+            <span
+              style={{
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                color: COLORS.textMuted,
+                lineHeight: 1.6,
+                maxWidth: 360,
+              }}
+            >
+              Sync review comments and CI checks to start the convergence loop.
+              Run the first round to discover actionable issues.
+            </span>
+          </div>
+        ) : (
+          <>
+            {/* Two-column grid: Review Comments | CI Checks */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 16,
+                marginBottom: 16,
+              }}
+            >
+              {/* Review Comments */}
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  minHeight: 0,
+                  borderRadius: 10,
+                  border: `1px solid ${COLORS.border}`,
+                  background: "rgba(255,255,255,0.015)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    borderBottom: `1px solid ${COLORS.border}`,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
                 >
-                  Enable auto-converge
-                </button>
-              ) : null}
+                  <ChatText size={14} weight="fill" style={{ color: "#F59E0B" }} />
+                  <span
+                    style={{
+                      fontFamily: SANS_FONT,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: COLORS.textPrimary,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                    }}
+                  >
+                    Review Comments
+                  </span>
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      fontFamily: MONO_FONT,
+                      fontSize: 10,
+                      color: "#F59E0B",
+                    }}
+                  >
+                    {reviewCommentItems.length}
+                  </span>
+                  {reviewCommentItems.length > 0 ? (
+                    <button
+                      type="button"
+                      title="Reset inventory"
+                      onClick={onResetInventory}
+                      disabled={busy}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 24,
+                        height: 24,
+                        borderRadius: 6,
+                        border: `1px solid ${COLORS.border}`,
+                        background: "rgba(255,255,255,0.03)",
+                        cursor: busy ? "not-allowed" : "pointer",
+                        color: COLORS.textDim,
+                        padding: 0,
+                        flexShrink: 0,
+                        opacity: busy ? 0.45 : 1,
+                        transition: "all 0.15s ease",
+                      }}
+                    >
+                      <ArrowsClockwise size={11} />
+                    </button>
+                  ) : null}
+                </div>
+                <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
+                  {reviewCommentItems.length > 0 ? (
+                    <>
+                      {STATE_ORDER.map((state) => {
+                        const stateItems = grouped[state];
+                        if (stateItems.length === 0) return null;
+                        const meta = STATE_META[state];
+                        return (
+                          <div key={state} style={{ marginBottom: 8 }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "6px 4px",
+                                borderBottom: `1px solid ${meta.accent}20`,
+                                marginBottom: 4,
+                              }}
+                            >
+                              <span style={{ color: meta.accent, display: "inline-flex", alignItems: "center" }}>
+                                {state === "in_progress" ? (
+                                  <span style={{ animation: "convergeSpin 1.2s linear infinite", display: "inline-flex" }}>
+                                    {meta.icon}
+                                  </span>
+                                ) : (
+                                  meta.icon
+                                )}
+                              </span>
+                              <span
+                                style={{
+                                  fontFamily: SANS_FONT,
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  color: meta.accent,
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.05em",
+                                }}
+                              >
+                                {meta.label}
+                              </span>
+                              <span
+                                style={{
+                                  marginLeft: "auto",
+                                  fontFamily: MONO_FONT,
+                                  fontSize: 9,
+                                  fontWeight: 600,
+                                  color: meta.accent,
+                                }}
+                              >
+                                {stateItems.length}
+                              </span>
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                              {stateItems.map((item) => {
+                                if (state === "fixed") return <FixedRow key={item.id} item={item} />;
+                                if (state === "dismissed") return <DismissedRow key={item.id} item={item} />;
+                                return (
+                                  <IssueRow
+                                    key={item.id}
+                                    item={item}
+                                    showAgent={state === "in_progress"}
+                                    onDismiss={(id) => onMarkDismissed([id], "Dismissed from UI")}
+                                    onEscalate={(id) => onMarkEscalated([id])}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </>
+                  ) : (
+                    <div style={{ padding: "28px 16px", textAlign: "center" }}>
+                      <span
+                        style={{
+                          fontFamily: SANS_FONT,
+                          fontSize: 12,
+                          color: COLORS.textMuted,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        No issues have been inventoried yet. Run the first round to discover issues from review comments.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* CI Checks */}
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  minHeight: 0,
+                  borderRadius: 10,
+                  border: `1px solid ${COLORS.border}`,
+                  background: "rgba(255,255,255,0.015)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    borderBottom: `1px solid ${COLORS.border}`,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <Play size={14} weight="fill" style={{ color: allChecksPassing ? COLORS.success : COLORS.danger }} />
+                  <span
+                    style={{
+                      fontFamily: SANS_FONT,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: COLORS.textPrimary,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                    }}
+                  >
+                    CI Checks
+                  </span>
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      fontFamily: MONO_FONT,
+                      fontSize: 10,
+                      color: allChecksPassing ? COLORS.success : COLORS.danger,
+                    }}
+                  >
+                    {allChecksPassing ? "all passing" : `${failingChecks.length} failing`}
+                  </span>
+                </div>
+                <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
+                  {orderedChecks.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      {orderedChecks.map((check) => (
+                        <CheckRow key={check.name} check={check} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ padding: "28px 16px", textAlign: "center" }}>
+                      <span
+                        style={{
+                          fontFamily: SANS_FONT,
+                          fontSize: 12,
+                          color: COLORS.textMuted,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        No CI checks found.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
 
-            {!runtime.autoConverge ? (
-              <PrResolverLaunchControls
-                modelId={modelId}
-                reasoningEffort={reasoningEffort}
-                permissionMode={permissionMode}
-                onModelChange={onModelChange}
-                onReasoningEffortChange={onReasoningEffortChange}
-                onPermissionModeChange={onPermissionModeChange}
-                disabled={busy}
-              />
-            ) : (
+            {/* Pipeline Settings */}
+            <div
+              style={{
+                borderRadius: 10,
+                border: `1px solid ${COLORS.border}`,
+                background: "rgba(255,255,255,0.015)",
+                padding: 14,
+                marginBottom: 16,
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: COLORS.textMuted,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  marginBottom: 10,
+                }}
+              >
+                Pipeline Settings
+              </div>
               <PrPipelineSettings
                 settings={pipelineSettings}
                 onSettingsChange={onPipelineSettingsChange}
-                autoConverge={runtime.autoConverge}
-                onAutoConvergeChange={onAutoConvergeChange}
+                showAutoConvergeSettings={mode === "auto-converge"}
                 modelId={modelId}
                 reasoningEffort={reasoningEffort}
                 permissionMode={permissionMode}
@@ -868,79 +1437,210 @@ export function PrConvergencePanel({
                 onPermissionModeChange={onPermissionModeChange}
                 disabled={busy}
               />
-            )}
-
-            <textarea
-              value={additionalInstructions}
-              onChange={(e) => onAdditionalInstructionsChange(e.target.value)}
-              placeholder={runtime.autoConverge ? "Additional instructions for this round..." : "Add instructions for this round..."}
-              disabled={busy}
-              style={{
-                width: "100%",
-                minHeight: 94,
-                resize: "vertical",
-                padding: 10,
-                borderRadius: 8,
-                border: `1px solid ${COLORS.border}`,
-                background: "rgba(255,255,255,0.02)",
-                color: COLORS.textPrimary,
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                lineHeight: 1.6,
-                outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                {runtime.autoConverge ? (
-                  <span style={inlineBadge(COLORS.accent, { background: `${COLORS.accent}10` })}>Auto-converge ON</span>
-                ) : (
-                  <span style={inlineBadge(COLORS.textMuted, { background: "rgba(255,255,255,0.03)" })}>Auto-converge OFF</span>
-                )}
-                {runtime.pollerPhase !== "idle" ? (
-                  <span style={inlineBadge(COLORS.warning, { background: "rgba(245,158,11,0.08)" })}>
-                    {POLLER_PHASE_LABELS[runtime.pollerPhase] ?? "Polling"}
-                  </span>
-                ) : null}
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginLeft: "auto" }}>
-                <button
-                  type="button"
-                  disabled={busy || actionDisabled}
-                  onClick={() => {
-                    if (runtime.autoConverge) {
-                      void onStartNextRound(additionalInstructions);
-                    } else {
-                      void onLaunchAgent(additionalInstructions);
-                    }
-                  }}
-                  style={primaryButton({
-                    height: 34,
-                    padding: "0 14px",
-                    borderRadius: 8,
-                    opacity: busy || actionDisabled ? 0.5 : 1,
-                    background: runtime.autoConverge ? COLORS.accent : COLORS.textPrimary,
-                    color: runtime.autoConverge ? COLORS.pageBg : COLORS.pageBg,
-                  })}
-                >
-                  {actionIcon}
-                  {actionLabel}
-                </button>
-              </div>
             </div>
-            {runtime.autoConverge ? (
-              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.55 }}>
-                Auto-converge keeps the agent in the loop until the inventory stops changing and the checks settle. Use the stop button in the header if you need to pause between rounds.
+
+            {/* Additional Instructions */}
+            <div
+              style={{
+                borderRadius: 10,
+                border: `1px solid ${COLORS.border}`,
+                background: "rgba(255,255,255,0.015)",
+                padding: 14,
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: COLORS.textMuted,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  marginBottom: 6,
+                }}
+              >
+                Additional Instructions
               </div>
+              <div
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  color: COLORS.textMuted,
+                  marginBottom: 8,
+                  lineHeight: 1.5,
+                }}
+              >
+                Add custom instructions that will be injected into the agent&apos;s prompt for this round. Use this to guide the agent&apos;s approach or add context.
+              </div>
+              <textarea
+                value={additionalInstructions}
+                onChange={(e) => setAdditionalInstructions(e.target.value)}
+                placeholder="Add instructions for this round..."
+                disabled={busy}
+                style={{
+                  width: "100%",
+                  minHeight: 64,
+                  resize: "vertical",
+                  padding: 10,
+                  borderRadius: 8,
+                  border: `1px solid ${COLORS.border}`,
+                  background: "rgba(255,255,255,0.02)",
+                  color: COLORS.textPrimary,
+                  fontFamily: SANS_FONT,
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ---- Waiting indicator ---- */}
+      {mode === "auto-converge" && waitState.phase !== "idle" && (
+        <WaitingIndicator
+          waitState={waitState}
+          convergence={convergence}
+          onViewSession={onViewAgentSession}
+          onResumePause={onResumePause}
+          onDismissPause={onDismissPause}
+          onDismissMerged={onDismissMerged}
+          onStop={onStopAutoConverge}
+        />
+      )}
+
+      {/* ---- Action bar ---- */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          padding: "12px 16px",
+          borderTop: `1px solid ${COLORS.border}`,
+          background: "linear-gradient(180deg, rgba(15,13,20,0.96) 0%, rgba(15,13,20,1) 100%)",
+          flexShrink: 0,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {mode === "auto-converge" && waitState.phase !== "idle" && (
+            <button
+              type="button"
+              onClick={onStopAutoConverge}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                height: 34,
+                padding: "0 12px",
+                borderRadius: 8,
+                border: "1px solid rgba(239,68,68,0.35)",
+                background: "rgba(239,68,68,0.08)",
+                color: "#EF4444",
+                fontFamily: SANS_FONT,
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <Stop size={13} weight="fill" />
+              Stop Auto-Converge
+            </button>
+          )}
+          {autoConverge && (
+            <span style={{
+              fontFamily: MONO_FONT,
+              fontSize: 9,
+              fontWeight: 700,
+              color: COLORS.accent,
+              background: `${COLORS.accent}14`,
+              border: `1px solid ${COLORS.accent}30`,
+              borderRadius: 4,
+              padding: "3px 7px",
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+            }}>
+              Auto-Converge
+            </span>
+          )}
+          {pipelineSettings.autoMerge && (
+            <span style={{
+              fontFamily: MONO_FONT,
+              fontSize: 9,
+              fontWeight: 700,
+              color: "#22C55E",
+              background: "rgba(34, 197, 94, 0.10)",
+              border: "1px solid rgba(34, 197, 94, 0.25)",
+              borderRadius: 4,
+              padding: "3px 7px",
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+            }}>
+              Auto-Merge
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginLeft: "auto" }}>
+          {waitState.phase === "agent_running" && onViewAgentSession && (
+            <button
+              type="button"
+              onClick={() => onViewAgentSession(waitState.sessionId)}
+              style={outlineButton({
+                height: 34,
+                padding: "0 12px",
+                borderRadius: 8,
+                color: COLORS.accent,
+                borderColor: `${COLORS.accent}30`,
+              })}
+            >
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>View Session →</span>
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void onCopyPrompt(additionalInstructions)}
+            style={outlineButton({
+              height: 34,
+              padding: "0 12px",
+              borderRadius: 8,
+              color: COLORS.info,
+              borderColor: `${COLORS.info}30`,
+              opacity: busy ? 0.45 : 1,
+            })}
+          >
+            <CopySimple size={13} />
+            <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Copy Prompt</span>
+          </button>
+          <button
+            type="button"
+            disabled={!canRunNext}
+            title={launchDisabledReason ?? undefined}
+            onClick={() => void onRunNextRound(additionalInstructions)}
+            style={primaryButton({
+              height: 34,
+              padding: "0 16px",
+              borderRadius: 8,
+              opacity: canRunNext ? 1 : 0.45,
+              background: canRunNext ? COLORS.accent : "rgba(255,255,255,0.06)",
+              color: canRunNext ? "#0F0D14" : COLORS.textDim,
+              fontWeight: 700,
+            })}
+          >
+            {busy ? (
+              <CircleNotch size={13} weight="bold" style={{ animation: "convergeSpin 1s linear infinite" }} />
             ) : (
-              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.55 }}>
-                Manual launch sends only the current new issues to the agent once. Switch to auto-converge if you want the loop to keep polling for new review feedback.
-              </div>
+              <ArrowsClockwise size={13} weight="bold" />
             )}
-          </div>
+            <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>
+              {busy ? "Running..." : mode === "auto-converge" ? `Start Round ${convergence.currentRound}` : "Launch Agent"}
+            </span>
+          </button>
         </div>
       </div>
     </div>

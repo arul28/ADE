@@ -4,7 +4,7 @@ import React from "react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LaneSummary, PrActivityEvent, PrCheck, PrConvergenceState, PrReviewThread, PrStatus, PrWithConflicts } from "../../../../shared/types";
+import type { LaneSummary, PrActivityEvent, PrCheck, PrReviewThread, PrStatus, PrWithConflicts } from "../../../../shared/types";
 
 const mockUsePrs = vi.fn();
 
@@ -30,28 +30,6 @@ vi.mock("../shared/PrIssueResolverModal", () => ({
 }));
 
 import { PrDetailPane } from "./PrDetailPane";
-
-function makeConvergenceState(overrides: Partial<PrConvergenceState> = {}): PrConvergenceState {
-  return {
-    prId: "pr-80",
-    autoConvergeEnabled: false,
-    status: "idle",
-    pollerStatus: "idle",
-    currentRound: 0,
-    activeSessionId: null,
-    activeLaneId: null,
-    activeHref: null,
-    pauseReason: null,
-    errorMessage: null,
-    lastStartedAt: null,
-    lastPolledAt: null,
-    lastPausedAt: null,
-    lastStoppedAt: null,
-    createdAt: "2026-03-23T12:00:00.000Z",
-    updatedAt: "2026-03-23T12:00:00.000Z",
-    ...overrides,
-  };
-}
 
 function makeCheck(overrides: Partial<PrCheck> = {}): PrCheck {
   return { name: "ci / unit", status: "completed", conclusion: "failure", detailsUrl: null, startedAt: null, completedAt: null, ...overrides };
@@ -230,36 +208,7 @@ function renderPane(args: {
         getReviewThreads,
         issueResolutionStart,
         issueResolutionPreviewPrompt,
-        issueInventorySync: vi.fn().mockResolvedValue({
-          prId: "pr-80",
-          items: [],
-          convergence: {
-            currentRound: 0,
-            maxRounds: 5,
-            issuesPerRound: [],
-            totalNew: 0,
-            totalFixed: 0,
-            totalDismissed: 0,
-            totalEscalated: 0,
-            totalSentToAgent: 0,
-            isConverging: false,
-            canAutoAdvance: false,
-          },
-          runtime: makeConvergenceState(),
-        }),
-        issueInventoryReset: vi.fn().mockResolvedValue(undefined),
-        issueInventoryMarkDismissed: vi.fn().mockResolvedValue(undefined),
-        issueInventoryMarkEscalated: vi.fn().mockResolvedValue(undefined),
         land,
-        aiResolutionStop: vi.fn().mockResolvedValue(undefined),
-        onAiResolutionEvent: vi.fn(() => () => {}),
-        pipelineSettingsGet: vi.fn().mockResolvedValue({
-          autoMerge: false,
-          mergeMethod: "squash",
-          maxRounds: 5,
-          onRebaseNeeded: "pause",
-        }),
-        pipelineSettingsSave: vi.fn().mockResolvedValue(undefined),
         openInGitHub: vi.fn().mockResolvedValue(undefined),
       },
       app: {
@@ -296,11 +245,6 @@ function renderPane(args: {
 describe("PrDetailPane issue resolver CTA", () => {
   beforeEach(() => {
     mockUsePrs.mockReturnValue({
-      rebaseNeeds: [],
-      convergenceStatesByPrId: { "pr-80": makeConvergenceState() },
-      loadConvergenceState: vi.fn().mockResolvedValue(makeConvergenceState()),
-      saveConvergenceState: vi.fn().mockImplementation(async (_prId: string, patch: Partial<PrConvergenceState>) => makeConvergenceState(patch)),
-      resetConvergenceState: vi.fn().mockResolvedValue(undefined),
       resolverModel: "openai/gpt-5.4-codex",
       resolverReasoningLevel: "high",
       resolverPermissionMode: "guarded_edit",
@@ -314,22 +258,16 @@ describe("PrDetailPane issue resolver CTA", () => {
     cleanup();
   });
 
-  it.each(visibilityCases)("$name", async ({ checks, reviewThreads, statusOverrides, visible }) => {
-    const user = userEvent.setup();
+  it.each(visibilityCases)("$name — Path to Merge tab is always visible", async ({ checks, reviewThreads, statusOverrides }) => {
     renderPane({ checks, reviewThreads, statusOverrides });
-    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
 
+    // Path to Merge is now a permanent tab (2nd position), always rendered
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: /path to merge/i }).length).toBeGreaterThan(0);
-      if (visible) {
-        expect(screen.getByRole("button", { name: /resolve issues with agent/i })).toBeTruthy();
-      } else {
-        expect(screen.queryByRole("button", { name: /resolve issues with agent/i })).toBeNull();
-      }
+      expect(screen.getByRole("button", { name: /path to merge/i })).toBeTruthy();
     });
   });
 
-  it("shows the action in both the header and the checks tab when issues are actionable", async () => {
+  it("shows the resolve action in the checks tab when issues are actionable", async () => {
     const user = userEvent.setup();
     renderPane({
       checks: [makeCheck()],
@@ -339,7 +277,7 @@ describe("PrDetailPane issue resolver CTA", () => {
     await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
 
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: /path to merge/i }).length).toBeGreaterThan(0);
+      // "Resolve issues with agent" in ChecksTab
       expect(screen.getByRole("button", { name: /resolve issues with agent/i })).toBeTruthy();
     });
   });
