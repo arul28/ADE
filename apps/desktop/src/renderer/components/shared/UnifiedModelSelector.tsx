@@ -61,8 +61,7 @@ function providerAccent(family: string, fallback?: string): string {
 }
 
 function subsectionTabTitle(sub: ModelSubsection): string {
-  const name = sub.subsectionLabel || sub.label;
-  return name.trim() || "Models";
+  return sub.label.trim() || "Models";
 }
 
 function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): string {
@@ -140,13 +139,8 @@ function mergeSelectorModels(
       .map((entry) => String(entry ?? "").trim())
       .filter(Boolean),
   );
-  const hasAvailableModels = availableIdSet.size > 0;
-
   for (const model of MODEL_REGISTRY) {
     if (model.deprecated) continue;
-    if (hasAvailableModels && model.family === "cursor" && !availableIdSet.has(model.id)) {
-      continue;
-    }
     if (filter && !filter(model)) continue;
     merged.set(model.id, model);
   }
@@ -534,7 +528,7 @@ export function UnifiedModelSelector({
               </div>
               {prov.subsections.map((sub) => (
                 <div key={`${sourceBlock.key}:${prov.key}:${sub.key}`}>
-                  {sub.subsectionLabel || sub.label ? (
+                  {sub.label ? (
                     <div className="px-3 pt-2 font-sans text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-fg/32">
                       {subsectionTabTitle(sub)}
                     </div>

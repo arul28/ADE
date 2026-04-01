@@ -289,6 +289,12 @@ function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>
   }
 }
 
+function trimOrNull(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function sanitizeConvergenceRuntimeState(
   prId: string,
   state: ConvergenceRuntimeState,
@@ -300,35 +306,17 @@ function sanitizeConvergenceRuntimeState(
     status: CONVERGENCE_RUNTIME_STATUS_VALUES.has(state.status) ? state.status : "idle",
     pollerStatus: CONVERGENCE_POLLER_STATUS_VALUES.has(state.pollerStatus) ? state.pollerStatus : "idle",
     currentRound: Number.isFinite(state.currentRound) ? Math.max(0, Math.trunc(state.currentRound)) : 0,
-    activeSessionId: typeof state.activeSessionId === "string" && state.activeSessionId.trim().length > 0
-      ? state.activeSessionId.trim()
-      : null,
-    activeLaneId: typeof state.activeLaneId === "string" && state.activeLaneId.trim().length > 0
-      ? state.activeLaneId.trim()
-      : null,
-    activeHref: typeof state.activeHref === "string" && state.activeHref.trim().length > 0
-      ? state.activeHref.trim()
-      : null,
-    pauseReason: typeof state.pauseReason === "string" && state.pauseReason.trim().length > 0
-      ? state.pauseReason.trim()
-      : null,
-    errorMessage: typeof state.errorMessage === "string" && state.errorMessage.trim().length > 0
-      ? state.errorMessage.trim()
-      : null,
-    lastStartedAt: typeof state.lastStartedAt === "string" && state.lastStartedAt.trim().length > 0
-      ? state.lastStartedAt.trim()
-      : null,
-    lastPolledAt: typeof state.lastPolledAt === "string" && state.lastPolledAt.trim().length > 0
-      ? state.lastPolledAt.trim()
-      : null,
-    lastPausedAt: typeof state.lastPausedAt === "string" && state.lastPausedAt.trim().length > 0
-      ? state.lastPausedAt.trim()
-      : null,
-    lastStoppedAt: typeof state.lastStoppedAt === "string" && state.lastStoppedAt.trim().length > 0
-      ? state.lastStoppedAt.trim()
-      : null,
-    createdAt: typeof state.createdAt === "string" && state.createdAt.trim().length > 0 ? state.createdAt : now,
-    updatedAt: typeof state.updatedAt === "string" && state.updatedAt.trim().length > 0 ? state.updatedAt : now,
+    activeSessionId: trimOrNull(state.activeSessionId),
+    activeLaneId: trimOrNull(state.activeLaneId),
+    activeHref: trimOrNull(state.activeHref),
+    pauseReason: trimOrNull(state.pauseReason),
+    errorMessage: trimOrNull(state.errorMessage),
+    lastStartedAt: trimOrNull(state.lastStartedAt),
+    lastPolledAt: trimOrNull(state.lastPolledAt),
+    lastPausedAt: trimOrNull(state.lastPausedAt),
+    lastStoppedAt: trimOrNull(state.lastStoppedAt),
+    createdAt: trimOrNull(state.createdAt) ?? now,
+    updatedAt: trimOrNull(state.updatedAt) ?? now,
   };
 }
 

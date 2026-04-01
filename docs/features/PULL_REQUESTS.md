@@ -183,7 +183,7 @@ The PR service exposes review thread data through a dedicated GraphQL-backed `ge
 
 Rebase suggestions for queued PRs are now queue-aware. The conflict service calls `fetchQueueTargetTrackingBranches()` before scanning rebase needs, then uses `resolveQueueRebaseOverride()` per lane to determine the correct comparison ref. When a lane belongs to an active merge queue, the rebase targets the queue's tracking branch rather than the lane's static base branch. Queue group context is propagated into the rebase need for display in the rebase UI. AI-assisted rebase (`rebaseLane`) also respects the queue override, and the rebase request accepts `modelId` and `reasoningEffort` parameters for finer control over the AI rebase agent. Permission is set via provider-native fields (`unifiedPermissionMode`).
 
-For non-queued stacked lanes, the conflict service uses `resolveLaneRebaseTarget()` combined with the shared `shouldLaneTrackParent()` logic to determine the comparison ref. When the parent is a non-primary lane, the comparison ref resolves to `origin/<parent-branch>`. When the parent is a primary lane (or absent), the lane falls back to its own `baseRef`. This keeps conflict prediction and rebase suggestions consistent with the lane service's own rebase behavior.
+For non-queued stacked lanes, the conflict service uses `resolveLaneRebaseTarget()` combined with the shared `shouldLaneTrackParent()` logic to determine the comparison ref. When the parent is a non-primary lane, the comparison ref resolves to the local parent branch ref, with `origin/<parent-branch>` as the fallback ref. When the parent is a primary lane (or absent), the lane falls back to its own `baseRef`. This keeps conflict prediction and rebase suggestions consistent with the lane service's own rebase behavior.
 
 ### Rebase need kinds
 
@@ -192,9 +192,17 @@ Each `RebaseNeed` now carries a `kind` field distinguishing the source of the re
 - `lane_base` -- the lane is behind its base branch or parent lane.
 - `pr_target` -- the lane's open PR targets a different branch than the lane's computed base, and the lane is behind that PR target.
 
-Both kinds can coexist for the same lane. The renderer-side `rebaseNeedUtils.ts` provides helpers (`rebaseNeedItemKey`, `findLaneBaseNeed`, `findMatchingRebaseNeed`) for deduplication and lookup by kind, PR id, or base branch.
+Both kinds can coexist for the same lane. The renderer-side `rebaseNeedUtils.ts` provides helpers (`rebaseNeedItemKey`, `findLaneBaseNeed`, `findMatchingRebaseNeed`, `resolveRouteRebaseSelection`) for deduplication and lookup by kind, PR id, or base branch. `resolveRouteRebaseSelection` uses the active rebase needs to determine which rebase route the UI should pre-select.
 
 The rebase request also accepts a `forcePushAfterRebase` flag, allowing callers to opt into force-push after a successful rebase when the upstream requires it (e.g., when resolving a PR-target rebase need).
+
+### Upstream rebase chain
+
+The `UpstreamRebaseNeed` type and `buildUpstreamRebaseChain` helper in `rebaseNeedUtils.ts` model the chain of upstream lanes that also need rebasing. This lets the rebase UI show the full dependency chain when a lane's parent (or grandparent) is also behind, helping users decide whether to rebase the current lane or start from the root of the chain. `formatUpstreamRebaseSummary` produces a human-readable summary of the chain.
+
+### Rebase attention
+
+The `rebaseAttentionUtils.ts` module surfaces auto-rebase failures, conflicts, and pending states in the Rebase tab as a `stack_attention` section. `RebaseAttentionItem` captures per-lane attention state (e.g., rebase failed, conflicts detected, rebase pending). `buildRebaseAttentionItems`, `filterRebaseAttentionStatuses`, and `findRebaseAttentionStatus` provide filtering and lookup for these items. The RebaseTab and WorkflowsTab receive `attentionStatuses` alongside regular rebase needs.
 
 ---
 

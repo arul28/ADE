@@ -829,7 +829,14 @@ export function createAiIntegrationService(args: {
 
     const auth = await detectAuth();
     const available = await getResolvedAvailableModels(auth);
-    const family = provider === "codex" ? "openai" : provider === "cursor" ? "cursor" : "anthropic";
+    let family: string;
+    if (provider === "codex") {
+      family = "openai";
+    } else if (provider === "cursor") {
+      family = "cursor";
+    } else {
+      family = "anthropic";
+    }
     const models = available
       .filter((descriptor) => descriptor.family === family)
       .map((descriptor) => ({

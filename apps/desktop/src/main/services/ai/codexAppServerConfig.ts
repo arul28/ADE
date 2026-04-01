@@ -1,12 +1,5 @@
 type McpServerRecord = Record<string, unknown>;
 
-function firstDefined<T>(...values: Array<T | undefined>): T | undefined {
-  for (const value of values) {
-    if (value !== undefined) return value;
-  }
-  return undefined;
-}
-
 function stringArrayOrUndefined(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const normalized = value.filter((entry): entry is string => typeof entry === "string");
@@ -33,34 +26,28 @@ export function buildCodexAppServerMcpConfigOverrides(
       overrides[`${prefix}.enabled`] = enabled;
     }
 
-    const startupTimeoutSec = firstDefined(
-      typeof server.startupTimeoutSec === "number" ? server.startupTimeoutSec : undefined,
-      typeof server.startup_timeout_sec === "number" ? server.startup_timeout_sec : undefined,
-    );
+    const startupTimeoutSec =
+      (typeof server.startupTimeoutSec === "number" ? server.startupTimeoutSec : undefined)
+      ?? (typeof server.startup_timeout_sec === "number" ? server.startup_timeout_sec : undefined);
     if (startupTimeoutSec !== undefined) {
       overrides[`${prefix}.startup_timeout_sec`] = startupTimeoutSec;
     }
 
-    const toolTimeoutSec = firstDefined(
-      typeof server.toolTimeoutSec === "number" ? server.toolTimeoutSec : undefined,
-      typeof server.tool_timeout_sec === "number" ? server.tool_timeout_sec : undefined,
-    );
+    const toolTimeoutSec =
+      (typeof server.toolTimeoutSec === "number" ? server.toolTimeoutSec : undefined)
+      ?? (typeof server.tool_timeout_sec === "number" ? server.tool_timeout_sec : undefined);
     if (toolTimeoutSec !== undefined) {
       overrides[`${prefix}.tool_timeout_sec`] = toolTimeoutSec;
     }
 
-    const enabledTools = firstDefined(
-      stringArrayOrUndefined(server.enabledTools),
-      stringArrayOrUndefined(server.enabled_tools),
-    );
+    const enabledTools = stringArrayOrUndefined(server.enabledTools)
+      ?? stringArrayOrUndefined(server.enabled_tools);
     if (enabledTools !== undefined) {
       overrides[`${prefix}.enabled_tools`] = enabledTools;
     }
 
-    const disabledTools = firstDefined(
-      stringArrayOrUndefined(server.disabledTools),
-      stringArrayOrUndefined(server.disabled_tools),
-    );
+    const disabledTools = stringArrayOrUndefined(server.disabledTools)
+      ?? stringArrayOrUndefined(server.disabled_tools);
     if (disabledTools !== undefined) {
       overrides[`${prefix}.disabled_tools`] = disabledTools;
     }

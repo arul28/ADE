@@ -1129,6 +1129,178 @@ describe("conflictService conflict context integrity", () => {
     }
   });
 
+  it("prefers the local parent branch over a stale remote parent branch", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-local-parent-"));
+    const remoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-local-parent-remote-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = randomUUID();
+    const now = "2026-03-24T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now]
+      );
+
+      git(remoteRoot, ["init", "--bare"]);
+
+      fs.writeFileSync(path.join(repoRoot, "file.txt"), "base\n", "utf8");
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "ade@test.local"]);
+      git(repoRoot, ["config", "user.name", "ADE Test"]);
+      git(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+      git(repoRoot, ["push", "-u", "origin", "main"]);
+
+      git(repoRoot, ["checkout", "-b", "feature/worktree-parent"]);
+      fs.writeFileSync(path.join(repoRoot, "parent.txt"), "parent work\n", "utf8");
+      git(repoRoot, ["add", "parent.txt"]);
+      git(repoRoot, ["commit", "-m", "parent work"]);
+      git(repoRoot, ["push", "-u", "origin", "feature/worktree-parent"]);
+
+      git(repoRoot, ["checkout", "-b", "feature/grandchild"]);
+      fs.writeFileSync(path.join(repoRoot, "child.txt"), "grandchild\n", "utf8");
+      git(repoRoot, ["add", "child.txt"]);
+      git(repoRoot, ["commit", "-m", "grandchild work"]);
+
+      git(repoRoot, ["checkout", "feature/worktree-parent"]);
+      fs.writeFileSync(path.join(repoRoot, "parent2.txt"), "parent advance\n", "utf8");
+      git(repoRoot, ["add", "parent2.txt"]);
+      git(repoRoot, ["commit", "-m", "parent advance"]);
+      git(repoRoot, ["checkout", "feature/grandchild"]);
+
+      const parentLane = createLaneSummary(repoRoot, {
+        id: "lane-wt-parent",
+        name: "Worktree Parent",
+        branchRef: "feature/worktree-parent",
+        baseRef: "main",
+        parentLaneId: null,
+      });
+      const childLane = createLaneSummary(repoRoot, {
+        id: "lane-grandchild",
+        name: "Grandchild",
+        branchRef: "feature/grandchild",
+        baseRef: "main",
+        parentLaneId: "lane-wt-parent",
+      });
+
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          list: async () => [parentLane, childLane],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/grandchild" }),
+        } as any,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" }, local: {} }),
+        } as any,
+      });
+
+      const needs = await service.scanRebaseNeeds();
+      expect(needs).toHaveLength(1);
+      expect(needs[0]).toMatchObject({
+        laneId: "lane-grandchild",
+        baseBranch: "feature/worktree-parent",
+      });
+      expect(needs[0]!.behindBy).toBeGreaterThan(0);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+      fs.rmSync(remoteRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps rebase targets hierarchy-safe by surfacing only the direct parent need for descendants", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-direct-parent-only-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = randomUUID();
+    const now = "2026-03-24T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now]
+      );
+
+      fs.writeFileSync(path.join(repoRoot, "file.txt"), "base\n", "utf8");
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "ade@test.local"]);
+      git(repoRoot, ["config", "user.name", "ADE Test"]);
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+
+      git(repoRoot, ["checkout", "-b", "feature/parent"]);
+      fs.writeFileSync(path.join(repoRoot, "parent.txt"), "parent work\n", "utf8");
+      git(repoRoot, ["add", "parent.txt"]);
+      git(repoRoot, ["commit", "-m", "parent work"]);
+
+      git(repoRoot, ["checkout", "-b", "feature/grandchild"]);
+      fs.writeFileSync(path.join(repoRoot, "grandchild.txt"), "grandchild work\n", "utf8");
+      git(repoRoot, ["add", "grandchild.txt"]);
+      git(repoRoot, ["commit", "-m", "grandchild work"]);
+
+      git(repoRoot, ["checkout", "main"]);
+      fs.writeFileSync(path.join(repoRoot, "main-advance.txt"), "main advance\n", "utf8");
+      git(repoRoot, ["add", "main-advance.txt"]);
+      git(repoRoot, ["commit", "-m", "main advance"]);
+      git(repoRoot, ["checkout", "feature/grandchild"]);
+
+      const primaryLane = {
+        ...createLaneSummary(repoRoot, {
+          id: "lane-root",
+          name: "Main",
+          branchRef: "main",
+          baseRef: "main",
+          parentLaneId: null,
+        }),
+        laneType: "primary" as const,
+      };
+      const parentLane = createLaneSummary(repoRoot, {
+        id: "lane-parent",
+        name: "Parent",
+        branchRef: "feature/parent",
+        baseRef: "main",
+        parentLaneId: "lane-root",
+      });
+      const grandchildLane = createLaneSummary(repoRoot, {
+        id: "lane-grandchild",
+        name: "Grandchild",
+        branchRef: "feature/grandchild",
+        baseRef: "main",
+        parentLaneId: "lane-parent",
+      });
+
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          list: async () => [primaryLane, parentLane, grandchildLane],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/grandchild" }),
+        } as any,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "guest" }, local: {} }),
+        } as any,
+      });
+
+      const needs = await service.scanRebaseNeeds();
+      expect(needs).toEqual([
+        expect.objectContaining({
+          laneId: "lane-parent",
+          kind: "lane_base",
+          baseBranch: "main",
+        }),
+      ]);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("does not treat a primary parent as the live base when the lane is anchored elsewhere", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-primary-fallback-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

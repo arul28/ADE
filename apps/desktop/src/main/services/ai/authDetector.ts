@@ -307,63 +307,41 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
   for (const args of probes) {
     try {
       const result = await spawnAsync(command, args, { timeout: 8_000 });
-      const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
-      const normalized = output.toLowerCase();
+      const stdout = result.stdout ?? "";
+      const normalized = `${stdout}\n${result.stderr ?? ""}`.trim().toLowerCase();
 
-      try {
-        const json = JSON.parse(result.stdout?.trim() || "") as Record<string, unknown>;
-        if (json && typeof json === "object") {
-          const jsonAuth = parseJsonAuthStatus(result.stdout ?? "");
-          if (jsonAuth) {
-            return {
-              authenticated: jsonAuth.authenticated,
-              verified: true,
-              paidPlan: inferCursorPaidPlanFromJson(json),
-            };
-          }
-        }
-      } catch {
-        // not JSON
-      }
-
-      const jsonResult = parseJsonAuthStatus(result.stdout ?? "");
-      if (jsonResult) {
+      // Try structured JSON auth first
+      const jsonAuth = parseJsonAuthStatus(stdout);
+      if (jsonAuth) {
         let paidPlan = true;
         try {
-          const parsed = JSON.parse(result.stdout?.trim() || "") as Record<string, unknown>;
-          if (parsed && typeof parsed === "object") {
-            paidPlan = inferCursorPaidPlanFromJson(parsed);
+          const json = JSON.parse(stdout.trim() || "") as Record<string, unknown>;
+          if (json && typeof json === "object") {
+            paidPlan = inferCursorPaidPlanFromJson(json);
           }
         } catch {
           // Not JSON — fall back to paidPlan = true
         }
         return {
-          authenticated: jsonResult.authenticated,
+          authenticated: jsonAuth.authenticated,
           verified: true,
           paidPlan,
         };
       }
 
-      const matchesStrongUnauth = hasPattern(normalized, STRONG_UNAUTH_INDICATORS);
-      if (matchesStrongUnauth) {
+      if (hasPattern(normalized, STRONG_UNAUTH_INDICATORS)) {
         return { authenticated: false, verified: true, paidPlan: false };
       }
-
-      const matchesAuth = hasPattern(normalized, AUTH_INDICATORS);
-      const matchesWeakUnauth = hasPattern(normalized, WEAK_UNAUTH_INDICATORS);
-      if (matchesAuth) {
+      if (hasPattern(normalized, AUTH_INDICATORS)) {
         return { authenticated: true, verified: true, paidPlan: true };
       }
-      if (matchesWeakUnauth) {
+      if (hasPattern(normalized, WEAK_UNAUTH_INDICATORS)) {
         return { authenticated: false, verified: true, paidPlan: false };
       }
 
       if (result.status === 0 && normalized.length === 0) {
         return { authenticated: true, verified: true, paidPlan: true };
       }
-
-      // If exit 0 with non-empty output reached here, all regex branches above
-      // already returned, so a separate `normalized.length > 0` check is unreachable.
 
       if (hasPattern(normalized, UNSUPPORTED_INDICATORS)) {
         sawUnsupported = true;

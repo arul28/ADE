@@ -166,6 +166,20 @@ function readInitialTab(): PrTab {
   return "normal";
 }
 
+function requirePrId(prId: string): string {
+  const normalized = String(prId ?? "").trim();
+  if (!normalized) throw new Error("PR id is required.");
+  return normalized;
+}
+
+/** Remove entries from a keyed record whose key is not in the allowed set. */
+function pruneByAllowedIds<T>(record: Record<string, T>, allowedIds: Set<string>): Record<string, T> {
+  const next = Object.fromEntries(
+    Object.entries(record).filter(([id]) => allowedIds.has(id)),
+  ) as Record<string, T>;
+  return jsonEqual(record, next) ? record : next;
+}
+
 /** Shallow-compare two JSON-serializable values to avoid unnecessary re-renders. */
 function jsonEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -288,22 +302,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     if (!prsRef.current.some((pr) => pr.id === state.prId)) {
       return state;
     }
-    convergenceStatesByPrIdRef.current = { ...convergenceStatesByPrIdRef.current, [state.prId]: state };
     setConvergenceStatesByPrId((prev) => {
-      if (jsonEqual(prev[state.prId], state)) {
-        return prev;
-      }
+      if (jsonEqual(prev[state.prId], state)) return prev;
       const next = { ...prev, [state.prId]: state };
       convergenceStatesByPrIdRef.current = next;
       return next;
     });
     return state;
-  }, []);
-
-  const requirePrId = useCallback((prId: string): string => {
-    const normalized = String(prId ?? "").trim();
-    if (!normalized) throw new Error("PR id is required.");
-    return normalized;
   }, []);
 
   const loadConvergenceState = useCallback(async (prId: string, options?: { force?: boolean }): Promise<PrConvergenceState> => {
@@ -314,13 +319,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     }
     const runtime = await window.ade.prs.convergenceStateGet(normalizedPrId);
     return storeConvergenceState(runtime);
-  }, [requirePrId, storeConvergenceState]);
+  }, [storeConvergenceState]);
 
   const saveConvergenceState = useCallback(async (prId: string, state: Partial<PrConvergenceState>): Promise<PrConvergenceState> => {
     const normalizedPrId = requirePrId(prId);
     const runtime = await window.ade.prs.convergenceStateSave(normalizedPrId, state);
     return storeConvergenceState(runtime);
-  }, [requirePrId, storeConvergenceState]);
+  }, [storeConvergenceState]);
 
   const resetConvergenceState = useCallback(async (prId: string): Promise<void> => {
     const normalizedPrId = String(prId ?? "").trim();
@@ -451,20 +456,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         return prev;
       });
 
-      setMergeContextByPrId((prev) => {
-        const allowed = new Set(prList.map((pr) => pr.id));
-        const next = Object.fromEntries(
-          Object.entries(prev).filter(([prId]) => allowed.has(prId))
-        ) as Record<string, PrMergeContext>;
-        return jsonEqual(prev, next) ? prev : next;
-      });
-      setConvergenceStatesByPrId((prev) => {
-        const allowed = new Set(prList.map((pr) => pr.id));
-        const next = Object.fromEntries(
-          Object.entries(prev).filter(([prId]) => allowed.has(prId)),
-        ) as Record<string, PrConvergenceState>;
-        return jsonEqual(prev, next) ? prev : next;
-      });
+      const allowedPrIds = new Set(prList.map((pr) => pr.id));
+      setMergeContextByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
+      setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
 
       if (changedPrIds.length > 0) {
         void refreshMergeContexts(changedPrIds);
@@ -694,13 +688,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
         prsRef.current = next;
         setPrs((prev) => (jsonEqual(prev, next) ? prev : next));
-        setConvergenceStatesByPrId((prev) => {
-          const allowed = new Set(next.map((pr) => pr.id));
-          const filtered = Object.fromEntries(
-            Object.entries(prev).filter(([prId]) => allowed.has(prId)),
-          ) as Record<string, PrConvergenceState>;
-          return jsonEqual(prev, filtered) ? prev : filtered;
-        });
+        const allowedPrIds = new Set(next.map((pr) => pr.id));
+        setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
 
         if (changedPrIds.length > 0) {
           void refreshMergeContexts(changedPrIds);

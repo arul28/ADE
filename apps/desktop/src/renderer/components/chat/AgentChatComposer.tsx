@@ -133,8 +133,6 @@ const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode;
   { value: "full-auto", label: "Full auto" },
 ];
 
-// CURSOR_MODE_LABELS imported from shared/cursorModes.ts
-
 function cursorModeLabel(modeId: string): string {
   const normalized = modeId.trim().toLowerCase();
   if (!normalized.length) return "Agent";

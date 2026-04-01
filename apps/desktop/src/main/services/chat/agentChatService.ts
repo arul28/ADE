@@ -7,10 +7,13 @@ import {
   generateText,
   streamText,
   stepCountIs,
+  tool as aiTool,
+  jsonSchema as aiJsonSchema,
   type FilePart,
   type ImagePart,
   type LanguageModel,
   type ModelMessage,
+  type Tool as AiTool,
   type UserContent,
 } from "ai";
 import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
@@ -157,6 +160,8 @@ import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUs
 import { createProofObserver } from "../computerUse/proofObserver";
 import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
 import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "../orchestrator/unifiedOrchestratorAdapter";
+import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport as McpStdioTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { McpServer, PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import type { ExternalMcpServerConfig } from "../../../shared/types/externalMcp";
 import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
@@ -341,6 +346,9 @@ type UnifiedRuntime = {
   interrupted: boolean;
   resolvedModel: LanguageModel;
   modelDescriptor: ModelDescriptor;
+  /** MCP client connected to the ADE MCP server via stdio. */
+  mcpClient: McpSdkClient | null;
+  mcpTransport: McpStdioTransport | null;
 };
 
 type CursorPermissionWaiter = {
@@ -2063,7 +2071,7 @@ function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefin
 }
 
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
-  return provider === "codex" || provider === "claude" || provider === "cursor" ? "full_mcp" : "fallback";
+  return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "unified" ? "full_mcp" : "fallback";
 }
 
 function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
@@ -2081,24 +2089,7 @@ function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">)
   return session.sessionProfile === "light";
 }
 
-function findRepoRuntimeRoot(startPaths: string[]): string | null {
-  for (const startPath of startPaths) {
-    const trimmed = startPath.trim();
-    if (!trimmed.length) continue;
-    let dir = path.resolve(trimmed);
-    for (let depth = 0; depth < 12; depth += 1) {
-      if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
-        return dir;
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-  }
-  return null;
-}
-
-function resolveMcpRuntimeRoot(_projectRoot: string, _workspaceRoot: string): string {
+function resolveMcpRuntimeRoot(): string {
   // Only use the trusted ADE install path — never walk up user repo trees
   // which could match apps/mcp-server/package.json by coincidence.
   return resolveUnifiedRuntimeRoot();
@@ -2854,7 +2845,7 @@ export function createAgentChatService(args: {
     const launch = resolveAdeMcpServerLaunch({
       projectRoot,
       workspaceRoot,
-      runtimeRoot: resolveMcpRuntimeRoot(projectRoot, workspaceRoot),
+      runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole,
       ownerId: ownerId ?? undefined,
       chatSessionId: chatSessionId ?? undefined,
@@ -2972,6 +2963,80 @@ export function createAgentChatService(args: {
     .filter((serverName) => serverName.length > 0)
     .map((serverName) => `mcp__${serverName}__*`);
 
+  /**
+   * Spawn the ADE MCP server as a stdio child process and connect an MCP SDK
+   * client.  Returns the client + transport so the caller can list/call tools
+   * and close the connection when the session is disposed.
+   */
+  const spawnUnifiedMcpClient = async (
+    workspaceRoot: string,
+    defaultRole: "agent" | "cto",
+    ownerId?: string | null,
+    chatSessionId?: string | null,
+    computerUsePolicy?: ComputerUsePolicy | null,
+  ): Promise<{ client: McpSdkClient; transport: McpStdioTransport }> => {
+    const launch = resolveAdeMcpServerLaunch({
+      projectRoot,
+      workspaceRoot,
+      runtimeRoot: resolveMcpRuntimeRoot(),
+      defaultRole,
+      ownerId: ownerId ?? undefined,
+      chatSessionId: chatSessionId ?? undefined,
+      computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
+      preferBundledProxy: false,
+    });
+
+    const mergedEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries({ ...process.env, ...launch.env })) {
+      if (v !== undefined) mergedEnv[k] = v;
+    }
+
+    const transport = new McpStdioTransport({
+      command: launch.command,
+      args: launch.cmdArgs,
+      env: mergedEnv,
+    });
+
+    const client = new McpSdkClient(
+      { name: "ade-unified-chat", version: "1.0.0" },
+      { capabilities: {} },
+    );
+
+    await client.connect(transport);
+    return { client, transport };
+  };
+
+  /**
+   * Discover tools from an MCP client and convert each into an AI SDK `tool()`
+   * so they can be merged with the universal tool set and passed to `streamText()`.
+   */
+  const buildMcpToolWrappers = async (
+    mcpClient: McpSdkClient,
+  ): Promise<Record<string, AiTool>> => {
+    const { tools: mcpTools } = await mcpClient.listTools();
+    const wrapped: Record<string, AiTool> = {};
+
+    for (const spec of mcpTools) {
+      const toolName = `mcp__ade__${spec.name}`;
+      wrapped[toolName] = aiTool({
+        description: spec.description ?? spec.name,
+        inputSchema: aiJsonSchema<Record<string, unknown>>(spec.inputSchema as any),
+        execute: async (args) => {
+          const result = await mcpClient.callTool({ name: spec.name, arguments: args as Record<string, unknown> });
+          // MCP tools return { content: [{ type, text }] } — flatten to text.
+          const content = result.content;
+          if (Array.isArray(content)) {
+            return content
+              .map((c: any) => (typeof c === "string" ? c : c?.text ?? JSON.stringify(c)))
+              .join("\n");
+          }
+          return typeof content === "string" ? content : JSON.stringify(content);
+        },
+      });
+    }
+    return wrapped;
+  };
+
   const summarizeAdeMcpLaunch = (args: {
     workspaceRoot: string;
     defaultRole: "agent" | "cto" | "external";
@@ -2981,7 +3046,7 @@ export function createAgentChatService(args: {
     const { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath } = resolveAdeMcpServerLaunch({
       projectRoot,
       workspaceRoot: args.workspaceRoot,
-      runtimeRoot: resolveMcpRuntimeRoot(projectRoot, args.workspaceRoot),
+      runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole: args.defaultRole,
       ownerId: args.ownerId ?? undefined,
       computerUsePolicy: normalizeComputerUsePolicy(args.computerUsePolicy, createDefaultComputerUsePolicy()),
@@ -3737,9 +3802,6 @@ export function createAgentChatService(args: {
     });
 
     const auth = await detectAuth();
-    // Unified (direct-API) models do NOT spawn MCP servers — they use
-    // in-process workflow tools instead.  MCP is only available through
-    // CLI-wrapped runtimes (Claude Agent SDK / Codex App Server).
     const resolvedModel = await providerResolver.resolveModel(modelId, auth, {
       cwd: managed.laneWorktreePath,
     });
@@ -3749,6 +3811,33 @@ export function createAgentChatService(args: {
       managed.session,
       chatConfig.unifiedPermissionMode,
     );
+
+    // Spawn the ADE MCP server so unified sessions get the same tools as
+    // Claude / Codex sessions.  If the MCP server fails to start we fall
+    // back gracefully — the session still works with in-process tools.
+    let mcpClient: McpSdkClient | null = null;
+    let mcpTransport: McpStdioTransport | null = null;
+    if (!isLightweightSession(managed.session)) {
+      try {
+        const mcp = await spawnUnifiedMcpClient(
+          managed.laneWorktreePath,
+          managed.session.identityKey === "cto" ? "cto" : "agent",
+          resolveWorkerIdentityAgentId(managed.session.identityKey),
+          managed.session.id,
+          managed.session.computerUse,
+        );
+        mcpClient = mcp.client;
+        mcpTransport = mcp.transport;
+        logger.info("agent_chat.unified_mcp_connected", {
+          sessionId: managed.session.id,
+        });
+      } catch (error) {
+        logger.warn("agent_chat.unified_mcp_spawn_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     const runtime: UnifiedRuntime = {
       kind: "unified",
@@ -3763,6 +3852,8 @@ export function createAgentChatService(args: {
       interrupted: false,
       resolvedModel,
       modelDescriptor: descriptor,
+      mcpClient,
+      mcpTransport,
     };
 
     managed.runtime = runtime;
@@ -3770,7 +3861,7 @@ export function createAgentChatService(args: {
     managed.session.provider = "unified";
     managed.session.unifiedPermissionMode = permMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
-    managed.session.capabilityMode = "fallback";
+    managed.session.capabilityMode = mcpClient ? "full_mcp" : "fallback";
     return "handled";
   };
 
@@ -4730,6 +4821,9 @@ export function createAgentChatService(args: {
         pending.resolve({ decision: "cancel" });
       }
       managed.runtime.pendingApprovals.clear();
+      // Tear down MCP client + transport
+      try { managed.runtime.mcpClient?.close(); } catch { /* ignore */ }
+      try { managed.runtime.mcpTransport?.close(); } catch { /* ignore */ }
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "cursor") {
@@ -6587,6 +6681,21 @@ export function createAgentChatService(args: {
         }
       }
 
+      // Merge MCP tools from the ADE MCP server so unified sessions have the
+      // same tooling surface as Claude / Codex sessions.
+      if (!lightweight && runtime.mcpClient) {
+        try {
+          const mcpTools = await buildMcpToolWrappers(runtime.mcpClient);
+          Object.assign(tools, mcpTools);
+        } catch (error) {
+          logger.warn("agent_chat.unified_mcp_tools_failed", {
+            sessionId: managed.session.id,
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
       const providerOptions = providerResolver.buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
       const baseHarnessPrompt = lightweight
@@ -8275,7 +8384,6 @@ export function createAgentChatService(args: {
       if (allowedTools.length > 0) {
         opts.allowedTools = allowedTools;
       }
-      console.error("[ADE-DEBUG] mcpServers config:", JSON.stringify(opts.mcpServers, null, 2)?.slice(0, 1200));
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
 
       // Handle MCP elicitation requests (form input or OAuth URL flows).

@@ -654,7 +654,7 @@ function CollapsibleCard({
     prevForceOpen.current = forceOpen;
   }, [forceOpen]);
 
-  const isOpen = forceOpen === true ? (userCollapsed ? false : true) : open;
+  const isOpen = forceOpen === true ? !userCollapsed : open;
 
   return (
     <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={SURFACE_INLINE_CARD_STYLE}>
@@ -938,6 +938,25 @@ type AssistantPresentation = {
   glyph: React.ReactNode;
 };
 
+const KNOWN_PROVIDER_LABELS = new Set(["Claude", "Codex", "Cursor"]);
+const GENERIC_ASSISTANT_LABELS = new Set(["Agent", "Assistant", ...KNOWN_PROVIDER_LABELS]);
+
+function inferProviderLabel(meta: { family: string | null; cliCommand: string | null }): string | null {
+  if (meta.family === "anthropic" || meta.cliCommand === "claude") return "Claude";
+  if (meta.cliCommand === "codex") return "Codex";
+  if (meta.family === "cursor" || meta.cliCommand === "cursor") return "Cursor";
+  return null;
+}
+
+function providerGlyph(provider: string | null): React.ReactNode {
+  switch (provider) {
+    case "Claude": return <ClaudeLogo size={10} className="text-fg/70" />;
+    case "Codex": return <CodexLogo size={10} className="text-fg/70" />;
+    case "Cursor": return <CursorAgentLogo size={10} className="text-fg/70" />;
+    default: return <Robot size={10} weight="bold" className="text-fg/70" />;
+  }
+}
+
 function resolveAssistantPresentation({
   assistantLabel,
   turnModel,
@@ -947,35 +966,14 @@ function resolveAssistantPresentation({
 }): AssistantPresentation {
   const customLabel = assistantLabel?.trim() ?? "";
   const modelMeta = turnModel ? resolveModelMeta(turnModel.modelId, turnModel.model) : { family: null, cliCommand: null };
-  const providerLabel =
-    modelMeta.family === "anthropic" || modelMeta.cliCommand === "claude"
-      ? "Claude"
-      : modelMeta.cliCommand === "codex"
-        ? "Codex"
-        : modelMeta.family === "cursor" || modelMeta.cliCommand === "cursor"
-          ? "Cursor"
-          : null;
-  const fallbackProviderLabel =
-    customLabel === "Claude" || customLabel === "Codex" || customLabel === "Cursor" ? customLabel : null;
+  const resolvedProviderLabel = inferProviderLabel(modelMeta)
+    ?? (KNOWN_PROVIDER_LABELS.has(customLabel) ? customLabel : null);
   const hardOverrideLabel =
-    customLabel.length > 0
-      && customLabel !== "Agent"
-      && customLabel !== "Assistant"
-      && customLabel !== "Claude"
-      && customLabel !== "Codex"
-      && customLabel !== "Cursor"
+    customLabel.length > 0 && !GENERIC_ASSISTANT_LABELS.has(customLabel)
       ? customLabel
       : null;
-  const resolvedProviderLabel = providerLabel ?? fallbackProviderLabel;
   const label = hardOverrideLabel ?? resolvedProviderLabel ?? "Assistant";
-  const glyph = resolvedProviderLabel === "Claude"
-    ? <ClaudeLogo size={10} className="text-fg/70" />
-    : resolvedProviderLabel === "Codex"
-      ? <CodexLogo size={10} className="text-fg/70" />
-      : resolvedProviderLabel === "Cursor"
-        ? <CursorAgentLogo size={10} className="text-fg/70" />
-        : <Robot size={10} weight="bold" className="text-fg/70" />;
-  return { label, glyph };
+  return { label, glyph: providerGlyph(resolvedProviderLabel) };
 }
 
 function commandTimelineVerb(status: Extract<AgentChatEvent, { type: "command" }>["status"]): string {

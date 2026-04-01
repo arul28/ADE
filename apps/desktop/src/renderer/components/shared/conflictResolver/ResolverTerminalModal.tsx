@@ -93,7 +93,8 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
 function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor", value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
-  const family = provider === "codex" ? "openai" : provider === "cursor" ? "cursor" : "anthropic";
+  const familyMap: Record<string, string> = { codex: "openai", cursor: "cursor", claude: "anthropic" };
+  const family = familyMap[provider] ?? "anthropic";
   const match = MODEL_REGISTRY.find(
     (model) =>
       model.isCliWrapped

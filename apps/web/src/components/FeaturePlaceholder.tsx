@@ -1,18 +1,19 @@
 import { cn } from "../lib/cn";
 
 export function FeaturePlaceholder({ colorClass }: { colorClass: string }) {
+  const bgClass = colorClass.replace("text-", "bg-");
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden bg-[#0a0a0f]">
       <div
         className={cn(
           "absolute -right-10 -top-10 h-32 w-32 rounded-full opacity-20 blur-[40px]",
-          colorClass.replace("text-", "bg-"),
+          bgClass,
         )}
       />
       <div
         className={cn(
           "absolute -bottom-10 -left-10 h-32 w-32 rounded-full opacity-10 blur-[40px]",
-          colorClass.replace("text-", "bg-"),
+          bgClass,
         )}
       />
 
@@ -38,7 +39,7 @@ export function FeaturePlaceholder({ colorClass }: { colorClass: string }) {
           <div
             className={cn(
               "mt-auto h-1.5 w-[40%] rounded-full opacity-40",
-              colorClass.replace("text-", "bg-"),
+              bgClass,
             )}
           />
         </div>

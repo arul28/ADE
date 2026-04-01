@@ -347,6 +347,22 @@ function unqualifyAdeMcpToolName(toolName: string | null): string | null {
   return toolName.replace(/^mcp__[^_]+__/, "");
 }
 
+function buildMcpToolCapabilities(
+  runtimeLabel: string,
+  executionMode: PrIssueResolutionRuntimeCapabilities["executionMode"],
+): PrIssueResolutionRuntimeCapabilities {
+  return {
+    refreshInventoryTool: qualifyAdeMcpToolName("pr_refresh_issue_inventory"),
+    getReviewCommentsTool: qualifyAdeMcpToolName("pr_get_review_comments"),
+    rerunChecksTool: qualifyAdeMcpToolName("pr_rerun_failed_checks"),
+    replyThreadTool: qualifyAdeMcpToolName("pr_reply_to_review_thread"),
+    resolveThreadTool: qualifyAdeMcpToolName("pr_resolve_review_thread"),
+    runtimeLabel,
+    toolSurface: "ade_mcp",
+    executionMode,
+  };
+}
+
 function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | undefined): PrIssueResolutionRuntimeCapabilities {
   const descriptor = modelId ? getModelById(modelId) : null;
   if (!descriptor) {
@@ -354,29 +370,11 @@ function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | un
   }
 
   if (descriptor.isCliWrapped && descriptor.family === "openai") {
-    return {
-      refreshInventoryTool: qualifyAdeMcpToolName("pr_refresh_issue_inventory"),
-      getReviewCommentsTool: qualifyAdeMcpToolName("pr_get_review_comments"),
-      rerunChecksTool: qualifyAdeMcpToolName("pr_rerun_failed_checks"),
-      replyThreadTool: qualifyAdeMcpToolName("pr_reply_to_review_thread"),
-      resolveThreadTool: qualifyAdeMcpToolName("pr_resolve_review_thread"),
-      runtimeLabel: "Codex chat via ADE MCP",
-      toolSurface: "ade_mcp",
-      executionMode: "parallel",
-    };
+    return buildMcpToolCapabilities("Codex chat via ADE MCP", "parallel");
   }
 
   if (descriptor.isCliWrapped && descriptor.family === "anthropic") {
-    return {
-      refreshInventoryTool: qualifyAdeMcpToolName("pr_refresh_issue_inventory"),
-      getReviewCommentsTool: qualifyAdeMcpToolName("pr_get_review_comments"),
-      rerunChecksTool: qualifyAdeMcpToolName("pr_rerun_failed_checks"),
-      replyThreadTool: qualifyAdeMcpToolName("pr_reply_to_review_thread"),
-      resolveThreadTool: qualifyAdeMcpToolName("pr_resolve_review_thread"),
-      runtimeLabel: "Claude chat via ADE MCP",
-      toolSurface: "ade_mcp",
-      executionMode: "subagents",
-    };
+    return buildMcpToolCapabilities("Claude chat via ADE MCP", "subagents");
   }
 
   return defaultPrIssueResolutionRuntimeCapabilities();

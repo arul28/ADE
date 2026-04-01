@@ -1,4 +1,13 @@
-import type { RebaseNeed } from "../../../../shared/types";
+import type { LaneSummary, RebaseNeed } from "../../../../shared/types";
+
+export type UpstreamRebaseNeed = {
+  laneId: string;
+  laneName: string;
+  kind: RebaseNeed["kind"];
+  baseBranch: string;
+  behindBy: number;
+  conflictPredicted: boolean;
+};
 
 export function rebaseNeedItemKey(need: RebaseNeed): string {
   return `${need.laneId}:${need.kind}:${need.prId ?? "base"}:${need.baseBranch}`;
@@ -50,4 +59,51 @@ export function findMatchingRebaseNeed(args: {
   }
 
   return rebaseNeeds.find((need) => need.laneId === args.laneId) ?? null;
+}
+
+export function buildUpstreamRebaseChain(args: {
+  laneId: string;
+  lanes: LaneSummary[] | null | undefined;
+  rebaseNeeds: RebaseNeed[] | null | undefined;
+}): UpstreamRebaseNeed[] {
+  const lanes = args.lanes ?? [];
+  const rebaseNeeds = args.rebaseNeeds ?? [];
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+  const entries: UpstreamRebaseNeed[] = [];
+  const visited = new Set<string>();
+
+  let currentLane = laneById.get(args.laneId) ?? null;
+  let parentLaneId = currentLane?.parentLaneId ?? null;
+
+  while (parentLaneId && !visited.has(parentLaneId)) {
+    visited.add(parentLaneId);
+    currentLane = laneById.get(parentLaneId) ?? null;
+    if (!currentLane) break;
+
+    const directNeed = findLaneBaseNeed(rebaseNeeds, currentLane.id)
+      ?? findMatchingRebaseNeed({ rebaseNeeds, laneId: currentLane.id });
+    if (directNeed && directNeed.behindBy > 0) {
+      entries.push({
+        laneId: currentLane.id,
+        laneName: currentLane.name,
+        kind: directNeed.kind,
+        baseBranch: directNeed.baseBranch,
+        behindBy: directNeed.behindBy,
+        conflictPredicted: directNeed.conflictPredicted,
+      });
+    }
+
+    parentLaneId = currentLane.parentLaneId;
+  }
+
+  return entries;
+}
+
+export function formatUpstreamRebaseSummary(entries: UpstreamRebaseNeed[]): string | null {
+  if (!entries.length) return null;
+
+  const terminalEntry = entries[entries.length - 1];
+  const suffix = `${terminalEntry.laneName} is ${terminalEntry.behindBy} behind ${terminalEntry.baseBranch}`;
+  if (entries.length === 1) return suffix;
+  return `${entries.length} ancestors pending; ${suffix}`;
 }

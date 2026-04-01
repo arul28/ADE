@@ -227,6 +227,31 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(rescueButton.getAttribute("title")).toMatch(/finish the current merge/i);
   });
 
+  it("explains why sync is disabled when the lane is behind but still dirty", async () => {
+    mockStoreState = {
+      ...mockStoreState,
+      lanes: [
+        buildLane({
+          name: "PR-CONVERGENCE-CHILD",
+          status: {
+            dirty: true,
+            ahead: 0,
+            behind: 2,
+            remoteBehind: 0,
+            rebaseInProgress: false,
+          },
+        }),
+      ],
+    };
+
+    renderPane();
+
+    const syncButton = await screen.findByRole("button", { name: "SYNC" });
+    expect((syncButton as HTMLButtonElement).disabled).toBe(true);
+    expect(syncButton.getAttribute("title")).toMatch(/has uncommitted changes/i);
+    expect(syncButton.getAttribute("title")).toMatch(/before rebasing and pushing/i);
+  });
+
   it("treats auto-rebase conflicts as failures and links to the Rebase tab", async () => {
     const user = userEvent.setup();
     const resolveRebaseConflict = vi.fn();

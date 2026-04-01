@@ -1053,13 +1053,10 @@ export function getRuntimeModelRefForDescriptor(
   providerHint?: ModelProviderGroup,
 ): string {
   const provider = providerHint ?? resolveProviderGroupForModel(descriptor);
-  if (provider === "codex") {
-    return descriptor.sdkModelId;
-  }
   if (provider === "claude") {
     return descriptor.shortId;
   }
-  if (provider === "cursor") {
+  if (provider === "codex" || provider === "cursor") {
     return descriptor.sdkModelId;
   }
   return descriptor.id;
