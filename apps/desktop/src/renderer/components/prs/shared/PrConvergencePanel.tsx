@@ -1015,7 +1015,7 @@ export function PrConvergencePanel({
   React.useEffect(() => {
     if (autoConverge && mode !== "auto-converge") setMode("auto-converge");
     if (!autoConverge && mode === "auto-converge") setMode("manual");
-  }, [autoConverge]);
+  }, [autoConverge, mode]);
 
   // Group items by state
   const grouped: Record<IssueItemState, IssueInventoryItem[]> = {

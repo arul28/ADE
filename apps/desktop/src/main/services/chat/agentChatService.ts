@@ -2713,6 +2713,88 @@ export function createAgentChatService(args: {
     return Array.from(snapshots.values());
   };
 
+  const previewSessionToolNames = ({
+    laneId,
+    sessionProfile,
+    identityKey,
+    computerUse,
+  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey" | "computerUse">): string[] => {
+    const effectiveSessionProfile = sessionProfile ?? "workflow";
+    if (effectiveSessionProfile === "light") return [];
+
+    const sessionId = `preview:${laneId}`;
+    const toolNames = new Set<string>();
+    const workflowTools = createWorkflowTools({
+      laneService,
+      prService: prService ?? undefined,
+      computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? undefined,
+      computerUsePolicy: computerUse,
+      onReportCompletion: null,
+      sessionId,
+      laneId,
+    });
+    for (const toolName of Object.keys(workflowTools)) {
+      toolNames.add(toolName);
+    }
+
+    const linearTools = createLinearTools({
+      linearClient: linearClientRef ?? null,
+      credentials: linearCredentialsRef ?? null,
+    });
+    for (const toolName of Object.keys(linearTools)) {
+      toolNames.add(toolName);
+    }
+
+    if (identityKey === "cto") {
+      const ctoTools = createCtoOperatorTools({
+        currentSessionId: sessionId,
+        defaultLaneId: laneId,
+        defaultModelId: null,
+        defaultReasoningEffort: null,
+        resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || laneId,
+        laneService,
+        missionService: getMissionService?.() ?? null,
+        aiOrchestratorService: getAiOrchestratorService?.() ?? null,
+        workerAgentService: workerAgentService ?? null,
+        workerHeartbeatService: workerHeartbeatService ?? null,
+        linearDispatcherService: getLinearDispatcherService?.() ?? null,
+        flowPolicyService: flowPolicyService ?? null,
+        prService: prService ?? null,
+        issueInventoryService: issueInventoryService ?? null,
+        fileService: fileService ?? null,
+        processService: processService ?? null,
+        testService: getTestService?.() ?? null,
+        ptyService: ptyService ?? null,
+        automationService: getAutomationService?.() ?? null,
+        issueTracker: linearIssueTracker ?? null,
+        listChats: listSessions,
+        getChatStatus: getSessionSummary,
+        getChatTranscript,
+        createChat: createSession,
+        updateChatSession: updateSession,
+        sendChatMessage: sendMessage,
+        interruptChat: interrupt,
+        resumeChat: resumeSession,
+        disposeChat: dispose,
+        sessionService,
+        ensureCtoSession: async ({ laneId: requestedLaneId, modelId, reasoningEffort, reuseExisting }) =>
+          ensureIdentitySession({
+            identityKey: "cto",
+            laneId: requestedLaneId,
+            modelId,
+            reasoningEffort,
+            reuseExisting,
+            permissionMode: "full-auto",
+          }),
+      });
+      for (const toolName of Object.keys(ctoTools)) {
+        toolNames.add(toolName);
+      }
+    }
+
+    return Array.from(toolNames).sort((a, b) => a.localeCompare(b));
+  };
+
   const deriveSessionCapabilities = (managed: ManagedChatSession | null): AgentChatSessionCapabilities => ({
     supportsSubagentInspection: Boolean(managed && (managed.session.provider === "claude" || managed.session.provider === "codex")),
     supportsSubagentControl: Boolean(managed && managed.runtime?.kind === "claude"),
@@ -8005,7 +8087,7 @@ export function createAgentChatService(args: {
       // Handle MCP elicitation requests (form input or OAuth URL flows).
       (opts as any).onElicitation = async (
         elicitReq: { serverName: string; message: string; mode?: "form" | "url"; url?: string; elicitationId?: string; requestedSchema?: Record<string, unknown> },
-        elicitOpts: { signal: AbortSignal },
+        _elicitOpts: { signal: AbortSignal },
       ): Promise<{ action: "accept" | "decline" | "cancel"; content?: Record<string, string | number | boolean | string[]> }> => {
         const approvalItemId = randomUUID();
         const turnId = runtime.activeTurnId ?? undefined;
@@ -11793,6 +11875,7 @@ export function createAgentChatService(args: {
     warmupModel,
     listSubagents,
     getSessionCapabilities,
+    previewSessionToolNames,
     /** Clean up temp attachment files older than 7 days. Call on app startup. */
     cleanupStaleAttachments() {
       try {

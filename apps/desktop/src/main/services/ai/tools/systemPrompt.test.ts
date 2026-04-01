@@ -183,6 +183,26 @@ describe("buildCodingAgentSystemPrompt", () => {
     });
   });
 
+  describe("pull request tools section", () => {
+    it("includes PR tool guidance when PR workflow tools are present", () => {
+      const result = buildCodingAgentSystemPrompt({
+        cwd: "/x",
+        toolNames: ["prRefreshIssueInventory", "prGetReviewComments"],
+      });
+      expect(result).toContain("## Pull Request Tools");
+      expect(result).toContain("prRefreshIssueInventory, prGetReviewComments");
+      expect(result).toContain("report the misconfiguration immediately");
+    });
+
+    it("omits PR tool guidance when PR workflow tools are absent", () => {
+      const result = buildCodingAgentSystemPrompt({
+        cwd: "/x",
+        toolNames: ["readFile", "listFiles"],
+      });
+      expect(result).not.toContain("## Pull Request Tools");
+    });
+  });
+
   it("always includes operating loop, editing rules, and verification rules", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
     expect(result).toContain("## Operating Loop");

@@ -1583,6 +1583,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
             agentChatService: {
               createSession: deps.createChat,
               sendMessage: deps.sendChatMessage,
+              previewSessionToolNames: () => [
+                "prRefreshIssueInventory",
+                "prGetReviewComments",
+                "prRerunFailedChecks",
+                "prReplyToReviewThread",
+                "prResolveReviewThread",
+              ],
             },
             sessionService: deps.sessionService,
             issueInventoryService: deps.issueInventoryService ?? null,

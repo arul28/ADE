@@ -71,7 +71,7 @@ type PrIssueResolutionRuntimeCapabilities = {
 export type PrIssueResolutionLaunchDeps = {
   prService: ReturnType<typeof createPrService>;
   laneService: Pick<ReturnType<typeof createLaneService>, "list" | "getLaneBaseAndBranch">;
-  agentChatService: Pick<ReturnType<typeof createAgentChatService>, "createSession" | "sendMessage">;
+  agentChatService: Pick<ReturnType<typeof createAgentChatService>, "createSession" | "sendMessage" | "previewSessionToolNames">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
 };
@@ -325,7 +325,7 @@ function buildSelectedScopeDescription(scope: PrIssueResolutionScope): string {
 
 function defaultPrIssueResolutionRuntimeCapabilities(): PrIssueResolutionRuntimeCapabilities {
   return {
-    runtimeLabel: "Unified/API chat with ADE workflow tools",
+    runtimeLabel: "Workflow chat with ADE PR tools",
     toolSurface: "workflow_tools",
     refreshInventoryTool: "prRefreshIssueInventory",
     getReviewCommentsTool: "prGetReviewComments",
@@ -338,37 +338,38 @@ function defaultPrIssueResolutionRuntimeCapabilities(): PrIssueResolutionRuntime
 
 function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | undefined): PrIssueResolutionRuntimeCapabilities {
   const descriptor = modelId ? getModelById(modelId) : null;
-  if (!descriptor || !descriptor.isCliWrapped) {
+  if (!descriptor) {
     return defaultPrIssueResolutionRuntimeCapabilities();
   }
 
-  const MCP_TOOLS = {
-    refreshInventoryTool: "pr_refresh_issue_inventory",
-    getReviewCommentsTool: "pr_get_review_comments",
-    rerunChecksTool: "pr_rerun_failed_checks",
-    replyThreadTool: "pr_reply_to_review_thread",
-    resolveThreadTool: "pr_resolve_review_thread",
-  } as const;
-
   if (descriptor.family === "openai") {
     return {
-      ...MCP_TOOLS,
-      runtimeLabel: "Codex chat via ADE MCP",
-      toolSurface: "ade_mcp",
+      ...defaultPrIssueResolutionRuntimeCapabilities(),
+      runtimeLabel: "Codex workflow chat with ADE PR tools",
       executionMode: "parallel",
     };
   }
 
   if (descriptor.family === "anthropic") {
     return {
-      ...MCP_TOOLS,
-      runtimeLabel: "Claude SDK chat via ADE MCP",
-      toolSurface: "ade_mcp",
+      ...defaultPrIssueResolutionRuntimeCapabilities(),
+      runtimeLabel: "Claude workflow chat with ADE PR tools",
       executionMode: "subagents",
     };
   }
 
   return defaultPrIssueResolutionRuntimeCapabilities();
+}
+
+function listRequiredRuntimeTools(runtimeCapabilities: PrIssueResolutionRuntimeCapabilities): string[] {
+  if (runtimeCapabilities.toolSurface === "prompt_only") return [];
+  return [
+    runtimeCapabilities.refreshInventoryTool,
+    runtimeCapabilities.getReviewCommentsTool,
+    runtimeCapabilities.rerunChecksTool,
+    runtimeCapabilities.replyThreadTool,
+    runtimeCapabilities.resolveThreadTool,
+  ].filter((toolName): toolName is string => typeof toolName === "string" && toolName.trim().length > 0);
 }
 
 export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): string {
@@ -507,17 +508,11 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
       "- If you need fresher PR state than this prompt provides, fetch it manually before making changes.",
     );
   } else {
-    const surfaceLabel = runtimeCapabilities.toolSurface === "ade_mcp" ? "ADE MCP tool" : "ADE workflow tool";
-    const toolList = [
-      runtimeCapabilities.refreshInventoryTool,
-      runtimeCapabilities.getReviewCommentsTool,
-      runtimeCapabilities.rerunChecksTool,
-      runtimeCapabilities.replyThreadTool,
-      runtimeCapabilities.resolveThreadTool,
-    ].filter(Boolean).map((t) => `\`${t}\``).join(", ");
+    const toolList = listRequiredRuntimeTools(runtimeCapabilities).map((toolName) => `\`${toolName}\``).join(", ");
     promptSections.push(
-      `- Start by refreshing the PR issue inventory with ${surfaceLabel} \`${runtimeCapabilities.refreshInventoryTool}\`, especially if CI or review state may have changed.`,
-      `- Use ${surfaceLabel}s instead of assuming GitHub CLI access. Relevant tools include ${toolList}.`,
+      `- This workflow chat is expected to expose ADE PR tools. Start by refreshing the PR issue inventory with \`${runtimeCapabilities.refreshInventoryTool}\`.`,
+      `- Required PR tools for this run: ${toolList}. If any of them are unavailable, stop and report that the chat was launched without the required ADE PR tools.`,
+      "- Do not waste time reverse-engineering local MCP wiring or local server bootstraps from inside the task session.",
     );
   }
 
@@ -669,6 +664,20 @@ export async function launchPrIssueResolutionChat(
   }
   const prepared = await preparePrIssueResolutionPrompt(deps, args, { detailLevel: "launch" });
   const reasoningEffort = args.reasoning?.trim() || undefined;
+  const requiredToolNames = listRequiredRuntimeTools(prepared.runtimeCapabilities);
+
+  if (requiredToolNames.length > 0) {
+    const availableToolNames = deps.agentChatService.previewSessionToolNames({
+      laneId: prepared.lane.id,
+      sessionProfile: "workflow",
+    });
+    const missingToolNames = requiredToolNames.filter((toolName) => !availableToolNames.includes(toolName));
+    if (missingToolNames.length > 0) {
+      throw new Error(
+        `PR issue resolver requires ADE PR tools that are unavailable in this chat runtime: ${missingToolNames.join(", ")}.`,
+      );
+    }
+  }
 
   const session = await deps.agentChatService.createSession({
     laneId: prepared.lane.id,

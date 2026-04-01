@@ -4,7 +4,15 @@ import React from "react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LaneSummary, PrActivityEvent, PrCheck, PrReviewThread, PrStatus, PrWithConflicts } from "../../../../shared/types";
+import type {
+  LaneSummary,
+  PrActivityEvent,
+  PrCheck,
+  PrConvergenceState,
+  PrReviewThread,
+  PrStatus,
+  PrWithConflicts,
+} from "../../../../shared/types";
 
 const mockUsePrs = vi.fn();
 
@@ -158,6 +166,29 @@ function makeStatus(overrides: Partial<PrStatus> = {}): PrStatus {
   };
 }
 
+function makeConvergenceState(overrides: Partial<PrConvergenceState> = {}): PrConvergenceState {
+  const now = "2026-03-23T12:30:00.000Z";
+  return {
+    prId: "pr-80",
+    autoConvergeEnabled: false,
+    status: "idle",
+    pollerStatus: "idle",
+    currentRound: 0,
+    activeSessionId: null,
+    activeLaneId: null,
+    activeHref: null,
+    pauseReason: null,
+    errorMessage: null,
+    lastStartedAt: null,
+    lastPolledAt: null,
+    lastPausedAt: null,
+    lastStoppedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 function renderPane(args: {
   checks: PrCheck[];
   reviewThreads: PrReviewThread[];
@@ -166,6 +197,7 @@ function renderPane(args: {
   activity?: PrActivityEvent[];
   statusOverrides?: Partial<PrStatus>;
   mergeMethod?: "merge" | "squash" | "rebase";
+  convergenceState?: PrConvergenceState | null;
 }) {
   const issueResolutionStart = vi.fn().mockResolvedValue({
     sessionId: "session-1",
@@ -188,6 +220,25 @@ function renderPane(args: {
     error: null,
   });
   const onRefresh = vi.fn().mockResolvedValue(undefined);
+  const convergenceState = args.convergenceState ?? null;
+  const loadConvergenceState = vi.fn().mockResolvedValue(convergenceState);
+  const saveConvergenceState = vi.fn().mockImplementation(async (_prId: string, state: Partial<PrConvergenceState>) => (
+    convergenceState ? { ...convergenceState, ...state } : makeConvergenceState(state)
+  ));
+  const resetConvergenceState = vi.fn().mockResolvedValue(undefined);
+  mockUsePrs.mockReturnValue({
+    convergenceStatesByPrId: convergenceState ? { "pr-80": convergenceState } : {},
+    loadConvergenceState,
+    saveConvergenceState,
+    resetConvergenceState,
+    rebaseNeeds: [],
+    resolverModel: "openai/gpt-5.4-codex",
+    resolverReasoningLevel: "high",
+    resolverPermissionMode: "guarded_edit",
+    setResolverModel: vi.fn(),
+    setResolverReasoningLevel: vi.fn(),
+    setResolverPermissionMode: vi.fn(),
+  });
   Object.assign(window, {
     ade: {
       prs: {
@@ -206,14 +257,35 @@ function renderPane(args: {
         getActionRuns: vi.fn().mockResolvedValue([]),
         getActivity: vi.fn().mockResolvedValue(args.activity ?? []),
         getReviewThreads,
+        issueInventorySync: vi.fn().mockResolvedValue({
+          items: [],
+          convergence: { currentRound: 0, maxRounds: 5, totalNew: 0, totalSentToAgent: 0, isConverging: false },
+        }),
+        pipelineSettingsGet: vi.fn().mockResolvedValue({
+          autoMerge: false,
+          mergeMethod: "repo_default",
+          maxRounds: 5,
+          onRebaseNeeded: "pause",
+        }),
+        getChecks: vi.fn().mockResolvedValue(args.checks),
+        getStatus: vi.fn().mockResolvedValue(args.statusOverrides ? makeStatus(args.statusOverrides) : makeStatus()),
+        onAiResolutionEvent: vi.fn(() => () => {}),
         issueResolutionStart,
         issueResolutionPreviewPrompt,
+        loadConvergenceState,
+        saveConvergenceState,
+        resetConvergenceState,
         land,
         openInGitHub: vi.fn().mockResolvedValue(undefined),
       },
       app: {
         openExternal: vi.fn(),
         writeClipboardText,
+      },
+      ai: {
+        getStatus: vi.fn().mockResolvedValue({
+          availableModels: [],
+        }),
       },
     },
   });
@@ -222,6 +294,9 @@ function renderPane(args: {
     issueResolutionStart,
     issueResolutionPreviewPrompt,
     getReviewThreads,
+    loadConvergenceState,
+    saveConvergenceState,
+    resetConvergenceState,
     writeClipboardText,
     land,
     onRefresh,
@@ -245,6 +320,11 @@ function renderPane(args: {
 describe("PrDetailPane issue resolver CTA", () => {
   beforeEach(() => {
     mockUsePrs.mockReturnValue({
+      convergenceStatesByPrId: {},
+      loadConvergenceState: vi.fn(),
+      saveConvergenceState: vi.fn(),
+      resetConvergenceState: vi.fn(),
+      rebaseNeeds: [],
       resolverModel: "openai/gpt-5.4-codex",
       resolverReasoningLevel: "high",
       resolverPermissionMode: "guarded_edit",
@@ -333,7 +413,7 @@ describe("PrDetailPane issue resolver CTA", () => {
   it("launches the issue resolver chat and navigates to the work session", async () => {
     const user = userEvent.setup();
     const onNavigate = vi.fn();
-    const { issueResolutionStart } = renderPane({
+    const { issueResolutionStart, saveConvergenceState } = renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
       onNavigate,
@@ -349,8 +429,59 @@ describe("PrDetailPane issue resolver CTA", () => {
         scope: "checks",
         additionalInstructions: "extra context",
       }));
+      expect(saveConvergenceState).toHaveBeenCalledWith("pr-80", expect.objectContaining({
+        autoConvergeEnabled: false,
+        status: "running",
+        pollerStatus: "idle",
+        activeSessionId: "session-1",
+        activeLaneId: "lane-1",
+        activeHref: "/work?laneId=lane-1&sessionId=session-1",
+      }));
       expect(onNavigate).toHaveBeenCalledWith("/work?laneId=lane-1&sessionId=session-1");
     });
+  });
+
+  it("restores a persisted convergence session on mount and remounts with the exact session URL", async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    const convergenceState = makeConvergenceState({
+      autoConvergeEnabled: true,
+      status: "running",
+      pollerStatus: "idle",
+      currentRound: 2,
+      activeSessionId: "session-2",
+      activeLaneId: "lane-1",
+      activeHref: "/work?laneId=lane-1&sessionId=session-2",
+      lastStartedAt: "2026-03-23T12:29:00.000Z",
+    });
+
+    const firstRender = renderPane({
+      checks: [makeCheck()],
+      reviewThreads: [],
+      onNavigate,
+      convergenceState,
+    });
+
+    await user.click(screen.getByRole("button", { name: /path to merge/i }));
+
+    const [viewSessionButton] = await screen.findAllByRole("button", { name: /view session/i });
+    await user.click(viewSessionButton);
+
+    expect(onNavigate).toHaveBeenCalledWith("/work?laneId=lane-1&sessionId=session-2");
+    firstRender.unmount();
+
+    const secondRender = renderPane({
+      checks: [makeCheck()],
+      reviewThreads: [],
+      onNavigate,
+      convergenceState,
+    });
+
+    await user.click(screen.getByRole("button", { name: /path to merge/i }));
+
+    await screen.findAllByRole("button", { name: /view session/i });
+
+    secondRender.unmount();
   });
 
   it("reloads review threads when opening the resolver", async () => {

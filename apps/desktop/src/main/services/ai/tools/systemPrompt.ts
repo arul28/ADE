@@ -47,6 +47,15 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasCaptureScreenshot = toolNames.includes("captureScreenshot");
   const hasReportCompletion = toolNames.includes("reportCompletion");
   const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
+  const prIssueToolNames = toolNames.filter((name) => (
+    name === "prGetChecks"
+    || name === "prGetReviewComments"
+    || name === "prRefreshIssueInventory"
+    || name === "prRerunFailedChecks"
+    || name === "prReplyToReviewThread"
+    || name === "prResolveReviewThread"
+  ));
+  const hasPrIssueTools = prIssueToolNames.length > 0;
 
   return [
     `You are ADE's software engineering agent working in ${args.cwd}.`,
@@ -125,6 +134,15 @@ export function buildCodingAgentSystemPrompt(args: {
           "",
           "**Recommended workflow:** Create a lane, make changes, verify with tests and screenshots, create a PR, then report completion.",
           "**Do not** create infrastructure (CI configs, deployment scripts) or modify settings outside your lane without explicit user approval.",
+        ]
+      : []),
+    ...(hasPrIssueTools
+      ? [
+          "",
+          "## Pull Request Tools",
+          `Key PR tools in this session: ${prIssueToolNames.join(", ")}.`,
+          "Use these tools first when the task is to address PR comments, review threads, or CI failures.",
+          "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local MCP wiring or bootstrap code.",
         ]
       : []),
     "",
