@@ -259,10 +259,11 @@ function extractConfiguredApiKeys(snapshot: ReturnType<ReturnType<typeof createP
   return out;
 }
 
-function toCliAvailability(auth: DetectedAuth[]): { claude: boolean; codex: boolean } {
+function toCliAvailability(auth: DetectedAuth[]): { claude: boolean; codex: boolean; cursor: boolean } {
   return {
     claude: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "claude"),
     codex: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "codex"),
+    cursor: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "cursor"),
   };
 }
 
@@ -406,9 +407,11 @@ export function createAiIntegrationService(args: {
     const statuses = getCachedCliAuthStatuses();
     const claude = statuses.find((entry) => entry.cli === "claude");
     const codex = statuses.find((entry) => entry.cli === "codex");
+    const cursor = statuses.find((entry) => entry.cli === "cursor");
     return {
       claude: Boolean(claude?.installed && (claude.authenticated || !claude.verified)),
       codex: Boolean(codex?.installed && (codex.authenticated || !codex.verified)),
+      cursor: Boolean(cursor?.installed && (cursor.authenticated || !cursor.verified)),
     };
   };
 

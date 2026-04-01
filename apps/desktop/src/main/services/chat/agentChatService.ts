@@ -10020,16 +10020,18 @@ export function createAgentChatService(args: {
       });
 
       if (!runtime.pooled) throw new Error("Cursor ACP connection not available");
-      const promptRes = await runtime.pooled.connection.prompt({
-        sessionId: runtime.acpSessionId!,
-        prompt: promptBlocks,
-      });
 
-      // Signal dispatch completion now that the real ACP prompt has been initiated.
+      // Signal dispatch completion before awaiting the prompt so the dispatch
+      // resolves as soon as the request is sent rather than after it returns.
       if (args.onDispatched) {
         args.onDispatched();
         args.onDispatched = undefined;
       }
+
+      const promptRes = await runtime.pooled.connection.prompt({
+        sessionId: runtime.acpSessionId!,
+        prompt: promptBlocks,
+      });
 
       await refreshCursorSessionState(managed, runtime, "after_prompt");
 

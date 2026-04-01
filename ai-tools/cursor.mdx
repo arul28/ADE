@@ -84,7 +84,7 @@ ADE shows Cursor's connection status in **Settings → AI**:
 
 <AccordionGroup>
   <Accordion title="Cursor not detected" icon="circle-question">
-    ADE checks standard installation paths for the Cursor agent executable. If Cursor is installed in a non-standard location, ensure the `agent` command (Cursor agent CLI) is available in your PATH. You can verify with `which agent` in a terminal.
+    ADE checks standard installation paths for the Cursor agent executable. If Cursor is installed in a non-standard location, ensure the `agent` command (Cursor agent CLI) is available in your PATH. You can verify by running `which agent` (macOS/Linux) or `where agent` (Windows) in a terminal. If neither works, try running `agent --version` directly — if the command is not found, add the directory containing the `agent` binary to your PATH environment variable.
   </Accordion>
   <Accordion title="Authentication failed" icon="lock">
     Open the Cursor desktop app and sign in. ADE detects Cursor's auth status through the CLI — it does not manage Cursor credentials directly.

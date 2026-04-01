@@ -241,7 +241,7 @@ function summarizeNativeControls(
   }
   if (provider === "cursor") {
     return {
-      ...(controls.cursorModeId !== undefined ? { cursorModeId: controls.cursorModeId } : {}),
+      ...(controls.cursorModeId != null ? { cursorModeId: controls.cursorModeId } : {}),
     };
   }
   return {
@@ -1835,6 +1835,35 @@ export function AgentChatPane({
     }
   }, [selectedSessionId, touchSession]);
 
+  const handleApproval = useCallback(async (
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+    responseText?: string | null,
+    answers?: Record<string, string | string[]>,
+  ) => {
+    if (!selectedSessionId) return;
+    try {
+      touchSession(selectedSessionId);
+      setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
+      await window.ade.agentChat.respondToInput({
+        sessionId: selectedSessionId,
+        itemId,
+        decision,
+        responseText,
+        ...(answers ? { answers } : {}),
+      });
+      setPendingInputsBySession((prev) => ({
+        ...prev,
+        [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId)
+      }));
+      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
+      await refreshSessions().catch(() => {});
+    } catch (approvalError) {
+      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
+      setError(approvalError instanceof Error ? approvalError.message : String(approvalError));
+    }
+  }, [refreshSessions, selectedSessionId, touchSession]);
+
   const approve = useCallback(async (
     decision: AgentChatApprovalDecision,
     responseText?: string | null,
@@ -1843,27 +1872,8 @@ export function AgentChatPane({
     if (!selectedSessionId) return;
     const request = pendingInputsBySession[selectedSessionId]?.[0];
     if (!request) return;
-    try {
-      touchSession(selectedSessionId);
-      setRespondingApprovalIds((prev) => new Set(prev).add(request.itemId));
-      await window.ade.agentChat.respondToInput({
-        sessionId: selectedSessionId,
-        itemId: request.itemId,
-        decision,
-        responseText,
-        ...(answers ? { answers } : {}),
-      });
-      setPendingInputsBySession((prev) => ({
-        ...prev,
-        [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== request.itemId)
-      }));
-      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(request.itemId); return next; });
-      await refreshSessions().catch(() => {});
-    } catch (approvalError) {
-      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(request.itemId); return next; });
-      setError(approvalError instanceof Error ? approvalError.message : String(approvalError));
-    }
-  }, [pendingInputsBySession, refreshSessions, selectedSessionId, touchSession]);
+    await handleApproval(request.itemId, decision, responseText, answers);
+  }, [handleApproval, pendingInputsBySession, selectedSessionId]);
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -2376,20 +2386,7 @@ export function AgentChatPane({
                 respondingApprovalIds={respondingApprovalIds}
                 pendingApprovalIds={pendingApprovalIds}
                 onApproval={(itemId, decision, responseText) => {
-                  if (!selectedSessionId) return;
-                  touchSession(selectedSessionId);
-                  setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
-                  window.ade.agentChat.respondToInput({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
-                    setPendingInputsBySession((prev) => ({
-                      ...prev,
-                      [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId)
-                    }));
-                    setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
-                    void refreshSessions().catch(() => {});
-                  }).catch((err) => {
-                    setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
-                    setError(err instanceof Error ? err.message : String(err));
-                  });
+                  void handleApproval(itemId, decision, responseText);
                 }}
               />
               {sessionDelta ? (

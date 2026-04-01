@@ -158,6 +158,14 @@ function deriveConfiguredCliModelIdsFromStatus(status: {
     .map((model) => model.id);
 }
 
+function isCursorModel(modelId: string): boolean {
+  return modelId.startsWith("cursor/");
+}
+
+function filterOutCursorModels(ids: string[]): string[] {
+  return ids.filter((id) => !isCursorModel(id));
+}
+
 function inferProviderFromModel(modelId: string): ExternalConflictResolverProvider {
   const descriptor = getModelById(modelId);
   return descriptor?.family === "anthropic" ? "claude" : "codex";
@@ -283,14 +291,14 @@ export function ResolverTerminalModal({
   const [phase, setPhase] = React.useState<ResolverModalPhase>("configure");
   const [resolverModel, setResolverModel] = React.useState(initialModel ?? "");
   const [resolverReasoningEffort, setResolverReasoningEffort] = React.useState<string | null>(initialReasoningEffort ?? "medium");
-  const [availableModelIds, setAvailableModelIds] = React.useState<string[]>(availableModelIdsProp ?? []);
-  const provider: ExternalConflictResolverProvider = inferProviderFromModel(resolverModel);
+  const [availableModelIds, setAvailableModelIds] = React.useState<string[]>(filterOutCursorModels(availableModelIdsProp ?? []));
+  const provider: ExternalConflictResolverProvider = isCursorModel(resolverModel) ? "claude" : inferProviderFromModel(resolverModel);
   const [permissionMode, setPermissionMode] = React.useState<AiPermissionMode>("guarded_edit");
   const [anticipatedRepoPath, setAnticipatedRepoPath] = React.useState<string | null>(null);
   const [keptRunningInBackground, setKeptRunningInBackground] = React.useState(false);
   const selectedModelDescriptor = getModelById(resolverModel);
   const reasoningTiers = selectedModelDescriptor?.reasoningTiers ?? [];
-  const effectiveAvailableModelIds = availableModelIdsProp?.length ? availableModelIdsProp : availableModelIds;
+  const effectiveAvailableModelIds = filterOutCursorModels(availableModelIdsProp?.length ? availableModelIdsProp : availableModelIds);
   const [postResolution, setPostResolution] = React.useState<PostResolutionBehavior>(() => ({
     autoCommit: postResolutionDefaults?.autoCommit === true,
     autoPush: postResolutionDefaults?.autoPush === true,
@@ -328,7 +336,7 @@ export function ResolverTerminalModal({
           window.ade.projectConfig.get(),
           window.ade.lanes.list({ includeStatus: false }).catch(() => []),
         ]);
-        const configuredCliModelIds = deriveConfiguredCliModelIdsFromStatus(s);
+        const configuredCliModelIds = filterOutCursorModels(deriveConfiguredCliModelIdsFromStatus(s));
         setAvailableModelIds(configuredCliModelIds);
         const effectiveAiRaw = snapshot.effective?.ai;
         const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
@@ -561,6 +569,10 @@ export function ResolverTerminalModal({
     if (!targetLaneId) return;
     if (!resolverModel) {
       setErrorMsg("Select a configured model before starting.");
+      return;
+    }
+    if (isCursorModel(resolverModel)) {
+      setErrorMsg("Cursor models are not supported in the resolver terminal. Please select a Claude or Codex model.");
       return;
     }
 

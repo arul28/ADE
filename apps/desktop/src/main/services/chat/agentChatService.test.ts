@@ -494,6 +494,7 @@ beforeEach(() => {
   mockState.cursorAcquireCalls = [];
   mockState.cursorNewSessionCalls = [];
   mockState.cursorPromptCalls = [];
+  vi.mocked(acquireCursorAcpConnection).mockClear();
   vi.mocked(streamText).mockReset();
   vi.mocked(generateText).mockReset();
   vi.mocked(unstable_v2_createSession).mockReset();
