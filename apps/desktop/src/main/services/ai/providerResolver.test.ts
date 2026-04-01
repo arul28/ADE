@@ -64,6 +64,9 @@ describe("providerResolver codex CLI", () => {
             env: {
               ADE_RUN_ID: "run-1",
             },
+            required: true,
+            startup_timeout_sec: 30,
+            tool_timeout_sec: 120,
           },
         },
       },
@@ -82,6 +85,9 @@ describe("providerResolver codex CLI", () => {
               env: {
                 ADE_RUN_ID: "run-1",
               },
+              required: true,
+              startup_timeout_sec: 30,
+              tool_timeout_sec: 120,
             },
           },
         }),
@@ -162,6 +168,9 @@ describe("providerResolver codex CLI", () => {
         command: "node",
         args: ["/tmp/mcp-server.js"],
         env: { ADE_RUN_ID: "run-1" },
+        required: true,
+        startup_timeout_sec: 30,
+        tool_timeout_sec: 120,
       },
     };
 
@@ -171,6 +180,9 @@ describe("providerResolver codex CLI", () => {
         command: "node",
         args: ["/tmp/mcp-server.js"],
         env: { ADE_RUN_ID: "run-1" },
+        required: true,
+        startup_timeout_sec: 30,
+        tool_timeout_sec: 120,
       },
     });
 

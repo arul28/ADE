@@ -332,7 +332,7 @@ describe("launchPrIssueResolutionChat", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("uses workflow PR tools in the prompt for Codex launches", async () => {
+  it("uses ADE MCP PR tools in the prompt for Codex launches", async () => {
     const { deps, pr } = makeDeps();
 
     const result = await previewPrIssueResolutionPrompt(deps as any, {
@@ -344,11 +344,11 @@ describe("launchPrIssueResolutionChat", () => {
       additionalInstructions: null,
     });
 
-    expect(result.prompt).toContain("Runtime: Codex workflow chat with ADE PR tools");
-    expect(result.prompt).toContain("prRefreshIssueInventory");
-    expect(result.prompt).toContain("prGetReviewComments");
-    expect(result.prompt).toContain("prResolveReviewThread");
-    expect(result.prompt).not.toContain("pr_refresh_issue_inventory");
+    expect(result.prompt).toContain("Runtime: Codex chat via ADE MCP");
+    expect(result.prompt).toContain("pr_refresh_issue_inventory");
+    expect(result.prompt).toContain("pr_get_review_comments");
+    expect(result.prompt).toContain("pr_resolve_review_thread");
+    expect(result.prompt).not.toContain("prRefreshIssueInventory");
   });
 
   it("creates a normal work chat session and sends the composed prompt", async () => {
@@ -385,14 +385,14 @@ describe("launchPrIssueResolutionChat", () => {
     });
   });
 
-  it("fails fast when the workflow chat does not expose required PR tools", async () => {
+  it("fails fast when an API workflow chat does not expose required PR tools", async () => {
     const { deps, pr, createSession, sendMessage } = makeDeps();
     deps.agentChatService.previewSessionToolNames = vi.fn(() => ["prGetChecks"]);
 
     await expect(launchPrIssueResolutionChat(deps as any, {
       prId: pr.id,
       scope: "checks",
-      modelId: "openai/gpt-5.4-codex",
+      modelId: "openai/gpt-5.4",
       reasoning: "high",
       permissionMode: "guarded_edit",
       additionalInstructions: null,
@@ -479,7 +479,7 @@ describe("launchPrIssueResolutionChat", () => {
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-claude",
       executionMode: "subagents",
-      text: expect.stringContaining("Runtime: Claude workflow chat with ADE PR tools"),
+      text: expect.stringContaining("Runtime: Claude chat via ADE MCP"),
     }));
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("Current unresolved review threads (detailed context)"),

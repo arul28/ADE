@@ -54,6 +54,12 @@ export function buildCodingAgentSystemPrompt(args: {
     || name === "prRerunFailedChecks"
     || name === "prReplyToReviewThread"
     || name === "prResolveReviewThread"
+    || name === "pr_get_checks"
+    || name === "pr_get_review_comments"
+    || name === "pr_refresh_issue_inventory"
+    || name === "pr_rerun_failed_checks"
+    || name === "pr_reply_to_review_thread"
+    || name === "pr_resolve_review_thread"
   ));
   const hasPrIssueTools = prIssueToolNames.length > 0;
 

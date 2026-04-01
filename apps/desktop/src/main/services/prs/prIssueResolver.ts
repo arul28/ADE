@@ -342,18 +342,28 @@ function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | un
     return defaultPrIssueResolutionRuntimeCapabilities();
   }
 
-  if (descriptor.family === "openai") {
+  if (descriptor.isCliWrapped && descriptor.family === "openai") {
     return {
-      ...defaultPrIssueResolutionRuntimeCapabilities(),
-      runtimeLabel: "Codex workflow chat with ADE PR tools",
+      refreshInventoryTool: "pr_refresh_issue_inventory",
+      getReviewCommentsTool: "pr_get_review_comments",
+      rerunChecksTool: "pr_rerun_failed_checks",
+      replyThreadTool: "pr_reply_to_review_thread",
+      resolveThreadTool: "pr_resolve_review_thread",
+      runtimeLabel: "Codex chat via ADE MCP",
+      toolSurface: "ade_mcp",
       executionMode: "parallel",
     };
   }
 
-  if (descriptor.family === "anthropic") {
+  if (descriptor.isCliWrapped && descriptor.family === "anthropic") {
     return {
-      ...defaultPrIssueResolutionRuntimeCapabilities(),
-      runtimeLabel: "Claude workflow chat with ADE PR tools",
+      refreshInventoryTool: "pr_refresh_issue_inventory",
+      getReviewCommentsTool: "pr_get_review_comments",
+      rerunChecksTool: "pr_rerun_failed_checks",
+      replyThreadTool: "pr_reply_to_review_thread",
+      resolveThreadTool: "pr_resolve_review_thread",
+      runtimeLabel: "Claude chat via ADE MCP",
+      toolSurface: "ade_mcp",
       executionMode: "subagents",
     };
   }
@@ -666,7 +676,7 @@ export async function launchPrIssueResolutionChat(
   const reasoningEffort = args.reasoning?.trim() || undefined;
   const requiredToolNames = listRequiredRuntimeTools(prepared.runtimeCapabilities);
 
-  if (requiredToolNames.length > 0) {
+  if (requiredToolNames.length > 0 && prepared.runtimeCapabilities.toolSurface === "workflow_tools") {
     const availableToolNames = deps.agentChatService.previewSessionToolNames({
       laneId: prepared.lane.id,
       sessionProfile: "workflow",

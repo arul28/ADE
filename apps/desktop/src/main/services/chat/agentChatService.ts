@@ -2821,7 +2821,14 @@ export function createAgentChatService(args: {
       ade: {
         command: launch.command,
         args: launch.cmdArgs,
-        env: launch.env
+        env: launch.env,
+        ...(provider === "codex"
+          ? {
+              required: true,
+              startup_timeout_sec: 30,
+              tool_timeout_sec: 120,
+            }
+          : {}),
       }
     }) ?? {};
   };
