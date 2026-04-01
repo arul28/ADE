@@ -516,6 +516,9 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     "",
     "Requirements",
     "- Fix all valid issues in the selected scope, not just the first one.",
+    "- If you make local code or git changes that should affect the PR, do not finish with local-only state. Commit the changes and push the PR branch before you stop.",
+    "- If you only resolve stale review threads or other PR metadata with ADE tools and no local git changes are needed, say that clearly in your final note.",
+    "- If you cannot safely commit or push the necessary changes, stop with a concrete blocker instead of exiting as if the round succeeded.",
   );
 
   if (runtimeCapabilities.toolSurface === "prompt_only") {

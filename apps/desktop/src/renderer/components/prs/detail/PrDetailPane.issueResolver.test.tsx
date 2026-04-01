@@ -5,6 +5,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  GitUpstreamSyncStatus,
   IssueInventoryItem,
   LaneSummary,
   PrActivityEvent,
@@ -131,7 +132,7 @@ function makePr(): PrWithConflicts {
   };
 }
 
-function makeLane(): LaneSummary {
+function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   return {
     id: "lane-1",
     name: "feature/pr-80",
@@ -153,6 +154,7 @@ function makeLane(): LaneSummary {
     folder: null,
     createdAt: "2026-03-23T10:00:00.000Z",
     archivedAt: null,
+    ...overrides,
   };
 }
 
@@ -220,17 +222,29 @@ function renderPane(args: {
   checks: PrCheck[];
   reviewThreads: PrReviewThread[];
   lanes?: LaneSummary[];
+  laneStatusOverrides?: Partial<LaneSummary["status"]>;
   onNavigate?: (path: string) => void;
   activity?: PrActivityEvent[];
   statusOverrides?: Partial<PrStatus>;
   mergeMethod?: "merge" | "squash" | "rebase";
   convergenceState?: PrConvergenceState | null;
   sessionStatus?: TerminalSessionStatus;
+  syncStatus?: Partial<GitUpstreamSyncStatus>;
   inventorySnapshot?: {
     items: IssueInventoryItem[];
     convergence: { currentRound: number; maxRounds: number; totalNew: number; totalSentToAgent: number; isConverging: boolean };
   };
 }) {
+  const laneList = args.lanes ?? [makeLane({
+    status: {
+      dirty: false,
+      ahead: 0,
+      behind: 0,
+      remoteBehind: -1,
+      rebaseInProgress: false,
+      ...args.laneStatusOverrides,
+    },
+  })];
   const issueResolutionStart = vi.fn().mockResolvedValue({
     sessionId: "session-1",
     laneId: "lane-1",
@@ -248,6 +262,15 @@ function renderPane(args: {
     convergence: args.inventorySnapshot?.convergence ?? { currentRound: 0, maxRounds: 5, totalNew: 0, totalSentToAgent: 0, isConverging: false },
   });
   const issueInventoryReset = vi.fn().mockResolvedValue(undefined);
+  const getSyncStatus = vi.fn().mockResolvedValue({
+    hasUpstream: true,
+    upstreamRef: "origin/feature/pr-80",
+    ahead: 0,
+    behind: 0,
+    diverged: false,
+    recommendedAction: "none",
+    ...args.syncStatus,
+  } satisfies GitUpstreamSyncStatus);
   const getSession = vi.fn().mockResolvedValue(args.sessionStatus ? {
     id: "session-1",
     laneId: "lane-1",
@@ -344,6 +367,12 @@ function renderPane(args: {
         land,
         openInGitHub: vi.fn().mockResolvedValue(undefined),
       },
+      lanes: {
+        list: vi.fn().mockResolvedValue(laneList),
+      },
+      git: {
+        getSyncStatus,
+      },
       app: {
         openExternal: vi.fn(),
         writeClipboardText,
@@ -367,6 +396,7 @@ function renderPane(args: {
     issueInventoryReset,
     getChecks,
     getStatus,
+    getSyncStatus,
     getSession,
     onAiResolutionEvent,
     emitAiResolutionEvent: (event: PrAiResolutionEventPayload) => {
@@ -386,7 +416,7 @@ function renderPane(args: {
         reviews={[]}
         comments={[]}
         detailBusy={false}
-        lanes={args.lanes ?? [makeLane()]}
+        lanes={laneList}
         mergeMethod={args.mergeMethod ?? "squash"}
         onRefresh={onRefresh}
         onNavigate={args.onNavigate ?? vi.fn()}
@@ -664,6 +694,69 @@ describe("PrDetailPane issue resolver CTA", () => {
         pauseReason: "Agent session stopped before completion.",
       }));
     });
+  });
+
+  it("pauses auto-converge when a completed agent session leaves unpublished commits", async () => {
+    const convergenceState = makeConvergenceState({
+      autoConvergeEnabled: true,
+      status: "running",
+      pollerStatus: "idle",
+      currentRound: 2,
+      activeSessionId: "session-1",
+      activeLaneId: "lane-1",
+      activeHref: "/work?laneId=lane-1&sessionId=session-1",
+      lastStartedAt: "2026-03-23T12:29:00.000Z",
+    });
+
+    const { saveConvergenceState, getSyncStatus } = renderPane({
+      checks: [makeCheck()],
+      reviewThreads: [],
+      convergenceState,
+      sessionStatus: "completed",
+      syncStatus: { ahead: 1, recommendedAction: "push" },
+    });
+
+    await waitFor(() => {
+      expect(getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
+      expect(saveConvergenceState).toHaveBeenCalledWith("pr-80", expect.objectContaining({
+        status: "paused",
+        pollerStatus: "paused",
+        activeSessionId: null,
+        pauseReason: expect.stringContaining("not pushed to the PR branch"),
+      }));
+    });
+  });
+
+  it("marks a manual convergence round as failed when the agent exits with unpushed commits", async () => {
+    const convergenceState = makeConvergenceState({
+      autoConvergeEnabled: false,
+      status: "running",
+      pollerStatus: "idle",
+      currentRound: 1,
+      activeSessionId: "session-1",
+      activeLaneId: "lane-1",
+      activeHref: "/work?laneId=lane-1&sessionId=session-1",
+      lastStartedAt: "2026-03-23T12:29:00.000Z",
+    });
+
+    const { saveConvergenceState } = renderPane({
+      checks: [makeCheck()],
+      reviewThreads: [],
+      convergenceState,
+      sessionStatus: "completed",
+      syncStatus: { ahead: 1, recommendedAction: "push" },
+    });
+
+    await waitFor(() => {
+      expect(saveConvergenceState).toHaveBeenCalledWith("pr-80", expect.objectContaining({
+        status: "failed",
+        pollerStatus: "stopped",
+        activeSessionId: null,
+        errorMessage: expect.stringContaining("not pushed to the PR branch"),
+      }));
+    });
+
+    expect(screen.getByText(/not pushed to the PR branch/i)).toBeTruthy();
   });
 
   it("restarts polling from a restored waiting-for-checks runtime", async () => {

@@ -43,6 +43,8 @@ const TRACE_EXTENSIONS = /\.(zip|trace)$/i;
 const LOG_EXTENSIONS = /\.(log|txt|ndjson|jsonl)$/i;
 const ARTIFACT_FIELD_NAMES =
   /screenshot|image|proof|recording|video|capture|snapshot|trace|console|log/i;
+const EMBEDDED_ARTIFACT_CONTEXT_FIELDS = /stdout|stderr|output|result|response|trace|console|log/i;
+const TEXTUAL_CONTENT_FIELD_NAMES = /body|comment|content|text|markdown|description|summary|headline|title|html|note/i;
 const TRACE_FIELD_NAMES = /trace/i;
 const LOG_FIELD_NAMES = /console|log/i;
 const BASE64_IMAGE_URI = /^data:image\/[a-z+]+;base64,/i;
@@ -262,6 +264,11 @@ function scanResultForArtifacts(
   if (depth > 10) return;
 
   if (typeof value === "string") {
+    const fieldLooksTextual = fieldName != null
+      && TEXTUAL_CONTENT_FIELD_NAMES.test(fieldName)
+      && !ARTIFACT_FIELD_NAMES.test(fieldName);
+    if (fieldLooksTextual) return;
+
     // Check for base64 data URIs
     const exactCandidate = looksLikeDirectArtifactLocator(value)
       ? buildCandidateFromString(value.trim(), fieldName)
@@ -271,7 +278,12 @@ function scanResultForArtifacts(
       return;
     }
 
-    const embeddedMatches = value.match(EMBEDDED_ARTIFACT_PATTERN) ?? [];
+    const allowEmbeddedMatches = fieldName == null
+      || ARTIFACT_FIELD_NAMES.test(fieldName)
+      || EMBEDDED_ARTIFACT_CONTEXT_FIELDS.test(fieldName);
+    const embeddedMatches = allowEmbeddedMatches
+      ? (value.match(EMBEDDED_ARTIFACT_PATTERN) ?? [])
+      : [];
     if (embeddedMatches.length > 0) {
       for (const match of embeddedMatches) {
         const embeddedCandidate = buildCandidateFromString(match, fieldName);

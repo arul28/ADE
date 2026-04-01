@@ -919,6 +919,49 @@ export function PrDetailPane({
     }
   }, []);
 
+  const getConvergencePublishBlocker = React.useCallback(async (sessionId: string): Promise<string | null> => {
+    const sessionDetailPromise = typeof window.ade?.sessions?.get === "function"
+      ? window.ade.sessions.get(sessionId).catch(() => null)
+      : Promise.resolve(null);
+    const syncStatusPromise = typeof window.ade?.git?.getSyncStatus === "function"
+      ? window.ade.git.getSyncStatus({ laneId: pr.laneId }).catch(() => null)
+      : Promise.resolve(null);
+    const laneListPromise = typeof window.ade?.lanes?.list === "function"
+      ? window.ade.lanes.list({ includeStatus: true }).catch(() => lanes)
+      : Promise.resolve(lanes);
+    const [sessionDetail, syncStatus, freshLanes] = await Promise.all([
+      sessionDetailPromise,
+      syncStatusPromise,
+      laneListPromise,
+    ]);
+    const lane = freshLanes.find((entry) => entry.id === pr.laneId) ?? lanes.find((entry) => entry.id === pr.laneId) ?? null;
+    const hasDirtyChanges = Boolean(lane?.status.dirty);
+    const sessionHeadChanged = Boolean(sessionDetail?.headShaStart)
+      && Boolean(sessionDetail?.headShaEnd)
+      && sessionDetail?.headShaStart !== sessionDetail?.headShaEnd;
+    const hasUnpublishedCommits = syncStatus
+      ? syncStatus.ahead > 0
+        || syncStatus.recommendedAction === "force_push_lease"
+        || (
+          !syncStatus.hasUpstream
+          && sessionHeadChanged
+        )
+      : false;
+
+    if (!hasDirtyChanges && !hasUnpublishedCommits) return null;
+
+    const pendingStates: string[] = [];
+    if (hasDirtyChanges) pendingStates.push("uncommitted changes");
+    if (hasUnpublishedCommits) {
+      pendingStates.push(
+        syncStatus?.recommendedAction === "force_push_lease"
+          ? "commits that still need a force push"
+          : "commits that are not pushed to the PR branch",
+      );
+    }
+    return `Agent session exited, but the lane still has ${pendingStates.join(" and ")}. Commit and push the lane before continuing.`;
+  }, [lanes, pr.laneId]);
+
   const handleConvergenceSessionTerminal = React.useCallback(async (
     args: { sessionId: string; status: "completed" | "failed" | "cancelled" | "disposed"; message?: string | null },
   ) => {
@@ -942,6 +985,38 @@ export function PrDetailPane({
     await refreshDetailSurface({ includeInventory: true }).catch(() => {});
 
     if (args.status === "completed") {
+      const publishBlocker = await getConvergencePublishBlocker(args.sessionId).catch(() => null);
+      if (publishBlocker) {
+        if (autoConvergeRef.current) {
+          stopAutoConvergePoller();
+          setConvergencePauseReason(publishBlocker);
+          setAutoConvergeWaitState({ phase: "paused", reason: publishBlocker });
+          saveConvergenceRuntime({
+            status: "paused",
+            pollerStatus: "paused",
+            activeSessionId: null,
+            activeHref,
+            pauseReason: publishBlocker,
+            errorMessage: publishBlocker,
+            lastPausedAt: now,
+            lastStoppedAt: now,
+          });
+        } else {
+          setActionError(publishBlocker);
+          saveConvergenceRuntime({
+            status: "failed",
+            pollerStatus: "stopped",
+            activeSessionId: null,
+            activeHref,
+            pauseReason: null,
+            errorMessage: publishBlocker,
+            lastStoppedAt: now,
+          });
+          setAutoConvergeWaitState({ phase: "idle" });
+        }
+        return;
+      }
+
       if (autoConvergeRef.current) {
         saveConvergenceRuntime({
           status: "polling",
@@ -997,7 +1072,7 @@ export function PrDetailPane({
       lastStoppedAt: now,
     });
     setAutoConvergeWaitState({ phase: "idle" });
-  }, [refreshDetailSurface, saveConvergenceRuntime, stopAutoConvergePoller, stopConvergenceSessionPoller]);
+  }, [getConvergencePublishBlocker, refreshDetailSurface, saveConvergenceRuntime, stopAutoConvergePoller, stopConvergenceSessionPoller]);
 
   const startAutoConvergePoller = React.useCallback(() => {
     stopAutoConvergePoller();
