@@ -2811,6 +2811,7 @@ export function createAgentChatService(args: {
     computerUsePolicy?: ComputerUsePolicy | null,
   ): Record<string, Record<string, unknown>> => {
     const launch = resolveAdeMcpServerLaunch({
+      projectRoot,
       workspaceRoot,
       runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole,
@@ -2865,6 +2866,7 @@ export function createAgentChatService(args: {
     computerUsePolicy?: ComputerUsePolicy | null;
   }) => {
     const { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath } = resolveAdeMcpServerLaunch({
+      projectRoot,
       workspaceRoot: args.workspaceRoot,
       runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole: args.defaultRole,

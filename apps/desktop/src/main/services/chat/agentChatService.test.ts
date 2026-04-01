@@ -1169,7 +1169,7 @@ describe("createAgentChatService", () => {
       expect(secondUserContent).not.toContain("[ADE launch directive]");
     });
 
-    it("roots Codex MCP launches in the selected lane worktree", async () => {
+    it("roots Codex MCP launches in the selected lane worktree while keeping the desktop project root", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
       const laneRoot = fs.realpathSync(laneRootPath);
@@ -1194,9 +1194,14 @@ describe("createAgentChatService", () => {
       const workspaceRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
         .map(([args]) => (args as { workspaceRoot?: string }).workspaceRoot)
         .filter((value): value is string => typeof value === "string");
+      const projectRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
+        .map(([args]) => (args as { projectRoot?: string }).projectRoot)
+        .filter((value): value is string => typeof value === "string");
 
       expect(workspaceRoots.length).toBeGreaterThan(0);
       expect(new Set(workspaceRoots)).toEqual(new Set([laneRoot]));
+      expect(projectRoots.length).toBeGreaterThan(0);
+      expect(new Set(projectRoots)).toEqual(new Set([tmpRoot]));
     });
 
     it("executes identity-hosted unified turns from the selected execution lane", async () => {
