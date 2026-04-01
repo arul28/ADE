@@ -69,7 +69,7 @@ export type PrConvergencePanelProps = {
   onPipelineSettingsChange: (settings: Partial<PipelineSettings>) => void;
 };
 
-type ItemGroupKey = IssueInventoryState | "sent_to_agent";
+type ItemGroupKey = IssueInventoryState;
 
 const SOURCE_META: Record<string, { label: string; color: string }> = {
   coderabbit: { label: "CodeRabbit", color: "#22C55E" },
@@ -90,6 +90,13 @@ const STATE_META: Record<ItemGroupKey, { label: string; accent: string; icon: Re
 
 const STATE_ORDER: ItemGroupKey[] = ["escalated", "new", "sent_to_agent", "fixed", "dismissed"];
 
+const POLLER_PHASE_LABELS: Record<string, string> = {
+  waiting_checks: "Waiting for checks",
+  waiting_comments: "Waiting for comments",
+  paused: "Polling paused",
+  polling: "Polling",
+};
+
 const STATUS_META: Record<PathToMergeRuntimeState["phase"], { label: string; color: string; background: string; border: string }> = {
   idle: { label: "Idle", color: COLORS.textMuted, background: "rgba(255,255,255,0.03)", border: COLORS.border },
   launching: { label: "Launching", color: COLORS.warning, background: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.25)" },
@@ -102,10 +109,6 @@ const STATUS_META: Record<PathToMergeRuntimeState["phase"], { label: string; col
   error: { label: "Error", color: COLORS.danger, background: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.25)" },
 };
 
-function itemState(item: IssueInventoryItem): ItemGroupKey {
-  return item.state;
-}
-
 function groupItems(items: IssueInventoryItem[]): Record<ItemGroupKey, IssueInventoryItem[]> {
   const grouped: Record<ItemGroupKey, IssueInventoryItem[]> = {
     new: [],
@@ -115,7 +118,7 @@ function groupItems(items: IssueInventoryItem[]): Record<ItemGroupKey, IssueInve
     escalated: [],
   };
   for (const item of items) {
-    grouped[itemState(item)].push(item);
+    grouped[item.state].push(item);
   }
   return grouped;
 }
@@ -459,11 +462,18 @@ function SectionHeader({
   );
 }
 
+function checkColor(check: PrCheck): string {
+  if (check.conclusion === "success") return COLORS.success;
+  if (check.conclusion === "failure") return COLORS.danger;
+  if (check.status === "in_progress" || check.status === "queued") return COLORS.warning;
+  return COLORS.textDim;
+}
+
 function CheckRow({ check }: { check: PrCheck }) {
   const isPassing = check.conclusion === "success";
   const isFailing = check.conclusion === "failure";
   const isRunning = check.status === "in_progress" || check.status === "queued";
-  const color = isPassing ? COLORS.success : isFailing ? COLORS.danger : isRunning ? COLORS.warning : COLORS.textDim;
+  const color = checkColor(check);
 
   return (
     <div
@@ -590,13 +600,14 @@ export function PrConvergencePanel({
   const hasNewItems = grouped.new.length > 0;
   const sessionActive = runtime.phase === "launching" || runtime.phase === "working" || runtime.phase === "polling";
   const actionDisabled = busy || sessionActive || !hasNewItems;
-  const actionLabel = busy || sessionActive
-    ? runtime.phase === "launching"
-      ? "Launching..."
-      : "Working..."
-    : runtime.autoConverge
-      ? "Start Next Round"
-      : "Launch Agent";
+  let actionLabel: string;
+  if (busy || sessionActive) {
+    actionLabel = runtime.phase === "launching" ? "Launching..." : "Working...";
+  } else if (runtime.autoConverge) {
+    actionLabel = "Start Next Round";
+  } else {
+    actionLabel = "Launch Agent";
+  }
   const actionIcon = busy || sessionActive ? <CircleNotch size={13} weight="bold" style={{ animation: "ptmSpin 1s linear infinite" }} /> : <ArrowsClockwise size={13} weight="bold" />;
 
   return (
@@ -834,78 +845,52 @@ export function PrConvergencePanel({
             </div>
 
             {!runtime.autoConverge ? (
-              <>
-                <PrResolverLaunchControls
-                  modelId={modelId}
-                  reasoningEffort={reasoningEffort}
-                  permissionMode={permissionMode}
-                  onModelChange={onModelChange}
-                  onReasoningEffortChange={onReasoningEffortChange}
-                  onPermissionModeChange={onPermissionModeChange}
-                  disabled={busy}
-                />
-
-                <textarea
-                  value={additionalInstructions}
-                  onChange={(e) => onAdditionalInstructionsChange(e.target.value)}
-                  placeholder="Add instructions for this round..."
-                  disabled={busy}
-                  style={{
-                    width: "100%",
-                    minHeight: 96,
-                    resize: "vertical",
-                    padding: 10,
-                    borderRadius: 8,
-                    border: `1px solid ${COLORS.border}`,
-                    background: "rgba(255,255,255,0.02)",
-                    color: COLORS.textPrimary,
-                    fontFamily: SANS_FONT,
-                    fontSize: 12,
-                    lineHeight: 1.6,
-                    outline: "none",
-                    boxSizing: "border-box",
-                  }}
-                />
-              </>
+              <PrResolverLaunchControls
+                modelId={modelId}
+                reasoningEffort={reasoningEffort}
+                permissionMode={permissionMode}
+                onModelChange={onModelChange}
+                onReasoningEffortChange={onReasoningEffortChange}
+                onPermissionModeChange={onPermissionModeChange}
+                disabled={busy}
+              />
             ) : (
-              <>
-                <PrPipelineSettings
-                  settings={pipelineSettings}
-                  onSettingsChange={onPipelineSettingsChange}
-                  autoConverge={runtime.autoConverge}
-                  onAutoConvergeChange={onAutoConvergeChange}
-                  modelId={modelId}
-                  reasoningEffort={reasoningEffort}
-                  permissionMode={permissionMode}
-                  onModelChange={onModelChange}
-                  onReasoningEffortChange={onReasoningEffortChange}
-                  onPermissionModeChange={onPermissionModeChange}
-                  disabled={busy}
-                />
-
-                <textarea
-                  value={additionalInstructions}
-                  onChange={(e) => onAdditionalInstructionsChange(e.target.value)}
-                  placeholder="Additional instructions for this round..."
-                  disabled={busy}
-                  style={{
-                    width: "100%",
-                    minHeight: 92,
-                    resize: "vertical",
-                    padding: 10,
-                    borderRadius: 8,
-                    border: `1px solid ${COLORS.border}`,
-                    background: "rgba(255,255,255,0.02)",
-                    color: COLORS.textPrimary,
-                    fontFamily: SANS_FONT,
-                    fontSize: 12,
-                    lineHeight: 1.6,
-                    outline: "none",
-                    boxSizing: "border-box",
-                  }}
-                />
-              </>
+              <PrPipelineSettings
+                settings={pipelineSettings}
+                onSettingsChange={onPipelineSettingsChange}
+                autoConverge={runtime.autoConverge}
+                onAutoConvergeChange={onAutoConvergeChange}
+                modelId={modelId}
+                reasoningEffort={reasoningEffort}
+                permissionMode={permissionMode}
+                onModelChange={onModelChange}
+                onReasoningEffortChange={onReasoningEffortChange}
+                onPermissionModeChange={onPermissionModeChange}
+                disabled={busy}
+              />
             )}
+
+            <textarea
+              value={additionalInstructions}
+              onChange={(e) => onAdditionalInstructionsChange(e.target.value)}
+              placeholder={runtime.autoConverge ? "Additional instructions for this round..." : "Add instructions for this round..."}
+              disabled={busy}
+              style={{
+                width: "100%",
+                minHeight: 94,
+                resize: "vertical",
+                padding: 10,
+                borderRadius: 8,
+                border: `1px solid ${COLORS.border}`,
+                background: "rgba(255,255,255,0.02)",
+                color: COLORS.textPrimary,
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                lineHeight: 1.6,
+                outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -916,13 +901,7 @@ export function PrConvergencePanel({
                 )}
                 {runtime.pollerPhase !== "idle" ? (
                   <span style={inlineBadge(COLORS.warning, { background: "rgba(245,158,11,0.08)" })}>
-                    {runtime.pollerPhase === "waiting_checks"
-                      ? "Waiting for checks"
-                      : runtime.pollerPhase === "waiting_comments"
-                        ? "Waiting for comments"
-                        : runtime.pollerPhase === "paused"
-                          ? "Polling paused"
-                          : "Polling"}
+                    {POLLER_PHASE_LABELS[runtime.pollerPhase] ?? "Polling"}
                   </span>
                 ) : null}
               </div>

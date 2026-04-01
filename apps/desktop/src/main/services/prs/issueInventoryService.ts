@@ -426,10 +426,10 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
   function saveConvergenceRuntimeState(prId: string, state: Partial<ConvergenceRuntimeState>): ConvergenceRuntimeState {
     const existing = readConvergenceRuntime(prId);
     const merged: ConvergenceRuntimeState = {
-      ...(existing ?? buildDefaultRuntimeState(prId)),
+      ...existing,
       ...state,
       prId,
-      createdAt: existing?.createdAt ?? nowIso(),
+      createdAt: existing.createdAt,
       updatedAt: nowIso(),
     };
 
@@ -555,24 +555,26 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         const source = detectSource(author);
         const existing = existingByExternalId.get(externalId) ?? null;
 
+        const threadData = {
+          source,
+          type: "review_thread" as const,
+          filePath: thread.path,
+          line: thread.line,
+          severity: extractSeverity(body ?? ""),
+          headline: extractHeadline(body, `Review thread at ${thread.path ?? "unknown"}`),
+          body,
+          author,
+          url: thread.url ?? latestComment?.url ?? null,
+          threadCommentCount: commentCount,
+          threadLatestCommentId: latestComment?.id ?? existing?.thread_latest_comment_id ?? null,
+          threadLatestCommentAuthor: author,
+          threadLatestCommentAt: latestComment?.updatedAt ?? latestComment?.createdAt ?? thread.updatedAt,
+          threadLatestCommentSource: source,
+        };
+
         if (thread.isResolved || thread.isOutdated) {
           if (!existing) continue;
-          upsertItem(prId, externalId, {
-            source,
-            type: "review_thread",
-            filePath: thread.path,
-            line: thread.line,
-            severity: extractSeverity(body ?? ""),
-            headline: extractHeadline(body, `Review thread at ${thread.path ?? "unknown"}`),
-            body,
-            author,
-            url: thread.url ?? latestComment?.url ?? null,
-            threadCommentCount: commentCount,
-            threadLatestCommentId: latestComment?.id ?? existing.thread_latest_comment_id,
-            threadLatestCommentAuthor: author,
-            threadLatestCommentAt: latestComment?.updatedAt ?? latestComment?.createdAt ?? thread.updatedAt,
-            threadLatestCommentSource: source,
-          }, {
+          upsertItem(prId, externalId, threadData, {
             state: "fixed",
             round: existing.round,
             dismissReason: null,
@@ -588,22 +590,7 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
           );
         const shouldReopen = !existing || (threadChanged && source !== "ade");
 
-        upsertItem(prId, externalId, {
-          source,
-          type: "review_thread",
-          filePath: thread.path,
-          line: thread.line,
-          severity: extractSeverity(body ?? ""),
-          headline: extractHeadline(body, `Review thread at ${thread.path ?? "unknown"}`),
-          body,
-          author,
-          url: thread.url ?? latestComment?.url ?? null,
-          threadCommentCount: commentCount,
-          threadLatestCommentId: latestComment?.id ?? existing?.thread_latest_comment_id ?? null,
-          threadLatestCommentAuthor: author,
-          threadLatestCommentAt: latestComment?.updatedAt ?? latestComment?.createdAt ?? thread.updatedAt,
-          threadLatestCommentSource: source,
-        }, shouldReopen ? {
+        upsertItem(prId, externalId, threadData, shouldReopen ? {
           state: "new",
           round: existing?.round ?? 0,
           dismissReason: null,

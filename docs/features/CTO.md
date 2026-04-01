@@ -249,7 +249,7 @@ The CTO is a persistent ADE operator with a broad internal tool surface in chat.
 - lanes
 - missions
 - managed processes
-- pull requests
+- pull requests and PR convergence (read/edit pipeline settings and runtime state, start/stop convergence rounds, inspect issue inventory)
 - files and context exports
 - worker agents
 - Linear workflow state

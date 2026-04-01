@@ -2325,6 +2325,16 @@ create table if not exists pr_issue_inventory (
       foreign key(pr_id) references pull_requests(id) on delete cascade
     );
 
+alter table pr_issue_inventory add column thread_comment_count integer;
+
+alter table pr_issue_inventory add column thread_latest_comment_id text;
+
+alter table pr_issue_inventory add column thread_latest_comment_author text;
+
+alter table pr_issue_inventory add column thread_latest_comment_at text;
+
+alter table pr_issue_inventory add column thread_latest_comment_source text;
+
 create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state);
 
 create table if not exists pr_pipeline_settings (
@@ -2333,6 +2343,26 @@ create table if not exists pr_pipeline_settings (
       merge_method text not null default 'repo_default',
       max_rounds integer not null default 5,
       on_rebase_needed text not null default 'pause',
+      updated_at text not null,
+      foreign key(pr_id) references pull_requests(id) on delete cascade
+    );
+
+create table if not exists pr_convergence_state (
+      pr_id text primary key,
+      auto_converge_enabled integer not null default 0,
+      status text not null default 'idle',
+      poller_status text not null default 'idle',
+      current_round integer not null default 0,
+      active_session_id text,
+      active_lane_id text,
+      active_href text,
+      pause_reason text,
+      error_message text,
+      last_started_at text,
+      last_polled_at text,
+      last_paused_at text,
+      last_stopped_at text,
+      created_at text not null,
       updated_at text not null,
       foreign key(pr_id) references pull_requests(id) on delete cascade
     );

@@ -271,27 +271,27 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     return state;
   }, []);
 
+  const requirePrId = useCallback((prId: string): string => {
+    const normalized = String(prId ?? "").trim();
+    if (!normalized) throw new Error("PR id is required.");
+    return normalized;
+  }, []);
+
   const loadConvergenceState = useCallback(async (prId: string, options?: { force?: boolean }): Promise<PrConvergenceState> => {
-    const normalizedPrId = String(prId ?? "").trim();
-    if (!normalizedPrId) {
-      throw new Error("PR id is required.");
-    }
+    const normalizedPrId = requirePrId(prId);
     if (!options?.force) {
       const cached = convergenceStatesByPrIdRef.current[normalizedPrId];
       if (cached) return cached;
     }
     const runtime = await window.ade.prs.convergenceStateGet(normalizedPrId);
     return storeConvergenceState(runtime);
-  }, [storeConvergenceState]);
+  }, [requirePrId, storeConvergenceState]);
 
   const saveConvergenceState = useCallback(async (prId: string, state: Partial<PrConvergenceState>): Promise<PrConvergenceState> => {
-    const normalizedPrId = String(prId ?? "").trim();
-    if (!normalizedPrId) {
-      throw new Error("PR id is required.");
-    }
+    const normalizedPrId = requirePrId(prId);
     const runtime = await window.ade.prs.convergenceStateSave(normalizedPrId, state);
     return storeConvergenceState(runtime);
-  }, [storeConvergenceState]);
+  }, [requirePrId, storeConvergenceState]);
 
   const resetConvergenceState = useCallback(async (prId: string): Promise<void> => {
     const normalizedPrId = String(prId ?? "").trim();

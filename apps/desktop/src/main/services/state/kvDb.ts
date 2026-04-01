@@ -3004,7 +3004,6 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   `);
 }
 
-
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {
   db.enableLoadExtension(true);
   db.loadExtension(extensionPath);

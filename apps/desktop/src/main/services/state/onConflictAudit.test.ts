@@ -92,6 +92,11 @@ const APPROVED_CONFLICT_TARGETS: ConflictTarget[] = [
   },
   {
     file: "src/main/services/prs/issueInventoryService.ts",
+    table: "pr_convergence_state",
+    columns: "pr_id",
+  },
+  {
+    file: "src/main/services/prs/issueInventoryService.ts",
     table: "pr_pipeline_settings",
     columns: "pr_id",
   },

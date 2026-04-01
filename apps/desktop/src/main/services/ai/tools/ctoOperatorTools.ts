@@ -358,7 +358,7 @@ function buildFallbackInventoryItems(args: {
   const timestamp = nowIso();
 
   for (const thread of args.reviewThreads) {
-    const latestComment = thread.comments.at(-1) ?? thread.comments[0] ?? null;
+    const latestComment = thread.comments.at(-1) ?? null;
     const headlineSource = latestComment?.body?.trim() || thread.comments[0]?.body?.trim() || thread.path || `Review thread ${thread.id}`;
     const body = thread.comments
       .map((entry) => entry.body?.trim() || "")
@@ -456,33 +456,23 @@ function buildFallbackInventoryItems(args: {
 }
 
 function mapInventoryItemView(item: IssueInventoryItem) {
+  const {
+    threadLatestCommentId,
+    threadLatestCommentAuthor,
+    threadLatestCommentAt,
+    threadLatestCommentSource,
+    ...rest
+  } = item;
   return {
-    id: item.id,
-    externalId: item.externalId,
-    type: item.type,
-    state: item.state,
-    source: item.source,
-    round: item.round,
-    filePath: item.filePath,
-    line: item.line,
-    severity: item.severity,
-    headline: item.headline,
-    body: item.body,
-    author: item.author,
-    url: item.url,
-    dismissReason: item.dismissReason,
-    agentSessionId: item.agentSessionId,
-    threadCommentCount: item.threadCommentCount,
-    latestComment: item.threadLatestCommentId
+    ...rest,
+    latestComment: threadLatestCommentId
       ? {
-          id: item.threadLatestCommentId,
-          author: item.threadLatestCommentAuthor ?? null,
-          at: item.threadLatestCommentAt ?? null,
-          source: item.threadLatestCommentSource ?? null,
+          id: threadLatestCommentId,
+          author: threadLatestCommentAuthor ?? null,
+          at: threadLatestCommentAt ?? null,
+          source: threadLatestCommentSource ?? null,
         }
       : null,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
   };
 }
 
@@ -504,21 +494,18 @@ function buildRuntimePatch(input: {
 }): Partial<ConvergenceRuntimeState> {
   const patch: Partial<ConvergenceRuntimeState> = {};
   const autoConvergeEnabled = input.autoConvergeEnabled ?? input.autoConverge;
-  if (autoConvergeEnabled !== undefined && autoConvergeEnabled !== null) {
-    patch.autoConvergeEnabled = autoConvergeEnabled;
+  if (autoConvergeEnabled != null) patch.autoConvergeEnabled = autoConvergeEnabled;
+  if (input.currentRound != null) patch.currentRound = input.currentRound;
+
+  const nullableFields = [
+    "status", "pollerStatus", "activeSessionId", "activeLaneId", "activeHref",
+    "pauseReason", "errorMessage", "lastStartedAt", "lastPolledAt", "lastPausedAt", "lastStoppedAt",
+  ] as const;
+  for (const key of nullableFields) {
+    if (input[key] !== undefined) {
+      (patch as Record<string, unknown>)[key] = input[key];
+    }
   }
-  if (input.status !== undefined) patch.status = input.status;
-  if (input.pollerStatus !== undefined) patch.pollerStatus = input.pollerStatus;
-  if (input.currentRound !== undefined && input.currentRound !== null) patch.currentRound = input.currentRound;
-  if (input.activeSessionId !== undefined) patch.activeSessionId = input.activeSessionId;
-  if (input.activeLaneId !== undefined) patch.activeLaneId = input.activeLaneId;
-  if (input.activeHref !== undefined) patch.activeHref = input.activeHref;
-  if (input.pauseReason !== undefined) patch.pauseReason = input.pauseReason;
-  if (input.errorMessage !== undefined) patch.errorMessage = input.errorMessage;
-  if (input.lastStartedAt !== undefined) patch.lastStartedAt = input.lastStartedAt;
-  if (input.lastPolledAt !== undefined) patch.lastPolledAt = input.lastPolledAt;
-  if (input.lastPausedAt !== undefined) patch.lastPausedAt = input.lastPausedAt;
-  if (input.lastStoppedAt !== undefined) patch.lastStoppedAt = input.lastStoppedAt;
   return patch;
 }
 
@@ -1501,16 +1488,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         return { success: false, error: "Issue inventory service is not available." };
       }
       try {
-        const hasPatch = autoMerge !== undefined || mergeMethod !== undefined || maxRounds !== undefined || onRebaseNeeded !== undefined;
-        if (!hasPatch) {
+        const patch = Object.fromEntries(
+          Object.entries({ autoMerge, mergeMethod, maxRounds, onRebaseNeeded })
+            .filter(([, v]) => v !== undefined),
+        );
+        if (Object.keys(patch).length === 0) {
           return { success: false, error: "No pipeline fields were provided." };
         }
-        deps.issueInventoryService.savePipelineSettings(prId, {
-          ...(autoMerge !== undefined ? { autoMerge } : {}),
-          ...(mergeMethod !== undefined ? { mergeMethod } : {}),
-          ...(maxRounds !== undefined ? { maxRounds } : {}),
-          ...(onRebaseNeeded !== undefined ? { onRebaseNeeded } : {}),
-        });
+        deps.issueInventoryService.savePipelineSettings(prId, patch);
         return {
           success: true,
           prId,
@@ -1578,6 +1563,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         if (!resolvedModelId) {
           return { success: false, error: "A modelId is required to launch a convergence round." };
         }
+        const resolvedReasoning = reasoning ?? deps.defaultReasoningEffort ?? null;
 
         const context = deps.issueInventoryService
           ? await loadPrConvergenceContext(deps, prId)
@@ -1605,7 +1591,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
             prId,
             scope,
             modelId: resolvedModelId,
-            reasoning: reasoning ?? deps.defaultReasoningEffort ?? null,
+            reasoning: resolvedReasoning,
             permissionMode,
             additionalInstructions: additionalInstructions ?? null,
           },
@@ -1615,11 +1601,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           laneId: pr.laneId,
           provider: "unified",
           model: resolvedModelId,
-          ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
-          reasoningEffort: reasoning ?? deps.defaultReasoningEffort ?? null,
+          modelId: resolvedModelId,
+          reasoningEffort: resolvedReasoning,
           surface: "work",
           sessionProfile: "workflow",
         });
+
+        const href = `/work?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(session.id)}`;
 
         await deps.sessionService.updateMeta({
           sessionId: session.id,
@@ -1629,7 +1617,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           sessionId: session.id,
           text: prepared.prompt,
           displayText: prepared.title,
-          reasoningEffort: reasoning ?? deps.defaultReasoningEffort ?? null,
+          reasoningEffort: resolvedReasoning,
         });
 
         let runtime: ConvergenceRuntimeState | null = null;
@@ -1651,7 +1639,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
             currentRound: roundNumber,
             activeSessionId: session.id,
             activeLaneId: session.laneId,
-            activeHref: `/work?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(session.id)}`,
+            activeHref: href,
             pauseReason: null,
             errorMessage: null,
             lastStartedAt: nowIso(),
@@ -1666,7 +1654,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           prId,
           sessionId: session.id,
           laneId: session.laneId,
-          href: `/work?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(session.id)}`,
+          href,
           runtime,
           ...buildNavigationPayload(buildNavigationSuggestion({
             surface: "work",
@@ -1689,38 +1677,30 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     }),
     execute: async ({ prId, sessionId, reason }) => {
       try {
-        const runtime = deps.issueInventoryService?.getConvergenceRuntime(prId) ?? null;
-        const activeSessionId = sessionId?.trim() || runtime?.activeSessionId || null;
+        const currentRuntime = deps.issueInventoryService?.getConvergenceRuntime(prId) ?? null;
+        const activeSessionId = sessionId?.trim() || currentRuntime?.activeSessionId || null;
         if (!activeSessionId) {
           return { success: false, error: "No active convergence session was found to stop." };
         }
         await deps.interruptChat({ sessionId: activeSessionId });
 
-        if (deps.issueInventoryService) {
-          const nextRuntime = deps.issueInventoryService.saveConvergenceRuntime(prId, {
-            autoConvergeEnabled: false,
-            status: "stopped",
-            pollerStatus: "stopped",
-            activeSessionId: null,
-            activeLaneId: null,
-            activeHref: null,
-            pauseReason: reason?.trim() || null,
-            errorMessage: null,
-            lastStoppedAt: nowIso(),
-          });
-          return {
-            success: true,
-            prId,
-            sessionId: activeSessionId,
-            runtime: nextRuntime,
-          };
-        }
+        const stoppedRuntime = deps.issueInventoryService?.saveConvergenceRuntime(prId, {
+          autoConvergeEnabled: false,
+          status: "stopped",
+          pollerStatus: "stopped",
+          activeSessionId: null,
+          activeLaneId: null,
+          activeHref: null,
+          pauseReason: reason?.trim() || null,
+          errorMessage: null,
+          lastStoppedAt: nowIso(),
+        }) ?? null;
 
         return {
           success: true,
           prId,
           sessionId: activeSessionId,
-          runtime: null,
+          runtime: stoppedRuntime,
         };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };

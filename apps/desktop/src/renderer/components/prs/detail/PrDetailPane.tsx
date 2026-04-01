@@ -1431,16 +1431,27 @@ export function PrDetailPane({
         autoConvergeTimerRef.current = null;
       }
     }
+
+    const hasActiveSession = convergenceState.activeSessionId != null;
+    const isTerminalStatus =
+      convergenceState.status === "stopped"
+      || convergenceState.status === "failed"
+      || convergenceState.status === "cancelled";
+
+    let nextStatus = convergenceState.status;
+    let nextPollerStatus = convergenceState.pollerStatus;
+    if (enabled) {
+      if (isTerminalStatus) nextStatus = "idle";
+      nextPollerStatus = hasActiveSession ? convergenceState.pollerStatus : "idle";
+    } else {
+      if (!hasActiveSession) nextStatus = "stopped";
+      nextPollerStatus = hasActiveSession ? "idle" : "stopped";
+    }
+
     void saveConvergenceStateSafely({
       autoConvergeEnabled: enabled,
-      status: enabled
-        ? (convergenceState.status === "stopped" || convergenceState.status === "failed" || convergenceState.status === "cancelled"
-          ? "idle"
-          : convergenceState.status)
-        : (convergenceState.activeSessionId ? convergenceState.status : "stopped"),
-      pollerStatus: enabled
-        ? (convergenceState.activeSessionId ? convergenceState.pollerStatus : "idle")
-        : (convergenceState.activeSessionId ? "idle" : "stopped"),
+      status: nextStatus,
+      pollerStatus: nextPollerStatus,
       pauseReason: null,
       errorMessage: enabled ? null : convergenceState.errorMessage,
       ...(enabled ? {} : { lastStoppedAt: nowIso() }),

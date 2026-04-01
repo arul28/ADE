@@ -233,6 +233,10 @@ The `prRefreshIssueInventory` workflow tool now evaluates checks status with a f
 
 ADE tracks PR issues (failing CI checks, unresolved review threads, and issue comments) in a structured inventory backed by the `pr_issue_inventory` table. The `issueInventoryService` syncs from live GitHub data, classifies issues by source (CodeRabbit, Codex, Copilot, human, ADE), extracts severity from comment text and emoji patterns, and computes a round-based convergence status.
 
+### Thread tracking
+
+Review thread inventory items track the latest comment in the conversation thread. The `thread_comment_count`, `thread_latest_comment_id`, `thread_latest_comment_author`, `thread_latest_comment_at`, and `thread_latest_comment_source` fields allow the sync logic to detect when a new reply has been added. When a non-ADE participant adds a follow-up comment to a previously resolved or sent-to-agent thread, the item is automatically re-opened to `new` state so it re-enters the convergence loop.
+
 ### Convergence model
 
 The inventory operates in rounds. Each round:
@@ -243,6 +247,22 @@ The inventory operates in rounds. Each round:
 4. Repeat until all issues are resolved, the round cap is reached, or convergence stalls.
 
 The `ConvergenceStatus` tracks per-round statistics (new, fixed, dismissed counts), whether progress is being made (`isConverging`), and whether auto-advance is possible (`canAutoAdvance`). The default maximum is 5 rounds.
+
+### Convergence runtime state
+
+The convergence loop runtime is persisted in the `pr_convergence_state` table. The `ConvergenceRuntimeState` type tracks:
+
+- `autoConvergeEnabled` -- whether the auto-converge loop is active for this PR
+- `status` -- overall loop status (`idle`, `launching`, `running`, `polling`, `paused`, `converged`, `merged`, `failed`, `cancelled`, `stopped`)
+- `pollerStatus` -- poller sub-status (`idle`, `scheduled`, `polling`, `waiting_for_checks`, `waiting_for_comments`, `paused`, `stopped`)
+- `currentRound` -- the round number the loop is on
+- `activeSessionId`, `activeLaneId`, `activeHref` -- the agent session currently working on fixes
+- `pauseReason`, `errorMessage` -- human-readable context when the loop is paused or failed
+- lifecycle timestamps (`lastStartedAt`, `lastPolledAt`, `lastPausedAt`, `lastStoppedAt`)
+
+The renderer caches convergence runtime state per PR in `PrsContext` and exposes `loadConvergenceState`, `saveConvergenceState`, and `resetConvergenceState` methods. Three IPC channels (`prsConvergenceStateGet`, `prsConvergenceStateSave`, `prsConvergenceStateDelete`) back these operations.
+
+When an issue resolution session is launched via the `prsIssueResolutionStart` IPC handler, the handler also writes the runtime state with the active session, lane, and href so the convergence panel can track the running session.
 
 ### Pipeline settings
 
@@ -260,3 +280,17 @@ Settings are persisted per PR in the key-value store and editable from the conve
 The `PrConvergencePanel` is a slide-over panel in the PR detail pane. It displays the issue inventory grouped by severity, convergence progress (round indicator, fix/dismiss/escalate counts), an embedded agent chat pane for the active resolution session, and pipeline settings controls.
 
 The auto-converge mode polls GitHub after each agent session completes. It waits for CI checks to finish and comment counts to stabilize (2 consecutive polls with the same count) before triggering the next round. A pause reason banner surfaces when convergence is blocked by rebase needs or round limits.
+
+### CTO operator tools
+
+The CTO agent has five dedicated tools for managing the PR convergence loop programmatically:
+
+| Tool | Purpose |
+|---|---|
+| `getPullRequestConvergence` | Read the persisted runtime state, pipeline settings, and issue inventory summary for a PR |
+| `updatePullRequestConvergencePipeline` | Edit pipeline settings (auto-merge, merge method, max rounds, rebase policy) |
+| `updatePullRequestConvergenceRuntime` | Edit the runtime state (enable/disable auto-converge, update status, set poller state) |
+| `startPullRequestConvergenceRound` | Launch the next convergence round by starting an issue-resolution agent session |
+| `stopPullRequestConvergence` | Stop the active convergence run, interrupt the chat session, and persist the stopped state |
+
+These tools allow the CTO to orchestrate the convergence loop end-to-end: inspect what issues remain, configure the pipeline, start or stop rounds, and adjust runtime behavior without manual UI interaction. The MCP server also exposes the issue inventory service for external tool consumers.
