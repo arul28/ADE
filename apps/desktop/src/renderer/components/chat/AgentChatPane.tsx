@@ -32,6 +32,7 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
+import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
@@ -253,18 +254,12 @@ function summarizeNativeControls(
 /**
  * Build a fallback CursorModeSnapshot when the Cursor ACP provider hasn't
  * reported its own snapshot yet.
- *
- * NOTE: availableModeIds is hardcoded because there is no canonical constant
- * exported from the Cursor provider for the set of supported modes. If Cursor
- * adds new modes (e.g. "debug", "edit", "full-auto"), this list must be
- * updated manually to match.  See also CURSOR_MODE_LABELS in
- * AgentChatComposer.tsx which should stay in sync.
  */
 function buildFallbackCursorModeSnapshot(modeId: string | null | undefined): NonNullable<AgentChatSessionSummary["cursorModeSnapshot"]> {
   const normalized = typeof modeId === "string" && modeId.trim().length ? modeId.trim() : "agent";
   return {
     currentModeId: normalized,
-    availableModeIds: ["agent", "ask", "plan"],
+    availableModeIds: [...CURSOR_AVAILABLE_MODE_IDS],
   };
 }
 

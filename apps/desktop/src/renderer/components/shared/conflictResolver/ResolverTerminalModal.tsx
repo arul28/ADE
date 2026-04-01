@@ -81,6 +81,15 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
+/**
+ * Resolve a model ID against the static MODEL_REGISTRY for CLI-wrapped providers.
+ *
+ * NOTE: This intentionally only checks the static registry and does not handle
+ * dynamic Cursor models (those resolved at runtime via getModelById /
+ * resolveModelDescriptorForProvider in AgentChatPane.tsx). The conflict resolver
+ * only needs to map well-known CLI model IDs; dynamic Cursor models are not
+ * applicable in this context.
+ */
 function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor", value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;

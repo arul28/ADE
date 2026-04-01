@@ -43,6 +43,7 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import {
   fileSizeOrZero,
+  hasNullByte,
   isEnoentError,
   nowIso,
   readFileWithinRootSecure,
@@ -9640,13 +9641,20 @@ export function createAgentChatService(args: {
             mimeType: guessImageMimeForPath(attachment._resolvedPath),
           });
         } else if (fileSize <= MAX_INLINE_BYTES) {
-          // Non-image file attachment -- include content as text
+          // Non-image file attachment -- include content as text if not binary
           const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
-          const text = buf.toString("utf-8");
-          blocks.push({
-            type: "text",
-            text: `[File: ${attachment.path}]\n${text}`,
-          });
+          if (hasNullByte(buf)) {
+            blocks.push({
+              type: "text",
+              text: `[File: ${attachment.path} omitted: binary or unsupported type]`,
+            });
+          } else {
+            const text = buf.toString("utf-8");
+            blocks.push({
+              type: "text",
+              text: `[File: ${attachment.path}]\n${text}`,
+            });
+          }
         } else {
           // File is too large to inline -- push a placeholder with a truncated preview.
           blocks.push({
@@ -10099,6 +10107,16 @@ export function createAgentChatService(args: {
     } catch (error) {
       managed.session.status = "idle";
       const msg = error instanceof Error ? error.message : String(error);
+
+      // Drain pending permission waiters so they don't block future sends.
+      for (const [, w] of runtime.permissionWaiters) {
+        w.resolve({ outcome: { outcome: "cancelled" } });
+      }
+      runtime.permissionWaiters.clear();
+
+      // Drop queued steers so they don't replay on the next turn.
+      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+
       if (runtime.interrupted) {
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({

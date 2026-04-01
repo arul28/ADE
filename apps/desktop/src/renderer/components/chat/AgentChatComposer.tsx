@@ -25,6 +25,7 @@ import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
+import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatSubagentStrip } from "./ChatSubagentStrip";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
@@ -132,13 +133,7 @@ const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode;
   { value: "full-auto", label: "Full auto" },
 ];
 
-const CURSOR_MODE_LABELS: Record<string, string> = {
-  agent: "Agent",
-  default: "Agent",
-  ask: "Ask",
-  plan: "Plan",
-  debug: "Debug",
-};
+// CURSOR_MODE_LABELS imported from shared/cursorModes.ts
 
 function cursorModeLabel(modeId: string): string {
   const normalized = modeId.trim().toLowerCase();

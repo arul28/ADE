@@ -33,10 +33,6 @@ if (typeof Element !== "undefined") {
       return origQSA.call(this, selectors);
     } catch (err: unknown) {
       if (err instanceof DOMException && err.code === 12 /* SYNTAX_ERR */) {
-        console.warn(
-          `[test/setup] querySelectorAll SYNTAX_ERR for selector "${selectors}". Returning fallback empty NodeList.`,
-          err,
-        );
         return document.createDocumentFragment().querySelectorAll("*");
       }
       throw err;
