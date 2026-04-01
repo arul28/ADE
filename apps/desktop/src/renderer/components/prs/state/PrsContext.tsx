@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import type {
   AiPermissionMode,
+  PrConvergenceState,
   PrAiResolutionContext,
   PrAiResolutionSessionInfo,
   PrWithConflicts,
@@ -68,6 +69,9 @@ type PrsState = {
   // Inline terminal
   inlineTerminal: InlineTerminalState;
 
+  // Persisted convergence runtime cache
+  convergenceStatesByPrId: Record<string, PrConvergenceState>;
+
   // Resolver preferences
   resolverModel: string;
   resolverReasoningLevel: string;
@@ -87,6 +91,9 @@ type PrsContextValue = PrsState & {
   upsertResolverSession: (session: PrAiResolutionSessionInfo) => void;
   clearResolverSession: (context: PrAiResolutionContext) => void;
   setInlineTerminal: (terminal: InlineTerminalState) => void;
+  loadConvergenceState: (prId: string, options?: { force?: boolean }) => Promise<PrConvergenceState>;
+  saveConvergenceState: (prId: string, state: Partial<PrConvergenceState>) => Promise<PrConvergenceState>;
+  resetConvergenceState: (prId: string) => Promise<void>;
   refresh: () => Promise<void>;
 };
 
@@ -207,6 +214,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Inline terminal
   const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(null);
 
+  // Persisted convergence runtime cache
+  const [convergenceStatesByPrId, setConvergenceStatesByPrId] = useState<Record<string, PrConvergenceState>>({});
+  const convergenceStatesByPrIdRef = React.useRef<Record<string, PrConvergenceState>>({});
+  React.useEffect(() => {
+    convergenceStatesByPrIdRef.current = convergenceStatesByPrId;
+  }, [convergenceStatesByPrId]);
+
   // Resolver preferences
   const [resolverModel, setResolverModelRaw] = useState<string>(readPersistedModel);
   const [resolverReasoningLevel, setResolverReasoningLevel] = useState("medium");
@@ -245,6 +259,52 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       if (!(key in prev)) return prev;
       const next = { ...prev };
       delete next[key];
+      return next;
+    });
+  }, []);
+
+  const storeConvergenceState = useCallback((state: PrConvergenceState): PrConvergenceState => {
+    setConvergenceStatesByPrId((prev) => {
+      if (jsonEqual(prev[state.prId], state)) return prev;
+      return { ...prev, [state.prId]: state };
+    });
+    return state;
+  }, []);
+
+  const loadConvergenceState = useCallback(async (prId: string, options?: { force?: boolean }): Promise<PrConvergenceState> => {
+    const normalizedPrId = String(prId ?? "").trim();
+    if (!normalizedPrId) {
+      throw new Error("PR id is required.");
+    }
+    if (!options?.force) {
+      const cached = convergenceStatesByPrIdRef.current[normalizedPrId];
+      if (cached) return cached;
+    }
+    const runtime = await window.ade.prs.convergenceStateGet(normalizedPrId);
+    return storeConvergenceState(runtime);
+  }, [storeConvergenceState]);
+
+  const saveConvergenceState = useCallback(async (prId: string, state: Partial<PrConvergenceState>): Promise<PrConvergenceState> => {
+    const normalizedPrId = String(prId ?? "").trim();
+    if (!normalizedPrId) {
+      throw new Error("PR id is required.");
+    }
+    const runtime = await window.ade.prs.convergenceStateSave(normalizedPrId, state);
+    return storeConvergenceState(runtime);
+  }, [storeConvergenceState]);
+
+  const resetConvergenceState = useCallback(async (prId: string): Promise<void> => {
+    const normalizedPrId = String(prId ?? "").trim();
+    if (!normalizedPrId) return;
+    await window.ade.prs.convergenceStateDelete(normalizedPrId);
+    // Update the mutable ref synchronously so callers that read it
+    // immediately after reset don't see stale data.
+    const { [normalizedPrId]: _, ...rest } = convergenceStatesByPrIdRef.current;
+    convergenceStatesByPrIdRef.current = rest;
+    setConvergenceStatesByPrId((prev) => {
+      if (!(normalizedPrId in prev)) return prev;
+      const next = { ...prev };
+      delete next[normalizedPrId];
       return next;
     });
   }, []);
@@ -367,6 +427,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         const next = Object.fromEntries(
           Object.entries(prev).filter(([prId]) => allowed.has(prId))
         ) as Record<string, PrMergeContext>;
+        return jsonEqual(prev, next) ? prev : next;
+      });
+      setConvergenceStatesByPrId((prev) => {
+        const allowed = new Set(prList.map((pr) => pr.id));
+        const next = Object.fromEntries(
+          Object.entries(prev).filter(([prId]) => allowed.has(prId)),
+        ) as Record<string, PrConvergenceState>;
         return jsonEqual(prev, next) ? prev : next;
       });
 
@@ -598,6 +665,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
         prsRef.current = next;
         setPrs((prev) => (jsonEqual(prev, next) ? prev : next));
+        setConvergenceStatesByPrId((prev) => {
+          const allowed = new Set(next.map((pr) => pr.id));
+          const filtered = Object.fromEntries(
+            Object.entries(prev).filter(([prId]) => allowed.has(prId)),
+          ) as Record<string, PrConvergenceState>;
+          return jsonEqual(prev, filtered) ? prev : filtered;
+        });
 
         if (changedPrIds.length > 0) {
           void refreshMergeContexts(changedPrIds);
@@ -693,6 +767,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       autoRebaseStatuses,
       queueStates,
       inlineTerminal,
+      convergenceStatesByPrId,
       resolverModel,
       resolverReasoningLevel,
       resolverPermissionMode: resolverPermissions[resolvePermissionFamilyForModel(resolverModel)],
@@ -708,6 +783,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       upsertResolverSession,
       clearResolverSession,
       setInlineTerminal,
+      loadConvergenceState,
+      saveConvergenceState,
+      resetConvergenceState,
       refresh,
     }),
     // Note: setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId,
@@ -735,6 +813,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       autoRebaseStatuses,
       queueStates,
       inlineTerminal,
+      convergenceStatesByPrId,
       resolverModel,
       resolverReasoningLevel,
       resolverPermissions,
@@ -743,6 +822,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setResolverPermissionMode,
       upsertResolverSession,
       clearResolverSession,
+      loadConvergenceState,
+      saveConvergenceState,
+      resetConvergenceState,
       refresh,
     ],
   );

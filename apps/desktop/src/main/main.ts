@@ -2239,6 +2239,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       orchestratorService,
       aiOrchestratorService,
+      issueInventoryService,
       eventBuffer: mcpEventBuffer,
       dispose: () => {} // desktop manages service lifecycle
     };

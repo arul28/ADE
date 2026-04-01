@@ -248,6 +248,7 @@ const FK_CONSTRAINTS: Record<string, { references: string; action: string }> = {
   // PR convergence loop tables
   "pr_issue_inventory:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
   "pr_pipeline_settings:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
+  "pr_convergence_state:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
 };
 
 /**
@@ -2960,6 +2961,11 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
+  try { db.run("alter table pr_issue_inventory add column thread_comment_count integer"); } catch {}
+  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_id text"); } catch {}
+  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_author text"); } catch {}
+  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_at text"); } catch {}
+  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_source text"); } catch {}
   db.run("create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state)");
 
   // PR pipeline settings: per-PR auto-converge / auto-merge configuration
@@ -2970,6 +2976,28 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       merge_method text not null default 'repo_default',
       max_rounds integer not null default 5,
       on_rebase_needed text not null default 'pause',
+      updated_at text not null,
+      foreign key(pr_id) references pull_requests(id) on delete cascade
+    )
+  `);
+
+  db.run(`
+    create table if not exists pr_convergence_state (
+      pr_id text primary key,
+      auto_converge_enabled integer not null default 0,
+      status text not null default 'idle',
+      poller_status text not null default 'idle',
+      current_round integer not null default 0,
+      active_session_id text,
+      active_lane_id text,
+      active_href text,
+      pause_reason text,
+      error_message text,
+      last_started_at text,
+      last_polled_at text,
+      last_paused_at text,
+      last_stopped_at text,
+      created_at text not null,
       updated_at text not null,
       foreign key(pr_id) references pull_requests(id) on delete cascade
     )

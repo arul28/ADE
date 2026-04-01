@@ -1064,6 +1064,52 @@ export const DEFAULT_PIPELINE_SETTINGS: PipelineSettings = {
 };
 
 // --------------------------------
+// PR Convergence Runtime State
+// --------------------------------
+
+export type ConvergenceRuntimeStatus =
+  | "idle"
+  | "launching"
+  | "running"
+  | "polling"
+  | "paused"
+  | "converged"
+  | "merged"
+  | "failed"
+  | "cancelled"
+  | "stopped";
+
+export type ConvergencePollerStatus =
+  | "idle"
+  | "scheduled"
+  | "polling"
+  | "waiting_for_checks"
+  | "waiting_for_comments"
+  | "paused"
+  | "stopped";
+
+export type ConvergenceRuntimeState = {
+  prId: string;
+  autoConvergeEnabled: boolean;
+  status: ConvergenceRuntimeStatus;
+  pollerStatus: ConvergencePollerStatus;
+  currentRound: number;
+  activeSessionId: string | null;
+  activeLaneId: string | null;
+  activeHref: string | null;
+  pauseReason: string | null;
+  errorMessage: string | null;
+  lastStartedAt: string | null;
+  lastPolledAt: string | null;
+  lastPausedAt: string | null;
+  lastStoppedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PrConvergenceState = ConvergenceRuntimeState;
+
+// --------------------------------
 // Issue Inventory (PR Convergence Loop)
 // --------------------------------
 
@@ -1088,6 +1134,11 @@ export type IssueInventoryItem = {
   url: string | null;
   dismissReason: string | null;
   agentSessionId: string | null;
+  threadCommentCount?: number | null;
+  threadLatestCommentId?: string | null;
+  threadLatestCommentAuthor?: string | null;
+  threadLatestCommentAt?: string | null;
+  threadLatestCommentSource?: IssueSource | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -1112,8 +1163,27 @@ export type ConvergenceStatus = {
   canAutoAdvance: boolean;
 };
 
+export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "prId"> = {
+  autoConvergeEnabled: false,
+  status: "idle",
+  pollerStatus: "idle",
+  currentRound: 0,
+  activeSessionId: null,
+  activeLaneId: null,
+  activeHref: null,
+  pauseReason: null,
+  errorMessage: null,
+  lastStartedAt: null,
+  lastPolledAt: null,
+  lastPausedAt: null,
+  lastStoppedAt: null,
+  createdAt: new Date(0).toISOString(),
+  updatedAt: new Date(0).toISOString(),
+};
+
 export type IssueInventorySnapshot = {
   prId: string;
   items: IssueInventoryItem[];
   convergence: ConvergenceStatus;
+  runtime: ConvergenceRuntimeState;
 };

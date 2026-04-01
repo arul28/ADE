@@ -141,6 +141,7 @@ import type { createLinearDispatcherService } from "../cto/linearDispatcherServi
 import type { LinearClient } from "../cto/linearClient";
 import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
+import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createProofObserver } from "../computerUse/proofObserver";
 import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
@@ -2087,6 +2088,7 @@ export function createAgentChatService(args: {
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
+  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
@@ -2120,6 +2122,7 @@ export function createAgentChatService(args: {
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
+    issueInventoryService,
     processService,
     getTestService,
     ptyService,
@@ -6302,6 +6305,7 @@ export function createAgentChatService(args: {
             linearDispatcherService: getLinearDispatcherService?.() ?? null,
             flowPolicyService: flowPolicyService ?? null,
             prService: prService ?? null,
+            issueInventoryService: issueInventoryService ?? null,
             fileService: fileService ?? null,
             processService: processService ?? null,
             testService: getTestService?.() ?? null,
@@ -6317,6 +6321,7 @@ export function createAgentChatService(args: {
             interruptChat: interrupt,
             resumeChat: resumeSession,
             disposeChat: dispose,
+            sessionService,
             ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
               ensureIdentitySession({
                 identityKey: "cto",

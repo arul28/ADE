@@ -2019,6 +2019,12 @@ export function LanesPage() {
         selectedTemplateId={selectedTemplateId}
         setSelectedTemplateId={setSelectedTemplateId}
         onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
+        importBranchWarning={
+          createMode === "existing" && createImportBranch && primaryLane?.status.dirty
+            && createBranches.find((b) => b.name === createImportBranch && !b.isRemote)?.isCurrent
+            ? `This branch is currently checked out and has uncommitted changes. The new lane will only include committed changes\u2009—\u2009uncommitted work will not carry over.`
+            : null
+        }
       />
 
       {/* Attach Lane dialog */}

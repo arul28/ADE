@@ -129,6 +129,7 @@ import type {
   PrIssueResolutionStartResult,
   IssueInventoryItem,
   IssueInventorySnapshot,
+  ConvergenceRuntimeState,
   ConvergenceStatus,
   PipelineSettings,
   RebaseResolutionStartArgs,
@@ -5018,15 +5019,33 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsIssueResolutionStart, async (_event, arg: PrIssueResolutionStartArgs): Promise<PrIssueResolutionStartResult> => {
     const ctx = getCtx();
-    return await launchPrIssueResolutionChat(
+    const result = await launchPrIssueResolutionChat(
       {
         prService: ctx.prService,
         laneService: ctx.laneService,
         agentChatService: ctx.agentChatService,
         sessionService: ctx.sessionService,
+        issueInventoryService: ctx.issueInventoryService,
       },
       arg,
     );
+    try {
+      const status = ctx.issueInventoryService.getConvergenceStatus(arg.prId);
+      ctx.issueInventoryService.saveConvergenceRuntime(arg.prId, {
+        currentRound: status.currentRound,
+        status: "running",
+        pollerStatus: "idle",
+        activeSessionId: result.sessionId,
+        activeLaneId: result.laneId,
+        activeHref: result.href,
+        lastStartedAt: nowIso(),
+        errorMessage: null,
+        pauseReason: null,
+      });
+    } catch {
+      // Best-effort persistence only.
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.prsIssueResolutionPreviewPrompt, async (
@@ -5040,6 +5059,7 @@ export function registerIpc({
         laneService: ctx.laneService,
         agentChatService: ctx.agentChatService,
         sessionService: ctx.sessionService,
+        issueInventoryService: ctx.issueInventoryService,
       },
       arg,
     );
@@ -5099,6 +5119,13 @@ export function registerIpc({
     getCtx().issueInventoryService.getConvergenceStatus(args.prId));
   ipcMain.handle(IPC.prsIssueInventoryReset, (_e, args: { prId: string }): void =>
     getCtx().issueInventoryService.resetInventory(args.prId));
+
+  ipcMain.handle(IPC.prsConvergenceStateGet, (_e, args: { prId: string }): ConvergenceRuntimeState =>
+    getCtx().issueInventoryService.getConvergenceRuntime(args.prId));
+  ipcMain.handle(IPC.prsConvergenceStateSave, (_e, args: { prId: string; state: Partial<ConvergenceRuntimeState> }): ConvergenceRuntimeState =>
+    getCtx().issueInventoryService.saveConvergenceRuntime(args.prId, args.state));
+  ipcMain.handle(IPC.prsConvergenceStateDelete, (_e, args: { prId: string }): void =>
+    getCtx().issueInventoryService.resetConvergenceRuntime(args.prId));
 
   ipcMain.handle(IPC.prsPipelineSettingsGet, (_e, args: { prId: string }): PipelineSettings =>
     getCtx().issueInventoryService.getPipelineSettings(args.prId));

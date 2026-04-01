@@ -18,6 +18,18 @@ import type {
   TestRunSummary,
   TestSuiteDefinition,
 } from "../../../../shared/types";
+import type {
+  ConvergenceRuntimeState,
+  ConvergenceStatus,
+  ConvergenceRoundStat,
+  IssueInventoryItem,
+  PipelineSettings,
+  PrCheck,
+  PrComment,
+  PrReviewThread,
+  PrSummary,
+} from "../../../../shared/types/prs";
+import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types/prs";
 import type { IssueTracker } from "../../cto/issueTracker";
 import type { createLinearDispatcherService } from "../../cto/linearDispatcherService";
 import type { createWorkerAgentService } from "../../cto/workerAgentService";
@@ -27,9 +39,12 @@ import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createMissionService } from "../../missions/missionService";
 import type { createAiOrchestratorService } from "../../orchestrator/aiOrchestratorService";
+import type { createIssueInventoryService } from "../../prs/issueInventoryService";
+import { previewPrIssueResolutionPrompt } from "../../prs/prIssueResolver";
 import type { createPrService } from "../../prs/prService";
 import type { createProcessService } from "../../processes/processService";
-import { getErrorMessage } from "../../shared/utils";
+import type { createSessionService } from "../../sessions/sessionService";
+import { getErrorMessage, nowIso } from "../../shared/utils";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
@@ -50,8 +65,10 @@ export interface CtoOperatorToolDeps {
   linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   prService?: ReturnType<typeof createPrService> | null;
+  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
+  sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   testService?: {
     listSuites: () => TestSuiteDefinition[];
     run: (args: { laneId: string; suiteId: string }) => Promise<TestRunSummary>;
@@ -251,6 +268,309 @@ function resolveWorkspaceIdForLane(
     null;
   if (laneWorkspace) return laneWorkspace.id;
   throw new Error(`Workspace not found for lane ${laneId}.`);
+}
+
+function extractSeverityFromText(text: string | null | undefined): IssueInventoryItem["severity"] {
+  const match = String(text ?? "").match(/\b(Critical|Major|Minor)\b/i);
+  if (!match?.[1]) return null;
+  return match[1].toLowerCase() as IssueInventoryItem["severity"];
+}
+
+function truncateForHeadline(text: string, max = 140): string {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function summarizeInventoryItems(items: IssueInventoryItem[], maxRounds: number): ConvergenceStatus {
+  let totalNew = 0;
+  let totalFixed = 0;
+  let totalDismissed = 0;
+  let totalEscalated = 0;
+  let totalSentToAgent = 0;
+  let currentRound = 0;
+  const roundMap = new Map<number, ConvergenceRoundStat>();
+
+  for (const item of items) {
+    switch (item.state) {
+      case "new":
+        totalNew++;
+        break;
+      case "fixed":
+        totalFixed++;
+        break;
+      case "dismissed":
+        totalDismissed++;
+        break;
+      case "escalated":
+        totalEscalated++;
+        break;
+      case "sent_to_agent":
+        totalSentToAgent++;
+        break;
+    }
+
+    if (item.round > currentRound) currentRound = item.round;
+    if (item.round <= 0) continue;
+
+    const stat = roundMap.get(item.round) ?? { round: item.round, newCount: 0, fixedCount: 0, dismissedCount: 0 };
+    switch (item.state) {
+      case "new":
+      case "sent_to_agent":
+        stat.newCount++;
+        break;
+      case "fixed":
+        stat.fixedCount++;
+        break;
+      case "dismissed":
+        stat.dismissedCount++;
+        break;
+    }
+    roundMap.set(item.round, stat);
+  }
+
+  const issuesPerRound = Array.from(roundMap.values()).sort((a, b) => a.round - b.round);
+  const lastRoundStat = issuesPerRound.at(-1);
+  const isConverging = lastRoundStat != null && (lastRoundStat.fixedCount + lastRoundStat.dismissedCount) > 0;
+  const canAutoAdvance = totalNew > 0 && currentRound < maxRounds;
+
+  return {
+    currentRound,
+    maxRounds,
+    issuesPerRound,
+    totalNew,
+    totalFixed,
+    totalDismissed,
+    totalEscalated,
+    totalSentToAgent,
+    isConverging,
+    canAutoAdvance,
+  };
+}
+
+function buildFallbackInventoryItems(args: {
+  prId: string;
+  checks: PrCheck[];
+  reviewThreads: PrReviewThread[];
+  comments: PrComment[];
+}): IssueInventoryItem[] {
+  const items: IssueInventoryItem[] = [];
+  const timestamp = nowIso();
+
+  for (const thread of args.reviewThreads) {
+    const latestComment = thread.comments.at(-1) ?? thread.comments[0] ?? null;
+    const headlineSource = latestComment?.body?.trim() || thread.comments[0]?.body?.trim() || thread.path || `Review thread ${thread.id}`;
+    const body = thread.comments
+      .map((entry) => entry.body?.trim() || "")
+      .filter(Boolean)
+      .join("\n\n")
+      .trim() || null;
+    items.push({
+      id: `transient-thread-${thread.id}`,
+      prId: args.prId,
+      source: "unknown",
+      type: "review_thread",
+      externalId: `review-thread:${thread.id}`,
+      state: thread.isResolved || thread.isOutdated ? "fixed" : "new",
+      round: 0,
+      filePath: thread.path,
+      line: thread.line,
+      severity: extractSeverityFromText(body ?? headlineSource),
+      headline: truncateForHeadline(headlineSource),
+      body,
+      author: latestComment?.author ?? null,
+      url: thread.url,
+      dismissReason: null,
+      agentSessionId: null,
+      threadCommentCount: thread.comments.length,
+      threadLatestCommentId: latestComment?.id ?? null,
+      threadLatestCommentAuthor: latestComment?.author ?? null,
+      threadLatestCommentAt: latestComment?.createdAt ?? null,
+      threadLatestCommentSource: "unknown",
+      createdAt: thread.createdAt ?? timestamp,
+      updatedAt: thread.updatedAt ?? thread.createdAt ?? timestamp,
+    });
+  }
+
+  for (const comment of args.comments) {
+    if (comment.source !== "issue") continue;
+    const body = comment.body?.trim() || null;
+    items.push({
+      id: `transient-comment-${comment.id}`,
+      prId: args.prId,
+      source: "unknown",
+      type: "issue_comment",
+      externalId: `issue-comment:${comment.id}`,
+      state: "new",
+      round: 0,
+      filePath: comment.path,
+      line: comment.line,
+      severity: extractSeverityFromText(body),
+      headline: body ? truncateForHeadline(body) : `Issue comment by ${comment.author}`,
+      body,
+      author: comment.author,
+      url: comment.url,
+      dismissReason: null,
+      agentSessionId: null,
+      threadCommentCount: null,
+      threadLatestCommentId: null,
+      threadLatestCommentAuthor: null,
+      threadLatestCommentAt: null,
+      threadLatestCommentSource: null,
+      createdAt: comment.createdAt ?? timestamp,
+      updatedAt: comment.updatedAt ?? comment.createdAt ?? timestamp,
+    });
+  }
+
+  for (const check of args.checks) {
+    if (check.conclusion !== "failure") continue;
+    const timestampValue = check.completedAt ?? check.startedAt ?? timestamp;
+    items.push({
+      id: `transient-check-${check.name}`,
+      prId: args.prId,
+      source: "unknown",
+      type: "check_failure",
+      externalId: `check:${check.name}`,
+      state: "new",
+      round: 0,
+      filePath: null,
+      line: null,
+      severity: "major",
+      headline: `Check failed: ${check.name}`,
+      body: check.detailsUrl ? `Details: ${check.detailsUrl}` : null,
+      author: null,
+      url: check.detailsUrl,
+      dismissReason: null,
+      agentSessionId: null,
+      threadCommentCount: null,
+      threadLatestCommentId: null,
+      threadLatestCommentAuthor: null,
+      threadLatestCommentAt: null,
+      threadLatestCommentSource: null,
+      createdAt: timestampValue,
+      updatedAt: timestampValue,
+    });
+  }
+
+  return items;
+}
+
+function mapInventoryItemView(item: IssueInventoryItem) {
+  return {
+    id: item.id,
+    externalId: item.externalId,
+    type: item.type,
+    state: item.state,
+    source: item.source,
+    round: item.round,
+    filePath: item.filePath,
+    line: item.line,
+    severity: item.severity,
+    headline: item.headline,
+    body: item.body,
+    author: item.author,
+    url: item.url,
+    dismissReason: item.dismissReason,
+    agentSessionId: item.agentSessionId,
+    threadCommentCount: item.threadCommentCount,
+    latestComment: item.threadLatestCommentId
+      ? {
+          id: item.threadLatestCommentId,
+          author: item.threadLatestCommentAuthor ?? null,
+          at: item.threadLatestCommentAt ?? null,
+          source: item.threadLatestCommentSource ?? null,
+        }
+      : null,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+function buildRuntimePatch(input: {
+  autoConvergeEnabled?: boolean | null;
+  autoConverge?: boolean | null;
+  status?: ConvergenceRuntimeState["status"];
+  pollerStatus?: ConvergenceRuntimeState["pollerStatus"];
+  currentRound?: number | null;
+  activeSessionId?: string | null;
+  activeLaneId?: string | null;
+  activeHref?: string | null;
+  pauseReason?: string | null;
+  errorMessage?: string | null;
+  lastStartedAt?: string | null;
+  lastPolledAt?: string | null;
+  lastPausedAt?: string | null;
+  lastStoppedAt?: string | null;
+}): Partial<ConvergenceRuntimeState> {
+  const patch: Partial<ConvergenceRuntimeState> = {};
+  const autoConvergeEnabled = input.autoConvergeEnabled ?? input.autoConverge;
+  if (autoConvergeEnabled !== undefined && autoConvergeEnabled !== null) {
+    patch.autoConvergeEnabled = autoConvergeEnabled;
+  }
+  if (input.status !== undefined) patch.status = input.status;
+  if (input.pollerStatus !== undefined) patch.pollerStatus = input.pollerStatus;
+  if (input.currentRound !== undefined && input.currentRound !== null) patch.currentRound = input.currentRound;
+  if (input.activeSessionId !== undefined) patch.activeSessionId = input.activeSessionId;
+  if (input.activeLaneId !== undefined) patch.activeLaneId = input.activeLaneId;
+  if (input.activeHref !== undefined) patch.activeHref = input.activeHref;
+  if (input.pauseReason !== undefined) patch.pauseReason = input.pauseReason;
+  if (input.errorMessage !== undefined) patch.errorMessage = input.errorMessage;
+  if (input.lastStartedAt !== undefined) patch.lastStartedAt = input.lastStartedAt;
+  if (input.lastPolledAt !== undefined) patch.lastPolledAt = input.lastPolledAt;
+  if (input.lastPausedAt !== undefined) patch.lastPausedAt = input.lastPausedAt;
+  if (input.lastStoppedAt !== undefined) patch.lastStoppedAt = input.lastStoppedAt;
+  return patch;
+}
+
+async function loadPrConvergenceContext(
+  deps: Pick<CtoOperatorToolDeps, "prService" | "issueInventoryService">,
+  prId: string,
+): Promise<{
+  pr: PrSummary;
+  status: Awaited<ReturnType<NonNullable<CtoOperatorToolDeps["prService"]>["getStatus"]>>;
+  runtime: ConvergenceRuntimeState | null;
+  pipelineSettings: PipelineSettings;
+  inventory: { items: IssueInventoryItem[]; summary: ConvergenceStatus };
+  persistedInventory: boolean;
+}> {
+  if (!deps.prService) throw new Error("PR service is not available.");
+  const pr = deps.prService.listAll().find((entry) => entry.id === prId) ?? null;
+  if (!pr) throw new Error(`PR not found: ${prId}`);
+
+  const [status, checks, reviewThreads, comments] = await Promise.all([
+    deps.prService.getStatus(prId),
+    deps.prService.getChecks(prId),
+    deps.prService.getReviewThreads(prId),
+    deps.prService.getComments(prId),
+  ]);
+
+  if (deps.issueInventoryService) {
+    const snapshot = deps.issueInventoryService.syncFromPrData(prId, checks, reviewThreads, comments);
+    return {
+      pr,
+      status,
+      runtime: deps.issueInventoryService.getConvergenceRuntime(prId),
+      pipelineSettings: deps.issueInventoryService.getPipelineSettings(prId),
+      inventory: {
+        items: snapshot.items,
+        summary: snapshot.convergence,
+      },
+      persistedInventory: true,
+    };
+  }
+
+  const items = buildFallbackInventoryItems({ prId, checks, reviewThreads, comments });
+  return {
+    pr,
+    status,
+    runtime: null,
+    pipelineSettings: { ...DEFAULT_PIPELINE_SETTINGS },
+    inventory: {
+      items,
+      summary: summarizeInventoryItems(items, DEFAULT_PIPELINE_SETTINGS.maxRounds),
+    },
+    persistedInventory: false,
+  };
 }
 
 export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string, Tool> {
@@ -1129,6 +1449,279 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       try {
         await deps.prService.updateDescription({ prId, body });
         return { success: true, prId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.getPullRequestConvergence = tool({
+    description: "Read the persisted PR convergence runtime, pipeline settings, and issue inventory summary for a pull request.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+    }),
+    execute: async ({ prId }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        const context = await loadPrConvergenceContext(deps, prId);
+        return {
+          success: true,
+          pr: context.pr,
+          status: context.status,
+          runtime: context.runtime,
+          pipelineSettings: context.pipelineSettings,
+          persistedInventory: context.persistedInventory,
+          inventory: {
+            summary: context.inventory.summary,
+            items: context.inventory.items.map(mapInventoryItemView),
+          },
+          ...(context.runtime?.activeSessionId ? buildNavigationPayload(buildNavigationSuggestion({
+            surface: "work",
+            laneId: context.runtime.activeLaneId ?? context.pr.laneId,
+            sessionId: context.runtime.activeSessionId,
+          })) : {}),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.updatePullRequestConvergencePipeline = tool({
+    description: "Edit the persisted PR convergence pipeline settings for auto-merge and round handling.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      autoMerge: z.boolean().optional(),
+      mergeMethod: z.enum(["merge", "squash", "rebase", "repo_default"]).optional(),
+      maxRounds: z.number().int().positive().max(20).optional(),
+      onRebaseNeeded: z.enum(["pause", "auto_rebase"]).optional(),
+    }),
+    execute: async ({ prId, autoMerge, mergeMethod, maxRounds, onRebaseNeeded }) => {
+      if (!deps.issueInventoryService) {
+        return { success: false, error: "Issue inventory service is not available." };
+      }
+      try {
+        const hasPatch = autoMerge !== undefined || mergeMethod !== undefined || maxRounds !== undefined || onRebaseNeeded !== undefined;
+        if (!hasPatch) {
+          return { success: false, error: "No pipeline fields were provided." };
+        }
+        deps.issueInventoryService.savePipelineSettings(prId, {
+          ...(autoMerge !== undefined ? { autoMerge } : {}),
+          ...(mergeMethod !== undefined ? { mergeMethod } : {}),
+          ...(maxRounds !== undefined ? { maxRounds } : {}),
+          ...(onRebaseNeeded !== undefined ? { onRebaseNeeded } : {}),
+        });
+        return {
+          success: true,
+          prId,
+          pipelineSettings: deps.issueInventoryService.getPipelineSettings(prId),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.updatePullRequestConvergenceRuntime = tool({
+    description: "Edit the persisted PR convergence runtime object that tracks status, session, and polling state.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      autoConvergeEnabled: z.boolean().optional(),
+      autoConverge: z.boolean().optional(),
+      status: z.enum(["idle", "launching", "running", "polling", "paused", "converged", "merged", "failed", "cancelled", "stopped"]).optional(),
+      pollerStatus: z.enum(["idle", "scheduled", "polling", "waiting_for_checks", "waiting_for_comments", "paused", "stopped"]).optional(),
+      currentRound: z.number().int().min(0).optional(),
+      activeSessionId: z.string().nullable().optional(),
+      activeLaneId: z.string().nullable().optional(),
+      activeHref: z.string().nullable().optional(),
+      pauseReason: z.string().nullable().optional(),
+      errorMessage: z.string().nullable().optional(),
+      lastStartedAt: z.string().nullable().optional(),
+      lastPolledAt: z.string().nullable().optional(),
+      lastPausedAt: z.string().nullable().optional(),
+      lastStoppedAt: z.string().nullable().optional(),
+    }),
+    execute: async (input) => {
+      if (!deps.issueInventoryService) {
+        return { success: false, error: "Issue inventory service is not available." };
+      }
+      try {
+        const patch = buildRuntimePatch(input);
+        if (Object.keys(patch).length === 0) {
+          return { success: false, error: "No runtime fields were provided." };
+        }
+        const runtime = deps.issueInventoryService.saveConvergenceRuntime(input.prId, patch);
+        return { success: true, prId: input.prId, runtime };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.startPullRequestConvergenceRound = tool({
+    description: "Launch the next PR convergence round through the existing PR issue-resolution workflow.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      scope: z.enum(["checks", "comments", "both"]).optional().default("both"),
+      modelId: z.string().trim().min(1).optional(),
+      reasoning: z.string().nullable().optional(),
+      permissionMode: z.enum(["read_only", "guarded_edit", "full_edit"]).optional(),
+      additionalInstructions: z.string().nullable().optional(),
+      autoConvergeEnabled: z.boolean().optional().default(true),
+    }),
+    execute: async ({ prId, scope, modelId, reasoning, permissionMode, additionalInstructions, autoConvergeEnabled }) => {
+      if (!deps.prService) {
+        return { success: false, error: "PR service is not available." };
+      }
+      try {
+        const resolvedModelId = modelId?.trim() || deps.defaultModelId?.trim() || null;
+        if (!resolvedModelId) {
+          return { success: false, error: "A modelId is required to launch a convergence round." };
+        }
+
+        const context = deps.issueInventoryService
+          ? await loadPrConvergenceContext(deps, prId)
+          : null;
+        const pr = context?.pr ?? deps.prService.listAll().find((entry) => entry.id === prId) ?? null;
+        if (!pr) {
+          return { success: false, error: `PR not found: ${prId}` };
+        }
+
+        const prepared = await previewPrIssueResolutionPrompt(
+          {
+            prService: deps.prService,
+            laneService: {
+              list: deps.laneService.list,
+              getLaneBaseAndBranch: deps.laneService.getLaneBaseAndBranch,
+            },
+            agentChatService: {
+              createSession: deps.createChat,
+              sendMessage: deps.sendChatMessage,
+            },
+            sessionService: deps.sessionService,
+            issueInventoryService: deps.issueInventoryService ?? null,
+          },
+          {
+            prId,
+            scope,
+            modelId: resolvedModelId,
+            reasoning: reasoning ?? deps.defaultReasoningEffort ?? null,
+            permissionMode,
+            additionalInstructions: additionalInstructions ?? null,
+          },
+        );
+
+        const session = await deps.createChat({
+          laneId: pr.laneId,
+          provider: "unified",
+          model: resolvedModelId,
+          ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
+          reasoningEffort: reasoning ?? deps.defaultReasoningEffort ?? null,
+          surface: "work",
+          sessionProfile: "workflow",
+        });
+
+        await deps.sessionService.updateMeta({
+          sessionId: session.id,
+          title: prepared.title,
+        });
+        await deps.sendChatMessage({
+          sessionId: session.id,
+          text: prepared.prompt,
+          displayText: prepared.title,
+          reasoningEffort: reasoning ?? deps.defaultReasoningEffort ?? null,
+        });
+
+        let runtime: ConvergenceRuntimeState | null = null;
+        if (deps.issueInventoryService) {
+          const roundNumber = (context?.inventory.summary.currentRound ?? 0) + 1;
+          const inventoryNewItems = deps.issueInventoryService.getNewItems(prId);
+          if (inventoryNewItems.length > 0) {
+            deps.issueInventoryService.markSentToAgent(
+              prId,
+              inventoryNewItems.map((item) => item.id),
+              session.id,
+              roundNumber,
+            );
+          }
+          runtime = deps.issueInventoryService.saveConvergenceRuntime(prId, {
+            autoConvergeEnabled,
+            status: "running",
+            pollerStatus: "waiting_for_comments",
+            currentRound: roundNumber,
+            activeSessionId: session.id,
+            activeLaneId: session.laneId,
+            activeHref: `/work?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(session.id)}`,
+            pauseReason: null,
+            errorMessage: null,
+            lastStartedAt: nowIso(),
+            lastPolledAt: null,
+            lastPausedAt: null,
+            lastStoppedAt: null,
+          });
+        }
+
+        return {
+          success: true,
+          prId,
+          sessionId: session.id,
+          laneId: session.laneId,
+          href: `/work?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(session.id)}`,
+          runtime,
+          ...buildNavigationPayload(buildNavigationSuggestion({
+            surface: "work",
+            laneId: session.laneId,
+            sessionId: session.id,
+          })),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.stopPullRequestConvergence = tool({
+    description: "Stop an active PR convergence run, interrupt the chat session, and persist the stopped runtime state.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      sessionId: z.string().trim().min(1).optional(),
+      reason: z.string().nullable().optional(),
+    }),
+    execute: async ({ prId, sessionId, reason }) => {
+      try {
+        const runtime = deps.issueInventoryService?.getConvergenceRuntime(prId) ?? null;
+        const activeSessionId = sessionId?.trim() || runtime?.activeSessionId || null;
+        if (!activeSessionId) {
+          return { success: false, error: "No active convergence session was found to stop." };
+        }
+        await deps.interruptChat({ sessionId: activeSessionId });
+
+        if (deps.issueInventoryService) {
+          const nextRuntime = deps.issueInventoryService.saveConvergenceRuntime(prId, {
+            autoConvergeEnabled: false,
+            status: "stopped",
+            pollerStatus: "stopped",
+            activeSessionId: null,
+            activeLaneId: null,
+            activeHref: null,
+            pauseReason: reason?.trim() || null,
+            errorMessage: null,
+            lastStoppedAt: nowIso(),
+          });
+          return {
+            success: true,
+            prId,
+            sessionId: activeSessionId,
+            runtime: nextRuntime,
+          };
+        }
+
+        return {
+          success: true,
+          prId,
+          sessionId: activeSessionId,
+          runtime: null,
+        };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

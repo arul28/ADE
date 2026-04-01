@@ -321,6 +321,7 @@ import type {
   AiReviewSummary,
   IssueInventoryItem,
   IssueInventorySnapshot,
+  PrConvergenceState,
   ConvergenceStatus,
   PipelineSettings,
   UpdateIntegrationProposalArgs,
@@ -1030,6 +1031,9 @@ declare global {
         issueInventoryMarkEscalated: (prId: string, itemIds: string[]) => Promise<void>;
         issueInventoryGetConvergence: (prId: string) => Promise<ConvergenceStatus>;
         issueInventoryReset: (prId: string) => Promise<void>;
+        convergenceStateGet: (prId: string) => Promise<PrConvergenceState>;
+        convergenceStateSave: (prId: string, state: Partial<PrConvergenceState>) => Promise<PrConvergenceState>;
+        convergenceStateDelete: (prId: string) => Promise<void>;
         pipelineSettingsGet: (prId: string) => Promise<PipelineSettings>;
         pipelineSettingsSave: (prId: string, settings: Partial<PipelineSettings>) => Promise<void>;
         pipelineSettingsDelete: (prId: string) => Promise<void>;
