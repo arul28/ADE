@@ -1800,6 +1800,11 @@ export function createPrService({
       `,
       [projectId, projectId]
     );
+    // Explicitly delete child rows that rely on FK cascade — CRR conversion can
+    // strip checked foreign keys, leaving orphaned rows if we only rely on CASCADE.
+    db.run("delete from pr_convergence_state where pr_id = ?", [row.id]);
+    db.run("delete from pr_pipeline_settings where pr_id = ?", [row.id]);
+    db.run("delete from pr_issue_inventory where pr_id = ?", [row.id]);
     db.run("delete from pull_requests where id = ? and project_id = ?", [row.id, projectId]);
 
     let laneArchived = false;

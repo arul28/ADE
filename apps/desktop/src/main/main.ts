@@ -1021,6 +1021,16 @@ app.whenReady().then(async () => {
     const onTrackedSessionEnded = ({ laneId, sessionId, exitCode }: { laneId: string; sessionId: string; exitCode: number | null }) => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
+      try {
+        issueInventoryService.reconcileConvergenceSessionExit(sessionId, { exitCode });
+      } catch (error) {
+        logger.warn("main.convergence_session_reconcile_failed", {
+          laneId,
+          sessionId,
+          exitCode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       void linearSyncServiceRef?.processActiveRunsNow().catch(() => {});
       if (orchestratorServiceRef) {
         void orchestratorServiceRef
@@ -1364,6 +1374,7 @@ app.whenReady().then(async () => {
       linearClient,
       linearCredentials: linearCredentialService,
       prService,
+      issueInventoryService,
       processService,
       getTestService: () => testServiceRef,
       ptyService,

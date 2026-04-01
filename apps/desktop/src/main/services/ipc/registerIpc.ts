@@ -5042,8 +5042,14 @@ export function registerIpc({
         errorMessage: null,
         pauseReason: null,
       });
-    } catch {
-      // Best-effort persistence only.
+    } catch (error) {
+      ctx.logger.warn("ipc.prs_issue_resolution_convergence_persist_failed", {
+        prId: arg.prId,
+        sessionId: result.sessionId,
+        laneId: result.laneId,
+        href: result.href,
+        error: getErrorMessage(error),
+      });
     }
     return result;
   });
@@ -5122,8 +5128,34 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsConvergenceStateGet, (_e, args: { prId: string }): ConvergenceRuntimeState =>
     getCtx().issueInventoryService.getConvergenceRuntime(args.prId));
-  ipcMain.handle(IPC.prsConvergenceStateSave, (_e, args: { prId: string; state: Partial<ConvergenceRuntimeState> }): ConvergenceRuntimeState =>
-    getCtx().issueInventoryService.saveConvergenceRuntime(args.prId, args.state));
+  ipcMain.handle(IPC.prsConvergenceStateSave, (_e, args: { prId: string; state: Partial<ConvergenceRuntimeState> }): ConvergenceRuntimeState => {
+    // Whitelist: only allow renderer to update operational fields.
+    // Identity fields (prId) and immutable timestamps (createdAt) are stripped.
+    const MUTABLE_FIELDS: ReadonlySet<keyof ConvergenceRuntimeState> = new Set([
+      "autoConvergeEnabled",
+      "status",
+      "pollerStatus",
+      "currentRound",
+      "activeSessionId",
+      "activeLaneId",
+      "activeHref",
+      "pauseReason",
+      "errorMessage",
+      "lastStartedAt",
+      "lastPolledAt",
+      "lastPausedAt",
+      "lastStoppedAt",
+      "updatedAt",
+    ]);
+    const sanitized: Partial<ConvergenceRuntimeState> = {};
+    for (const key of Object.keys(args.state) as (keyof ConvergenceRuntimeState)[]) {
+      if (MUTABLE_FIELDS.has(key)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+        (sanitized as any)[key] = (args.state as any)[key];
+      }
+    }
+    return getCtx().issueInventoryService.saveConvergenceRuntime(args.prId, sanitized);
+  });
   ipcMain.handle(IPC.prsConvergenceStateDelete, (_e, args: { prId: string }): void =>
     getCtx().issueInventoryService.resetConvergenceRuntime(args.prId));
 

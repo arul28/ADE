@@ -205,6 +205,17 @@ function ConvergenceHarness() {
       </button>
       <button
         type="button"
+        data-testid="save-then-load"
+        onClick={async () => {
+          await saveConvergenceState("pr-1", { autoConvergeEnabled: true });
+          const result = await loadConvergenceState("pr-1");
+          resultRef.current = result;
+        }}
+      >
+        save-then-load
+      </button>
+      <button
+        type="button"
         data-testid="reset"
         onClick={async () => {
           await resetConvergenceState("pr-1");
@@ -364,6 +375,27 @@ describe("PrsContext convergence state", () => {
     await waitFor(() => {
       expect(screen.getByTestId("cached-keys").textContent).toBe("pr-1");
     });
+  });
+
+  it("uses the updated ref cache for a back-to-back save then load", async () => {
+    const user = userEvent.setup();
+    render(
+      <PrsProvider>
+        <ConvergenceHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByTestId("save-then-load"));
+
+    await waitFor(() => {
+      expect(convergenceSaveMock).toHaveBeenCalledWith("pr-1", { autoConvergeEnabled: true });
+    });
+
+    expect(convergenceGetMock).not.toHaveBeenCalled();
   });
 
   it("resetConvergenceState calls IPC delete and removes from cache", async () => {

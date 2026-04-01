@@ -244,7 +244,7 @@ function RoundIndicator({ current, max }: { current: number; max: number }) {
           else if (isCurrent) dotColor = COLORS.accent;
           return (
             <div
-              key={i}
+              key={`round-${i + 1}`}
               style={{
                 width: isCurrent ? 8 : 6,
                 height: isCurrent ? 8 : 6,

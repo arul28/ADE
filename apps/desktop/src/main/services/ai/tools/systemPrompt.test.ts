@@ -191,6 +191,7 @@ describe("buildCodingAgentSystemPrompt", () => {
       });
       expect(result).toContain("## Pull Request Tools");
       expect(result).toContain("prRefreshIssueInventory, prGetReviewComments");
+      expect(result).toContain("not shell commands");
       expect(result).toContain("report the misconfiguration immediately");
     });
 

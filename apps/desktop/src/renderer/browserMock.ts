@@ -1538,10 +1538,12 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       convergenceStateGet: async (prId: string) => MOCK_CONVERGENCE_RUNTIME[prId] ?? createDefaultConvergenceRuntime(prId),
       convergenceStateSave: async (prId: string, state: Record<string, any>) => {
         const nowIso = new Date().toISOString();
+        const existing = MOCK_CONVERGENCE_RUNTIME[prId] ?? createDefaultConvergenceRuntime(prId);
         const next = {
-          ...createDefaultConvergenceRuntime(prId),
-          ...(MOCK_CONVERGENCE_RUNTIME[prId] ?? {}),
+          ...existing,
           ...state,
+          prId,
+          createdAt: existing.createdAt ?? new Date().toISOString(),
           updatedAt: nowIso,
         };
         MOCK_CONVERGENCE_RUNTIME[prId] = next;

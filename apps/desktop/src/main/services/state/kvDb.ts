@@ -3022,11 +3022,31 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       loadCrsqlite(db, extensionPath);
     }
 
-    migrate({
+    // Build a CRR-aware run wrapper: when crsqlite is loaded and a table has
+    // been converted to a CRR, ALTER TABLE statements must be wrapped with
+    // crsql_begin_alter / crsql_commit_alter so the clock tables stay in sync.
+    const makeMigrateDb = () => ({
       run: (sql: string, params: SqlValue[] = []) => {
+        const alterTable = parseAlterTableTarget(sql);
+        if (alterTable && rawHasTable(db, `${alterTable}__crsql_clock`)) {
+          getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
+          try {
+            runStatement(db, sql, params);
+          } catch (error) {
+            // Commit the alter even on failure so the CRR state stays consistent,
+            // then re-throw so the caller's try/catch can handle it (e.g. column
+            // already exists on upgrade).
+            getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
+            throw error;
+          }
+          getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
+          return;
+        }
         runStatement(db, sql, params);
       },
     });
+
+    migrate(makeMigrateDb());
 
     if (existedBeforeOpen && !hasCrsqlMetadata(db)) {
       writeMigrationBackupIfNeeded(dbPath);
@@ -3038,11 +3058,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hadCrsqlMetadata && hasCrsqlite) {
         loadCrsqlite(db, extensionPath);
       }
-      migrate({
-        run: (sql: string, params: SqlValue[] = []) => {
-          runStatement(db, sql, params);
-        },
-      });
+      migrate(makeMigrateDb());
     }
 
     if (retrofitForeignKeyCascadeActions(db, hasCrsqlite)) {
@@ -3051,11 +3067,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hadCrsqlMetadata && hasCrsqlite) {
         loadCrsqlite(db, extensionPath);
       }
-      migrate({
-        run: (sql: string, params: SqlValue[] = []) => {
-          runStatement(db, sql, params);
-        },
-      });
+      migrate(makeMigrateDb());
     }
 
     if (hasCrsqlite) {

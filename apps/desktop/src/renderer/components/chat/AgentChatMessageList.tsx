@@ -2900,7 +2900,7 @@ export function AgentChatMessageList({
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 
   const streamingIndicator = showStreamingIndicator ? (
-    <div className="sticky bottom-0 z-10 bg-gradient-to-t from-[#09090b] via-[#09090b]/95 to-transparent pt-3 pb-1">
+    <div className="pt-3 pb-1">
       {latestActivity ? (
         <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
       ) : (

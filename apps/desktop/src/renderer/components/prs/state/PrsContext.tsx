@@ -284,9 +284,14 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const storeConvergenceState = useCallback((state: PrConvergenceState): PrConvergenceState => {
+    convergenceStatesByPrIdRef.current = { ...convergenceStatesByPrIdRef.current, [state.prId]: state };
     setConvergenceStatesByPrId((prev) => {
-      if (jsonEqual(prev[state.prId], state)) return prev;
-      return { ...prev, [state.prId]: state };
+      if (jsonEqual(prev[state.prId], state)) {
+        return prev;
+      }
+      const next = { ...prev, [state.prId]: state };
+      convergenceStatesByPrIdRef.current = next;
+      return next;
     });
     return state;
   }, []);

@@ -30,7 +30,30 @@ const SOURCE_PATTERNS: Array<{ pattern: RegExp; source: IssueSource }> = [
   { pattern: /^ade-review(\[bot\])?$/i, source: "ade" },
 ];
 
-function detectSource(author: string | null | undefined): IssueSource {
+const CONVERGENCE_RUNTIME_STATUS_VALUES = new Set<ConvergenceRuntimeState["status"]>([
+  "idle",
+  "launching",
+  "running",
+  "polling",
+  "paused",
+  "converged",
+  "merged",
+  "failed",
+  "cancelled",
+  "stopped",
+]);
+
+const CONVERGENCE_POLLER_STATUS_VALUES = new Set<ConvergenceRuntimeState["pollerStatus"]>([
+  "idle",
+  "scheduled",
+  "polling",
+  "waiting_for_checks",
+  "waiting_for_comments",
+  "paused",
+  "stopped",
+]);
+
+export function detectSource(author: string | null | undefined): IssueSource {
   const name = (author ?? "").trim();
   if (!name) return "unknown";
   for (const { pattern, source } of SOURCE_PATTERNS) {
@@ -44,7 +67,7 @@ function detectSource(author: string | null | undefined): IssueSource {
 // Severity extraction — reuses the same pattern as prIssueResolver.ts
 // ---------------------------------------------------------------------------
 
-function extractSeverity(value: string): "critical" | "major" | "minor" | null {
+export function extractSeverity(value: string): "critical" | "major" | "minor" | null {
   // Match explicit severity words
   const wordMatch = value.match(/\b(Critical|Major|Minor)\b/i);
   if (wordMatch?.[1]) return wordMatch[1].toLowerCase() as "critical" | "major" | "minor";
@@ -165,7 +188,7 @@ function rowToItem(row: InventoryRow): IssueInventoryItem {
 
 const DEFAULT_MAX_ROUNDS = 5;
 
-function computeConvergenceStatus(items: IssueInventoryItem[], maxRounds: number = DEFAULT_MAX_ROUNDS): ConvergenceStatus {
+export function computeConvergenceStatus(items: IssueInventoryItem[], maxRounds: number = DEFAULT_MAX_ROUNDS): ConvergenceStatus {
   let totalNew = 0;
   let totalFixed = 0;
   let totalDismissed = 0;
@@ -244,8 +267,73 @@ function buildDefaultRuntimeState(prId: string): ConvergenceRuntimeState {
   };
 }
 
-function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntimeState {
+/**
+ * Validates renderer-supplied runtime fields before persisting.
+ * Throws on clearly malformed data (wrong types, unknown enum values,
+ * negative rounds) rather than silently correcting.
+ */
+function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>): void {
+  if (state.status !== undefined && !CONVERGENCE_RUNTIME_STATUS_VALUES.has(state.status as ConvergenceRuntimeState["status"])) {
+    throw new Error(`Invalid convergence runtime status: ${JSON.stringify(state.status)}`);
+  }
+  if (state.pollerStatus !== undefined && !CONVERGENCE_POLLER_STATUS_VALUES.has(state.pollerStatus as ConvergenceRuntimeState["pollerStatus"])) {
+    throw new Error(`Invalid convergence poller status: ${JSON.stringify(state.pollerStatus)}`);
+  }
+  if (state.currentRound !== undefined) {
+    if (typeof state.currentRound !== "number" || !Number.isFinite(state.currentRound)) {
+      throw new Error(`Invalid currentRound: expected a finite number, got ${JSON.stringify(state.currentRound)}`);
+    }
+    if (state.currentRound < 0 || !Number.isInteger(state.currentRound)) {
+      throw new Error(`Invalid currentRound: expected a non-negative integer, got ${state.currentRound}`);
+    }
+  }
+}
+
+function sanitizeConvergenceRuntimeState(
+  prId: string,
+  state: ConvergenceRuntimeState,
+): ConvergenceRuntimeState {
+  const now = nowIso();
   return {
+    prId,
+    autoConvergeEnabled: state.autoConvergeEnabled === true,
+    status: CONVERGENCE_RUNTIME_STATUS_VALUES.has(state.status) ? state.status : "idle",
+    pollerStatus: CONVERGENCE_POLLER_STATUS_VALUES.has(state.pollerStatus) ? state.pollerStatus : "idle",
+    currentRound: Number.isFinite(state.currentRound) ? Math.max(0, Math.trunc(state.currentRound)) : 0,
+    activeSessionId: typeof state.activeSessionId === "string" && state.activeSessionId.trim().length > 0
+      ? state.activeSessionId.trim()
+      : null,
+    activeLaneId: typeof state.activeLaneId === "string" && state.activeLaneId.trim().length > 0
+      ? state.activeLaneId.trim()
+      : null,
+    activeHref: typeof state.activeHref === "string" && state.activeHref.trim().length > 0
+      ? state.activeHref.trim()
+      : null,
+    pauseReason: typeof state.pauseReason === "string" && state.pauseReason.trim().length > 0
+      ? state.pauseReason.trim()
+      : null,
+    errorMessage: typeof state.errorMessage === "string" && state.errorMessage.trim().length > 0
+      ? state.errorMessage.trim()
+      : null,
+    lastStartedAt: typeof state.lastStartedAt === "string" && state.lastStartedAt.trim().length > 0
+      ? state.lastStartedAt.trim()
+      : null,
+    lastPolledAt: typeof state.lastPolledAt === "string" && state.lastPolledAt.trim().length > 0
+      ? state.lastPolledAt.trim()
+      : null,
+    lastPausedAt: typeof state.lastPausedAt === "string" && state.lastPausedAt.trim().length > 0
+      ? state.lastPausedAt.trim()
+      : null,
+    lastStoppedAt: typeof state.lastStoppedAt === "string" && state.lastStoppedAt.trim().length > 0
+      ? state.lastStoppedAt.trim()
+      : null,
+    createdAt: typeof state.createdAt === "string" && state.createdAt.trim().length > 0 ? state.createdAt : now,
+    updatedAt: typeof state.updatedAt === "string" && state.updatedAt.trim().length > 0 ? state.updatedAt : now,
+  };
+}
+
+function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntimeState {
+  return sanitizeConvergenceRuntimeState(row.pr_id, {
     prId: row.pr_id,
     autoConvergeEnabled: row.auto_converge_enabled === 1,
     status: row.status as ConvergenceRuntimeState["status"],
@@ -262,7 +350,7 @@ function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntime
     lastStoppedAt: row.last_stopped_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -423,15 +511,23 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
     );
   }
 
+  function getConvergenceRuntimeRowsByActiveSessionId(sessionId: string): ConvergenceRuntimeRow[] {
+    return db.all<ConvergenceRuntimeRow>(
+      "select * from pr_convergence_state where active_session_id = ?",
+      [sessionId],
+    );
+  }
+
   function saveConvergenceRuntimeState(prId: string, state: Partial<ConvergenceRuntimeState>): ConvergenceRuntimeState {
+    validateConvergenceRuntimeState(state);
     const existing = readConvergenceRuntime(prId);
-    const merged: ConvergenceRuntimeState = {
+    const merged = sanitizeConvergenceRuntimeState(prId, {
       ...existing,
       ...state,
       prId,
       createdAt: existing.createdAt,
       updatedAt: nowIso(),
-    };
+    });
 
     db.run(
       `insert into pr_convergence_state
@@ -583,10 +679,13 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
           continue;
         }
 
+        const latestCommentAt = latestComment?.updatedAt ?? latestComment?.createdAt ?? null;
         const threadChanged = existing != null
           && (
             commentCount > (existing.thread_comment_count ?? 0)
             || (latestComment?.id != null && latestComment.id !== existing.thread_latest_comment_id)
+            || (latestCommentAt != null && existing.thread_latest_comment_at != null
+                && latestCommentAt > existing.thread_latest_comment_at)
           );
         const shouldReopen = !existing || (threadChanged && source !== "ade");
 
@@ -690,6 +789,38 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
 
     saveConvergenceRuntime(prId: string, state: Partial<ConvergenceRuntimeState>): ConvergenceRuntimeState {
       return saveConvergenceRuntimeState(prId, state);
+    },
+
+    reconcileConvergenceSessionExit(sessionId: string, opts?: { exitCode?: number | null }): ConvergenceRuntimeState[] {
+      const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!normalizedSessionId) return [];
+      const rows = getConvergenceRuntimeRowsByActiveSessionId(normalizedSessionId);
+      if (rows.length === 0) return [];
+      const endedAt = nowIso();
+      const exitCode = typeof opts?.exitCode === "number" ? opts.exitCode : null;
+      return rows.map((row) => {
+        const runtime = rowToConvergenceRuntime(row);
+        if (runtime.autoConvergeEnabled) {
+          return saveConvergenceRuntimeState(runtime.prId, {
+            status: "paused",
+            pollerStatus: "paused",
+            activeSessionId: null,
+            pauseReason: "Agent session ended. Refresh the PR to reconcile checks and continue.",
+            errorMessage: null,
+            lastPausedAt: endedAt,
+          });
+        }
+        return saveConvergenceRuntimeState(runtime.prId, {
+          status: exitCode === 0 ? "stopped" : "failed",
+          pollerStatus: "stopped",
+          activeSessionId: null,
+          pauseReason: null,
+          errorMessage: exitCode === 0
+            ? null
+            : `Agent session ended with exit code ${exitCode ?? "unknown"}. Refresh the PR to inspect the result.`,
+          lastStoppedAt: endedAt,
+        });
+      });
     },
 
     resetConvergenceRuntime(prId: string): void {

@@ -295,6 +295,15 @@ describe("launchPrIssueResolutionChat", () => {
     const previewSessionToolNames = vi.fn(() => WORKFLOW_PR_TOOL_NAMES);
     const updateMeta = vi.fn();
 
+    const issueInventoryService = {
+      syncFromPrData: vi.fn(() => ({
+        items: [],
+        convergence: { currentRound: 0, status: "idle" },
+      })),
+      getNewItems: vi.fn(() => []),
+      markSentToAgent: vi.fn(),
+    };
+
     const deps = {
       prService: {
         listAll: () => [pr],
@@ -311,6 +320,7 @@ describe("launchPrIssueResolutionChat", () => {
       },
       agentChatService: { createSession, sendMessage, previewSessionToolNames },
       sessionService: { updateMeta },
+      issueInventoryService,
     };
 
     return { lane, pr, deps, createSession, sendMessage, previewSessionToolNames, updateMeta };
@@ -350,11 +360,14 @@ describe("launchPrIssueResolutionChat", () => {
     expect(result.prompt).toContain("mcp__ade__pr_refresh_issue_inventory");
     expect(result.prompt).toContain("mcp__ade__pr_get_review_comments");
     expect(result.prompt).toContain("mcp__ade__pr_resolve_review_thread");
-    expect(result.prompt).toContain("Use those exact names, not the unprefixed `pr_...` variants.");
+    expect(result.prompt).toContain("ADE PR tools are runtime tool calls, not shell commands.");
+    expect(result.prompt).toContain("Some bridges may also expose the base tool names like `pr_refresh_issue_inventory` and `pr_get_review_comments`.");
+    expect(result.prompt).toContain("Use whichever variant is actually exposed in the live tool list for this chat runtime.");
     expect(result.prompt).toContain("Immediately after that, call `mcp__ade__pr_get_review_comments`");
     expect(result.prompt).toContain("Treat the refreshed inventory as a triage index");
     expect(result.prompt).toContain("Do not spend your first steps reading local skill docs");
-    expect(result.prompt).toContain("Do not conclude the PR tools are missing just because the unprefixed `pr_...` names are absent.");
+    expect(result.prompt).toContain("Do not probe tool availability with `which`, `command -v`, `.mcp.json`, or project settings files");
+    expect(result.prompt).toContain("Do not conclude the PR tools are missing just because one naming variant is absent.");
     expect(result.prompt).not.toContain("prRefreshIssueInventory");
   });
 
@@ -472,6 +485,14 @@ describe("launchPrIssueResolutionChat", () => {
         previewSessionToolNames: vi.fn(() => WORKFLOW_PR_TOOL_NAMES),
       },
       sessionService: { updateMeta: vi.fn() },
+      issueInventoryService: {
+        syncFromPrData: vi.fn(() => ({
+          items: [],
+          convergence: { currentRound: 0, status: "idle" },
+        })),
+        getNewItems: vi.fn(() => []),
+        markSentToAgent: vi.fn(),
+      },
     };
 
     await launchPrIssueResolutionChat(deps as any, {

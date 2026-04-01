@@ -425,11 +425,117 @@ function createMockProjectConfigService() {
   } as any;
 }
 
+function createMockIssueInventoryService() {
+  const now = new Date().toISOString();
+  return {
+    syncFromPrData: vi.fn((prId: string) => ({
+      prId,
+      items: [],
+      convergence: {
+        currentRound: 0,
+        maxRounds: 5,
+        issuesPerRound: [],
+        totalNew: 0,
+        totalFixed: 0,
+        totalDismissed: 0,
+        totalEscalated: 0,
+        totalSentToAgent: 0,
+        isConverging: false,
+        canAutoAdvance: false,
+      },
+      runtime: {
+        prId,
+        autoConvergeEnabled: false,
+        status: "idle",
+        pollerStatus: "idle",
+        currentRound: 0,
+        activeSessionId: null,
+        activeLaneId: null,
+        activeHref: null,
+        pauseReason: null,
+        errorMessage: null,
+        lastStartedAt: null,
+        lastPolledAt: null,
+        lastPausedAt: null,
+        lastStoppedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    })),
+    getInventory: vi.fn(),
+    getNewItems: vi.fn(() => []),
+    markSentToAgent: vi.fn(),
+    markFixed: vi.fn(),
+    markDismissed: vi.fn(),
+    markEscalated: vi.fn(),
+    getConvergenceStatus: vi.fn(() => ({
+      currentRound: 0,
+      maxRounds: 5,
+      issuesPerRound: [],
+      totalNew: 0,
+      totalFixed: 0,
+      totalDismissed: 0,
+      totalEscalated: 0,
+      totalSentToAgent: 0,
+      isConverging: false,
+      canAutoAdvance: false,
+    })),
+    resetInventory: vi.fn(),
+    getConvergenceRuntime: vi.fn((prId: string) => ({
+      prId,
+      autoConvergeEnabled: false,
+      status: "idle",
+      pollerStatus: "idle",
+      currentRound: 0,
+      activeSessionId: null,
+      activeLaneId: null,
+      activeHref: null,
+      pauseReason: null,
+      errorMessage: null,
+      lastStartedAt: null,
+      lastPolledAt: null,
+      lastPausedAt: null,
+      lastStoppedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    })),
+    saveConvergenceRuntime: vi.fn((prId: string, state: Record<string, unknown>) => ({
+      prId,
+      autoConvergeEnabled: false,
+      status: "idle",
+      pollerStatus: "idle",
+      currentRound: 0,
+      activeSessionId: null,
+      activeLaneId: null,
+      activeHref: null,
+      pauseReason: null,
+      errorMessage: null,
+      lastStartedAt: null,
+      lastPolledAt: null,
+      lastPausedAt: null,
+      lastStoppedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      ...state,
+    })),
+    resetConvergenceRuntime: vi.fn(),
+    getPipelineSettings: vi.fn(() => ({
+      maxRounds: 5,
+      autoMerge: false,
+      mergeMethod: "repo_default",
+      onRebaseNeeded: "pause",
+    })),
+    savePipelineSettings: vi.fn(),
+    deletePipelineSettings: vi.fn(),
+  } as any;
+}
+
 function createService(overrides: Record<string, unknown> = {}) {
   const logger = createLogger();
   const laneService = createMockLaneService();
   const sessionService = createMockSessionService();
   const projectConfigService = createMockProjectConfigService();
+  const issueInventoryService = createMockIssueInventoryService();
   const transcriptsDir = path.join(tmpRoot, "transcripts");
   fs.mkdirSync(transcriptsDir, { recursive: true });
 
@@ -440,6 +546,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     laneService,
     sessionService,
     projectConfigService,
+    issueInventoryService,
     logger: logger as any,
     appVersion: "0.0.1-test",
     getExternalMcpConfigs: () => [],
@@ -447,7 +554,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     ...overrides,
   });
 
-  return { service, logger, laneService, sessionService, projectConfigService };
+  return { service, logger, laneService, sessionService, projectConfigService, issueInventoryService };
 }
 
 function readPersistedChatState(sessionId: string): Record<string, any> {
@@ -670,6 +777,32 @@ describe("createAgentChatService", () => {
       expect(session).toBeDefined();
       expect(session.provider).toBe("claude");
       expect(session.status).toBe("idle");
+    });
+
+    it("appends ADE tooling guidance to Claude SDK sessions", async () => {
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-guidance",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      expect(opts?.systemPrompt?.append).toContain("ADE and MCP tools are runtime tool calls, not shell commands.");
+      expect(opts?.systemPrompt?.append).toContain(".mcp.json");
     });
 
     it("migrates legacy Claude plan mode into interaction mode", async () => {
@@ -1170,9 +1303,12 @@ describe("createAgentChatService", () => {
     });
 
     it("roots Codex MCP launches in the selected lane worktree while keeping the desktop project root", async () => {
+      fs.mkdirSync(path.join(tmpRoot, "apps", "mcp-server"), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, "apps", "mcp-server", "package.json"), "{\"name\":\"mcp-server\"}", "utf8");
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
       const laneRoot = fs.realpathSync(laneRootPath);
+      const runtimeRoot = fs.realpathSync(tmpRoot);
       vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
       const { service } = createService();
@@ -1197,11 +1333,16 @@ describe("createAgentChatService", () => {
       const projectRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
         .map(([args]) => (args as { projectRoot?: string }).projectRoot)
         .filter((value): value is string => typeof value === "string");
+      const runtimeRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
+        .map(([args]) => (args as { runtimeRoot?: string }).runtimeRoot)
+        .filter((value): value is string => typeof value === "string");
 
       expect(workspaceRoots.length).toBeGreaterThan(0);
       expect(new Set(workspaceRoots)).toEqual(new Set([laneRoot]));
       expect(projectRoots.length).toBeGreaterThan(0);
       expect(new Set(projectRoots)).toEqual(new Set([tmpRoot]));
+      expect(runtimeRoots.length).toBeGreaterThan(0);
+      expect(new Set(runtimeRoots.map((value) => fs.realpathSync(value)))).toEqual(new Set([runtimeRoot]));
     });
 
     it("executes identity-hosted unified turns from the selected execution lane", async () => {

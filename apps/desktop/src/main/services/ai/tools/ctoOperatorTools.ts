@@ -21,8 +21,8 @@ import type {
 import type {
   ConvergenceRuntimeState,
   ConvergenceStatus,
-  ConvergenceRoundStat,
   IssueInventoryItem,
+  IssueSource,
   PipelineSettings,
   PrCheck,
   PrComment,
@@ -40,6 +40,7 @@ import type { createLaneService } from "../../lanes/laneService";
 import type { createMissionService } from "../../missions/missionService";
 import type { createAiOrchestratorService } from "../../orchestrator/aiOrchestratorService";
 import type { createIssueInventoryService } from "../../prs/issueInventoryService";
+import { computeConvergenceStatus, detectSource, extractSeverity } from "../../prs/issueInventoryService";
 import { previewPrIssueResolutionPrompt } from "../../prs/prIssueResolver";
 import type { createPrService } from "../../prs/prService";
 import type { createProcessService } from "../../processes/processService";
@@ -271,9 +272,7 @@ function resolveWorkspaceIdForLane(
 }
 
 function extractSeverityFromText(text: string | null | undefined): IssueInventoryItem["severity"] {
-  const match = String(text ?? "").match(/\b(Critical|Major|Minor)\b/i);
-  if (!match?.[1]) return null;
-  return match[1].toLowerCase() as IssueInventoryItem["severity"];
+  return extractSeverity(String(text ?? ""));
 }
 
 function truncateForHeadline(text: string, max = 140): string {
@@ -283,69 +282,7 @@ function truncateForHeadline(text: string, max = 140): string {
 }
 
 function summarizeInventoryItems(items: IssueInventoryItem[], maxRounds: number): ConvergenceStatus {
-  let totalNew = 0;
-  let totalFixed = 0;
-  let totalDismissed = 0;
-  let totalEscalated = 0;
-  let totalSentToAgent = 0;
-  let currentRound = 0;
-  const roundMap = new Map<number, ConvergenceRoundStat>();
-
-  for (const item of items) {
-    switch (item.state) {
-      case "new":
-        totalNew++;
-        break;
-      case "fixed":
-        totalFixed++;
-        break;
-      case "dismissed":
-        totalDismissed++;
-        break;
-      case "escalated":
-        totalEscalated++;
-        break;
-      case "sent_to_agent":
-        totalSentToAgent++;
-        break;
-    }
-
-    if (item.round > currentRound) currentRound = item.round;
-    if (item.round <= 0) continue;
-
-    const stat = roundMap.get(item.round) ?? { round: item.round, newCount: 0, fixedCount: 0, dismissedCount: 0 };
-    switch (item.state) {
-      case "new":
-      case "sent_to_agent":
-        stat.newCount++;
-        break;
-      case "fixed":
-        stat.fixedCount++;
-        break;
-      case "dismissed":
-        stat.dismissedCount++;
-        break;
-    }
-    roundMap.set(item.round, stat);
-  }
-
-  const issuesPerRound = Array.from(roundMap.values()).sort((a, b) => a.round - b.round);
-  const lastRoundStat = issuesPerRound.at(-1);
-  const isConverging = lastRoundStat != null && (lastRoundStat.fixedCount + lastRoundStat.dismissedCount) > 0;
-  const canAutoAdvance = totalNew > 0 && currentRound < maxRounds;
-
-  return {
-    currentRound,
-    maxRounds,
-    issuesPerRound,
-    totalNew,
-    totalFixed,
-    totalDismissed,
-    totalEscalated,
-    totalSentToAgent,
-    isConverging,
-    canAutoAdvance,
-  };
+  return computeConvergenceStatus(items, maxRounds);
 }
 
 function buildFallbackInventoryItems(args: {
@@ -365,10 +302,12 @@ function buildFallbackInventoryItems(args: {
       .filter(Boolean)
       .join("\n\n")
       .trim() || null;
+    const author = latestComment?.author ?? null;
+    const source: IssueSource = detectSource(author);
     items.push({
       id: `transient-thread-${thread.id}`,
       prId: args.prId,
-      source: "unknown",
+      source,
       type: "review_thread",
       externalId: `review-thread:${thread.id}`,
       state: thread.isResolved || thread.isOutdated ? "fixed" : "new",
@@ -378,7 +317,7 @@ function buildFallbackInventoryItems(args: {
       severity: extractSeverityFromText(body ?? headlineSource),
       headline: truncateForHeadline(headlineSource),
       body,
-      author: latestComment?.author ?? null,
+      author,
       url: thread.url,
       dismissReason: null,
       agentSessionId: null,
@@ -386,7 +325,7 @@ function buildFallbackInventoryItems(args: {
       threadLatestCommentId: latestComment?.id ?? null,
       threadLatestCommentAuthor: latestComment?.author ?? null,
       threadLatestCommentAt: latestComment?.createdAt ?? null,
-      threadLatestCommentSource: "unknown",
+      threadLatestCommentSource: source,
       createdAt: thread.createdAt ?? timestamp,
       updatedAt: thread.updatedAt ?? thread.createdAt ?? timestamp,
     });
@@ -398,7 +337,7 @@ function buildFallbackInventoryItems(args: {
     items.push({
       id: `transient-comment-${comment.id}`,
       prId: args.prId,
-      source: "unknown",
+      source: detectSource(comment.author),
       type: "issue_comment",
       externalId: `issue-comment:${comment.id}`,
       state: "new",
@@ -1565,9 +1504,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         }
         const resolvedReasoning = reasoning ?? deps.defaultReasoningEffort ?? null;
 
-        const context = deps.issueInventoryService
-          ? await loadPrConvergenceContext(deps, prId)
-          : null;
+        if (!deps.issueInventoryService) {
+          return { success: false, error: "Issue inventory service is not available." };
+        }
+
+        const context = await loadPrConvergenceContext(deps, prId);
         const pr = context?.pr ?? deps.prService.listAll().find((entry) => entry.id === prId) ?? null;
         if (!pr) {
           return { success: false, error: `PR not found: ${prId}` };
@@ -1592,7 +1533,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
               ],
             },
             sessionService: deps.sessionService,
-            issueInventoryService: deps.issueInventoryService ?? null,
+            issueInventoryService: deps.issueInventoryService,
           },
           {
             prId,
@@ -1630,30 +1571,36 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         let runtime: ConvergenceRuntimeState | null = null;
         if (deps.issueInventoryService) {
           const roundNumber = (context?.inventory.summary.currentRound ?? 0) + 1;
-          const inventoryNewItems = deps.issueInventoryService.getNewItems(prId);
-          if (inventoryNewItems.length > 0) {
-            deps.issueInventoryService.markSentToAgent(
-              prId,
-              inventoryNewItems.map((item) => item.id),
-              session.id,
-              roundNumber,
+          try {
+            const inventoryNewItems = deps.issueInventoryService.getNewItems(prId);
+            if (inventoryNewItems.length > 0) {
+              deps.issueInventoryService.markSentToAgent(
+                prId,
+                inventoryNewItems.map((item) => item.id),
+                session.id,
+                roundNumber,
+              );
+            }
+            runtime = deps.issueInventoryService.saveConvergenceRuntime(prId, {
+              autoConvergeEnabled,
+              status: "running",
+              pollerStatus: "waiting_for_comments",
+              currentRound: roundNumber,
+              activeSessionId: session.id,
+              activeLaneId: session.laneId,
+              activeHref: href,
+              pauseReason: null,
+              errorMessage: null,
+              lastStartedAt: nowIso(),
+              lastPolledAt: null,
+              lastPausedAt: null,
+              lastStoppedAt: null,
+            });
+          } catch (inventoryError) {
+            console.error(
+              `[convergence] Failed to update inventory/runtime for PR ${prId}: ${getErrorMessage(inventoryError)}`,
             );
           }
-          runtime = deps.issueInventoryService.saveConvergenceRuntime(prId, {
-            autoConvergeEnabled,
-            status: "running",
-            pollerStatus: "waiting_for_comments",
-            currentRound: roundNumber,
-            activeSessionId: session.id,
-            activeLaneId: session.laneId,
-            activeHref: href,
-            pauseReason: null,
-            errorMessage: null,
-            lastStartedAt: nowIso(),
-            lastPolledAt: null,
-            lastPausedAt: null,
-            lastStoppedAt: null,
-          });
         }
 
         return {

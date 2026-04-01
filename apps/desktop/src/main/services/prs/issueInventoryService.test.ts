@@ -1258,6 +1258,39 @@ describe("issueInventoryService", () => {
       expect(params[5]).toBe("session-9");
     });
 
+    it("reconciles active convergence sessions when a tracked chat exits", () => {
+      const db = makeMockDb();
+      db.all.mockImplementation((sql: string, params?: unknown[]) => {
+        if (sql.includes("from pr_convergence_state where active_session_id = ?")) {
+          expect(params).toEqual(["session-1"]);
+          return [makeRuntimeRow()];
+        }
+        return [];
+      });
+      db.get.mockImplementation((sql: string) => {
+        if (sql.includes("from pr_convergence_state")) {
+          return makeRuntimeRow();
+        }
+        return null;
+      });
+
+      const service = createIssueInventoryService({ db });
+      const reconciled = service.reconcileConvergenceSessionExit("session-1", { exitCode: 0 });
+
+      expect(reconciled).toHaveLength(1);
+      expect(reconciled[0]).toEqual(expect.objectContaining({
+        prId: PR_ID,
+        status: "paused",
+        pollerStatus: "paused",
+        activeSessionId: null,
+        pauseReason: "Agent session ended. Refresh the PR to reconcile checks and continue.",
+      }));
+      expect(db.run).toHaveBeenCalledWith(
+        expect.stringContaining("insert into pr_convergence_state"),
+        expect.arrayContaining([PR_ID, 1, "paused", "paused", 2, null]),
+      );
+    });
+
     it("deletes convergence runtime state on reset", () => {
       const db = makeMockDb();
       const service = createIssueInventoryService({ db });
@@ -1793,6 +1826,226 @@ describe("issueInventoryService", () => {
       );
       const args = insertCalls[0][1] as unknown[];
       expect(args[9]).toBe("minor");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tests — validateConvergenceRuntimeState (Issue 1)
+  // ---------------------------------------------------------------------------
+
+  describe("convergence runtime validation", () => {
+    it("rejects an unknown status value", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+
+      const service = createIssueInventoryService({ db });
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { status: "bogus" as any }),
+      ).toThrow(/Invalid convergence runtime status/);
+    });
+
+    it("rejects an unknown pollerStatus value", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+
+      const service = createIssueInventoryService({ db });
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { pollerStatus: "made_up" as any }),
+      ).toThrow(/Invalid convergence poller status/);
+    });
+
+    it("rejects a negative currentRound", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+
+      const service = createIssueInventoryService({ db });
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { currentRound: -1 }),
+      ).toThrow(/Invalid currentRound/);
+    });
+
+    it("rejects a non-integer currentRound", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+
+      const service = createIssueInventoryService({ db });
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { currentRound: 2.5 }),
+      ).toThrow(/Invalid currentRound/);
+    });
+
+    it("rejects NaN currentRound", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+
+      const service = createIssueInventoryService({ db });
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { currentRound: NaN }),
+      ).toThrow(/Invalid currentRound/);
+    });
+
+    it("accepts valid runtime state fields", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+
+      const service = createIssueInventoryService({ db });
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, {
+          status: "running",
+          pollerStatus: "polling",
+          currentRound: 3,
+        }),
+      ).not.toThrow();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tests — reopen on latest-comment edits (Issue 2)
+  // ---------------------------------------------------------------------------
+
+  describe("thread reopen on comment edit", () => {
+    it("reopens a fixed thread when the latest comment is edited in place", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(makeFakeRow({
+        id: "existing-thread-item",
+        external_id: "thread:thread-edited",
+        state: "fixed",
+        round: 1,
+        thread_comment_count: 1,
+        thread_latest_comment_id: "comment-1",
+        thread_latest_comment_at: "2026-03-23T12:00:00.000Z",
+      }));
+      db.all.mockReturnValue([makeFakeRow({
+        id: "existing-thread-item",
+        external_id: "thread:thread-edited",
+        state: "new",
+        round: 1,
+      })]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [makeReviewThread({
+          id: "thread-edited",
+          comments: [{
+            id: "comment-1",
+            author: "reviewer",
+            authorAvatarUrl: null,
+            body: "**Critical** Actually this is worse than I thought.",
+            url: null,
+            createdAt: "2026-03-23T12:00:00.000Z",
+            // Same comment ID, but updatedAt is newer than stored thread_latest_comment_at
+            updatedAt: "2026-03-23T14:00:00.000Z",
+          }],
+        })],
+        [],
+      );
+
+      const updateCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("update pr_issue_inventory"),
+      );
+      expect(updateCalls.length).toBe(1);
+      const params = updateCalls[0][1] as unknown[];
+      // state should be "new" (reopened) because the comment was edited
+      expect(params[8]).toBe("new");
+      // agentSessionId should be cleared
+      expect(params[11]).toBeNull();
+    });
+
+    it("does not reopen when the latest comment has not been edited", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(makeFakeRow({
+        id: "existing-thread-item",
+        external_id: "thread:thread-unchanged",
+        state: "fixed",
+        round: 1,
+        thread_comment_count: 1,
+        thread_latest_comment_id: "comment-1",
+        thread_latest_comment_at: "2026-03-23T12:00:00.000Z",
+      }));
+      db.all.mockReturnValue([makeFakeRow({
+        id: "existing-thread-item",
+        external_id: "thread:thread-unchanged",
+        state: "fixed",
+        round: 1,
+      })]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [makeReviewThread({
+          id: "thread-unchanged",
+          comments: [{
+            id: "comment-1",
+            author: "reviewer",
+            authorAvatarUrl: null,
+            body: "Fix the null check.",
+            url: null,
+            createdAt: "2026-03-23T12:00:00.000Z",
+            // Same updatedAt as stored — no edit
+            updatedAt: "2026-03-23T12:00:00.000Z",
+          }],
+        })],
+        [],
+      );
+
+      const updateCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("update pr_issue_inventory"),
+      );
+      expect(updateCalls.length).toBe(1);
+      const params = updateCalls[0][1] as unknown[];
+      // state should remain "fixed" because nothing changed
+      expect(params[8]).toBe("fixed");
+    });
+
+    it("reopens a dismissed thread when the latest comment is edited", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(makeFakeRow({
+        id: "existing-thread-item",
+        external_id: "thread:thread-dismissed-edited",
+        state: "dismissed",
+        dismiss_reason: "Not relevant",
+        round: 1,
+        thread_comment_count: 1,
+        thread_latest_comment_id: "comment-1",
+        thread_latest_comment_at: "2026-03-23T12:00:00.000Z",
+      }));
+      db.all.mockReturnValue([makeFakeRow({
+        id: "existing-thread-item",
+        external_id: "thread:thread-dismissed-edited",
+        state: "new",
+        round: 1,
+      })]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [makeReviewThread({
+          id: "thread-dismissed-edited",
+          comments: [{
+            id: "comment-1",
+            author: "reviewer",
+            authorAvatarUrl: null,
+            body: "Updated: this is actually a real problem.",
+            url: null,
+            createdAt: "2026-03-23T12:00:00.000Z",
+            updatedAt: "2026-03-23T15:00:00.000Z",
+          }],
+        })],
+        [],
+      );
+
+      const updateCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("update pr_issue_inventory"),
+      );
+      expect(updateCalls.length).toBe(1);
+      const params = updateCalls[0][1] as unknown[];
+      expect(params[8]).toBe("new");
+      // dismiss_reason should be cleared
+      expect(params[10]).toBeNull();
     });
   });
 });

@@ -155,6 +155,8 @@ export function buildCodingAgentSystemPrompt(args: {
           "## Pull Request Tools",
           `Key PR tools in this session: ${prIssueToolNames.join(", ")}.`,
           "Use these tools first when the task is to address PR comments, review threads, or CI failures.",
+          "ADE/MCP PR tools are runtime tool calls, not shell commands. Do not probe them with `which`, `command -v`, `.mcp.json`, or local settings files.",
+          "If the runtime exposes both base and namespaced variants, use the exact identifier shown in the live tool list.",
           "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local MCP wiring or bootstrap code.",
         ]
       : []),

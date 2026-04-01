@@ -73,7 +73,7 @@ export type PrIssueResolutionLaunchDeps = {
   laneService: Pick<ReturnType<typeof createLaneService>, "list" | "getLaneBaseAndBranch">;
   agentChatService: Pick<ReturnType<typeof createAgentChatService>, "createSession" | "sendMessage" | "previewSessionToolNames">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
-  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  issueInventoryService: ReturnType<typeof createIssueInventoryService>;
 };
 
 type PreparedIssueResolutionPrompt = {
@@ -342,6 +342,11 @@ function qualifyAdeMcpToolName(toolName: string): string {
   return `mcp__${ADE_MCP_SERVER_NAME}__${toolName}`;
 }
 
+function unqualifyAdeMcpToolName(toolName: string | null): string | null {
+  if (!toolName) return null;
+  return toolName.replace(/^mcp__[^_]+__/, "");
+}
+
 function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | undefined): PrIssueResolutionRuntimeCapabilities {
   const descriptor = modelId ? getModelById(modelId) : null;
   if (!descriptor) {
@@ -528,15 +533,19 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     );
   } else if (runtimeCapabilities.toolSurface === "ade_mcp") {
     const toolList = listRequiredRuntimeTools(runtimeCapabilities).map((toolName) => `\`${toolName}\``).join(", ");
+    const refreshToolFallback = unqualifyAdeMcpToolName(runtimeCapabilities.refreshInventoryTool);
+    const commentsToolFallback = unqualifyAdeMcpToolName(runtimeCapabilities.getReviewCommentsTool);
     promptSections.push(
-      `- This runtime uses ADE via MCP. In Codex/Claude chat sessions, ADE PR tools are namespaced with the MCP server prefix, for example \`${runtimeCapabilities.refreshInventoryTool}\`.`,
-      `- Primary PR tools for this run: ${toolList}. Use those exact names, not the unprefixed \`pr_...\` variants.`,
+      `- This runtime uses ADE via MCP. ADE PR tools are runtime tool calls, not shell commands.`,
+      `- Primary PR tools for this run: ${toolList}. In many sessions they appear namespaced with the MCP server prefix, for example \`${runtimeCapabilities.refreshInventoryTool}\`. Some bridges may also expose the base tool names like \`${refreshToolFallback}\` and \`${commentsToolFallback}\`.`,
+      "- Use whichever variant is actually exposed in the live tool list for this chat runtime.",
       `- Start by refreshing the PR issue inventory with \`${runtimeCapabilities.refreshInventoryTool}\`.`,
       `- Immediately after that, call \`${runtimeCapabilities.getReviewCommentsTool}\` to load the full review-thread bodies and line context before deciding which comments are stale, valid, or already addressed.`,
       "- Treat the refreshed inventory as a triage index, not as the full source of truth for long comment bodies. If a summary looks compact or truncated, fetch the detailed review comments instead of guessing.",
       "- Do not spend your first steps reading local skill docs, repo docs, or unrelated files before those PR context calls succeed.",
+      "- Do not probe tool availability with `which`, `command -v`, `.mcp.json`, or project settings files from inside the task session.",
       "- If one of those MCP tools is unavailable in-session, continue with the prompt's issue context and the linked GitHub thread/check URLs instead of reverse-engineering local MCP wiring.",
-      "- Do not conclude the PR tools are missing just because the unprefixed `pr_...` names are absent.",
+      "- Do not conclude the PR tools are missing just because one naming variant is absent.",
     );
   } else {
     const toolList = listRequiredRuntimeTools(runtimeCapabilities).map((toolName) => `\`${toolName}\``).join(", ");
@@ -617,34 +626,32 @@ async function preparePrIssueResolutionPrompt(
     throw new Error("Checks and comments are no longer both actionable. Refresh the PR and choose the currently available scope.");
   }
 
-  // If inventory service is available, sync and build incremental context
-  const inventoryService = deps.issueInventoryService ?? null;
+  // Sync inventory and build incremental context
+  const inventoryService = deps.issueInventoryService;
   let previouslyHandled: PreviouslyHandledSummary | null = null;
   let roundNumber: number | null = null;
   let inventoryNewItems: IssueInventoryItem[] | undefined;
   const runtimeCapabilities = resolvePrIssueResolutionRuntimeCapabilities(args.modelId);
 
-  if (inventoryService) {
-    // Sync the inventory with fresh GitHub data
-    const snapshot = inventoryService.syncFromPrData(pr.id, checks, reviewThreads, comments);
-    const convergence = snapshot.convergence;
-    roundNumber = convergence.currentRound + 1;
-    inventoryNewItems = inventoryService.getNewItems(pr.id);
+  // Sync the inventory with fresh GitHub data
+  const snapshot = inventoryService.syncFromPrData(pr.id, checks, reviewThreads, comments);
+  const convergence = snapshot.convergence;
+  roundNumber = convergence.currentRound + 1;
+  inventoryNewItems = inventoryService.getNewItems(pr.id);
 
-    // Build summary of previously handled items across all prior rounds
-    if (convergence.currentRound > 0) {
-      const fixedItems = snapshot.items.filter((i) => i.state === "fixed");
-      const dismissedItems = snapshot.items.filter((i) => i.state === "dismissed");
-      const escalatedItems = snapshot.items.filter((i) => i.state === "escalated");
+  // Build summary of previously handled items across all prior rounds
+  if (convergence.currentRound > 0) {
+    const fixedItems = snapshot.items.filter((i) => i.state === "fixed");
+    const dismissedItems = snapshot.items.filter((i) => i.state === "dismissed");
+    const escalatedItems = snapshot.items.filter((i) => i.state === "escalated");
 
-      previouslyHandled = {
-        fixedCount: fixedItems.length,
-        dismissedCount: dismissedItems.length,
-        escalatedCount: escalatedItems.length,
-        fixedHeadlines: fixedItems.map((i) => i.headline),
-        dismissedHeadlines: dismissedItems.map((i) => i.headline),
-      };
-    }
+    previouslyHandled = {
+      fixedCount: fixedItems.length,
+      dismissedCount: dismissedItems.length,
+      escalatedCount: escalatedItems.length,
+      fixedHeadlines: fixedItems.map((i) => i.headline),
+      dismissedHeadlines: dismissedItems.map((i) => i.headline),
+    };
   }
 
   return {
@@ -735,7 +742,7 @@ export async function launchPrIssueResolutionChat(
   });
 
   // Mark inventory items as sent to agent for this round
-  if (deps.issueInventoryService && prepared.inventoryNewItems?.length && prepared.roundNumber != null) {
+  if (prepared.inventoryNewItems?.length && prepared.roundNumber != null) {
     deps.issueInventoryService.markSentToAgent(
       prepared.pr.id,
       prepared.inventoryNewItems.map((item) => item.id),

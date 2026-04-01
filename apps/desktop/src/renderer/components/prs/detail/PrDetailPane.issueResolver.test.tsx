@@ -220,6 +220,7 @@ function makeInventoryItem(overrides: Partial<IssueInventoryItem> = {}): IssueIn
 
 function renderPane(args: {
   checks: PrCheck[];
+  freshChecks?: PrCheck[];
   reviewThreads: PrReviewThread[];
   lanes?: LaneSummary[];
   laneStatusOverrides?: Partial<LaneSummary["status"]>;
@@ -254,8 +255,9 @@ function renderPane(args: {
     title: "Resolve PR #80 issues",
     prompt: "Prepared issue resolver prompt",
   });
+  const aiResolutionStop = vi.fn().mockResolvedValue(undefined);
   const getReviewThreads = vi.fn().mockResolvedValue(args.reviewThreads);
-  const getChecks = vi.fn().mockResolvedValue(args.checks);
+  const getChecks = vi.fn().mockResolvedValue(args.freshChecks ?? args.checks);
   const getStatus = vi.fn().mockResolvedValue(args.statusOverrides ? makeStatus(args.statusOverrides) : makeStatus());
   const issueInventorySync = vi.fn().mockResolvedValue({
     items: args.inventorySnapshot?.items ?? [],
@@ -361,6 +363,7 @@ function renderPane(args: {
         onAiResolutionEvent,
         issueResolutionStart,
         issueResolutionPreviewPrompt,
+        aiResolutionStop,
         loadConvergenceState,
         saveConvergenceState,
         resetConvergenceState,
@@ -391,6 +394,7 @@ function renderPane(args: {
   return {
     issueResolutionStart,
     issueResolutionPreviewPrompt,
+    aiResolutionStop,
     getReviewThreads,
     issueInventorySync,
     issueInventoryReset,
@@ -645,6 +649,10 @@ describe("PrDetailPane issue resolver CTA", () => {
       convergenceState,
     });
 
+    await waitFor(() => {
+      expect(firstRender.loadConvergenceState).toHaveBeenCalledWith("pr-80", { force: true });
+    });
+
     await user.click(screen.getByRole("button", { name: /path to merge/i }));
 
     const [viewSessionButton] = await screen.findAllByRole("button", { name: /view session/i });
@@ -658,6 +666,10 @@ describe("PrDetailPane issue resolver CTA", () => {
       reviewThreads: [],
       onNavigate,
       convergenceState,
+    });
+
+    await waitFor(() => {
+      expect(secondRender.loadConvergenceState).toHaveBeenCalledWith("pr-80", { force: true });
     });
 
     await user.click(screen.getByRole("button", { name: /path to merge/i }));
@@ -759,44 +771,53 @@ describe("PrDetailPane issue resolver CTA", () => {
     expect(screen.getByText(/not pushed to the PR branch/i)).toBeTruthy();
   });
 
-  it("restarts polling from a restored waiting-for-checks runtime", async () => {
-    vi.useFakeTimers();
-    try {
-      const convergenceState = makeConvergenceState({
-        autoConvergeEnabled: true,
-        status: "polling",
-        pollerStatus: "waiting_for_checks",
-        currentRound: 2,
-        activeSessionId: null,
-      });
+  it("restores a persisted waiting-for-checks runtime from canonical state", async () => {
+    const convergenceState = makeConvergenceState({
+      autoConvergeEnabled: true,
+      status: "polling",
+      pollerStatus: "waiting_for_checks",
+      currentRound: 2,
+      activeSessionId: null,
+    });
 
-      const { getChecks, issueInventorySync } = renderPane({
-        checks: [makeCheck({ status: "in_progress", conclusion: null })],
-        reviewThreads: [],
-        convergenceState,
-        inventorySnapshot: {
-          items: [makeInventoryItem()],
-          convergence: { currentRound: 2, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: true },
-        },
-      });
+    const { loadConvergenceState } = renderPane({
+      checks: [makeCheck({ status: "in_progress", conclusion: null })],
+      reviewThreads: [],
+      convergenceState,
+      inventorySnapshot: {
+        items: [makeInventoryItem()],
+        convergence: { currentRound: 2, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: true },
+      },
+    });
 
-      getChecks.mockClear();
-      issueInventorySync.mockClear();
+    await React.act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
-      await React.act(async () => {
-        vi.advanceTimersByTime(60_000);
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(getChecks).toHaveBeenCalled();
-      expect(issueInventorySync).toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(loadConvergenceState).toHaveBeenCalledWith("pr-80", { force: true });
   });
 
-  it("disabling auto-converge during an active round keeps the session attached", async () => {
+  it("refreshes stale convergence checks when opening the path to merge tab", async () => {
+    const user = userEvent.setup();
+    renderPane({
+      checks: [makeCheck({ status: "in_progress", conclusion: null })],
+      freshChecks: [makeCheck({ status: "completed", conclusion: "success" })],
+      reviewThreads: [],
+      inventorySnapshot: {
+        items: [makeInventoryItem()],
+        convergence: { currentRound: 0, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: false },
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: /path to merge/i }));
+
+    await waitFor(() => {
+      expect((screen.getByRole("button", { name: /launch agent/i }) as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  it("disabling auto-converge during an active round stops the session and clears the handle", async () => {
     const user = userEvent.setup();
     const convergenceState = makeConvergenceState({
       autoConvergeEnabled: true,
@@ -809,7 +830,7 @@ describe("PrDetailPane issue resolver CTA", () => {
       lastStartedAt: "2026-03-23T12:29:00.000Z",
     });
 
-    const { saveConvergenceState } = renderPane({
+    const { aiResolutionStop, saveConvergenceState } = renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
       convergenceState,
@@ -820,11 +841,49 @@ describe("PrDetailPane issue resolver CTA", () => {
     await user.click(screen.getAllByRole("button", { name: /stop auto-converge/i })[0]!);
 
     await waitFor(() => {
+      expect(aiResolutionStop).toHaveBeenCalledWith({ sessionId: "session-2" });
+      expect(saveConvergenceState).toHaveBeenCalledWith("pr-80", expect.objectContaining({
+        autoConvergeEnabled: false,
+        status: "stopped",
+        activeSessionId: null,
+        activeHref: null,
+      }));
+    });
+  });
+
+  it("retains session handle when stop fails during auto-converge toggle off", async () => {
+    const user = userEvent.setup();
+    const convergenceState = makeConvergenceState({
+      autoConvergeEnabled: true,
+      status: "running",
+      pollerStatus: "idle",
+      currentRound: 2,
+      activeSessionId: "session-2",
+      activeLaneId: "lane-1",
+      activeHref: "/work?laneId=lane-1&sessionId=session-2",
+      lastStartedAt: "2026-03-23T12:29:00.000Z",
+    });
+
+    const { aiResolutionStop, saveConvergenceState } = renderPane({
+      checks: [makeCheck()],
+      reviewThreads: [],
+      convergenceState,
+      sessionStatus: "running",
+    });
+
+    aiResolutionStop.mockRejectedValueOnce(new Error("Network timeout"));
+
+    await user.click(screen.getByRole("button", { name: /path to merge/i }));
+    await user.click(screen.getAllByRole("button", { name: /stop auto-converge/i })[0]!);
+
+    await waitFor(() => {
+      expect(aiResolutionStop).toHaveBeenCalledWith({ sessionId: "session-2" });
       expect(saveConvergenceState).toHaveBeenCalledWith("pr-80", expect.objectContaining({
         autoConvergeEnabled: false,
         status: "running",
         activeSessionId: "session-2",
         activeHref: "/work?laneId=lane-1&sessionId=session-2",
+        errorMessage: "Network timeout",
       }));
     });
   });

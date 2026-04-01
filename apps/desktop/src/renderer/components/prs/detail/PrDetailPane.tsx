@@ -430,6 +430,7 @@ export function PrDetailPane({
 
   // Convergence panel state
   const [inventorySnapshot, setInventorySnapshot] = React.useState<IssueInventorySnapshot | null>(null);
+  const [convergenceChecks, setConvergenceChecks] = React.useState<PrCheck[]>(checks);
   const [convergenceBusy, setConvergenceBusy] = React.useState(false);
   const [autoConverge, setAutoConverge] = React.useState(false);
   const [convergenceSessionId, setConvergenceSessionId] = React.useState<string | null>(null);
@@ -449,6 +450,10 @@ export function PrDetailPane({
   const onRefreshRef = React.useRef(onRefresh);
   onRefreshRef.current = onRefresh;
   cachedConvergenceRuntimeRef.current = convergenceStatesByPrId[pr.id] ?? null;
+
+  React.useEffect(() => {
+    setConvergenceChecks(checks);
+  }, [checks, pr.id]);
 
   const buildSessionHref = React.useCallback((laneId: string, sessionId: string) => {
     const lane = encodeURIComponent(laneId);
@@ -588,7 +593,7 @@ export function PrDetailPane({
     const requestId = ++convergenceLoadSeqRef.current;
     const cachedRuntime = cachedConvergenceRuntimeRef.current;
     applyConvergenceRuntime(cachedRuntime);
-    void loadConvergenceState(pr.id, { force: cachedRuntime == null })
+    void loadConvergenceState(pr.id, { force: true })
       .then((runtime) => {
         if (requestId !== convergenceLoadSeqRef.current) return;
         applyConvergenceRuntime(runtime);
@@ -814,14 +819,18 @@ export function PrDetailPane({
   const syncInventory = React.useCallback(async () => {
     const requestId = ++inventoryLoadSeqRef.current;
     try {
-      const snapshot = await window.ade.prs.issueInventorySync(pr.id);
+      const [snapshot, freshChecks] = await Promise.all([
+        window.ade.prs.issueInventorySync(pr.id),
+        window.ade.prs.getChecks(pr.id).catch(() => checks),
+      ]);
       if (requestId !== inventoryLoadSeqRef.current) return null;
       setInventorySnapshot(snapshot);
+      setConvergenceChecks(freshChecks);
       return snapshot;
     } catch {
       return null;
     }
-  }, [pr.id]);
+  }, [checks, pr.id]);
 
   const refreshDetailSurface = React.useCallback(async (options: { includeInventory?: boolean } = {}) => {
     const tasks: Array<Promise<unknown>> = [onRefresh(), loadDetail()];
@@ -874,13 +883,16 @@ export function PrDetailPane({
   // Sync inventory and load pipeline settings on convergence tab open
   React.useEffect(() => {
     if (activeTab === "convergence") {
+      void loadConvergenceState(pr.id, { force: true }).then((runtime) => {
+        applyConvergenceRuntime(runtime);
+      }).catch(() => undefined);
       void syncInventory();
       void window.ade.prs.pipelineSettingsGet(pr.id).then((s) => {
         setPipelineSettings(s);
         pipelineSettingsRef.current = s;
       });
     }
-  }, [activeTab, syncInventory, pr.id]);
+  }, [activeTab, applyConvergenceRuntime, loadConvergenceState, syncInventory, pr.id]);
 
   // Auto-converge: hybrid polling (checks complete + comment stabilization)
   // After agent session completes, polls every 60s. Triggers next round when:
@@ -1077,7 +1089,7 @@ export function PrDetailPane({
   const startAutoConvergePoller = React.useCallback(() => {
     stopAutoConvergePoller();
 
-    const scheduleTick = () => {
+    const scheduleTick = (delayMs = 60_000) => {
       autoConvergePollerRef.current = setTimeout(async () => {
         if (!autoConvergeRef.current) { stopAutoConvergePoller(); return; }
         try {
@@ -1087,6 +1099,7 @@ export function PrDetailPane({
             window.ade.prs.issueInventorySync(pr.id),
           ]);
           setInventorySnapshot(snapshot);
+          setConvergenceChecks(freshChecks);
 
           // Skip rebase logic while an agent session is still active
           if (!convergenceSessionIdRef.current) {
@@ -1307,7 +1320,7 @@ export function PrDetailPane({
       }, 60_000); // Poll every 60 seconds
     };
 
-    scheduleTick();
+    scheduleTick(0);
   }, [convergenceSessionHref, pr.id, saveConvergenceRuntime, stopAutoConvergePoller]);
   startAutoConvergePollerRef.current = startAutoConvergePoller;
 
@@ -1502,21 +1515,47 @@ export function PrDetailPane({
     }
   }, [pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope]);
 
-  const handleAutoConvergeToggle = React.useCallback((enabled: boolean) => {
+  const handleAutoConvergeToggle = React.useCallback(async (enabled: boolean) => {
     setAutoConverge(enabled);
     if (!enabled) {
       stopAutoConvergePoller();
       const activeSessionId = convergenceSessionIdRef.current;
       if (activeSessionId) {
-        saveConvergenceRuntime({
-          autoConvergeEnabled: false,
-          status: "running",
-          pollerStatus: "idle",
-          activeSessionId,
-          activeHref: convergenceSessionHrefRef.current,
-          pauseReason: null,
-          errorMessage: null,
-        });
+        // Try to stop the running session. Only clear the session handle on
+        // confirmed success so the user retains the ability to retry if the
+        // stop call fails.
+        try {
+          await window.ade.prs.aiResolutionStop({ sessionId: activeSessionId });
+          // Stop succeeded -- clear session handle and mark stopped.
+          setConvergenceSessionId(null);
+          setConvergenceSessionHref(null);
+          setAutoConvergeWaitState({ phase: "idle" });
+          setConvergencePauseReason(null);
+          saveConvergenceRuntime({
+            autoConvergeEnabled: false,
+            status: "stopped",
+            pollerStatus: "stopped",
+            activeSessionId: null,
+            activeHref: null,
+            pauseReason: null,
+            errorMessage: null,
+            lastStoppedAt: new Date().toISOString(),
+          });
+        } catch (err: unknown) {
+          // Stop failed -- keep the session handle so the user can retry.
+          setActionError(
+            `Failed to stop session: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          saveConvergenceRuntime({
+            autoConvergeEnabled: false,
+            status: "running",
+            pollerStatus: "idle",
+            activeSessionId,
+            activeHref: convergenceSessionHrefRef.current,
+            pauseReason: null,
+            errorMessage: err instanceof Error ? err.message : String(err),
+          });
+        }
       } else {
         setAutoConvergeWaitState({ phase: "idle" });
         setConvergenceSessionHref(null);
@@ -1797,7 +1836,7 @@ export function PrDetailPane({
             baseBranch={pr.baseBranch}
             items={mapInventoryItems(inventorySnapshot)}
             convergence={mapConvergenceStatus(inventorySnapshot)}
-            checks={checks}
+            checks={convergenceChecks}
             modelId={resolverModel}
             reasoningEffort={resolverReasoningLevel}
             permissionMode={resolverPermissionMode}

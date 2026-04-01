@@ -2075,10 +2075,25 @@ function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">)
   return session.sessionProfile === "light";
 }
 
-let _mcpRuntimeRootCache: string | null = null;
-function resolveMcpRuntimeRoot(): string {
-  _mcpRuntimeRootCache ??= resolveUnifiedRuntimeRoot();
-  return _mcpRuntimeRootCache;
+function findRepoRuntimeRoot(startPaths: string[]): string | null {
+  for (const startPath of startPaths) {
+    const trimmed = startPath.trim();
+    if (!trimmed.length) continue;
+    let dir = path.resolve(trimmed);
+    for (let depth = 0; depth < 12; depth += 1) {
+      if (fs.existsSync(path.join(dir, "apps", "mcp-server", "package.json"))) {
+        return dir;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return null;
+}
+
+function resolveMcpRuntimeRoot(projectRoot: string, workspaceRoot: string): string {
+  return findRepoRuntimeRoot([workspaceRoot, projectRoot]) ?? resolveUnifiedRuntimeRoot();
 }
 
 
@@ -2101,7 +2116,7 @@ export function createAgentChatService(args: {
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
-  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  issueInventoryService: ReturnType<typeof createIssueInventoryService>;
   processService?: ReturnType<typeof createProcessService> | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
@@ -2157,6 +2172,9 @@ export function createAgentChatService(args: {
   }
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
+  }
+  if (!issueInventoryService) {
+    throw new Error("Issue inventory service is required to initialize agent chat.");
   }
 
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
@@ -2773,7 +2791,7 @@ export function createAgentChatService(args: {
         linearDispatcherService: getLinearDispatcherService?.() ?? null,
         flowPolicyService: flowPolicyService ?? null,
         prService: prService ?? null,
-        issueInventoryService: issueInventoryService ?? null,
+        issueInventoryService,
         fileService: fileService ?? null,
         processService: processService ?? null,
         testService: getTestService?.() ?? null,
@@ -2825,7 +2843,7 @@ export function createAgentChatService(args: {
     const launch = resolveAdeMcpServerLaunch({
       projectRoot,
       workspaceRoot,
-      runtimeRoot: resolveMcpRuntimeRoot(),
+      runtimeRoot: resolveMcpRuntimeRoot(projectRoot, workspaceRoot),
       defaultRole,
       ownerId: ownerId ?? undefined,
       chatSessionId: chatSessionId ?? undefined,
@@ -2880,7 +2898,7 @@ export function createAgentChatService(args: {
     const { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath } = resolveAdeMcpServerLaunch({
       projectRoot,
       workspaceRoot: args.workspaceRoot,
-      runtimeRoot: resolveMcpRuntimeRoot(),
+      runtimeRoot: resolveMcpRuntimeRoot(projectRoot, args.workspaceRoot),
       defaultRole: args.defaultRole,
       ownerId: args.ownerId ?? undefined,
       computerUsePolicy: normalizeComputerUsePolicy(args.computerUsePolicy, createDefaultComputerUsePolicy()),
@@ -3636,8 +3654,19 @@ export function createAgentChatService(args: {
     });
 
     const auth = await detectAuth();
+    const mcpServers = isLightweightSession(managed.session)
+      ? undefined
+      : buildAdeMcpServers(
+          managed.laneWorktreePath,
+          "claude",
+          managed.session.identityKey === "cto" ? "cto" : "agent",
+          resolveWorkerIdentityAgentId(managed.session.identityKey),
+          managed.session.id,
+          managed.session.computerUse,
+        );
     const resolvedModel = await providerResolver.resolveModel(modelId, auth, {
       cwd: managed.laneWorktreePath,
+      ...(mcpServers ? { cli: { mcpServers } } : {}),
     });
 
     const chatConfig = resolveChatConfig();
@@ -6441,7 +6470,7 @@ export function createAgentChatService(args: {
             linearDispatcherService: getLinearDispatcherService?.() ?? null,
             flowPolicyService: flowPolicyService ?? null,
             prService: prService ?? null,
-            issueInventoryService: issueInventoryService ?? null,
+            issueInventoryService,
             fileService: fileService ?? null,
             processService: processService ?? null,
             testService: getTestService?.() ?? null,
@@ -8138,6 +8167,11 @@ export function createAgentChatService(args: {
           "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
           "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
           "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
+          "",
+          "## ADE Tooling",
+          "ADE and MCP tools are runtime tool calls, not shell commands.",
+          "Do not probe tool availability with `which`, `command -v`, `.mcp.json`, or project settings files.",
+          "Use the exact tool identifier exposed in this session's tool list. MCP-backed ADE tools may appear in namespaced form like `mcp__ade__pr_refresh_issue_inventory`.",
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
