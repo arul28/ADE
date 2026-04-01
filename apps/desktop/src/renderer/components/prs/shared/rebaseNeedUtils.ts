@@ -4,6 +4,25 @@ export function rebaseNeedItemKey(need: RebaseNeed): string {
   return `${need.laneId}:${need.kind}:${need.prId ?? "base"}:${need.baseBranch}`;
 }
 
+export function resolveRouteRebaseSelection(args: {
+  rebaseNeeds: RebaseNeed[] | null | undefined;
+  routeItemId?: string | null;
+}): string | null {
+  const routeItemId = (args.routeItemId ?? "").trim();
+  if (!routeItemId) return null;
+
+  const rebaseNeeds = args.rebaseNeeds ?? [];
+  if (rebaseNeeds.some((need) => rebaseNeedItemKey(need) === routeItemId)) {
+    return routeItemId;
+  }
+
+  const laneBaseNeed = findLaneBaseNeed(rebaseNeeds, routeItemId);
+  if (laneBaseNeed) return rebaseNeedItemKey(laneBaseNeed);
+
+  const matchingNeed = findMatchingRebaseNeed({ rebaseNeeds, laneId: routeItemId });
+  return matchingNeed ? rebaseNeedItemKey(matchingNeed) : routeItemId;
+}
+
 export function findLaneBaseNeed(rebaseNeeds: RebaseNeed[], laneId: string): RebaseNeed | null {
   return rebaseNeeds.find((need) => need.laneId === laneId && need.kind === "lane_base") ?? null;
 }

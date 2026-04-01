@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rebaseNeedItemKey, findLaneBaseNeed, findMatchingRebaseNeed } from "./rebaseNeedUtils";
+import { rebaseNeedItemKey, resolveRouteRebaseSelection, findLaneBaseNeed, findMatchingRebaseNeed } from "./rebaseNeedUtils";
 import type { RebaseNeed } from "../../../../shared/types";
 
 function makeNeed(overrides: Partial<RebaseNeed> = {}): RebaseNeed {
@@ -209,5 +209,39 @@ describe("findMatchingRebaseNeed", () => {
     // baseBranch matches but laneId doesn't -- should not match on baseBranch
     const result = findMatchingRebaseNeed({ rebaseNeeds: needs, laneId: "lane-1", baseBranch: "develop" });
     expect(result).toBeNull();
+  });
+});
+
+describe("resolveRouteRebaseSelection", () => {
+  it("keeps an exact rebase item key unchanged", () => {
+    const need = makeNeed({ laneId: "lane-1", kind: "lane_base", baseBranch: "main" });
+    const itemKey = rebaseNeedItemKey(need);
+
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [need], routeItemId: itemKey })).toBe(itemKey);
+  });
+
+  it("resolves a raw lane id to the lane-base need key when available", () => {
+    const laneBaseNeed = makeNeed({ laneId: "lane-1", kind: "lane_base", baseBranch: "main" });
+    const prTargetNeed = makeNeed({ laneId: "lane-1", kind: "pr_target", prId: "pr-1", baseBranch: "develop" });
+
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [prTargetNeed, laneBaseNeed], routeItemId: "lane-1" })).toBe(
+      rebaseNeedItemKey(laneBaseNeed),
+    );
+  });
+
+  it("falls back to another matching rebase need when no lane-base need exists", () => {
+    const prTargetNeed = makeNeed({ laneId: "lane-1", kind: "pr_target", prId: "pr-1", baseBranch: "develop" });
+
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [prTargetNeed], routeItemId: "lane-1" })).toBe(
+      rebaseNeedItemKey(prTargetNeed),
+    );
+  });
+
+  it("preserves the raw route item id when rebase needs have not loaded yet", () => {
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [], routeItemId: "lane-1" })).toBe("lane-1");
+  });
+
+  it("returns null for empty route ids", () => {
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [], routeItemId: "   " })).toBeNull();
   });
 });

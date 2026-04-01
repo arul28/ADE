@@ -38,6 +38,7 @@ import {
 } from "./laneUtils";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { isRunOwnedSession } from "../../lib/sessions";
+import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import type {
   ConflictChip,
   ConflictStatus,
@@ -1036,15 +1037,27 @@ export function LanesPage() {
   const openRebaseDetails = useCallback((laneId?: string | null) => {
     const trimmedLaneId = typeof laneId === "string" ? laneId.trim() : "";
     if (trimmedLaneId.length) {
-      const search = new URLSearchParams({ tab: "rebase", laneId: trimmedLaneId });
-      navigate(`/prs?${search.toString()}`);
+      const search = buildPrsRouteSearch({
+        activeTab: "rebase",
+        selectedPrId: null,
+        selectedQueueGroupId: null,
+        selectedRebaseItemId: trimmedLaneId,
+      });
+      navigate(`/prs${search}`);
       return;
     }
-    navigate("/prs?tab=rebase");
+    navigate("/prs?tab=workflows&workflow=rebase");
   }, [navigate]);
 
   const openRebaseConflictResolver = useCallback((laneId: string, parentLaneId: string | null) => {
-    const search = new URLSearchParams({ tab: "rebase", laneId });
+    const search = new URLSearchParams(
+      buildPrsRouteSearch({
+        activeTab: "rebase",
+        selectedPrId: null,
+        selectedQueueGroupId: null,
+        selectedRebaseItemId: laneId,
+      }).slice(1),
+    );
     if (parentLaneId) search.set("parentLaneId", parentLaneId);
     navigate(`/prs?${search.toString()}`);
   }, [navigate]);
