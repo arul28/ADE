@@ -11,8 +11,15 @@ export function SiteFooter() {
       <Container className="py-12">
         <div className="grid gap-10 md:grid-cols-3">
           <div>
-            <div className="flex items-center gap-3">
-              <img src="/logo.png" alt="ADE" className="h-7" />
+            <div className="flex flex-col gap-2">
+              <img
+                src="/images/ade-wordmark.png"
+                alt="ADE"
+                className="h-9 w-auto object-contain object-left sm:h-10"
+                width={200}
+                height={40}
+                decoding="async"
+              />
               <div className="text-xs text-muted-fg">Agentic Development Environment</div>
             </div>
             <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted-fg">

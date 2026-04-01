@@ -9313,7 +9313,15 @@ export function createAgentChatService(args: {
   const mapChatDecisionToCursorPermission = (
     decision: AgentChatApprovalDecision | undefined,
     options: PermissionOption[],
+    answers?: Record<string, string | string[]>,
   ): RequestPermissionResponse => {
+    // If the caller provided an explicit optionId (e.g. from a structured
+    // selection), resolve it directly instead of the coarse decision mapping.
+    if (answers) {
+      const explicit = Object.values(answers).flat()[0];
+      const match = explicit ? options.find((o) => o.optionId === explicit) : undefined;
+      if (match) return { outcome: { outcome: "selected", optionId: match.optionId } };
+    }
     const pick = (kind: PermissionOption["kind"]) => options.find((o) => o.kind === kind)?.optionId;
     if (decision === "cancel") return { outcome: { outcome: "cancelled" } };
     if (decision === "accept_for_session") {
@@ -9726,8 +9734,11 @@ export function createAgentChatService(args: {
         // Sync session-level mode fields so ensureCursorSessionState won't
         // revert Cursor back to the old mode on the next turn.
         owner.session.cursorModeId = note.update.currentModeId;
-        owner.session.unifiedPermissionMode =
-          note.update.currentModeId === "plan" ? "plan" : "edit";
+        if (note.update.currentModeId === "plan") {
+          owner.session.unifiedPermissionMode = "plan";
+        } else if (!owner.session.unifiedPermissionMode || owner.session.unifiedPermissionMode === "plan") {
+          owner.session.unifiedPermissionMode = "edit";
+        }
         syncCursorModeSnapshot(owner, owner.runtime);
         persistChatState(owner);
       } else if (note.update.sessionUpdate === "config_option_update") {
@@ -11114,7 +11125,7 @@ export function createAgentChatService(args: {
         });
         return;
       }
-      pending.resolve(mapChatDecisionToCursorPermission(decision, pending.options));
+      pending.resolve(mapChatDecisionToCursorPermission(decision, pending.options, answers));
       return;
     }
 

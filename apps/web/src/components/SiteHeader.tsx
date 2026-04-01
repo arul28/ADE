@@ -64,13 +64,15 @@ export function SiteHeader() {
       >
         <Container className="flex h-16 items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link className="focus-ring inline-flex items-center gap-3 rounded-lg" to="/">
+            <Link className="focus-ring inline-flex items-center rounded-lg" to="/" aria-label="ADE home">
               <img
-                src="/images/ade-mark.svg"
+                src="/images/ade-wordmark.png"
                 alt=""
-                className="h-8"
+                className="h-8 w-auto object-contain object-left sm:h-9"
+                width={180}
+                height={36}
+                decoding="async"
               />
-              <span className="font-bold text-lg tracking-tight">ADE</span>
             </Link>
           </div>
 

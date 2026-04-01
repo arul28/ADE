@@ -726,7 +726,7 @@ export function AgentChatPane({
     setCursorConfigValues(
       Object.fromEntries(
         (session.cursorModeSnapshot?.configOptions ?? [])
-          .filter((option) => option.id !== session.cursorModeSnapshot?.modelConfigId)
+          .filter((option) => option.id !== session.cursorModeSnapshot?.modeConfigId)
           .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
       ),
     );
@@ -1891,7 +1891,10 @@ export function AgentChatPane({
     if (!selectedSessionId) return;
 
     const provider = selectedSession?.provider ?? sessionProvider;
-    const nextSummary = summarizeNativeControls(provider, nextControls);
+    const nextSummary = {
+      ...summarizeNativeControls(provider, nextControls),
+      ...(provider === "cursor" ? { cursorConfigValues: nextControls.cursorConfigValues } : {}),
+    };
     patchSessionSummary(selectedSessionId, nextSummary);
     if (isPersistentIdentitySurface) {
       setSessionMutationKind("permission");
