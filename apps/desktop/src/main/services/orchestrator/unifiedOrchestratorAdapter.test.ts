@@ -16,6 +16,7 @@ import {
 describe("buildCodexMcpConfigFlags", () => {
   it("shell-escapes TOML override values so zsh does not parse brackets or spaces", () => {
     const flags = buildCodexMcpConfigFlags({
+      projectRoot: "/Users/admin/Projects/ADE",
       workspaceRoot: "/Users/admin/Projects/ADE",
       runtimeRoot: "/tmp/ade-runtime",
       preferBundledProxy: false,

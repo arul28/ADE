@@ -446,6 +446,16 @@ export function appendCollapsedChatTranscriptEvent(
         && normalizedMessage !== "started"
         && normalizedMessage !== "completed");
     if (!keepStatus) return;
+
+    // Deduplicate consecutive identical status events (e.g. multiple "interrupted")
+    const previous = rows[rows.length - 1];
+    if (
+      previous?.event.type === "status"
+      && previous.event.turnStatus === event.turnStatus
+      && (previous.event.turnId ?? null) === (event.turnId ?? null)
+    ) {
+      return;
+    }
   }
 
   if (event.type === "system_notice" && event.noticeKind === "info" && event.message.trim().toLowerCase() === "session ready") {

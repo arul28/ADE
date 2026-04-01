@@ -349,6 +349,9 @@ describe("launchPrIssueResolutionChat", () => {
     expect(result.prompt).toContain("mcp__ade__pr_get_review_comments");
     expect(result.prompt).toContain("mcp__ade__pr_resolve_review_thread");
     expect(result.prompt).toContain("Use those exact names, not the unprefixed `pr_...` variants.");
+    expect(result.prompt).toContain("Immediately after that, call `mcp__ade__pr_get_review_comments`");
+    expect(result.prompt).toContain("Treat the refreshed inventory as a triage index");
+    expect(result.prompt).toContain("Do not spend your first steps reading local skill docs");
     expect(result.prompt).toContain("Do not conclude the PR tools are missing just because the unprefixed `pr_...` names are absent.");
     expect(result.prompt).not.toContain("prRefreshIssueInventory");
   });

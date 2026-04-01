@@ -637,24 +637,37 @@ function CollapsibleCard({
   className?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  // Track whether the user explicitly collapsed while forceOpen is active
+  const [userCollapsed, setUserCollapsed] = useState(false);
   const prevForceOpen = useRef(forceOpen);
 
   useEffect(() => {
     // Auto-collapse when forceOpen transitions from true → falsy (turn finished)
     if (prevForceOpen.current === true && !forceOpen) {
       setOpen(false);
+      setUserCollapsed(false);
+    }
+    // Reset user override when forceOpen activates (new turn)
+    if (!prevForceOpen.current && forceOpen) {
+      setUserCollapsed(false);
     }
     prevForceOpen.current = forceOpen;
   }, [forceOpen]);
 
-  const isOpen = forceOpen === true ? true : open;
+  const isOpen = forceOpen === true ? (userCollapsed ? false : true) : open;
 
   return (
     <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={SURFACE_INLINE_CARD_STYLE}>
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-mono text-[11px]"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          if (forceOpen === true) {
+            setUserCollapsed((v) => !v);
+          } else {
+            setOpen((v) => !v);
+          }
+        }}
       >
         {isOpen ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
@@ -1158,7 +1171,6 @@ function renderEvent(
             ) : null}
             <div className="ml-auto flex items-center gap-2">
               <MessageCopyButton value={event.text} className="opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100" />
-              <span className="font-sans text-[10px] text-fg/34">{formatTime(envelope.timestamp)}</span>
             </div>
           </div>
           <div>
@@ -1476,7 +1488,6 @@ function renderEvent(
             <ChatCircleText size={13} weight="bold" className="text-[var(--chat-accent)]" />
           </span>
           <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-[var(--chat-accent)]">Agent Question</span>
-          <span className="ml-auto font-mono text-[9px] text-muted-fg/25">{formatTime(envelope.timestamp)}</span>
         </div>
         <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] px-4 py-3 text-[12.5px] leading-[1.65] text-fg/85">
           {event.question}
@@ -2712,6 +2723,25 @@ export function AgentChatMessageList({
     return () => cancelAnimationFrame(raf);
   }, [groupedRows, measurementTick, stickToBottom, showStreamingIndicator]);
 
+  // Observe scrollHeight changes via MutationObserver so streaming content
+  // (which grows existing rows without changing groupedRows identity) still
+  // triggers autoscroll.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof MutationObserver === "undefined") return;
+    let prevScrollHeight = el.scrollHeight;
+    const mo = new MutationObserver(() => {
+      if (el.scrollHeight !== prevScrollHeight) {
+        prevScrollHeight = el.scrollHeight;
+        if (stickToBottomRef.current) {
+          el.scrollTop = el.scrollHeight;
+        }
+      }
+    });
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => mo.disconnect();
+  }, []);
+
   // Observe the scroll container's size so we know the viewport height.
   useEffect(() => {
     const el = scrollRef.current;
@@ -2739,11 +2769,11 @@ export function AgentChatMessageList({
   }, []);
 
   /** Callback from MeasuredEventRow when it measures its real DOM height. */
+  const measureFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleMeasure = useCallback((index: number, height: number) => {
     const prev = measuredHeights.current.get(index);
     if (prev !== height) {
       measuredHeights.current.set(index, height);
-      setMeasurementTick((value) => value + 1);
       const scrollEl = scrollRef.current;
       if (scrollEl && shouldVirtualize && !stickToBottomRef.current) {
         const adjustedScrollTop = reconcileMeasuredScrollTop({
@@ -2758,10 +2788,21 @@ export function AgentChatMessageList({
           setScrollTop(adjustedScrollTop);
         }
       }
+      // Debounce measurement tick updates to batch rapid height changes
+      // into a single re-render instead of one per row.
+      if (!measureFlushTimer.current) {
+        measureFlushTimer.current = setTimeout(() => {
+          measureFlushTimer.current = null;
+          setMeasurementTick((value) => value + 1);
+        }, 80);
+      }
     }
   }, [rowHeight, shouldVirtualize]);
 
   // Compute the visible window of rows when virtualization is active.
+  // measurementTick forces recomputation when row heights are measured so
+  // totalHeight stays accurate — without this, scroll-to-top can break because
+  // the spacer heights are computed from stale estimates.
   const { startIndex, endIndex, totalHeight, offsetTop } = useMemo(() => {
     if (!shouldVirtualize) {
       return { startIndex: 0, endIndex: groupedRows.length, totalHeight: 0, offsetTop: 0 };
@@ -2773,7 +2814,8 @@ export function AgentChatMessageList({
       containerHeight,
       rowHeight,
     });
-  }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight, measurementTick]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
@@ -2858,14 +2900,16 @@ export function AgentChatMessageList({
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 
   const streamingIndicator = showStreamingIndicator ? (
-    latestActivity ? (
-      <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
-    ) : (
-      <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
-        <ThinkingDots toneClass="bg-emerald-300/75" />
-        <span>Working...</span>
-      </div>
-    )
+    <div className="sticky bottom-0 z-10 bg-gradient-to-t from-[#09090b] via-[#09090b]/95 to-transparent pt-3 pb-1">
+      {latestActivity ? (
+        <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
+      ) : (
+        <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
+          <ThinkingDots toneClass="bg-emerald-300/75" />
+          <span>Working...</span>
+        </div>
+      )}
+    </div>
   ) : null;
 
   const turnSummaryCard = turnSummary ? (

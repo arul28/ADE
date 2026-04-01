@@ -534,6 +534,18 @@ function isSignalPermissionError(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "EPERM");
 }
 
+function isAbortRelatedError(error: unknown): boolean {
+  if (typeof globalThis.DOMException === "function" && error instanceof globalThis.DOMException && error.name === "AbortError") return true;
+  if (error instanceof Error && error.name === "AbortError") return true;
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    message.includes("aborted by user")
+    || message.includes("connection aborted")
+    || message.includes("operation aborted")
+    || message.includes("process aborted")
+  );
+}
+
 function isProcessAlive(pid: number | null): boolean {
   if (pid == null || !Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -3822,6 +3834,12 @@ export function createAgentChatService(args: {
   const metadataPathFor = (sessionId: string): string => path.join(chatSessionsDir, `${sessionId}.json`);
 
   const persistChatState = (managed: ManagedChatSession): void => {
+    // When runtime has been torn down (null), fall back to the last persisted state
+    // so that sdkSessionId, messages, and lastLaneDirectiveKey survive teardown.
+    let prevPersisted: PersistedChatState | null = null;
+    if (!managed.runtime) {
+      try { prevPersisted = readPersistedState(managed.session.id); } catch { /* ignore */ }
+    }
     const payload: PersistedChatState = {
       version: 2,
       sessionId: managed.session.id,
@@ -3853,13 +3871,15 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "cursor" && managed.runtime.acpSessionId
         ? { acpSessionId: managed.runtime.acpSessionId }
         : {}),
-      ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined } : {}),
+      ...(managed.runtime?.kind === "claude"
+        ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined }
+        : prevPersisted?.sdkSessionId ? { sdkSessionId: prevPersisted.sdkSessionId } : {}),
       ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
         ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
         : {}),
       ...(managed.runtime?.kind === "unified"
         ? { messages: managed.runtime.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })) }
-        : {}),
+        : prevPersisted?.messages?.length ? { messages: prevPersisted.messages } : {}),
       ...(managed.recentConversationEntries.length
         ? {
             recentConversationEntries: managed.recentConversationEntries.map((entry) => ({
@@ -3873,7 +3893,9 @@ export function createAgentChatService(args: {
       ...(managed.continuitySummaryUpdatedAt ? { continuitySummaryUpdatedAt: managed.continuitySummaryUpdatedAt } : {}),
       ...(managed.preferredExecutionLaneId ? { preferredExecutionLaneId: managed.preferredExecutionLaneId } : {}),
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
-      ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
+      ...(managed.lastLaneDirectiveKey
+        ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey }
+        : prevPersisted?.lastLaneDirectiveKey ? { lastLaneDirectiveKey: prevPersisted.lastLaneDirectiveKey } : {}),
       manuallyNamed: Boolean(managed.manuallyNamed)
         || (() => {
           const trimmedTitle = String(sessionService.get(managed.session.id)?.title || "").trim();
@@ -4576,6 +4598,8 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "claude") {
+      // Mark interrupted so the streaming catch block takes the graceful path
+      managed.runtime.interrupted = true;
       cancelClaudeWarmup(managed, managed.runtime, "teardown");
       managed.runtime.activeQuery?.close();
       managed.runtime.activeQuery = null;
@@ -4591,6 +4615,8 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "unified") {
+      // Mark interrupted so the streaming catch block takes the graceful path
+      managed.runtime.interrupted = true;
       managed.runtime.abortController?.abort();
       for (const pending of managed.runtime.pendingApprovals.values()) {
         pending.resolve({ decision: "cancel" });
@@ -5135,6 +5161,13 @@ export function createAgentChatService(args: {
       return {
         message: `Connection to ${providerFamily} timed out. Check your network or try again.`,
         errorInfo: { category: "network", provider: providerFamily, model: modelDisplayName },
+      };
+    }
+
+    if (isAbortRelatedError(error)) {
+      return {
+        message: "Session was interrupted.",
+        errorInfo: { category: "unknown", provider: providerFamily, model: modelDisplayName },
       };
     }
 
@@ -5994,6 +6027,17 @@ export function createAgentChatService(args: {
           status: "interrupted",
           ...doneModel,
         });
+      } else if (isAbortRelatedError(error)) {
+        // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
+        // Treat as interruption to avoid surfacing raw SDK messages like "aborted by user".
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "interrupted",
+          ...doneModel,
+        });
       } else {
         managed.session.status = "idle";
         const isAuthFailure = isClaudeRuntimeAuthError(error);
@@ -6692,6 +6736,17 @@ export function createAgentChatService(args: {
       runtime.abortController = null;
 
       if (runtime.interrupted) {
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "interrupted",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
+      } else if (isAbortRelatedError(error)) {
+        // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
         managed.session.status = "idle";
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         emitChatEvent(managed, {

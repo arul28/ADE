@@ -27,8 +27,9 @@ export function canAppendBufferedAssistantText(
     }
     return false;
   }
-  // Don't collapse anonymous chunks that lack any identity
-  if (!buffered.turnId && !buffered.itemId && !event.turnId && !event.itemId) return false;
+  // Coalesce anonymous chunks that lack any identity — these are consecutive
+  // assistant text deltas from the same stream that simply have no IDs attached.
+  if (!buffered.turnId && !buffered.itemId && !event.turnId && !event.itemId) return true;
   return (buffered.turnId ?? null) === (event.turnId ?? null)
     && (buffered.itemId ?? null) === (event.itemId ?? null);
 }

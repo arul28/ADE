@@ -529,6 +529,9 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
       `- This runtime uses ADE via MCP. In Codex/Claude chat sessions, ADE PR tools are namespaced with the MCP server prefix, for example \`${runtimeCapabilities.refreshInventoryTool}\`.`,
       `- Primary PR tools for this run: ${toolList}. Use those exact names, not the unprefixed \`pr_...\` variants.`,
       `- Start by refreshing the PR issue inventory with \`${runtimeCapabilities.refreshInventoryTool}\`.`,
+      `- Immediately after that, call \`${runtimeCapabilities.getReviewCommentsTool}\` to load the full review-thread bodies and line context before deciding which comments are stale, valid, or already addressed.`,
+      "- Treat the refreshed inventory as a triage index, not as the full source of truth for long comment bodies. If a summary looks compact or truncated, fetch the detailed review comments instead of guessing.",
+      "- Do not spend your first steps reading local skill docs, repo docs, or unrelated files before those PR context calls succeed.",
       "- If one of those MCP tools is unavailable in-session, continue with the prompt's issue context and the linked GitHub thread/check URLs instead of reverse-engineering local MCP wiring.",
       "- Do not conclude the PR tools are missing just because the unprefixed `pr_...` names are absent.",
     );
@@ -536,6 +539,9 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     const toolList = listRequiredRuntimeTools(runtimeCapabilities).map((toolName) => `\`${toolName}\``).join(", ");
     promptSections.push(
       `- This workflow chat is expected to expose ADE PR tools. Start by refreshing the PR issue inventory with \`${runtimeCapabilities.refreshInventoryTool}\`.`,
+      `- Immediately after that, call \`${runtimeCapabilities.getReviewCommentsTool}\` to load the full review-thread bodies and line context before deciding which comments are stale, valid, or already addressed.`,
+      "- Treat the refreshed inventory as a triage index, not as the full source of truth for long comment bodies. If a summary looks compact or truncated, fetch the detailed review comments instead of guessing.",
+      "- Do not spend your first steps reading local skill docs, repo docs, or unrelated files before those PR context calls succeed.",
       `- Required PR tools for this run: ${toolList}. If any of them are unavailable, stop and report that the chat was launched without the required ADE PR tools.`,
       "- Do not waste time reverse-engineering local MCP wiring or local server bootstraps from inside the task session.",
     );

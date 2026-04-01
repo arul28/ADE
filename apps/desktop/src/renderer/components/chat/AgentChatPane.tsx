@@ -1427,7 +1427,6 @@ export function AgentChatPane({
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
       if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
-        setProofDrawerOpen(true);
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
       }
     });
@@ -1440,7 +1439,6 @@ export function AgentChatPane({
       const usageEvent = event.usageEvent;
       const usageChatSessionId = usageEvent?.chatSessionId ?? usageEvent?.callerId ?? null;
       if (usageChatSessionId !== selectedSessionId) return;
-      setProofDrawerOpen(true);
       void refreshComputerUseSnapshot(selectedSessionId, { force: true });
     });
     return unsubscribe;

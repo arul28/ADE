@@ -100,6 +100,7 @@ type PrsContextValue = PrsState & {
 const PrsContext = createContext<PrsContextValue | null>(null);
 
 const LS_MODEL_KEY = "ade:prs:resolverModel";
+const LS_REASONING_KEY = "ade:prs:resolverReasoningLevel";
 const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
 
 type ResolverPermissionPreferences = {
@@ -144,6 +145,16 @@ function readPersistedModel(): string {
     /* ignore */
   }
   return "anthropic/claude-sonnet-4-6";
+}
+
+function readPersistedReasoningLevel(): string {
+  try {
+    const value = localStorage.getItem(LS_REASONING_KEY);
+    if (value && value.trim().length > 0) return value.trim();
+  } catch {
+    /* ignore */
+  }
+  return "medium";
 }
 
 function readInitialTab(): PrTab {
@@ -223,7 +234,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Resolver preferences
   const [resolverModel, setResolverModelRaw] = useState<string>(readPersistedModel);
-  const [resolverReasoningLevel, setResolverReasoningLevel] = useState("medium");
+  const [resolverReasoningLevel, setResolverReasoningLevelRaw] = useState<string>(readPersistedReasoningLevel);
   const [resolverPermissions, setResolverPermissions] = useState<ResolverPermissionPreferences>(readPersistedResolverPermissions);
   const [resolverSessionsByContextKey, setResolverSessionsByContextKey] = useState<Record<string, PrAiResolutionSessionInfo>>({});
 
@@ -248,6 +259,15 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       return next;
     });
   }, [resolverModel]);
+
+  const setResolverReasoningLevel = useCallback((level: string) => {
+    setResolverReasoningLevelRaw(level);
+    try {
+      localStorage.setItem(LS_REASONING_KEY, level);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const upsertResolverSession = useCallback((session: PrAiResolutionSessionInfo) => {
     setResolverSessionsByContextKey((prev) => ({ ...prev, [session.contextKey]: session }));
@@ -789,10 +809,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       refresh,
     }),
     // Note: setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId,
-    // setMergeMethod, setResolverReasoningLevel, and setInlineTerminal are intentionally
-    // excluded from this dependency array because they are useState setters which are
-    // guaranteed to be referentially stable across re-renders per the React useState contract.
-    // setResolverModel is included because it's a useCallback wrapper (not a raw setter).
+    // setMergeMethod, and setInlineTerminal are intentionally excluded from this dependency
+    // array because they are useState setters which are guaranteed to be referentially stable
+    // across re-renders per the React useState contract. Resolver preference setters are
+    // included because they are useCallback wrappers (not raw setters).
     [
       activeTab,
       prs,
@@ -819,6 +839,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       resolverPermissions,
       resolverSessionsByContextKey,
       setResolverModel,
+      setResolverReasoningLevel,
       setResolverPermissionMode,
       upsertResolverSession,
       clearResolverSession,

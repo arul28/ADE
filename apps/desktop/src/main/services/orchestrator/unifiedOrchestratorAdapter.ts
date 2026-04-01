@@ -56,7 +56,7 @@ function resolveWorkerOwnerId(metadata: Record<string, unknown> | null | undefin
 }
 
 export function resolveAdeMcpServerLaunch(args: {
-  projectRoot?: string;
+  projectRoot: string;
   workspaceRoot: string;
   runtimeRoot: string;
   missionId?: string;
@@ -207,7 +207,7 @@ export function resolveUnifiedRuntimeRoot(): string {
  * `-c key=value` flag overrides individual dotted TOML paths.
  */
 export function buildCodexMcpConfigFlags(args: {
-  projectRoot?: string;
+  projectRoot: string;
   workspaceRoot: string;
   runtimeRoot: string;
   missionId?: string;
