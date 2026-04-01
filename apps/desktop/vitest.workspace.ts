@@ -30,9 +30,14 @@ const shared = {
   },
 };
 
+const sharedResolveAlias = {
+  "@emoji-mart/data": emojiDataStub,
+  "@lobehub/icons": lobeIconsStub,
+};
+
 export default defineWorkspace([
   {
-    resolve: { alias: { "@emoji-mart/data": emojiDataStub, "@lobehub/icons": lobeIconsStub } },
+    resolve: { alias: sharedResolveAlias },
     test: {
       ...shared,
       name: "unit-main",
@@ -40,7 +45,7 @@ export default defineWorkspace([
     },
   },
   {
-    resolve: { alias: { "@emoji-mart/data": emojiDataStub, "@lobehub/icons": lobeIconsStub } },
+    resolve: { alias: sharedResolveAlias },
     test: {
       ...shared,
       name: "unit-renderer",
@@ -48,7 +53,7 @@ export default defineWorkspace([
     },
   },
   {
-    resolve: { alias: { "@emoji-mart/data": emojiDataStub, "@lobehub/icons": lobeIconsStub } },
+    resolve: { alias: sharedResolveAlias },
     test: {
       ...shared,
       name: "unit-shared",

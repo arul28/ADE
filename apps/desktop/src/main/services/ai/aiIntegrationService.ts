@@ -826,7 +826,7 @@ export function createAiIntegrationService(args: {
 
     const auth = await detectAuth();
     const available = await getResolvedAvailableModels(auth);
-    const family = provider === "codex" ? "openai" : "anthropic";
+    const family = provider === "codex" ? "openai" : provider === "cursor" ? "cursor" : "anthropic";
     const models = available
       .filter((descriptor) => descriptor.family === family)
       .map((descriptor) => ({
@@ -893,6 +893,7 @@ export function createAiIntegrationService(args: {
         resetProviderRuntimeHealth();
         resetClaudeRuntimeProbeCache();
         clearCursorCliModelsCache();
+        modelListCache.clear();
         runtimeHealthVersion = getProviderRuntimeHealthVersion();
       }
       const auth = await detectAuth(options);

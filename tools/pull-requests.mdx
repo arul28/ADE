@@ -335,11 +335,11 @@ ADE includes a built-in **PR issue resolution** workflow for addressing review c
 1. **Issue inventory** — ADE scans the PR for failing checks, review comments requesting changes, and merge conflicts. Each item becomes an entry in the issue inventory.
 2. **Resolution modal** — Click **Resolve issues** on a PR to open the resolution modal. It lists all open issues with their type and severity.
 3. **AI resolution** — Select issues and click **Fix with AI**. ADE launches an agent session scoped to the PR's lane with the issue context pre-loaded. The agent reads the failing check output or review comment, makes fixes, and commits them.
-4. **Convergence rounds** — For PRs with multiple issues, ADE can run multiple resolution rounds automatically. Configure `maxRounds` in pipeline settings to cap the number of iterations.
+4. **Convergence rounds** — For PRs with multiple issues, ADE can run multiple resolution rounds automatically. Set the `prs.convergence.maxRounds` key in `.ade/ade.yaml` to cap the number of iterations.
 
 ### Pipeline settings
 
-Configure PR convergence behavior per-project:
+Configure PR convergence behavior per-project. The `prs` section in `.ade/ade.yaml` is optional — projects may omit it entirely and default behavior will apply.
 
 ```yaml
 # .ade/ade.yaml

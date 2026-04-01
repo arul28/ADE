@@ -549,7 +549,7 @@ function CreateMissionDialogInner({
   }, [draft.phaseOverride, disabledPhases]);
 
   const selectedBudgetFamilies = useMemo(() => {
-    const subscriptionProviders = new Set<"claude" | "codex">();
+    const subscriptionProviders = new Set<"claude" | "codex" | "cursor">();
     let hasApiModels = false;
     const inspectModel = (rawModelId: string | null | undefined): void => {
       const modelId = String(rawModelId ?? "").trim();
@@ -565,6 +565,10 @@ function CreateMissionDialogInner({
       }
       if (descriptor.isCliWrapped && descriptor.family === "openai") {
         subscriptionProviders.add("codex");
+        return;
+      }
+      if (descriptor.isCliWrapped && descriptor.family === "cursor") {
+        subscriptionProviders.add("cursor");
         return;
       }
       if (descriptor.authTypes.includes("api-key") || descriptor.authTypes.includes("openrouter")) {
@@ -709,7 +713,7 @@ function CreateMissionDialogInner({
     for (const auth of aiDetectedAuth) {
       if (!auth.authenticated) continue;
       if (auth.type === "cli-subscription" && auth.cli) {
-        const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
+        const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", cursor: "cursor" };
         if (familyMap[auth.cli]) subProviders.push(familyMap[auth.cli]!);
       }
       if (auth.type === "api-key" && auth.provider) {

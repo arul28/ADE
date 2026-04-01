@@ -139,12 +139,8 @@ function deriveConfiguredCliModelIdsFromStatus(status: {
     }
   }
 
-  if (status.availableProviders.cursor) {
-    for (const model of status.models.cursor ?? []) {
-      const resolved = resolveCliRegistryModelId("cursor", model.id);
-      if (resolved) available.add(resolved);
-    }
-  }
+  // Cursor models are excluded: the resolver terminal only supports Claude CLI and Codex CLI;
+  // cursor/* IDs would be misclassified by inferProviderFromModel and cannot be launched here.
 
   const detectedAuth = status.detectedAuth ?? [];
   if (detectedAuth.length) {

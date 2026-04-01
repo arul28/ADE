@@ -21,9 +21,9 @@ The ACP integration means Cursor's agent capabilities are available directly in 
 |------------|---------|
 | **Cursor installed** | Cursor desktop app must be installed on your machine |
 | **Cursor agent CLI** | The Cursor `agent` executable must be available (ADE checks standard install paths and PATH) |
-| **Authentication** | Cursor must be authenticated (sign in through the Cursor app) |
+| **Authentication** | Cursor must be authenticated — either sign in through the Cursor app or set `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` environment variables |
 
-ADE automatically detects Cursor's CLI executable and checks authentication status during onboarding and in **Settings → AI**.
+ADE auto-detects the Cursor CLI executable and checks authentication status during onboarding and in **Settings → AI**. When environment-based credentials (`CURSOR_API_KEY` or `CURSOR_AUTH_TOKEN`) are present, ADE recognizes them as valid authentication signals and the AI status indicator in Settings may reflect those variables rather than an interactive sign-in session.
 
 ---
 

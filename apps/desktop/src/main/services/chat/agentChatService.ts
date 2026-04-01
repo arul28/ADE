@@ -2098,8 +2098,8 @@ export function createAgentChatService(args: {
   appVersion: string;
   onEvent?: (event: AgentChatEventEnvelope) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
-  getExternalMcpConfigs?: () => ExternalMcpServerConfig[];
-  getDirtyFileTextForPath?: (absPath: string) => string | undefined | Promise<string | undefined>;
+  getExternalMcpConfigs: () => ExternalMcpServerConfig[];
+  getDirtyFileTextForPath: (absPath: string) => string | undefined | Promise<string | undefined>;
 }) {
   const {
     projectRoot,
@@ -2134,6 +2134,13 @@ export function createAgentChatService(args: {
     getExternalMcpConfigs,
     getDirtyFileTextForPath,
   } = args;
+
+  if (!getExternalMcpConfigs) {
+    throw new Error("createAgentChatService: getExternalMcpConfigs is required");
+  }
+  if (!getDirtyFileTextForPath) {
+    throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
+  }
 
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
 
@@ -2735,7 +2742,7 @@ export function createAgentChatService(args: {
 
   const buildCursorAcpMcpServers = (managed: ManagedChatSession): McpServer[] => {
     const list: McpServer[] = [];
-    const external = getExternalMcpConfigs?.() ?? [];
+    const external = getExternalMcpConfigs();
     list.push(...externalMcpConfigsToAcpStdio(external));
     const adeWrapped = buildAdeMcpServers(
       managed.laneWorktreePath,
@@ -9293,6 +9300,7 @@ export function createAgentChatService(args: {
     const launch = resolveCursorAcpLaunchSettings(managed.session);
     return [
       managed.session.laneId,
+      managed.laneWorktreePath,
       managed.session.model,
       launch.mode ?? "default",
       launch.sandbox,
@@ -9603,6 +9611,9 @@ export function createAgentChatService(args: {
     return "image/jpeg";
   };
 
+  /** Maximum bytes to inline for a non-image attachment in a Cursor ACP prompt. */
+  const MAX_INLINE_BYTES = 512 * 1024; // 512 KB
+
   const buildCursorAcpPromptBlocks = (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
@@ -9612,19 +9623,35 @@ export function createAgentChatService(args: {
     > = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
       try {
-        const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+        // Check file size before reading the full contents into memory.
+        let fileSize: number;
+        try {
+          fileSize = fs.statSync(attachment._resolvedPath).size;
+        } catch {
+          // stat failed -- skip unreadable attachment
+          continue;
+        }
+
         if (attachment.type === "image") {
+          const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
           blocks.push({
             type: "image",
             data: buf.toString("base64"),
             mimeType: guessImageMimeForPath(attachment._resolvedPath),
           });
-        } else {
+        } else if (fileSize <= MAX_INLINE_BYTES) {
           // Non-image file attachment -- include content as text
+          const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
           const text = buf.toString("utf-8");
           blocks.push({
             type: "text",
             text: `[File: ${attachment.path}]\n${text}`,
+          });
+        } else {
+          // File is too large to inline -- push a placeholder with a truncated preview.
+          blocks.push({
+            type: "text",
+            text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
           });
         }
       } catch {
@@ -9804,7 +9831,7 @@ export function createAgentChatService(args: {
         if (!existing.pooled) throw new Error("Cursor ACP connection not available");
         wireCursorAcpBridgeHandlers(existing.pooled);
         existing.pooled.bridge.getRootPath = () => managed.laneWorktreePath;
-        existing.pooled.bridge.getDirtyFileText = getDirtyFileTextForPath ?? null;
+        existing.pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
         return existing;
       }
     } else if (managed.runtime) {
@@ -9821,7 +9848,7 @@ export function createAgentChatService(args: {
     });
     wireCursorAcpBridgeHandlers(pooled);
     pooled.bridge.getRootPath = () => managed.laneWorktreePath;
-    pooled.bridge.getDirtyFileText = getDirtyFileTextForPath ?? null;
+    pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
 
     const rt: CursorRuntime = {
       kind: "cursor",
@@ -9997,6 +10024,13 @@ export function createAgentChatService(args: {
         sessionId: runtime.acpSessionId!,
         prompt: promptBlocks,
       });
+
+      // Signal dispatch completion now that the real ACP prompt has been initiated.
+      if (args.onDispatched) {
+        args.onDispatched();
+        args.onDispatched = undefined;
+      }
+
       await refreshCursorSessionState(managed, runtime, "after_prompt");
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
@@ -10310,8 +10344,10 @@ export function createAgentChatService(args: {
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
       prepared.managed.session.status = "active";
       persistChatState(prepared.managed);
-      prepared.onDispatched?.();
-      prepared.onDispatched = undefined;
+      // NOTE: onDispatched is NOT called here. It will be called inside
+      // runCursorTurn after the real ACP prompt has been initiated, so the
+      // caller's awaitDispatch promise resolves only once the backend has
+      // acknowledged the prompt.
     }
 
     logger.info("agent_chat.turn_dispatch_ack", {
@@ -11050,7 +11086,13 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "cursor") {
       const pending = managed.runtime.permissionWaiters.get(itemId);
       if (!pending) {
-        throw new Error(`No pending Cursor permission for item '${itemId}'.`);
+        // Treat missing waiter as a benign race (e.g. the Cursor turn already
+        // resolved or was cancelled before the user responded). Simply no-op.
+        logger.debug("agent_chat.cursor_permission_waiter_missing", {
+          sessionId,
+          itemId,
+        });
+        return;
       }
       pending.resolve(mapChatDecisionToCursorPermission(decision, pending.options));
       return;

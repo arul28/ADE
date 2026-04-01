@@ -440,6 +440,8 @@ function createService(overrides: Record<string, unknown> = {}) {
     projectConfigService,
     logger: logger as any,
     appVersion: "0.0.1-test",
+    getExternalMcpConfigs: () => [],
+    getDirtyFileTextForPath: () => undefined,
     ...overrides,
   });
 
@@ -4078,11 +4080,15 @@ describe("createAgentChatService", () => {
       sendResolved = true;
     });
 
-    for (let i = 0; i < 5 && !sendResolved; i += 1) {
+    // Allow a few microticks for the optimistic UI events to be emitted.
+    for (let i = 0; i < 5; i += 1) {
       await Promise.resolve();
     }
 
-    expect(sendResolved).toBe(true);
+    // The user_message and status events should be emitted optimistically
+    // (before ACP warmup completes), even though awaitDispatch has NOT yet
+    // resolved -- it now waits for the real prompt to be acknowledged.
+    expect(sendResolved).toBe(false);
     expect(
       events.filter((event) => event.event.type === "user_message"),
     ).toHaveLength(1);
@@ -4117,6 +4123,8 @@ describe("createAgentChatService", () => {
 
     await sendPromise;
 
+    // awaitDispatch should now have resolved (after the prompt completed).
+    expect(sendResolved).toBe(true);
     expect(completedEvent.event.status).toBe("completed");
     expect(
       events.filter((event) => event.event.type === "user_message"),

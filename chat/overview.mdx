@@ -141,16 +141,19 @@ When computer use is active, a **monitoring panel** expands below the chat. It s
 
 ### Auto-titling
 
-ADE automatically generates descriptive session titles using AI. Controlled by:
-- `ai.chat.autoTitleEnabled` — toggle auto-titling on or off
-- `autoTitleReasoningEffort` — depth of analysis for title generation
-- `autoTitleRefreshOnComplete` — regenerate the title when the session ends
+ADE automatically generates descriptive session titles using AI. The primary configuration namespace is `sessionIntelligence.titles`:
+- `sessionIntelligence.titles.autoTitleEnabled` — toggle auto-titling on or off
+- `sessionIntelligence.titles.reasoningEffort` — depth of analysis for title generation
+- `sessionIntelligence.titles.refreshOnComplete` — regenerate the title when the session ends
+- `sessionIntelligence.titles.modelId` — override the model used for title generation
+
+Legacy keys `ai.chat.autoTitleEnabled` and `chat.autoTitleReasoningEffort` / `chat.autoTitleRefreshOnComplete` still function as runtime fallbacks.
 
 ### Interrupting agents
 
 Press **Escape** or click the **Stop** button to interrupt a running agent. Behavior varies by provider:
 - **Claude** — graceful interrupt; agent reports partial results
-- **Codex** — session terminates; partial output is preserved in the transcript
+- **Codex** — issues a turn/interrupt for the active turn; partial output is preserved in the transcript
 - **Cursor (ACP)** — session cancel via ACP protocol
 
 ### Steering and editing
