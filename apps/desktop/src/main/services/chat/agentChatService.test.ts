@@ -14,6 +14,7 @@ const mockState = vi.hoisted(() => ({
   codexThreadCounter: 0,
   codexTurnCounter: 0,
   cursorSessionCounter: 0,
+  codexRequestPayloads: [] as Array<Record<string, unknown>>,
   codexLineHandler: null as ((line: string) => void) | null,
   cursorAcquireCalls: [] as Array<Record<string, unknown>>,
   cursorNewSessionCalls: [] as Array<Record<string, unknown>>,
@@ -46,6 +47,7 @@ vi.mock("node:child_process", () => ({
         writable: true,
         write: vi.fn((line: string) => {
           const payload = JSON.parse(line);
+          mockState.codexRequestPayloads.push(payload);
           if (payload?.id == null || typeof payload?.method !== "string") return true;
 
           let result: Record<string, unknown> = {};
@@ -490,6 +492,7 @@ beforeEach(() => {
   mockState.codexThreadCounter = 0;
   mockState.codexTurnCounter = 0;
   mockState.cursorSessionCounter = 0;
+  mockState.codexRequestPayloads = [];
   mockState.codexLineHandler = null;
   mockState.cursorAcquireCalls = [];
   mockState.cursorNewSessionCalls = [];

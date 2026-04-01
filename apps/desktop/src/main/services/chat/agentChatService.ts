@@ -117,6 +117,7 @@ import {
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
+import { buildCodexAppServerMcpConfigOverrides } from "../ai/codexAppServerConfig";
 import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
@@ -7994,10 +7995,12 @@ export function createAgentChatService(args: {
     codexPolicy: CodexPolicy,
     mcpServers: Record<string, Record<string, unknown>>,
   ): Promise<void> => {
+    const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
     const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
       model: managed.session.model,
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       cwd: managed.laneWorktreePath,
+      ...(mcpConfig ? { config: mcpConfig } : {}),
       mcpServers,
       mcp_servers: mcpServers,
       ...codexPolicyArgs(codexPolicy),
@@ -10354,6 +10357,7 @@ export function createAgentChatService(args: {
       if (!runtime.threadResumed) {
         const threadIdToResume = managed.session.threadId || readPersistedState(sessionId)?.threadId;
         const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
+        const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
 
         if (threadIdToResume) {
           try {
@@ -10362,6 +10366,7 @@ export function createAgentChatService(args: {
               model: managed.session.model,
               ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
               cwd: managed.laneWorktreePath,
+              ...(mcpConfig ? { config: mcpConfig } : {}),
               mcpServers,
               mcp_servers: mcpServers,
               ...codexPolicyArgs(codexPolicy),
@@ -10767,12 +10772,14 @@ export function createAgentChatService(args: {
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
         const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
+        const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
         try {
           await runtime.request("thread/resume", {
             threadId,
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
+            ...(mcpConfig ? { config: mcpConfig } : {}),
             mcpServers,
             mcp_servers: mcpServers,
             ...codexPolicyArgs(codexPolicy),
