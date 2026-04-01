@@ -46,6 +46,8 @@ import fs from "node:fs";
 import net from "node:net";
 import { createMcpRequestHandler } from "../../../mcp-server/src/mcpServer";
 import { createEventBuffer, type AdeMcpRuntime, type AdeMcpPaths } from "../../../mcp-server/src/bootstrap";
+import { startJsonRpcServer } from "../../../mcp-server/src/jsonrpc";
+import type { JsonRpcTransport } from "../../../mcp-server/src/transport";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createDevToolsService } from "./services/devTools/devToolsService";
@@ -2250,37 +2252,33 @@ app.whenReady().then(async () => {
     try { fs.unlinkSync(mcpSocketPath); } catch {}
 
     const mcpSocketServer = net.createServer((conn) => {
+      let stopped = false;
+      const transport: JsonRpcTransport = {
+        onData(callback) {
+          conn.on("data", callback);
+        },
+        write(data) {
+          conn.write(data);
+        },
+        close() {
+          if (!conn.destroyed) conn.end();
+        },
+      };
+      let stop: ReturnType<typeof startJsonRpcServer> | null = null;
       const mcpHandler = createMcpRequestHandler({
         runtime: mcpRuntime,
         serverVersion: app.getVersion(),
         onToolsListChanged: () => {
-          conn.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} })}\n`);
+          stop?.notify("notifications/tools/list_changed", {});
         },
       });
-      let buf = "";
+      stop = startJsonRpcServer(mcpHandler, transport);
       conn.on("close", () => {
-        mcpHandler.dispose();
-      });
-      conn.on("data", (chunk) => {
-        buf += chunk.toString();
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          let parsed: any;
-          try { parsed = JSON.parse(line); } catch { continue; }
-          const id = parsed.id ?? null;
-          void mcpHandler(parsed).then((result) => {
-            if (id !== null && id !== undefined) {
-              conn.write(JSON.stringify({ jsonrpc: "2.0", id, result: result ?? {} }) + "\n");
-            }
-          }).catch((err: any) => {
-            if (id !== null && id !== undefined) {
-              conn.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: err?.message ?? String(err) } }) + "\n");
-            }
-          });
+        if (!stopped) {
+          stopped = true;
+          stop?.();
         }
+        mcpHandler.dispose();
       });
       conn.on("error", () => {}); // ignore connection errors
     });
