@@ -1638,7 +1638,7 @@ export function PrConvergencePanel({
               <ArrowsClockwise size={13} weight="bold" />
             )}
             <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>
-              {busy ? "Running..." : mode === "auto-converge" ? `Start Round ${convergence.currentRound}` : "Launch Agent"}
+              {busy ? "Running..." : mode === "auto-converge" ? `Start Round ${convergence.currentRound + 1}` : "Launch Agent"}
             </span>
           </button>
         </div>

@@ -355,10 +355,21 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
   }
   const externalMcpConfigWatcher = (() => {
     try {
-      return fs.watch(paths.adeDir, (_eventType, fileName) => {
+      const watcher = fs.watch(paths.adeDir, (_eventType, fileName) => {
         if (String(fileName ?? "").trim() !== "local.secret.yaml") return;
         externalMcpService.reload();
       });
+      watcher.on("error", (error) => {
+        logger.warn("external_mcp.bootstrap_watch_runtime_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        try {
+          watcher.close();
+        } catch {
+          // Ignore watcher shutdown errors during degraded headless startup.
+        }
+      });
+      return watcher;
     } catch (error) {
       logger.warn("external_mcp.bootstrap_watch_failed", {
         error: error instanceof Error ? error.message : String(error),

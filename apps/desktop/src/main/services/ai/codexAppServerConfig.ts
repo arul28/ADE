@@ -65,7 +65,7 @@ export function buildCodexAppServerMcpConfigOverrides(
       overrides[`${prefix}.disabled_tools`] = disabledTools;
     }
 
-    if (typeof server.command === "string") {
+    if (typeof server.command === "string" && server.command.trim().length > 0) {
       overrides[`${prefix}.command`] = server.command;
       if (Array.isArray(server.args)) overrides[`${prefix}.args`] = server.args;
       if (server.env && typeof server.env === "object") overrides[`${prefix}.env`] = server.env;
@@ -73,7 +73,7 @@ export function buildCodexAppServerMcpConfigOverrides(
       continue;
     }
 
-    if (typeof server.url === "string") {
+    if (typeof server.url === "string" && server.url.trim().length > 0) {
       overrides[`${prefix}.url`] = server.url;
       if (typeof server.bearerToken === "string") overrides[`${prefix}.bearer_token`] = server.bearerToken;
       if (typeof server.bearerTokenEnvVar === "string") {

@@ -43,6 +43,7 @@ import type { createIssueInventoryService } from "../../prs/issueInventoryServic
 import { computeConvergenceStatus, detectSource, extractSeverity } from "../../prs/issueInventoryService";
 import { previewPrIssueResolutionPrompt } from "../../prs/prIssueResolver";
 import type { createPrService } from "../../prs/prService";
+import { isNoisyIssueComment, mapPermissionMode } from "../../prs/resolverUtils";
 import type { createProcessService } from "../../processes/processService";
 import type { createSessionService } from "../../sessions/sessionService";
 import { getErrorMessage, nowIso } from "../../shared/utils";
@@ -324,11 +325,14 @@ function buildFallbackInventoryItems(args: {
 
   for (const comment of args.comments) {
     if (comment.source !== "issue") continue;
+    if (isNoisyIssueComment(comment)) continue;
+    const source = detectSource(comment.author);
+    if (source !== "human") continue;
     const body = comment.body?.trim() || null;
     items.push({
       id: `transient-comment-${comment.id}`,
       prId: args.prId,
-      source: detectSource(comment.author),
+      source,
       type: "issue_comment",
       externalId: `issue-comment:${comment.id}`,
       state: "new",
@@ -1543,6 +1547,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           model: resolvedModel,
           modelId: resolvedModelId,
           reasoningEffort: resolvedReasoning,
+          ...(permissionMode ? { permissionMode: mapPermissionMode(permissionMode) } : {}),
           surface: "work",
           sessionProfile: "workflow",
         });

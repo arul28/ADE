@@ -21,7 +21,17 @@ type ClaudeV2Session = {
   stream: () => AsyncGenerator<SDKMessage, void>;
   close: () => void;
   readonly sessionId: string;
+  query?: {
+    setMcpServers?: (servers: Record<string, Record<string, unknown>>) => Promise<{
+      added?: string[];
+      removed?: string[];
+      errors?: Record<string, string>;
+    }>;
+    setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
+    supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
+  };
   setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
+  supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
 };
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import {
@@ -538,12 +548,7 @@ function isAbortRelatedError(error: unknown): boolean {
   if (typeof globalThis.DOMException === "function" && error instanceof globalThis.DOMException && error.name === "AbortError") return true;
   if (error instanceof Error && error.name === "AbortError") return true;
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  return (
-    message.includes("aborted by user")
-    || message.includes("connection aborted")
-    || message.includes("operation aborted")
-    || message.includes("process aborted")
-  );
+  return message.includes("aborterror") || message.includes("aborted by user");
 }
 
 function isProcessAlive(pid: number | null): boolean {
@@ -693,6 +698,7 @@ type ManagedChatSession = {
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
+  runtimeInvalidated: boolean;
   localPendingInputs: Map<string, {
     request: PendingInputRequest;
     resolve: (response: {
@@ -2092,8 +2098,10 @@ function findRepoRuntimeRoot(startPaths: string[]): string | null {
   return null;
 }
 
-function resolveMcpRuntimeRoot(projectRoot: string, workspaceRoot: string): string {
-  return findRepoRuntimeRoot([workspaceRoot, projectRoot]) ?? resolveUnifiedRuntimeRoot();
+function resolveMcpRuntimeRoot(_projectRoot: string, _workspaceRoot: string): string {
+  // Only use the trusted ADE install path — never walk up user repo trees
+  // which could match apps/mcp-server/package.json by coincidence.
+  return resolveUnifiedRuntimeRoot();
 }
 
 
@@ -2840,6 +2848,9 @@ export function createAgentChatService(args: {
     chatSessionId?: string | null,
     computerUsePolicy?: ComputerUsePolicy | null,
   ): Record<string, Record<string, unknown>> => {
+    // CLI providers (claude/codex) spawn the MCP server as a plain Node child
+    // process via stdio.  Skip the Electron bundled-proxy so the command
+    // resolves to `node dist/index.cjs` which the CLI can manage as stdio.
     const launch = resolveAdeMcpServerLaunch({
       projectRoot,
       workspaceRoot,
@@ -2848,6 +2859,7 @@ export function createAgentChatService(args: {
       ownerId: ownerId ?? undefined,
       chatSessionId: chatSessionId ?? undefined,
       computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
+      preferBundledProxy: false,
     });
     return providerResolver.normalizeCliMcpServers(provider, {
       ade: {
@@ -2888,6 +2900,77 @@ export function createAgentChatService(args: {
     }
     return list;
   };
+
+  const getClaudeV2SessionControl = (
+    session: ClaudeV2Session | null | undefined,
+  ): {
+    setMcpServers?: (servers: Record<string, Record<string, unknown>>) => Promise<{
+      added?: string[];
+      removed?: string[];
+      errors?: Record<string, string>;
+    }>;
+    setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
+    supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
+  } => {
+    const sessionRecord = session as (ClaudeV2Session & { query?: ClaudeV2Session["query"] }) | null | undefined;
+    const query = sessionRecord?.query;
+
+    return {
+      setMcpServers: typeof query?.setMcpServers === "function" ? query.setMcpServers.bind(query) : undefined,
+      setPermissionMode: typeof sessionRecord?.setPermissionMode === "function"
+        ? sessionRecord.setPermissionMode.bind(sessionRecord)
+        : (typeof query?.setPermissionMode === "function" ? query.setPermissionMode.bind(query) : undefined),
+      supportedCommands: typeof sessionRecord?.supportedCommands === "function"
+        ? sessionRecord.supportedCommands.bind(sessionRecord)
+        : (typeof query?.supportedCommands === "function" ? query.supportedCommands.bind(query) : undefined),
+    };
+  };
+
+  const attachClaudeV2McpServers = async (
+    managed: ManagedChatSession,
+    session: ClaudeV2Session | null | undefined,
+    mcpServers: Record<string, Record<string, unknown>> | undefined,
+  ): Promise<void> => {
+    if (!mcpServers || Object.keys(mcpServers).length === 0) return;
+
+    const control = getClaudeV2SessionControl(session);
+    if (typeof control.setMcpServers !== "function") {
+      logger.warn("agent_chat.claude_v2_mcp_attach_unavailable", {
+        sessionId: managed.session.id,
+        serverNames: Object.keys(mcpServers),
+      });
+      return;
+    }
+
+    try {
+      const result = await control.setMcpServers(mcpServers);
+      const errors = Object.entries(result?.errors ?? {}).filter(([, message]) => typeof message === "string" && message.trim().length > 0);
+      if (errors.length > 0) {
+        logger.warn("agent_chat.claude_v2_mcp_attach_failed", {
+          sessionId: managed.session.id,
+          errors: Object.fromEntries(errors),
+        });
+        return;
+      }
+      logger.info("agent_chat.claude_v2_mcp_attach", {
+        sessionId: managed.session.id,
+        added: result?.added ?? [],
+        removed: result?.removed ?? [],
+      });
+    } catch (error) {
+      logger.warn("agent_chat.claude_v2_mcp_attach_failed", {
+        sessionId: managed.session.id,
+        error,
+      });
+    }
+  };
+
+  const buildClaudeAllowedTools = (
+    mcpServers: Record<string, Record<string, unknown>> | undefined,
+  ): string[] => Object.keys(mcpServers ?? {})
+    .map((serverName) => serverName.trim())
+    .filter((serverName) => serverName.length > 0)
+    .map((serverName) => `mcp__${serverName}__*`);
 
   const summarizeAdeMcpLaunch = (args: {
     workspaceRoot: string;
@@ -3683,6 +3766,7 @@ export function createAgentChatService(args: {
     };
 
     managed.runtime = runtime;
+    managed.runtimeInvalidated = false;
     managed.session.provider = "unified";
     managed.session.unifiedPermissionMode = permMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
@@ -3855,10 +3939,13 @@ export function createAgentChatService(args: {
   const metadataPathFor = (sessionId: string): string => path.join(chatSessionsDir, `${sessionId}.json`);
 
   const persistChatState = (managed: ManagedChatSession): void => {
-    // When runtime has been torn down (null), fall back to the last persisted state
-    // so that sdkSessionId, messages, and lastLaneDirectiveKey survive teardown.
+    // When runtime has been torn down (null) but NOT intentionally invalidated,
+    // fall back to the last persisted state so that sdkSessionId, messages, and
+    // lastLaneDirectiveKey survive a transient teardown (e.g. app backgrounding).
+    // When runtimeInvalidated is set, teardownRuntime() intentionally cleared
+    // runtime state, so we must NOT restore stale values from disk.
     let prevPersisted: PersistedChatState | null = null;
-    if (!managed.runtime) {
+    if (!managed.runtime && !managed.runtimeInvalidated) {
       try { prevPersisted = readPersistedState(managed.session.id); } catch { /* ignore */ }
     }
     const payload: PersistedChatState = {
@@ -4659,6 +4746,7 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     clearLaneDirectiveKey(managed);
+    managed.runtimeInvalidated = true;
   };
 
   const maybeGenerateSessionSummary = async (
@@ -4932,6 +5020,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: persisted?.preferredExecutionLaneId ?? null,
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
+      runtimeInvalidated: false,
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -5394,6 +5483,11 @@ export function createAgentChatService(args: {
         } else {
           runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
         }
+        await attachClaudeV2McpServers(
+          managed,
+          runtime.v2Session,
+          v2Opts.mcpServers as Record<string, Record<string, unknown>> | undefined,
+        );
       }
 
       // Build the message — plain string for text-only, or SDKUserMessage with
@@ -5403,8 +5497,9 @@ export function createAgentChatService(args: {
       });
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
-      if (typeof runtime.v2Session.setPermissionMode === "function") {
-        await runtime.v2Session.setPermissionMode(turnPermissionMode);
+      const sessionControl = getClaudeV2SessionControl(runtime.v2Session);
+      if (typeof sessionControl.setPermissionMode === "function") {
+        await sessionControl.setPermissionMode(turnPermissionMode);
       } else if (turnPermissionMode === "plan") {
         throw new Error("Claude plan mode is not available in this Claude SDK build.");
       }
@@ -5440,9 +5535,9 @@ export function createAgentChatService(args: {
             applyClaudeSlashCommands(runtime, initMsg.slash_commands);
           }
           try {
-            const sessionImpl = runtime.v2Session as any;
-            if (typeof sessionImpl?.supportedCommands === "function") {
-              sessionImpl.supportedCommands().then((cmds: any[]) => {
+            const control = getClaudeV2SessionControl(runtime.v2Session);
+            if (typeof control.supportedCommands === "function") {
+              control.supportedCommands().then((cmds: any[]) => {
                 if (Array.isArray(cmds) && cmds.length > 0) {
                   applyClaudeSlashCommands(runtime, cmds);
                 }
@@ -8025,6 +8120,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "codex") return managed.runtime;
     const runtime = await startCodexRuntime(managed);
     managed.runtime = runtime;
+    managed.runtimeInvalidated = false;
     return runtime;
   };
 
@@ -8175,6 +8271,11 @@ export function createAgentChatService(args: {
         managed.session.id,
         managed.session.computerUse,
       ) as any;
+      const allowedTools = buildClaudeAllowedTools(opts.mcpServers as Record<string, Record<string, unknown>> | undefined);
+      if (allowedTools.length > 0) {
+        opts.allowedTools = allowedTools;
+      }
+      console.error("[ADE-DEBUG] mcpServers config:", JSON.stringify(opts.mcpServers, null, 2)?.slice(0, 1200));
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
 
       // Handle MCP elicitation requests (form input or OAuth URL flows).
@@ -8632,6 +8733,11 @@ export function createAgentChatService(args: {
         } else {
           runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
         }
+        await attachClaudeV2McpServers(
+          managed,
+          runtime.v2Session,
+          v2Opts.mcpServers as Record<string, Record<string, unknown>> | undefined,
+        );
 
         if (runtime.v2WarmupCancelled) {
           try { runtime.v2Session?.close(); } catch { /* ignore */ }
@@ -8642,8 +8748,9 @@ export function createAgentChatService(args: {
         // Apply permission mode before the first interaction so the session
         // starts with the correct approval behaviour selected in the rebase tab.
         const initialPermissionMode = resolveClaudeTurnPermissionMode(managed);
-        if (typeof runtime.v2Session.setPermissionMode === "function") {
-          await runtime.v2Session.setPermissionMode(initialPermissionMode);
+        const sessionControl = getClaudeV2SessionControl(runtime.v2Session);
+        if (typeof sessionControl.setPermissionMode === "function") {
+          await sessionControl.setPermissionMode(initialPermissionMode);
         }
 
         await runtime.v2Session.send("System initialization check. Respond with only the word READY.");
@@ -8659,9 +8766,9 @@ export function createAgentChatService(args: {
               applyClaudeSlashCommands(runtime, initMsg.slash_commands);
             }
             try {
-              const sessionImpl = runtime.v2Session as any;
-              if (typeof sessionImpl?.supportedCommands === "function") {
-                sessionImpl.supportedCommands().then((cmds: any[]) => {
+              const control = getClaudeV2SessionControl(runtime.v2Session);
+              if (typeof control.supportedCommands === "function") {
+                control.supportedCommands().then((cmds: any[]) => {
                   if (Array.isArray(cmds) && cmds.length > 0) {
                     applyClaudeSlashCommands(runtime, cmds);
                   }
@@ -8770,6 +8877,7 @@ export function createAgentChatService(args: {
       pendingElicitations: new Map<string, () => void>(),
     };
     managed.runtime = runtime;
+    managed.runtimeInvalidated = false;
 
     return runtime;
   };
@@ -8810,6 +8918,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
+      runtimeInvalidated: false,
       activeAssistantMessageId: null,
       previewTextBuffer: null,
       bufferedText: null,
@@ -9150,6 +9259,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
+      runtimeInvalidated: false,
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -10937,8 +11047,11 @@ export function createAgentChatService(args: {
         ensureClaudeSessionRuntime(managed);
         // Re-sync permission mode from persisted/config settings
         const fallbackPermMode = resolveClaudeTurnPermissionMode(managed);
-        if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && typeof managed.runtime.v2Session.setPermissionMode === "function") {
-          await managed.runtime.v2Session.setPermissionMode(fallbackPermMode);
+        if (managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
+          const control = getClaudeV2SessionControl(managed.runtime.v2Session);
+          if (typeof control.setPermissionMode === "function") {
+            await control.setPermissionMode(fallbackPermMode);
+          }
         }
         sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
       }
@@ -10947,8 +11060,11 @@ export function createAgentChatService(args: {
       ensureClaudeSessionRuntime(managed);
       // Re-sync permission mode from persisted/config settings
       const claudePermMode = resolveClaudeTurnPermissionMode(managed);
-      if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && typeof managed.runtime.v2Session.setPermissionMode === "function") {
-        await managed.runtime.v2Session.setPermissionMode(claudePermMode);
+      if (managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
+        const control = getClaudeV2SessionControl(managed.runtime.v2Session);
+        if (typeof control.setPermissionMode === "function") {
+          await control.setPermissionMode(claudePermMode);
+        }
       }
       sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
     }
@@ -11652,8 +11768,9 @@ export function createAgentChatService(args: {
       }
       if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && !managed.runtime.busy) {
         const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
-        if (typeof managed.runtime.v2Session.setPermissionMode === "function") {
-          await managed.runtime.v2Session.setPermissionMode(turnPermissionMode);
+        const control = getClaudeV2SessionControl(managed.runtime.v2Session);
+        if (typeof control.setPermissionMode === "function") {
+          await control.setPermissionMode(turnPermissionMode);
         }
       }
       if (managed.runtime?.kind === "cursor" && !managed.runtime.busy) {

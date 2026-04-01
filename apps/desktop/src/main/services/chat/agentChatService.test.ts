@@ -805,6 +805,71 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain(".mcp.json");
     });
 
+    it("pre-approves ADE MCP tools for Claude SDK sessions", async () => {
+      vi.mocked(providerResolver.normalizeCliMcpServers).mockImplementation((_provider, servers) => servers ?? {});
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-mcp-allow",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
+        allowedTools?: string[];
+        mcpServers?: Record<string, Record<string, unknown>>;
+      } | undefined;
+      expect(opts?.mcpServers).toHaveProperty("ade");
+      expect(opts?.allowedTools).toContain("mcp__ade__*");
+    });
+
+    it("attaches ADE MCP servers through the Claude V2 query controls", async () => {
+      vi.mocked(providerResolver.normalizeCliMcpServers).mockImplementation((_provider, servers) => servers ?? {});
+      const setMcpServers = vi.fn().mockResolvedValue({
+        added: ["ade"],
+        removed: [],
+        errors: {},
+      });
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-mcp-query",
+        query: {
+          setMcpServers,
+        },
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(setMcpServers).toHaveBeenCalledWith(expect.objectContaining({
+          ade: expect.objectContaining({
+            command: "node",
+          }),
+        }));
+      });
+    });
+
     it("migrates legacy Claude plan mode into interaction mode", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -1303,12 +1368,12 @@ describe("createAgentChatService", () => {
     });
 
     it("roots Codex MCP launches in the selected lane worktree while keeping the desktop project root", async () => {
-      fs.mkdirSync(path.join(tmpRoot, "apps", "mcp-server"), { recursive: true });
-      fs.writeFileSync(path.join(tmpRoot, "apps", "mcp-server", "package.json"), "{\"name\":\"mcp-server\"}", "utf8");
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
       const laneRoot = fs.realpathSync(laneRootPath);
-      const runtimeRoot = fs.realpathSync(tmpRoot);
+      // runtimeRoot should always come from the trusted ADE install path
+      // (resolveUnifiedRuntimeRoot), never from walking up user repo trees.
+      const runtimeRoot = fs.realpathSync(process.cwd());
       vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
       const { service } = createService();
@@ -2870,6 +2935,63 @@ describe("createAgentChatService", () => {
       });
 
       expect(result.outputText).toContain("Plan ready");
+      expect(setPermissionMode).toHaveBeenCalledWith("plan");
+      expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[1]);
+    });
+
+    it("uses Claude V2 query controls for plan mode when the wrapper lacks setPermissionMode", async () => {
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-query-plan",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Plan via query control" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-query-plan",
+        query: {
+          setPermissionMode,
+        },
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        interactionMode: "plan",
+      });
+
+      const result = await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Outline the implementation only.",
+        interactionMode: "plan",
+      });
+
+      expect(result.outputText).toContain("Plan via query control");
       expect(setPermissionMode).toHaveBeenCalledWith("plan");
       expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[1]);
     });

@@ -453,6 +453,7 @@ export function appendCollapsedChatTranscriptEvent(
       previous?.event.type === "status"
       && previous.event.turnStatus === event.turnStatus
       && (previous.event.turnId ?? null) === (event.turnId ?? null)
+      && (previous.event.message ?? "") === (event.message ?? "")
     ) {
       return;
     }

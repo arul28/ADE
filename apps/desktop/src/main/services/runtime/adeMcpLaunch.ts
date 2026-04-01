@@ -167,11 +167,21 @@ export function resolveDesktopAdeMcpLaunch(args: DesktopAdeMcpLaunchArgs): AdeMc
   const srcEntry = path.join(mcpServerDir, "src", "index.ts");
 
   if (fs.existsSync(builtEntry)) {
+    // Native modules (e.g. node-pty) are externalised from the bundle and
+    // resolved at runtime via require().  When the MCP server runs as a
+    // plain `node` process (not inside Electron), NODE_PATH must include
+    // the desktop app's node_modules so those externals can be found.
+    const desktopNodeModules = path.resolve(runtimeRoot, "apps", "desktop", "node_modules");
+    const existingNodePath = env.NODE_PATH ?? process.env.NODE_PATH ?? "";
+    const nodePath = existingNodePath
+      ? `${desktopNodeModules}${path.delimiter}${existingNodePath}`
+      : desktopNodeModules;
+
     return {
       mode: "headless_built",
       command: "node",
       cmdArgs: [builtEntry, "--project-root", projectRoot, "--workspace-root", workspaceRoot],
-      env,
+      env: { ...process.env as Record<string, string>, ...env, NODE_PATH: nodePath },
       entryPath: builtEntry,
       runtimeRoot,
       socketPath,
@@ -184,7 +194,7 @@ export function resolveDesktopAdeMcpLaunch(args: DesktopAdeMcpLaunchArgs): AdeMc
     mode: "headless_source",
     command: "npx",
     cmdArgs: ["tsx", srcEntry, "--project-root", projectRoot, "--workspace-root", workspaceRoot],
-    env,
+    env: { ...process.env as Record<string, string>, ...env },
     entryPath: srcEntry,
     runtimeRoot,
     socketPath,

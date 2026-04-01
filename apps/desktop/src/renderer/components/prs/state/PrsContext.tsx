@@ -284,6 +284,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const storeConvergenceState = useCallback((state: PrConvergenceState): PrConvergenceState => {
+    // Guard against late IPC responses for PRs that have been pruned from the list.
+    if (!prsRef.current.some((pr) => pr.id === state.prId)) {
+      return state;
+    }
     convergenceStatesByPrIdRef.current = { ...convergenceStatesByPrIdRef.current, [state.prId]: state };
     setConvergenceStatesByPrId((prev) => {
       if (jsonEqual(prev[state.prId], state)) {
