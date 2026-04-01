@@ -111,6 +111,8 @@ vi.mock("ai", () => ({
   generateText: vi.fn(),
   streamText: vi.fn(),
   stepCountIs: vi.fn(),
+  tool: vi.fn((def: Record<string, unknown>) => def),
+  jsonSchema: vi.fn((s: unknown) => s),
 }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
@@ -118,6 +120,21 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   unstable_v2_createSession: vi.fn(),
   unstable_v2_resumeSession: vi.fn(),
 }));
+
+vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {
+  const Client = vi.fn().mockImplementation(() => ({
+    connect: vi.fn(async () => {}),
+    listTools: vi.fn(async () => ({ tools: [] })),
+    callTool: vi.fn(async () => ({ content: [{ type: "text", text: "" }] })),
+    close: vi.fn(),
+  }));
+  return { Client };
+});
+
+vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => {
+  const StdioClientTransport = vi.fn().mockImplementation(() => ({}));
+  return { StdioClientTransport };
+});
 
 vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),

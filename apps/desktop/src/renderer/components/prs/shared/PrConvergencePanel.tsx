@@ -1032,7 +1032,9 @@ export function PrConvergencePanel({
   const reviewCommentItems = [...grouped.escalated, ...grouped.new, ...grouped.in_progress, ...grouped.fixed, ...grouped.dismissed];
   const failingChecks = checks.filter((c) => c.conclusion === "failure");
   const runningChecks = checks.filter((c) => c.status === "in_progress");
-  const allChecksPassing = failingChecks.length === 0 && runningChecks.length === 0;
+  const queuedChecks = checks.filter((c) => c.status === "queued");
+  const checksStillRunning = queuedChecks.length > 0 || runningChecks.length > 0;
+  const allChecksPassing = failingChecks.length === 0 && !checksStillRunning;
   const passingChecks = checks.filter((c) => c.conclusion === "success");
   const otherChecks = checks.filter(
     (c) => c.conclusion !== "failure" && c.conclusion !== "success" && c.status !== "in_progress",
@@ -1041,12 +1043,15 @@ export function PrConvergencePanel({
 
   const hasNewItems = grouped.new.length > 0;
   const atMaxRounds = convergence.currentRound >= convergence.maxRounds;
-  const checksStillRunning = checks.some(c => c.status === "queued" || c.status === "in_progress");
-  const canRunNext = hasNewItems && !atMaxRounds && !busy && !checksStillRunning;
+  const hasActiveWaitState = waitState.phase === "agent_running" || waitState.phase === "waiting_checks" || waitState.phase === "waiting_comments";
+  const canRunNext = hasNewItems && !atMaxRounds && !busy && !checksStillRunning && !hasActiveWaitState;
 
   const launchDisabledReason = !hasNewItems ? "No new issues to resolve"
     : atMaxRounds ? "Maximum rounds reached"
     : busy ? "Agent is currently running"
+    : waitState.phase === "agent_running" ? "A convergence session is already running"
+    : waitState.phase === "waiting_checks" ? "Waiting for CI checks to finish"
+    : waitState.phase === "waiting_comments" ? "Waiting for review comments to settle"
     : checksStillRunning ? "CI checks are still running"
     : null;
 
@@ -1353,7 +1358,7 @@ export function PrConvergencePanel({
                     gap: 8,
                   }}
                 >
-                  <Play size={14} weight="fill" style={{ color: allChecksPassing ? COLORS.success : COLORS.danger }} />
+                  <Play size={14} weight="fill" style={{ color: allChecksPassing ? COLORS.success : failingChecks.length > 0 ? COLORS.danger : COLORS.warning }} />
                   <span
                     style={{
                       fontFamily: SANS_FONT,
@@ -1371,10 +1376,18 @@ export function PrConvergencePanel({
                       marginLeft: "auto",
                       fontFamily: MONO_FONT,
                       fontSize: 10,
-                      color: allChecksPassing ? COLORS.success : COLORS.danger,
+                      color: allChecksPassing ? COLORS.success : failingChecks.length > 0 ? COLORS.danger : COLORS.warning,
                     }}
                   >
-                    {allChecksPassing ? "all passing" : `${failingChecks.length} failing`}
+                    {allChecksPassing
+                      ? "all passing"
+                      : failingChecks.length > 0
+                        ? `${failingChecks.length} failing`
+                        : queuedChecks.length > 0 && runningChecks.length > 0
+                          ? `${queuedChecks.length} queued, ${runningChecks.length} running`
+                          : queuedChecks.length > 0
+                            ? `${queuedChecks.length} queued`
+                            : `${runningChecks.length} running`}
                   </span>
                 </div>
                 <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>

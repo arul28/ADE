@@ -41,7 +41,7 @@ import type { createMissionService } from "../../missions/missionService";
 import type { createAiOrchestratorService } from "../../orchestrator/aiOrchestratorService";
 import type { createIssueInventoryService } from "../../prs/issueInventoryService";
 import { computeConvergenceStatus, detectSource, extractSeverity } from "../../prs/issueInventoryService";
-import { previewPrIssueResolutionPrompt } from "../../prs/prIssueResolver";
+import { launchPrIssueResolutionChat } from "../../prs/prIssueResolver";
 import type { createPrService } from "../../prs/prService";
 import { isNoisyIssueComment, mapPermissionMode } from "../../prs/resolverUtils";
 import type { createProcessService } from "../../processes/processService";
@@ -109,6 +109,10 @@ export interface CtoOperatorToolDeps {
     sessionId: string;
     title?: string | null;
   }) => Promise<AgentChatSession>;
+  previewSessionToolNames: (args: {
+    laneId: string;
+    sessionProfile?: AgentChatCreateArgs["sessionProfile"];
+  }) => string[];
   sendChatMessage: (args: AgentChatSendArgs) => Promise<void>;
   interruptChat: (args: AgentChatInterruptArgs) => Promise<void>;
   resumeChat: (args: { sessionId: string }) => Promise<AgentChatSession>;
@@ -1503,13 +1507,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           return { success: false, error: "Issue inventory service is not available." };
         }
 
-        const context = await loadPrConvergenceContext(deps, prId);
-        const pr = context?.pr ?? deps.prService.listAll().find((entry) => entry.id === prId) ?? null;
-        if (!pr) {
-          return { success: false, error: `PR not found: ${prId}` };
-        }
-
-        const prepared = await previewPrIssueResolutionPrompt(
+        const result = await launchPrIssueResolutionChat(
           {
             prService: deps.prService,
             laneService: {
@@ -1519,13 +1517,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
             agentChatService: {
               createSession: deps.createChat,
               sendMessage: deps.sendChatMessage,
-              previewSessionToolNames: () => [
-                "prRefreshIssueInventory",
-                "prGetReviewComments",
-                "prRerunFailedChecks",
-                "prReplyToReviewThread",
-                "prResolveReviewThread",
-              ],
+              previewSessionToolNames: deps.previewSessionToolNames,
             },
             sessionService: deps.sessionService,
             issueInventoryService: deps.issueInventoryService,
@@ -1540,77 +1532,41 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           },
         );
 
-        const { provider: resolvedProvider, model: resolvedModel } = deriveChatProvider({ modelId: resolvedModelId });
-        const session = await deps.createChat({
-          laneId: pr.laneId,
-          provider: resolvedProvider,
-          model: resolvedModel,
-          modelId: resolvedModelId,
-          reasoningEffort: resolvedReasoning,
-          ...(permissionMode ? { permissionMode: mapPermissionMode(permissionMode) } : {}),
-          surface: "work",
-          sessionProfile: "workflow",
-        });
-
-        const href = `/work?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(session.id)}`;
-
-        await deps.sessionService.updateMeta({
-          sessionId: session.id,
-          title: prepared.title,
-        });
-        await deps.sendChatMessage({
-          sessionId: session.id,
-          text: prepared.prompt,
-          displayText: prepared.title,
-          reasoningEffort: resolvedReasoning,
-        });
-
         let runtime: ConvergenceRuntimeState | null = null;
-        if (deps.issueInventoryService) {
-          const roundNumber = (context?.inventory.summary.currentRound ?? 0) + 1;
-          try {
-            const inventoryNewItems = deps.issueInventoryService.getNewItems(prId);
-            if (inventoryNewItems.length > 0) {
-              deps.issueInventoryService.markSentToAgent(
-                prId,
-                inventoryNewItems.map((item) => item.id),
-                session.id,
-                roundNumber,
-              );
-            }
-            runtime = deps.issueInventoryService.saveConvergenceRuntime(prId, {
-              autoConvergeEnabled,
-              status: "running",
-              pollerStatus: "waiting_for_comments",
-              currentRound: roundNumber,
-              activeSessionId: session.id,
-              activeLaneId: session.laneId,
-              activeHref: href,
-              pauseReason: null,
-              errorMessage: null,
-              lastStartedAt: nowIso(),
-              lastPolledAt: null,
-              lastPausedAt: null,
-              lastStoppedAt: null,
-            });
-          } catch (inventoryError) {
-            console.error(
-              `[convergence] Failed to update inventory/runtime for PR ${prId}: ${getErrorMessage(inventoryError)}`,
-            );
-          }
+        try {
+          const status = deps.issueInventoryService.getConvergenceStatus(prId);
+          runtime = deps.issueInventoryService.saveConvergenceRuntime(prId, {
+            autoConvergeEnabled,
+            currentRound: status.currentRound,
+            status: "running",
+            pollerStatus: "waiting_for_comments",
+            activeSessionId: result.sessionId,
+            activeLaneId: result.laneId,
+            activeHref: result.href,
+            pauseReason: null,
+            errorMessage: null,
+            lastStartedAt: nowIso(),
+            lastPolledAt: null,
+            lastPausedAt: null,
+            lastStoppedAt: null,
+          });
+        } catch (inventoryError) {
+          console.error(
+            `[convergence] Failed to update runtime for PR ${prId}: ${getErrorMessage(inventoryError)}`,
+          );
         }
 
         return {
           success: true,
           prId,
-          sessionId: session.id,
-          laneId: session.laneId,
-          href,
+          sessionId: result.sessionId,
+          laneId: result.laneId,
+          href: result.href,
           runtime,
           ...buildNavigationPayload(buildNavigationSuggestion({
             surface: "work",
-            laneId: session.laneId,
-            sessionId: session.id,
+            laneId: result.laneId,
+            sessionId: result.sessionId,
           })),
         };
       } catch (error) {

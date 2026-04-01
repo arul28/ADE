@@ -130,6 +130,7 @@ import type {
   IssueInventoryItem,
   IssueInventorySnapshot,
   ConvergenceRuntimeState,
+  PrConvergenceStatePatch,
   ConvergenceStatus,
   PipelineSettings,
   RebaseResolutionStartArgs,
@@ -5128,9 +5129,9 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsConvergenceStateGet, (_e, args: { prId: string }): ConvergenceRuntimeState =>
     getCtx().issueInventoryService.getConvergenceRuntime(args.prId));
-  ipcMain.handle(IPC.prsConvergenceStateSave, (_e, args: { prId: string; state: Partial<ConvergenceRuntimeState> }): ConvergenceRuntimeState => {
+  ipcMain.handle(IPC.prsConvergenceStateSave, (_e, args: { prId: string; state: PrConvergenceStatePatch }): ConvergenceRuntimeState => {
     // Whitelist: only allow renderer to update operational fields.
-    // Identity fields (prId) and immutable timestamps (createdAt) are stripped.
+    // Identity fields and immutable timestamps are stripped.
     const MUTABLE_FIELDS: ReadonlySet<keyof ConvergenceRuntimeState> = new Set([
       "autoConvergeEnabled",
       "status",
@@ -5145,9 +5146,8 @@ export function registerIpc({
       "lastPolledAt",
       "lastPausedAt",
       "lastStoppedAt",
-      "updatedAt",
     ]);
-    const sanitized: Partial<ConvergenceRuntimeState> = {};
+    const sanitized: PrConvergenceStatePatch = {};
     for (const key of Object.keys(args.state) as (keyof ConvergenceRuntimeState)[]) {
       if (MUTABLE_FIELDS.has(key)) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment

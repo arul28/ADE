@@ -22,7 +22,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createPrService } from "./prService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
-import type { createIssueInventoryService } from "./issueInventoryService";
+import { computeConvergenceStatus, type createIssueInventoryService } from "./issueInventoryService";
 import { isNoisyIssueComment, mapPermissionMode, readRecentCommits } from "./resolverUtils";
 
 type PreviouslyHandledSummary = {
@@ -32,6 +32,12 @@ type PreviouslyHandledSummary = {
   fixedHeadlines: string[];
   dismissedHeadlines: string[];
 };
+
+function isInventoryItemInScope(item: IssueInventoryItem, scope: PrIssueResolutionScope): boolean {
+  if (scope === "checks") return item.type === "check_failure";
+  if (scope === "comments") return item.type === "review_thread" || item.type === "issue_comment";
+  return true;
+}
 
 type IssueResolutionPromptArgs = {
   pr: PrSummary;
@@ -633,15 +639,16 @@ async function preparePrIssueResolutionPrompt(
 
   // Sync the inventory with fresh GitHub data
   const snapshot = inventoryService.syncFromPrData(pr.id, checks, reviewThreads, comments);
-  const convergence = snapshot.convergence;
+  const scopedInventoryItems = snapshot.items.filter((item) => isInventoryItemInScope(item, args.scope));
+  const convergence = computeConvergenceStatus(scopedInventoryItems, snapshot.convergence.maxRounds);
   roundNumber = convergence.currentRound + 1;
-  inventoryNewItems = inventoryService.getNewItems(pr.id);
+  inventoryNewItems = scopedInventoryItems.filter((item) => item.state === "new");
 
   // Build summary of previously handled items across all prior rounds
   if (convergence.currentRound > 0) {
-    const fixedItems = snapshot.items.filter((i) => i.state === "fixed");
-    const dismissedItems = snapshot.items.filter((i) => i.state === "dismissed");
-    const escalatedItems = snapshot.items.filter((i) => i.state === "escalated");
+    const fixedItems = scopedInventoryItems.filter((i) => i.state === "fixed");
+    const dismissedItems = scopedInventoryItems.filter((i) => i.state === "dismissed");
+    const escalatedItems = scopedInventoryItems.filter((i) => i.state === "escalated");
 
     previouslyHandled = {
       fixedCount: fixedItems.length,

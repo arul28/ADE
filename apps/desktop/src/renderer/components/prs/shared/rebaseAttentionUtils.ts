@@ -53,6 +53,12 @@ function filterStatuses(
   });
 }
 
+function isRenderableRebaseAttentionStatus(
+  status: AutoRebaseLaneStatus,
+): status is AutoRebaseLaneStatus & { state: RebaseAttentionState } {
+  return status.state !== "autoRebased";
+}
+
 export function filterRebaseAttentionStatuses(args: {
   autoRebaseStatuses: AutoRebaseLaneStatus[];
   visibleRebaseNeeds: RebaseNeed[];
@@ -73,6 +79,7 @@ export function buildRebaseAttentionItems(args: {
   view: "active" | "history";
 }): RebaseAttentionItem[] {
   return filterStatuses(args.autoRebaseStatuses, args.visibleRebaseNeeds, args.view)
+    .filter(isRenderableRebaseAttentionStatus)
     .map((status) => {
       const lane = args.lanes.find((entry) => entry.id === status.laneId) ?? null;
       const parentLane = status.parentLaneId ? args.lanes.find((entry) => entry.id === status.parentLaneId) ?? null : null;
@@ -82,7 +89,7 @@ export function buildRebaseAttentionItems(args: {
         laneName: lane?.name ?? status.laneId,
         parentLaneId: status.parentLaneId,
         parentLaneName: parentLane?.name ?? status.parentLaneId,
-        state: status.state as RebaseAttentionState,
+        state: status.state,
         updatedAt: status.updatedAt,
         conflictCount: status.conflictCount,
         message: status.message,

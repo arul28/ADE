@@ -1038,7 +1038,7 @@ export function resolveProviderGroupForModel(
 
 /**
  * Resolve the chat session provider and model ref for a model descriptor.
- * CLI-wrapped models route to their native runtime (claude/codex);
+ * CLI-wrapped models route to their native runtime (claude/codex/cursor);
  * everything else goes through the unified (in-process) path.
  */
 export function resolveChatProviderForDescriptor(

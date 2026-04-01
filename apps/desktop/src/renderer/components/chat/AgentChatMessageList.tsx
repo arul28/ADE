@@ -2768,6 +2768,12 @@ export function AgentChatMessageList({
 
   /** Callback from MeasuredEventRow when it measures its real DOM height. */
   const measureFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (measureFlushTimer.current) {
+      clearTimeout(measureFlushTimer.current);
+      measureFlushTimer.current = null;
+    }
+  }, []);
   const handleMeasure = useCallback((index: number, height: number) => {
     const prev = measuredHeights.current.get(index);
     if (prev !== height) {

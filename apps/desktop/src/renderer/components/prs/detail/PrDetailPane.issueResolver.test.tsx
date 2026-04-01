@@ -4,6 +4,7 @@ import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   GitUpstreamSyncStatus,
@@ -13,6 +14,7 @@ import type {
   PrAiResolutionEventPayload,
   PrCheck,
   PrConvergenceState,
+  PrConvergenceStatePatch,
   PrReviewThread,
   PrStatus,
   PrWithConflicts,
@@ -316,7 +318,7 @@ function renderPane(args: {
   const onRefresh = vi.fn().mockResolvedValue(undefined);
   const convergenceState = args.convergenceState ?? null;
   const loadConvergenceState = vi.fn().mockResolvedValue(convergenceState);
-  const saveConvergenceState = vi.fn().mockImplementation(async (_prId: string, state: Partial<PrConvergenceState>) => (
+  const saveConvergenceState = vi.fn().mockImplementation(async (_prId: string, state: PrConvergenceStatePatch) => (
     convergenceState ? { ...convergenceState, ...state } : makeConvergenceState(state)
   ));
   const resetConvergenceState = vi.fn().mockResolvedValue(undefined);
@@ -793,12 +795,9 @@ describe("PrDetailPane issue resolver CTA", () => {
       },
     });
 
-    await React.act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
+    await waitFor(() => {
+      expect(loadConvergenceState).toHaveBeenCalledWith("pr-80", { force: true });
     });
-
-    expect(loadConvergenceState).toHaveBeenCalledWith("pr-80", { force: true });
   });
 
   it("refreshes stale convergence checks when opening the path to merge tab", async () => {

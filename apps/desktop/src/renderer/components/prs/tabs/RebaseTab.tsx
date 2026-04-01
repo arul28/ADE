@@ -231,7 +231,7 @@ export function RebaseTab({
 
   // Auto-select first item in highest-urgency group
   React.useEffect(() => {
-    if (rebaseNeeds.length === 0 && selectedItemId === null) return;
+    if (rebaseNeeds.length === 0 && attentionItems.length === 0 && selectedItemId === null) return;
     if (selectedNeed || selectedAttentionItem) return;
     const first = grouped.lane_base[0] ?? grouped.pr_target[0];
     if (first) {

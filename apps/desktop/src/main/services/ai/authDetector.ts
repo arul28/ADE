@@ -186,7 +186,13 @@ async function refreshProcessPathFromShell(): Promise<void> {
 /** JSON fields that indicate a positive login state across CLI versions. */
 const JSON_AUTH_FIELDS = ["loggedIn", "logged_in", "authenticated", "signedIn", "signed_in", "active"] as const;
 
-function parseJsonAuthStatus(stdout: string): { authenticated: boolean; verified: true } | null {
+type ParsedJsonAuthStatus = {
+  authenticated: boolean;
+  verified: true;
+  json: Record<string, unknown>;
+} | null;
+
+function parseJsonAuthStatus(stdout: string): ParsedJsonAuthStatus {
   try {
     const json = JSON.parse(stdout.trim() || "");
     if (typeof json !== "object" || json === null) return null;
@@ -194,7 +200,7 @@ function parseJsonAuthStatus(stdout: string): { authenticated: boolean; verified
     // Check well-known boolean fields
     for (const field of JSON_AUTH_FIELDS) {
       if (field in json) {
-        return { authenticated: Boolean(json[field]), verified: true };
+        return { authenticated: Boolean(json[field]), verified: true, json: json as Record<string, unknown> };
       }
     }
 
@@ -204,7 +210,7 @@ function parseJsonAuthStatus(stdout: string): { authenticated: boolean; verified
       (typeof json.email === "string" && json.email.trim().length > 0)
       || (typeof json.account === "string" && json.account.trim().length > 0)
     ) {
-      return { authenticated: true, verified: true };
+      return { authenticated: true, verified: true, json: json as Record<string, unknown> };
     }
   } catch {
     // Not JSON — fall through to regex matching.
@@ -313,15 +319,7 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
       // Try structured JSON auth first
       const jsonAuth = parseJsonAuthStatus(stdout);
       if (jsonAuth) {
-        let paidPlan = true;
-        try {
-          const json = JSON.parse(stdout.trim() || "") as Record<string, unknown>;
-          if (json && typeof json === "object") {
-            paidPlan = inferCursorPaidPlanFromJson(json);
-          }
-        } catch {
-          // Not JSON — fall back to paidPlan = true
-        }
+        const paidPlan = inferCursorPaidPlanFromJson(jsonAuth.json);
         return {
           authenticated: jsonAuth.authenticated,
           verified: true,

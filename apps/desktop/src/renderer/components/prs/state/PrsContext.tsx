@@ -25,6 +25,7 @@ import type {
   LaneSummary,
   AutoRebaseLaneStatus,
   AutoRebaseEventPayload,
+  PrConvergenceStatePatch,
 } from "../../../../shared/types";
 import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { getModelById } from "../../../../shared/modelRegistry";
@@ -92,7 +93,7 @@ type PrsContextValue = PrsState & {
   clearResolverSession: (context: PrAiResolutionContext) => void;
   setInlineTerminal: (terminal: InlineTerminalState) => void;
   loadConvergenceState: (prId: string, options?: { force?: boolean }) => Promise<PrConvergenceState>;
-  saveConvergenceState: (prId: string, state: Partial<PrConvergenceState>) => Promise<PrConvergenceState>;
+  saveConvergenceState: (prId: string, state: PrConvergenceStatePatch) => Promise<PrConvergenceState>;
   resetConvergenceState: (prId: string) => Promise<void>;
   refresh: () => Promise<void>;
 };
@@ -325,7 +326,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     return storeConvergenceState(runtime);
   }, [storeConvergenceState]);
 
-  const saveConvergenceState = useCallback(async (prId: string, state: Partial<PrConvergenceState>): Promise<PrConvergenceState> => {
+  const saveConvergenceState = useCallback(async (prId: string, state: PrConvergenceStatePatch): Promise<PrConvergenceState> => {
     const normalizedPrId = requirePrId(prId);
     const runtime = await window.ade.prs.convergenceStateSave(normalizedPrId, state);
     return storeConvergenceState(runtime);

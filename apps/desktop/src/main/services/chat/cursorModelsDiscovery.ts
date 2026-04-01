@@ -84,10 +84,12 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
             }
             if (row && typeof row === "object") {
               const r = row as Record<string, unknown>;
-              const id = (typeof r.id === "string" && r.id) || (typeof r.model === "string" && r.model) || "";
+              const trimmedId = typeof r.id === "string" ? r.id.trim() : "";
+              const trimmedModel = typeof r.model === "string" ? r.model.trim() : "";
+              const id = trimmedId || trimmedModel;
               const displayName = (typeof r.name === "string" ? r.name : undefined)
                 ?? (typeof r.displayName === "string" ? r.displayName : undefined);
-              if (id.trim()) models.push({ id: id.trim(), displayName });
+              if (id) models.push({ id, displayName });
             }
           }
           if (models.length) {

@@ -4,7 +4,7 @@ import React from "react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AutoRebaseLaneStatus, PrConvergenceState, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
+import type { AutoRebaseLaneStatus, PrConvergenceState, PrConvergenceStatePatch, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
 import { PrsProvider, usePrs } from "./PrsContext";
 
 const originalAde = globalThis.window.ade;
@@ -245,7 +245,7 @@ describe("PrsContext convergence state", () => {
     globalThis.window.ade = {
       prs: {
         refresh: vi.fn().mockResolvedValue(undefined),
-        listWithConflicts: vi.fn().mockResolvedValue([]),
+        listWithConflicts: vi.fn().mockResolvedValue([makeFakePr("pr-1")]),
         listQueueStates: vi.fn().mockResolvedValue([]),
         onEvent: vi.fn(() => () => {}),
         convergenceStateGet: convergenceGetMock,
@@ -445,7 +445,7 @@ describe("PrsContext convergence state", () => {
         convergenceStateGet: vi.fn().mockImplementation((prId: string) =>
           Promise.resolve(makeFakeConvergenceState(prId)),
         ),
-        convergenceStateSave: vi.fn().mockImplementation((prId: string, partial: Partial<PrConvergenceState>) =>
+        convergenceStateSave: vi.fn().mockImplementation((prId: string, partial: PrConvergenceStatePatch) =>
           Promise.resolve(makeFakeConvergenceState(prId, partial)),
         ),
         convergenceStateDelete: vi.fn().mockResolvedValue(undefined),

@@ -1939,6 +1939,7 @@ async function runCtoOperatorBridgeTool(
     getChatTranscript: agentChatService.getChatTranscript,
     createChat: agentChatService.createSession,
     updateChatSession: agentChatService.updateSession,
+    previewSessionToolNames: agentChatService.previewSessionToolNames,
     sendChatMessage: agentChatService.sendMessage,
     interruptChat: agentChatService.interrupt,
     resumeChat: agentChatService.resumeSession,

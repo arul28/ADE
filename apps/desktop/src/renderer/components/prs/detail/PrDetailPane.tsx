@@ -16,6 +16,7 @@ import type {
   IssueInventorySnapshot,
   PipelineSettings,
   PrConvergenceState,
+  PrConvergenceStatePatch,
 } from "../../../../shared/types";
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
@@ -490,6 +491,7 @@ export function PrDetailPane({
 
   const applyConvergenceRuntime = React.useCallback((runtime: PrConvergenceState | null) => {
     if (!runtime) {
+      setConvergenceBusy(false);
       setAutoConverge(false);
       setConvergenceSessionId(null);
       setConvergenceSessionHref(null);
@@ -506,6 +508,7 @@ export function PrDetailPane({
     );
 
     setAutoConverge(runtime.autoConvergeEnabled);
+    setConvergenceBusy(Boolean(runtime.activeSessionId) || runtime.status === "launching" || runtime.status === "running" || runtime.status === "polling");
     setConvergenceSessionId(runtime.activeSessionId);
     setConvergenceSessionHref(nextHref);
     setConvergenceMerged(runtime.status === "merged");
@@ -513,8 +516,14 @@ export function PrDetailPane({
     setAutoConvergeWaitState(deriveWaitStateFromRuntime(runtime));
   }, [buildSessionHref, deriveWaitStateFromRuntime]);
 
-  const saveConvergenceRuntime = React.useCallback((partial: Partial<PrConvergenceState>) => {
-    void saveConvergenceState(pr.id, partial).catch(() => undefined);
+  const saveConvergenceRuntime = React.useCallback((partial: PrConvergenceStatePatch) => {
+    void saveConvergenceState(pr.id, partial).catch((error: unknown) => {
+      console.error("pr_detail.save_convergence_runtime_failed", {
+        prId: pr.id,
+        state: partial,
+        error,
+      });
+    });
   }, [pr.id, saveConvergenceState]);
 
   // Action states
@@ -1527,6 +1536,7 @@ export function PrDetailPane({
         try {
           await window.ade.prs.aiResolutionStop({ sessionId: activeSessionId });
           // Stop succeeded -- clear session handle and mark stopped.
+          setConvergenceBusy(false);
           setConvergenceSessionId(null);
           setConvergenceSessionHref(null);
           setAutoConvergeWaitState({ phase: "idle" });

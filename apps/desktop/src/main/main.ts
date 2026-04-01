@@ -603,6 +603,7 @@ app.whenReady().then(async () => {
   const normalizeProjectRoot = (projectRoot: string) => path.resolve(projectRoot);
   const projectContexts = new Map<string, AppContext>();
   const closeContextPromises = new Map<string, Promise<void>>();
+  const mcpSocketCleanupByRoot = new Map<string, () => void>();
   let activeProjectRoot: string | null = null;
   let dormantContext!: AppContext;
 
@@ -2258,11 +2259,25 @@ app.whenReady().then(async () => {
     };
 
     const mcpSocketPath = adePaths.socketPath;
+    const activeMcpConnections = new Set<net.Socket>();
+
+    const destroyActiveMcpConnections = (): void => {
+      for (const conn of activeMcpConnections) {
+        activeMcpConnections.delete(conn);
+        try {
+          conn.destroy();
+        } catch {
+          // ignore
+        }
+      }
+    };
+    mcpSocketCleanupByRoot.set(normalizeProjectRoot(projectRoot), destroyActiveMcpConnections);
 
     // Clean stale socket from prior crash
     try { fs.unlinkSync(mcpSocketPath); } catch {}
 
     const mcpSocketServer = net.createServer((conn) => {
+      activeMcpConnections.add(conn);
       let stopped = false;
       const transport: JsonRpcTransport = {
         onData(callback) {
@@ -2284,6 +2299,12 @@ app.whenReady().then(async () => {
         },
       });
       stop = startJsonRpcServer(mcpHandler, transport);
+      const removeConnection = (): void => {
+        activeMcpConnections.delete(conn);
+      };
+      conn.once("close", removeConnection);
+      conn.once("end", removeConnection);
+      conn.once("error", removeConnection);
       conn.on("close", () => {
         if (!stopped) {
           stopped = true;
@@ -2474,6 +2495,9 @@ app.whenReady().then(async () => {
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {
+    const normalizedRoot = typeof ctx.project?.rootPath === "string" && ctx.project.rootPath.trim().length > 0
+      ? normalizeProjectRoot(ctx.project.rootPath)
+      : null;
     // Flush DB before disposing services so that any pending writes are persisted.
     // Services may write during disposal, so we flush again at the end as a safety net.
     try {
@@ -2597,6 +2621,10 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
+      if (normalizedRoot) {
+        mcpSocketCleanupByRoot.get(normalizedRoot)?.();
+        mcpSocketCleanupByRoot.delete(normalizedRoot);
+      }
       ctx.mcpSocketServer?.close();
     } catch {
       // ignore

@@ -2816,6 +2816,9 @@ export function createAgentChatService(args: {
             reuseExisting,
             permissionMode: "full-auto",
           }),
+        previewSessionToolNames,
+      } as Parameters<typeof createCtoOperatorTools>[0] & {
+        previewSessionToolNames: typeof previewSessionToolNames;
       });
       for (const toolName of Object.keys(ctoTools)) {
         toolNames.add(toolName);
@@ -3015,22 +3018,39 @@ export function createAgentChatService(args: {
   ): Promise<Record<string, AiTool>> => {
     const { tools: mcpTools } = await mcpClient.listTools();
     const wrapped: Record<string, AiTool> = {};
+    const resolveMcpToolTimeoutMs = (): number => {
+      const rawTimeout = process.env.ADE_MCP_TOOL_CALL_TIMEOUT_MS ?? process.env.ADE_MCP_STEP_TIMEOUT_MS;
+      const parsedTimeout = rawTimeout ? Number(rawTimeout) : NaN;
+      return Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? Math.floor(parsedTimeout) : 30_000;
+    };
 
     for (const spec of mcpTools) {
       const toolName = `mcp__ade__${spec.name}`;
       wrapped[toolName] = aiTool({
         description: spec.description ?? spec.name,
-        inputSchema: aiJsonSchema<Record<string, unknown>>(spec.inputSchema as any),
+        inputSchema: aiJsonSchema(spec.inputSchema as any),
         execute: async (args) => {
-          const result = await mcpClient.callTool({ name: spec.name, arguments: args as Record<string, unknown> });
-          // MCP tools return { content: [{ type, text }] } — flatten to text.
-          const content = result.content;
-          if (Array.isArray(content)) {
-            return content
-              .map((c: any) => (typeof c === "string" ? c : c?.text ?? JSON.stringify(c)))
-              .join("\n");
+          const timeoutMs = resolveMcpToolTimeoutMs();
+          let timeoutId: ReturnType<typeof setTimeout> | null = null;
+          const callToolPromise = mcpClient.callTool({ name: spec.name, arguments: args as Record<string, unknown> });
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error(`MCP tool '${spec.name}' timed out after ${timeoutMs}ms.`));
+            }, timeoutMs);
+          });
+          try {
+            const result = await Promise.race([callToolPromise, timeoutPromise]);
+            // MCP tools return { content: [{ type, text }] } — flatten to text.
+            const content = result.content;
+            if (Array.isArray(content)) {
+              return content
+                .map((c: any) => (typeof c === "string" ? c : c?.text ?? JSON.stringify(c)))
+                .join("\n");
+            }
+            return typeof content === "string" ? content : JSON.stringify(content);
+          } finally {
+            if (timeoutId) clearTimeout(timeoutId);
           }
-          return typeof content === "string" ? content : JSON.stringify(content);
         },
       });
     }
@@ -4839,8 +4859,8 @@ export function createAgentChatService(args: {
       if (rt.pooled) releaseCursorAcpConnection(rt.poolKey);
       managed.runtime = null;
     }
-    clearLaneDirectiveKey(managed);
     managed.runtimeInvalidated = true;
+    clearLaneDirectiveKey(managed);
   };
 
   const maybeGenerateSessionSummary = async (
@@ -6285,6 +6305,7 @@ export function createAgentChatService(args: {
             error: error instanceof Error ? error.message : String(error),
           });
           runtime.sdkSessionId = null;
+          managed.runtimeInvalidated = true;
           clearLaneDirectiveKey(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
           refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
@@ -6677,6 +6698,9 @@ export function createAgentChatService(args: {
                 reuseExisting,
                 permissionMode: "full-auto",
               }),
+            previewSessionToolNames,
+          } as Parameters<typeof createCtoOperatorTools>[0] & {
+            previewSessionToolNames: typeof previewSessionToolNames;
           }));
         }
       }
@@ -11743,6 +11767,7 @@ export function createAgentChatService(args: {
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
       if (previousProvider !== nextProvider || previousProvider === "codex") {
         delete managed.session.threadId;
+        managed.runtimeInvalidated = true;
         clearLaneDirectiveKey(managed);
       }
       sessionService.updateMeta({

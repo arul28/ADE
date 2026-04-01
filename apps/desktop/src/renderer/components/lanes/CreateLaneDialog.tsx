@@ -187,6 +187,7 @@ export function CreateLaneDialog({
                     className={SELECT_CLASS_NAME + " !mt-0"}
                     disabled={busy || laneCreated}
                     aria-label="Import branch"
+                    aria-describedby={importBranchWarning ? "import-branch-warning" : undefined}
                   >
                     <option value="">Select a branch\u2026</option>
                     {allBranches.map((b) => (
@@ -201,7 +202,12 @@ export function CreateLaneDialog({
                     </div>
                   ) : null}
                   {importBranchWarning ? (
-                    <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                    <div
+                      id="import-branch-warning"
+                      role="alert"
+                      aria-live="polite"
+                      className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200"
+                    >
                       <span className="mt-px shrink-0">⚠</span>
                       <span>{importBranchWarning}</span>
                     </div>

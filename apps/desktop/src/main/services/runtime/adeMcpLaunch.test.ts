@@ -18,7 +18,6 @@ describe("resolveDesktopAdeMcpLaunch", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-project-"));
     const workspaceRoot = path.join(projectRoot, "workspace");
     const proxyEntry = path.join(projectRoot, "dist", "main", "adeMcpProxy.cjs");
-
     fs.mkdirSync(workspaceRoot, { recursive: true });
     fs.mkdirSync(path.dirname(proxyEntry), { recursive: true });
     fs.writeFileSync(proxyEntry, "module.exports = {};\n", "utf8");
@@ -142,11 +141,14 @@ describe("resolveDesktopAdeMcpLaunch", () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-runtime-nopr-"));
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-ws-nopr-"));
 
-    expect(() => resolveDesktopAdeMcpLaunch({
-      workspaceRoot,
-      runtimeRoot,
-      preferBundledProxy: false,
-    } as any)).toThrow("ADE MCP launch requires a non-empty projectRoot.");
+    expect(() => {
+      // @ts-expect-error: projectRoot is intentionally omitted for this runtime assertion.
+      resolveDesktopAdeMcpLaunch({
+        workspaceRoot,
+        runtimeRoot,
+        preferBundledProxy: false,
+      });
+    }).toThrow("ADE MCP launch requires a non-empty projectRoot.");
 
     expect(() => resolveDesktopAdeMcpLaunch({
       projectRoot: "  ",

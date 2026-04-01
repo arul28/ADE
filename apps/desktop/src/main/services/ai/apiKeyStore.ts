@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { SafeStorage } from "electron";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 // electron.safeStorage is only available inside an Electron main process.
 // When this module is bundled into the headless MCP server (spawned by
 // Claude Agent SDK / Codex App Server as a plain Node process), `electron`
 // is not present.  Gracefully degrade so the MCP server can start.
-let safeStorage: typeof import("electron").safeStorage | null = null;
+let safeStorage: SafeStorage | null = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   safeStorage = require("electron").safeStorage;

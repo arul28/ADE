@@ -1108,6 +1108,7 @@ export type ConvergenceRuntimeState = {
 };
 
 export type PrConvergenceState = ConvergenceRuntimeState;
+export type PrConvergenceStatePatch = Partial<Omit<ConvergenceRuntimeState, "prId" | "createdAt" | "updatedAt">>;
 
 // --------------------------------
 // Issue Inventory (PR Convergence Loop)

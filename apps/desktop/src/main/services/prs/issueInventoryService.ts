@@ -273,11 +273,18 @@ function buildDefaultRuntimeState(prId: string): ConvergenceRuntimeState {
  * negative rounds) rather than silently correcting.
  */
 function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>): void {
-  if (state.status !== undefined && !CONVERGENCE_RUNTIME_STATUS_VALUES.has(state.status as ConvergenceRuntimeState["status"])) {
-    throw new Error(`Invalid convergence runtime status: ${JSON.stringify(state.status)}`);
+  if (state.autoConvergeEnabled !== undefined && typeof state.autoConvergeEnabled !== "boolean") {
+    throw new Error(`Invalid autoConvergeEnabled: expected a boolean, got ${JSON.stringify(state.autoConvergeEnabled)}`);
   }
-  if (state.pollerStatus !== undefined && !CONVERGENCE_POLLER_STATUS_VALUES.has(state.pollerStatus as ConvergenceRuntimeState["pollerStatus"])) {
-    throw new Error(`Invalid convergence poller status: ${JSON.stringify(state.pollerStatus)}`);
+  if (state.status !== undefined) {
+    if (typeof state.status !== "string" || !CONVERGENCE_RUNTIME_STATUS_VALUES.has(state.status as ConvergenceRuntimeState["status"])) {
+      throw new Error(`Invalid convergence runtime status: ${JSON.stringify(state.status)}`);
+    }
+  }
+  if (state.pollerStatus !== undefined) {
+    if (typeof state.pollerStatus !== "string" || !CONVERGENCE_POLLER_STATUS_VALUES.has(state.pollerStatus as ConvergenceRuntimeState["pollerStatus"])) {
+      throw new Error(`Invalid convergence poller status: ${JSON.stringify(state.pollerStatus)}`);
+    }
   }
   if (state.currentRound !== undefined) {
     if (typeof state.currentRound !== "number" || !Number.isFinite(state.currentRound)) {
@@ -287,10 +294,28 @@ function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>
       throw new Error(`Invalid currentRound: expected a non-negative integer, got ${state.currentRound}`);
     }
   }
+  for (const field of [
+    "activeSessionId",
+    "activeLaneId",
+    "activeHref",
+    "pauseReason",
+    "errorMessage",
+    "lastStartedAt",
+    "lastPolledAt",
+    "lastPausedAt",
+    "lastStoppedAt",
+    "createdAt",
+    "updatedAt",
+  ] as const) {
+    const value = state[field];
+    if (value != null && typeof value !== "string") {
+      throw new Error(`Invalid ${field}: expected a string, got ${JSON.stringify(value)}`);
+    }
+  }
 }
 
-function trimOrNull(value: unknown): string | null {
-  if (typeof value !== "string") return null;
+function trimOrNull(value: string | null | undefined): string | null {
+  if (value == null) return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
@@ -302,10 +327,10 @@ function sanitizeConvergenceRuntimeState(
   const now = nowIso();
   return {
     prId,
-    autoConvergeEnabled: state.autoConvergeEnabled === true,
-    status: CONVERGENCE_RUNTIME_STATUS_VALUES.has(state.status) ? state.status : "idle",
-    pollerStatus: CONVERGENCE_POLLER_STATUS_VALUES.has(state.pollerStatus) ? state.pollerStatus : "idle",
-    currentRound: Number.isFinite(state.currentRound) ? Math.max(0, Math.trunc(state.currentRound)) : 0,
+    autoConvergeEnabled: state.autoConvergeEnabled,
+    status: state.status,
+    pollerStatus: state.pollerStatus,
+    currentRound: state.currentRound,
     activeSessionId: trimOrNull(state.activeSessionId),
     activeLaneId: trimOrNull(state.activeLaneId),
     activeHref: trimOrNull(state.activeHref),
@@ -668,12 +693,26 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         }
 
         const latestCommentAt = latestComment?.updatedAt ?? latestComment?.createdAt ?? null;
+        const hasStoredThreadMetadata = existing != null
+          && (
+            existing.thread_latest_comment_at != null
+            || existing.thread_latest_comment_id != null
+            || existing.thread_comment_count != null
+          );
         const threadChanged = existing != null
           && (
-            commentCount > (existing.thread_comment_count ?? 0)
-            || (latestComment?.id != null && latestComment.id !== existing.thread_latest_comment_id)
-            || (latestCommentAt != null && existing.thread_latest_comment_at != null
-                && latestCommentAt > existing.thread_latest_comment_at)
+            hasStoredThreadMetadata
+              ? (
+                commentCount > (existing.thread_comment_count ?? 0)
+                || (latestComment?.id != null && latestComment.id !== existing.thread_latest_comment_id)
+                || (latestCommentAt != null && existing.thread_latest_comment_at != null
+                    && latestCommentAt > existing.thread_latest_comment_at)
+              )
+              : (
+                existing.body !== threadData.body
+                || existing.headline !== threadData.headline
+                || existing.author !== threadData.author
+              )
           );
         const shouldReopen = !existing || (threadChanged && source !== "ade");
 

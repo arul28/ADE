@@ -322,6 +322,7 @@ import type {
   IssueInventoryItem,
   IssueInventorySnapshot,
   PrConvergenceState,
+  PrConvergenceStatePatch,
   ConvergenceStatus,
   PipelineSettings,
   UpdateIntegrationProposalArgs,
@@ -1032,7 +1033,7 @@ declare global {
         issueInventoryGetConvergence: (prId: string) => Promise<ConvergenceStatus>;
         issueInventoryReset: (prId: string) => Promise<void>;
         convergenceStateGet: (prId: string) => Promise<PrConvergenceState>;
-        convergenceStateSave: (prId: string, state: Partial<PrConvergenceState>) => Promise<PrConvergenceState>;
+        convergenceStateSave: (prId: string, state: PrConvergenceStatePatch) => Promise<PrConvergenceState>;
         convergenceStateDelete: (prId: string) => Promise<void>;
         pipelineSettingsGet: (prId: string) => Promise<PipelineSettings>;
         pipelineSettingsSave: (prId: string, settings: Partial<PipelineSettings>) => Promise<void>;
