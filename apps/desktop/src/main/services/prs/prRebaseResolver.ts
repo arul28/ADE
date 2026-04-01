@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { getModelById } from "../../../shared/modelRegistry";
+import { getModelById, resolveChatProviderForDescriptor } from "../../../shared/modelRegistry";
 import type {
   LaneSummary,
   RebaseResolutionStartArgs,
@@ -139,11 +139,12 @@ export async function launchRebaseResolutionChat(
 
   const title = `Rebase ${lane.name} onto ${rebaseNeed.baseBranch}`;
   const reasoningEffort = args.reasoning?.trim() || undefined;
+  const { provider, model } = resolveChatProviderForDescriptor(descriptor);
 
   const session = await deps.agentChatService.createSession({
     laneId: lane.id,
-    provider: "unified",
-    model: descriptor.id,
+    provider,
+    model,
     modelId: descriptor.id,
     ...(reasoningEffort ? { reasoningEffort } : {}),
     permissionMode: mapPermissionMode(args.permissionMode),

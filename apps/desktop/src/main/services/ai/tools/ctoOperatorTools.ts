@@ -1,6 +1,6 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
-import { getModelById } from "../../../../shared/modelRegistry";
+import { getModelById, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
   AgentChatCreateArgs,
   AgentChatInterruptArgs,
@@ -133,18 +133,9 @@ const ACTIVE_LINEAR_RUN_STATUSES = new Set([
 function deriveChatProvider(args: { modelId?: string | null }): { provider: AgentChatCreateArgs["provider"]; model: string } {
   const descriptor = args.modelId ? getModelById(args.modelId) : null;
   if (!descriptor) {
-    return {
-      provider: "unified",
-      model: args.modelId?.trim() || "",
-    };
+    return { provider: "unified", model: args.modelId?.trim() || "" };
   }
-  if (!descriptor.isCliWrapped) {
-    return { provider: "unified", model: descriptor.id };
-  }
-  if (descriptor.family === "openai") {
-    return { provider: "codex", model: descriptor.shortId };
-  }
-  return { provider: "claude", model: descriptor.shortId };
+  return resolveChatProviderForDescriptor(descriptor);
 }
 
 function buildIssueBrief(issue: Awaited<ReturnType<IssueTracker["fetchIssueById"]>>): string {
@@ -1545,10 +1536,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           },
         );
 
+        const { provider: resolvedProvider, model: resolvedModel } = deriveChatProvider({ modelId: resolvedModelId });
         const session = await deps.createChat({
           laneId: pr.laneId,
-          provider: "unified",
-          model: resolvedModelId,
+          provider: resolvedProvider,
+          model: resolvedModel,
           modelId: resolvedModelId,
           reasoningEffort: resolvedReasoning,
           surface: "work",

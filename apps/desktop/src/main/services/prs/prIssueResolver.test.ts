@@ -385,7 +385,8 @@ describe("launchPrIssueResolutionChat", () => {
 
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
       laneId: lane.id,
-      provider: "unified",
+      provider: "codex",
+      model: "gpt-5.4",
       modelId: "openai/gpt-5.4-codex",
       surface: "work",
       sessionProfile: "workflow",

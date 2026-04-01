@@ -44,7 +44,7 @@ import type { BudgetCapProvider } from "../../../shared/types/usage";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/unifiedOrchestratorAdapter";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
 import { escapeRegExp, globToRegExp, isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
-import { getDefaultModelDescriptor, getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, getModelById, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 
 type CronTask = {
   stop: () => void;
@@ -1626,7 +1626,8 @@ export function createAutomationService({
       throw new Error("No lane is available for this automation run.");
     }
 
-    const { modelId, providerGroup, budgetProvider } = resolveAutomationModelDescriptor(args.rule);
+    const { modelId, modelDescriptor, providerGroup, budgetProvider } = resolveAutomationModelDescriptor(args.rule);
+    const resolvedChat = resolveChatProviderForDescriptor(modelDescriptor);
     const budgetCheck = budgetCapServiceRef?.checkBudget(
       AUTOMATION_SCOPE as Parameters<NonNullable<typeof budgetCapServiceRef>["checkBudget"]>[0],
       args.rule.id,
@@ -1675,8 +1676,8 @@ export function createAutomationService({
     try {
       const session = await agentChatServiceRef.createSession({
         laneId,
-        provider: "unified",
-        model: modelId,
+        provider: resolvedChat.provider,
+        model: resolvedChat.model,
         modelId,
         sessionProfile: "workflow",
         reasoningEffort,

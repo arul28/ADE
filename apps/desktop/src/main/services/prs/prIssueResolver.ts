@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { getModelById } from "../../../shared/modelRegistry";
+import { getModelById, resolveChatProviderForDescriptor } from "../../../shared/modelRegistry";
 import type {
   AgentChatExecutionMode,
   IssueInventoryItem,
@@ -706,6 +706,7 @@ export async function launchPrIssueResolutionChat(
   const prepared = await preparePrIssueResolutionPrompt(deps, args, { detailLevel: "launch" });
   const reasoningEffort = args.reasoning?.trim() || undefined;
   const requiredToolNames = listRequiredRuntimeTools(prepared.runtimeCapabilities);
+  const { provider, model } = resolveChatProviderForDescriptor(descriptor);
 
   if (requiredToolNames.length > 0 && prepared.runtimeCapabilities.toolSurface === "workflow_tools") {
     const availableToolNames = deps.agentChatService.previewSessionToolNames({
@@ -722,8 +723,8 @@ export async function launchPrIssueResolutionChat(
 
   const session = await deps.agentChatService.createSession({
     laneId: prepared.lane.id,
-    provider: "unified",
-    model: descriptor.id,
+    provider,
+    model,
     modelId: descriptor.id,
     ...(reasoningEffort ? { reasoningEffort } : {}),
     permissionMode: mapPermissionMode(args.permissionMode),

@@ -3654,19 +3654,11 @@ export function createAgentChatService(args: {
     });
 
     const auth = await detectAuth();
-    const mcpServers = isLightweightSession(managed.session)
-      ? undefined
-      : buildAdeMcpServers(
-          managed.laneWorktreePath,
-          "claude",
-          managed.session.identityKey === "cto" ? "cto" : "agent",
-          resolveWorkerIdentityAgentId(managed.session.identityKey),
-          managed.session.id,
-          managed.session.computerUse,
-        );
+    // Unified (direct-API) models do NOT spawn MCP servers — they use
+    // in-process workflow tools instead.  MCP is only available through
+    // CLI-wrapped runtimes (Claude Agent SDK / Codex App Server).
     const resolvedModel = await providerResolver.resolveModel(modelId, auth, {
       cwd: managed.laneWorktreePath,
-      ...(mcpServers ? { cli: { mcpServers } } : {}),
     });
 
     const chatConfig = resolveChatConfig();
