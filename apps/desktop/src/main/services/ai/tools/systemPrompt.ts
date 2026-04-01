@@ -47,20 +47,27 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasCaptureScreenshot = toolNames.includes("captureScreenshot");
   const hasReportCompletion = toolNames.includes("reportCompletion");
   const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
-  const prIssueToolNames = toolNames.filter((name) => (
-    name === "prGetChecks"
-    || name === "prGetReviewComments"
-    || name === "prRefreshIssueInventory"
-    || name === "prRerunFailedChecks"
-    || name === "prReplyToReviewThread"
-    || name === "prResolveReviewThread"
-    || name === "pr_get_checks"
-    || name === "pr_get_review_comments"
-    || name === "pr_refresh_issue_inventory"
-    || name === "pr_rerun_failed_checks"
-    || name === "pr_reply_to_review_thread"
-    || name === "pr_resolve_review_thread"
-  ));
+  const normalizeToolName = (name: string): string => {
+    const match = name.match(/^mcp__[^_]+__(.+)$/);
+    return match?.[1] ?? name;
+  };
+  const prIssueToolNames = toolNames.filter((name) => {
+    const normalized = normalizeToolName(name);
+    return (
+      normalized === "prGetChecks"
+      || normalized === "prGetReviewComments"
+      || normalized === "prRefreshIssueInventory"
+      || normalized === "prRerunFailedChecks"
+      || normalized === "prReplyToReviewThread"
+      || normalized === "prResolveReviewThread"
+      || normalized === "pr_get_checks"
+      || normalized === "pr_get_review_comments"
+      || normalized === "pr_refresh_issue_inventory"
+      || normalized === "pr_rerun_failed_checks"
+      || normalized === "pr_reply_to_review_thread"
+      || normalized === "pr_resolve_review_thread"
+    );
+  });
   const hasPrIssueTools = prIssueToolNames.length > 0;
 
   return [

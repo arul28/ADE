@@ -1167,6 +1167,7 @@ export function PrDetailPane({
   }, [issueResolutionAvailability]);
 
   const handleRunNextRound = React.useCallback(async (additionalInstructions: string) => {
+    const launchingAutoConverge = autoConverge;
     setConvergenceBusy(true);
     setActionError(null);
     try {
@@ -1190,12 +1191,11 @@ export function PrDetailPane({
       const currentRound = snapshot.convergence.currentRound + 1;
       setConvergenceSessionId(result.sessionId);
       setConvergenceSessionHref(result.href);
-      setAutoConverge(true);
       setAutoConvergeWaitState({ phase: "agent_running", sessionId: result.sessionId });
       setConvergencePauseReason(null);
       setConvergenceMerged(false);
       saveConvergenceRuntime({
-        autoConvergeEnabled: true,
+        autoConvergeEnabled: launchingAutoConverge,
         status: "running",
         pollerStatus: "idle",
         currentRound,
@@ -1211,7 +1211,7 @@ export function PrDetailPane({
       setActionError(err instanceof Error ? err.message : "Failed to launch agent");
       setConvergenceBusy(false);
     }
-  }, [pr.id, pr.laneId, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope, saveConvergenceRuntime, syncInventory]);
+  }, [autoConverge, pr.id, pr.laneId, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope, saveConvergenceRuntime, syncInventory]);
 
   // Keep ref in sync for the auto-converge poller
   handleRunNextRoundRef.current = handleRunNextRound;

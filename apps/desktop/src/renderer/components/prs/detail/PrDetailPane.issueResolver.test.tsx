@@ -5,6 +5,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  IssueInventoryItem,
   LaneSummary,
   PrActivityEvent,
   PrCheck,
@@ -189,6 +190,30 @@ function makeConvergenceState(overrides: Partial<PrConvergenceState> = {}): PrCo
   };
 }
 
+function makeInventoryItem(overrides: Partial<IssueInventoryItem> = {}): IssueInventoryItem {
+  return {
+    id: "inv-1",
+    prId: "pr-80",
+    source: "human",
+    type: "review_thread",
+    externalId: "thread:1",
+    state: "new",
+    round: 0,
+    filePath: "src/prs.ts",
+    line: 18,
+    severity: "major",
+    headline: "Tighten review-thread handling",
+    body: "Please verify the thread before replying.",
+    author: "reviewer",
+    url: "https://example.com/thread/1",
+    dismissReason: null,
+    agentSessionId: null,
+    createdAt: "2026-03-23T12:00:00.000Z",
+    updatedAt: "2026-03-23T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
 function renderPane(args: {
   checks: PrCheck[];
   reviewThreads: PrReviewThread[];
@@ -198,6 +223,10 @@ function renderPane(args: {
   statusOverrides?: Partial<PrStatus>;
   mergeMethod?: "merge" | "squash" | "rebase";
   convergenceState?: PrConvergenceState | null;
+  inventorySnapshot?: {
+    items: IssueInventoryItem[];
+    convergence: { currentRound: number; maxRounds: number; totalNew: number; totalSentToAgent: number; isConverging: boolean };
+  };
 }) {
   const issueResolutionStart = vi.fn().mockResolvedValue({
     sessionId: "session-1",
@@ -258,8 +287,8 @@ function renderPane(args: {
         getActivity: vi.fn().mockResolvedValue(args.activity ?? []),
         getReviewThreads,
         issueInventorySync: vi.fn().mockResolvedValue({
-          items: [],
-          convergence: { currentRound: 0, maxRounds: 5, totalNew: 0, totalSentToAgent: 0, isConverging: false },
+          items: args.inventorySnapshot?.items ?? [],
+          convergence: args.inventorySnapshot?.convergence ?? { currentRound: 0, maxRounds: 5, totalNew: 0, totalSentToAgent: 0, isConverging: false },
         }),
         pipelineSettingsGet: vi.fn().mockResolvedValue({
           autoMerge: false,
@@ -439,6 +468,36 @@ describe("PrDetailPane issue resolver CTA", () => {
       }));
       expect(onNavigate).toHaveBeenCalledWith("/work?laneId=lane-1&sessionId=session-1");
     });
+  });
+
+  it("keeps a Path to Merge manual launch in manual mode", async () => {
+    const user = userEvent.setup();
+    const { issueResolutionStart, saveConvergenceState } = renderPane({
+      checks: [makeCheck()],
+      reviewThreads: [],
+      inventorySnapshot: {
+        items: [makeInventoryItem()],
+        convergence: { currentRound: 0, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: false },
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: /path to merge/i }));
+    await user.click(await screen.findByRole("button", { name: /launch agent/i }));
+
+    await waitFor(() => {
+      expect(issueResolutionStart).toHaveBeenCalledWith(expect.objectContaining({
+        prId: "pr-80",
+      }));
+      expect(saveConvergenceState).toHaveBeenCalledWith("pr-80", expect.objectContaining({
+        autoConvergeEnabled: false,
+        status: "running",
+        activeSessionId: "session-1",
+      }));
+    });
+
+    expect(saveConvergenceState).not.toHaveBeenCalledWith("pr-80", expect.objectContaining({
+      autoConvergeEnabled: true,
+    }));
   });
 
   it("restores a persisted convergence session on mount and remounts with the exact session URL", async () => {

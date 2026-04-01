@@ -336,6 +336,12 @@ function defaultPrIssueResolutionRuntimeCapabilities(): PrIssueResolutionRuntime
   };
 }
 
+const ADE_MCP_SERVER_NAME = "ade";
+
+function qualifyAdeMcpToolName(toolName: string): string {
+  return `mcp__${ADE_MCP_SERVER_NAME}__${toolName}`;
+}
+
 function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | undefined): PrIssueResolutionRuntimeCapabilities {
   const descriptor = modelId ? getModelById(modelId) : null;
   if (!descriptor) {
@@ -344,11 +350,11 @@ function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | un
 
   if (descriptor.isCliWrapped && descriptor.family === "openai") {
     return {
-      refreshInventoryTool: "pr_refresh_issue_inventory",
-      getReviewCommentsTool: "pr_get_review_comments",
-      rerunChecksTool: "pr_rerun_failed_checks",
-      replyThreadTool: "pr_reply_to_review_thread",
-      resolveThreadTool: "pr_resolve_review_thread",
+      refreshInventoryTool: qualifyAdeMcpToolName("pr_refresh_issue_inventory"),
+      getReviewCommentsTool: qualifyAdeMcpToolName("pr_get_review_comments"),
+      rerunChecksTool: qualifyAdeMcpToolName("pr_rerun_failed_checks"),
+      replyThreadTool: qualifyAdeMcpToolName("pr_reply_to_review_thread"),
+      resolveThreadTool: qualifyAdeMcpToolName("pr_resolve_review_thread"),
       runtimeLabel: "Codex chat via ADE MCP",
       toolSurface: "ade_mcp",
       executionMode: "parallel",
@@ -357,11 +363,11 @@ function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | un
 
   if (descriptor.isCliWrapped && descriptor.family === "anthropic") {
     return {
-      refreshInventoryTool: "pr_refresh_issue_inventory",
-      getReviewCommentsTool: "pr_get_review_comments",
-      rerunChecksTool: "pr_rerun_failed_checks",
-      replyThreadTool: "pr_reply_to_review_thread",
-      resolveThreadTool: "pr_resolve_review_thread",
+      refreshInventoryTool: qualifyAdeMcpToolName("pr_refresh_issue_inventory"),
+      getReviewCommentsTool: qualifyAdeMcpToolName("pr_get_review_comments"),
+      rerunChecksTool: qualifyAdeMcpToolName("pr_rerun_failed_checks"),
+      replyThreadTool: qualifyAdeMcpToolName("pr_reply_to_review_thread"),
+      resolveThreadTool: qualifyAdeMcpToolName("pr_resolve_review_thread"),
       runtimeLabel: "Claude chat via ADE MCP",
       toolSurface: "ade_mcp",
       executionMode: "subagents",
@@ -516,6 +522,15 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     promptSections.push(
       "- No live ADE PR tools are available in this session. Use the detailed issue context in this prompt plus the linked GitHub thread/check URLs.",
       "- If you need fresher PR state than this prompt provides, fetch it manually before making changes.",
+    );
+  } else if (runtimeCapabilities.toolSurface === "ade_mcp") {
+    const toolList = listRequiredRuntimeTools(runtimeCapabilities).map((toolName) => `\`${toolName}\``).join(", ");
+    promptSections.push(
+      `- This runtime uses ADE via MCP. In Codex/Claude chat sessions, ADE PR tools are namespaced with the MCP server prefix, for example \`${runtimeCapabilities.refreshInventoryTool}\`.`,
+      `- Primary PR tools for this run: ${toolList}. Use those exact names, not the unprefixed \`pr_...\` variants.`,
+      `- Start by refreshing the PR issue inventory with \`${runtimeCapabilities.refreshInventoryTool}\`.`,
+      "- If one of those MCP tools is unavailable in-session, continue with the prompt's issue context and the linked GitHub thread/check URLs instead of reverse-engineering local MCP wiring.",
+      "- Do not conclude the PR tools are missing just because the unprefixed `pr_...` names are absent.",
     );
   } else {
     const toolList = listRequiredRuntimeTools(runtimeCapabilities).map((toolName) => `\`${toolName}\``).join(", ");

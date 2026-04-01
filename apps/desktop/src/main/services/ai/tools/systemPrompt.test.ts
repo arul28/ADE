@@ -210,6 +210,15 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("## Pull Request Tools");
       expect(result).toContain("pr_refresh_issue_inventory, pr_get_review_comments");
     });
+
+    it("includes PR tool guidance when namespaced ADE MCP PR tools are present", () => {
+      const result = buildCodingAgentSystemPrompt({
+        cwd: "/x",
+        toolNames: ["mcp__ade__pr_refresh_issue_inventory", "mcp__ade__pr_get_review_comments"],
+      });
+      expect(result).toContain("## Pull Request Tools");
+      expect(result).toContain("mcp__ade__pr_refresh_issue_inventory, mcp__ade__pr_get_review_comments");
+    });
   });
 
   it("always includes operating loop, editing rules, and verification rules", () => {
