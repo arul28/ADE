@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
+import { MemoryRouter } from "react-router-dom";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -413,18 +414,20 @@ function renderPane(args: {
     land,
     onRefresh,
     ...render(
-      <PrDetailPane
-        pr={makePr()}
-        status={makeStatus(args.statusOverrides)}
-        checks={args.checks}
-        reviews={[]}
-        comments={[]}
-        detailBusy={false}
-        lanes={laneList}
-        mergeMethod={args.mergeMethod ?? "squash"}
-        onRefresh={onRefresh}
-        onNavigate={args.onNavigate ?? vi.fn()}
-      />,
+      <MemoryRouter>
+        <PrDetailPane
+          pr={makePr()}
+          status={makeStatus(args.statusOverrides)}
+          checks={args.checks}
+          reviews={[]}
+          comments={[]}
+          detailBusy={false}
+          lanes={laneList}
+          mergeMethod={args.mergeMethod ?? "squash"}
+          onRefresh={onRefresh}
+          onNavigate={args.onNavigate ?? vi.fn()}
+        />
+      </MemoryRouter>,
     ),
   };
 }
