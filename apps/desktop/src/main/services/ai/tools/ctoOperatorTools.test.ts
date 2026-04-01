@@ -44,8 +44,12 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
     linearDispatcherService: null,
     flowPolicyService: null,
     prService: null,
+    issueInventoryService: null,
     fileService: null,
     processService: null,
+    sessionService: {
+      updateMeta: vi.fn(),
+    } as any,
     issueTracker: null,
     listChats: vi.fn().mockResolvedValue([]),
     getChatStatus: vi.fn().mockResolvedValue(null),
@@ -57,6 +61,13 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
     }),
     createChat: vi.fn().mockResolvedValue(baseSession),
     updateChatSession: vi.fn().mockResolvedValue(baseSession),
+    previewSessionToolNames: vi.fn(() => [
+      "prRefreshIssueInventory",
+      "prGetReviewComments",
+      "prRerunFailedChecks",
+      "prReplyToReviewThread",
+      "prResolveReviewThread",
+    ]),
     sendChatMessage: vi.fn().mockResolvedValue(undefined),
     interruptChat: vi.fn().mockResolvedValue(undefined),
     resumeChat: vi.fn().mockResolvedValue(baseSession),
@@ -121,6 +132,11 @@ describe("createCtoOperatorTools", () => {
     expect(toolKeys).toContain("commentOnPullRequest");
     expect(toolKeys).toContain("updatePullRequestTitle");
     expect(toolKeys).toContain("updatePullRequestBody");
+    expect(toolKeys).toContain("getPullRequestConvergence");
+    expect(toolKeys).toContain("updatePullRequestConvergencePipeline");
+    expect(toolKeys).toContain("updatePullRequestConvergenceRuntime");
+    expect(toolKeys).toContain("startPullRequestConvergenceRound");
+    expect(toolKeys).toContain("stopPullRequestConvergence");
 
     // Linear issue routing / issue tools
     expect(toolKeys).toContain("routeLinearIssueToCto");
@@ -843,6 +859,359 @@ describe("createCtoOperatorTools", () => {
       });
 
       expect(result).toMatchObject({ success: true, prId: "pr-1" });
+    });
+
+    it("reads PR convergence runtime, pipeline settings, and inventory summary", async () => {
+      const snapshot = {
+        prId: "pr-1",
+        items: [
+          {
+            id: "item-1",
+            prId: "pr-1",
+            source: "unknown",
+            type: "review_thread",
+            externalId: "review-thread:thread-1",
+            state: "new",
+            round: 2,
+            filePath: "src/app.ts",
+            line: 12,
+            severity: "major",
+            headline: "Fix the null check",
+            body: "Please handle null.",
+            author: "Reviewer",
+            url: "https://github.com/acme/repo/pull/1#discussion_r1",
+            dismissReason: null,
+            agentSessionId: null,
+            threadCommentCount: 2,
+            threadLatestCommentId: "c-2",
+            threadLatestCommentAuthor: "Reviewer",
+            threadLatestCommentAt: "2026-03-16T00:00:00.000Z",
+            threadLatestCommentSource: "unknown",
+            createdAt: "2026-03-16T00:00:00.000Z",
+            updatedAt: "2026-03-16T00:00:00.000Z",
+          },
+        ],
+        convergence: {
+          currentRound: 2,
+          maxRounds: 5,
+          issuesPerRound: [{ round: 2, newCount: 1, fixedCount: 0, dismissedCount: 0 }],
+          totalNew: 1,
+          totalFixed: 0,
+          totalDismissed: 0,
+          totalEscalated: 0,
+          totalSentToAgent: 0,
+          isConverging: false,
+          canAutoAdvance: true,
+        },
+      };
+      const runtime = {
+        prId: "pr-1",
+        autoConvergeEnabled: true,
+        status: "running",
+        pollerStatus: "waiting_for_comments",
+        currentRound: 2,
+        activeSessionId: "session-1",
+        activeLaneId: "lane-1",
+        activeHref: "/work?laneId=lane-1&sessionId=session-1",
+        pauseReason: null,
+        errorMessage: null,
+        lastStartedAt: "2026-03-16T00:00:00.000Z",
+        lastPolledAt: null,
+        lastPausedAt: null,
+        lastStoppedAt: null,
+        createdAt: "2026-03-16T00:00:00.000Z",
+        updatedAt: "2026-03-16T00:00:00.000Z",
+      };
+      const pipelineSettings = {
+        autoMerge: true,
+        mergeMethod: "squash",
+        maxRounds: 4,
+        onRebaseNeeded: "pause",
+      };
+      const deps = buildDeps({
+        prService: {
+          listAll: vi.fn().mockReturnValue([issueFixture, { ...issueFixture, id: "pr-1", title: "Path to merge", laneId: "lane-1" }]),
+          getStatus: vi.fn().mockResolvedValue({
+            prId: "pr-1",
+            state: "open",
+            checksStatus: "pending",
+            reviewStatus: "changes_requested",
+            isMergeable: false,
+            mergeConflicts: false,
+            behindBaseBy: 0,
+          }),
+          getChecks: vi.fn().mockResolvedValue([{ name: "CI", status: "completed", conclusion: "failure", detailsUrl: null, startedAt: null, completedAt: null }]),
+          getReviewThreads: vi.fn().mockResolvedValue([{ id: "thread-1", isResolved: false, isOutdated: false, path: "src/app.ts", line: 12, originalLine: 12, startLine: null, originalStartLine: null, diffSide: "RIGHT", url: "https://github.com/acme/repo/pull/1#discussion_r1", createdAt: "2026-03-16T00:00:00.000Z", updatedAt: "2026-03-16T00:00:00.000Z", comments: [{ id: "c-1", author: "Reviewer", authorAvatarUrl: null, body: "Please handle null.", url: null, createdAt: "2026-03-16T00:00:00.000Z", updatedAt: "2026-03-16T00:00:00.000Z" }, { id: "c-2", author: "Reviewer", authorAvatarUrl: null, body: "Still needs a guard.", url: null, createdAt: "2026-03-16T00:00:00.000Z", updatedAt: "2026-03-16T00:00:00.000Z" }] }]),
+          getComments: vi.fn().mockResolvedValue([{ id: "comment-1", author: "Reviewer", authorAvatarUrl: null, body: "Please handle null.", source: "issue", url: null, path: "src/app.ts", line: 12, createdAt: "2026-03-16T00:00:00.000Z", updatedAt: "2026-03-16T00:00:00.000Z" }]),
+        } as any,
+        issueInventoryService: {
+          syncFromPrData: vi.fn().mockReturnValue(snapshot),
+          getConvergenceRuntime: vi.fn().mockReturnValue(runtime),
+          getPipelineSettings: vi.fn().mockReturnValue(pipelineSettings),
+        } as any,
+      });
+      const tools = createCtoOperatorTools(deps);
+
+      const result = await (tools.getPullRequestConvergence as any).execute({ prId: "pr-1" });
+
+      expect((deps.issueInventoryService as any).syncFromPrData).toHaveBeenCalledWith(
+        "pr-1",
+        expect.any(Array),
+        expect.any(Array),
+        expect.any(Array),
+      );
+      expect(result).toMatchObject({
+        success: true,
+        pr: expect.objectContaining({ id: "pr-1", title: "Path to merge" }),
+        runtime,
+        pipelineSettings,
+        inventory: {
+          summary: expect.objectContaining({
+            currentRound: 2,
+            totalNew: 1,
+          }),
+          items: [expect.objectContaining({
+            id: "item-1",
+            latestComment: expect.objectContaining({ id: "c-2", author: "Reviewer" }),
+          })],
+        },
+      });
+    });
+
+    it("updates convergence pipeline and runtime state", async () => {
+      const deps = buildDeps({
+        issueInventoryService: {
+          savePipelineSettings: vi.fn(),
+          getPipelineSettings: vi.fn().mockReturnValue({
+            autoMerge: true,
+            mergeMethod: "merge",
+            maxRounds: 3,
+            onRebaseNeeded: "auto_rebase",
+          }),
+          saveConvergenceRuntime: vi.fn().mockReturnValue({
+            prId: "pr-1",
+            autoConvergeEnabled: true,
+            status: "running",
+            pollerStatus: "scheduled",
+            currentRound: 3,
+            activeSessionId: "session-1",
+            activeLaneId: "lane-1",
+            activeHref: "/work?laneId=lane-1&sessionId=session-1",
+            pauseReason: null,
+            errorMessage: null,
+            lastStartedAt: null,
+            lastPolledAt: null,
+            lastPausedAt: null,
+            lastStoppedAt: null,
+            createdAt: "2026-03-16T00:00:00.000Z",
+            updatedAt: "2026-03-16T00:00:00.000Z",
+          }),
+        } as any,
+      });
+      const tools = createCtoOperatorTools(deps);
+
+      const pipeline = await (tools.updatePullRequestConvergencePipeline as any).execute({
+        prId: "pr-1",
+        autoMerge: true,
+        mergeMethod: "merge",
+        maxRounds: 3,
+        onRebaseNeeded: "auto_rebase",
+      });
+      const runtime = await (tools.updatePullRequestConvergenceRuntime as any).execute({
+        prId: "pr-1",
+        autoConvergeEnabled: true,
+        status: "running",
+        pollerStatus: "scheduled",
+        currentRound: 3,
+        activeSessionId: "session-1",
+        activeLaneId: "lane-1",
+        activeHref: "/work?laneId=lane-1&sessionId=session-1",
+      });
+
+      expect((deps.issueInventoryService as any).savePipelineSettings).toHaveBeenCalledWith("pr-1", {
+        autoMerge: true,
+        mergeMethod: "merge",
+        maxRounds: 3,
+        onRebaseNeeded: "auto_rebase",
+      });
+      expect((deps.issueInventoryService as any).saveConvergenceRuntime).toHaveBeenCalledWith("pr-1", expect.objectContaining({
+        autoConvergeEnabled: true,
+        status: "running",
+        pollerStatus: "scheduled",
+        currentRound: 3,
+      }));
+      expect(pipeline).toMatchObject({ success: true, pipelineSettings: { autoMerge: true, mergeMethod: "merge" } });
+      expect(runtime).toMatchObject({ success: true, runtime: expect.objectContaining({ currentRound: 3 }) });
+    });
+
+    it("launches and stops a PR convergence round through chat services", async () => {
+      const deps = buildDeps({
+        prService: {
+          listAll: vi.fn().mockReturnValue([{ ...issueFixture, id: "pr-1", laneId: "lane-1" }]),
+          getStatus: vi.fn().mockResolvedValue({
+            prId: "pr-1",
+            state: "open",
+            checksStatus: "failing",
+            reviewStatus: "changes_requested",
+            isMergeable: false,
+            mergeConflicts: false,
+            behindBaseBy: 0,
+          }),
+          getChecks: vi.fn().mockResolvedValue([]),
+          getReviewThreads: vi.fn().mockResolvedValue([{ id: "thread-1", isResolved: false, isOutdated: false, path: "src/app.ts", line: 12, originalLine: 12, startLine: null, originalStartLine: null, diffSide: "RIGHT", url: "https://github.com/acme/repo/pull/1#discussion_r1", createdAt: "2026-03-16T00:00:00.000Z", updatedAt: "2026-03-16T00:00:00.000Z", comments: [{ id: "c-1", author: "Reviewer", authorAvatarUrl: null, body: "Please handle null.", url: null, createdAt: "2026-03-16T00:00:00.000Z", updatedAt: "2026-03-16T00:00:00.000Z" }] }]),
+          getComments: vi.fn().mockResolvedValue([]),
+          getDetail: vi.fn().mockResolvedValue(null),
+          getFiles: vi.fn().mockResolvedValue([]),
+          getActionRuns: vi.fn().mockResolvedValue([]),
+        } as any,
+        laneService: {
+          list: vi.fn().mockResolvedValue([{ id: "lane-1", worktreePath: "/tmp", archivedAt: null }]),
+          getLaneBaseAndBranch: vi.fn().mockResolvedValue({ baseBranch: "main", headBranch: "feature" }),
+        } as any,
+        issueInventoryService: {
+          syncFromPrData: vi.fn().mockReturnValue({
+            prId: "pr-1",
+            items: [
+              {
+                id: "inventory-item-1",
+                prId: "pr-1",
+                source: "unknown",
+                type: "review_thread",
+                externalId: "review-thread:thread-1",
+                state: "new",
+                round: 1,
+                filePath: "src/app.ts",
+                line: 12,
+                severity: "major",
+                headline: "Please handle null.",
+                body: "Please handle null.",
+                author: "Reviewer",
+                url: "https://github.com/acme/repo/pull/1#discussion_r1",
+                dismissReason: null,
+                agentSessionId: null,
+                threadCommentCount: 1,
+                threadLatestCommentId: "c-1",
+                threadLatestCommentAuthor: "Reviewer",
+                threadLatestCommentAt: "2026-03-16T00:00:00.000Z",
+                threadLatestCommentSource: "unknown",
+                createdAt: "2026-03-16T00:00:00.000Z",
+                updatedAt: "2026-03-16T00:00:00.000Z",
+              },
+            ],
+            convergence: {
+              currentRound: 1,
+              maxRounds: 5,
+              issuesPerRound: [{ round: 1, newCount: 1, fixedCount: 0, dismissedCount: 0 }],
+              totalNew: 1,
+              totalFixed: 0,
+              totalDismissed: 0,
+              totalEscalated: 0,
+              totalSentToAgent: 0,
+              isConverging: false,
+              canAutoAdvance: true,
+            },
+          }),
+          getNewItems: vi.fn().mockReturnValue([{ id: "inventory-item-1" }]),
+          markSentToAgent: vi.fn(),
+          getConvergenceRuntime: vi.fn().mockReturnValue({
+            prId: "pr-1",
+            autoConvergeEnabled: true,
+            status: "running",
+            pollerStatus: "waiting_for_comments",
+            currentRound: 1,
+            activeSessionId: "session-2",
+            activeLaneId: "lane-1",
+            activeHref: "/work?laneId=lane-1&sessionId=session-2",
+            pauseReason: null,
+            errorMessage: null,
+            lastStartedAt: null,
+            lastPolledAt: null,
+            lastPausedAt: null,
+            lastStoppedAt: null,
+            createdAt: "2026-03-16T00:00:00.000Z",
+            updatedAt: "2026-03-16T00:00:00.000Z",
+          }),
+          getPipelineSettings: vi.fn().mockReturnValue({
+            autoMerge: true,
+            mergeMethod: "merge",
+            maxRounds: 5,
+            onRebaseNeeded: "pause",
+          }),
+          getConvergenceStatus: vi.fn().mockReturnValue({
+            currentRound: 2,
+            maxRounds: 5,
+            issuesPerRound: [],
+            totalNew: 1,
+            totalFixed: 0,
+            totalDismissed: 0,
+            totalEscalated: 0,
+            totalSentToAgent: 1,
+            isConverging: true,
+            canAutoAdvance: false,
+          }),
+          saveConvergenceRuntime: vi.fn().mockReturnValue({
+            prId: "pr-1",
+            autoConvergeEnabled: true,
+            status: "running",
+            pollerStatus: "waiting_for_comments",
+            currentRound: 2,
+            activeSessionId: "session-2",
+            activeLaneId: "lane-1",
+            activeHref: "/work?laneId=lane-1&sessionId=session-2",
+            pauseReason: null,
+            errorMessage: null,
+            lastStartedAt: "2026-03-16T00:00:00.000Z",
+            lastPolledAt: null,
+            lastPausedAt: null,
+            lastStoppedAt: null,
+            createdAt: "2026-03-16T00:00:00.000Z",
+            updatedAt: "2026-03-16T00:00:00.000Z",
+          }),
+        } as any,
+        sessionService: {
+          updateMeta: vi.fn(),
+        } as any,
+        createChat: vi.fn().mockResolvedValue({ ...baseSession, id: "session-2", laneId: "lane-1" }),
+        sendChatMessage: vi.fn().mockResolvedValue(undefined),
+        interruptChat: vi.fn().mockResolvedValue(undefined),
+      });
+      const tools = createCtoOperatorTools(deps);
+
+      const started = await (tools.startPullRequestConvergenceRound as any).execute({
+        prId: "pr-1",
+        scope: "comments",
+        modelId: "openai/gpt-5.4",
+        additionalInstructions: "Be concise.",
+      });
+      const stopped = await (tools.stopPullRequestConvergence as any).execute({
+        prId: "pr-1",
+        sessionId: "session-2",
+        reason: "Stop for now.",
+      });
+
+      expect(started).toMatchObject({ success: true });
+      expect((deps.issueInventoryService as any).markSentToAgent).toHaveBeenCalledWith(
+        "pr-1",
+        ["inventory-item-1"],
+        "session-2",
+        2,
+      );
+      expect((deps.interruptChat as any)).toHaveBeenCalledWith({ sessionId: "session-2" });
+      expect((deps.issueInventoryService as any).saveConvergenceRuntime).toHaveBeenCalledWith("pr-1", expect.objectContaining({
+        status: "stopped",
+        pollerStatus: "stopped",
+        autoConvergeEnabled: false,
+      }));
+      expect(started).toMatchObject({
+        success: true,
+        sessionId: "session-2",
+        laneId: "lane-1",
+        href: "/work?laneId=lane-1&sessionId=session-2",
+      });
+      expect(stopped).toMatchObject({
+        success: true,
+        sessionId: "session-2",
+      });
     });
   });
 

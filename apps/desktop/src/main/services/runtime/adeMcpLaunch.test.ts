@@ -18,7 +18,6 @@ describe("resolveDesktopAdeMcpLaunch", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-project-"));
     const workspaceRoot = path.join(projectRoot, "workspace");
     const proxyEntry = path.join(projectRoot, "dist", "main", "adeMcpProxy.cjs");
-
     fs.mkdirSync(workspaceRoot, { recursive: true });
     fs.mkdirSync(path.dirname(proxyEntry), { recursive: true });
     fs.writeFileSync(proxyEntry, "module.exports = {};\n", "utf8");
@@ -138,29 +137,32 @@ describe("resolveDesktopAdeMcpLaunch", () => {
     expect(launch.runtimeRoot).toBe(path.resolve(runtimeRoot));
   });
 
-  it("defaults projectRoot to workspaceRoot when projectRoot is empty or missing", () => {
+  it("requires an explicit non-empty projectRoot", () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-runtime-nopr-"));
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-ws-nopr-"));
 
-    const launch = resolveDesktopAdeMcpLaunch({
-      workspaceRoot,
-      runtimeRoot,
-      preferBundledProxy: false,
-    });
+    expect(() => {
+      // @ts-expect-error: projectRoot is intentionally omitted for this runtime assertion.
+      resolveDesktopAdeMcpLaunch({
+        workspaceRoot,
+        runtimeRoot,
+        preferBundledProxy: false,
+      });
+    }).toThrow("ADE MCP launch requires a non-empty projectRoot.");
 
-    expect(launch.env.ADE_PROJECT_ROOT).toBe(path.resolve(workspaceRoot));
-    expect(launch.env.ADE_WORKSPACE_ROOT).toBe(path.resolve(workspaceRoot));
-    expect(launch.socketPath).toBe(path.join(path.resolve(workspaceRoot), ".ade", "mcp.sock"));
-
-    // Also test with empty string projectRoot
-    const launchEmpty = resolveDesktopAdeMcpLaunch({
+    expect(() => resolveDesktopAdeMcpLaunch({
       projectRoot: "  ",
       workspaceRoot,
       runtimeRoot,
       preferBundledProxy: false,
-    });
+    })).toThrow("ADE MCP launch requires a non-empty projectRoot.");
 
-    expect(launchEmpty.env.ADE_PROJECT_ROOT).toBe(path.resolve(workspaceRoot));
+    expect(() => resolveDesktopAdeMcpLaunch({
+      projectRoot: workspaceRoot,
+      workspaceRoot: "  ",
+      runtimeRoot,
+      preferBundledProxy: false,
+    })).toThrow("ADE MCP launch requires a non-empty workspaceRoot.");
   });
 
   it("populates computerUsePolicy env vars when policy is provided", () => {

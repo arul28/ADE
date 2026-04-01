@@ -46,6 +46,8 @@ import fs from "node:fs";
 import net from "node:net";
 import { createMcpRequestHandler } from "../../../mcp-server/src/mcpServer";
 import { createEventBuffer, type AdeMcpRuntime, type AdeMcpPaths } from "../../../mcp-server/src/bootstrap";
+import { startJsonRpcServer } from "../../../mcp-server/src/jsonrpc";
+import type { JsonRpcTransport } from "../../../mcp-server/src/transport";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createDevToolsService } from "./services/devTools/devToolsService";
@@ -601,6 +603,7 @@ app.whenReady().then(async () => {
   const normalizeProjectRoot = (projectRoot: string) => path.resolve(projectRoot);
   const projectContexts = new Map<string, AppContext>();
   const closeContextPromises = new Map<string, Promise<void>>();
+  const mcpSocketCleanupByRoot = new Map<string, () => void>();
   let activeProjectRoot: string | null = null;
   let dormantContext!: AppContext;
 
@@ -1019,6 +1022,16 @@ app.whenReady().then(async () => {
     const onTrackedSessionEnded = ({ laneId, sessionId, exitCode }: { laneId: string; sessionId: string; exitCode: number | null }) => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
+      try {
+        issueInventoryService.reconcileConvergenceSessionExit(sessionId, { exitCode });
+      } catch (error) {
+        logger.warn("main.convergence_session_reconcile_failed", {
+          laneId,
+          sessionId,
+          exitCode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       void linearSyncServiceRef?.processActiveRunsNow().catch(() => {});
       if (orchestratorServiceRef) {
         void orchestratorServiceRef
@@ -1362,6 +1375,7 @@ app.whenReady().then(async () => {
       linearClient,
       linearCredentials: linearCredentialService,
       prService,
+      issueInventoryService,
       processService,
       getTestService: () => testServiceRef,
       ptyService,
@@ -2239,47 +2253,64 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       orchestratorService,
       aiOrchestratorService,
+      issueInventoryService,
       eventBuffer: mcpEventBuffer,
       dispose: () => {} // desktop manages service lifecycle
     };
 
     const mcpSocketPath = adePaths.socketPath;
+    const activeMcpConnections = new Set<net.Socket>();
+
+    const destroyActiveMcpConnections = (): void => {
+      for (const conn of activeMcpConnections) {
+        activeMcpConnections.delete(conn);
+        try {
+          conn.destroy();
+        } catch {
+          // ignore
+        }
+      }
+    };
+    mcpSocketCleanupByRoot.set(normalizeProjectRoot(projectRoot), destroyActiveMcpConnections);
 
     // Clean stale socket from prior crash
     try { fs.unlinkSync(mcpSocketPath); } catch {}
 
     const mcpSocketServer = net.createServer((conn) => {
+      activeMcpConnections.add(conn);
+      let stopped = false;
+      const transport: JsonRpcTransport = {
+        onData(callback) {
+          conn.on("data", callback);
+        },
+        write(data) {
+          conn.write(data);
+        },
+        close() {
+          if (!conn.destroyed) conn.destroy();
+        },
+      };
+      let stop: ReturnType<typeof startJsonRpcServer> | null = null;
       const mcpHandler = createMcpRequestHandler({
         runtime: mcpRuntime,
         serverVersion: app.getVersion(),
         onToolsListChanged: () => {
-          conn.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} })}\n`);
+          stop?.notify("notifications/tools/list_changed", {});
         },
       });
-      let buf = "";
+      stop = startJsonRpcServer(mcpHandler, transport, { nonFatal: true });
+      const removeConnection = (): void => {
+        activeMcpConnections.delete(conn);
+      };
+      conn.once("close", removeConnection);
+      conn.once("end", removeConnection);
+      conn.once("error", removeConnection);
       conn.on("close", () => {
-        mcpHandler.dispose();
-      });
-      conn.on("data", (chunk) => {
-        buf += chunk.toString();
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          let parsed: any;
-          try { parsed = JSON.parse(line); } catch { continue; }
-          const id = parsed.id ?? null;
-          void mcpHandler(parsed).then((result) => {
-            if (id !== null && id !== undefined) {
-              conn.write(JSON.stringify({ jsonrpc: "2.0", id, result: result ?? {} }) + "\n");
-            }
-          }).catch((err: any) => {
-            if (id !== null && id !== undefined) {
-              conn.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: err?.message ?? String(err) } }) + "\n");
-            }
-          });
+        if (!stopped) {
+          stopped = true;
+          stop?.();
         }
+        mcpHandler.dispose();
       });
       conn.on("error", () => {}); // ignore connection errors
     });
@@ -2464,6 +2495,25 @@ app.whenReady().then(async () => {
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {
+    const normalizedRoot = typeof ctx.project?.rootPath === "string" && ctx.project.rootPath.trim().length > 0
+      ? normalizeProjectRoot(ctx.project.rootPath)
+      : null;
+    // Tear down MCP socket BEFORE any service disposal so in-flight MCP requests
+    // do not race with services that are being shut down.
+    try {
+      if (normalizedRoot) {
+        mcpSocketCleanupByRoot.get(normalizedRoot)?.();
+        mcpSocketCleanupByRoot.delete(normalizedRoot);
+      }
+      ctx.mcpSocketServer?.close();
+    } catch {
+      // ignore
+    }
+    try {
+      if (ctx.mcpSocketPath) fs.unlinkSync(ctx.mcpSocketPath);
+    } catch {
+      // ignore
+    }
     // Flush DB before disposing services so that any pending writes are persisted.
     // Services may write during disposal, so we flush again at the end as a safety net.
     try {
@@ -2583,16 +2633,6 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.syncHostService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.mcpSocketServer?.close();
-    } catch {
-      // ignore
-    }
-    try {
-      if (ctx.mcpSocketPath) fs.unlinkSync(ctx.mcpSocketPath);
     } catch {
       // ignore
     }

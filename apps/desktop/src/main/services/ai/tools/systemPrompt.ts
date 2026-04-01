@@ -47,6 +47,28 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasCaptureScreenshot = toolNames.includes("captureScreenshot");
   const hasReportCompletion = toolNames.includes("reportCompletion");
   const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
+  const normalizeToolName = (name: string): string => {
+    const match = name.match(/^mcp__(.+)__(.+)$/);
+    return match?.[2] ?? name;
+  };
+  const prIssueToolNames = toolNames.filter((name) => {
+    const normalized = normalizeToolName(name);
+    return (
+      normalized === "prGetChecks"
+      || normalized === "prGetReviewComments"
+      || normalized === "prRefreshIssueInventory"
+      || normalized === "prRerunFailedChecks"
+      || normalized === "prReplyToReviewThread"
+      || normalized === "prResolveReviewThread"
+      || normalized === "pr_get_checks"
+      || normalized === "pr_get_review_comments"
+      || normalized === "pr_refresh_issue_inventory"
+      || normalized === "pr_rerun_failed_checks"
+      || normalized === "pr_reply_to_review_thread"
+      || normalized === "pr_resolve_review_thread"
+    );
+  });
+  const hasPrIssueTools = prIssueToolNames.length > 0;
 
   return [
     `You are ADE's software engineering agent working in ${args.cwd}.`,
@@ -125,6 +147,17 @@ export function buildCodingAgentSystemPrompt(args: {
           "",
           "**Recommended workflow:** Create a lane, make changes, verify with tests and screenshots, create a PR, then report completion.",
           "**Do not** create infrastructure (CI configs, deployment scripts) or modify settings outside your lane without explicit user approval.",
+        ]
+      : []),
+    ...(hasPrIssueTools
+      ? [
+          "",
+          "## Pull Request Tools",
+          `Key PR tools in this session: ${prIssueToolNames.join(", ")}.`,
+          "Use these tools first when the task is to address PR comments, review threads, or CI failures.",
+          "ADE/MCP PR tools are runtime tool calls, not shell commands. Do not probe them with `which`, `command -v`, `.mcp.json`, or local settings files.",
+          "If the runtime exposes both base and namespaced variants, use the exact identifier shown in the live tool list.",
+          "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local MCP wiring or bootstrap code.",
         ]
       : []),
     "",

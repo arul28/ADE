@@ -1,7 +1,23 @@
 import fs from "node:fs";
 import path from "node:path";
-import { safeStorage } from "electron";
+import type { SafeStorage } from "electron";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+
+// electron.safeStorage is only available inside an Electron main process.
+// When this module is bundled into the headless MCP server (spawned by
+// Claude Agent SDK / Codex App Server as a plain Node process), `electron`
+// is not present.  Gracefully degrade so the MCP server can start.
+let safeStorage: SafeStorage | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  safeStorage = require("electron").safeStorage;
+} catch (err) {
+  // Not running inside Electron — secure storage unavailable.
+  // Log at debug level so silent failures don't hide useful diagnostics.
+  if (typeof process !== "undefined" && process.env.DEBUG) {
+    console.debug("[apiKeyStore] electron.safeStorage unavailable:", err);
+  }
+}
 
 type StoredKeys = Record<string, string>;
 
@@ -64,7 +80,7 @@ function ensureStore(): StoredKeys {
 
   try {
     const raw = fs.readFileSync(storePath);
-    const decrypted = safeStorage.decryptString(raw);
+    const decrypted = safeStorage!.decryptString(raw);
     cache = normalizeStoredKeys(JSON.parse(decrypted));
     decryptionFailed = false;
     return cache;
@@ -81,7 +97,7 @@ function persist(): void {
     throw new Error("OS secure storage is unavailable. Cannot persist API keys.");
   }
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
-  const encrypted = safeStorage.encryptString(JSON.stringify(cache));
+  const encrypted = safeStorage!.encryptString(JSON.stringify(cache));
   fs.writeFileSync(storePath, encrypted);
   try {
     fs.chmodSync(storePath, 0o600);

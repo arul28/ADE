@@ -31,7 +31,7 @@ export function parseCursorCliModelsStdout(stdout: string): CursorCliModelRow[] 
     const table = line.match(/^([a-z0-9][\w.-]*)\s+-\s+(.+)$/i);
     if (table) {
       const id = table[1].trim();
-      let label = table[2].replace(/\s*\(current\)\s*$/i, "").trim();
+      const label = table[2].replace(/\s*\(current\)\s*$/i, "").trim();
       if (!seen.has(id)) {
         seen.add(id);
         out.push({ id, displayName: label });
@@ -84,9 +84,12 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
             }
             if (row && typeof row === "object") {
               const r = row as Record<string, unknown>;
-              const id = typeof r.id === "string" ? r.id : typeof r.model === "string" ? r.model : "";
-              const displayName = typeof r.name === "string" ? r.name : typeof r.displayName === "string" ? r.displayName : undefined;
-              if (id.trim()) models.push({ id: id.trim(), displayName });
+              const trimmedId = typeof r.id === "string" ? r.id.trim() : "";
+              const trimmedModel = typeof r.model === "string" ? r.model.trim() : "";
+              const id = trimmedId || trimmedModel;
+              const displayName = (typeof r.name === "string" ? r.name : undefined)
+                ?? (typeof r.displayName === "string" ? r.displayName : undefined);
+              if (id) models.push({ id, displayName });
             }
           }
           if (models.length) {

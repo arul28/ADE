@@ -24,6 +24,7 @@ import { QueueTab } from "./QueueTab";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
 import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
+import { filterRebaseAttentionStatuses } from "../shared/rebaseAttentionUtils";
 import { usePrs } from "../state/PrsContext";
 import { getQueueWorkflowBucket } from "./queueWorkflowModel";
 
@@ -620,6 +621,7 @@ export function WorkflowsTab({
     selectedRebaseItemId,
     setSelectedRebaseItemId,
     rebaseNeeds,
+    autoRebaseStatuses,
     queueStates,
     loading: prsLoading,
     resolverModel,
@@ -676,6 +678,14 @@ export function WorkflowsTab({
     active: rebaseNeeds.filter((need) => !need.dismissedAt && !(need.deferredUntil && new Date(need.deferredUntil) > new Date()) && need.behindBy > 0),
     history: rebaseNeeds.filter((need) => need.dismissedAt || (need.deferredUntil && new Date(need.deferredUntil) > new Date()) || need.behindBy === 0),
   }), [rebaseNeeds]);
+  const rebaseAttentionByView = React.useMemo(() => ({
+    active: filterRebaseAttentionStatuses({
+      autoRebaseStatuses,
+      visibleRebaseNeeds: rebaseByView.active,
+      view: "active",
+    }),
+    history: [] as typeof autoRebaseStatuses,
+  }), [autoRebaseStatuses, rebaseByView.active]);
 
   React.useEffect(() => {
     if (activeCategory !== "rebase" || !selectedRebaseItemId) return;
@@ -684,16 +694,26 @@ export function WorkflowsTab({
       if (view !== "active") setView("active");
       return;
     }
+    const activeAttentionLaneIds = new Set(rebaseAttentionByView.active.map((status) => status.laneId));
+    if (activeAttentionLaneIds.has(selectedRebaseItemId)) {
+      if (view !== "active") setView("active");
+      return;
+    }
     const historyKeys = new Set(rebaseByView.history.map(rebaseNeedItemKey));
     if (historyKeys.has(selectedRebaseItemId) && view !== "history") {
       setView("history");
+      return;
     }
-  }, [activeCategory, rebaseByView.active, rebaseByView.history, selectedRebaseItemId, view]);
+    const historyAttentionLaneIds = new Set(rebaseAttentionByView.history.map((status) => status.laneId));
+    if (historyAttentionLaneIds.has(selectedRebaseItemId) && view !== "history") {
+      setView("history");
+    }
+  }, [activeCategory, rebaseAttentionByView.active, rebaseAttentionByView.history, rebaseByView.active, rebaseByView.history, selectedRebaseItemId, view]);
 
   const counts = {
     integration: integrationByView[view].length,
     queue: queueByView[view].length,
-    rebase: rebaseByView[view].length,
+    rebase: rebaseByView[view].length + rebaseAttentionByView[view].length,
   };
 
   const activeTheme = CATEGORY_THEMES[activeCategory];
@@ -858,6 +878,7 @@ export function WorkflowsTab({
           view === "active" ? (
             <RebaseTab
               rebaseNeeds={rebaseByView.active}
+              attentionStatuses={rebaseAttentionByView.active}
               lanes={lanes}
               selectedItemId={selectedRebaseItemId}
               onSelectItem={setSelectedRebaseItemId}

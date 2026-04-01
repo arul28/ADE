@@ -207,6 +207,8 @@ import type {
   AiReviewSummary,
   IssueInventoryItem,
   IssueInventorySnapshot,
+  PrConvergenceState,
+  PrConvergenceStatePatch,
   ConvergenceStatus,
   PipelineSettings,
   UpdateIntegrationProposalArgs,
@@ -1462,6 +1464,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsIssueInventoryGetConvergence, { prId }),
     issueInventoryReset: async (prId: string): Promise<void> =>
       ipcRenderer.invoke(IPC.prsIssueInventoryReset, { prId }),
+    convergenceStateGet: async (prId: string): Promise<PrConvergenceState> =>
+      ipcRenderer.invoke(IPC.prsConvergenceStateGet, { prId }),
+    convergenceStateSave: async (prId: string, state: PrConvergenceStatePatch): Promise<PrConvergenceState> =>
+      ipcRenderer.invoke(IPC.prsConvergenceStateSave, { prId, state }),
+    convergenceStateDelete: async (prId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsConvergenceStateDelete, { prId }),
     pipelineSettingsGet: async (prId: string): Promise<PipelineSettings> =>
       ipcRenderer.invoke(IPC.prsPipelineSettingsGet, { prId }),
     pipelineSettingsSave: async (prId: string, settings: Partial<PipelineSettings>): Promise<void> =>

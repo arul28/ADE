@@ -61,10 +61,7 @@ export function deriveConfiguredModelIds(
 
   for (const auth of status.detectedAuth ?? []) {
     if (auth.type === "cli-subscription") {
-      if (!auth.authenticated) continue;
-      if (auth.cli === "cursor") {
-        continue;
-      }
+      if (!auth.authenticated || auth.cli === "cursor") continue;
       const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
       const family = auth.cli ? familyMap[auth.cli] : undefined;
       if (family) addKnownModelIds(ids, family, true);

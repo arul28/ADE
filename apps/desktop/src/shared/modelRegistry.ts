@@ -1036,18 +1036,27 @@ export function resolveProviderGroupForModel(
   return resolveCliProviderForModel(descriptor) ?? "unified";
 }
 
+/**
+ * Resolve the chat session provider and model ref for a model descriptor.
+ * CLI-wrapped models route to their native runtime (claude/codex/cursor);
+ * everything else goes through the unified (in-process) path.
+ */
+export function resolveChatProviderForDescriptor(
+  descriptor: ModelDescriptor,
+): { provider: ModelProviderGroup; model: string } {
+  const provider = resolveProviderGroupForModel(descriptor);
+  return { provider, model: getRuntimeModelRefForDescriptor(descriptor, provider) };
+}
+
 export function getRuntimeModelRefForDescriptor(
   descriptor: ModelDescriptor,
   providerHint?: ModelProviderGroup,
 ): string {
   const provider = providerHint ?? resolveProviderGroupForModel(descriptor);
-  if (provider === "codex") {
-    return descriptor.sdkModelId;
-  }
   if (provider === "claude") {
     return descriptor.shortId;
   }
-  if (provider === "cursor") {
+  if (provider === "codex" || provider === "cursor") {
     return descriptor.sdkModelId;
   }
   return descriptor.id;

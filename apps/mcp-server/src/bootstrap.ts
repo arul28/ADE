@@ -17,6 +17,7 @@ import { createPtyService } from "../../desktop/src/main/services/pty/ptyService
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import type { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
+import { createIssueInventoryService } from "../../desktop/src/main/services/prs/issueInventoryService";
 import { createMemoryService } from "../../desktop/src/main/services/memory/memoryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
@@ -127,6 +128,7 @@ export type AdeMcpRuntime = {
   testService: ReturnType<typeof createTestService>;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
   prService?: ReturnType<typeof createPrService>;
+  issueInventoryService: ReturnType<typeof createIssueInventoryService>;
   fileService?: ReturnType<typeof createFileService> | null;
   memoryService: ReturnType<typeof createMemoryService>;
   ctoStateService: ReturnType<typeof createCtoStateService>;
@@ -273,6 +275,7 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     projectConfigService,
     broadcastEvent: () => {}
   });
+  const issueInventoryService = createIssueInventoryService({ db });
 
   // Ensure MCP-specific tables exist (evaluation framework)
   db.run(`
@@ -352,10 +355,21 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
   }
   const externalMcpConfigWatcher = (() => {
     try {
-      return fs.watch(paths.adeDir, (_eventType, fileName) => {
+      const watcher = fs.watch(paths.adeDir, (_eventType, fileName) => {
         if (String(fileName ?? "").trim() !== "local.secret.yaml") return;
         externalMcpService.reload();
       });
+      watcher.on("error", (error) => {
+        logger.warn("external_mcp.bootstrap_watch_runtime_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        try {
+          watcher.close();
+        } catch {
+          // Ignore watcher shutdown errors during degraded headless startup.
+        }
+      });
+      return watcher;
     } catch (error) {
       logger.warn("external_mcp.bootstrap_watch_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -456,6 +470,7 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     ptyService,
     testService,
     agentChatService: headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null,
+    issueInventoryService,
     memoryService,
     ctoStateService,
     workerAgentService,

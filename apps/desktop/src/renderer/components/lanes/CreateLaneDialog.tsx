@@ -45,7 +45,8 @@ export function CreateLaneDialog({
   templates,
   selectedTemplateId,
   setSelectedTemplateId,
-  onNavigateToTemplates
+  onNavigateToTemplates,
+  importBranchWarning
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -71,6 +72,8 @@ export function CreateLaneDialog({
   selectedTemplateId: string;
   setSelectedTemplateId: (id: string) => void;
   onNavigateToTemplates?: () => void;
+  /** Warning shown below the import branch selector (e.g. uncommitted changes). */
+  importBranchWarning?: string | null;
 }) {
   const localBranches = createBranches.filter((b) => !b.isRemote);
   const allBranches = createBranches;
@@ -184,6 +187,7 @@ export function CreateLaneDialog({
                     className={SELECT_CLASS_NAME + " !mt-0"}
                     disabled={busy || laneCreated}
                     aria-label="Import branch"
+                    aria-describedby={importBranchWarning ? "import-branch-warning" : undefined}
                   >
                     <option value="">Select a branch\u2026</option>
                     {allBranches.map((b) => (
@@ -195,6 +199,17 @@ export function CreateLaneDialog({
                   {createImportBranch ? (
                     <div className="mt-1.5 text-[11px] text-muted-fg/60">
                       Base will be auto-detected from git history
+                    </div>
+                  ) : null}
+                  {importBranchWarning ? (
+                    <div
+                      id="import-branch-warning"
+                      role="alert"
+                      aria-live="polite"
+                      className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200"
+                    >
+                      <span className="mt-px shrink-0">⚠</span>
+                      <span>{importBranchWarning}</span>
                     </div>
                   ) : null}
                 </>

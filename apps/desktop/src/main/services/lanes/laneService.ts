@@ -2487,6 +2487,11 @@ export function createLaneService({
 
       db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
       db.run("delete from pr_group_members where lane_id = ?", [laneId]);
+      // Explicitly delete child rows that rely on FK cascade — CRR conversion can
+      // strip checked foreign keys, leaving orphaned rows if we only rely on CASCADE.
+      db.run("delete from pr_convergence_state where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+      db.run("delete from pr_pipeline_settings where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+      db.run("delete from pr_issue_inventory where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
       db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
       db.run("delete from session_deltas where lane_id = ?", [laneId]);
       db.run("delete from terminal_sessions where lane_id = ?", [laneId]);

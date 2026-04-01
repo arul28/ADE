@@ -129,6 +129,8 @@ import type {
   PrIssueResolutionStartResult,
   IssueInventoryItem,
   IssueInventorySnapshot,
+  ConvergenceRuntimeState,
+  PrConvergenceStatePatch,
   ConvergenceStatus,
   PipelineSettings,
   RebaseResolutionStartArgs,
@@ -5018,15 +5020,39 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsIssueResolutionStart, async (_event, arg: PrIssueResolutionStartArgs): Promise<PrIssueResolutionStartResult> => {
     const ctx = getCtx();
-    return await launchPrIssueResolutionChat(
+    const result = await launchPrIssueResolutionChat(
       {
         prService: ctx.prService,
         laneService: ctx.laneService,
         agentChatService: ctx.agentChatService,
         sessionService: ctx.sessionService,
+        issueInventoryService: ctx.issueInventoryService,
       },
       arg,
     );
+    try {
+      const status = ctx.issueInventoryService.getConvergenceStatus(arg.prId);
+      ctx.issueInventoryService.saveConvergenceRuntime(arg.prId, {
+        currentRound: status.currentRound,
+        status: "running",
+        pollerStatus: "idle",
+        activeSessionId: result.sessionId,
+        activeLaneId: result.laneId,
+        activeHref: result.href,
+        lastStartedAt: nowIso(),
+        errorMessage: null,
+        pauseReason: null,
+      });
+    } catch (error) {
+      ctx.logger.warn("ipc.prs_issue_resolution_convergence_persist_failed", {
+        prId: arg.prId,
+        sessionId: result.sessionId,
+        laneId: result.laneId,
+        href: result.href,
+        error: getErrorMessage(error),
+      });
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.prsIssueResolutionPreviewPrompt, async (
@@ -5040,6 +5066,7 @@ export function registerIpc({
         laneService: ctx.laneService,
         agentChatService: ctx.agentChatService,
         sessionService: ctx.sessionService,
+        issueInventoryService: ctx.issueInventoryService,
       },
       arg,
     );
@@ -5099,6 +5126,78 @@ export function registerIpc({
     getCtx().issueInventoryService.getConvergenceStatus(args.prId));
   ipcMain.handle(IPC.prsIssueInventoryReset, (_e, args: { prId: string }): void =>
     getCtx().issueInventoryService.resetInventory(args.prId));
+
+  ipcMain.handle(IPC.prsConvergenceStateGet, (_e, args: { prId: string }): ConvergenceRuntimeState =>
+    getCtx().issueInventoryService.getConvergenceRuntime(args.prId));
+  ipcMain.handle(IPC.prsConvergenceStateSave, (_e, args: { prId: string; state: PrConvergenceStatePatch }): ConvergenceRuntimeState => {
+    // Whitelist: only allow renderer to update operational fields.
+    // Identity fields and immutable timestamps are stripped.
+    const MUTABLE_FIELDS: ReadonlySet<keyof ConvergenceRuntimeState> = new Set([
+      "autoConvergeEnabled",
+      "status",
+      "pollerStatus",
+      "currentRound",
+      "activeSessionId",
+      "activeLaneId",
+      "activeHref",
+      "pauseReason",
+      "errorMessage",
+      "lastStartedAt",
+      "lastPolledAt",
+      "lastPausedAt",
+      "lastStoppedAt",
+    ]);
+    // Validate that args.state is a plain non-null object before iterating.
+    if (args.state == null || typeof args.state !== "object" || Array.isArray(args.state)) {
+      return getCtx().issueInventoryService.getConvergenceRuntime(args.prId);
+    }
+
+    const VALID_STATUS: ReadonlySet<string> = new Set([
+      "idle", "launching", "running", "polling", "paused", "converged", "merged", "failed", "cancelled", "stopped",
+    ]);
+    const VALID_POLLER_STATUS: ReadonlySet<string> = new Set([
+      "idle", "scheduled", "polling", "waiting_for_checks", "waiting_for_comments", "paused", "stopped",
+    ]);
+
+    const isStringOrNull = (v: unknown): boolean => v === null || typeof v === "string";
+
+    const sanitized: PrConvergenceStatePatch = {};
+    for (const key of Object.keys(args.state) as (keyof ConvergenceRuntimeState)[]) {
+      if (!MUTABLE_FIELDS.has(key)) continue;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+      const val = (args.state as any)[key];
+      switch (key) {
+        case "autoConvergeEnabled":
+          if (typeof val === "boolean") sanitized.autoConvergeEnabled = val;
+          break;
+        case "status":
+          if (typeof val === "string" && VALID_STATUS.has(val)) sanitized.status = val as ConvergenceRuntimeState["status"];
+          break;
+        case "pollerStatus":
+          if (typeof val === "string" && VALID_POLLER_STATUS.has(val)) sanitized.pollerStatus = val as ConvergenceRuntimeState["pollerStatus"];
+          break;
+        case "currentRound":
+          if (typeof val === "number" && Number.isFinite(val) && val >= 0) sanitized.currentRound = val;
+          break;
+        case "activeSessionId":
+        case "activeLaneId":
+        case "activeHref":
+        case "pauseReason":
+        case "errorMessage":
+        case "lastStartedAt":
+        case "lastPolledAt":
+        case "lastPausedAt":
+        case "lastStoppedAt":
+          if (isStringOrNull(val)) (sanitized as any)[key] = val;
+          break;
+        default:
+          break;
+      }
+    }
+    return getCtx().issueInventoryService.saveConvergenceRuntime(args.prId, sanitized);
+  });
+  ipcMain.handle(IPC.prsConvergenceStateDelete, (_e, args: { prId: string }): void =>
+    getCtx().issueInventoryService.resetConvergenceRuntime(args.prId));
 
   ipcMain.handle(IPC.prsPipelineSettingsGet, (_e, args: { prId: string }): PipelineSettings =>
     getCtx().issueInventoryService.getPipelineSettings(args.prId));

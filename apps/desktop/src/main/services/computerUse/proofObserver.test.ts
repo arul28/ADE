@@ -95,4 +95,25 @@ describe("proofObserver", () => {
       }),
     ]);
   });
+
+  it("ignores image URLs embedded inside PR comment bodies", () => {
+    const { observer, requests } = createHarness();
+
+    observer.observe({
+      type: "tool_result",
+      tool: "mcp__ade__pr_get_review_comments",
+      result: {
+        comments: [
+          {
+            author: "cursor[bot]",
+            body: "Cursor logo: https://cursor.com/assets/logo.png",
+          },
+        ],
+      },
+      itemId: "item-4",
+      status: "completed",
+    }, "chat-1");
+
+    expect(requests).toHaveLength(0);
+  });
 });

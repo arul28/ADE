@@ -90,13 +90,13 @@ export async function buildProviderConnections(
     health: ReturnType<typeof getProviderRuntimeHealth> | null,
   ): void {
     if (!health) return;
-    if (health?.state === "auth-failed" || health?.state === "runtime-failed") {
+    if (health.state === "auth-failed" || health.state === "runtime-failed") {
       status.runtimeAvailable = false;
       status.blocker = health.message
         ?? (health.state === "auth-failed"
           ? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`
           : `${status.provider} runtime was detected, but ADE could not launch it from this app session.`);
-    } else if (health?.state === "ready") {
+    } else if (health.state === "ready") {
       status.runtimeAvailable = true;
       status.authAvailable = true;
       status.blocker = null;
@@ -193,8 +193,6 @@ export async function buildProviderConnections(
   let cursorBlocker: string | null = null;
   if (!cursorFlags.authAvailable && !cursorFlags.runtimeDetected) {
     cursorBlocker = "No Cursor CLI (`agent`) or Cursor credentials were found locally.";
-  } else if (cursorFlags.cliExplicitlyUnauthenticated && !cursorEnvAuth) {
-    cursorBlocker = "Cursor CLI (`agent`) is installed but no login was detected. Run: agent login";
   } else if (!cursorFlags.authAvailable) {
     cursorBlocker = "Cursor CLI (`agent`) is installed but no login was detected. Run: agent login";
   } else if (!cursorFlags.runtimeDetected) {

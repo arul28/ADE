@@ -84,6 +84,25 @@ body {
   animation: ade-marquee 40s linear infinite reverse;
 }
 
+/* Hero splash strip — seamless loop, content drifts left → right */
+@keyframes ade-splash-marquee-ltr {
+  from {
+    transform: translateX(-50%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-splash-marquee-ltr {
+  animation: ade-splash-marquee-ltr 70s linear infinite;
+  will-change: transform;
+}
+
+.hero-splash-carousel:hover .animate-splash-marquee-ltr {
+  animation-play-state: paused;
+}
+
 /* ── Gradient text shimmer ──────────────────── */
 @keyframes gradient-shift {
   from { background-position: 0% center; }
@@ -98,7 +117,12 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .animate-marquee,
   .animate-marquee-reverse,
+  .animate-splash-marquee-ltr,
   .animate-gradient-text {
     animation: none;
+  }
+
+  .hero-splash-carousel .animate-splash-marquee-ltr {
+    transform: translateX(0);
   }
 }

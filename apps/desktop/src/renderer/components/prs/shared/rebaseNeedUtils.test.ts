@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { rebaseNeedItemKey, findLaneBaseNeed, findMatchingRebaseNeed } from "./rebaseNeedUtils";
-import type { RebaseNeed } from "../../../../shared/types";
+import {
+  buildUpstreamRebaseChain,
+  findLaneBaseNeed,
+  findMatchingRebaseNeed,
+  formatUpstreamRebaseSummary,
+  rebaseNeedItemKey,
+  resolveRouteRebaseSelection,
+} from "./rebaseNeedUtils";
+import type { LaneSummary, RebaseNeed } from "../../../../shared/types";
 
 function makeNeed(overrides: Partial<RebaseNeed> = {}): RebaseNeed {
   return {
@@ -15,6 +22,34 @@ function makeNeed(overrides: Partial<RebaseNeed> = {}): RebaseNeed {
     groupContext: overrides.groupContext ?? null,
     dismissedAt: overrides.dismissedAt ?? null,
     deferredUntil: overrides.deferredUntil ?? null,
+  };
+}
+
+function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
+  return {
+    id: overrides.id ?? "lane-1",
+    name: overrides.name ?? "Feature Lane",
+    laneType: overrides.laneType ?? "worktree",
+    baseRef: overrides.baseRef ?? "refs/heads/main",
+    branchRef: overrides.branchRef ?? "refs/heads/feature",
+    worktreePath: overrides.worktreePath ?? "/tmp/feature",
+    parentLaneId: overrides.parentLaneId ?? null,
+    childCount: overrides.childCount ?? 0,
+    stackDepth: overrides.stackDepth ?? 0,
+    parentStatus: overrides.parentStatus ?? null,
+    isEditProtected: overrides.isEditProtected ?? false,
+    status: overrides.status ?? {
+      dirty: false,
+      ahead: 0,
+      behind: 0,
+      remoteBehind: 0,
+      rebaseInProgress: false,
+    },
+    color: overrides.color ?? null,
+    icon: overrides.icon ?? null,
+    tags: overrides.tags ?? [],
+    createdAt: overrides.createdAt ?? "2026-01-01T00:00:00.000Z",
+    ...overrides,
   };
 }
 
@@ -209,5 +244,143 @@ describe("findMatchingRebaseNeed", () => {
     // baseBranch matches but laneId doesn't -- should not match on baseBranch
     const result = findMatchingRebaseNeed({ rebaseNeeds: needs, laneId: "lane-1", baseBranch: "develop" });
     expect(result).toBeNull();
+  });
+});
+
+describe("resolveRouteRebaseSelection", () => {
+  it("keeps an exact rebase item key unchanged", () => {
+    const need = makeNeed({ laneId: "lane-1", kind: "lane_base", baseBranch: "main" });
+    const itemKey = rebaseNeedItemKey(need);
+
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [need], routeItemId: itemKey })).toBe(itemKey);
+  });
+
+  it("resolves a raw lane id to the lane-base need key when available", () => {
+    const laneBaseNeed = makeNeed({ laneId: "lane-1", kind: "lane_base", baseBranch: "main" });
+    const prTargetNeed = makeNeed({ laneId: "lane-1", kind: "pr_target", prId: "pr-1", baseBranch: "develop" });
+
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [prTargetNeed, laneBaseNeed], routeItemId: "lane-1" })).toBe(
+      rebaseNeedItemKey(laneBaseNeed),
+    );
+  });
+
+  it("falls back to another matching rebase need when no lane-base need exists", () => {
+    const prTargetNeed = makeNeed({ laneId: "lane-1", kind: "pr_target", prId: "pr-1", baseBranch: "develop" });
+
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [prTargetNeed], routeItemId: "lane-1" })).toBe(
+      rebaseNeedItemKey(prTargetNeed),
+    );
+  });
+
+  it("preserves the raw route item id when rebase needs have not loaded yet", () => {
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [], routeItemId: "lane-1" })).toBe("lane-1");
+  });
+
+  it("returns null for empty route ids", () => {
+    expect(resolveRouteRebaseSelection({ rebaseNeeds: [], routeItemId: "   " })).toBeNull();
+  });
+});
+
+describe("buildUpstreamRebaseChain", () => {
+  it("surfaces the immediate parent's direct rebase need for a child lane", () => {
+    const lanes = [
+      makeLane({ id: "root", name: "main" }),
+      makeLane({ id: "parent", name: "Parent Lane", parentLaneId: null, stackDepth: 1 }),
+      makeLane({ id: "child", name: "Child Lane", parentLaneId: "parent", stackDepth: 2 }),
+    ];
+    const rebaseNeeds = [
+      makeNeed({ laneId: "parent", laneName: "Parent Lane", baseBranch: "main", behindBy: 7 }),
+      makeNeed({ laneId: "child", laneName: "Child Lane", baseBranch: "parent", behindBy: 2 }),
+    ];
+
+    expect(buildUpstreamRebaseChain({ laneId: "child", lanes, rebaseNeeds })).toEqual([
+      {
+        laneId: "parent",
+        laneName: "Parent Lane",
+        kind: "lane_base",
+        baseBranch: "main",
+        behindBy: 7,
+        conflictPredicted: false,
+      },
+    ]);
+  });
+
+  it("walks the full ancestor chain without duplicating the selected lane", () => {
+    const lanes = [
+      makeLane({ id: "grand", name: "Grand Lane", stackDepth: 1 }),
+      makeLane({ id: "parent", name: "Parent Lane", parentLaneId: "grand", stackDepth: 2 }),
+      makeLane({ id: "child", name: "Child Lane", parentLaneId: "parent", stackDepth: 3 }),
+    ];
+    const rebaseNeeds = [
+      makeNeed({ laneId: "grand", laneName: "Grand Lane", baseBranch: "main", behindBy: 7 }),
+      makeNeed({ laneId: "parent", laneName: "Parent Lane", baseBranch: "grand", behindBy: 2 }),
+      makeNeed({ laneId: "child", laneName: "Child Lane", baseBranch: "parent", behindBy: 1 }),
+    ];
+
+    expect(buildUpstreamRebaseChain({ laneId: "child", lanes, rebaseNeeds })).toEqual([
+      {
+        laneId: "parent",
+        laneName: "Parent Lane",
+        kind: "lane_base",
+        baseBranch: "grand",
+        behindBy: 2,
+        conflictPredicted: false,
+      },
+      {
+        laneId: "grand",
+        laneName: "Grand Lane",
+        kind: "lane_base",
+        baseBranch: "main",
+        behindBy: 7,
+        conflictPredicted: false,
+      },
+    ]);
+  });
+
+  it("returns an empty chain for top-level lanes", () => {
+    const lanes = [makeLane({ id: "root", name: "Root Lane" })];
+    const rebaseNeeds = [makeNeed({ laneId: "root", laneName: "Root Lane", baseBranch: "main", behindBy: 3 })];
+
+    expect(buildUpstreamRebaseChain({ laneId: "root", lanes, rebaseNeeds })).toEqual([]);
+  });
+});
+
+describe("formatUpstreamRebaseSummary", () => {
+  it("returns null when there is no upstream drift", () => {
+    expect(formatUpstreamRebaseSummary([])).toBeNull();
+  });
+
+  it("summarizes a single ancestor directly", () => {
+    expect(formatUpstreamRebaseSummary([
+      {
+        laneId: "parent",
+        laneName: "Parent Lane",
+        kind: "lane_base",
+        baseBranch: "main",
+        behindBy: 7,
+        conflictPredicted: false,
+      },
+    ])).toBe("Parent Lane is 7 behind main");
+  });
+
+  it("summarizes multiple ancestors using the terminal upstream target", () => {
+    expect(formatUpstreamRebaseSummary([
+      {
+        laneId: "parent",
+        laneName: "Parent Lane",
+        kind: "lane_base",
+        baseBranch: "grand",
+        behindBy: 2,
+        conflictPredicted: false,
+      },
+      {
+        laneId: "grand",
+        laneName: "Grand Lane",
+        kind: "lane_base",
+        baseBranch: "main",
+        behindBy: 7,
+        conflictPredicted: false,
+      },
+    ])).toBe("2 ancestors pending; Grand Lane is 7 behind main");
   });
 });

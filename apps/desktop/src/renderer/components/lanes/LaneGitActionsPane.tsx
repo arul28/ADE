@@ -327,6 +327,37 @@ function SectionCard({
   );
 }
 
+function HoverTitleButton({
+  tooltip,
+  disabled,
+  style,
+  children,
+  ...buttonProps
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  tooltip: string;
+}) {
+  const button = (
+    <button
+      {...buttonProps}
+      disabled={disabled}
+      title={tooltip}
+      style={{
+        ...style,
+        ...(disabled ? { pointerEvents: "none" as const } : {}),
+      }}
+    >
+      {children}
+    </button>
+  );
+
+  if (!disabled) return button;
+  return (
+    <span title={tooltip} style={{ display: "inline-flex" }}>
+      {button}
+    </span>
+  );
+}
+
 function ActionButton({
   title,
   detail,
@@ -348,10 +379,11 @@ function ActionButton({
 }) {
   const primary = emphasis === "primary";
   return (
-    <button
+    <HoverTitleButton
       type="button"
       disabled={disabled}
       onClick={onClick}
+      tooltip={`${title}. ${detail}`}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -368,7 +400,6 @@ function ActionButton({
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.45 : 1,
       }}
-      title={`${title}. ${detail}`}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         {icon ? <span style={{ flexShrink: 0, display: "inline-flex", alignItems: "center" }}>{icon}</span> : null}
@@ -387,7 +418,7 @@ function ActionButton({
         </span>
       </div>
       {badge ? <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{badge}</span> : null}
-    </button>
+    </HoverTitleButton>
   );
 }
 
@@ -1100,6 +1131,19 @@ export function LaneGitActionsPane({
   const commitButtonLabel = getCommitButtonLabel({ busyAction, amendCommit });
   const commitHelperText = getCommitHelperText({ commitMessage, commitMessageAi });
   const primaryPushLabel = syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
+  const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
+  const syncButtonTitle = useMemo(() => {
+    if (!laneId) return "Sync is unavailable until you select a child lane.";
+    if (busyAction) return `Sync is unavailable while '${busyAction}' is running.`;
+    if (!lane?.parentLaneId) return "Sync is only available for child lanes that track a parent lane.";
+    if (lane.status.dirty) {
+      return "Sync is unavailable because this lane has uncommitted changes. Commit, stash, or discard them before rebasing and pushing.";
+    }
+    if (lane.status.behind === 0) {
+      return `Sync is unavailable because ${lane.name} is already up to date with ${parentLane?.name ?? "its parent lane"}.`;
+    }
+    return `Rebase ${lane.name} onto ${parentLane?.name ?? "its parent lane"} and push the rewritten branch.`;
+  }, [busyAction, lane, laneId, parentLane]);
 
   const renderFileRow = (file: FileChange, mode: "staged" | "unstaged") => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
@@ -1562,20 +1606,20 @@ export function LaneGitActionsPane({
               {syncStatus?.hasUpstream === false ? "PUBLISH" : nextActionHint?.action === "force_push_lease" ? "FORCE PUSH" : "PUSH"}
             </button>
             {lane?.parentLaneId ? (
-              <button
+              <HoverTitleButton
                 type="button"
                 style={{
                   ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
                   ...(nextActionHint?.action === "rebase_push" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
-                  opacity: (!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty) ? 0.45 : 1,
+                  opacity: syncButtonDisabled ? 0.45 : 1,
                 }}
-                disabled={!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty}
+                disabled={syncButtonDisabled}
                 onClick={() => runRebaseAndPushFlow(true)}
-                title="Rebase from parent and push"
+                tooltip={syncButtonTitle}
               >
                 <Stack size={12} weight="bold" style={{ marginRight: 4 }} />
                 SYNC
-              </button>
+              </HoverTitleButton>
             ) : null}
 
             {/* Separator */}

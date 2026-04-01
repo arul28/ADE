@@ -183,7 +183,7 @@ The PR service exposes review thread data through a dedicated GraphQL-backed `ge
 
 Rebase suggestions for queued PRs are now queue-aware. The conflict service calls `fetchQueueTargetTrackingBranches()` before scanning rebase needs, then uses `resolveQueueRebaseOverride()` per lane to determine the correct comparison ref. When a lane belongs to an active merge queue, the rebase targets the queue's tracking branch rather than the lane's static base branch. Queue group context is propagated into the rebase need for display in the rebase UI. AI-assisted rebase (`rebaseLane`) also respects the queue override, and the rebase request accepts `modelId` and `reasoningEffort` parameters for finer control over the AI rebase agent. Permission is set via provider-native fields (`unifiedPermissionMode`).
 
-For non-queued stacked lanes, the conflict service uses `resolveLaneRebaseTarget()` combined with the shared `shouldLaneTrackParent()` logic to determine the comparison ref. When the parent is a non-primary lane, the comparison ref resolves to `origin/<parent-branch>`. When the parent is a primary lane (or absent), the lane falls back to its own `baseRef`. This keeps conflict prediction and rebase suggestions consistent with the lane service's own rebase behavior.
+For non-queued stacked lanes, the conflict service uses `resolveLaneRebaseTarget()` combined with the shared `shouldLaneTrackParent()` logic to determine the comparison ref. When the parent is a non-primary lane, the comparison ref resolves to the local parent branch ref, with `origin/<parent-branch>` as the fallback ref. When the parent is a primary lane (or absent), the lane falls back to its own `baseRef`. This keeps conflict prediction and rebase suggestions consistent with the lane service's own rebase behavior.
 
 ### Rebase need kinds
 
@@ -192,9 +192,17 @@ Each `RebaseNeed` now carries a `kind` field distinguishing the source of the re
 - `lane_base` -- the lane is behind its base branch or parent lane.
 - `pr_target` -- the lane's open PR targets a different branch than the lane's computed base, and the lane is behind that PR target.
 
-Both kinds can coexist for the same lane. The renderer-side `rebaseNeedUtils.ts` provides helpers (`rebaseNeedItemKey`, `findLaneBaseNeed`, `findMatchingRebaseNeed`) for deduplication and lookup by kind, PR id, or base branch.
+Both kinds can coexist for the same lane. The renderer-side `rebaseNeedUtils.ts` provides helpers (`rebaseNeedItemKey`, `findLaneBaseNeed`, `findMatchingRebaseNeed`, `resolveRouteRebaseSelection`) for deduplication and lookup by kind, PR id, or base branch. `resolveRouteRebaseSelection` uses the active rebase needs to determine which rebase route the UI should pre-select.
 
 The rebase request also accepts a `forcePushAfterRebase` flag, allowing callers to opt into force-push after a successful rebase when the upstream requires it (e.g., when resolving a PR-target rebase need).
+
+### Upstream rebase chain
+
+The `UpstreamRebaseNeed` type and `buildUpstreamRebaseChain` helper in `rebaseNeedUtils.ts` model the chain of upstream lanes that also need rebasing. This lets the rebase UI show the full dependency chain when a lane's parent (or grandparent) is also behind, helping users decide whether to rebase the current lane or start from the root of the chain. `formatUpstreamRebaseSummary` produces a human-readable summary of the chain.
+
+### Rebase attention
+
+The `rebaseAttentionUtils.ts` module surfaces auto-rebase failures, conflicts, and pending states in the Rebase tab as a `stack_attention` section. `RebaseAttentionItem` captures per-lane attention state (e.g., rebase failed, conflicts detected, rebase pending). `buildRebaseAttentionItems`, `filterRebaseAttentionStatuses`, and `findRebaseAttentionStatus` provide filtering and lookup for these items. The RebaseTab and WorkflowsTab receive `attentionStatuses` alongside regular rebase needs.
 
 ---
 
@@ -233,6 +241,10 @@ The `prRefreshIssueInventory` workflow tool now evaluates checks status with a f
 
 ADE tracks PR issues (failing CI checks, unresolved review threads, and issue comments) in a structured inventory backed by the `pr_issue_inventory` table. The `issueInventoryService` syncs from live GitHub data, classifies issues by source (CodeRabbit, Codex, Copilot, human, ADE), extracts severity from comment text and emoji patterns, and computes a round-based convergence status.
 
+### Thread tracking
+
+Review thread inventory items track the latest comment in the conversation thread. The `thread_comment_count`, `thread_latest_comment_id`, `thread_latest_comment_author`, `thread_latest_comment_at`, and `thread_latest_comment_source` fields allow the sync logic to detect when a new reply has been added. When a non-ADE participant adds a follow-up comment to a previously resolved or sent-to-agent thread, the item is automatically re-opened to `new` state so it re-enters the convergence loop.
+
 ### Convergence model
 
 The inventory operates in rounds. Each round:
@@ -243,6 +255,22 @@ The inventory operates in rounds. Each round:
 4. Repeat until all issues are resolved, the round cap is reached, or convergence stalls.
 
 The `ConvergenceStatus` tracks per-round statistics (new, fixed, dismissed counts), whether progress is being made (`isConverging`), and whether auto-advance is possible (`canAutoAdvance`). The default maximum is 5 rounds.
+
+### Convergence runtime state
+
+The convergence loop runtime is persisted in the `pr_convergence_state` table. The `ConvergenceRuntimeState` type tracks:
+
+- `autoConvergeEnabled` -- whether the auto-converge loop is active for this PR
+- `status` -- overall loop status (`idle`, `launching`, `running`, `polling`, `paused`, `converged`, `merged`, `failed`, `cancelled`, `stopped`)
+- `pollerStatus` -- poller sub-status (`idle`, `scheduled`, `polling`, `waiting_for_checks`, `waiting_for_comments`, `paused`, `stopped`)
+- `currentRound` -- the round number the loop is on
+- `activeSessionId`, `activeLaneId`, `activeHref` -- the agent session currently working on fixes
+- `pauseReason`, `errorMessage` -- human-readable context when the loop is paused or failed
+- lifecycle timestamps (`lastStartedAt`, `lastPolledAt`, `lastPausedAt`, `lastStoppedAt`)
+
+The renderer caches convergence runtime state per PR in `PrsContext` and exposes `loadConvergenceState`, `saveConvergenceState`, and `resetConvergenceState` methods. Three IPC channels (`prsConvergenceStateGet`, `prsConvergenceStateSave`, `prsConvergenceStateDelete`) back these operations.
+
+When an issue resolution session is launched via the `prsIssueResolutionStart` IPC handler, the handler also writes the runtime state with the active session, lane, and href so the convergence panel can track the running session.
 
 ### Pipeline settings
 
@@ -260,3 +288,17 @@ Settings are persisted per PR in the key-value store and editable from the conve
 The `PrConvergencePanel` is a slide-over panel in the PR detail pane. It displays the issue inventory grouped by severity, convergence progress (round indicator, fix/dismiss/escalate counts), an embedded agent chat pane for the active resolution session, and pipeline settings controls.
 
 The auto-converge mode polls GitHub after each agent session completes. It waits for CI checks to finish and comment counts to stabilize (2 consecutive polls with the same count) before triggering the next round. A pause reason banner surfaces when convergence is blocked by rebase needs or round limits.
+
+### CTO operator tools
+
+The CTO agent has five dedicated tools for managing the PR convergence loop programmatically:
+
+| Tool | Purpose |
+|---|---|
+| `getPullRequestConvergence` | Read the persisted runtime state, pipeline settings, and issue inventory summary for a PR |
+| `updatePullRequestConvergencePipeline` | Edit pipeline settings (auto-merge, merge method, max rounds, rebase policy) |
+| `updatePullRequestConvergenceRuntime` | Edit the runtime state (enable/disable auto-converge, update status, set poller state) |
+| `startPullRequestConvergenceRound` | Launch the next convergence round by starting an issue-resolution agent session |
+| `stopPullRequestConvergence` | Stop the active convergence run, interrupt the chat session, and persist the stopped state |
+
+These tools allow the CTO to orchestrate the convergence loop end-to-end: inspect what issues remain, configure the pipeline, start or stop rounds, and adjust runtime behavior without manual UI interaction. The MCP server also exposes the issue inventory service for external tool consumers.

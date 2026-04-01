@@ -31,6 +31,10 @@ vi.mock("monaco-editor/esm/vs/editor/editor.worker?worker", () => ({
   default: class MockEditorWorker {},
 }));
 
+vi.mock("monaco-editor/esm/vs/language/typescript/ts.worker?worker", () => ({
+  default: class MockTsWorker {},
+}));
+
 vi.mock("monaco-editor", () => {
   const createModel = (value: string, language: string) => ({
     value,

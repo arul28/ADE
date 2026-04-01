@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import type {
   AiPermissionMode,
+  PrConvergenceState,
   PrAiResolutionContext,
   PrAiResolutionSessionInfo,
   PrWithConflicts,
@@ -24,6 +25,7 @@ import type {
   LaneSummary,
   AutoRebaseLaneStatus,
   AutoRebaseEventPayload,
+  PrConvergenceStatePatch,
 } from "../../../../shared/types";
 import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { getModelById } from "../../../../shared/modelRegistry";
@@ -68,6 +70,9 @@ type PrsState = {
   // Inline terminal
   inlineTerminal: InlineTerminalState;
 
+  // Persisted convergence runtime cache
+  convergenceStatesByPrId: Record<string, PrConvergenceState>;
+
   // Resolver preferences
   resolverModel: string;
   resolverReasoningLevel: string;
@@ -87,12 +92,16 @@ type PrsContextValue = PrsState & {
   upsertResolverSession: (session: PrAiResolutionSessionInfo) => void;
   clearResolverSession: (context: PrAiResolutionContext) => void;
   setInlineTerminal: (terminal: InlineTerminalState) => void;
+  loadConvergenceState: (prId: string, options?: { force?: boolean }) => Promise<PrConvergenceState>;
+  saveConvergenceState: (prId: string, state: PrConvergenceStatePatch) => Promise<PrConvergenceState>;
+  resetConvergenceState: (prId: string) => Promise<void>;
   refresh: () => Promise<void>;
 };
 
 const PrsContext = createContext<PrsContextValue | null>(null);
 
 const LS_MODEL_KEY = "ade:prs:resolverModel";
+const LS_REASONING_KEY = "ade:prs:resolverReasoningLevel";
 const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
 
 type ResolverPermissionPreferences = {
@@ -139,6 +148,16 @@ function readPersistedModel(): string {
   return "anthropic/claude-sonnet-4-6";
 }
 
+function readPersistedReasoningLevel(): string {
+  try {
+    const value = localStorage.getItem(LS_REASONING_KEY);
+    if (value && value.trim().length > 0) return value.trim();
+  } catch {
+    /* ignore */
+  }
+  return "medium";
+}
+
 function readInitialTab(): PrTab {
   try {
     const params = new URLSearchParams(window.location.search);
@@ -146,6 +165,20 @@ function readInitialTab(): PrTab {
     if (tab === "normal" || tab === "queue" || tab === "integration" || tab === "rebase") return tab;
   } catch { /* ignore */ }
   return "normal";
+}
+
+function requirePrId(prId: string): string {
+  const normalized = String(prId ?? "").trim();
+  if (!normalized) throw new Error("PR id is required.");
+  return normalized;
+}
+
+/** Remove entries from a keyed record whose key is not in the allowed set. */
+function pruneByAllowedIds<T>(record: Record<string, T>, allowedIds: Set<string>): Record<string, T> {
+  const next = Object.fromEntries(
+    Object.entries(record).filter(([id]) => allowedIds.has(id)),
+  ) as Record<string, T>;
+  return jsonEqual(record, next) ? record : next;
 }
 
 /** Shallow-compare two JSON-serializable values to avoid unnecessary re-renders. */
@@ -207,9 +240,16 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Inline terminal
   const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(null);
 
+  // Persisted convergence runtime cache
+  const [convergenceStatesByPrId, setConvergenceStatesByPrId] = useState<Record<string, PrConvergenceState>>({});
+  const convergenceStatesByPrIdRef = React.useRef<Record<string, PrConvergenceState>>({});
+  React.useEffect(() => {
+    convergenceStatesByPrIdRef.current = convergenceStatesByPrId;
+  }, [convergenceStatesByPrId]);
+
   // Resolver preferences
   const [resolverModel, setResolverModelRaw] = useState<string>(readPersistedModel);
-  const [resolverReasoningLevel, setResolverReasoningLevel] = useState("medium");
+  const [resolverReasoningLevel, setResolverReasoningLevelRaw] = useState<string>(readPersistedReasoningLevel);
   const [resolverPermissions, setResolverPermissions] = useState<ResolverPermissionPreferences>(readPersistedResolverPermissions);
   const [resolverSessionsByContextKey, setResolverSessionsByContextKey] = useState<Record<string, PrAiResolutionSessionInfo>>({});
 
@@ -235,6 +275,15 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     });
   }, [resolverModel]);
 
+  const setResolverReasoningLevel = useCallback((level: string) => {
+    setResolverReasoningLevelRaw(level);
+    try {
+      localStorage.setItem(LS_REASONING_KEY, level);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const upsertResolverSession = useCallback((session: PrAiResolutionSessionInfo) => {
     setResolverSessionsByContextKey((prev) => ({ ...prev, [session.contextKey]: session }));
   }, []);
@@ -245,6 +294,57 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       if (!(key in prev)) return prev;
       const next = { ...prev };
       delete next[key];
+      return next;
+    });
+  }, []);
+
+  const storeConvergenceState = useCallback((state: PrConvergenceState): PrConvergenceState => {
+    // Guard against late IPC responses for PRs that have been pruned from the list.
+    // Only apply the guard after the initial load has completed — before that the PR
+    // list is empty and states should still be cached so explicit load/save calls work.
+    // Using initialLoadDone (rather than prsRef.current.length > 0) ensures that once
+    // the list is known, stale responses for unknown PR ids are always rejected — even
+    // when the list becomes empty after pruning.
+    if (initialLoadDone.current && !prsRef.current.some((pr) => pr.id === state.prId)) {
+      return state;
+    }
+    setConvergenceStatesByPrId((prev) => {
+      if (jsonEqual(prev[state.prId], state)) return prev;
+      const next = { ...prev, [state.prId]: state };
+      convergenceStatesByPrIdRef.current = next;
+      return next;
+    });
+    return state;
+  }, []);
+
+  const loadConvergenceState = useCallback(async (prId: string, options?: { force?: boolean }): Promise<PrConvergenceState> => {
+    const normalizedPrId = requirePrId(prId);
+    if (!options?.force) {
+      const cached = convergenceStatesByPrIdRef.current[normalizedPrId];
+      if (cached) return cached;
+    }
+    const runtime = await window.ade.prs.convergenceStateGet(normalizedPrId);
+    return storeConvergenceState(runtime);
+  }, [storeConvergenceState]);
+
+  const saveConvergenceState = useCallback(async (prId: string, state: PrConvergenceStatePatch): Promise<PrConvergenceState> => {
+    const normalizedPrId = requirePrId(prId);
+    const runtime = await window.ade.prs.convergenceStateSave(normalizedPrId, state);
+    return storeConvergenceState(runtime);
+  }, [storeConvergenceState]);
+
+  const resetConvergenceState = useCallback(async (prId: string): Promise<void> => {
+    const normalizedPrId = String(prId ?? "").trim();
+    if (!normalizedPrId) return;
+    await window.ade.prs.convergenceStateDelete(normalizedPrId);
+    // Update the mutable ref synchronously so callers that read it
+    // immediately after reset don't see stale data.
+    const { [normalizedPrId]: _, ...rest } = convergenceStatesByPrIdRef.current;
+    convergenceStatesByPrIdRef.current = rest;
+    setConvergenceStatesByPrId((prev) => {
+      if (!(normalizedPrId in prev)) return prev;
+      const next = { ...prev };
+      delete next[normalizedPrId];
       return next;
     });
   }, []);
@@ -362,13 +462,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         return prev;
       });
 
-      setMergeContextByPrId((prev) => {
-        const allowed = new Set(prList.map((pr) => pr.id));
-        const next = Object.fromEntries(
-          Object.entries(prev).filter(([prId]) => allowed.has(prId))
-        ) as Record<string, PrMergeContext>;
-        return jsonEqual(prev, next) ? prev : next;
-      });
+      const allowedPrIds = new Set(prList.map((pr) => pr.id));
+      setMergeContextByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
+      setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
 
       if (changedPrIds.length > 0) {
         void refreshMergeContexts(changedPrIds);
@@ -598,6 +694,18 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
         prsRef.current = next;
         setPrs((prev) => (jsonEqual(prev, next) ? prev : next));
+        const allowedPrIds = new Set(next.map((pr) => pr.id));
+        setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
+
+        // Clear selection if the active PR was removed (mirrors refresh() guard).
+        const activePrIdForPrune = selectedPrIdRef.current;
+        if (activePrIdForPrune && !allowedPrIds.has(activePrIdForPrune)) {
+          setDetailStatus(null);
+          setDetailChecks([]);
+          setDetailReviews([]);
+          setDetailComments([]);
+          setSelectedPrId(null);
+        }
 
         if (changedPrIds.length > 0) {
           void refreshMergeContexts(changedPrIds);
@@ -693,6 +801,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       autoRebaseStatuses,
       queueStates,
       inlineTerminal,
+      convergenceStatesByPrId,
       resolverModel,
       resolverReasoningLevel,
       resolverPermissionMode: resolverPermissions[resolvePermissionFamilyForModel(resolverModel)],
@@ -708,13 +817,16 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       upsertResolverSession,
       clearResolverSession,
       setInlineTerminal,
+      loadConvergenceState,
+      saveConvergenceState,
+      resetConvergenceState,
       refresh,
     }),
     // Note: setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId,
-    // setMergeMethod, setResolverReasoningLevel, and setInlineTerminal are intentionally
-    // excluded from this dependency array because they are useState setters which are
-    // guaranteed to be referentially stable across re-renders per the React useState contract.
-    // setResolverModel is included because it's a useCallback wrapper (not a raw setter).
+    // setMergeMethod, and setInlineTerminal are intentionally excluded from this dependency
+    // array because they are useState setters which are guaranteed to be referentially stable
+    // across re-renders per the React useState contract. Resolver preference setters are
+    // included because they are useCallback wrappers (not raw setters).
     [
       activeTab,
       prs,
@@ -735,14 +847,19 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       autoRebaseStatuses,
       queueStates,
       inlineTerminal,
+      convergenceStatesByPrId,
       resolverModel,
       resolverReasoningLevel,
       resolverPermissions,
       resolverSessionsByContextKey,
       setResolverModel,
+      setResolverReasoningLevel,
       setResolverPermissionMode,
       upsertResolverSession,
       clearResolverSession,
+      loadConvergenceState,
+      saveConvergenceState,
+      resetConvergenceState,
       refresh,
     ],
   );

@@ -79,7 +79,8 @@ function buildToolArgs(args: {
   kind?: string | null;
   locations?: ReadonlyArray<{ path?: string | null } | null> | null;
 }): Record<string, unknown> {
-  const base = readObject(args.rawInput) ? { ...readObject(args.rawInput)! } : {};
+  const parsed = readObject(args.rawInput);
+  const base = parsed ? { ...parsed } : {};
   const title = typeof args.title === "string" ? args.title.trim() : "";
   const kind = typeof args.kind === "string" ? args.kind.trim() : "";
   if (title.length && typeof base.title !== "string") {
@@ -372,8 +373,14 @@ export function mapStopReasonToTerminalEvents(args: {
     });
   }
 
-  const doneStatus =
-    stopReason === "cancelled" ? "interrupted" : stopReason === "refusal" ? "failed" : "completed";
+  let doneStatus: "interrupted" | "failed" | "completed";
+  if (stopReason === "cancelled") {
+    doneStatus = "interrupted";
+  } else if (stopReason === "refusal") {
+    doneStatus = "failed";
+  } else {
+    doneStatus = "completed";
+  }
 
   out.push({
     type: "done",

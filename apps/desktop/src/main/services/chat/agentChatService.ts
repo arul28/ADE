@@ -7,10 +7,13 @@ import {
   generateText,
   streamText,
   stepCountIs,
+  tool as aiTool,
+  jsonSchema as aiJsonSchema,
   type FilePart,
   type ImagePart,
   type LanguageModel,
   type ModelMessage,
+  type Tool as AiTool,
   type UserContent,
 } from "ai";
 import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
@@ -21,7 +24,17 @@ type ClaudeV2Session = {
   stream: () => AsyncGenerator<SDKMessage, void>;
   close: () => void;
   readonly sessionId: string;
+  query?: {
+    setMcpServers?: (servers: Record<string, Record<string, unknown>>) => Promise<{
+      added?: string[];
+      removed?: string[];
+      errors?: Record<string, string>;
+    }>;
+    setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
+    supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
+  };
   setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
+  supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
 };
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import {
@@ -117,6 +130,7 @@ import {
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
+import { buildCodexAppServerMcpConfigOverrides } from "../ai/codexAppServerConfig";
 import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
@@ -141,10 +155,13 @@ import type { createLinearDispatcherService } from "../cto/linearDispatcherServi
 import type { LinearClient } from "../cto/linearClient";
 import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
+import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createProofObserver } from "../computerUse/proofObserver";
 import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
 import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "../orchestrator/unifiedOrchestratorAdapter";
+import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport as McpStdioTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { McpServer, PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import type { ExternalMcpServerConfig } from "../../../shared/types/externalMcp";
 import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
@@ -329,6 +346,9 @@ type UnifiedRuntime = {
   interrupted: boolean;
   resolvedModel: LanguageModel;
   modelDescriptor: ModelDescriptor;
+  /** MCP client connected to the ADE MCP server via stdio. */
+  mcpClient: McpSdkClient | null;
+  mcpTransport: McpStdioTransport | null;
 };
 
 type CursorPermissionWaiter = {
@@ -532,6 +552,13 @@ function isSignalPermissionError(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "EPERM");
 }
 
+function isAbortRelatedError(error: unknown): boolean {
+  if (typeof globalThis.DOMException === "function" && error instanceof globalThis.DOMException && error.name === "AbortError") return true;
+  if (error instanceof Error && error.name === "AbortError") return true;
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return message.includes("aborterror") || message.includes("aborted by user");
+}
+
 function isProcessAlive(pid: number | null): boolean {
   if (pid == null || !Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -679,6 +706,7 @@ type ManagedChatSession = {
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
+  runtimeInvalidated: boolean;
   localPendingInputs: Map<string, {
     request: PendingInputRequest;
     resolve: (response: {
@@ -2043,7 +2071,7 @@ function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefin
 }
 
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
-  return provider === "codex" || provider === "claude" || provider === "cursor" ? "full_mcp" : "fallback";
+  return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "unified" ? "full_mcp" : "fallback";
 }
 
 function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
@@ -2061,10 +2089,10 @@ function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">)
   return session.sessionProfile === "light";
 }
 
-let _mcpRuntimeRootCache: string | null = null;
 function resolveMcpRuntimeRoot(): string {
-  _mcpRuntimeRootCache ??= resolveUnifiedRuntimeRoot();
-  return _mcpRuntimeRootCache;
+  // Only use the trusted ADE install path — never walk up user repo trees
+  // which could match apps/mcp-server/package.json by coincidence.
+  return resolveUnifiedRuntimeRoot();
 }
 
 
@@ -2087,6 +2115,7 @@ export function createAgentChatService(args: {
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
+  issueInventoryService: ReturnType<typeof createIssueInventoryService>;
   processService?: ReturnType<typeof createProcessService> | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
@@ -2120,6 +2149,7 @@ export function createAgentChatService(args: {
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
+    issueInventoryService,
     processService,
     getTestService,
     ptyService,
@@ -2141,6 +2171,9 @@ export function createAgentChatService(args: {
   }
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
+  }
+  if (!issueInventoryService) {
+    throw new Error("Issue inventory service is required to initialize agent chat.");
   }
 
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
@@ -2710,6 +2743,91 @@ export function createAgentChatService(args: {
     return Array.from(snapshots.values());
   };
 
+  const previewSessionToolNames = ({
+    laneId,
+    sessionProfile,
+    identityKey,
+    computerUse,
+  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey" | "computerUse">): string[] => {
+    const effectiveSessionProfile = sessionProfile ?? "workflow";
+    if (effectiveSessionProfile === "light") return [];
+
+    const sessionId = `preview:${laneId}`;
+    const toolNames = new Set<string>();
+    const workflowTools = createWorkflowTools({
+      laneService,
+      prService: prService ?? undefined,
+      computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? undefined,
+      computerUsePolicy: computerUse,
+      onReportCompletion: null,
+      sessionId,
+      laneId,
+    });
+    for (const toolName of Object.keys(workflowTools)) {
+      toolNames.add(toolName);
+    }
+
+    const linearTools = createLinearTools({
+      linearClient: linearClientRef ?? null,
+      credentials: linearCredentialsRef ?? null,
+    });
+    for (const toolName of Object.keys(linearTools)) {
+      toolNames.add(toolName);
+    }
+
+    if (identityKey === "cto") {
+      const ctoTools = createCtoOperatorTools({
+        currentSessionId: sessionId,
+        defaultLaneId: laneId,
+        defaultModelId: null,
+        defaultReasoningEffort: null,
+        resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || laneId,
+        laneService,
+        missionService: getMissionService?.() ?? null,
+        aiOrchestratorService: getAiOrchestratorService?.() ?? null,
+        workerAgentService: workerAgentService ?? null,
+        workerHeartbeatService: workerHeartbeatService ?? null,
+        linearDispatcherService: getLinearDispatcherService?.() ?? null,
+        flowPolicyService: flowPolicyService ?? null,
+        prService: prService ?? null,
+        issueInventoryService,
+        fileService: fileService ?? null,
+        processService: processService ?? null,
+        testService: getTestService?.() ?? null,
+        ptyService: ptyService ?? null,
+        automationService: getAutomationService?.() ?? null,
+        issueTracker: linearIssueTracker ?? null,
+        listChats: listSessions,
+        getChatStatus: getSessionSummary,
+        getChatTranscript,
+        createChat: createSession,
+        updateChatSession: updateSession,
+        sendChatMessage: sendMessage,
+        interruptChat: interrupt,
+        resumeChat: resumeSession,
+        disposeChat: dispose,
+        sessionService,
+        ensureCtoSession: async ({ laneId: requestedLaneId, modelId, reasoningEffort, reuseExisting }) =>
+          ensureIdentitySession({
+            identityKey: "cto",
+            laneId: requestedLaneId,
+            modelId,
+            reasoningEffort,
+            reuseExisting,
+            permissionMode: "full-auto",
+          }),
+        previewSessionToolNames,
+      } as Parameters<typeof createCtoOperatorTools>[0] & {
+        previewSessionToolNames: typeof previewSessionToolNames;
+      });
+      for (const toolName of Object.keys(ctoTools)) {
+        toolNames.add(toolName);
+      }
+    }
+
+    return Array.from(toolNames).sort((a, b) => a.localeCompare(b));
+  };
+
   const deriveSessionCapabilities = (managed: ManagedChatSession | null): AgentChatSessionCapabilities => ({
     supportsSubagentInspection: Boolean(managed && (managed.session.provider === "claude" || managed.session.provider === "codex")),
     supportsSubagentControl: Boolean(managed && managed.runtime?.kind === "claude"),
@@ -2724,19 +2842,31 @@ export function createAgentChatService(args: {
     chatSessionId?: string | null,
     computerUsePolicy?: ComputerUsePolicy | null,
   ): Record<string, Record<string, unknown>> => {
+    // CLI providers (claude/codex) spawn the MCP server as a plain Node child
+    // process via stdio.  Skip the Electron bundled-proxy so the command
+    // resolves to `node dist/index.cjs` which the CLI can manage as stdio.
     const launch = resolveAdeMcpServerLaunch({
+      projectRoot,
       workspaceRoot,
       runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole,
       ownerId: ownerId ?? undefined,
       chatSessionId: chatSessionId ?? undefined,
       computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
+      preferBundledProxy: false,
     });
     return providerResolver.normalizeCliMcpServers(provider, {
       ade: {
         command: launch.command,
         args: launch.cmdArgs,
-        env: launch.env
+        env: launch.env,
+        ...(provider === "codex"
+          ? {
+              required: true,
+              startup_timeout_sec: 30,
+              tool_timeout_sec: 120,
+            }
+          : {}),
       }
     }) ?? {};
   };
@@ -2765,6 +2895,213 @@ export function createAgentChatService(args: {
     return list;
   };
 
+  const getClaudeV2SessionControl = (
+    session: ClaudeV2Session | null | undefined,
+  ): {
+    setMcpServers?: (servers: Record<string, Record<string, unknown>>) => Promise<{
+      added?: string[];
+      removed?: string[];
+      errors?: Record<string, string>;
+    }>;
+    setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
+    supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
+  } => {
+    const sessionRecord = session as (ClaudeV2Session & { query?: ClaudeV2Session["query"] }) | null | undefined;
+    const query = sessionRecord?.query;
+
+    return {
+      setMcpServers: typeof query?.setMcpServers === "function" ? query.setMcpServers.bind(query) : undefined,
+      setPermissionMode: typeof sessionRecord?.setPermissionMode === "function"
+        ? sessionRecord.setPermissionMode.bind(sessionRecord)
+        : (typeof query?.setPermissionMode === "function" ? query.setPermissionMode.bind(query) : undefined),
+      supportedCommands: typeof sessionRecord?.supportedCommands === "function"
+        ? sessionRecord.supportedCommands.bind(sessionRecord)
+        : (typeof query?.supportedCommands === "function" ? query.supportedCommands.bind(query) : undefined),
+    };
+  };
+
+  const attachClaudeV2McpServers = async (
+    managed: ManagedChatSession,
+    session: ClaudeV2Session | null | undefined,
+    mcpServers: Record<string, Record<string, unknown>> | undefined,
+  ): Promise<void> => {
+    if (!mcpServers || Object.keys(mcpServers).length === 0) return;
+
+    const control = getClaudeV2SessionControl(session);
+    if (typeof control.setMcpServers !== "function") {
+      logger.warn("agent_chat.claude_v2_mcp_attach_unavailable", {
+        sessionId: managed.session.id,
+        serverNames: Object.keys(mcpServers),
+      });
+      return;
+    }
+
+    try {
+      const result = await control.setMcpServers(mcpServers);
+      const errors = Object.entries(result?.errors ?? {}).filter(([, message]) => typeof message === "string" && message.trim().length > 0);
+      if (errors.length > 0) {
+        logger.warn("agent_chat.claude_v2_mcp_attach_failed", {
+          sessionId: managed.session.id,
+          errors: Object.fromEntries(errors),
+        });
+        return;
+      }
+      logger.info("agent_chat.claude_v2_mcp_attach", {
+        sessionId: managed.session.id,
+        added: result?.added ?? [],
+        removed: result?.removed ?? [],
+      });
+    } catch (error) {
+      logger.warn("agent_chat.claude_v2_mcp_attach_failed", {
+        sessionId: managed.session.id,
+        error,
+      });
+    }
+  };
+
+  const buildClaudeAllowedTools = (
+    mcpServers: Record<string, Record<string, unknown>> | undefined,
+  ): string[] => Object.keys(mcpServers ?? {})
+    .map((serverName) => serverName.trim())
+    .filter((serverName) => serverName.length > 0)
+    .map((serverName) => `mcp__${serverName}__*`);
+
+  /**
+   * Spawn the ADE MCP server as a stdio child process and connect an MCP SDK
+   * client.  Returns the client + transport so the caller can list/call tools
+   * and close the connection when the session is disposed.
+   */
+  const spawnUnifiedMcpClient = async (
+    workspaceRoot: string,
+    defaultRole: "agent" | "cto",
+    ownerId?: string | null,
+    chatSessionId?: string | null,
+    computerUsePolicy?: ComputerUsePolicy | null,
+  ): Promise<{ client: McpSdkClient; transport: McpStdioTransport }> => {
+    const launch = resolveAdeMcpServerLaunch({
+      projectRoot,
+      workspaceRoot,
+      runtimeRoot: resolveMcpRuntimeRoot(),
+      defaultRole,
+      ownerId: ownerId ?? undefined,
+      chatSessionId: chatSessionId ?? undefined,
+      computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
+      preferBundledProxy: false,
+    });
+
+    const mergedEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries({ ...process.env, ...launch.env })) {
+      if (v !== undefined) mergedEnv[k] = v;
+    }
+
+    const transport = new McpStdioTransport({
+      command: launch.command,
+      args: launch.cmdArgs,
+      env: mergedEnv,
+    });
+
+    const client = new McpSdkClient(
+      { name: "ade-unified-chat", version: "1.0.0" },
+      { capabilities: {} },
+    );
+
+    await client.connect(transport);
+    return { client, transport };
+  };
+
+  /** MCP tool names that are purely read-only and never need approval or memory-orientation gating. */
+  const MCP_READ_ONLY_PREFIX_RE = /^(?:get_|read_|search_|list_|memory_search)/;
+
+  /**
+   * Discover tools from an MCP client and convert each into an AI SDK `tool()`
+   * so they can be merged with the universal tool set and passed to `streamText()`.
+   *
+   * When `guards` are provided the execute path enforces the same
+   * memory-orientation and plan/edit approval checks that in-process
+   * universal tools use, preventing MCP tools from bypassing those gates.
+   */
+  const buildMcpToolWrappers = async (
+    mcpClient: McpSdkClient,
+    guards?: {
+      permissionMode: PermissionMode;
+      turnMemoryPolicyState?: TurnMemoryPolicyState;
+      onApprovalRequest?: (request: {
+        category: "write" | "bash";
+        description: string;
+        detail?: unknown;
+      }) => Promise<{ approved: boolean; decision?: AgentChatApprovalDecision; reason?: string | null }>;
+    },
+  ): Promise<Record<string, AiTool>> => {
+    const { tools: mcpTools } = await mcpClient.listTools();
+    const wrapped: Record<string, AiTool> = {};
+    const resolveMcpToolTimeoutMs = (): number => {
+      const rawTimeout = process.env.ADE_MCP_TOOL_CALL_TIMEOUT_MS ?? process.env.ADE_MCP_STEP_TIMEOUT_MS;
+      const parsedTimeout = rawTimeout ? Number(rawTimeout) : NaN;
+      return Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? Math.floor(parsedTimeout) : 30_000;
+    };
+
+    for (const spec of mcpTools) {
+      const toolName = `mcp__ade__${spec.name}`;
+      const isReadOnly = MCP_READ_ONLY_PREFIX_RE.test(spec.name);
+      wrapped[toolName] = aiTool({
+        description: spec.description ?? spec.name,
+        inputSchema: aiJsonSchema(spec.inputSchema as any),
+        execute: async (args) => {
+          // ── Guard: memory orientation ──
+          if (guards?.turnMemoryPolicyState && !isReadOnly) {
+            const mps = guards.turnMemoryPolicyState;
+            if (mps.classification === "required" && !mps.orientationSatisfied && !mps.explicitSearchPerformed) {
+              return "EXECUTION DENIED: Search memory before mutating files or running mutating commands for this turn.";
+            }
+          }
+
+          // ── Guard: plan/edit approval ──
+          if (guards && !isReadOnly) {
+            const mode = guards.permissionMode;
+            const needsApproval = mode === "plan" || mode === "edit";
+            if (needsApproval && guards.onApprovalRequest) {
+              try {
+                const result = await guards.onApprovalRequest({
+                  category: "write",
+                  description: `MCP tool: ${spec.name}`,
+                  detail: { tool: spec.name, arguments: args },
+                });
+                if (!result.approved) {
+                  return `EXECUTION DENIED: ${result.reason ?? "MCP tool call was not approved."}`;
+                }
+              } catch (err) {
+                return `EXECUTION DENIED: Approval request failed — ${err instanceof Error ? err.message : String(err)}`;
+              }
+            }
+          }
+
+          const timeoutMs = resolveMcpToolTimeoutMs();
+          let timeoutId: ReturnType<typeof setTimeout> | null = null;
+          const callToolPromise = mcpClient.callTool({ name: spec.name, arguments: args as Record<string, unknown> });
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error(`MCP tool '${spec.name}' timed out after ${timeoutMs}ms.`));
+            }, timeoutMs);
+          });
+          try {
+            const result = await Promise.race([callToolPromise, timeoutPromise]);
+            // MCP tools return { content: [{ type, text }] } — flatten to text.
+            const content = result.content;
+            if (Array.isArray(content)) {
+              return content
+                .map((c: any) => (typeof c === "string" ? c : c?.text ?? JSON.stringify(c)))
+                .join("\n");
+            }
+            return typeof content === "string" ? content : JSON.stringify(content);
+          } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+          }
+        },
+      });
+    }
+    return wrapped;
+  };
+
   const summarizeAdeMcpLaunch = (args: {
     workspaceRoot: string;
     defaultRole: "agent" | "cto" | "external";
@@ -2772,6 +3109,7 @@ export function createAgentChatService(args: {
     computerUsePolicy?: ComputerUsePolicy | null;
   }) => {
     const { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath } = resolveAdeMcpServerLaunch({
+      projectRoot,
       workspaceRoot: args.workspaceRoot,
       runtimeRoot: resolveMcpRuntimeRoot(),
       defaultRole: args.defaultRole,
@@ -3539,6 +3877,33 @@ export function createAgentChatService(args: {
       chatConfig.unifiedPermissionMode,
     );
 
+    // Spawn the ADE MCP server so unified sessions get the same tools as
+    // Claude / Codex sessions.  If the MCP server fails to start we fall
+    // back gracefully — the session still works with in-process tools.
+    let mcpClient: McpSdkClient | null = null;
+    let mcpTransport: McpStdioTransport | null = null;
+    if (!isLightweightSession(managed.session)) {
+      try {
+        const mcp = await spawnUnifiedMcpClient(
+          managed.laneWorktreePath,
+          managed.session.identityKey === "cto" ? "cto" : "agent",
+          resolveWorkerIdentityAgentId(managed.session.identityKey),
+          managed.session.id,
+          managed.session.computerUse,
+        );
+        mcpClient = mcp.client;
+        mcpTransport = mcp.transport;
+        logger.info("agent_chat.unified_mcp_connected", {
+          sessionId: managed.session.id,
+        });
+      } catch (error) {
+        logger.warn("agent_chat.unified_mcp_spawn_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     const runtime: UnifiedRuntime = {
       kind: "unified",
       messages: [],
@@ -3552,13 +3917,16 @@ export function createAgentChatService(args: {
       interrupted: false,
       resolvedModel,
       modelDescriptor: descriptor,
+      mcpClient,
+      mcpTransport,
     };
 
     managed.runtime = runtime;
+    managed.runtimeInvalidated = false;
     managed.session.provider = "unified";
     managed.session.unifiedPermissionMode = permMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
-    managed.session.capabilityMode = "fallback";
+    managed.session.capabilityMode = mcpClient ? "full_mcp" : "fallback";
     return "handled";
   };
 
@@ -3727,6 +4095,15 @@ export function createAgentChatService(args: {
   const metadataPathFor = (sessionId: string): string => path.join(chatSessionsDir, `${sessionId}.json`);
 
   const persistChatState = (managed: ManagedChatSession): void => {
+    // When runtime has been torn down (null) but NOT intentionally invalidated,
+    // fall back to the last persisted state so that sdkSessionId, messages, and
+    // lastLaneDirectiveKey survive a transient teardown (e.g. app backgrounding).
+    // When runtimeInvalidated is set, teardownRuntime() intentionally cleared
+    // runtime state, so we must NOT restore stale values from disk.
+    let prevPersisted: PersistedChatState | null = null;
+    if (!managed.runtime && !managed.runtimeInvalidated) {
+      try { prevPersisted = readPersistedState(managed.session.id); } catch { /* ignore */ }
+    }
     const payload: PersistedChatState = {
       version: 2,
       sessionId: managed.session.id,
@@ -3758,13 +4135,15 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "cursor" && managed.runtime.acpSessionId
         ? { acpSessionId: managed.runtime.acpSessionId }
         : {}),
-      ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined } : {}),
+      ...(managed.runtime?.kind === "claude"
+        ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined }
+        : prevPersisted?.sdkSessionId ? { sdkSessionId: prevPersisted.sdkSessionId } : {}),
       ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
         ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
-        : {}),
+        : prevPersisted?.approvalOverrides?.length ? { approvalOverrides: prevPersisted.approvalOverrides } : {}),
       ...(managed.runtime?.kind === "unified"
         ? { messages: managed.runtime.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })) }
-        : {}),
+        : prevPersisted?.messages?.length ? { messages: prevPersisted.messages } : {}),
       ...(managed.recentConversationEntries.length
         ? {
             recentConversationEntries: managed.recentConversationEntries.map((entry) => ({
@@ -3778,7 +4157,9 @@ export function createAgentChatService(args: {
       ...(managed.continuitySummaryUpdatedAt ? { continuitySummaryUpdatedAt: managed.continuitySummaryUpdatedAt } : {}),
       ...(managed.preferredExecutionLaneId ? { preferredExecutionLaneId: managed.preferredExecutionLaneId } : {}),
       ...(managed.selectedExecutionLaneId ? { selectedExecutionLaneId: managed.selectedExecutionLaneId } : {}),
-      ...(managed.lastLaneDirectiveKey ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey } : {}),
+      ...(managed.lastLaneDirectiveKey
+        ? { lastLaneDirectiveKey: managed.lastLaneDirectiveKey }
+        : prevPersisted?.lastLaneDirectiveKey ? { lastLaneDirectiveKey: prevPersisted.lastLaneDirectiveKey } : {}),
       manuallyNamed: Boolean(managed.manuallyNamed)
         || (() => {
           const trimmedTitle = String(sessionService.get(managed.session.id)?.title || "").trim();
@@ -4481,6 +4862,8 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "claude") {
+      // Mark interrupted so the streaming catch block takes the graceful path
+      managed.runtime.interrupted = true;
       cancelClaudeWarmup(managed, managed.runtime, "teardown");
       managed.runtime.activeQuery?.close();
       managed.runtime.activeQuery = null;
@@ -4496,11 +4879,16 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "unified") {
+      // Mark interrupted so the streaming catch block takes the graceful path
+      managed.runtime.interrupted = true;
       managed.runtime.abortController?.abort();
       for (const pending of managed.runtime.pendingApprovals.values()) {
         pending.resolve({ decision: "cancel" });
       }
       managed.runtime.pendingApprovals.clear();
+      // Tear down MCP client + transport
+      try { managed.runtime.mcpClient?.close(); } catch { /* ignore */ }
+      try { managed.runtime.mcpTransport?.close(); } catch { /* ignore */ }
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "cursor") {
@@ -4516,6 +4904,7 @@ export function createAgentChatService(args: {
       if (rt.pooled) releaseCursorAcpConnection(rt.poolKey);
       managed.runtime = null;
     }
+    managed.runtimeInvalidated = true;
     clearLaneDirectiveKey(managed);
   };
 
@@ -4790,6 +5179,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: persisted?.preferredExecutionLaneId ?? null,
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
+      runtimeInvalidated: false,
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -5043,6 +5433,13 @@ export function createAgentChatService(args: {
       };
     }
 
+    if (isAbortRelatedError(error)) {
+      return {
+        message: "Session was interrupted.",
+        errorInfo: { category: "unknown", provider: providerFamily, model: modelDisplayName },
+      };
+    }
+
     return {
       message: rawMessage,
       errorInfo: { category: "unknown", provider: providerFamily, model: modelDisplayName },
@@ -5245,6 +5642,11 @@ export function createAgentChatService(args: {
         } else {
           runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
         }
+        await attachClaudeV2McpServers(
+          managed,
+          runtime.v2Session,
+          v2Opts.mcpServers as Record<string, Record<string, unknown>> | undefined,
+        );
       }
 
       // Build the message — plain string for text-only, or SDKUserMessage with
@@ -5254,8 +5656,24 @@ export function createAgentChatService(args: {
       });
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
-      if (typeof runtime.v2Session.setPermissionMode === "function") {
-        await runtime.v2Session.setPermissionMode(turnPermissionMode);
+      const sessionControl = getClaudeV2SessionControl(runtime.v2Session);
+      if (typeof sessionControl.setPermissionMode === "function") {
+        try {
+          await sessionControl.setPermissionMode(turnPermissionMode);
+        } catch (permErr) {
+          // Invalidate the V2 session so it is recreated with the correct
+          // mode, then rethrow so the turn follows the normal failure path.
+          logger.warn("agent_chat.v2_set_permission_mode_failed", {
+            sessionId: managed.session.id,
+            turnPermissionMode,
+            error: String(permErr),
+          });
+          cancelClaudeWarmup(managed, runtime, "session_reset");
+          try { runtime.v2Session?.close(); } catch { /* ignore */ }
+          runtime.v2Session = null;
+          runtime.v2WarmupDone = null;
+          throw new Error(`Permission mode change to '${turnPermissionMode}' was rejected by the SDK. The session will be recreated on the next attempt.`);
+        }
       } else if (turnPermissionMode === "plan") {
         throw new Error("Claude plan mode is not available in this Claude SDK build.");
       }
@@ -5291,9 +5709,9 @@ export function createAgentChatService(args: {
             applyClaudeSlashCommands(runtime, initMsg.slash_commands);
           }
           try {
-            const sessionImpl = runtime.v2Session as any;
-            if (typeof sessionImpl?.supportedCommands === "function") {
-              sessionImpl.supportedCommands().then((cmds: any[]) => {
+            const control = getClaudeV2SessionControl(runtime.v2Session);
+            if (typeof control.supportedCommands === "function") {
+              control.supportedCommands().then((cmds: any[]) => {
                 if (Array.isArray(cmds) && cmds.length > 0) {
                   applyClaudeSlashCommands(runtime, cmds);
                 }
@@ -5899,6 +6317,17 @@ export function createAgentChatService(args: {
           status: "interrupted",
           ...doneModel,
         });
+      } else if (isAbortRelatedError(error)) {
+        // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
+        // Treat as interruption to avoid surfacing raw SDK messages like "aborted by user".
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "interrupted",
+          ...doneModel,
+        });
       } else {
         managed.session.status = "idle";
         const isAuthFailure = isClaudeRuntimeAuthError(error);
@@ -5936,6 +6365,7 @@ export function createAgentChatService(args: {
             error: error instanceof Error ? error.message : String(error),
           });
           runtime.sdkSessionId = null;
+          managed.runtimeInvalidated = true;
           clearLaneDirectiveKey(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
           refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
@@ -6302,6 +6732,7 @@ export function createAgentChatService(args: {
             linearDispatcherService: getLinearDispatcherService?.() ?? null,
             flowPolicyService: flowPolicyService ?? null,
             prService: prService ?? null,
+            issueInventoryService,
             fileService: fileService ?? null,
             processService: processService ?? null,
             testService: getTestService?.() ?? null,
@@ -6317,6 +6748,7 @@ export function createAgentChatService(args: {
             interruptChat: interrupt,
             resumeChat: resumeSession,
             disposeChat: dispose,
+            sessionService,
             ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
               ensureIdentitySession({
                 identityKey: "cto",
@@ -6326,7 +6758,72 @@ export function createAgentChatService(args: {
                 reuseExisting,
                 permissionMode: "full-auto",
               }),
+            previewSessionToolNames,
+          } as Parameters<typeof createCtoOperatorTools>[0] & {
+            previewSessionToolNames: typeof previewSessionToolNames;
           }));
+        }
+      }
+
+      // Merge MCP tools from the ADE MCP server so unified sessions have the
+      // same tooling surface as Claude / Codex sessions.
+      if (!lightweight && runtime.mcpClient) {
+        try {
+          const mcpTools = await buildMcpToolWrappers(runtime.mcpClient, {
+            permissionMode: runtime.permissionMode,
+            turnMemoryPolicyState,
+            onApprovalRequest: async ({ category, description, detail }) => {
+              if (runtime.approvalOverrides.has(category as any)) {
+                return { approved: true, decision: "accept_for_session" as const, reason: "Already approved for this session." };
+              }
+
+              const approvalItemId = randomUUID();
+              const request: PendingInputRequest = {
+                requestId: approvalItemId,
+                itemId: approvalItemId,
+                source: "unified",
+                kind: "approval",
+                description,
+                questions: [],
+                allowsFreeform: false,
+                blocking: true,
+                canProceedWithoutAnswer: false,
+                providerMetadata: { category, detail },
+                turnId,
+              };
+              emitPendingInputRequest(managed, request, {
+                kind: "file_change",
+                description,
+                detail: detail && typeof detail === "object" && !Array.isArray(detail)
+                  ? { ...(detail as Record<string, unknown>) }
+                  : {},
+              });
+
+              const response = await new Promise<{ decision?: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
+                runtime.pendingApprovals.set(approvalItemId, { category: category as any, request, resolve });
+              });
+              runtime.pendingApprovals.delete(approvalItemId);
+
+              if (response.decision === "accept_for_session") {
+                runtime.approvalOverrides.add(category as any);
+              }
+
+              const approved = response.decision === "accept" || response.decision === "accept_for_session";
+              const trimmedReason = typeof response.responseText === "string" ? response.responseText.trim() : "";
+              return {
+                approved,
+                decision: response.decision,
+                reason: trimmedReason.length ? trimmedReason : approved ? "User approved the action." : "User denied the action.",
+              };
+            },
+          });
+          Object.assign(tools, mcpTools);
+        } catch (error) {
+          logger.warn("agent_chat.unified_mcp_tools_failed", {
+            sessionId: managed.session.id,
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
 
@@ -6595,6 +7092,17 @@ export function createAgentChatService(args: {
       runtime.abortController = null;
 
       if (runtime.interrupted) {
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "interrupted",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
+      } else if (isAbortRelatedError(error)) {
+        // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
         managed.session.status = "idle";
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         emitChatEvent(managed, {
@@ -7852,6 +8360,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "codex") return managed.runtime;
     const runtime = await startCodexRuntime(managed);
     managed.runtime = runtime;
+    managed.runtimeInvalidated = false;
     return runtime;
   };
 
@@ -7900,10 +8409,12 @@ export function createAgentChatService(args: {
     codexPolicy: CodexPolicy,
     mcpServers: Record<string, Record<string, unknown>>,
   ): Promise<void> => {
+    const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
     const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
       model: managed.session.model,
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       cwd: managed.laneWorktreePath,
+      ...(mcpConfig ? { config: mcpConfig } : {}),
       mcpServers,
       mcp_servers: mcpServers,
       ...codexPolicyArgs(codexPolicy),
@@ -7962,6 +8473,7 @@ export function createAgentChatService(args: {
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
       permissionMode: claudePermissionMode as any,
+      ...(claudePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } as any : {}),
       includePartialMessages: true,
       agentProgressSummaries: true,
       promptSuggestions: true,
@@ -7984,6 +8496,11 @@ export function createAgentChatService(args: {
           "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
           "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
           "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
+          "",
+          "## ADE Tooling",
+          "ADE and MCP tools are runtime tool calls, not shell commands.",
+          "Do not probe tool availability with `which`, `command -v`, `.mcp.json`, or project settings files.",
+          "Use the exact tool identifier exposed in this session's tool list. MCP-backed ADE tools may appear in namespaced form like `mcp__ade__pr_refresh_issue_inventory`.",
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
@@ -7995,12 +8512,16 @@ export function createAgentChatService(args: {
         managed.session.id,
         managed.session.computerUse,
       ) as any;
+      const allowedTools = buildClaudeAllowedTools(opts.mcpServers as Record<string, Record<string, unknown>> | undefined);
+      if (allowedTools.length > 0) {
+        opts.allowedTools = allowedTools;
+      }
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
 
       // Handle MCP elicitation requests (form input or OAuth URL flows).
       (opts as any).onElicitation = async (
         elicitReq: { serverName: string; message: string; mode?: "form" | "url"; url?: string; elicitationId?: string; requestedSchema?: Record<string, unknown> },
-        elicitOpts: { signal: AbortSignal },
+        _elicitOpts: { signal: AbortSignal },
       ): Promise<{ action: "accept" | "decline" | "cancel"; content?: Record<string, string | number | boolean | string[]> }> => {
         const approvalItemId = randomUUID();
         const turnId = runtime.activeTurnId ?? undefined;
@@ -8452,6 +8973,11 @@ export function createAgentChatService(args: {
         } else {
           runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
         }
+        await attachClaudeV2McpServers(
+          managed,
+          runtime.v2Session,
+          v2Opts.mcpServers as Record<string, Record<string, unknown>> | undefined,
+        );
 
         if (runtime.v2WarmupCancelled) {
           try { runtime.v2Session?.close(); } catch { /* ignore */ }
@@ -8462,8 +8988,9 @@ export function createAgentChatService(args: {
         // Apply permission mode before the first interaction so the session
         // starts with the correct approval behaviour selected in the rebase tab.
         const initialPermissionMode = resolveClaudeTurnPermissionMode(managed);
-        if (typeof runtime.v2Session.setPermissionMode === "function") {
-          await runtime.v2Session.setPermissionMode(initialPermissionMode);
+        const sessionControl = getClaudeV2SessionControl(runtime.v2Session);
+        if (typeof sessionControl.setPermissionMode === "function") {
+          await sessionControl.setPermissionMode(initialPermissionMode);
         }
 
         await runtime.v2Session.send("System initialization check. Respond with only the word READY.");
@@ -8479,9 +9006,9 @@ export function createAgentChatService(args: {
               applyClaudeSlashCommands(runtime, initMsg.slash_commands);
             }
             try {
-              const sessionImpl = runtime.v2Session as any;
-              if (typeof sessionImpl?.supportedCommands === "function") {
-                sessionImpl.supportedCommands().then((cmds: any[]) => {
+              const control = getClaudeV2SessionControl(runtime.v2Session);
+              if (typeof control.supportedCommands === "function") {
+                control.supportedCommands().then((cmds: any[]) => {
                   if (Array.isArray(cmds) && cmds.length > 0) {
                     applyClaudeSlashCommands(runtime, cmds);
                   }
@@ -8590,6 +9117,7 @@ export function createAgentChatService(args: {
       pendingElicitations: new Map<string, () => void>(),
     };
     managed.runtime = runtime;
+    managed.runtimeInvalidated = false;
 
     return runtime;
   };
@@ -8630,6 +9158,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
+      runtimeInvalidated: false,
       activeAssistantMessageId: null,
       previewTextBuffer: null,
       bufferedText: null,
@@ -8970,6 +9499,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
+      runtimeInvalidated: false,
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -10260,6 +10790,7 @@ export function createAgentChatService(args: {
       if (!runtime.threadResumed) {
         const threadIdToResume = managed.session.threadId || readPersistedState(sessionId)?.threadId;
         const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
+        const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
 
         if (threadIdToResume) {
           try {
@@ -10268,6 +10799,7 @@ export function createAgentChatService(args: {
               model: managed.session.model,
               ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
               cwd: managed.laneWorktreePath,
+              ...(mcpConfig ? { config: mcpConfig } : {}),
               mcpServers,
               mcp_servers: mcpServers,
               ...codexPolicyArgs(codexPolicy),
@@ -10673,12 +11205,14 @@ export function createAgentChatService(args: {
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
         const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
+        const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
         try {
           await runtime.request("thread/resume", {
             threadId,
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
+            ...(mcpConfig ? { config: mcpConfig } : {}),
             mcpServers,
             mcp_servers: mcpServers,
             ...codexPolicyArgs(codexPolicy),
@@ -10753,8 +11287,19 @@ export function createAgentChatService(args: {
         ensureClaudeSessionRuntime(managed);
         // Re-sync permission mode from persisted/config settings
         const fallbackPermMode = resolveClaudeTurnPermissionMode(managed);
-        if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && typeof managed.runtime.v2Session.setPermissionMode === "function") {
-          await managed.runtime.v2Session.setPermissionMode(fallbackPermMode);
+        if (managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
+          const control = getClaudeV2SessionControl(managed.runtime.v2Session);
+          if (typeof control.setPermissionMode === "function") {
+            try {
+              await control.setPermissionMode(fallbackPermMode);
+            } catch {
+              // Session was created without --dangerously-skip-permissions.
+              // Invalidate so it is recreated with the correct mode.
+              try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
+              managed.runtime.v2Session = null;
+              managed.runtime.v2WarmupDone = null;
+            }
+          }
         }
         sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
       }
@@ -10763,8 +11308,17 @@ export function createAgentChatService(args: {
       ensureClaudeSessionRuntime(managed);
       // Re-sync permission mode from persisted/config settings
       const claudePermMode = resolveClaudeTurnPermissionMode(managed);
-      if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && typeof managed.runtime.v2Session.setPermissionMode === "function") {
-        await managed.runtime.v2Session.setPermissionMode(claudePermMode);
+      if (managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
+        const control = getClaudeV2SessionControl(managed.runtime.v2Session);
+        if (typeof control.setPermissionMode === "function") {
+          try {
+            await control.setPermissionMode(claudePermMode);
+          } catch {
+            try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
+            managed.runtime.v2Session = null;
+            managed.runtime.v2WarmupDone = null;
+          }
+        }
       }
       sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
     }
@@ -11335,6 +11889,7 @@ export function createAgentChatService(args: {
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
       if (previousProvider !== nextProvider || previousProvider === "codex") {
         delete managed.session.threadId;
+        managed.runtimeInvalidated = true;
         clearLaneDirectiveKey(managed);
       }
       sessionService.updateMeta({
@@ -11468,8 +12023,25 @@ export function createAgentChatService(args: {
       }
       if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && !managed.runtime.busy) {
         const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
-        if (typeof managed.runtime.v2Session.setPermissionMode === "function") {
-          await managed.runtime.v2Session.setPermissionMode(turnPermissionMode);
+        const control = getClaudeV2SessionControl(managed.runtime.v2Session);
+        if (typeof control.setPermissionMode === "function") {
+          try {
+            await control.setPermissionMode(turnPermissionMode);
+          } catch (permErr) {
+            // If the SDK rejects the mode change (e.g. escalating to
+            // bypassPermissions on a session not started with
+            // --dangerously-skip-permissions), invalidate the V2 session
+            // so it is recreated with the correct mode on the next turn.
+            logger.warn("agent_chat.v2_set_permission_mode_failed", {
+              sessionId: managed.session.id,
+              turnPermissionMode,
+              error: String(permErr),
+            });
+            cancelClaudeWarmup(managed, managed.runtime, "session_reset");
+            try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
+            managed.runtime.v2Session = null;
+            managed.runtime.v2WarmupDone = null;
+          }
         }
       }
       if (managed.runtime?.kind === "cursor" && !managed.runtime.busy) {
@@ -11788,6 +12360,7 @@ export function createAgentChatService(args: {
     warmupModel,
     listSubagents,
     getSessionCapabilities,
+    previewSessionToolNames,
     /** Clean up temp attachment files older than 7 days. Call on app startup. */
     cleanupStaleAttachments() {
       try {

@@ -119,7 +119,8 @@ describe("launchRebaseResolutionChat", () => {
     expect(createSession).toHaveBeenCalledWith(
       expect.objectContaining({
         laneId: lane.id,
-        provider: "unified",
+        provider: "claude",
+        model: "sonnet",
         modelId: "anthropic/claude-sonnet-4-6",
         surface: "work",
         sessionProfile: "workflow",

@@ -14,6 +14,7 @@ const mockState = vi.hoisted(() => ({
   codexThreadCounter: 0,
   codexTurnCounter: 0,
   cursorSessionCounter: 0,
+  codexRequestPayloads: [] as Array<Record<string, unknown>>,
   codexLineHandler: null as ((line: string) => void) | null,
   cursorAcquireCalls: [] as Array<Record<string, unknown>>,
   cursorNewSessionCalls: [] as Array<Record<string, unknown>>,
@@ -46,6 +47,7 @@ vi.mock("node:child_process", () => ({
         writable: true,
         write: vi.fn((line: string) => {
           const payload = JSON.parse(line);
+          mockState.codexRequestPayloads.push(payload);
           if (payload?.id == null || typeof payload?.method !== "string") return true;
 
           let result: Record<string, unknown> = {};
@@ -109,6 +111,8 @@ vi.mock("ai", () => ({
   generateText: vi.fn(),
   streamText: vi.fn(),
   stepCountIs: vi.fn(),
+  tool: vi.fn((def: Record<string, unknown>) => def),
+  jsonSchema: vi.fn((s: unknown) => s),
 }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
@@ -116,6 +120,21 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   unstable_v2_createSession: vi.fn(),
   unstable_v2_resumeSession: vi.fn(),
 }));
+
+vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {
+  const Client = vi.fn().mockImplementation(() => ({
+    connect: vi.fn(async () => {}),
+    listTools: vi.fn(async () => ({ tools: [] })),
+    callTool: vi.fn(async () => ({ content: [{ type: "text", text: "" }] })),
+    close: vi.fn(),
+  }));
+  return { Client };
+});
+
+vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => {
+  const StdioClientTransport = vi.fn().mockImplementation(() => ({}));
+  return { StdioClientTransport };
+});
 
 vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),
@@ -423,11 +442,99 @@ function createMockProjectConfigService() {
   } as any;
 }
 
+function createMockIssueInventoryService() {
+  const now = new Date().toISOString();
+  const runtimeByPr = new Map<string, Record<string, unknown>>();
+
+  const defaultRuntime = (prId: string) => ({
+    prId,
+    autoConvergeEnabled: false,
+    status: "idle",
+    pollerStatus: "idle",
+    currentRound: 0,
+    activeSessionId: null,
+    activeLaneId: null,
+    activeHref: null,
+    pauseReason: null,
+    errorMessage: null,
+    lastStartedAt: null,
+    lastPolledAt: null,
+    lastPausedAt: null,
+    lastStoppedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return {
+    syncFromPrData: vi.fn((prId: string) => {
+      const runtime = { ...defaultRuntime(prId), ...runtimeByPr.get(prId) };
+      return {
+        prId,
+        items: [],
+        convergence: {
+          currentRound: typeof runtime.currentRound === "number" ? runtime.currentRound : 0,
+          maxRounds: 5,
+          issuesPerRound: [],
+          totalNew: 0,
+          totalFixed: 0,
+          totalDismissed: 0,
+          totalEscalated: 0,
+          totalSentToAgent: 0,
+          isConverging: false,
+          canAutoAdvance: false,
+        },
+        runtime,
+      };
+    }),
+    getInventory: vi.fn(),
+    getNewItems: vi.fn(() => []),
+    markSentToAgent: vi.fn(),
+    markFixed: vi.fn(),
+    markDismissed: vi.fn(),
+    markEscalated: vi.fn(),
+    getConvergenceStatus: vi.fn(() => ({
+      currentRound: 0,
+      maxRounds: 5,
+      issuesPerRound: [],
+      totalNew: 0,
+      totalFixed: 0,
+      totalDismissed: 0,
+      totalEscalated: 0,
+      totalSentToAgent: 0,
+      isConverging: false,
+      canAutoAdvance: false,
+    })),
+    resetInventory: vi.fn(),
+    getConvergenceRuntime: vi.fn((prId: string) => ({
+      ...defaultRuntime(prId),
+      ...runtimeByPr.get(prId),
+    })),
+    saveConvergenceRuntime: vi.fn((prId: string, state: Record<string, unknown>) => {
+      const existing = runtimeByPr.get(prId) ?? {};
+      const merged = { ...defaultRuntime(prId), ...existing, ...state };
+      runtimeByPr.set(prId, merged);
+      return merged;
+    }),
+    resetConvergenceRuntime: vi.fn((prId: string) => {
+      runtimeByPr.delete(prId);
+    }),
+    getPipelineSettings: vi.fn(() => ({
+      maxRounds: 5,
+      autoMerge: false,
+      mergeMethod: "repo_default",
+      onRebaseNeeded: "pause",
+    })),
+    savePipelineSettings: vi.fn(),
+    deletePipelineSettings: vi.fn(),
+  } as any;
+}
+
 function createService(overrides: Record<string, unknown> = {}) {
   const logger = createLogger();
   const laneService = createMockLaneService();
   const sessionService = createMockSessionService();
   const projectConfigService = createMockProjectConfigService();
+  const issueInventoryService = createMockIssueInventoryService();
   const transcriptsDir = path.join(tmpRoot, "transcripts");
   fs.mkdirSync(transcriptsDir, { recursive: true });
 
@@ -438,6 +545,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     laneService,
     sessionService,
     projectConfigService,
+    issueInventoryService,
     logger: logger as any,
     appVersion: "0.0.1-test",
     getExternalMcpConfigs: () => [],
@@ -445,7 +553,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     ...overrides,
   });
 
-  return { service, logger, laneService, sessionService, projectConfigService };
+  return { service, logger, laneService, sessionService, projectConfigService, issueInventoryService };
 }
 
 function readPersistedChatState(sessionId: string): Record<string, any> {
@@ -490,6 +598,7 @@ beforeEach(() => {
   mockState.codexThreadCounter = 0;
   mockState.codexTurnCounter = 0;
   mockState.cursorSessionCounter = 0;
+  mockState.codexRequestPayloads = [];
   mockState.codexLineHandler = null;
   mockState.cursorAcquireCalls = [];
   mockState.cursorNewSessionCalls = [];
@@ -667,6 +776,97 @@ describe("createAgentChatService", () => {
       expect(session).toBeDefined();
       expect(session.provider).toBe("claude");
       expect(session.status).toBe("idle");
+    });
+
+    it("appends ADE tooling guidance to Claude SDK sessions", async () => {
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-guidance",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      expect(opts?.systemPrompt?.append).toContain("ADE and MCP tools are runtime tool calls, not shell commands.");
+      expect(opts?.systemPrompt?.append).toContain(".mcp.json");
+    });
+
+    it("pre-approves ADE MCP tools for Claude SDK sessions", async () => {
+      vi.mocked(providerResolver.normalizeCliMcpServers).mockImplementation((_provider, servers) => servers ?? {});
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-mcp-allow",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
+        allowedTools?: string[];
+        mcpServers?: Record<string, Record<string, unknown>>;
+      } | undefined;
+      expect(opts?.mcpServers).toHaveProperty("ade");
+      expect(opts?.allowedTools).toContain("mcp__ade__*");
+    });
+
+    it("attaches ADE MCP servers through the Claude V2 query controls", async () => {
+      vi.mocked(providerResolver.normalizeCliMcpServers).mockImplementation((_provider, servers) => servers ?? {});
+      const setMcpServers = vi.fn().mockResolvedValue({
+        added: ["ade"],
+        removed: [],
+        errors: {},
+      });
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-mcp-query",
+        query: {
+          setMcpServers,
+        },
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(setMcpServers).toHaveBeenCalledWith(expect.objectContaining({
+          ade: expect.objectContaining({
+            command: "node",
+          }),
+        }));
+      });
     });
 
     it("migrates legacy Claude plan mode into interaction mode", async () => {
@@ -1166,10 +1366,13 @@ describe("createAgentChatService", () => {
       expect(secondUserContent).not.toContain("[ADE launch directive]");
     });
 
-    it("roots Codex MCP launches in the selected lane worktree", async () => {
+    it("roots Codex MCP launches in the selected lane worktree while keeping the desktop project root", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
       const laneRoot = fs.realpathSync(laneRootPath);
+      // runtimeRoot should always come from the trusted ADE install path
+      // (resolveUnifiedRuntimeRoot), never from walking up user repo trees.
+      const runtimeRoot = fs.realpathSync(process.cwd());
       vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
       const { service } = createService();
@@ -1191,9 +1394,19 @@ describe("createAgentChatService", () => {
       const workspaceRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
         .map(([args]) => (args as { workspaceRoot?: string }).workspaceRoot)
         .filter((value): value is string => typeof value === "string");
+      const projectRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
+        .map(([args]) => (args as { projectRoot?: string }).projectRoot)
+        .filter((value): value is string => typeof value === "string");
+      const runtimeRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
+        .map(([args]) => (args as { runtimeRoot?: string }).runtimeRoot)
+        .filter((value): value is string => typeof value === "string");
 
       expect(workspaceRoots.length).toBeGreaterThan(0);
       expect(new Set(workspaceRoots)).toEqual(new Set([laneRoot]));
+      expect(projectRoots.length).toBeGreaterThan(0);
+      expect(new Set(projectRoots)).toEqual(new Set([tmpRoot]));
+      expect(runtimeRoots.length).toBeGreaterThan(0);
+      expect(new Set(runtimeRoots.map((value) => fs.realpathSync(value)))).toEqual(new Set([runtimeRoot]));
     });
 
     it("executes identity-hosted unified turns from the selected execution lane", async () => {
@@ -2721,6 +2934,63 @@ describe("createAgentChatService", () => {
       });
 
       expect(result.outputText).toContain("Plan ready");
+      expect(setPermissionMode).toHaveBeenCalledWith("plan");
+      expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[1]);
+    });
+
+    it("uses Claude V2 query controls for plan mode when the wrapper lacks setPermissionMode", async () => {
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-query-plan",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Plan via query control" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-query-plan",
+        query: {
+          setPermissionMode,
+        },
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        interactionMode: "plan",
+      });
+
+      const result = await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Outline the implementation only.",
+        interactionMode: "plan",
+      });
+
+      expect(result.outputText).toContain("Plan via query control");
       expect(setPermissionMode).toHaveBeenCalledWith("plan");
       expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[1]);
     });

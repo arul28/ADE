@@ -10,7 +10,10 @@ let monacoInit: Promise<typeof import("monaco-editor")> | null = null;
 async function loadMonaco(): Promise<typeof import("monaco-editor")> {
   if (!monacoInit) {
     monacoInit = (async () => {
-      const EditorWorker = (await import("monaco-editor/esm/vs/editor/editor.worker?worker")).default;
+      const [{ default: EditorWorker }, { default: TsWorker }] = await Promise.all([
+        import("monaco-editor/esm/vs/editor/editor.worker?worker"),
+        import("monaco-editor/esm/vs/language/typescript/ts.worker?worker"),
+      ]);
       const globalAny = globalThis as typeof globalThis & {
         MonacoEnvironment?: {
           getWorker?: (workerId: string, label: string) => Worker;
@@ -19,7 +22,12 @@ async function loadMonaco(): Promise<typeof import("monaco-editor")> {
       const existing = globalAny.MonacoEnvironment;
       globalAny.MonacoEnvironment = {
         ...existing,
-        getWorker: existing?.getWorker ?? (() => new EditorWorker())
+        getWorker: existing?.getWorker ?? ((_workerId: string, label: string) => {
+          if (label === "typescript" || label === "javascript") {
+            return new TsWorker();
+          }
+          return new EditorWorker();
+        })
       };
       return await import("monaco-editor");
     })();

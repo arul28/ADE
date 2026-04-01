@@ -149,37 +149,38 @@ export function ModelRowLogo({
 }) {
   const fam = String(modelFamily ?? "").toLowerCase();
   const cli = String(cliCommand ?? "").toLowerCase();
+  const c = lobeMarkClass(className);
 
   if (fam === "cursor" || cli === "cursor") {
     const sdk = resolveCursorSdkId(modelId, sdkModelId);
     if (!sdk.length) {
-      return <Cursor.Avatar size={size} className={lobeMarkClass(cn("shrink-0", className))} />;
+      return <Cursor.Avatar size={size} className={c} />;
     }
-    return <CursorSubscriptionModelMark sdkModelId={sdk} size={size} className={cn("shrink-0", className)} />;
+    return <CursorSubscriptionModelMark sdkModelId={sdk} size={size} className={className} />;
   }
 
   if (fam === "anthropic" || cli === "claude") {
-    return <Claude.Avatar size={size} className={lobeMarkClass(cn("shrink-0", className))} />;
+    return <Claude.Avatar size={size} className={c} />;
   }
 
   if (cli === "codex") {
-    return <Codex.Avatar size={size} className={lobeMarkClass(cn("shrink-0 opacity-95", className))} />;
+    return <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
   }
 
   if (fam === "openai") {
-    return <OpenAI size={size} className={lobeMarkClass(cn("shrink-0 opacity-95", className))} />;
+    return <OpenAI size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
   }
 
   if (fam === "google") {
-    return <Gemini.Color size={size} className={lobeMarkClass(cn("shrink-0", className))} />;
+    return <Gemini.Color size={size} className={c} />;
   }
 
   if (fam === "xai") {
     const hint = `${sdkModelId ?? ""} ${modelId ?? ""}`.toLowerCase();
     if (/grok/.test(hint)) {
-      return <Grok.Avatar size={size} className={lobeMarkClass(cn("shrink-0", className))} />;
+      return <Grok.Avatar size={size} className={c} />;
     }
-    return <XAI.Avatar size={size} className={lobeMarkClass(cn("shrink-0", className))} />;
+    return <XAI.Avatar size={size} className={c} />;
   }
 
   return <ProviderLogo family={fam} size={size} className={className} />;

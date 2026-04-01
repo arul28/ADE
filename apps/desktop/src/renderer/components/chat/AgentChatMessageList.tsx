@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -637,29 +637,45 @@ function CollapsibleCard({
   className?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  // Track whether the user explicitly collapsed while forceOpen is active
+  const [userCollapsed, setUserCollapsed] = useState(false);
   const prevForceOpen = useRef(forceOpen);
+  const panelId = useId();
 
   useEffect(() => {
     // Auto-collapse when forceOpen transitions from true → falsy (turn finished)
     if (prevForceOpen.current === true && !forceOpen) {
       setOpen(false);
+      setUserCollapsed(false);
+    }
+    // Reset user override when forceOpen activates (new turn)
+    if (!prevForceOpen.current && forceOpen) {
+      setUserCollapsed(false);
     }
     prevForceOpen.current = forceOpen;
   }, [forceOpen]);
 
-  const isOpen = forceOpen === true ? true : open;
+  const isOpen = forceOpen === true ? !userCollapsed : open;
 
   return (
     <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={SURFACE_INLINE_CARD_STYLE}>
       <button
         type="button"
+        aria-expanded={isOpen}
+        aria-controls={panelId}
         className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-mono text-[11px]"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          if (forceOpen === true) {
+            setUserCollapsed((v) => !v);
+          } else {
+            setOpen((v) => !v);
+          }
+        }}
       >
         {isOpen ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {isOpen ? <div className="border-t border-white/[0.04] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
+      {isOpen ? <div id={panelId} className="border-t border-white/[0.04] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
     </div>
   );
 }
@@ -925,6 +941,25 @@ type AssistantPresentation = {
   glyph: React.ReactNode;
 };
 
+const KNOWN_PROVIDER_LABELS = new Set(["Claude", "Codex", "Cursor"]);
+const GENERIC_ASSISTANT_LABELS = new Set(["Agent", "Assistant", ...KNOWN_PROVIDER_LABELS]);
+
+function inferProviderLabel(meta: { family: string | null; cliCommand: string | null }): string | null {
+  if (meta.family === "anthropic" || meta.cliCommand === "claude") return "Claude";
+  if (meta.cliCommand === "codex") return "Codex";
+  if (meta.family === "cursor" || meta.cliCommand === "cursor") return "Cursor";
+  return null;
+}
+
+function providerGlyph(provider: string | null): React.ReactNode {
+  switch (provider) {
+    case "Claude": return <ClaudeLogo size={10} className="text-fg/70" />;
+    case "Codex": return <CodexLogo size={10} className="text-fg/70" />;
+    case "Cursor": return <CursorAgentLogo size={10} className="text-fg/70" />;
+    default: return <Robot size={10} weight="bold" className="text-fg/70" />;
+  }
+}
+
 function resolveAssistantPresentation({
   assistantLabel,
   turnModel,
@@ -934,35 +969,14 @@ function resolveAssistantPresentation({
 }): AssistantPresentation {
   const customLabel = assistantLabel?.trim() ?? "";
   const modelMeta = turnModel ? resolveModelMeta(turnModel.modelId, turnModel.model) : { family: null, cliCommand: null };
-  const providerLabel =
-    modelMeta.family === "anthropic" || modelMeta.cliCommand === "claude"
-      ? "Claude"
-      : modelMeta.cliCommand === "codex"
-        ? "Codex"
-        : modelMeta.family === "cursor" || modelMeta.cliCommand === "cursor"
-          ? "Cursor"
-          : null;
-  const fallbackProviderLabel =
-    customLabel === "Claude" || customLabel === "Codex" || customLabel === "Cursor" ? customLabel : null;
+  const resolvedProviderLabel = inferProviderLabel(modelMeta)
+    ?? (KNOWN_PROVIDER_LABELS.has(customLabel) ? customLabel : null);
   const hardOverrideLabel =
-    customLabel.length > 0
-      && customLabel !== "Agent"
-      && customLabel !== "Assistant"
-      && customLabel !== "Claude"
-      && customLabel !== "Codex"
-      && customLabel !== "Cursor"
+    customLabel.length > 0 && !GENERIC_ASSISTANT_LABELS.has(customLabel)
       ? customLabel
       : null;
-  const resolvedProviderLabel = providerLabel ?? fallbackProviderLabel;
   const label = hardOverrideLabel ?? resolvedProviderLabel ?? "Assistant";
-  const glyph = resolvedProviderLabel === "Claude"
-    ? <ClaudeLogo size={10} className="text-fg/70" />
-    : resolvedProviderLabel === "Codex"
-      ? <CodexLogo size={10} className="text-fg/70" />
-      : resolvedProviderLabel === "Cursor"
-        ? <CursorAgentLogo size={10} className="text-fg/70" />
-        : <Robot size={10} weight="bold" className="text-fg/70" />;
-  return { label, glyph };
+  return { label, glyph: providerGlyph(resolvedProviderLabel) };
 }
 
 function commandTimelineVerb(status: Extract<AgentChatEvent, { type: "command" }>["status"]): string {
@@ -1158,7 +1172,6 @@ function renderEvent(
             ) : null}
             <div className="ml-auto flex items-center gap-2">
               <MessageCopyButton value={event.text} className="opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100" />
-              <span className="font-sans text-[10px] text-fg/34">{formatTime(envelope.timestamp)}</span>
             </div>
           </div>
           <div>
@@ -1476,7 +1489,6 @@ function renderEvent(
             <ChatCircleText size={13} weight="bold" className="text-[var(--chat-accent)]" />
           </span>
           <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-[var(--chat-accent)]">Agent Question</span>
-          <span className="ml-auto font-mono text-[9px] text-muted-fg/25">{formatTime(envelope.timestamp)}</span>
         </div>
         <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] px-4 py-3 text-[12.5px] leading-[1.65] text-fg/85">
           {event.question}
@@ -2712,6 +2724,28 @@ export function AgentChatMessageList({
     return () => cancelAnimationFrame(raf);
   }, [groupedRows, measurementTick, stickToBottom, showStreamingIndicator]);
 
+  // Observe scrollHeight changes via MutationObserver so streaming content
+  // (which grows existing rows without changing groupedRows identity) still
+  // triggers autoscroll.  Scoped to the live-turn window: the observer is
+  // attached only while activeTurnId is non-null and tears down when the
+  // turn ends, avoiding unnecessary scroll-forcing after streaming finishes.
+  useEffect(() => {
+    if (!activeTurnId) return;
+    const el = scrollRef.current;
+    if (!el || typeof MutationObserver === "undefined") return;
+    let prevScrollHeight = el.scrollHeight;
+    const mo = new MutationObserver(() => {
+      if (el.scrollHeight !== prevScrollHeight) {
+        prevScrollHeight = el.scrollHeight;
+        if (stickToBottomRef.current) {
+          el.scrollTop = el.scrollHeight;
+        }
+      }
+    });
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => mo.disconnect();
+  }, [activeTurnId]);
+
   // Observe the scroll container's size so we know the viewport height.
   useEffect(() => {
     const el = scrollRef.current;
@@ -2739,11 +2773,17 @@ export function AgentChatMessageList({
   }, []);
 
   /** Callback from MeasuredEventRow when it measures its real DOM height. */
+  const measureFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (measureFlushTimer.current) {
+      clearTimeout(measureFlushTimer.current);
+      measureFlushTimer.current = null;
+    }
+  }, []);
   const handleMeasure = useCallback((index: number, height: number) => {
     const prev = measuredHeights.current.get(index);
     if (prev !== height) {
       measuredHeights.current.set(index, height);
-      setMeasurementTick((value) => value + 1);
       const scrollEl = scrollRef.current;
       if (scrollEl && shouldVirtualize && !stickToBottomRef.current) {
         const adjustedScrollTop = reconcileMeasuredScrollTop({
@@ -2758,10 +2798,21 @@ export function AgentChatMessageList({
           setScrollTop(adjustedScrollTop);
         }
       }
+      // Debounce measurement tick updates to batch rapid height changes
+      // into a single re-render instead of one per row.
+      if (!measureFlushTimer.current) {
+        measureFlushTimer.current = setTimeout(() => {
+          measureFlushTimer.current = null;
+          setMeasurementTick((value) => value + 1);
+        }, 80);
+      }
     }
   }, [rowHeight, shouldVirtualize]);
 
   // Compute the visible window of rows when virtualization is active.
+  // measurementTick forces recomputation when row heights are measured so
+  // totalHeight stays accurate — without this, scroll-to-top can break because
+  // the spacer heights are computed from stale estimates.
   const { startIndex, endIndex, totalHeight, offsetTop } = useMemo(() => {
     if (!shouldVirtualize) {
       return { startIndex: 0, endIndex: groupedRows.length, totalHeight: 0, offsetTop: 0 };
@@ -2773,7 +2824,8 @@ export function AgentChatMessageList({
       containerHeight,
       rowHeight,
     });
-  }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight, measurementTick]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
@@ -2858,14 +2910,16 @@ export function AgentChatMessageList({
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 
   const streamingIndicator = showStreamingIndicator ? (
-    latestActivity ? (
-      <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
-    ) : (
-      <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
-        <ThinkingDots toneClass="bg-emerald-300/75" />
-        <span>Working...</span>
-      </div>
-    )
+    <div className="pt-3 pb-1">
+      {latestActivity ? (
+        <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
+      ) : (
+        <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
+          <ThinkingDots toneClass="bg-emerald-300/75" />
+          <span>Working...</span>
+        </div>
+      )}
+    </div>
   ) : null;
 
   const turnSummaryCard = turnSummary ? (

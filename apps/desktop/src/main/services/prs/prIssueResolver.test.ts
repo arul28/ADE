@@ -71,6 +71,14 @@ function makeDetail(overrides: Partial<PrDetail> = {}): PrDetail {
   };
 }
 
+const WORKFLOW_PR_TOOL_NAMES = [
+  "prRefreshIssueInventory",
+  "prGetReviewComments",
+  "prRerunFailedChecks",
+  "prReplyToReviewThread",
+  "prResolveReviewThread",
+];
+
 describe("buildPrIssueResolutionPrompt", () => {
   it("includes scope, issue inventory, extra instructions, and regression guidance", () => {
     const prompt = buildPrIssueResolutionPrompt({
@@ -156,11 +164,13 @@ describe("buildPrIssueResolutionPrompt", () => {
 
     expect(prompt).toContain("Selected scope: checks and review comments");
     expect(prompt).toContain("ADE PR id (for ADE tools): pr-80");
-    expect(prompt).toContain("Runtime: Unified/API chat with ADE workflow tools");
+    expect(prompt).toContain("Runtime: Workflow chat with ADE PR tools");
     expect(prompt).toContain("Please keep the PR description accurate if behavior changes.");
     expect(prompt).toContain("Watch carefully for regressions caused by your fixes.");
     expect(prompt).toContain("update the test");
     expect(prompt).toContain("rerun the complete failing test files or suites locally");
+    expect(prompt).toContain("Commit the changes and push the PR branch before you stop.");
+    expect(prompt).toContain("If you cannot safely commit or push the necessary changes");
     expect(prompt).toContain("prRefreshIssueInventory");
     expect(prompt).toContain("prGetReviewComments");
     expect(prompt).toContain("thread-1");
@@ -282,7 +292,17 @@ describe("launchPrIssueResolutionChat", () => {
     const pr = makePr();
     const createSession = vi.fn(async () => ({ id: "session-1" }));
     const sendMessage = vi.fn(async () => undefined);
+    const previewSessionToolNames = vi.fn(() => WORKFLOW_PR_TOOL_NAMES);
     const updateMeta = vi.fn();
+
+    const issueInventoryService = {
+      syncFromPrData: vi.fn(() => ({
+        items: [],
+        convergence: { currentRound: 0, status: "idle" },
+      })),
+      getNewItems: vi.fn(() => []),
+      markSentToAgent: vi.fn(),
+    };
 
     const deps = {
       prService: {
@@ -298,11 +318,12 @@ describe("launchPrIssueResolutionChat", () => {
         list: vi.fn(async () => [lane]),
         getLaneBaseAndBranch: vi.fn(() => ({ baseRef: "main", branchRef: "feature/pr-80", worktreePath: lane.worktreePath, laneType: "worktree" })),
       },
-      agentChatService: { createSession, sendMessage },
+      agentChatService: { createSession, sendMessage, previewSessionToolNames },
       sessionService: { updateMeta },
+      issueInventoryService,
     };
 
-    return { lane, pr, deps, createSession, sendMessage, updateMeta };
+    return { lane, pr, deps, createSession, sendMessage, previewSessionToolNames, updateMeta };
   }
 
   it("previews the exact first prompt without creating a chat session", async () => {
@@ -336,9 +357,17 @@ describe("launchPrIssueResolutionChat", () => {
     });
 
     expect(result.prompt).toContain("Runtime: Codex chat via ADE MCP");
-    expect(result.prompt).toContain("pr_refresh_issue_inventory");
-    expect(result.prompt).toContain("pr_get_review_comments");
-    expect(result.prompt).toContain("pr_resolve_review_thread");
+    expect(result.prompt).toContain("mcp__ade__pr_refresh_issue_inventory");
+    expect(result.prompt).toContain("mcp__ade__pr_get_review_comments");
+    expect(result.prompt).toContain("mcp__ade__pr_resolve_review_thread");
+    expect(result.prompt).toContain("ADE PR tools are runtime tool calls, not shell commands.");
+    expect(result.prompt).toContain("Some bridges may also expose the base tool names like `pr_refresh_issue_inventory` and `pr_get_review_comments`.");
+    expect(result.prompt).toContain("Use whichever variant is actually exposed in the live tool list for this chat runtime.");
+    expect(result.prompt).toContain("Immediately after that, call `mcp__ade__pr_get_review_comments`");
+    expect(result.prompt).toContain("Treat the refreshed inventory as a triage index");
+    expect(result.prompt).toContain("Do not spend your first steps reading local skill docs");
+    expect(result.prompt).toContain("Do not probe tool availability with `which`, `command -v`, `.mcp.json`, or project settings files");
+    expect(result.prompt).toContain("Do not conclude the PR tools are missing just because one naming variant is absent.");
     expect(result.prompt).not.toContain("prRefreshIssueInventory");
   });
 
@@ -356,7 +385,8 @@ describe("launchPrIssueResolutionChat", () => {
 
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
       laneId: lane.id,
-      provider: "unified",
+      provider: "codex",
+      model: "gpt-5.4",
       modelId: "openai/gpt-5.4-codex",
       surface: "work",
       sessionProfile: "workflow",
@@ -374,6 +404,23 @@ describe("launchPrIssueResolutionChat", () => {
       laneId: lane.id,
       href: `/work?laneId=${encodeURIComponent(lane.id)}&sessionId=session-1`,
     });
+  });
+
+  it("fails fast when an API workflow chat does not expose required PR tools", async () => {
+    const { deps, pr, createSession, sendMessage } = makeDeps();
+    deps.agentChatService.previewSessionToolNames = vi.fn(() => ["prGetChecks"]);
+
+    await expect(launchPrIssueResolutionChat(deps as any, {
+      prId: pr.id,
+      scope: "checks",
+      modelId: "openai/gpt-5.4",
+      reasoning: "high",
+      permissionMode: "guarded_edit",
+      additionalInstructions: null,
+    })).rejects.toThrow("PR issue resolver requires ADE PR tools");
+
+    expect(createSession).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it("rejects checks scope while checks are still running", async () => {
@@ -433,8 +480,20 @@ describe("launchPrIssueResolutionChat", () => {
         list: vi.fn(async () => [lane]),
         getLaneBaseAndBranch: vi.fn(() => ({ baseRef: "main", branchRef: "feature/pr-80", worktreePath: lane.worktreePath, laneType: "worktree" })),
       },
-      agentChatService: { createSession, sendMessage },
+      agentChatService: {
+        createSession,
+        sendMessage,
+        previewSessionToolNames: vi.fn(() => WORKFLOW_PR_TOOL_NAMES),
+      },
       sessionService: { updateMeta: vi.fn() },
+      issueInventoryService: {
+        syncFromPrData: vi.fn(() => ({
+          items: [],
+          convergence: { currentRound: 0, status: "idle" },
+        })),
+        getNewItems: vi.fn(() => []),
+        markSentToAgent: vi.fn(),
+      },
     };
 
     await launchPrIssueResolutionChat(deps as any, {
@@ -449,7 +508,7 @@ describe("launchPrIssueResolutionChat", () => {
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-claude",
       executionMode: "subagents",
-      text: expect.stringContaining("Runtime: Claude SDK chat via ADE MCP"),
+      text: expect.stringContaining("Runtime: Claude chat via ADE MCP"),
     }));
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("Current unresolved review threads (detailed context)"),

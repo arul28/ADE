@@ -542,28 +542,33 @@ Maps lanes to GitHub pull requests. Each lane can have at most one linked PR. Th
 
 ```sql
 CREATE TABLE IF NOT EXISTS pr_issue_inventory (
-  id                TEXT PRIMARY KEY,
-  pr_id             TEXT NOT NULL,
-  source            TEXT NOT NULL,       -- 'coderabbit' | 'codex' | 'copilot' | 'human' | 'ade' | 'unknown'
-  type              TEXT NOT NULL,       -- 'review_thread' | 'check_failure' | 'issue_comment'
-  external_id       TEXT NOT NULL,
-  state             TEXT NOT NULL,       -- 'new' | 'sent_to_agent' | 'fixed' | 'dismissed' | 'escalated'
-  round             INTEGER NOT NULL DEFAULT 0,
-  file_path         TEXT,
-  line              INTEGER,
-  severity          TEXT,                -- 'critical' | 'major' | 'minor' | null
-  headline          TEXT NOT NULL,
-  body              TEXT,
-  author            TEXT,
-  url               TEXT,
-  dismiss_reason    TEXT,
-  agent_session_id  TEXT,
-  created_at        TEXT NOT NULL,
-  updated_at        TEXT NOT NULL
+  id                            TEXT PRIMARY KEY,
+  pr_id                         TEXT NOT NULL,
+  source                        TEXT NOT NULL,       -- 'coderabbit' | 'codex' | 'copilot' | 'human' | 'ade' | 'unknown'
+  type                          TEXT NOT NULL,       -- 'review_thread' | 'check_failure' | 'issue_comment'
+  external_id                   TEXT NOT NULL,
+  state                         TEXT NOT NULL,       -- 'new' | 'sent_to_agent' | 'fixed' | 'dismissed' | 'escalated'
+  round                         INTEGER NOT NULL DEFAULT 0,
+  file_path                     TEXT,
+  line                          INTEGER,
+  severity                      TEXT,                -- 'critical' | 'major' | 'minor' | null
+  headline                      TEXT NOT NULL,
+  body                          TEXT,
+  author                        TEXT,
+  url                           TEXT,
+  dismiss_reason                TEXT,
+  agent_session_id              TEXT,
+  thread_comment_count          INTEGER,
+  thread_latest_comment_id      TEXT,
+  thread_latest_comment_author  TEXT,
+  thread_latest_comment_at      TEXT,
+  thread_latest_comment_source  TEXT,
+  created_at                    TEXT NOT NULL,
+  updated_at                    TEXT NOT NULL
 );
 ```
 
-Tracks individual PR issues (failing checks, unresolved review threads, issue comments) for the convergence loop. The `issueInventoryService` syncs from live GitHub data and classifies issues by source and severity. The `round` field tracks which convergence round surfaced the issue. The `state` field progresses through the convergence lifecycle (`new` -> `sent_to_agent` -> `fixed`/`dismissed`/`escalated`).
+Tracks individual PR issues (failing checks, unresolved review threads, issue comments) for the convergence loop. The `issueInventoryService` syncs from live GitHub data and classifies issues by source and severity. The `round` field tracks which convergence round surfaced the issue. The `state` field progresses through the convergence lifecycle (`new` -> `sent_to_agent` -> `fixed`/`dismissed`/`escalated`). For review thread items, the `thread_*` columns track the latest comment metadata so the service can detect new replies and re-open items when a non-ADE participant adds a follow-up comment.
 
 #### PR Pipeline Settings
 
@@ -580,6 +585,32 @@ CREATE TABLE IF NOT EXISTS pr_pipeline_settings (
 ```
 
 Per-PR configuration for the auto-converge pipeline. Controls whether to auto-merge after convergence completes, the merge method, the maximum number of convergence rounds, and the rebase policy when the branch falls behind its target.
+
+#### PR Convergence Runtime State
+
+```sql
+CREATE TABLE IF NOT EXISTS pr_convergence_state (
+  pr_id                 TEXT PRIMARY KEY,
+  auto_converge_enabled INTEGER NOT NULL DEFAULT 0,
+  status                TEXT NOT NULL DEFAULT 'idle',    -- 'idle' | 'launching' | 'running' | 'polling' | 'paused' | 'converged' | 'merged' | 'failed' | 'cancelled' | 'stopped'
+  poller_status         TEXT NOT NULL DEFAULT 'idle',    -- 'idle' | 'scheduled' | 'polling' | 'waiting_for_checks' | 'waiting_for_comments' | 'paused' | 'stopped'
+  current_round         INTEGER NOT NULL DEFAULT 0,
+  active_session_id     TEXT,
+  active_lane_id        TEXT,
+  active_href           TEXT,
+  pause_reason          TEXT,
+  error_message         TEXT,
+  last_started_at       TEXT,
+  last_polled_at        TEXT,
+  last_paused_at        TEXT,
+  last_stopped_at       TEXT,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  FOREIGN KEY(pr_id) REFERENCES pull_requests(id) ON DELETE CASCADE
+);
+```
+
+Persists the convergence loop runtime for each PR. Tracks whether auto-converge is enabled, the overall loop status, the poller sub-status, the current round number, the active agent session and lane, and timestamps for lifecycle transitions. The CTO operator tools and the convergence panel read and write this table to coordinate round advancement, pausing, and stopping. IPC channels (`prsConvergenceStateGet`, `prsConvergenceStateSave`, `prsConvergenceStateDelete`) expose the state to the renderer.
 
 #### Checkpoints (Phase 8)
 

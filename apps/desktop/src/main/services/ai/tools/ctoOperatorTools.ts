@@ -1,6 +1,6 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
-import { getModelById } from "../../../../shared/modelRegistry";
+import { getModelById, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
   AgentChatCreateArgs,
   AgentChatInterruptArgs,
@@ -18,6 +18,18 @@ import type {
   TestRunSummary,
   TestSuiteDefinition,
 } from "../../../../shared/types";
+import type {
+  ConvergenceRuntimeState,
+  ConvergenceStatus,
+  IssueInventoryItem,
+  IssueSource,
+  PipelineSettings,
+  PrCheck,
+  PrComment,
+  PrReviewThread,
+  PrSummary,
+} from "../../../../shared/types/prs";
+import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types/prs";
 import type { IssueTracker } from "../../cto/issueTracker";
 import type { createLinearDispatcherService } from "../../cto/linearDispatcherService";
 import type { createWorkerAgentService } from "../../cto/workerAgentService";
@@ -27,9 +39,14 @@ import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createMissionService } from "../../missions/missionService";
 import type { createAiOrchestratorService } from "../../orchestrator/aiOrchestratorService";
+import type { createIssueInventoryService } from "../../prs/issueInventoryService";
+import { computeConvergenceStatus, detectSource, extractSeverity } from "../../prs/issueInventoryService";
+import { launchPrIssueResolutionChat } from "../../prs/prIssueResolver";
 import type { createPrService } from "../../prs/prService";
+import { isNoisyIssueComment, mapPermissionMode } from "../../prs/resolverUtils";
 import type { createProcessService } from "../../processes/processService";
-import { getErrorMessage } from "../../shared/utils";
+import type { createSessionService } from "../../sessions/sessionService";
+import { getErrorMessage, nowIso } from "../../shared/utils";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
@@ -50,8 +67,10 @@ export interface CtoOperatorToolDeps {
   linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   prService?: ReturnType<typeof createPrService> | null;
+  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
+  sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   testService?: {
     listSuites: () => TestSuiteDefinition[];
     run: (args: { laneId: string; suiteId: string }) => Promise<TestRunSummary>;
@@ -90,6 +109,10 @@ export interface CtoOperatorToolDeps {
     sessionId: string;
     title?: string | null;
   }) => Promise<AgentChatSession>;
+  previewSessionToolNames: (args: {
+    laneId: string;
+    sessionProfile?: AgentChatCreateArgs["sessionProfile"];
+  }) => string[];
   sendChatMessage: (args: AgentChatSendArgs) => Promise<void>;
   interruptChat: (args: AgentChatInterruptArgs) => Promise<void>;
   resumeChat: (args: { sessionId: string }) => Promise<AgentChatSession>;
@@ -115,18 +138,9 @@ const ACTIVE_LINEAR_RUN_STATUSES = new Set([
 function deriveChatProvider(args: { modelId?: string | null }): { provider: AgentChatCreateArgs["provider"]; model: string } {
   const descriptor = args.modelId ? getModelById(args.modelId) : null;
   if (!descriptor) {
-    return {
-      provider: "unified",
-      model: args.modelId?.trim() || "",
-    };
+    return { provider: "unified", model: args.modelId?.trim() || "" };
   }
-  if (!descriptor.isCliWrapped) {
-    return { provider: "unified", model: descriptor.id };
-  }
-  if (descriptor.family === "openai") {
-    return { provider: "codex", model: descriptor.shortId };
-  }
-  return { provider: "claude", model: descriptor.shortId };
+  return resolveChatProviderForDescriptor(descriptor);
 }
 
 function buildIssueBrief(issue: Awaited<ReturnType<IssueTracker["fetchIssueById"]>>): string {
@@ -251,6 +265,237 @@ function resolveWorkspaceIdForLane(
     null;
   if (laneWorkspace) return laneWorkspace.id;
   throw new Error(`Workspace not found for lane ${laneId}.`);
+}
+
+function extractSeverityFromText(text: string | null | undefined): IssueInventoryItem["severity"] {
+  return extractSeverity(String(text ?? ""));
+}
+
+function truncateForHeadline(text: string, max = 140): string {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function summarizeInventoryItems(items: IssueInventoryItem[], maxRounds: number): ConvergenceStatus {
+  return computeConvergenceStatus(items, maxRounds);
+}
+
+function buildFallbackInventoryItems(args: {
+  prId: string;
+  checks: PrCheck[];
+  reviewThreads: PrReviewThread[];
+  comments: PrComment[];
+}): IssueInventoryItem[] {
+  const items: IssueInventoryItem[] = [];
+  const timestamp = nowIso();
+
+  for (const thread of args.reviewThreads) {
+    const latestComment = thread.comments.at(-1) ?? null;
+    const headlineSource = latestComment?.body?.trim() || thread.comments[0]?.body?.trim() || thread.path || `Review thread ${thread.id}`;
+    const body = thread.comments
+      .map((entry) => entry.body?.trim() || "")
+      .filter(Boolean)
+      .join("\n\n")
+      .trim() || null;
+    const author = latestComment?.author ?? null;
+    const source: IssueSource = detectSource(author);
+    items.push({
+      id: `transient-thread-${thread.id}`,
+      prId: args.prId,
+      source,
+      type: "review_thread",
+      externalId: `review-thread:${thread.id}`,
+      state: thread.isResolved || thread.isOutdated ? "fixed" : "new",
+      round: 0,
+      filePath: thread.path,
+      line: thread.line,
+      severity: extractSeverityFromText(body ?? headlineSource),
+      headline: truncateForHeadline(headlineSource),
+      body,
+      author,
+      url: thread.url,
+      dismissReason: null,
+      agentSessionId: null,
+      threadCommentCount: thread.comments.length,
+      threadLatestCommentId: latestComment?.id ?? null,
+      threadLatestCommentAuthor: latestComment?.author ?? null,
+      threadLatestCommentAt: latestComment?.createdAt ?? null,
+      threadLatestCommentSource: source,
+      createdAt: thread.createdAt ?? timestamp,
+      updatedAt: thread.updatedAt ?? thread.createdAt ?? timestamp,
+    });
+  }
+
+  for (const comment of args.comments) {
+    if (comment.source !== "issue") continue;
+    if (isNoisyIssueComment(comment)) continue;
+    const source = detectSource(comment.author);
+    if (source !== "human") continue;
+    const body = comment.body?.trim() || null;
+    items.push({
+      id: `transient-comment-${comment.id}`,
+      prId: args.prId,
+      source,
+      type: "issue_comment",
+      externalId: `issue-comment:${comment.id}`,
+      state: "new",
+      round: 0,
+      filePath: comment.path,
+      line: comment.line,
+      severity: extractSeverityFromText(body),
+      headline: body ? truncateForHeadline(body) : `Issue comment by ${comment.author}`,
+      body,
+      author: comment.author,
+      url: comment.url,
+      dismissReason: null,
+      agentSessionId: null,
+      threadCommentCount: null,
+      threadLatestCommentId: null,
+      threadLatestCommentAuthor: null,
+      threadLatestCommentAt: null,
+      threadLatestCommentSource: null,
+      createdAt: comment.createdAt ?? timestamp,
+      updatedAt: comment.updatedAt ?? comment.createdAt ?? timestamp,
+    });
+  }
+
+  for (const check of args.checks) {
+    if (check.conclusion !== "failure") continue;
+    const timestampValue = check.completedAt ?? check.startedAt ?? timestamp;
+    items.push({
+      id: `transient-check-${check.name}-${timestampValue}`,
+      prId: args.prId,
+      source: "unknown",
+      type: "check_failure",
+      externalId: `check:${check.name}`,
+      state: "new",
+      round: 0,
+      filePath: null,
+      line: null,
+      severity: "major",
+      headline: `Check failed: ${check.name}`,
+      body: check.detailsUrl ? `Details: ${check.detailsUrl}` : null,
+      author: null,
+      url: check.detailsUrl,
+      dismissReason: null,
+      agentSessionId: null,
+      threadCommentCount: null,
+      threadLatestCommentId: null,
+      threadLatestCommentAuthor: null,
+      threadLatestCommentAt: null,
+      threadLatestCommentSource: null,
+      createdAt: timestampValue,
+      updatedAt: timestampValue,
+    });
+  }
+
+  return items;
+}
+
+function mapInventoryItemView(item: IssueInventoryItem) {
+  const {
+    threadLatestCommentId,
+    threadLatestCommentAuthor,
+    threadLatestCommentAt,
+    threadLatestCommentSource,
+    ...rest
+  } = item;
+  return {
+    ...rest,
+    latestComment: threadLatestCommentId
+      ? {
+          id: threadLatestCommentId,
+          author: threadLatestCommentAuthor ?? null,
+          at: threadLatestCommentAt ?? null,
+          source: threadLatestCommentSource ?? null,
+        }
+      : null,
+  };
+}
+
+function buildRuntimePatch(input: {
+  autoConvergeEnabled?: boolean | null;
+  autoConverge?: boolean | null;
+  status?: ConvergenceRuntimeState["status"];
+  pollerStatus?: ConvergenceRuntimeState["pollerStatus"];
+  currentRound?: number | null;
+  activeSessionId?: string | null;
+  activeLaneId?: string | null;
+  activeHref?: string | null;
+  pauseReason?: string | null;
+  errorMessage?: string | null;
+  lastStartedAt?: string | null;
+  lastPolledAt?: string | null;
+  lastPausedAt?: string | null;
+  lastStoppedAt?: string | null;
+}): Partial<ConvergenceRuntimeState> {
+  const patch: Partial<ConvergenceRuntimeState> = {};
+  const autoConvergeEnabled = input.autoConvergeEnabled ?? input.autoConverge;
+  if (autoConvergeEnabled != null) patch.autoConvergeEnabled = autoConvergeEnabled;
+  if (input.currentRound != null) patch.currentRound = input.currentRound;
+
+  const nullableFields = [
+    "status", "pollerStatus", "activeSessionId", "activeLaneId", "activeHref",
+    "pauseReason", "errorMessage", "lastStartedAt", "lastPolledAt", "lastPausedAt", "lastStoppedAt",
+  ] as const;
+  for (const key of nullableFields) {
+    if (input[key] !== undefined) {
+      (patch as Record<string, unknown>)[key] = input[key];
+    }
+  }
+  return patch;
+}
+
+async function loadPrConvergenceContext(
+  deps: Pick<CtoOperatorToolDeps, "prService" | "issueInventoryService">,
+  prId: string,
+): Promise<{
+  pr: PrSummary;
+  status: Awaited<ReturnType<NonNullable<CtoOperatorToolDeps["prService"]>["getStatus"]>>;
+  runtime: ConvergenceRuntimeState | null;
+  pipelineSettings: PipelineSettings;
+  inventory: { items: IssueInventoryItem[]; summary: ConvergenceStatus };
+  persistedInventory: boolean;
+}> {
+  if (!deps.prService) throw new Error("PR service is not available.");
+  const pr = deps.prService.listAll().find((entry) => entry.id === prId) ?? null;
+  if (!pr) throw new Error(`PR not found: ${prId}`);
+
+  const [status, checks, reviewThreads, comments] = await Promise.all([
+    deps.prService.getStatus(prId),
+    deps.prService.getChecks(prId),
+    deps.prService.getReviewThreads(prId),
+    deps.prService.getComments(prId),
+  ]);
+
+  if (deps.issueInventoryService) {
+    const snapshot = deps.issueInventoryService.syncFromPrData(prId, checks, reviewThreads, comments);
+    return {
+      pr,
+      status,
+      runtime: deps.issueInventoryService.getConvergenceRuntime(prId),
+      pipelineSettings: deps.issueInventoryService.getPipelineSettings(prId),
+      inventory: {
+        items: snapshot.items,
+        summary: snapshot.convergence,
+      },
+      persistedInventory: true,
+    };
+  }
+
+  const items = buildFallbackInventoryItems({ prId, checks, reviewThreads, comments });
+  return {
+    pr,
+    status,
+    runtime: null,
+    pipelineSettings: { ...DEFAULT_PIPELINE_SETTINGS },
+    inventory: {
+      items,
+      summary: summarizeInventoryItems(items, DEFAULT_PIPELINE_SETTINGS.maxRounds),
+    },
+    persistedInventory: false,
+  };
 }
 
 export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string, Tool> {
@@ -1129,6 +1374,243 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       try {
         await deps.prService.updateDescription({ prId, body });
         return { success: true, prId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.getPullRequestConvergence = tool({
+    description: "Read the persisted PR convergence runtime, pipeline settings, and issue inventory summary for a pull request.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+    }),
+    execute: async ({ prId }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        const context = await loadPrConvergenceContext(deps, prId);
+        return {
+          success: true,
+          pr: context.pr,
+          status: context.status,
+          runtime: context.runtime,
+          pipelineSettings: context.pipelineSettings,
+          persistedInventory: context.persistedInventory,
+          inventory: {
+            summary: context.inventory.summary,
+            items: context.inventory.items.map(mapInventoryItemView),
+          },
+          ...(context.runtime?.activeSessionId ? buildNavigationPayload(buildNavigationSuggestion({
+            surface: "work",
+            laneId: context.runtime.activeLaneId ?? context.pr.laneId,
+            sessionId: context.runtime.activeSessionId,
+          })) : {}),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.updatePullRequestConvergencePipeline = tool({
+    description: "Edit the persisted PR convergence pipeline settings for auto-merge and round handling.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      autoMerge: z.boolean().optional(),
+      mergeMethod: z.enum(["merge", "squash", "rebase", "repo_default"]).optional(),
+      maxRounds: z.number().int().positive().max(20).optional(),
+      onRebaseNeeded: z.enum(["pause", "auto_rebase"]).optional(),
+    }),
+    execute: async ({ prId, autoMerge, mergeMethod, maxRounds, onRebaseNeeded }) => {
+      if (!deps.issueInventoryService) {
+        return { success: false, error: "Issue inventory service is not available." };
+      }
+      try {
+        const patch = Object.fromEntries(
+          Object.entries({ autoMerge, mergeMethod, maxRounds, onRebaseNeeded })
+            .filter(([, v]) => v !== undefined),
+        );
+        if (Object.keys(patch).length === 0) {
+          return { success: false, error: "No pipeline fields were provided." };
+        }
+        deps.issueInventoryService.savePipelineSettings(prId, patch);
+        return {
+          success: true,
+          prId,
+          pipelineSettings: deps.issueInventoryService.getPipelineSettings(prId),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.updatePullRequestConvergenceRuntime = tool({
+    description: "Edit the persisted PR convergence runtime object that tracks status, session, and polling state.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      autoConvergeEnabled: z.boolean().optional(),
+      autoConverge: z.boolean().optional(),
+      status: z.enum(["idle", "launching", "running", "polling", "paused", "converged", "merged", "failed", "cancelled", "stopped"]).optional(),
+      pollerStatus: z.enum(["idle", "scheduled", "polling", "waiting_for_checks", "waiting_for_comments", "paused", "stopped"]).optional(),
+      currentRound: z.number().int().min(0).optional(),
+      activeSessionId: z.string().nullable().optional(),
+      activeLaneId: z.string().nullable().optional(),
+      activeHref: z.string().nullable().optional(),
+      pauseReason: z.string().nullable().optional(),
+      errorMessage: z.string().nullable().optional(),
+      lastStartedAt: z.string().nullable().optional(),
+      lastPolledAt: z.string().nullable().optional(),
+      lastPausedAt: z.string().nullable().optional(),
+      lastStoppedAt: z.string().nullable().optional(),
+    }),
+    execute: async (input) => {
+      if (!deps.issueInventoryService) {
+        return { success: false, error: "Issue inventory service is not available." };
+      }
+      try {
+        const patch = buildRuntimePatch(input);
+        if (Object.keys(patch).length === 0) {
+          return { success: false, error: "No runtime fields were provided." };
+        }
+        const runtime = deps.issueInventoryService.saveConvergenceRuntime(input.prId, patch);
+        return { success: true, prId: input.prId, runtime };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.startPullRequestConvergenceRound = tool({
+    description: "Launch the next PR convergence round through the existing PR issue-resolution workflow.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      scope: z.enum(["checks", "comments", "both"]).optional().default("both"),
+      modelId: z.string().trim().min(1).optional(),
+      reasoning: z.string().nullable().optional(),
+      permissionMode: z.enum(["read_only", "guarded_edit", "full_edit"]).optional(),
+      additionalInstructions: z.string().nullable().optional(),
+      autoConvergeEnabled: z.boolean().optional().default(true),
+    }),
+    execute: async ({ prId, scope, modelId, reasoning, permissionMode, additionalInstructions, autoConvergeEnabled }) => {
+      if (!deps.prService) {
+        return { success: false, error: "PR service is not available." };
+      }
+      try {
+        const resolvedModelId = modelId?.trim() || deps.defaultModelId?.trim() || null;
+        if (!resolvedModelId) {
+          return { success: false, error: "A modelId is required to launch a convergence round." };
+        }
+        const resolvedReasoning = reasoning ?? deps.defaultReasoningEffort ?? null;
+
+        if (!deps.issueInventoryService) {
+          return { success: false, error: "Issue inventory service is not available." };
+        }
+
+        const result = await launchPrIssueResolutionChat(
+          {
+            prService: deps.prService,
+            laneService: {
+              list: deps.laneService.list,
+              getLaneBaseAndBranch: deps.laneService.getLaneBaseAndBranch,
+            },
+            agentChatService: {
+              createSession: deps.createChat,
+              sendMessage: deps.sendChatMessage,
+              previewSessionToolNames: deps.previewSessionToolNames,
+            },
+            sessionService: deps.sessionService,
+            issueInventoryService: deps.issueInventoryService,
+          },
+          {
+            prId,
+            scope,
+            modelId: resolvedModelId,
+            reasoning: resolvedReasoning,
+            permissionMode,
+            additionalInstructions: additionalInstructions ?? null,
+          },
+        );
+
+        let runtime: ConvergenceRuntimeState | null = null;
+        try {
+          const status = deps.issueInventoryService.getConvergenceStatus(prId);
+          runtime = deps.issueInventoryService.saveConvergenceRuntime(prId, {
+            autoConvergeEnabled,
+            currentRound: status.currentRound,
+            status: "running",
+            pollerStatus: "waiting_for_comments",
+            activeSessionId: result.sessionId,
+            activeLaneId: result.laneId,
+            activeHref: result.href,
+            pauseReason: null,
+            errorMessage: null,
+            lastStartedAt: nowIso(),
+            lastPolledAt: null,
+            lastPausedAt: null,
+            lastStoppedAt: null,
+          });
+        } catch (inventoryError) {
+          console.error(
+            `[convergence] Failed to update runtime for PR ${prId}: ${getErrorMessage(inventoryError)}`,
+          );
+        }
+
+        return {
+          success: true,
+          prId,
+          sessionId: result.sessionId,
+          laneId: result.laneId,
+          href: result.href,
+          runtime,
+          ...buildNavigationPayload(buildNavigationSuggestion({
+            surface: "work",
+            laneId: result.laneId,
+            sessionId: result.sessionId,
+          })),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.stopPullRequestConvergence = tool({
+    description: "Stop an active PR convergence run, interrupt the chat session, and persist the stopped runtime state.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      sessionId: z.string().trim().min(1).optional(),
+      reason: z.string().nullable().optional(),
+    }),
+    execute: async ({ prId, sessionId, reason }) => {
+      try {
+        const currentRuntime = deps.issueInventoryService?.getConvergenceRuntime(prId) ?? null;
+        const activeSessionId = sessionId?.trim() || currentRuntime?.activeSessionId || null;
+        if (!activeSessionId) {
+          return { success: false, error: "No active convergence session was found to stop." };
+        }
+        await deps.interruptChat({ sessionId: activeSessionId });
+
+        const stoppedRuntime = currentRuntime?.activeSessionId === activeSessionId
+          ? deps.issueInventoryService?.saveConvergenceRuntime(prId, {
+              autoConvergeEnabled: false,
+              status: "stopped",
+              pollerStatus: "stopped",
+              activeSessionId: null,
+              activeLaneId: null,
+              activeHref: null,
+              pauseReason: reason?.trim() || null,
+              errorMessage: null,
+              lastStoppedAt: nowIso(),
+            }) ?? null
+          : currentRuntime;
+
+        return {
+          success: true,
+          prId,
+          sessionId: activeSessionId,
+          runtime: stoppedRuntime,
+        };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

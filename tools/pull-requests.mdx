@@ -326,30 +326,102 @@ If you have multiple PR templates (in `.github/PULL_REQUEST_TEMPLATE/`), ADE pre
 
 ---
 
-## PR issue resolution
+## Path to Merge
 
-ADE includes a built-in **PR issue resolution** workflow for addressing review comments and failing CI checks directly from the PRs tab.
+The **Path to Merge** tab is a dedicated convergence workspace inside every PR detail view. It provides a complete loop for resolving all outstanding issues — review comments, CI failures, and merge conflicts — until the PR is ready to land.
 
-### How it works
+<Note>The Path to Merge tab appears alongside Overview, Files, CI/Checks, and Activity in the PR detail pane. A count badge on the tab shows how many new issues need attention.</Note>
 
-1. **Issue inventory** — ADE scans the PR for failing checks, review comments requesting changes, and merge conflicts. Each item becomes an entry in the issue inventory.
-2. **Resolution modal** — Click **Resolve issues** on a PR to open the resolution modal. It lists all open issues with their type and severity.
-3. **AI resolution** — Select issues and click **Fix with AI**. ADE launches an agent session scoped to the PR's lane with the issue context pre-loaded. The agent reads the failing check output or review comment, makes fixes, and commits them.
-4. **Convergence rounds** — For PRs with multiple issues, ADE can run multiple resolution rounds automatically. Set the `prs.convergence.maxRounds` key in `.ade/ade.yaml` to cap the number of iterations.
+### Issue Inventory
 
-### Pipeline settings
+ADE automatically scans the PR and builds an **issue inventory** — a structured list of every item blocking merge readiness:
 
-Configure PR convergence behavior per-project. The `prs` section in `.ade/ade.yaml` is optional — projects may omit it entirely and default behavior will apply.
+| Source | Detection |
+|--------|-----------|
+| **Review comments** | GitHub review threads requesting changes |
+| **CI check failures** | Any required check that is not passing |
+| **Bot reviews** | Comments from CodeRabbit, Copilot, Codex, and other review bots are detected and attributed automatically |
+
+Each item in the inventory has:
+- **State**: `new`, `sent_to_agent`, `fixed`, `dismissed`, or `escalated`
+- **Severity**: `critical`, `major`, or `minor` (extracted from the issue body)
+- **Headline**: A compact display title extracted from the first line or bold text
+- **Source attribution**: Whether the issue came from a human reviewer, CodeRabbit, Copilot, Codex, or ADE itself
+
+The inventory panel groups issues by state, with escalated items shown first.
+
+### Manual Convergence
+
+In **Manual** mode, you control each resolution round:
+
+<Steps>
+  <Step title="Review the issue inventory">
+    Open the Path to Merge tab. The panel shows all outstanding issues grouped by state (new, in progress, fixed, dismissed, escalated).
+  </Step>
+  <Step title="Configure the round">
+    Optionally type additional instructions in the text area (e.g., "Focus on the performance feedback first"). Select the AI model, reasoning effort, and permission mode (Read-Only / Guarded Edit / Full Edit).
+  </Step>
+  <Step title="Run Next Round">
+    Click **Run Next Round**. ADE launches an agent session scoped to the PR's lane with all new issues pre-loaded as context. The agent reads each issue, makes fixes, and commits them.
+  </Step>
+  <Step title="Review results">
+    When the round completes, return to the panel. Issues the agent resolved move to **Fixed**. New issues that appeared (from fresh CI runs or new reviewer comments) appear as **New**. Repeat until all issues are resolved.
+  </Step>
+</Steps>
+
+You can also **dismiss** issues you consider non-actionable, or **escalate** issues that need human attention, directly from the inventory panel.
+
+### Auto-Converge Mode
+
+Toggle **Auto-Converge** to let ADE run the full convergence loop autonomously:
+
+1. **Agent round** — ADE launches a resolution round with all new issues
+2. **Wait for CI** — After the agent commits, ADE polls GitHub for check completion (~60s intervals)
+3. **Wait for comments** — Once checks finish, ADE polls for new review comments, requiring 2 stable polls before proceeding
+4. **Decision gate** — If new issues appeared: launch the next round. If no new issues: mark convergence as complete
+5. **Auto-merge** (optional) — If `autoMerge` is enabled in pipeline settings and convergence is complete, ADE merges the PR automatically
+
+The auto-converge poller handles edge cases:
+- **Rebase needed**: If the PR is behind its base branch, behavior depends on the `onRebaseNeeded` setting (`auto_rebase` or `pause`)
+- **Max rounds reached**: Pauses and notifies you instead of running indefinitely
+- **Agent still running**: Shows a "Agent working on round N..." banner with a link to view the active session
+
+<Tip>You can switch between Manual and Auto-Converge at any time — the issue inventory and round history are preserved across mode changes.</Tip>
+
+### Pipeline Settings
+
+Configure convergence behavior per-PR from the Path to Merge panel, or set project-wide defaults in `.ade/ade.yaml`:
 
 ```yaml
 # .ade/ade.yaml
 prs:
   convergence:
-    autoMerge: false              # auto-merge when all checks pass
-    mergeMethod: "squash"         # merge | squash | rebase
-    maxRounds: 3                  # max AI resolution rounds
-    onRebaseNeeded: "auto"        # auto | ask | skip
+    autoMerge: false              # auto-merge when convergence completes
+    mergeMethod: "repo_default"   # merge | squash | rebase | repo_default
+    maxRounds: 5                  # max AI resolution rounds (1–20)
+    onRebaseNeeded: "pause"       # pause | auto_rebase
 ```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `autoMerge` | `false` | Merge the PR automatically when all issues are resolved and checks pass |
+| `mergeMethod` | `repo_default` | Which GitHub merge strategy to use. `repo_default` uses whatever the repository allows |
+| `maxRounds` | `5` | Maximum convergence rounds before auto-converge pauses (1–20) |
+| `onRebaseNeeded` | `pause` | What to do when the PR branch is behind: `pause` stops and asks you; `auto_rebase` rebases automatically |
+
+### CTO Operator Tools
+
+The CTO agent can drive PR convergence programmatically using five dedicated tools:
+
+| Tool | Description |
+|------|-------------|
+| `getPullRequestConvergence` | Read the full convergence state: issue inventory, runtime, pipeline settings |
+| `updatePullRequestConvergencePipeline` | Edit pipeline settings (autoMerge, mergeMethod, maxRounds, onRebaseNeeded) |
+| `updatePullRequestConvergenceRuntime` | Directly set runtime state (status, poller, active session) |
+| `startPullRequestConvergenceRound` | Launch the next convergence round with a specific model, scope, and instructions |
+| `stopPullRequestConvergence` | Stop an active convergence run and interrupt the running session |
+
+This allows the CTO to autonomously monitor PRs, start convergence when review comments arrive, and stop rounds that are no longer productive — all without human intervention.
 
 ---
 

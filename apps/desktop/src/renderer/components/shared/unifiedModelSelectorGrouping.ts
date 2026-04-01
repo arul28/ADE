@@ -11,10 +11,8 @@ export type SourceSectionKey = "subscription" | "api" | "local";
 
 export type ModelSubsection = {
   key: string;
-  /** Human-readable subsection title (e.g. Cursor CLI line family). */
+  /** Human-readable subsection title (e.g. Cursor CLI line family). Empty when a single default bucket. */
   label: string;
-  /** Same as `label`; explicit name for sub-tab UI. Empty when a single default bucket. */
-  subsectionLabel: string;
   models: ModelDescriptor[];
 };
 
@@ -213,11 +211,9 @@ export function buildSourceBlocksForModels(
       const subMap = famMap.get(family)!;
       const subsections: ModelSubsection[] = [...subMap.entries()]
         .map(([key, ms]) => {
-          const label = subsectionLabel(family, key);
           return {
             key,
-            label,
-            subsectionLabel: label,
+            label: subsectionLabel(family, key),
             models: sortModels(ms, modelOrder),
           };
         })

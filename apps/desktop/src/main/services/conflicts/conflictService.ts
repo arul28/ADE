@@ -290,10 +290,9 @@ function resolveLaneRebaseTarget(args: {
   const parent = args.lane.parentLaneId ? args.lanesById.get(args.lane.parentLaneId) ?? null : null;
   const parentBranchRef = branchNameFromLaneRef(parent?.branchRef);
   if (parentBranchRef && shouldLaneTrackParent({ lane: args.lane, parent })) {
-    const comparisonRef = `origin/${parentBranchRef}`;
     return {
-      comparisonRef,
-      fallbackRef: parentBranchRef,
+      comparisonRef: parentBranchRef,
+      fallbackRef: `origin/${parentBranchRef}`,
       displayBaseBranch: parentBranchRef,
     };
   }

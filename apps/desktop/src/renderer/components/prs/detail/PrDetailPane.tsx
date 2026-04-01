@@ -15,6 +15,8 @@ import type {
   LaneSummary, MergeMethod, LandResult,
   IssueInventorySnapshot,
   PipelineSettings,
+  PrConvergenceState,
+  PrConvergenceStatePatch,
 } from "../../../../shared/types";
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
@@ -22,7 +24,7 @@ import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outl
 import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge, PrCiRunningIndicator } from "../shared/prVisuals";
 import { PrIssueResolverModal } from "../shared/PrIssueResolverModal";
 import { PrConvergencePanel } from "../shared/PrConvergencePanel";
-import type { IssueInventoryItem as PanelIssueItem, ConvergenceStatus as PanelConvergence } from "../shared/PrConvergencePanel";
+import type { IssueInventoryItem as PanelIssueItem, ConvergenceStatus as PanelConvergence, AutoConvergeWaitState } from "../shared/PrConvergencePanel";
 import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
 import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
 import { describePrTargetDiff } from "../shared/laneBranchTargets";
@@ -30,7 +32,7 @@ import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedU
 import { usePrs } from "../state/PrsContext";
 
 // ---- Sub-tab type ----
-type DetailTab = "overview" | "files" | "checks" | "activity";
+type DetailTab = "overview" | "convergence" | "files" | "checks" | "activity";
 
 // ---- Avatar component ----
 function Avatar({ user, size = 20 }: { user: { login: string; avatarUrl?: string | null }; size?: number }) {
@@ -401,6 +403,10 @@ export function PrDetailPane({
   onOpenQueueView,
 }: PrDetailPaneProps) {
   const {
+    convergenceStatesByPrId,
+    loadConvergenceState,
+    saveConvergenceState,
+    resetConvergenceState,
     rebaseNeeds,
     resolverModel,
     resolverReasoningLevel,
@@ -424,21 +430,105 @@ export function PrDetailPane({
   const [issueResolverError, setIssueResolverError] = React.useState<string | null>(null);
 
   // Convergence panel state
-  const [showConvergencePanel, setShowConvergencePanel] = React.useState(false);
   const [inventorySnapshot, setInventorySnapshot] = React.useState<IssueInventorySnapshot | null>(null);
+  const [convergenceChecks, setConvergenceChecks] = React.useState<PrCheck[]>(checks);
   const [convergenceBusy, setConvergenceBusy] = React.useState(false);
   const [autoConverge, setAutoConverge] = React.useState(false);
   const [convergenceSessionId, setConvergenceSessionId] = React.useState<string | null>(null);
-  const [convergenceMerged, setConvergenceMerged] = React.useState(false);
-  const [convergencePauseReason, setConvergencePauseReason] = React.useState<string | null>(null);
+  const [, setConvergenceMerged] = React.useState(false);
+  const [, setConvergencePauseReason] = React.useState<string | null>(null);
+  const [convergenceSessionHref, setConvergenceSessionHref] = React.useState<string | null>(null);
   const autoConvergeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const convergenceSessionPollerRef = React.useRef<number | null>(null);
+  const convergenceLoadSeqRef = React.useRef(0);
+  const convergenceTabLoadSeqRef = React.useRef(0);
+  const cachedConvergenceRuntimeRef = React.useRef<PrConvergenceState | null>(null);
   const behindCountRef = React.useRef<number>(0);
+  const [autoConvergeWaitState, setAutoConvergeWaitState] = React.useState<AutoConvergeWaitState>({ phase: "idle" });
   const [pipelineSettings, setPipelineSettings] = React.useState<PipelineSettings>(DEFAULT_PIPELINE_SETTINGS);
   const pipelineSettingsRef = React.useRef<PipelineSettings>(DEFAULT_PIPELINE_SETTINGS);
   const mergeMethodRef = React.useRef<MergeMethod>(mergeMethod);
   mergeMethodRef.current = mergeMethod;
   const onRefreshRef = React.useRef(onRefresh);
   onRefreshRef.current = onRefresh;
+  cachedConvergenceRuntimeRef.current = convergenceStatesByPrId[pr.id] ?? null;
+
+  React.useEffect(() => {
+    setConvergenceChecks(checks);
+  }, [checks, pr.id]);
+
+  const buildSessionHref = React.useCallback((laneId: string, sessionId: string) => {
+    const lane = encodeURIComponent(laneId);
+    const session = encodeURIComponent(sessionId);
+    return `/work?laneId=${lane}&sessionId=${session}`;
+  }, []);
+
+  const deriveWaitStateFromRuntime = React.useCallback((runtime: PrConvergenceState): AutoConvergeWaitState => {
+    if (runtime.status === "merged") return { phase: "merged" };
+    if (runtime.status === "converged") return { phase: "complete" };
+    if (runtime.status === "paused") {
+      return { phase: "paused", reason: runtime.pauseReason ?? "Auto-converge paused" };
+    }
+    if (runtime.status === "stopped") {
+      return { phase: "idle" };
+    }
+    if (runtime.status === "failed" || runtime.status === "cancelled") {
+      return {
+        phase: "paused",
+        reason: runtime.errorMessage ?? runtime.pauseReason ?? `Auto-converge ${runtime.status}`,
+      };
+    }
+    if (runtime.activeSessionId) {
+      return { phase: "agent_running", sessionId: runtime.activeSessionId };
+    }
+    if (runtime.pollerStatus === "waiting_for_checks") {
+      return { phase: "waiting_checks", pendingCount: 0, totalCount: 0 };
+    }
+    if (runtime.pollerStatus === "waiting_for_comments") {
+      return { phase: "waiting_comments", stablePollCount: 0 };
+    }
+    if (runtime.autoConvergeEnabled && (runtime.status === "launching" || runtime.status === "running" || runtime.status === "polling")) {
+      return { phase: "waiting_checks", pendingCount: 0, totalCount: 0 };
+    }
+    return { phase: "idle" };
+  }, []);
+
+  const applyConvergenceRuntime = React.useCallback((runtime: PrConvergenceState | null) => {
+    if (!runtime) {
+      setConvergenceBusy(false);
+      setAutoConverge(false);
+      setConvergenceSessionId(null);
+      setConvergenceSessionHref(null);
+      setConvergenceMerged(false);
+      setConvergencePauseReason(null);
+      setAutoConvergeWaitState({ phase: "idle" });
+      return;
+    }
+
+    const nextHref = runtime.activeHref ?? (
+      runtime.activeLaneId && runtime.activeSessionId
+        ? buildSessionHref(runtime.activeLaneId, runtime.activeSessionId)
+        : null
+    );
+
+    setAutoConverge(runtime.autoConvergeEnabled);
+    setConvergenceBusy(Boolean(runtime.activeSessionId) || runtime.status === "launching" || runtime.status === "running" || runtime.status === "polling");
+    setConvergenceSessionId(runtime.activeSessionId);
+    setConvergenceSessionHref(nextHref);
+    setConvergenceMerged(runtime.status === "merged");
+    setConvergencePauseReason(runtime.pauseReason);
+    setAutoConvergeWaitState(deriveWaitStateFromRuntime(runtime));
+  }, [buildSessionHref, deriveWaitStateFromRuntime]);
+
+  const saveConvergenceRuntime = React.useCallback((partial: PrConvergenceStatePatch) => {
+    void saveConvergenceState(pr.id, partial).catch((error: unknown) => {
+      console.error("pr_detail.save_convergence_runtime_failed", {
+        prId: pr.id,
+        state: partial,
+        error,
+      });
+    });
+  }, [pr.id, saveConvergenceState]);
 
   // Action states
   const [actionBusy, setActionBusy] = React.useState(false);
@@ -459,6 +549,7 @@ export function PrDetailPane({
   // expandedRun state removed — the unified ChecksTab manages its own expand state
   const [expandedFile, setExpandedFile] = React.useState<string | null>(null);
   const detailLoadSeqRef = React.useRef(0);
+  const inventoryLoadSeqRef = React.useRef(0);
 
   const loadDetail = React.useCallback(async () => {
     const requestId = ++detailLoadSeqRef.current;
@@ -490,13 +581,8 @@ export function PrDetailPane({
     setIssueResolverCopyBusy(false);
     setIssueResolverCopyNotice(null);
     setShowIssueResolverModal(false);
-    setShowConvergencePanel(false);
     setInventorySnapshot(null);
     setConvergenceBusy(false);
-    setAutoConverge(false);
-    setConvergenceSessionId(null);
-    setConvergenceMerged(false);
-    setConvergencePauseReason(null);
     setPipelineSettings(DEFAULT_PIPELINE_SETTINGS);
     pipelineSettingsRef.current = DEFAULT_PIPELINE_SETTINGS;
     if (autoConvergeTimerRef.current) {
@@ -517,11 +603,28 @@ export function PrDetailPane({
     setShowReviewerEditor(false);
     setShowReviewModal(false);
 
+    const requestId = ++convergenceLoadSeqRef.current;
+    const cachedRuntime = cachedConvergenceRuntimeRef.current;
+    applyConvergenceRuntime(cachedRuntime);
+    void loadConvergenceState(pr.id, { force: true })
+      .then((runtime) => {
+        if (requestId !== convergenceLoadSeqRef.current) return;
+        applyConvergenceRuntime(runtime);
+      })
+      .catch(() => {
+        if (requestId !== convergenceLoadSeqRef.current) return;
+        if (!cachedRuntime) {
+          applyConvergenceRuntime(null);
+        }
+      });
+
     void loadDetail();
     return () => {
       detailLoadSeqRef.current += 1;
+      inventoryLoadSeqRef.current += 1;
+      convergenceLoadSeqRef.current += 1;
     };
-  }, [loadDetail, pr.id]);
+  }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id]);
 
   React.useEffect(() => {
     if (!issueResolverCopyNotice) return;
@@ -671,13 +774,26 @@ export function PrDetailPane({
         additionalInstructions: args.additionalInstructions,
       });
       setShowIssueResolverModal(false);
+      setConvergenceSessionId(result.sessionId);
+      setConvergenceSessionHref(result.href);
+      saveConvergenceRuntime({
+        autoConvergeEnabled: autoConverge,
+        status: "running",
+        pollerStatus: "idle",
+        activeSessionId: result.sessionId,
+        activeLaneId: pr.laneId,
+        activeHref: result.href,
+        pauseReason: null,
+        errorMessage: null,
+        lastStartedAt: new Date().toISOString(),
+      });
       onNavigate(result.href);
     } catch (err: unknown) {
       setIssueResolverError(err instanceof Error ? err.message : String(err));
     } finally {
       setIssueResolverBusy(false);
     }
-  }, [onNavigate, pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel]);
+  }, [autoConverge, onNavigate, pr.id, pr.laneId, resolverModel, resolverPermissionMode, resolverReasoningLevel, saveConvergenceRuntime]);
 
   const handleCopyIssueResolverPrompt = React.useCallback(async (
     args: { scope: "checks" | "comments" | "both"; additionalInstructions: string },
@@ -714,14 +830,36 @@ export function PrDetailPane({
   // ---------------------------------------------------------------------------
 
   const syncInventory = React.useCallback(async () => {
+    const requestId = ++inventoryLoadSeqRef.current;
     try {
-      const snapshot = await window.ade.prs.issueInventorySync(pr.id);
+      const [snapshot, freshChecks] = await Promise.all([
+        window.ade.prs.issueInventorySync(pr.id),
+        window.ade.prs.getChecks(pr.id).catch(() => checks),
+      ]);
+      if (requestId !== inventoryLoadSeqRef.current) return null;
       setInventorySnapshot(snapshot);
+      setConvergenceChecks(freshChecks);
       return snapshot;
     } catch {
       return null;
     }
-  }, [pr.id]);
+  }, [checks, pr.id]);
+
+  const refreshDetailSurface = React.useCallback(async (options: { includeInventory?: boolean } = {}) => {
+    const tasks: Array<Promise<unknown>> = [onRefresh(), loadDetail()];
+    if (options.includeInventory) {
+      tasks.push(syncInventory());
+    }
+    await Promise.all(tasks);
+  }, [loadDetail, onRefresh, syncInventory]);
+
+  const handleRefresh = React.useCallback(async () => {
+    try {
+      await refreshDetailSurface({ includeInventory: activeTab === "convergence" });
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    }
+  }, [activeTab, refreshDetailSurface]);
 
   const mapInventoryItems = React.useCallback((snapshot: IssueInventorySnapshot | null): PanelIssueItem[] => {
     if (!snapshot) return [];
@@ -755,22 +893,30 @@ export function PrDetailPane({
     return { state, currentRound: displayRound, maxRounds: c.maxRounds };
   }, []);
 
-  // Sync inventory and load pipeline settings on panel open
+  // Sync inventory and load pipeline settings on convergence tab open
   React.useEffect(() => {
-    if (showConvergencePanel) {
+    if (activeTab === "convergence") {
+      const runId = ++convergenceTabLoadSeqRef.current;
+      const capturedPrId = pr.id;
+      void loadConvergenceState(capturedPrId, { force: true }).then((runtime) => {
+        if (runId !== convergenceTabLoadSeqRef.current) return; // stale
+        applyConvergenceRuntime(runtime);
+      }).catch(() => undefined);
       void syncInventory();
-      void window.ade.prs.pipelineSettingsGet(pr.id).then((s) => {
+      void window.ade.prs.pipelineSettingsGet(capturedPrId).then((s) => {
+        if (runId !== convergenceTabLoadSeqRef.current) return; // stale
         setPipelineSettings(s);
         pipelineSettingsRef.current = s;
-      });
+      }).catch(() => undefined);
     }
-  }, [showConvergencePanel, syncInventory, pr.id]);
+  }, [activeTab, applyConvergenceRuntime, loadConvergenceState, syncInventory, pr.id]);
 
   // Auto-converge: hybrid polling (checks complete + comment stabilization)
   // After agent session completes, polls every 60s. Triggers next round when:
   //   1. All GitHub checks are done (no queued/in_progress), AND
   //   2. Comment/thread count hasn't changed for 2 consecutive polls (~2 min stability)
   const autoConvergePollerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startAutoConvergePollerRef = React.useRef<() => void>(() => undefined);
   const lastCommentCountRef = React.useRef<number>(-1);
   const stableCountRef = React.useRef<number>(0);
   const autoConvergeAdditionalRef = React.useRef<string>("");
@@ -782,6 +928,8 @@ export function PrDetailPane({
   autoConvergeRef.current = autoConverge;
   const convergenceSessionIdRef = React.useRef(convergenceSessionId);
   convergenceSessionIdRef.current = convergenceSessionId;
+  const convergenceSessionHrefRef = React.useRef<string | null>(convergenceSessionHref);
+  convergenceSessionHrefRef.current = convergenceSessionHref;
 
   const stopAutoConvergePoller = React.useCallback(() => {
     if (autoConvergePollerRef.current) {
@@ -793,10 +941,172 @@ export function PrDetailPane({
     behindCountRef.current = 0;
   }, []);
 
+  const stopConvergenceSessionPoller = React.useCallback(() => {
+    if (convergenceSessionPollerRef.current) {
+      clearTimeout(convergenceSessionPollerRef.current);
+      convergenceSessionPollerRef.current = null;
+    }
+  }, []);
+
+  const getConvergencePublishBlocker = React.useCallback(async (sessionId: string): Promise<string | null> => {
+    const sessionDetailPromise = typeof window.ade?.sessions?.get === "function"
+      ? window.ade.sessions.get(sessionId).catch(() => null)
+      : Promise.resolve(null);
+    const syncStatusPromise = typeof window.ade?.git?.getSyncStatus === "function"
+      ? window.ade.git.getSyncStatus({ laneId: pr.laneId }).catch(() => null)
+      : Promise.resolve(null);
+    const laneListPromise = typeof window.ade?.lanes?.list === "function"
+      ? window.ade.lanes.list({ includeStatus: true }).catch(() => lanes)
+      : Promise.resolve(lanes);
+    const [sessionDetail, syncStatus, freshLanes] = await Promise.all([
+      sessionDetailPromise,
+      syncStatusPromise,
+      laneListPromise,
+    ]);
+    const lane = freshLanes.find((entry) => entry.id === pr.laneId) ?? lanes.find((entry) => entry.id === pr.laneId) ?? null;
+    const hasDirtyChanges = Boolean(lane?.status.dirty);
+    const sessionHeadChanged = Boolean(sessionDetail?.headShaStart)
+      && Boolean(sessionDetail?.headShaEnd)
+      && sessionDetail?.headShaStart !== sessionDetail?.headShaEnd;
+    const hasUnpublishedCommits = syncStatus
+      ? syncStatus.ahead > 0
+        || syncStatus.recommendedAction === "force_push_lease"
+        || (
+          !syncStatus.hasUpstream
+          && sessionHeadChanged
+        )
+      : false;
+
+    if (!hasDirtyChanges && !hasUnpublishedCommits) return null;
+
+    const pendingStates: string[] = [];
+    if (hasDirtyChanges) pendingStates.push("uncommitted changes");
+    if (hasUnpublishedCommits) {
+      pendingStates.push(
+        syncStatus?.recommendedAction === "force_push_lease"
+          ? "commits that still need a force push"
+          : "commits that are not pushed to the PR branch",
+      );
+    }
+    return `Agent session exited, but the lane still has ${pendingStates.join(" and ")}. Commit and push the lane before continuing.`;
+  }, [lanes, pr.laneId]);
+
+  const handleConvergenceSessionTerminal = React.useCallback(async (
+    args: { sessionId: string; status: "completed" | "failed" | "cancelled" | "disposed"; message?: string | null },
+  ) => {
+    if (convergenceSessionIdRef.current !== args.sessionId) return;
+
+    const now = new Date().toISOString();
+    const activeHref = convergenceSessionHrefRef.current;
+    const failureReason = (() => {
+      const message = args.message?.trim();
+      if (message) return message;
+      if (args.status === "cancelled") return "Agent session was cancelled.";
+      if (args.status === "disposed") return "Agent session stopped before completion.";
+      if (args.status === "failed") return "Agent session failed before completion.";
+      return null;
+    })();
+
+    setConvergenceBusy(false);
+    setConvergenceSessionId(null);
+    stopConvergenceSessionPoller();
+
+    await refreshDetailSurface({ includeInventory: true }).catch(() => {});
+
+    if (args.status === "completed") {
+      const publishBlocker = await getConvergencePublishBlocker(args.sessionId).catch(() => null);
+      if (publishBlocker) {
+        if (autoConvergeRef.current) {
+          stopAutoConvergePoller();
+          setConvergencePauseReason(publishBlocker);
+          setAutoConvergeWaitState({ phase: "paused", reason: publishBlocker });
+          saveConvergenceRuntime({
+            status: "paused",
+            pollerStatus: "paused",
+            activeSessionId: null,
+            activeHref,
+            pauseReason: publishBlocker,
+            errorMessage: publishBlocker,
+            lastPausedAt: now,
+            lastStoppedAt: now,
+          });
+        } else {
+          setActionError(publishBlocker);
+          saveConvergenceRuntime({
+            status: "failed",
+            pollerStatus: "stopped",
+            activeSessionId: null,
+            activeHref,
+            pauseReason: null,
+            errorMessage: publishBlocker,
+            lastStoppedAt: now,
+          });
+          setAutoConvergeWaitState({ phase: "idle" });
+        }
+        return;
+      }
+
+      if (autoConvergeRef.current) {
+        saveConvergenceRuntime({
+          status: "polling",
+          pollerStatus: "waiting_for_checks",
+          activeSessionId: null,
+          activeHref,
+          pauseReason: null,
+          errorMessage: null,
+          lastPolledAt: now,
+        });
+        setAutoConvergeWaitState({ phase: "waiting_checks", pendingCount: 0, totalCount: 0 });
+        startAutoConvergePollerRef.current();
+      } else {
+        saveConvergenceRuntime({
+          status: "idle",
+          pollerStatus: "idle",
+          activeSessionId: null,
+          activeHref,
+          pauseReason: null,
+          errorMessage: null,
+          lastStoppedAt: now,
+        });
+        setAutoConvergeWaitState({ phase: "idle" });
+      }
+      return;
+    }
+
+    if (autoConvergeRef.current) {
+      const reason = failureReason ?? "Agent session ended unexpectedly.";
+      stopAutoConvergePoller();
+      setConvergencePauseReason(reason);
+      setAutoConvergeWaitState({ phase: "paused", reason });
+      saveConvergenceRuntime({
+        status: "paused",
+        pollerStatus: "paused",
+        activeSessionId: null,
+        activeHref,
+        pauseReason: reason,
+        errorMessage: reason,
+        lastPausedAt: now,
+        lastStoppedAt: now,
+      });
+      return;
+    }
+
+    saveConvergenceRuntime({
+      status: args.status === "cancelled" ? "cancelled" : "failed",
+      pollerStatus: "stopped",
+      activeSessionId: null,
+      activeHref,
+      pauseReason: null,
+      errorMessage: failureReason,
+      lastStoppedAt: now,
+    });
+    setAutoConvergeWaitState({ phase: "idle" });
+  }, [getConvergencePublishBlocker, refreshDetailSurface, saveConvergenceRuntime, stopAutoConvergePoller, stopConvergenceSessionPoller]);
+
   const startAutoConvergePoller = React.useCallback(() => {
     stopAutoConvergePoller();
 
-    const scheduleTick = () => {
+    const scheduleTick = (delayMs = 60_000) => {
       autoConvergePollerRef.current = setTimeout(async () => {
         if (!autoConvergeRef.current) { stopAutoConvergePoller(); return; }
         try {
@@ -806,6 +1116,7 @@ export function PrDetailPane({
             window.ade.prs.issueInventorySync(pr.id),
           ]);
           setInventorySnapshot(snapshot);
+          setConvergenceChecks(freshChecks);
 
           // Skip rebase logic while an agent session is still active
           if (!convergenceSessionIdRef.current) {
@@ -818,6 +1129,16 @@ export function PrDetailPane({
               if (rebasePolicy === "pause") {
                 stopAutoConvergePoller();
                 setConvergencePauseReason("PR is behind base branch. Rebase needed to continue.");
+                setAutoConvergeWaitState({ phase: "paused", reason: "PR is behind base branch. Rebase needed to continue." });
+                saveConvergenceRuntime({
+                  status: "paused",
+                  pollerStatus: "paused",
+                  activeSessionId: null,
+                  activeHref: convergenceSessionHref,
+                  pauseReason: "PR is behind base branch. Rebase needed to continue.",
+                  errorMessage: null,
+                  lastPausedAt: new Date().toISOString(),
+                });
                 return;
               }
               // rebasePolicy === "auto_rebase"
@@ -828,6 +1149,16 @@ export function PrDetailPane({
               if (behindCountRef.current >= 3) {
                 stopAutoConvergePoller();
                 setConvergencePauseReason("PR needs rebase but auto-rebase appears stuck. Resolve conflicts manually.");
+                setAutoConvergeWaitState({ phase: "paused", reason: "PR needs rebase but auto-rebase appears stuck. Resolve conflicts manually." });
+                saveConvergenceRuntime({
+                  status: "paused",
+                  pollerStatus: "paused",
+                  activeSessionId: null,
+                  activeHref: convergenceSessionHref,
+                  pauseReason: "PR needs rebase but auto-rebase appears stuck. Resolve conflicts manually.",
+                  errorMessage: null,
+                  lastPausedAt: new Date().toISOString(),
+                });
                 return;
               }
               scheduleTick(); // Keep polling, give auto-rebase time to work
@@ -841,6 +1172,18 @@ export function PrDetailPane({
             (c: PrCheck) => c.status === "queued" || c.status === "in_progress",
           );
           if (checksStillRunning) {
+            const pendingCount = freshChecks.filter((c: PrCheck) => c.status === "queued" || c.status === "in_progress").length;
+            setAutoConvergeWaitState({ phase: "waiting_checks", pendingCount, totalCount: freshChecks.length });
+            saveConvergenceRuntime({
+              status: "polling",
+              pollerStatus: "waiting_for_checks",
+              currentRound: snapshot.convergence.currentRound,
+              activeSessionId: null,
+              activeHref: convergenceSessionHref,
+              pauseReason: null,
+              errorMessage: null,
+              lastPolledAt: new Date().toISOString(),
+            });
             lastCommentCountRef.current = -1;
             stableCountRef.current = 0;
             scheduleTick(); // Keep polling
@@ -857,18 +1200,55 @@ export function PrDetailPane({
           lastCommentCountRef.current = currentCount;
 
           // Trigger next round: checks done + 2 consecutive stable polls + has new items
+          if (stableCountRef.current < 2) {
+            setAutoConvergeWaitState({ phase: "waiting_comments", stablePollCount: stableCountRef.current });
+            saveConvergenceRuntime({
+              status: "polling",
+              pollerStatus: "waiting_for_comments",
+              currentRound: snapshot.convergence.currentRound,
+              activeSessionId: null,
+              activeHref: convergenceSessionHref,
+              pauseReason: null,
+              errorMessage: null,
+              lastPolledAt: new Date().toISOString(),
+            });
+          }
           if (stableCountRef.current >= 2 && currentCount > 0) {
             stopAutoConvergePoller();
+            setAutoConvergeWaitState({ phase: "ready" });
             const convergence = snapshot.convergence;
             if (convergence.currentRound >= convergence.maxRounds) {
-              setAutoConverge(false);
-              return; // Max rounds reached
+              const reason = "Maximum auto-converge rounds reached.";
+              setConvergencePauseReason(reason);
+              setAutoConvergeWaitState({ phase: "paused", reason });
+              saveConvergenceRuntime({
+                status: "paused",
+                pollerStatus: "paused",
+                currentRound: snapshot.convergence.currentRound,
+                activeSessionId: null,
+                activeHref: convergenceSessionHrefRef.current,
+                pauseReason: reason,
+                errorMessage: null,
+                lastPausedAt: new Date().toISOString(),
+              });
+              return;
             }
             // Launch next round
             void handleRunNextRoundRef.current?.(autoConvergeAdditionalRef.current);
           } else if (stableCountRef.current >= 2 && currentCount === 0) {
             // No new items after stabilization — convergence is done
             stopAutoConvergePoller();
+            setAutoConvergeWaitState({ phase: "complete" });
+            saveConvergenceRuntime({
+              status: "converged",
+              pollerStatus: "idle",
+              currentRound: snapshot.convergence.currentRound,
+              activeSessionId: null,
+              activeHref: convergenceSessionHref,
+              pauseReason: null,
+              errorMessage: null,
+              lastStoppedAt: new Date().toISOString(),
+            });
 
             // Auto-merge if enabled
             const settings = pipelineSettingsRef.current;
@@ -889,23 +1269,60 @@ export function PrDetailPane({
                       : settings.mergeMethod;
                   const res = await window.ade.prs.land({ prId: pr.id, method });
                   if (res.success) {
+                    setAutoConvergeWaitState({ phase: "merged" });
                     setConvergenceMerged(true);
                     setAutoConverge(false);
+                    saveConvergenceRuntime({
+                      status: "merged",
+                      pollerStatus: "idle",
+                      activeSessionId: null,
+                      activeHref: convergenceSessionHref,
+                      pauseReason: null,
+                      errorMessage: null,
+                      lastStoppedAt: new Date().toISOString(),
+                    });
                     await onRefreshRef.current();
                   } else {
                     setActionError(res.error ?? "Auto-merge failed");
                     setAutoConverge(false);
+                    saveConvergenceRuntime({
+                      status: "failed",
+                      pollerStatus: "idle",
+                      activeSessionId: null,
+                      activeHref: convergenceSessionHref,
+                      pauseReason: null,
+                      errorMessage: res.error ?? "Auto-merge failed",
+                      lastStoppedAt: new Date().toISOString(),
+                    });
                   }
                 } catch (err: unknown) {
                   setActionError(
                     err instanceof Error ? err.message : "Auto-merge failed",
                   );
                   setAutoConverge(false);
+                  saveConvergenceRuntime({
+                    status: "failed",
+                    pollerStatus: "idle",
+                    activeSessionId: null,
+                    activeHref: convergenceSessionHref,
+                    pauseReason: null,
+                    errorMessage: err instanceof Error ? err.message : "Auto-merge failed",
+                    lastStoppedAt: new Date().toISOString(),
+                  });
                 }
               } else {
                 // Checks not passing — cannot auto-merge
                 setActionError("Auto-merge skipped: some checks are not passing");
                 setAutoConverge(false);
+                saveConvergenceRuntime({
+                  status: "failed",
+                  pollerStatus: "idle",
+                  activeSessionId: null,
+                  activeHref: convergenceSessionHref,
+                  pauseReason: null,
+                  errorMessage: "Auto-merge skipped: some checks are not passing",
+                  lastStoppedAt: new Date().toISOString(),
+                });
               }
             } else {
               setAutoConverge(false);
@@ -917,11 +1334,12 @@ export function PrDetailPane({
           // Poll failed, schedule retry
           scheduleTick();
         }
-      }, 60_000); // Poll every 60 seconds
+      }, delayMs); // Poll every delayMs (default 60 s)
     };
 
-    scheduleTick();
-  }, [pr.id, stopAutoConvergePoller]);
+    scheduleTick(0);
+  }, [convergenceSessionHref, pr.id, saveConvergenceRuntime, stopAutoConvergePoller]);
+  startAutoConvergePollerRef.current = startAutoConvergePoller;
 
   // Listen for agent session completion to start polling
   React.useEffect(() => {
@@ -929,25 +1347,85 @@ export function PrDetailPane({
     const unsubscribe = window.ade.prs.onAiResolutionEvent((event) => {
       if (event.sessionId !== convergenceSessionId) return;
       if (event.status === "completed" || event.status === "failed" || event.status === "cancelled") {
-        setConvergenceBusy(false);
-        setConvergenceSessionId(null);
-        void syncInventory();
-        // Start polling if auto-converge is on and session completed successfully
-        if (autoConverge && event.status === "completed") {
-          startAutoConvergePoller();
-        }
+        void handleConvergenceSessionTerminal({
+          sessionId: event.sessionId,
+          status: event.status,
+          message: event.message,
+        });
       }
     });
     return unsubscribe;
-  }, [autoConverge, convergenceSessionId, startAutoConvergePoller, syncInventory]);
+  }, [convergenceSessionId, handleConvergenceSessionTerminal]);
+
+  React.useEffect(() => {
+    stopConvergenceSessionPoller();
+    if (!convergenceSessionId) return;
+
+    let cancelled = false;
+    const pollSessionState = async () => {
+      try {
+        const detail = await window.ade.sessions.get(convergenceSessionId);
+        if (cancelled || convergenceSessionIdRef.current !== convergenceSessionId) return;
+        if (!detail || detail.status === "running") {
+          convergenceSessionPollerRef.current = window.setTimeout(() => {
+            void pollSessionState();
+          }, 2_000);
+          return;
+        }
+        const terminalStatus: "completed" | "failed" | "disposed" =
+          detail.status === "completed"
+            ? "completed"
+            : detail.status === "disposed"
+              ? "disposed"
+              : "failed";
+        void handleConvergenceSessionTerminal({
+          sessionId: convergenceSessionId,
+          status: terminalStatus,
+        });
+      } catch {
+        if (cancelled || convergenceSessionIdRef.current !== convergenceSessionId) return;
+        convergenceSessionPollerRef.current = window.setTimeout(() => {
+          void pollSessionState();
+        }, 5_000);
+      }
+    };
+
+    void pollSessionState();
+    return () => {
+      cancelled = true;
+      stopConvergenceSessionPoller();
+    };
+  }, [convergenceSessionId, handleConvergenceSessionTerminal, stopConvergenceSessionPoller]);
+
+  React.useEffect(() => {
+    if (!autoConverge || convergenceSessionId) {
+      if (!convergenceSessionId) stopAutoConvergePoller();
+      return;
+    }
+    if (autoConvergeWaitState.phase === "waiting_checks" || autoConvergeWaitState.phase === "waiting_comments") {
+      if (!autoConvergePollerRef.current) {
+        startAutoConvergePoller();
+      }
+      return;
+    }
+    if (
+      autoConvergeWaitState.phase === "idle"
+      || autoConvergeWaitState.phase === "paused"
+      || autoConvergeWaitState.phase === "complete"
+      || autoConvergeWaitState.phase === "merged"
+    ) {
+      stopAutoConvergePoller();
+    }
+  }, [autoConverge, autoConvergeWaitState.phase, convergenceSessionId, startAutoConvergePoller, stopAutoConvergePoller]);
 
   // Cleanup poller on unmount
   React.useEffect(() => {
     return () => {
       if (autoConvergeTimerRef.current) clearTimeout(autoConvergeTimerRef.current);
       stopAutoConvergePoller();
+      stopConvergenceSessionPoller();
     };
-  }, [stopAutoConvergePoller]);
+  }, [stopAutoConvergePoller, stopConvergenceSessionPoller]);
 
   const resolveIssueScope = React.useCallback((): "both" | "checks" | "comments" => {
     const a = issueResolutionAvailability;
@@ -957,13 +1435,29 @@ export function PrDetailPane({
   }, [issueResolutionAvailability]);
 
   const handleRunNextRound = React.useCallback(async (additionalInstructions: string) => {
+    const launchingAutoConverge = autoConverge;
     setConvergenceBusy(true);
     setActionError(null);
+    autoConvergeAdditionalRef.current = additionalInstructions;
     try {
       const snapshot = await syncInventory();
       if (!snapshot) throw new Error("Failed to sync inventory");
       const hasNew = snapshot.items.some((item) => item.state === "new");
       if (!hasNew) {
+        if (launchingAutoConverge) {
+          setAutoConvergeWaitState({ phase: "complete" });
+          saveConvergenceRuntime({
+            autoConvergeEnabled: true,
+            status: "converged",
+            pollerStatus: "idle",
+            currentRound: snapshot.convergence.currentRound,
+            activeSessionId: null,
+            activeHref: convergenceSessionHrefRef.current,
+            pauseReason: null,
+            errorMessage: null,
+            lastStoppedAt: new Date().toISOString(),
+          });
+        }
         setConvergenceBusy(false);
         return;
       }
@@ -977,13 +1471,45 @@ export function PrDetailPane({
         additionalInstructions,
       });
 
+      const currentRound = snapshot.convergence.currentRound + 1;
       setConvergenceSessionId(result.sessionId);
+      setConvergenceSessionHref(result.href);
+      setAutoConvergeWaitState({ phase: "agent_running", sessionId: result.sessionId });
+      setConvergencePauseReason(null);
+      setConvergenceMerged(false);
+      saveConvergenceRuntime({
+        autoConvergeEnabled: launchingAutoConverge,
+        status: "running",
+        pollerStatus: "idle",
+        currentRound,
+        activeSessionId: result.sessionId,
+        activeLaneId: pr.laneId,
+        activeHref: result.href,
+        pauseReason: null,
+        errorMessage: null,
+        lastStartedAt: new Date().toISOString(),
+      });
       void syncInventory();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Failed to launch agent");
+      const message = err instanceof Error ? err.message : "Failed to launch agent";
+      setActionError(message);
       setConvergenceBusy(false);
+      if (launchingAutoConverge) {
+        setConvergencePauseReason(message);
+        setAutoConvergeWaitState({ phase: "paused", reason: message });
+        saveConvergenceRuntime({
+          autoConvergeEnabled: true,
+          status: "paused",
+          pollerStatus: "paused",
+          activeSessionId: null,
+          activeHref: convergenceSessionHrefRef.current,
+          pauseReason: message,
+          errorMessage: message,
+          lastPausedAt: new Date().toISOString(),
+        });
+      }
     }
-  }, [pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, syncInventory, resolveIssueScope]);
+  }, [autoConverge, pr.id, pr.laneId, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope, saveConvergenceRuntime, syncInventory]);
 
   // Keep ref in sync for the auto-converge poller
   handleRunNextRoundRef.current = handleRunNextRound;
@@ -1006,16 +1532,73 @@ export function PrDetailPane({
     }
   }, [pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope]);
 
-  const handleAutoConvergeToggle = React.useCallback((enabled: boolean) => {
+  const handleAutoConvergeToggle = React.useCallback(async (enabled: boolean) => {
     setAutoConverge(enabled);
     if (!enabled) {
       stopAutoConvergePoller();
+      const activeSessionId = convergenceSessionIdRef.current;
+      if (activeSessionId) {
+        // Try to stop the running session. Only clear the session handle on
+        // confirmed success so the user retains the ability to retry if the
+        // stop call fails.
+        try {
+          await window.ade.prs.aiResolutionStop({ sessionId: activeSessionId });
+          // Stop succeeded -- clear session handle and mark stopped.
+          setConvergenceBusy(false);
+          setConvergenceSessionId(null);
+          setConvergenceSessionHref(null);
+          setAutoConvergeWaitState({ phase: "idle" });
+          setConvergencePauseReason(null);
+          saveConvergenceRuntime({
+            autoConvergeEnabled: false,
+            status: "stopped",
+            pollerStatus: "stopped",
+            activeSessionId: null,
+            activeHref: null,
+            pauseReason: null,
+            errorMessage: null,
+            lastStoppedAt: new Date().toISOString(),
+          });
+        } catch (err: unknown) {
+          // Stop failed -- keep the session handle so the user can retry.
+          setActionError(
+            `Failed to stop session: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          saveConvergenceRuntime({
+            autoConvergeEnabled: false,
+            status: "running",
+            pollerStatus: "idle",
+            activeSessionId,
+            activeHref: convergenceSessionHrefRef.current,
+            pauseReason: null,
+            errorMessage: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        setAutoConvergeWaitState({ phase: "idle" });
+        setConvergenceSessionHref(null);
+        setConvergencePauseReason(null);
+        saveConvergenceRuntime({
+          autoConvergeEnabled: false,
+          status: "stopped",
+          pollerStatus: "stopped",
+          activeSessionId: null,
+          activeHref: null,
+          pauseReason: null,
+          errorMessage: null,
+          lastStoppedAt: new Date().toISOString(),
+        });
+      }
       if (autoConvergeTimerRef.current) {
         clearTimeout(autoConvergeTimerRef.current);
         autoConvergeTimerRef.current = null;
       }
+    } else {
+      saveConvergenceRuntime({
+        autoConvergeEnabled: true,
+      });
     }
-  }, [stopAutoConvergePoller]);
+  }, [saveConvergenceRuntime, stopAutoConvergePoller]);
 
   const handleMarkDismissed = React.useCallback(async (itemIds: string[], reason: string) => {
     try {
@@ -1036,21 +1619,28 @@ export function PrDetailPane({
   }, [pr.id, syncInventory]);
 
   const handleResetInventory = React.useCallback(async () => {
-    await window.ade.prs.issueInventoryReset(pr.id);
-    setInventorySnapshot(null);
-    setAutoConverge(false);
-    setConvergenceSessionId(null);
-    if (autoConvergeTimerRef.current) {
-      clearTimeout(autoConvergeTimerRef.current);
-      autoConvergeTimerRef.current = null;
+    try {
+      await window.ade.prs.issueInventoryReset(pr.id);
+      await resetConvergenceState(pr.id);
+      setInventorySnapshot(null);
+      setConvergenceBusy(false);
+      setAutoConverge(false);
+      setConvergenceSessionId(null);
+      setConvergenceSessionHref(null);
+      setConvergenceMerged(false);
+      setConvergencePauseReason(null);
+      setAutoConvergeWaitState({ phase: "idle" });
+      await refreshDetailSurface({ includeInventory: true });
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (autoConvergeTimerRef.current) {
+        clearTimeout(autoConvergeTimerRef.current);
+        autoConvergeTimerRef.current = null;
+      }
+      stopAutoConvergePoller();
     }
-  }, [pr.id]);
-
-  const handleOpenConvergencePanel = React.useCallback(() => {
-    setShowConvergencePanel(true);
-    void loadDetail();
-    void onRefresh();
-  }, [loadDetail, onRefresh]);
+  }, [pr.id, refreshDetailSurface, resetConvergenceState, stopAutoConvergePoller]);
 
   const localBehindCount = laneForPr?.status?.behind ?? 0;
 
@@ -1059,13 +1649,17 @@ export function PrDetailPane({
   const rc = getPrReviewsBadge(pr.reviewStatus);
   const TAB_ACTIVE_COLORS: Record<DetailTab, string> = {
     overview: COLORS.accent,
+    convergence: COLORS.accent,
     files: COLORS.info,
     checks: COLORS.success,
     activity: COLORS.warning,
   };
 
+  const newIssueCount = inventorySnapshot?.items.filter(i => i.state === "new").length ?? 0;
+
   const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
     { id: "overview", label: "Overview", icon: Eye },
+    { id: "convergence", label: "Path to Merge", icon: Sparkle, count: newIssueCount > 0 ? newIssueCount : undefined },
     { id: "files", label: "Files", icon: Code, count: files.length },
     { id: "checks", label: "CI / Checks", icon: Play, count: checks.length + actionRuns.reduce((sum, run) => sum + run.jobs.length, 0) },
     { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: activity.length > 0 ? activity.length : (comments.length + reviews.length) },
@@ -1177,16 +1771,7 @@ export function PrDetailPane({
 
           {/* Right-side action buttons */}
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-            {issueResolutionAvailability.hasAnyActionableIssues ? (
-              <button
-                type="button"
-                onClick={handleOpenConvergencePanel}
-                style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}
-              >
-                <Sparkle size={14} weight="fill" /> Path to Merge
-              </button>
-            ) : null}
-            <button type="button" onClick={() => void onRefresh()} style={outlineButton({ height: 30, padding: "0 8px" })} title="Refresh">
+            <button type="button" onClick={() => void handleRefresh()} style={outlineButton({ height: 30, padding: "0 8px" })} title="Refresh">
               <ArrowsClockwise size={14} weight="bold" />
             </button>
             {queueContext && onOpenQueueView ? (
@@ -1266,6 +1851,88 @@ export function PrDetailPane({
             lanes={lanes}
           />
         )}
+        {activeTab === "convergence" && (
+          <PrConvergencePanel
+            prNumber={pr.githubPrNumber}
+            prTitle={pr.title}
+            headBranch={pr.headBranch}
+            baseBranch={pr.baseBranch}
+            items={mapInventoryItems(inventorySnapshot)}
+            convergence={mapConvergenceStatus(inventorySnapshot)}
+            checks={convergenceChecks}
+            modelId={resolverModel}
+            reasoningEffort={resolverReasoningLevel}
+            permissionMode={resolverPermissionMode}
+            busy={convergenceBusy}
+            autoConverge={autoConverge}
+            pipelineSettings={pipelineSettings}
+            waitState={autoConvergeWaitState}
+            onPipelineSettingsChange={(partial) => {
+              const prev = pipelineSettings;
+              const next = { ...pipelineSettings, ...partial };
+              setPipelineSettings(next);
+              pipelineSettingsRef.current = next;
+              window.ade.prs.pipelineSettingsSave(pr.id, partial).catch((err: unknown) => {
+                setPipelineSettings(prev);
+                pipelineSettingsRef.current = prev;
+                setActionError(err instanceof Error ? err.message : String(err));
+              });
+            }}
+            onModelChange={setResolverModel}
+            onReasoningEffortChange={setResolverReasoningLevel}
+            onPermissionModeChange={setResolverPermissionMode}
+            onRunNextRound={handleRunNextRound}
+            onAutoConvergeChange={handleAutoConvergeToggle}
+            onCopyPrompt={handleConvergenceCopyPrompt}
+            onMarkDismissed={handleMarkDismissed}
+            onMarkEscalated={handleMarkEscalated}
+            onResetInventory={handleResetInventory}
+            onViewAgentSession={(sessionId) => {
+              const href = convergenceSessionHref
+                ?? (sessionId.startsWith("http://") || sessionId.startsWith("https://") || sessionId.startsWith("/")
+                  ? sessionId
+                  : (pr.laneId ? buildSessionHref(pr.laneId, sessionId) : null));
+              if (href && onNavigate) {
+                onNavigate(href);
+              }
+            }}
+            onStopAutoConverge={() => handleAutoConvergeToggle(false)}
+            onResumePause={() => {
+              setConvergencePauseReason(null);
+              setAutoConvergeWaitState({ phase: "idle" });
+              behindCountRef.current = 0;
+              saveConvergenceRuntime({
+                status: "polling",
+                pollerStatus: "scheduled",
+                pauseReason: null,
+              });
+              startAutoConvergePoller();
+            }}
+            onDismissPause={() => {
+              setConvergencePauseReason(null);
+              setAutoConvergeWaitState({ phase: "idle" });
+              behindCountRef.current = 0;
+              setAutoConverge(false);
+              saveConvergenceRuntime({
+                autoConvergeEnabled: false,
+                status: "stopped",
+                pollerStatus: "stopped",
+                pauseReason: null,
+                errorMessage: null,
+              });
+            }}
+            onDismissMerged={() => {
+              setConvergenceMerged(false);
+              setAutoConvergeWaitState({ phase: "idle" });
+              saveConvergenceRuntime({
+                status: "idle",
+                pollerStatus: "idle",
+                pauseReason: null,
+                errorMessage: null,
+              });
+            }}
+          />
+        )}
         {activeTab === "files" && (
           <FilesTab files={files} expandedFile={expandedFile} setExpandedFile={setExpandedFile} />
         )}
@@ -1313,52 +1980,6 @@ export function PrDetailPane({
         onPermissionModeChange={setResolverPermissionMode}
         onLaunch={handleLaunchIssueResolver}
         onCopyPrompt={handleCopyIssueResolverPrompt}
-      />
-      <PrConvergencePanel
-        open={showConvergencePanel}
-        prNumber={pr.githubPrNumber}
-        prTitle={pr.title}
-        headBranch={pr.headBranch}
-        baseBranch={pr.baseBranch}
-        items={mapInventoryItems(inventorySnapshot)}
-        convergence={mapConvergenceStatus(inventorySnapshot)}
-        checks={checks}
-        modelId={resolverModel}
-        reasoningEffort={resolverReasoningLevel}
-        permissionMode={resolverPermissionMode}
-        busy={convergenceBusy}
-        agentSessionId={convergenceSessionId}
-        autoConverge={autoConverge}
-        pipelineSettings={pipelineSettings}
-        onPipelineSettingsChange={(partial) => {
-          const next = { ...pipelineSettings, ...partial };
-          setPipelineSettings(next);
-          pipelineSettingsRef.current = next;
-          void window.ade.prs.pipelineSettingsSave(pr.id, partial);
-        }}
-        onOpenChange={setShowConvergencePanel}
-        onModelChange={setResolverModel}
-        onReasoningEffortChange={setResolverReasoningLevel}
-        onPermissionModeChange={setResolverPermissionMode}
-        onRunNextRound={handleRunNextRound}
-        onAutoConvergeChange={handleAutoConvergeToggle}
-        onCopyPrompt={handleConvergenceCopyPrompt}
-        onMarkDismissed={handleMarkDismissed}
-        onMarkEscalated={handleMarkEscalated}
-        onResetInventory={handleResetInventory}
-        pauseReason={convergencePauseReason}
-        onResumePause={() => {
-          setConvergencePauseReason(null);
-          behindCountRef.current = 0;
-          startAutoConvergePoller();
-        }}
-        onDismissPause={() => {
-          setConvergencePauseReason(null);
-          behindCountRef.current = 0;
-          setAutoConverge(false);
-        }}
-        convergenceMerged={convergenceMerged}
-        onDismissMerged={() => setConvergenceMerged(false)}
       />
     </div>
   );
@@ -1586,7 +2207,7 @@ type OverviewTabProps = {
 };
 
 function OverviewTab(props: OverviewTabProps) {
-  const { pr, detail, status, checks, reviews, comments, detailBusy, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;
+  const { pr, detail, status, checks, reviews, comments, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;
   const [checksExpanded, setChecksExpanded] = React.useState(false);
   const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(mergeMethod);
   const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
@@ -1616,7 +2237,7 @@ function OverviewTab(props: OverviewTabProps) {
 
   // Checks summary
   const checksSummary = summarizeChecks(checks);
-  const { allChecksPassed, someChecksFailing, checksRunning } = checksSummary;
+  const { someChecksFailing, checksRunning } = checksSummary;
   const checksRowVisuals = getChecksRowVisuals(checksSummary);
 
   // Review status from pr
@@ -2652,10 +3273,6 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
                 {isExpanded && hasSteps && (
                   <div style={{ borderTop: `1px solid ${COLORS.border}`, background: "rgba(0,0,0,0.08)", padding: "8px 16px 8px 52px" }}>
                     {item.steps!.map((step) => {
-                      const stepColor = step.conclusion === "success" ? COLORS.success
-                        : step.conclusion === "failure" ? COLORS.danger
-                        : step.conclusion === "skipped" ? COLORS.textDim
-                        : COLORS.warning;
                       return (
                         <div key={step.number} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
                           {step.conclusion === "success" ? <CheckCircle size={12} weight="fill" style={{ color: COLORS.success }} /> :

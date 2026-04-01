@@ -11,6 +11,7 @@ import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
 import { isMissionLaneHiddenByDefault } from "../lanes/laneUtils";
 import { buildPrsRouteSearch, parsePrsRouteState } from "./prsRouteState";
+import { resolveRouteRebaseSelection } from "./shared/rebaseNeedUtils";
 
 type SurfaceMode = "github" | "workflows";
 
@@ -28,6 +29,7 @@ function PRsPageInner() {
     setSelectedPrId,
     selectedQueueGroupId,
     setSelectedQueueGroupId,
+    rebaseNeeds,
     selectedRebaseItemId,
     setSelectedRebaseItemId,
     loading,
@@ -66,7 +68,10 @@ function PRsPageInner() {
         });
         const tab = routeState.tab;
         const workflowTab = routeState.workflowTab;
-        const laneId = routeState.laneId;
+        const routeRebaseItemId = resolveRouteRebaseSelection({
+          rebaseNeeds,
+          routeItemId: routeState.laneId,
+        });
 
         if (tab === "github" || tab === "normal") {
           setActiveTab("normal");
@@ -86,7 +91,7 @@ function PRsPageInner() {
           setSelectedQueueGroupId(routeState.queueGroupId ?? null);
         }
         if (tab === "rebase" || workflowTab === "rebase") {
-          setSelectedRebaseItemId(laneId ?? null);
+          setSelectedRebaseItemId(routeRebaseItemId);
         }
       } catch {
         // Ignore malformed URLs and fall back to current state.
@@ -100,7 +105,7 @@ function PRsPageInner() {
       window.removeEventListener("popstate", syncFromLocation);
       window.removeEventListener("hashchange", syncFromLocation);
     };
-  }, [location.search, setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId]);
+  }, [location.search, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId]);
 
   React.useEffect(() => {
     const nextSearch = buildPrsRouteSearch({

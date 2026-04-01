@@ -461,6 +461,30 @@ const MOCK_STATUS_BY_PR: Record<string, any> = {
   "pr-5": { prId: "pr-5", state: "open", checksStatus: "passing", reviewStatus: "none", isMergeable: true, mergeConflicts: false, behindBaseBy: 3 },
 };
 
+const MOCK_CONVERGENCE_RUNTIME: Record<string, any> = {};
+
+function createDefaultConvergenceRuntime(prId: string) {
+  const nowIso = new Date().toISOString();
+  return {
+    prId,
+    autoConvergeEnabled: false,
+    status: "idle",
+    pollerStatus: "idle",
+    currentRound: 0,
+    activeSessionId: null,
+    activeLaneId: null,
+    activeHref: null,
+    pauseReason: null,
+    errorMessage: null,
+    lastStartedAt: null,
+    lastPolledAt: null,
+    lastPausedAt: null,
+    lastStoppedAt: null,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+}
+
 // ── Rebase Needs (all urgency categories) ─────────────────────
 const MOCK_REBASE_NEEDS: any[] = [
   // Attention: behind + conflicts predicted
@@ -1511,6 +1535,36 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         laneId: "lane-dashboard",
         href: "/work?laneId=lane-dashboard&sessionId=mock-pr-issue-session",
       }),
+      convergenceStateGet: async (prId: string) => {
+        const stored = MOCK_CONVERGENCE_RUNTIME[prId] ?? createDefaultConvergenceRuntime(prId);
+        return { ...stored };
+      },
+      convergenceStateSave: async (prId: string, state: Record<string, any>) => {
+        const nowIso = new Date().toISOString();
+        const existing = MOCK_CONVERGENCE_RUNTIME[prId] ?? createDefaultConvergenceRuntime(prId);
+        // Only allow known ConvergenceRuntimeState keys (mirror real backend validation)
+        const allowedKeys = new Set([
+          "autoConvergeEnabled", "status", "pollerStatus", "currentRound",
+          "activeSessionId", "activeLaneId", "activeHref", "pauseReason",
+          "errorMessage", "lastStartedAt", "lastPolledAt", "lastPausedAt", "lastStoppedAt",
+        ]);
+        const filtered: Record<string, any> = {};
+        for (const key of Object.keys(state)) {
+          if (allowedKeys.has(key)) filtered[key] = state[key];
+        }
+        const next = {
+          ...existing,
+          ...filtered,
+          prId,
+          createdAt: existing.createdAt,
+          updatedAt: nowIso,
+        };
+        MOCK_CONVERGENCE_RUNTIME[prId] = next;
+        return { ...next };
+      },
+      convergenceStateDelete: async (prId: string) => {
+        delete MOCK_CONVERGENCE_RUNTIME[prId];
+      },
       rebaseResolutionStart: async () => ({
         sessionId: "mock-rebase-session",
         laneId: "lane-dashboard",

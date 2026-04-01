@@ -17,8 +17,8 @@ export type AdeMcpLaunch = {
   resourcesPath: string | null;
 };
 
-type AdeMcpLaunchArgs = {
-  projectRoot?: string;
+export type DesktopAdeMcpLaunchArgs = {
+  projectRoot: string;
   workspaceRoot: string;
   runtimeRoot?: string;
   missionId?: string;
@@ -31,6 +31,14 @@ type AdeMcpLaunchArgs = {
   bundledProxyPath?: string;
   preferBundledProxy?: boolean;
 };
+
+function resolveRequiredRoot(value: unknown, label: "projectRoot" | "workspaceRoot"): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed.length) {
+    throw new Error(`ADE MCP launch requires a non-empty ${label}.`);
+  }
+  return path.resolve(trimmed);
+}
 
 function pathExists(targetPath: string | null | undefined): targetPath is string {
   return Boolean(targetPath && fs.existsSync(targetPath));
@@ -92,7 +100,7 @@ function buildLaunchEnv(args: {
   projectRoot: string;
   workspaceRoot: string;
   socketPath: string;
-} & Pick<AdeMcpLaunchArgs, "missionId" | "runId" | "stepId" | "attemptId" | "defaultRole" | "ownerId" | "computerUsePolicy">): Record<string, string> {
+} & Pick<DesktopAdeMcpLaunchArgs, "missionId" | "runId" | "stepId" | "attemptId" | "defaultRole" | "ownerId" | "computerUsePolicy">): Record<string, string> {
   return {
     ADE_PROJECT_ROOT: args.projectRoot,
     ADE_WORKSPACE_ROOT: args.workspaceRoot,
@@ -116,11 +124,9 @@ function buildLaunchEnv(args: {
   };
 }
 
-export function resolveDesktopAdeMcpLaunch(args: AdeMcpLaunchArgs): AdeMcpLaunch {
-  const projectRoot = typeof args.projectRoot === "string" && args.projectRoot.trim().length > 0
-    ? path.resolve(args.projectRoot)
-    : path.resolve(args.workspaceRoot);
-  const workspaceRoot = path.resolve(args.workspaceRoot);
+export function resolveDesktopAdeMcpLaunch(args: DesktopAdeMcpLaunchArgs): AdeMcpLaunch {
+  const projectRoot = resolveRequiredRoot(args.projectRoot, "projectRoot");
+  const workspaceRoot = resolveRequiredRoot(args.workspaceRoot, "workspaceRoot");
   const socketPath = resolveAdeLayout(projectRoot).socketPath;
   const resourcesPath = resolveResourcesPath();
   const env = buildLaunchEnv({
@@ -161,11 +167,21 @@ export function resolveDesktopAdeMcpLaunch(args: AdeMcpLaunchArgs): AdeMcpLaunch
   const srcEntry = path.join(mcpServerDir, "src", "index.ts");
 
   if (fs.existsSync(builtEntry)) {
+    // Native modules (e.g. node-pty) are externalised from the bundle and
+    // resolved at runtime via require().  When the MCP server runs as a
+    // plain `node` process (not inside Electron), NODE_PATH must include
+    // the desktop app's node_modules so those externals can be found.
+    const desktopNodeModules = path.resolve(runtimeRoot, "apps", "desktop", "node_modules");
+    const existingNodePath = env.NODE_PATH ?? process.env.NODE_PATH ?? "";
+    const nodePath = existingNodePath
+      ? `${desktopNodeModules}${path.delimiter}${existingNodePath}`
+      : desktopNodeModules;
+
     return {
       mode: "headless_built",
       command: "node",
       cmdArgs: [builtEntry, "--project-root", projectRoot, "--workspace-root", workspaceRoot],
-      env,
+      env: { ...env, NODE_PATH: nodePath },
       entryPath: builtEntry,
       runtimeRoot,
       socketPath,

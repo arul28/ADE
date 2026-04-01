@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  X,
   CircleNotch,
   CheckCircle,
   Warning,
@@ -10,8 +9,8 @@ import {
   Eye,
   Trash,
   ArrowUp,
-  GitBranch,
   Play,
+  Stop,
 } from "@phosphor-icons/react";
 import type { AiPermissionMode, PipelineSettings, PrCheck } from "../../../../shared/types";
 import {
@@ -22,7 +21,6 @@ import {
   primaryButton,
 } from "../../lanes/laneDesignTokens";
 import { PrPipelineSettings } from "./PrPipelineSettings";
-import { AgentChatPane } from "../../chat/AgentChatPane";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,8 +48,17 @@ export type ConvergenceStatus = {
   maxRounds: number;
 };
 
+export type AutoConvergeWaitState =
+  | { phase: "idle" }
+  | { phase: "agent_running"; sessionId: string }
+  | { phase: "waiting_checks"; pendingCount: number; totalCount: number }
+  | { phase: "waiting_comments"; stablePollCount: number }
+  | { phase: "ready" }
+  | { phase: "paused"; reason: string }
+  | { phase: "complete" }
+  | { phase: "merged" };
+
 export type PrConvergencePanelProps = {
-  open: boolean;
   prNumber: number;
   prTitle: string;
   headBranch: string;
@@ -63,11 +70,10 @@ export type PrConvergencePanelProps = {
   reasoningEffort: string;
   permissionMode: AiPermissionMode;
   busy: boolean;
-  agentSessionId: string | null;
   autoConverge: boolean;
   pipelineSettings: PipelineSettings;
+  waitState: AutoConvergeWaitState;
   onPipelineSettingsChange: (settings: Partial<PipelineSettings>) => void;
-  onOpenChange: (open: boolean) => void;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (value: string) => void;
   onPermissionModeChange: (mode: AiPermissionMode) => void;
@@ -77,10 +83,10 @@ export type PrConvergencePanelProps = {
   onMarkDismissed: (itemIds: string[], reason: string) => void;
   onMarkEscalated: (itemIds: string[]) => void;
   onResetInventory: () => void;
-  pauseReason?: string | null;
+  onViewAgentSession?: (sessionId: string) => void;
+  onStopAutoConverge?: () => void;
   onResumePause?: () => void;
   onDismissPause?: () => void;
-  convergenceMerged?: boolean;
   onDismissMerged?: () => void;
 };
 
@@ -238,7 +244,7 @@ function RoundIndicator({ current, max }: { current: number; max: number }) {
           else if (isCurrent) dotColor = COLORS.accent;
           return (
             <div
-              key={i}
+              key={`round-${i + 1}`}
               style={{
                 width: isCurrent ? 8 : 6,
                 height: isCurrent ? 8 : 6,
@@ -680,69 +686,292 @@ function CheckRow({ check }: { check: PrCheck }) {
   );
 }
 
-function AutoConvergeSwitch({
-  enabled,
-  onChange,
-  remainingRounds,
-  disabled,
+// ---------------------------------------------------------------------------
+// WaitingIndicator
+// ---------------------------------------------------------------------------
+
+function WaitingIndicator({
+  waitState,
+  convergence,
+  onViewSession,
+  onResumePause,
+  onDismissPause,
+  onDismissMerged,
+  onStop,
 }: {
-  enabled: boolean;
-  onChange: (enabled: boolean) => void;
-  remainingRounds: number;
-  disabled: boolean;
+  waitState: AutoConvergeWaitState;
+  convergence: ConvergenceStatus;
+  onViewSession?: (sessionId: string) => void;
+  onResumePause?: () => void;
+  onDismissPause?: () => void;
+  onDismissMerged?: () => void;
+  onStop?: () => void;
 }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => onChange(!enabled)}
+  if (waitState.phase === "idle") return null;
+
+  const bannerBase: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "10px 20px",
+    fontFamily: SANS_FONT,
+    fontSize: 12,
+    lineHeight: 1.4,
+  };
+
+  const stopLink: React.CSSProperties = {
+    fontFamily: MONO_FONT,
+    fontSize: 10,
+    fontWeight: 600,
+    color: COLORS.textMuted,
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    padding: "2px 6px",
+    borderRadius: 4,
+    textDecoration: "underline",
+    textUnderlineOffset: "2px",
+  };
+
+  if (waitState.phase === "agent_running") {
+    return (
+      <div
         style={{
-          position: "relative",
-          width: 36,
-          height: 20,
-          borderRadius: 999,
-          border: `1px solid ${enabled ? `${COLORS.accent}50` : COLORS.border}`,
-          background: enabled ? `${COLORS.accent}30` : "rgba(255,255,255,0.04)",
-          cursor: disabled ? "not-allowed" : "pointer",
-          padding: 0,
-          transition: "all 0.25s ease",
-          opacity: disabled ? 0.45 : 1,
+          ...bannerBase,
+          background: `${COLORS.accent}0A`,
+          borderTop: `1px solid ${COLORS.accent}30`,
+          color: COLORS.accent,
         }}
       >
-        <span
-          style={{
-            position: "absolute",
-            top: 2,
-            left: enabled ? 18 : 2,
-            width: 14,
-            height: 14,
-            borderRadius: 999,
-            background: enabled ? COLORS.accent : COLORS.textMuted,
-            boxShadow: enabled ? `0 0 6px ${COLORS.accent}40` : "none",
-            transition: "all 0.25s ease",
-          }}
-        />
-      </button>
-      <div style={{ display: "flex", flexDirection: "column" }}>
-        <span
-          style={{
-            fontFamily: SANS_FONT,
-            fontSize: 11,
-            fontWeight: 600,
-            color: enabled ? COLORS.textPrimary : COLORS.textMuted,
-          }}
-        >
-          Auto-Converge
-        </span>
-        {enabled ? (
-          <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.accent }}>
-            Will auto-run up to {remainingRounds} more round{remainingRounds !== 1 ? "s" : ""}
-          </span>
-        ) : null}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CircleNotch
+            size={14}
+            weight="bold"
+            style={{ animation: "convergeSpin 1s linear infinite", flexShrink: 0 }}
+          />
+          <span>Agent working on round {convergence.currentRound + 1}...</span>
+        </div>
+        {onViewSession && (
+          <button
+            type="button"
+            onClick={() => onViewSession(waitState.sessionId)}
+            style={{
+              ...stopLink,
+              color: COLORS.accent,
+              textDecoration: "none",
+              border: `1px solid ${COLORS.accent}30`,
+              padding: "4px 10px",
+              borderRadius: 6,
+              fontFamily: SANS_FONT,
+              fontSize: 11,
+              fontWeight: 600,
+            }}
+          >
+            View Session →
+          </button>
+        )}
       </div>
-    </div>
-  );
+    );
+  }
+
+  if (waitState.phase === "waiting_checks") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(245,158,11,0.08)",
+          borderTop: "1px solid rgba(245,158,11,0.25)",
+          color: "#F59E0B",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CircleNotch
+            size={14}
+            weight="bold"
+            style={{ animation: "convergeSpin 1s linear infinite", flexShrink: 0 }}
+          />
+          <span>
+            Waiting for {waitState.pendingCount} of {waitState.totalCount} CI checks to complete
+          </span>
+        </div>
+        {onStop && (
+          <button type="button" onClick={onStop} style={stopLink}>
+            Stop
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (waitState.phase === "waiting_comments") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(59,130,246,0.08)",
+          borderTop: "1px solid rgba(59,130,246,0.25)",
+          color: "#3B82F6",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 999,
+                background: "#3B82F6",
+                animation: "convergePulse 1.5s ease-in-out infinite",
+                flexShrink: 0,
+              }}
+            />
+            <span>Waiting for review comments to settle</span>
+          </div>
+          <span style={{ fontSize: 10, color: "rgba(59,130,246,0.7)", paddingLeft: 14 }}>
+            (poll {waitState.stablePollCount}/2 — comments must remain stable for ~2 min)
+          </span>
+        </div>
+        {onStop && (
+          <button type="button" onClick={onStop} style={stopLink}>
+            Stop
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (waitState.phase === "ready") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(34,197,94,0.08)",
+          borderTop: "1px solid rgba(34,197,94,0.25)",
+          color: "#22C55E",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: 999,
+              background: "#22C55E",
+              flexShrink: 0,
+            }}
+          />
+          <span>Ready to launch round {convergence.currentRound + 1}</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (waitState.phase === "paused") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(245,158,11,0.08)",
+          borderTop: "1px solid rgba(245,158,11,0.25)",
+          color: "#F59E0B",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+          <Warning size={16} weight="fill" style={{ flexShrink: 0 }} />
+          <span>Paused: {waitState.reason}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          {onResumePause && (
+            <button
+              type="button"
+              onClick={onResumePause}
+              style={outlineButton({
+                height: 28,
+                padding: "0 10px",
+                borderRadius: 6,
+                color: "#F59E0B",
+                borderColor: "rgba(245, 158, 11, 0.30)",
+                fontSize: 11,
+              })}
+            >
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Resume</span>
+            </button>
+          )}
+          {onDismissPause && (
+            <button
+              type="button"
+              onClick={onDismissPause}
+              style={outlineButton({
+                height: 28,
+                padding: "0 10px",
+                borderRadius: 6,
+                color: COLORS.textDim,
+                borderColor: `${COLORS.border}`,
+                fontSize: 11,
+              })}
+            >
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Dismiss</span>
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (waitState.phase === "complete") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(34,197,94,0.08)",
+          borderTop: "1px solid rgba(34,197,94,0.25)",
+          color: "#22C55E",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CheckCircle size={16} weight="fill" style={{ flexShrink: 0 }} />
+          <span>Convergence complete — all issues resolved</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (waitState.phase === "merged") {
+    return (
+      <div
+        style={{
+          ...bannerBase,
+          background: "rgba(34,197,94,0.08)",
+          borderTop: "1px solid rgba(34,197,94,0.25)",
+          color: "#22C55E",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+          <CheckCircle size={16} weight="bold" style={{ flexShrink: 0 }} />
+          <span style={{ fontWeight: 600 }}>Merged! PR was auto-merged after convergence.</span>
+        </div>
+        {onDismissMerged && (
+          <button
+            type="button"
+            onClick={onDismissMerged}
+            style={outlineButton({
+              height: 28,
+              padding: "0 10px",
+              borderRadius: 6,
+              color: COLORS.textDim,
+              borderColor: `${COLORS.border}`,
+              fontSize: 11,
+            })}
+          >
+            <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Dismiss</span>
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -750,11 +979,6 @@ function AutoConvergeSwitch({
 // ---------------------------------------------------------------------------
 
 export function PrConvergencePanel({
-  open,
-  prNumber,
-  prTitle,
-  headBranch,
-  baseBranch,
   items,
   convergence,
   checks,
@@ -762,11 +986,10 @@ export function PrConvergencePanel({
   reasoningEffort,
   permissionMode,
   busy,
-  agentSessionId,
   autoConverge,
   pipelineSettings,
+  waitState,
   onPipelineSettingsChange,
-  onOpenChange,
   onModelChange,
   onReasoningEffortChange,
   onPermissionModeChange,
@@ -776,62 +999,23 @@ export function PrConvergencePanel({
   onMarkDismissed,
   onMarkEscalated,
   onResetInventory,
-  pauseReason,
+  onViewAgentSession,
+  onStopAutoConverge,
   onResumePause,
   onDismissPause,
-  convergenceMerged,
   onDismissMerged,
 }: PrConvergencePanelProps) {
   const [additionalInstructions, setAdditionalInstructions] = React.useState("");
-  const scrollRef = React.useRef<HTMLDivElement | null>(null);
-  const previousFocusRef = React.useRef<Element | null>(null);
+  const [mode, setMode] = React.useState<"manual" | "auto-converge">(autoConverge ? "auto-converge" : "manual");
 
   React.useEffect(() => {
     ensureKeyframes();
   }, []);
 
   React.useEffect(() => {
-    if (open) {
-      setAdditionalInstructions("");
-    }
-  }, [open]);
-
-  // Focus management: capture previously focused element and focus the dialog
-  React.useEffect(() => {
-    if (!open) return;
-
-    previousFocusRef.current = document.activeElement;
-
-    // Focus the dialog container on next frame so the ref is attached
-    requestAnimationFrame(() => {
-      scrollRef.current?.focus();
-    });
-
-    return () => {
-      // Restore focus to the previously focused element on unmount
-      if (previousFocusRef.current instanceof HTMLElement) {
-        previousFocusRef.current.focus();
-      }
-    };
-  }, [open]);
-
-  // Escape key handler
-  React.useEffect(() => {
-    if (!open) return;
-
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape" && !busy) {
-        e.stopPropagation();
-        onOpenChange(false);
-      }
-    }
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [open, busy, onOpenChange]);
-
-
-  if (!open) return null;
+    if (autoConverge && mode !== "auto-converge") setMode("auto-converge");
+    if (!autoConverge && mode === "auto-converge") setMode("manual");
+  }, [autoConverge, mode]);
 
   // Group items by state
   const grouped: Record<IssueItemState, IssueInventoryItem[]> = {
@@ -848,7 +1032,9 @@ export function PrConvergencePanel({
   const reviewCommentItems = [...grouped.escalated, ...grouped.new, ...grouped.in_progress, ...grouped.fixed, ...grouped.dismissed];
   const failingChecks = checks.filter((c) => c.conclusion === "failure");
   const runningChecks = checks.filter((c) => c.status === "in_progress");
-  const allChecksPassing = failingChecks.length === 0 && runningChecks.length === 0;
+  const queuedChecks = checks.filter((c) => c.status === "queued");
+  const checksStillRunning = queuedChecks.length > 0 || runningChecks.length > 0;
+  const allChecksPassing = checks.length > 0 && checks.every((c) => c.conclusion === "success");
   const passingChecks = checks.filter((c) => c.conclusion === "success");
   const otherChecks = checks.filter(
     (c) => c.conclusion !== "failure" && c.conclusion !== "success" && c.status !== "in_progress",
@@ -857,423 +1043,381 @@ export function PrConvergencePanel({
 
   const hasNewItems = grouped.new.length > 0;
   const atMaxRounds = convergence.currentRound >= convergence.maxRounds;
-  const canRunNext = hasNewItems && !atMaxRounds && !busy;
-  const remainingRounds = Math.max(0, convergence.maxRounds - convergence.currentRound);
+  const hasActiveWaitState = waitState.phase === "agent_running" || waitState.phase === "waiting_checks" || waitState.phase === "waiting_comments" || waitState.phase === "paused";
+  const canRunNext = hasNewItems && !atMaxRounds && !busy && !checksStillRunning && !hasActiveWaitState;
 
-  const truncatedTitle =
-    prTitle.length > 60 ? `${prTitle.slice(0, 59)}...` : prTitle;
+  const launchDisabledReason = !hasNewItems ? "No new issues to resolve"
+    : atMaxRounds ? "Maximum rounds reached"
+    : busy ? "Agent is currently running"
+    : waitState.phase === "agent_running" ? "A convergence session is already running"
+    : waitState.phase === "waiting_checks" ? "Waiting for CI checks to finish"
+    : waitState.phase === "waiting_comments" ? "Waiting for review comments to settle"
+    : waitState.phase === "paused" ? "Convergence session is paused"
+    : checksStillRunning ? "CI checks are still running"
+    : null;
+
+  const isEmpty = items.length === 0 && checks.length === 0;
 
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(3, 4, 10, 0.78)",
-        backdropFilter: "blur(12px)",
         display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 140,
-        overflowY: "auto",
-        padding: "32px 20px",
-      }}
-      onClick={() => {
-        if (!busy) onOpenChange(false);
+        flexDirection: "column",
+        height: "100%",
+        background: COLORS.pageBg,
+        overflow: "hidden",
       }}
     >
+      {/* ---- Toolbar ---- */}
       <div
-        ref={scrollRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Path to Merge"
-        tabIndex={-1}
-        onClick={(e) => e.stopPropagation()}
         style={{
-          width: "min(1200px, calc(100vw - 40px))",
-          maxHeight: "min(800px, calc(100vh - 64px))",
           display: "flex",
-          flexDirection: "column",
-          background: "#0F0D14",
-          border: `1px solid rgba(255,255,255,0.07)`,
-          borderRadius: 18,
-          boxShadow: "0 40px 120px rgba(0,0,0,0.7), 0 0 1px rgba(255,255,255,0.08) inset",
-          overflow: "hidden",
-          animation: "convergeFadeIn 0.2s ease-out",
-          outline: "none",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          padding: "10px 16px",
+          borderBottom: `1px solid ${COLORS.border}`,
+          flexShrink: 0,
         }}
       >
-        {/* ---- Header ---- */}
+        {/* Left: Segmented control */}
         <div
           style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 16,
-            padding: "18px 20px 14px",
-            borderBottom: `1px solid ${COLORS.border}`,
-            background: "linear-gradient(180deg, rgba(15,13,20,1) 0%, rgba(15,13,20,0.95) 100%)",
-          }}
-        >
-          <div style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span
-                style={{
-                  fontFamily: SANS_FONT,
-                  fontSize: 10,
-                  fontWeight: 800,
-                  color: COLORS.accent,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.12em",
-                }}
-              >
-                Path to Merge
-              </span>
-              {autoConverge && (
-                <>
-                  <span
-                    style={{
-                      width: 1,
-                      height: 12,
-                      background: "rgba(255,255,255,0.08)",
-                    }}
-                  />
-                  <RoundIndicator current={convergence.currentRound} max={pipelineSettings.maxRounds} />
-                  <ConvergenceStatusPill status={convergence.state} />
-                </>
-              )}
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span
-                style={{
-                  padding: "4px 8px",
-                  borderRadius: 6,
-                  background: `${COLORS.accent}14`,
-                  color: COLORS.accent,
-                  fontFamily: MONO_FONT,
-                  fontSize: 11,
-                  fontWeight: 600,
-                }}
-              >
-                #{prNumber}
-              </span>
-              <span
-                style={{
-                  fontFamily: SANS_FONT,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: COLORS.textPrimary,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  maxWidth: 400,
-                }}
-              >
-                {truncatedTitle}
-              </span>
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <GitBranch size={12} style={{ color: COLORS.textDim }} />
-              <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
-                {headBranch}
-              </span>
-              <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>
-                into
-              </span>
-              <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
-                {baseBranch}
-              </span>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={() => onOpenChange(false)}
-            disabled={busy}
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              border: `1px solid ${COLORS.border}`,
-              background: "rgba(255,255,255,0.03)",
-              cursor: busy ? "default" : "pointer",
-              color: COLORS.textMuted,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0,
-              transition: "all 0.15s ease",
-            }}
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* ---- Stats bar ---- */}
-        <StatsBar items={items} />
-
-        {/* ---- Three-column body ---- */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr 300px",
-            gap: 16,
-            flex: 1,
-            minHeight: 0,
-            padding: "16px 20px",
+            display: "inline-flex",
+            borderRadius: 8,
+            border: `1px solid ${COLORS.border}`,
+            background: "rgba(255,255,255,0.02)",
             overflow: "hidden",
           }}
         >
-          {/* Left: Review Comments */}
+          {(["manual", "auto-converge"] as const).map((m) => {
+            const active = mode === m;
+            return (
+              <button
+                key={m}
+                type="button"
+                onClick={() => {
+                  setMode(m);
+                  onAutoConvergeChange(m === "auto-converge");
+                }}
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  fontWeight: active ? 700 : 500,
+                  color: active ? "#0F0D14" : COLORS.textSecondary,
+                  background: active ? COLORS.accent : "transparent",
+                  border: "none",
+                  padding: "6px 14px",
+                  cursor: "pointer",
+                  transition: "all 0.15s ease",
+                  letterSpacing: "0.02em",
+                }}
+              >
+                {m === "manual" ? "Manual" : "Auto-Converge"}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Right: Round indicator + status pill (auto-converge only) */}
+        {mode === "auto-converge" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <RoundIndicator current={convergence.currentRound} max={pipelineSettings.maxRounds} />
+            <ConvergenceStatusPill status={convergence.state} />
+          </div>
+        )}
+      </div>
+
+      {/* ---- Stats bar ---- */}
+      <StatsBar items={items} />
+
+      {/* ---- Scrollable content ---- */}
+      <div style={{ flex: 1, overflow: "auto", padding: "16px" }}>
+        {isEmpty ? (
           <div
             style={{
               display: "flex",
               flexDirection: "column",
-              minHeight: 0,
-              borderRadius: 10,
-              border: `1px solid ${COLORS.border}`,
-              background: "rgba(255,255,255,0.015)",
-              overflow: "hidden",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "60px 20px",
+              textAlign: "center",
+              gap: 8,
             }}
           >
-            <div
+            <span
               style={{
-                padding: "10px 14px",
-                borderBottom: `1px solid ${COLORS.border}`,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
+                fontFamily: SANS_FONT,
+                fontSize: 14,
+                fontWeight: 600,
+                color: COLORS.textSecondary,
               }}
             >
-              <ChatText size={14} weight="fill" style={{ color: "#F59E0B" }} />
-              <span
+              No issues inventoried yet.
+            </span>
+            <span
+              style={{
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                color: COLORS.textMuted,
+                lineHeight: 1.6,
+                maxWidth: 360,
+              }}
+            >
+              Sync review comments and CI checks to start the convergence loop.
+              Run the first round to discover actionable issues.
+            </span>
+          </div>
+        ) : (
+          <>
+            {/* Two-column grid: Review Comments | CI Checks */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 16,
+                marginBottom: 16,
+              }}
+            >
+              {/* Review Comments */}
+              <div
                 style={{
-                  fontFamily: SANS_FONT,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  color: COLORS.textPrimary,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.05em",
+                  display: "flex",
+                  flexDirection: "column",
+                  minHeight: 0,
+                  borderRadius: 10,
+                  border: `1px solid ${COLORS.border}`,
+                  background: "rgba(255,255,255,0.015)",
+                  overflow: "hidden",
                 }}
               >
-                Review Comments
-              </span>
-              <span
-                style={{
-                  marginLeft: "auto",
-                  fontFamily: MONO_FONT,
-                  fontSize: 10,
-                  color: "#F59E0B",
-                }}
-              >
-                {reviewCommentItems.length}
-              </span>
-              {reviewCommentItems.length > 0 ? (
-                <button
-                  type="button"
-                  title="Reset inventory"
-                  onClick={onResetInventory}
-                  disabled={busy}
+                <div
                   style={{
-                    display: "inline-flex",
+                    padding: "10px 14px",
+                    borderBottom: `1px solid ${COLORS.border}`,
+                    display: "flex",
                     alignItems: "center",
-                    justifyContent: "center",
-                    width: 24,
-                    height: 24,
-                    borderRadius: 6,
-                    border: `1px solid ${COLORS.border}`,
-                    background: "rgba(255,255,255,0.03)",
-                    cursor: busy ? "not-allowed" : "pointer",
-                    color: COLORS.textDim,
-                    padding: 0,
-                    flexShrink: 0,
-                    opacity: busy ? 0.45 : 1,
-                    transition: "all 0.15s ease",
+                    gap: 8,
                   }}
                 >
-                  <ArrowsClockwise size={11} />
-                </button>
-              ) : null}
-            </div>
-            <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
-              {reviewCommentItems.length > 0 ? (
-                <>
-                  {STATE_ORDER.map((state) => {
-                    const stateItems = grouped[state];
-                    if (stateItems.length === 0) return null;
-                    const meta = STATE_META[state];
-                    return (
-                      <div key={state} style={{ marginBottom: 8 }}>
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            padding: "6px 4px",
-                            borderBottom: `1px solid ${meta.accent}20`,
-                            marginBottom: 4,
-                          }}
-                        >
-                          <span style={{ color: meta.accent, display: "inline-flex", alignItems: "center" }}>
-                            {state === "in_progress" ? (
-                              <span style={{ animation: "convergeSpin 1.2s linear infinite", display: "inline-flex" }}>
-                                {meta.icon}
+                  <ChatText size={14} weight="fill" style={{ color: "#F59E0B" }} />
+                  <span
+                    style={{
+                      fontFamily: SANS_FONT,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: COLORS.textPrimary,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                    }}
+                  >
+                    Review Comments
+                  </span>
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      fontFamily: MONO_FONT,
+                      fontSize: 10,
+                      color: "#F59E0B",
+                    }}
+                  >
+                    {reviewCommentItems.length}
+                  </span>
+                  {reviewCommentItems.length > 0 ? (
+                    <button
+                      type="button"
+                      title="Reset inventory"
+                      onClick={onResetInventory}
+                      disabled={busy}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 24,
+                        height: 24,
+                        borderRadius: 6,
+                        border: `1px solid ${COLORS.border}`,
+                        background: "rgba(255,255,255,0.03)",
+                        cursor: busy ? "not-allowed" : "pointer",
+                        color: COLORS.textDim,
+                        padding: 0,
+                        flexShrink: 0,
+                        opacity: busy ? 0.45 : 1,
+                        transition: "all 0.15s ease",
+                      }}
+                    >
+                      <ArrowsClockwise size={11} />
+                    </button>
+                  ) : null}
+                </div>
+                <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
+                  {reviewCommentItems.length > 0 ? (
+                    <>
+                      {STATE_ORDER.map((state) => {
+                        const stateItems = grouped[state];
+                        if (stateItems.length === 0) return null;
+                        const meta = STATE_META[state];
+                        return (
+                          <div key={state} style={{ marginBottom: 8 }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "6px 4px",
+                                borderBottom: `1px solid ${meta.accent}20`,
+                                marginBottom: 4,
+                              }}
+                            >
+                              <span style={{ color: meta.accent, display: "inline-flex", alignItems: "center" }}>
+                                {state === "in_progress" ? (
+                                  <span style={{ animation: "convergeSpin 1.2s linear infinite", display: "inline-flex" }}>
+                                    {meta.icon}
+                                  </span>
+                                ) : (
+                                  meta.icon
+                                )}
                               </span>
-                            ) : (
-                              meta.icon
-                            )}
-                          </span>
-                          <span
-                            style={{
-                              fontFamily: SANS_FONT,
-                              fontSize: 10,
-                              fontWeight: 700,
-                              color: meta.accent,
-                              textTransform: "uppercase",
-                              letterSpacing: "0.05em",
-                            }}
-                          >
-                            {meta.label}
-                          </span>
-                          <span
-                            style={{
-                              marginLeft: "auto",
-                              fontFamily: MONO_FONT,
-                              fontSize: 9,
-                              fontWeight: 600,
-                              color: meta.accent,
-                            }}
-                          >
-                            {stateItems.length}
-                          </span>
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {stateItems.map((item) => {
-                            if (state === "fixed") return <FixedRow key={item.id} item={item} />;
-                            if (state === "dismissed") return <DismissedRow key={item.id} item={item} />;
-                            return (
-                              <IssueRow
-                                key={item.id}
-                                item={item}
-                                showAgent={state === "in_progress"}
-                                onDismiss={(id) => onMarkDismissed([id], "Dismissed from UI")}
-                                onEscalate={(id) => onMarkEscalated([id])}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </>
-              ) : (
+                              <span
+                                style={{
+                                  fontFamily: SANS_FONT,
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  color: meta.accent,
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.05em",
+                                }}
+                              >
+                                {meta.label}
+                              </span>
+                              <span
+                                style={{
+                                  marginLeft: "auto",
+                                  fontFamily: MONO_FONT,
+                                  fontSize: 9,
+                                  fontWeight: 600,
+                                  color: meta.accent,
+                                }}
+                              >
+                                {stateItems.length}
+                              </span>
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                              {stateItems.map((item) => {
+                                if (state === "fixed") return <FixedRow key={item.id} item={item} />;
+                                if (state === "dismissed") return <DismissedRow key={item.id} item={item} />;
+                                return (
+                                  <IssueRow
+                                    key={item.id}
+                                    item={item}
+                                    showAgent={state === "in_progress"}
+                                    onDismiss={(id) => onMarkDismissed([id], "Dismissed from UI")}
+                                    onEscalate={(id) => onMarkEscalated([id])}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </>
+                  ) : (
+                    <div style={{ padding: "28px 16px", textAlign: "center" }}>
+                      <span
+                        style={{
+                          fontFamily: SANS_FONT,
+                          fontSize: 12,
+                          color: COLORS.textMuted,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        No issues have been inventoried yet. Run the first round to discover issues from review comments.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* CI Checks */}
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  minHeight: 0,
+                  borderRadius: 10,
+                  border: `1px solid ${COLORS.border}`,
+                  background: "rgba(255,255,255,0.015)",
+                  overflow: "hidden",
+                }}
+              >
                 <div
                   style={{
-                    padding: "28px 16px",
-                    textAlign: "center",
+                    padding: "10px 14px",
+                    borderBottom: `1px solid ${COLORS.border}`,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
                   }}
                 >
+                  <Play size={14} weight="fill" style={{ color: checks.length === 0 ? COLORS.textMuted : allChecksPassing ? COLORS.success : failingChecks.length > 0 ? COLORS.danger : COLORS.warning }} />
                   <span
                     style={{
                       fontFamily: SANS_FONT,
-                      fontSize: 12,
-                      color: COLORS.textMuted,
-                      lineHeight: 1.6,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: COLORS.textPrimary,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
                     }}
                   >
-                    No issues have been inventoried yet. Run the first round to discover issues from review comments.
+                    CI Checks
                   </span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Middle: CI Checks */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              minHeight: 0,
-              borderRadius: 10,
-              border: `1px solid ${COLORS.border}`,
-              background: "rgba(255,255,255,0.015)",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                padding: "10px 14px",
-                borderBottom: `1px solid ${COLORS.border}`,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
-            >
-              <Play size={14} weight="fill" style={{ color: allChecksPassing ? COLORS.success : COLORS.danger }} />
-              <span
-                style={{
-                  fontFamily: SANS_FONT,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  color: COLORS.textPrimary,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.05em",
-                }}
-              >
-                CI Checks
-              </span>
-              <span
-                style={{
-                  marginLeft: "auto",
-                  fontFamily: MONO_FONT,
-                  fontSize: 10,
-                  color: allChecksPassing ? COLORS.success : COLORS.danger,
-                }}
-              >
-                {allChecksPassing ? "all passing" : `${failingChecks.length} failing`}
-              </span>
-            </div>
-            <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
-              {orderedChecks.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {orderedChecks.map((check) => (
-                    <CheckRow key={check.name} check={check} />
-                  ))}
-                </div>
-              ) : (
-                <div
-                  style={{
-                    padding: "28px 16px",
-                    textAlign: "center",
-                  }}
-                >
                   <span
                     style={{
-                      fontFamily: SANS_FONT,
-                      fontSize: 12,
-                      color: COLORS.textMuted,
-                      lineHeight: 1.6,
+                      marginLeft: "auto",
+                      fontFamily: MONO_FONT,
+                      fontSize: 10,
+                      color: checks.length === 0 ? COLORS.textMuted : allChecksPassing ? COLORS.success : failingChecks.length > 0 ? COLORS.danger : COLORS.warning,
                     }}
                   >
-                    No CI checks found.
+                    {checks.length === 0
+                      ? "no checks found"
+                      : allChecksPassing
+                        ? "all passing"
+                        : failingChecks.length > 0
+                          ? `${failingChecks.length} failing`
+                          : queuedChecks.length > 0 && runningChecks.length > 0
+                            ? `${queuedChecks.length} queued, ${runningChecks.length} running`
+                            : queuedChecks.length > 0
+                              ? `${queuedChecks.length} queued`
+                              : `${runningChecks.length} running`}
                   </span>
                 </div>
-              )}
+                <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
+                  {orderedChecks.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      {orderedChecks.map((check) => (
+                        <CheckRow key={check.name} check={check} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ padding: "28px 16px", textAlign: "center" }}>
+                      <span
+                        style={{
+                          fontFamily: SANS_FONT,
+                          fontSize: 12,
+                          color: COLORS.textMuted,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        No CI checks found.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
 
-          {/* Right: Settings column */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-              minHeight: 0,
-              overflow: "auto",
-            }}
-          >
             {/* Pipeline Settings */}
             <div
               style={{
@@ -1281,6 +1425,7 @@ export function PrConvergencePanel({
                 border: `1px solid ${COLORS.border}`,
                 background: "rgba(255,255,255,0.015)",
                 padding: 14,
+                marginBottom: 16,
               }}
             >
               <div
@@ -1299,8 +1444,7 @@ export function PrConvergencePanel({
               <PrPipelineSettings
                 settings={pipelineSettings}
                 onSettingsChange={onPipelineSettingsChange}
-                autoConverge={autoConverge}
-                onAutoConvergeChange={onAutoConvergeChange}
+                showAutoConvergeSettings={mode === "auto-converge"}
                 modelId={modelId}
                 reasoningEffort={reasoningEffort}
                 permissionMode={permissionMode}
@@ -1366,259 +1510,153 @@ export function PrConvergencePanel({
                 }}
               />
             </div>
+          </>
+        )}
+      </div>
 
-            {/* Agent session embed */}
-            {agentSessionId ? (
-              <div
-                style={{
-                  border: `1px solid ${COLORS.accentBorder}`,
-                  borderRadius: 10,
-                  overflow: "hidden",
-                  minHeight: 200,
-                  display: "flex",
-                  flexDirection: "column",
-                  flex: 1,
-                }}
-              >
-                <div
-                  style={{
-                    padding: "8px 12px",
-                    background: `${COLORS.accent}08`,
-                    borderBottom: `1px solid ${COLORS.border}`,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                  }}
-                >
-                  <CircleNotch
-                    size={12}
-                    weight="bold"
-                    style={{ color: COLORS.accent, animation: "convergeSpin 1s linear infinite" }}
-                  />
-                  <span
-                    style={{
-                      fontFamily: SANS_FONT,
-                      fontSize: 10,
-                      fontWeight: 700,
-                      color: COLORS.accent,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.06em",
-                    }}
-                  >
-                    Agent Session
-                  </span>
-                </div>
-                <div style={{ flex: 1, minHeight: 0 }}>
-                  <AgentChatPane
-                    laneId={null}
-                    lockSessionId={agentSessionId}
-                    hideSessionTabs
-                    availableModelIdsOverride={[modelId]}
-                    modelSelectionLocked
-                    permissionModeLocked
-                    presentation={{
-                      mode: "resolver",
-                      title: "Convergence Round",
-                      subtitle: `Round ${convergence.currentRound} of ${convergence.maxRounds}`,
-                      accentColor: COLORS.accent,
-                      chips: [
-                        { label: modelId, tone: "accent" },
-                        { label: `round ${convergence.currentRound}`, tone: "warning" },
-                      ],
-                      showMcpStatus: false,
-                    }}
-                  />
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
+      {/* ---- Waiting indicator ---- */}
+      {(mode === "auto-converge" || waitState.phase !== "idle") && (
+        <WaitingIndicator
+          waitState={waitState}
+          convergence={convergence}
+          onViewSession={onViewAgentSession}
+          onResumePause={onResumePause}
+          onDismissPause={onDismissPause}
+          onDismissMerged={onDismissMerged}
+          onStop={onStopAutoConverge}
+        />
+      )}
 
-        {/* ---- Pause banner (rebase needed) ---- */}
-        {pauseReason ? (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              padding: "10px 20px",
-              background: "rgba(245, 158, 11, 0.08)",
-              borderTop: `1px solid rgba(245, 158, 11, 0.25)`,
-              borderBottom: `1px solid rgba(245, 158, 11, 0.15)`,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
-              <Warning size={16} weight="fill" style={{ color: "#F59E0B", flexShrink: 0 }} />
-              <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: "#F59E0B", lineHeight: 1.4 }}>
-                Paused: {pauseReason}
-              </span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-              {onResumePause && (
-                <button
-                  type="button"
-                  onClick={onResumePause}
-                  style={outlineButton({
-                    height: 28,
-                    padding: "0 10px",
-                    borderRadius: 6,
-                    color: "#F59E0B",
-                    borderColor: "rgba(245, 158, 11, 0.30)",
-                    fontSize: 11,
-                  })}
-                >
-                  <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Resume</span>
-                </button>
-              )}
-              {onDismissPause && (
-                <button
-                  type="button"
-                  onClick={onDismissPause}
-                  style={outlineButton({
-                    height: 28,
-                    padding: "0 10px",
-                    borderRadius: 6,
-                    color: COLORS.textDim,
-                    borderColor: `${COLORS.border}`,
-                    fontSize: 11,
-                  })}
-                >
-                  <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Dismiss</span>
-                </button>
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        {/* ---- Merged celebration banner ---- */}
-        {convergenceMerged ? (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              padding: "10px 20px",
-              background: "rgba(34, 197, 94, 0.08)",
-              borderTop: `1px solid rgba(34, 197, 94, 0.25)`,
-              borderBottom: `1px solid rgba(34, 197, 94, 0.15)`,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
-              <CheckCircle size={16} weight="fill" style={{ color: "#22C55E", flexShrink: 0 }} />
-              <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: "#22C55E", fontWeight: 600, lineHeight: 1.4 }}>
-                Merged! PR was auto-merged after convergence completed.
-              </span>
-            </div>
-            {onDismissMerged && (
-              <button
-                type="button"
-                onClick={onDismissMerged}
-                style={outlineButton({
-                  height: 28,
-                  padding: "0 10px",
-                  borderRadius: 6,
-                  color: COLORS.textDim,
-                  borderColor: `${COLORS.border}`,
-                  fontSize: 11,
-                })}
-              >
-                <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Dismiss</span>
-              </button>
-            )}
-          </div>
-        ) : null}
-
-        {/* ---- Sticky action bar ---- */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            padding: "12px 20px",
-            borderTop: `1px solid ${COLORS.border}`,
-            background: "linear-gradient(180deg, rgba(15,13,20,0.96) 0%, rgba(15,13,20,1) 100%)",
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {autoConverge && (
-              <span style={{
-                fontFamily: MONO_FONT,
-                fontSize: 9,
-                fontWeight: 700,
-                color: COLORS.accent,
-                background: `${COLORS.accent}14`,
-                border: `1px solid ${COLORS.accent}30`,
-                borderRadius: 4,
-                padding: "3px 7px",
-                textTransform: "uppercase",
-                letterSpacing: "0.04em",
-              }}>
-                Auto-Converge
-              </span>
-            )}
-            {pipelineSettings.autoMerge && (
-              <span style={{
-                fontFamily: MONO_FONT,
-                fontSize: 9,
-                fontWeight: 700,
-                color: "#22C55E",
-                background: "rgba(34, 197, 94, 0.10)",
-                border: "1px solid rgba(34, 197, 94, 0.25)",
-                borderRadius: 4,
-                padding: "3px 7px",
-                textTransform: "uppercase",
-                letterSpacing: "0.04em",
-              }}>
-                Auto-Merge
-              </span>
-            )}
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginLeft: "auto" }}>
+      {/* ---- Action bar ---- */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          padding: "12px 16px",
+          borderTop: `1px solid ${COLORS.border}`,
+          background: "linear-gradient(180deg, rgba(15,13,20,0.96) 0%, rgba(15,13,20,1) 100%)",
+          flexShrink: 0,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {(mode === "auto-converge" || waitState.phase !== "idle") && (
             <button
               type="button"
-              disabled={busy}
-              onClick={() => void onCopyPrompt(additionalInstructions)}
+              onClick={onStopAutoConverge}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                height: 34,
+                padding: "0 12px",
+                borderRadius: 8,
+                border: "1px solid rgba(239,68,68,0.35)",
+                background: "rgba(239,68,68,0.08)",
+                color: "#EF4444",
+                fontFamily: SANS_FONT,
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <Stop size={13} weight="fill" />
+              Stop Auto-Converge
+            </button>
+          )}
+          {autoConverge && (
+            <span style={{
+              fontFamily: MONO_FONT,
+              fontSize: 9,
+              fontWeight: 700,
+              color: COLORS.accent,
+              background: `${COLORS.accent}14`,
+              border: `1px solid ${COLORS.accent}30`,
+              borderRadius: 4,
+              padding: "3px 7px",
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+            }}>
+              Auto-Converge
+            </span>
+          )}
+          {pipelineSettings.autoMerge && (
+            <span style={{
+              fontFamily: MONO_FONT,
+              fontSize: 9,
+              fontWeight: 700,
+              color: "#22C55E",
+              background: "rgba(34, 197, 94, 0.10)",
+              border: "1px solid rgba(34, 197, 94, 0.25)",
+              borderRadius: 4,
+              padding: "3px 7px",
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+            }}>
+              Auto-Merge
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginLeft: "auto" }}>
+          {waitState.phase === "agent_running" && onViewAgentSession && (
+            <button
+              type="button"
+              onClick={() => onViewAgentSession(waitState.sessionId)}
               style={outlineButton({
                 height: 34,
                 padding: "0 12px",
                 borderRadius: 8,
-                color: COLORS.info,
-                borderColor: `${COLORS.info}30`,
-                opacity: busy ? 0.45 : 1,
+                color: COLORS.accent,
+                borderColor: `${COLORS.accent}30`,
               })}
             >
-              <CopySimple size={13} />
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Copy Prompt</span>
+              <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>View Session →</span>
             </button>
-            <button
-              type="button"
-              disabled={!canRunNext}
-              onClick={() => void onRunNextRound(additionalInstructions)}
-              style={primaryButton({
-                height: 34,
-                padding: "0 16px",
-                borderRadius: 8,
-                opacity: canRunNext ? 1 : 0.45,
-                background: canRunNext ? COLORS.accent : "rgba(255,255,255,0.06)",
-                color: canRunNext ? "#0F0D14" : COLORS.textDim,
-                fontWeight: 700,
-              })}
-            >
-              {busy ? (
-                <CircleNotch size={13} weight="bold" style={{ animation: "convergeSpin 1s linear infinite" }} />
-              ) : (
-                <ArrowsClockwise size={13} weight="bold" />
-              )}
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>
-                {busy ? "Running..." : autoConverge ? `Start Round ${convergence.currentRound}` : "Launch Agent"}
-              </span>
-            </button>
-          </div>
+          )}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void onCopyPrompt(additionalInstructions)}
+            style={outlineButton({
+              height: 34,
+              padding: "0 12px",
+              borderRadius: 8,
+              color: COLORS.info,
+              borderColor: `${COLORS.info}30`,
+              opacity: busy ? 0.45 : 1,
+            })}
+          >
+            <CopySimple size={13} />
+            <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>Copy Prompt</span>
+          </button>
+          <button
+            type="button"
+            disabled={!canRunNext}
+            title={launchDisabledReason ?? undefined}
+            onClick={() => void onRunNextRound(additionalInstructions)}
+            style={primaryButton({
+              height: 34,
+              padding: "0 16px",
+              borderRadius: 8,
+              opacity: canRunNext ? 1 : 0.45,
+              background: canRunNext ? COLORS.accent : "rgba(255,255,255,0.06)",
+              color: canRunNext ? "#0F0D14" : COLORS.textDim,
+              fontWeight: 700,
+            })}
+          >
+            {busy ? (
+              <CircleNotch size={13} weight="bold" style={{ animation: "convergeSpin 1s linear infinite" }} />
+            ) : (
+              <ArrowsClockwise size={13} weight="bold" />
+            )}
+            <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>
+              {busy ? "Running..." : mode === "auto-converge" ? `Start Round ${convergence.currentRound + 1}` : "Launch Agent"}
+            </span>
+          </button>
         </div>
       </div>
     </div>

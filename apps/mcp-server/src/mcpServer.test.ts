@@ -202,6 +202,83 @@ function createRuntime() {
       stop: vi.fn(),
       getLogTail: vi.fn(() => "")
     },
+    issueInventoryService: (() => {
+      const runtimeByPr = new Map<string, Record<string, unknown>>();
+      const inventoryByPr = new Map<string, Record<string, unknown>>();
+      const pipelineByPr = new Map<string, Record<string, unknown>>();
+
+      const defaultRuntime = (prId: string) => ({
+        prId,
+        autoConvergeEnabled: false,
+        status: "idle",
+        pollerStatus: "idle",
+        currentRound: 0,
+        activeSessionId: null,
+        activeLaneId: null,
+        activeHref: null,
+        pauseReason: null,
+        errorMessage: null,
+        lastStartedAt: null,
+        lastPolledAt: null,
+        lastPausedAt: null,
+        lastStoppedAt: null,
+        createdAt: "2026-03-17T19:00:00.000Z",
+        updatedAt: "2026-03-17T19:00:00.000Z",
+      });
+
+      const defaultPipeline = () => ({
+        autoMerge: false,
+        mergeMethod: "repo_default",
+        maxRounds: 5,
+        onRebaseNeeded: "pause",
+      });
+
+      return {
+        syncFromPrData: vi.fn((prId: string) => {
+          const runtime = { ...defaultRuntime(prId), ...runtimeByPr.get(prId) };
+          const existingSnapshot = inventoryByPr.get(prId) ?? null;
+          const snapshot = {
+            prId,
+            items: existingSnapshot?.items ?? [],
+            convergence: {
+              currentRound: typeof runtime.currentRound === "number" ? runtime.currentRound : 0,
+              maxRounds: { ...defaultPipeline(), ...pipelineByPr.get(prId) }.maxRounds,
+              issuesPerRound: [],
+              totalNew: 0,
+              totalFixed: 0,
+              totalDismissed: 0,
+              totalEscalated: 0,
+              totalSentToAgent: 0,
+              isConverging: false,
+              canAutoAdvance: false,
+            },
+            runtime,
+          };
+          inventoryByPr.set(prId, snapshot);
+          return snapshot;
+        }),
+        getConvergenceRuntime: vi.fn((prId: string) => ({
+          ...defaultRuntime(prId),
+          ...runtimeByPr.get(prId),
+        })),
+        getPipelineSettings: vi.fn((prId: string) => ({
+          ...defaultPipeline(),
+          ...pipelineByPr.get(prId),
+        })),
+        getNewItems: vi.fn((_prId: string) => []),
+        markSentToAgent: vi.fn(),
+        saveConvergenceRuntime: vi.fn((prId: string, state: Record<string, unknown>) => {
+          const existing = runtimeByPr.get(prId) ?? {};
+          const merged = { ...defaultRuntime(prId), ...existing, ...state };
+          runtimeByPr.set(prId, merged);
+          return merged;
+        }),
+        savePipelineSettings: vi.fn((prId: string, settings: Record<string, unknown>) => {
+          const existing = pipelineByPr.get(prId) ?? {};
+          pipelineByPr.set(prId, { ...existing, ...settings });
+        }),
+      };
+    })(),
     prService: {
       simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
       createQueuePrs: vi.fn(async () => ({ groupId: "group-1", prs: [] })),

@@ -102,7 +102,7 @@ describe("chatTextBatching", () => {
       })).toBe(false);
     });
 
-    it("does not collapse anonymous text chunks that lack identity", () => {
+    it("coalesces anonymous text chunks that lack identity", () => {
       const buffered = appendBufferedAssistantText(null, {
         type: "text",
         text: "Hello",
@@ -111,7 +111,7 @@ describe("chatTextBatching", () => {
       expect(canAppendBufferedAssistantText(buffered, {
         type: "text",
         text: " world",
-      })).toBe(false);
+      })).toBe(true);
     });
 
     it("allows batching with only turnId (no itemId) on both sides", () => {

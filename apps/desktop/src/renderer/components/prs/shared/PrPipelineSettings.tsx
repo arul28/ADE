@@ -15,8 +15,7 @@ import { PrResolverLaunchControls } from "./PrResolverLaunchControls";
 export type PrPipelineSettingsProps = {
   settings: PipelineSettings;
   onSettingsChange: (settings: Partial<PipelineSettings>) => void;
-  autoConverge: boolean;
-  onAutoConvergeChange: (enabled: boolean) => void;
+  showAutoConvergeSettings?: boolean;
   modelId: string;
   reasoningEffort: string;
   permissionMode: AiPermissionMode;
@@ -240,8 +239,7 @@ function StyledSelect({
 export function PrPipelineSettings({
   settings,
   onSettingsChange,
-  autoConverge,
-  onAutoConvergeChange,
+  showAutoConvergeSettings = true,
   modelId,
   reasoningEffort,
   permissionMode,
@@ -260,47 +258,8 @@ export function PrPipelineSettings({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      {/* Auto-Converge Toggle */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          padding: "6px 0",
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-          <span
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              fontWeight: 600,
-              color: COLORS.textPrimary,
-            }}
-          >
-            Auto-Converge
-          </span>
-          <span
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 10,
-              color: COLORS.textMuted,
-              lineHeight: 1.35,
-            }}
-          >
-            Automatically run rounds until all issues are resolved
-          </span>
-        </div>
-        <ToggleSwitch
-          checked={autoConverge}
-          onChange={onAutoConvergeChange}
-          disabled={disabled}
-        />
-      </div>
-
       {/* --- Auto-converge-only settings (hidden when off) --- */}
-      {autoConverge && (
+      {showAutoConvergeSettings && (
       <>
       {/* Auto-Merge Toggle */}
       <div

@@ -3,6 +3,7 @@ import type { AdeDb } from "../state/kvDb";
 import type {
   ConvergenceRoundStat,
   ConvergenceStatus,
+  ConvergenceRuntimeState,
   IssueInventoryItem,
   IssueInventorySnapshot,
   IssueInventoryState,
@@ -12,7 +13,7 @@ import type {
   PrComment,
   PrReviewThread,
 } from "../../../shared/types";
-import { DEFAULT_PIPELINE_SETTINGS } from "../../../shared/types";
+import { DEFAULT_CONVERGENCE_RUNTIME_STATE, DEFAULT_PIPELINE_SETTINGS } from "../../../shared/types";
 import { isNoisyIssueComment } from "./resolverUtils";
 import { nowIso } from "../shared/utils";
 
@@ -29,12 +30,36 @@ const SOURCE_PATTERNS: Array<{ pattern: RegExp; source: IssueSource }> = [
   { pattern: /^ade-review(\[bot\])?$/i, source: "ade" },
 ];
 
-function detectSource(author: string | null | undefined): IssueSource {
+const CONVERGENCE_RUNTIME_STATUS_VALUES = new Set<ConvergenceRuntimeState["status"]>([
+  "idle",
+  "launching",
+  "running",
+  "polling",
+  "paused",
+  "converged",
+  "merged",
+  "failed",
+  "cancelled",
+  "stopped",
+]);
+
+const CONVERGENCE_POLLER_STATUS_VALUES = new Set<ConvergenceRuntimeState["pollerStatus"]>([
+  "idle",
+  "scheduled",
+  "polling",
+  "waiting_for_checks",
+  "waiting_for_comments",
+  "paused",
+  "stopped",
+]);
+
+export function detectSource(author: string | null | undefined): IssueSource {
   const name = (author ?? "").trim();
   if (!name) return "unknown";
   for (const { pattern, source } of SOURCE_PATTERNS) {
     if (pattern.test(name)) return source;
   }
+  if (/\[bot\]/i.test(name) || /\bbot\b/i.test(name)) return "unknown";
   return "human";
 }
 
@@ -42,7 +67,7 @@ function detectSource(author: string | null | undefined): IssueSource {
 // Severity extraction — reuses the same pattern as prIssueResolver.ts
 // ---------------------------------------------------------------------------
 
-function extractSeverity(value: string): "critical" | "major" | "minor" | null {
+export function extractSeverity(value: string): "critical" | "major" | "minor" | null {
   // Match explicit severity words
   const wordMatch = value.match(/\b(Critical|Major|Minor)\b/i);
   if (wordMatch?.[1]) return wordMatch[1].toLowerCase() as "critical" | "major" | "minor";
@@ -120,6 +145,11 @@ type InventoryRow = {
   url: string | null;
   dismiss_reason: string | null;
   agent_session_id: string | null;
+  thread_comment_count: number | null;
+  thread_latest_comment_id: string | null;
+  thread_latest_comment_author: string | null;
+  thread_latest_comment_at: string | null;
+  thread_latest_comment_source: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -142,6 +172,11 @@ function rowToItem(row: InventoryRow): IssueInventoryItem {
     url: row.url,
     dismissReason: row.dismiss_reason,
     agentSessionId: row.agent_session_id,
+    threadCommentCount: row.thread_comment_count,
+    threadLatestCommentId: row.thread_latest_comment_id,
+    threadLatestCommentAuthor: row.thread_latest_comment_author,
+    threadLatestCommentAt: row.thread_latest_comment_at,
+    threadLatestCommentSource: row.thread_latest_comment_source as IssueSource | null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -153,7 +188,7 @@ function rowToItem(row: InventoryRow): IssueInventoryItem {
 
 const DEFAULT_MAX_ROUNDS = 5;
 
-function computeConvergenceStatus(items: IssueInventoryItem[], maxRounds: number = DEFAULT_MAX_ROUNDS): ConvergenceStatus {
+export function computeConvergenceStatus(items: IssueInventoryItem[], maxRounds: number = DEFAULT_MAX_ROUNDS): ConvergenceStatus {
   let totalNew = 0;
   let totalFixed = 0;
   let totalDismissed = 0;
@@ -203,6 +238,134 @@ function computeConvergenceStatus(items: IssueInventoryItem[], maxRounds: number
   };
 }
 
+type ConvergenceRuntimeRow = {
+  pr_id: string;
+  auto_converge_enabled: number;
+  status: string;
+  poller_status: string;
+  current_round: number;
+  active_session_id: string | null;
+  active_lane_id: string | null;
+  active_href: string | null;
+  pause_reason: string | null;
+  error_message: string | null;
+  last_started_at: string | null;
+  last_polled_at: string | null;
+  last_paused_at: string | null;
+  last_stopped_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function buildDefaultRuntimeState(prId: string): ConvergenceRuntimeState {
+  const now = nowIso();
+  return {
+    prId,
+    ...DEFAULT_CONVERGENCE_RUNTIME_STATE,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Validates renderer-supplied runtime fields before persisting.
+ * Throws on clearly malformed data (wrong types, unknown enum values,
+ * negative rounds) rather than silently correcting.
+ */
+function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>): void {
+  if (state.autoConvergeEnabled !== undefined && typeof state.autoConvergeEnabled !== "boolean") {
+    throw new Error(`Invalid autoConvergeEnabled: expected a boolean, got ${JSON.stringify(state.autoConvergeEnabled)}`);
+  }
+  if (state.status !== undefined) {
+    if (typeof state.status !== "string" || !CONVERGENCE_RUNTIME_STATUS_VALUES.has(state.status as ConvergenceRuntimeState["status"])) {
+      throw new Error(`Invalid convergence runtime status: ${JSON.stringify(state.status)}`);
+    }
+  }
+  if (state.pollerStatus !== undefined) {
+    if (typeof state.pollerStatus !== "string" || !CONVERGENCE_POLLER_STATUS_VALUES.has(state.pollerStatus as ConvergenceRuntimeState["pollerStatus"])) {
+      throw new Error(`Invalid convergence poller status: ${JSON.stringify(state.pollerStatus)}`);
+    }
+  }
+  if (state.currentRound !== undefined) {
+    if (typeof state.currentRound !== "number" || !Number.isFinite(state.currentRound)) {
+      throw new Error(`Invalid currentRound: expected a finite number, got ${JSON.stringify(state.currentRound)}`);
+    }
+    if (state.currentRound < 0 || !Number.isInteger(state.currentRound)) {
+      throw new Error(`Invalid currentRound: expected a non-negative integer, got ${state.currentRound}`);
+    }
+  }
+  for (const field of [
+    "activeSessionId",
+    "activeLaneId",
+    "activeHref",
+    "pauseReason",
+    "errorMessage",
+    "lastStartedAt",
+    "lastPolledAt",
+    "lastPausedAt",
+    "lastStoppedAt",
+    "createdAt",
+    "updatedAt",
+  ] as const) {
+    const value = state[field];
+    if (value != null && typeof value !== "string") {
+      throw new Error(`Invalid ${field}: expected a string, got ${JSON.stringify(value)}`);
+    }
+  }
+}
+
+function trimOrNull(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function sanitizeConvergenceRuntimeState(
+  prId: string,
+  state: ConvergenceRuntimeState,
+): ConvergenceRuntimeState {
+  const now = nowIso();
+  return {
+    prId,
+    autoConvergeEnabled: state.autoConvergeEnabled,
+    status: state.status,
+    pollerStatus: state.pollerStatus,
+    currentRound: state.currentRound,
+    activeSessionId: trimOrNull(state.activeSessionId),
+    activeLaneId: trimOrNull(state.activeLaneId),
+    activeHref: trimOrNull(state.activeHref),
+    pauseReason: trimOrNull(state.pauseReason),
+    errorMessage: trimOrNull(state.errorMessage),
+    lastStartedAt: trimOrNull(state.lastStartedAt),
+    lastPolledAt: trimOrNull(state.lastPolledAt),
+    lastPausedAt: trimOrNull(state.lastPausedAt),
+    lastStoppedAt: trimOrNull(state.lastStoppedAt),
+    createdAt: trimOrNull(state.createdAt) ?? now,
+    updatedAt: trimOrNull(state.updatedAt) ?? now,
+  };
+}
+
+function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntimeState {
+  return sanitizeConvergenceRuntimeState(row.pr_id, {
+    prId: row.pr_id,
+    autoConvergeEnabled: row.auto_converge_enabled === 1,
+    status: row.status as ConvergenceRuntimeState["status"],
+    pollerStatus: row.poller_status as ConvergenceRuntimeState["pollerStatus"],
+    currentRound: row.current_round,
+    activeSessionId: row.active_session_id,
+    activeLaneId: row.active_lane_id,
+    activeHref: row.active_href,
+    pauseReason: row.pause_reason,
+    errorMessage: row.error_message,
+    lastStartedAt: row.last_started_at,
+    lastPolledAt: row.last_polled_at,
+    lastPausedAt: row.last_paused_at,
+    lastStoppedAt: row.last_stopped_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -215,6 +378,43 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       "select * from pr_issue_inventory where pr_id = ? order by created_at asc",
       [prId],
     );
+  }
+
+  /**
+   * Returns the highest round number found among inventory items for the given
+   * PR.  Used by {@link computeEffectiveRuntime} to prevent the persisted
+   * `currentRound` from regressing below what the items imply.
+   */
+  function getMaxItemRound(prId: string): number {
+    const row = db.get<{ max_round: number | null }>(
+      "select max(round) as max_round from pr_issue_inventory where pr_id = ?",
+      [prId],
+    );
+    return row?.max_round ?? 0;
+  }
+
+  /**
+   * Merges a persisted (or default) runtime state with an optional patch,
+   * ensuring `currentRound` never regresses below the highest round implied
+   * by inventory items.  Without this floor the raw persisted value can be
+   * stale when items have been ingested at a higher round but the runtime row
+   * was not yet updated.
+   */
+  function computeEffectiveRuntime(
+    persisted: ConvergenceRuntimeState,
+    patch?: Partial<ConvergenceRuntimeState>,
+  ): ConvergenceRuntimeState {
+    const itemRound = getMaxItemRound(persisted.prId);
+    const candidateRound = Math.max(
+      persisted.currentRound,
+      itemRound,
+      patch?.currentRound ?? 0,
+    );
+    return {
+      ...persisted,
+      ...patch,
+      currentRound: candidateRound,
+    };
   }
 
   function getItemsByState(prId: string, state: IssueInventoryState): IssueInventoryItem[] {
@@ -254,44 +454,196 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       body: string | null;
       author: string | null;
       url: string | null;
+      threadCommentCount?: number | null;
+      threadLatestCommentId?: string | null;
+      threadLatestCommentAuthor?: string | null;
+      threadLatestCommentAt?: string | null;
+      threadLatestCommentSource?: IssueSource | null;
     },
+    options: {
+      state?: IssueInventoryState;
+      round?: number;
+      dismissReason?: string | null;
+      agentSessionId?: string | null;
+    } = {},
   ): void {
     const now = nowIso();
     const existing = db.get<InventoryRow>(
       "select * from pr_issue_inventory where pr_id = ? and external_id = ?",
       [prId, externalId],
     );
+    const nextState = options.state ?? existing?.state ?? "new";
+    const nextRound = options.round ?? existing?.round ?? 0;
+    const nextDismissReason = options.dismissReason !== undefined
+      ? options.dismissReason
+      : existing?.dismiss_reason ?? null;
+    const nextAgentSessionId = options.agentSessionId !== undefined
+      ? options.agentSessionId
+      : existing?.agent_session_id ?? null;
+    const nextThreadCommentCount = data.threadCommentCount ?? existing?.thread_comment_count ?? null;
+    const nextThreadLatestCommentId = data.threadLatestCommentId ?? existing?.thread_latest_comment_id ?? null;
+    const nextThreadLatestCommentAuthor = data.threadLatestCommentAuthor ?? existing?.thread_latest_comment_author ?? null;
+    const nextThreadLatestCommentAt = data.threadLatestCommentAt ?? existing?.thread_latest_comment_at ?? null;
+    const nextThreadLatestCommentSource = data.threadLatestCommentSource ?? (existing?.thread_latest_comment_source as IssueSource | null) ?? null;
+
     if (existing) {
-      // Update mutable fields but keep state
       db.run(
         `update pr_issue_inventory
          set headline = ?, body = ?, severity = ?, file_path = ?, line = ?,
-             author = ?, url = ?, source = ?, updated_at = ?
+             author = ?, url = ?, source = ?, state = ?, round = ?, dismiss_reason = ?,
+             agent_session_id = ?, thread_comment_count = ?, thread_latest_comment_id = ?,
+             thread_latest_comment_author = ?, thread_latest_comment_at = ?,
+             thread_latest_comment_source = ?, updated_at = ?
          where id = ?`,
-        [data.headline, data.body, data.severity, data.filePath, data.line,
-         data.author, data.url, data.source, now, existing.id],
+        [
+          data.headline,
+          data.body,
+          data.severity,
+          data.filePath,
+          data.line,
+          data.author,
+          data.url,
+          data.source,
+          nextState,
+          nextRound,
+          nextDismissReason,
+          nextAgentSessionId,
+          nextThreadCommentCount,
+          nextThreadLatestCommentId,
+          nextThreadLatestCommentAuthor,
+          nextThreadLatestCommentAt,
+          nextThreadLatestCommentSource,
+          now,
+          existing.id,
+        ],
       );
     } else {
       db.run(
         `insert into pr_issue_inventory
            (id, pr_id, source, type, external_id, state, round, file_path, line,
             severity, headline, body, author, url, dismiss_reason, agent_session_id,
-            created_at, updated_at)
-         values (?, ?, ?, ?, ?, 'new', 0, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)`,
-        [randomUUID(), prId, data.source, data.type, externalId,
-         data.filePath, data.line, data.severity, data.headline, data.body,
-         data.author, data.url, now, now],
+            thread_comment_count, thread_latest_comment_id, thread_latest_comment_author,
+            thread_latest_comment_at, thread_latest_comment_source, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          randomUUID(),
+          prId,
+          data.source,
+          data.type,
+          externalId,
+          nextState,
+          nextRound,
+          data.filePath,
+          data.line,
+          data.severity,
+          data.headline,
+          data.body,
+          data.author,
+          data.url,
+          nextDismissReason,
+          nextAgentSessionId,
+          nextThreadCommentCount,
+          nextThreadLatestCommentId,
+          nextThreadLatestCommentAuthor,
+          nextThreadLatestCommentAt,
+          nextThreadLatestCommentSource,
+          now,
+          now,
+        ],
       );
     }
+  }
+
+  function getConvergenceRuntimeRow(prId: string): ConvergenceRuntimeRow | null {
+    return db.get<ConvergenceRuntimeRow>(
+      "select * from pr_convergence_state where pr_id = ?",
+      [prId],
+    );
+  }
+
+  function getConvergenceRuntimeRowsByActiveSessionId(sessionId: string): ConvergenceRuntimeRow[] {
+    return db.all<ConvergenceRuntimeRow>(
+      "select * from pr_convergence_state where active_session_id = ?",
+      [sessionId],
+    );
+  }
+
+  function saveConvergenceRuntimeState(prId: string, state: Partial<ConvergenceRuntimeState>): ConvergenceRuntimeState {
+    validateConvergenceRuntimeState(state);
+    const existing = readConvergenceRuntime(prId);
+    // computeEffectiveRuntime ensures currentRound never regresses below the
+    // inventory-derived round, even if the incoming patch carries a stale value.
+    const effective = computeEffectiveRuntime(existing, state);
+    const merged = sanitizeConvergenceRuntimeState(prId, {
+      ...effective,
+      prId,
+      createdAt: existing.createdAt,
+      updatedAt: nowIso(),
+    });
+
+    db.run(
+      `insert into pr_convergence_state
+         (pr_id, auto_converge_enabled, status, poller_status, current_round, active_session_id,
+          active_lane_id, active_href, pause_reason, error_message, last_started_at, last_polled_at,
+          last_paused_at, last_stopped_at, created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       on conflict(pr_id) do update set
+         auto_converge_enabled = excluded.auto_converge_enabled,
+         status = excluded.status,
+         poller_status = excluded.poller_status,
+         current_round = excluded.current_round,
+         active_session_id = excluded.active_session_id,
+         active_lane_id = excluded.active_lane_id,
+         active_href = excluded.active_href,
+         pause_reason = excluded.pause_reason,
+         error_message = excluded.error_message,
+         last_started_at = excluded.last_started_at,
+         last_polled_at = excluded.last_polled_at,
+         last_paused_at = excluded.last_paused_at,
+         last_stopped_at = excluded.last_stopped_at,
+         updated_at = excluded.updated_at`,
+      [
+        merged.prId,
+        merged.autoConvergeEnabled ? 1 : 0,
+        merged.status,
+        merged.pollerStatus,
+        merged.currentRound,
+        merged.activeSessionId,
+        merged.activeLaneId,
+        merged.activeHref,
+        merged.pauseReason,
+        merged.errorMessage,
+        merged.lastStartedAt,
+        merged.lastPolledAt,
+        merged.lastPausedAt,
+        merged.lastStoppedAt,
+        merged.createdAt,
+        merged.updatedAt,
+      ],
+    );
+
+    return merged;
+  }
+
+  function readConvergenceRuntime(prId: string): ConvergenceRuntimeState {
+    const row = getConvergenceRuntimeRow(prId);
+    const persisted = row ? rowToConvergenceRuntime(row) : buildDefaultRuntimeState(prId);
+    return computeEffectiveRuntime(persisted);
   }
 
   function buildSnapshot(prId: string): IssueInventorySnapshot {
     const items = getAllRows(prId).map(rowToItem);
     const { maxRounds } = readPipelineSettings(prId);
+    const convergence = computeConvergenceStatus(items, maxRounds);
+    const runtime = readConvergenceRuntime(prId);
     return {
       prId,
       items,
-      convergence: computeConvergenceStatus(items, maxRounds),
+      convergence,
+      runtime: {
+        ...runtime,
+        currentRound: Math.max(runtime.currentRound, convergence.currentRound),
+      },
     };
   }
 
@@ -302,10 +654,17 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       reviewThreads: PrReviewThread[],
       comments: PrComment[],
     ): IssueInventorySnapshot {
+      const existingRows = getAllRows(prId);
+      const existingByExternalId = new Map(existingRows.map((row) => [row.external_id, row] as const));
+      const activeFailingChecks = new Set<string>();
+
       // Sync failing checks
       for (const check of checks) {
         if (check.conclusion !== "failure") continue;
-        upsertItem(prId, `check:${check.name}`, {
+        const externalId = `check:${check.name}`;
+        activeFailingChecks.add(externalId);
+        const existing = existingByExternalId.get(externalId) ?? null;
+        upsertItem(prId, externalId, {
           source: "unknown",
           type: "check_failure",
           filePath: null,
@@ -315,25 +674,98 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
           body: check.detailsUrl ? `Details: ${check.detailsUrl}` : null,
           author: null,
           url: check.detailsUrl,
+        }, existing?.state === "fixed" ? {
+          state: "new",
+          round: 0,
+          dismissReason: null,
+          agentSessionId: null,
+        } : {
+          state: existing?.state as IssueInventoryState | undefined,
         });
       }
 
-      // Sync unresolved, non-outdated review threads
+      for (const existing of existingRows) {
+        if (existing.type !== "check_failure") continue;
+        if (activeFailingChecks.has(existing.external_id)) continue;
+        if (existing.state === "fixed" || existing.state === "dismissed") continue;
+        db.run(
+          "update pr_issue_inventory set state = 'fixed', updated_at = ? where id = ?",
+          [nowIso(), existing.id],
+        );
+      }
+
+      // Sync review threads using the latest reply in the conversation.
       for (const thread of reviewThreads) {
-        if (thread.isResolved || thread.isOutdated) continue;
-        const firstComment = thread.comments[0] ?? null;
-        const author = firstComment?.author ?? null;
-        const body = firstComment?.body ?? null;
-        upsertItem(prId, `thread:${thread.id}`, {
-          source: detectSource(author),
-          type: "review_thread",
+        const externalId = `thread:${thread.id}`;
+        const latestComment = thread.comments.at(-1) ?? null;
+        const commentCount = thread.comments.length;
+        const author = latestComment?.author ?? null;
+        const body = latestComment?.body ?? null;
+        const source = detectSource(author);
+        const existing = existingByExternalId.get(externalId) ?? null;
+
+        const threadData = {
+          source,
+          type: "review_thread" as const,
           filePath: thread.path,
           line: thread.line,
           severity: extractSeverity(body ?? ""),
           headline: extractHeadline(body, `Review thread at ${thread.path ?? "unknown"}`),
           body,
           author,
-          url: thread.url ?? firstComment?.url ?? null,
+          url: thread.url ?? latestComment?.url ?? null,
+          threadCommentCount: commentCount,
+          threadLatestCommentId: latestComment?.id ?? existing?.thread_latest_comment_id ?? null,
+          threadLatestCommentAuthor: author,
+          threadLatestCommentAt: latestComment?.updatedAt ?? latestComment?.createdAt ?? thread.updatedAt,
+          threadLatestCommentSource: source,
+        };
+
+        if (thread.isResolved || thread.isOutdated) {
+          if (!existing) continue;
+          upsertItem(prId, externalId, threadData, {
+            state: "fixed",
+            round: existing.round,
+            dismissReason: null,
+            agentSessionId: existing.agent_session_id,
+          });
+          continue;
+        }
+
+        const latestCommentAt = latestComment?.updatedAt ?? latestComment?.createdAt ?? null;
+        const hasStoredThreadMetadata = existing != null
+          && (
+            existing.thread_latest_comment_at != null
+            || existing.thread_latest_comment_id != null
+            || existing.thread_comment_count != null
+          );
+        const threadChanged = existing != null
+          && (
+            hasStoredThreadMetadata
+              ? (
+                commentCount > (existing.thread_comment_count ?? 0)
+                || (latestComment?.id != null && latestComment.id !== existing.thread_latest_comment_id)
+                || (latestCommentAt != null && existing.thread_latest_comment_at != null
+                    && latestCommentAt > existing.thread_latest_comment_at)
+              )
+              : (
+                existing.body !== threadData.body
+                || existing.headline !== threadData.headline
+                || existing.author !== threadData.author
+              )
+          );
+        const shouldReopen = !existing || (threadChanged && source !== "ade");
+
+        upsertItem(prId, externalId, threadData, shouldReopen ? {
+          state: "new",
+          round: existing?.round ?? 0,
+          dismissReason: null,
+          agentSessionId: null,
+        } : {
+          state: existing?.state as IssueInventoryState | undefined,
+          round: existing?.round,
+          dismissReason: existing?.dismiss_reason,
+          agentSessionId: existing?.agent_session_id,
         });
       }
 
@@ -415,6 +847,51 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
 
     resetInventory(prId: string): void {
       db.run("delete from pr_issue_inventory where pr_id = ?", [prId]);
+      db.run("delete from pr_convergence_state where pr_id = ?", [prId]);
+    },
+
+    getConvergenceRuntime(prId: string): ConvergenceRuntimeState {
+      return readConvergenceRuntime(prId);
+    },
+
+    saveConvergenceRuntime(prId: string, state: Partial<ConvergenceRuntimeState>): ConvergenceRuntimeState {
+      return saveConvergenceRuntimeState(prId, state);
+    },
+
+    reconcileConvergenceSessionExit(sessionId: string, opts?: { exitCode?: number | null }): ConvergenceRuntimeState[] {
+      const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!normalizedSessionId) return [];
+      const rows = getConvergenceRuntimeRowsByActiveSessionId(normalizedSessionId);
+      if (rows.length === 0) return [];
+      const endedAt = nowIso();
+      const exitCode = typeof opts?.exitCode === "number" ? opts.exitCode : null;
+      return rows.map((row) => {
+        const runtime = rowToConvergenceRuntime(row);
+        if (runtime.autoConvergeEnabled) {
+          return saveConvergenceRuntimeState(runtime.prId, {
+            status: "paused",
+            pollerStatus: "paused",
+            activeSessionId: null,
+            pauseReason: "Agent session ended. Refresh the PR to reconcile checks and continue.",
+            errorMessage: null,
+            lastPausedAt: endedAt,
+          });
+        }
+        return saveConvergenceRuntimeState(runtime.prId, {
+          status: exitCode === 0 ? "stopped" : "failed",
+          pollerStatus: "stopped",
+          activeSessionId: null,
+          pauseReason: null,
+          errorMessage: exitCode === 0
+            ? null
+            : `Agent session ended with exit code ${exitCode ?? "unknown"}. Refresh the PR to inspect the result.`,
+          lastStoppedAt: endedAt,
+        });
+      });
+    },
+
+    resetConvergenceRuntime(prId: string): void {
+      db.run("delete from pr_convergence_state where pr_id = ?", [prId]);
     },
 
     // ----- Pipeline settings (auto-converge / auto-merge) -----

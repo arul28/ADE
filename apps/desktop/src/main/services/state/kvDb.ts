@@ -248,6 +248,7 @@ const FK_CONSTRAINTS: Record<string, { references: string; action: string }> = {
   // PR convergence loop tables
   "pr_issue_inventory:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
   "pr_pipeline_settings:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
+  "pr_convergence_state:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
 };
 
 /**
@@ -2960,6 +2961,11 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
+  try { db.run("alter table pr_issue_inventory add column thread_comment_count integer"); } catch {}
+  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_id text"); } catch {}
+  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_author text"); } catch {}
+  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_at text"); } catch {}
+  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_source text"); } catch {}
   db.run("create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state)");
 
   // PR pipeline settings: per-PR auto-converge / auto-merge configuration
@@ -2974,8 +2980,29 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
-}
 
+  db.run(`
+    create table if not exists pr_convergence_state (
+      pr_id text primary key,
+      auto_converge_enabled integer not null default 0,
+      status text not null default 'idle',
+      poller_status text not null default 'idle',
+      current_round integer not null default 0,
+      active_session_id text,
+      active_lane_id text,
+      active_href text,
+      pause_reason text,
+      error_message text,
+      last_started_at text,
+      last_polled_at text,
+      last_paused_at text,
+      last_stopped_at text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(pr_id) references pull_requests(id) on delete cascade
+    )
+  `);
+}
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {
   db.enableLoadExtension(true);
@@ -2995,11 +3022,32 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       loadCrsqlite(db, extensionPath);
     }
 
-    migrate({
+    // Build a CRR-aware run wrapper: when crsqlite is loaded and a table has
+    // been converted to a CRR, ALTER TABLE statements must be wrapped with
+    // crsql_begin_alter / crsql_commit_alter so the clock tables stay in sync.
+    let crsqliteLoaded = hadCrsqlMetadata && hasCrsqlite;
+    const makeMigrateDb = () => ({
       run: (sql: string, params: SqlValue[] = []) => {
+        const alterTable = parseAlterTableTarget(sql);
+        if (alterTable && crsqliteLoaded && rawHasTable(db, `${alterTable}__crsql_clock`)) {
+          getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
+          try {
+            runStatement(db, sql, params);
+          } catch (error) {
+            // Commit the alter even on failure so the CRR state stays consistent,
+            // then re-throw so the caller's try/catch can handle it (e.g. column
+            // already exists on upgrade).
+            getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
+            throw error;
+          }
+          getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
+          return;
+        }
         runStatement(db, sql, params);
       },
     });
+
+    migrate(makeMigrateDb());
 
     if (existedBeforeOpen && !hasCrsqlMetadata(db)) {
       writeMigrationBackupIfNeeded(dbPath);
@@ -3011,11 +3059,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hadCrsqlMetadata && hasCrsqlite) {
         loadCrsqlite(db, extensionPath);
       }
-      migrate({
-        run: (sql: string, params: SqlValue[] = []) => {
-          runStatement(db, sql, params);
-        },
-      });
+      migrate(makeMigrateDb());
     }
 
     if (retrofitForeignKeyCascadeActions(db, hasCrsqlite)) {
@@ -3024,11 +3068,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hadCrsqlMetadata && hasCrsqlite) {
         loadCrsqlite(db, extensionPath);
       }
-      migrate({
-        run: (sql: string, params: SqlValue[] = []) => {
-          runStatement(db, sql, params);
-        },
-      });
+      migrate(makeMigrateDb());
     }
 
     if (hasCrsqlite) {

@@ -112,7 +112,8 @@
             "pages": [
               "tools/pull-requests",
               "tools/conflicts",
-              "guides/stacked-prs"
+              "guides/stacked-prs",
+              "guides/pr-convergence"
             ]
           },
           {
@@ -219,6 +220,7 @@
             "icon": "tag",
             "expanded": true,
             "pages": [
+              "changelog/v1.0.3",
               "changelog/v1.0.2",
               "changelog/v1.0.1",
               "changelog/v1.0.0"
@@ -268,7 +270,7 @@
         "items": [
           { "label": "Features", "href": "/lanes/overview" },
           { "label": "Download", "href": "https://github.com/arul28/ADE/releases" },
-          { "label": "Changelog", "href": "/changelog/v1.0.2" }
+          { "label": "Changelog", "href": "/changelog/v1.0.3" }
         ]
       },
       {
