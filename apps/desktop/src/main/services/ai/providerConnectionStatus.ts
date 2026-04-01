@@ -210,7 +210,7 @@ export async function buildProviderConnections(
     usageAvailable: cursorFlags.runtimeAvailable,
     path: cursorCli?.path ?? null,
     sources: [
-      { kind: "local-credentials", detected: cursorEnvAuth },
+      { kind: "local-credentials", detected: cursorEnvAuth, source: cursorEnvAuth ? "cursor-env" : undefined },
       {
         kind: "cli",
         detected: Boolean(cursorCli?.installed),

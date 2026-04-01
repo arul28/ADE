@@ -13,7 +13,8 @@ const CODEX_TOKEN_REFRESH_DAYS = 8;
 export type LocalAuthSource =
   | "macos-keychain"
   | "claude-credentials-file"
-  | "codex-auth-file";
+  | "codex-auth-file"
+  | "cursor-env";
 
 export type ClaudeLocalAuthCredentials = {
   accessToken: string;

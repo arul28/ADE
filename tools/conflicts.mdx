@@ -4,13 +4,6 @@ description: "ADE continuously simulates merges in the background and surfaces p
 icon: "triangle-exclamation"
 ---
 
-<Frame caption="Conflicts tab — risk matrix and 3-pane resolution (Lane A / proposed / Lane B)">
-  <img
-    src="/images/conflicts-tab-risk-matrix-three-pane-resolution.png"
-    alt="The Conflicts tab in full view — left panel showing a risk matrix grid with color-coded cells, right panel showing a selected conflict with the 3-pane resolution view (Lane A on left, proposed resolution in center, Lane B on right). At least one red cell and one orange cell should be visible in the matrix."
-  />
-</Frame>
-
 ## What is the Conflicts View?
 
 The Conflicts view is ADE's proactive merge-safety system. Instead of waiting for a `git merge` to fail, ADE continuously runs merge simulations in the background using `git merge-tree` and surfaces predicted conflicts as soon as they are detected — often hours or days before a PR is ever opened.
@@ -68,13 +61,6 @@ In the PRs tab, each PR shows a **Conflict Risk** badge in the Overview section.
 ## The Risk Matrix
 
 The Risk Matrix is the top-level view in the Conflicts tab. It shows all active lanes as both rows and columns, with each cell representing the predicted conflict risk between that pair of lanes.
-
-<Frame caption="Risk matrix grid — lane axes, color-coded cells, selected row">
-  <img
-    src="/images/conflicts-risk-matrix-grid-lane-names.png"
-    alt={`The Risk Matrix in isolation — a grid with lane names on rows and columns (at least 5×5), cells colored green/yellow/orange/red. One row should be highlighted (selected), showing that row's conflicts are expanded in the right panel. Lane names should look realistic (e.g., "auth-refactor", "billing-v2", "perf-cache", "api-cleanup").`}
-  />
-</Frame>
 
 ### Reading the Matrix
 
@@ -167,13 +153,6 @@ Conflict Packs are invalidated (and regenerated) when either lane receives a new
 ---
 
 ## Conflict Resolution Workflow
-
-<Frame caption="Single conflict — Lane A, proposed merge, Lane B, Apply Resolution, AI note">
-  <img
-    src="/images/conflicts-three-pane-resolution-single-conflict.png"
-    alt={`The 3-pane resolution view for a single conflict — left pane labeled "Lane A" showing a diff with red deletions, right pane labeled "Lane B" with different changes highlighted in blue, center pane labeled "Proposed Resolution" showing the merged version with a green "Apply Resolution" button at the bottom. An AI explanation panel should be visible below the center pane.`}
-  />
-</Frame>
 
 <Steps>
   <Step title="Identify the conflict">
@@ -271,13 +250,6 @@ conflicts:
 ## Phase 3 Orchestrator Conflict Handling
 
 During **Mission** execution, ADE's orchestrator monitors for conflicts introduced by worker agent actions in real time.
-
-<Frame caption="Mission run — orchestrator conflict banner, waiting worker, resolve prompt">
-  <img
-    src="/images/mission-run-orchestrator-conflict-detected-banner.png"
-    alt={`The Mission run panel showing an "Orchestrator Conflict Detected" banner mid-execution — one worker lane paused with an amber "Waiting" status, the conflict badge visible on that lane row, and an action prompt asking the user to resolve before the mission continues.`}
-  />
-</Frame>
 
 When a worker agent's commit would introduce a conflict with another active lane:
 

@@ -41,8 +41,18 @@ function addKnownModelIds(ids: Set<ModelId>, family: string, includeCliWrapped: 
   }
 }
 
-export function deriveConfiguredModelIds(status: AiSettingsStatus | null | undefined): ModelId[] {
+export interface DeriveModelOptions {
+  /** Include cursor/* models in the result. Defaults to `false`. */
+  includeCursor?: boolean;
+}
+
+export function deriveConfiguredModelIds(
+  status: AiSettingsStatus | null | undefined,
+  options?: DeriveModelOptions,
+): ModelId[] {
   if (!status) return [];
+
+  const { includeCursor = false } = options ?? {};
 
   // Derive available models from detectedAuth. For Cursor CLI, merge in
   // `status.availableModelIds` entries under `cursor/*` (main lists them after
@@ -78,13 +88,15 @@ export function deriveConfiguredModelIds(status: AiSettingsStatus | null | undef
     }
   }
 
-  const cursorCliAuthed = status.detectedAuth?.some(
-    (a) => a.type === "cli-subscription" && a.cli === "cursor" && a.authenticated !== false,
-  );
-  if (cursorCliAuthed && status.availableModelIds?.length) {
-    for (const raw of status.availableModelIds) {
-      const id = String(raw ?? "").trim();
-      if (id.startsWith("cursor/")) ids.add(id as ModelId);
+  if (includeCursor) {
+    const cursorCliAuthed = status.detectedAuth?.some(
+      (a) => a.type === "cli-subscription" && a.cli === "cursor" && a.authenticated !== false,
+    );
+    if (cursorCliAuthed && status.availableModelIds?.length) {
+      for (const raw of status.availableModelIds) {
+        const id = String(raw ?? "").trim();
+        if (id.startsWith("cursor/")) ids.add(id as ModelId);
+      }
     }
   }
 
@@ -100,8 +112,11 @@ export function deriveConfiguredModelIds(status: AiSettingsStatus | null | undef
   return [...registryOrdered, ...extra];
 }
 
-export function deriveConfiguredModelOptions(status: AiSettingsStatus | null | undefined): AiModelDescriptor[] {
-  return deriveConfiguredModelIds(status).flatMap((modelId) => {
+export function deriveConfiguredModelOptions(
+  status: AiSettingsStatus | null | undefined,
+  options?: DeriveModelOptions,
+): AiModelDescriptor[] {
+  return deriveConfiguredModelIds(status, options).flatMap((modelId) => {
     const descriptor = getModelById(modelId);
     return descriptor ? [descriptorToModelOption(descriptor)] : [];
   });

@@ -60,10 +60,12 @@ export type AiIntegrationStatus = {
   availableProviders: {
     claude: boolean;
     codex: boolean;
+    cursor: boolean;
   };
   models: {
     claude: AgentModelDescriptor[];
     codex: AgentModelDescriptor[];
+    cursor: AgentModelDescriptor[];
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "openrouter" | "local";
@@ -840,7 +842,7 @@ export function createAiIntegrationService(args: {
 
     const fallback = provider === "codex"
       ? CODEX_FALLBACK_MODELS
-      : listModelDescriptorsForProvider("claude")
+      : listModelDescriptorsForProvider(provider)
           .map((descriptor) => ({ id: descriptor.id, label: descriptor.displayName }));
     modelListCache.set(provider, { models: fallback, cachedAt: now });
     return fallback;
@@ -911,6 +913,7 @@ export function createAiIntegrationService(args: {
       const availability = {
         claude: providerConnections.claude.runtimeAvailable,
         codex: providerConnections.codex.runtimeAvailable,
+        cursor: providerConnections.cursor.runtimeAvailable,
       };
       const runtimeFilteredAvailable = available.filter((descriptor) => {
         if (!descriptor.isCliWrapped) return true;
@@ -924,7 +927,8 @@ export function createAiIntegrationService(args: {
         availableProviders: availability,
         models: {
           claude: availability.claude ? await listModels("claude") : [],
-          codex: availability.codex ? await listModels("codex") : []
+          codex: availability.codex ? await listModels("codex") : [],
+          cursor: availability.cursor ? await listModels("cursor") : [],
         },
         detectedAuth: redactDetectedAuth(auth, cliStatuses),
         providerConnections,

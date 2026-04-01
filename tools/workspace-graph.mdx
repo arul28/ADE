@@ -4,10 +4,6 @@ description: "An infinite-canvas visualization of your entire project topology �
 icon: "diagram-project"
 ---
 
-<Frame caption="Workspace Graph — lane nodes, PR badges, and merge simulation overlays on an infinite canvas">
-  <img src="/images/workspace-graph.png" alt="Workspace Graph view showing hierarchical lane topology with color-coded nodes, PR indicators, and conflict edges" />
-</Frame>
-
 ## Overview
 
 The Workspace Graph is ADE's spatial view of your entire project topology. Built on **React Flow** with an **ELK.js** hierarchical layout engine, it renders every Lane, PR, branch, and dependency relationship as a living graph that updates in real time.
@@ -89,13 +85,6 @@ Edges represent relationships between nodes.
 - **PR target edges**: A lane's PR targets the main branch (or another lane's branch). Shown as a dashed line connecting the PR node to its target.
 - **Merge simulation overlays**: After running a simulation, edges gain annotation badges showing predicted merge outcome, conflict count, and risk level.
 
-<Frame caption="Lane nodes and edges with merge simulation conflict counts and risk levels">
-  <img
-    src="/images/workspace-graph-lane-nodes-merge-simulation-close-up.png"
-    alt="Close-up of lane nodes connected by edges with merge simulation annotations showing conflict counts and risk levels."
-  />
-</Frame>
-
 ---
 
 ## View Modes
@@ -139,13 +128,6 @@ The toolbar at the top of the graph provides three view modes. Switch between th
 ## Merge Simulation
 
 The merge simulation feature predicts what would happen if each lane's branch were merged into the base branch, in sequence. ADE uses `git merge-tree` under the hood — the same algorithm Git uses for real merges, but without touching any branch on disk.
-
-<Frame caption="Workspace Graph after merge simulation — edge badges and toolbar timestamp">
-  <img
-    src="/images/workspace-graph-merge-simulation-toolbar-badges.png"
-    alt="Workspace Graph after running merge simulation showing edge annotation badges and simulation timestamp in the toolbar."
-  />
-</Frame>
 
 ### Running a Simulation
 

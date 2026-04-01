@@ -43,7 +43,6 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import {
   fileSizeOrZero,
-  hasNullByte,
   isEnoentError,
   nowIso,
   readFileWithinRootSecure,
@@ -9229,7 +9228,7 @@ export function createAgentChatService(args: {
     if (managed.closed) return;
 
     const message = error instanceof Error ? error.message : String(error);
-    const turnId = randomUUID();
+    const turnId = prepared.turnId ?? randomUUID();
 
     // If the failure is "turn already active", the original turn is still running.
     // Do NOT clear activeTurnId or runtime state — that would corrupt the in-flight
@@ -9612,15 +9611,22 @@ export function createAgentChatService(args: {
       { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
     > = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
-      if (attachment.type !== "image") continue;
       try {
         const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
-        if (hasNullByte(buf)) continue;
-        blocks.push({
-          type: "image",
-          data: buf.toString("base64"),
-          mimeType: guessImageMimeForPath(attachment._resolvedPath),
-        });
+        if (attachment.type === "image") {
+          blocks.push({
+            type: "image",
+            data: buf.toString("base64"),
+            mimeType: guessImageMimeForPath(attachment._resolvedPath),
+          });
+        } else {
+          // Non-image file attachment -- include content as text
+          const text = buf.toString("utf-8");
+          blocks.push({
+            type: "text",
+            text: `[File: ${attachment.path}]\n${text}`,
+          });
+        }
       } catch {
         // skip unreadable attachment
       }
@@ -9682,6 +9688,11 @@ export function createAgentChatService(args: {
         if (note.update.currentModeId !== "plan") {
           owner.runtime.defaultModeId = note.update.currentModeId;
         }
+        // Sync session-level mode fields so ensureCursorSessionState won't
+        // revert Cursor back to the old mode on the next turn.
+        owner.session.cursorModeId = note.update.currentModeId;
+        owner.session.unifiedPermissionMode =
+          note.update.currentModeId === "plan" ? "plan" : "edit";
         syncCursorModeSnapshot(owner, owner.runtime);
         persistChatState(owner);
       } else if (note.update.sessionUpdate === "config_option_update") {

@@ -499,6 +499,7 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "text") {
+    if (!event.text.trim().length) return;
     const previous = rows[rows.length - 1];
     if (previous?.event.type === "text" && shouldMergeTextRows(previous.event, event)) {
       const nextTurn = event.turnId ?? null;
@@ -516,7 +517,6 @@ export function appendCollapsedChatTranscriptEvent(
       };
       return;
     }
-    if (!event.text.trim().length) return;
   }
 
   if (event.type === "system_notice") {

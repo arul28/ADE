@@ -3,14 +3,6 @@ title: "MCP Servers"
 description: "Connect external MCP (Model Context Protocol) servers to ADE. ADE proxies their tools to all agents under a namespaced interface, with centralized permission control."
 icon: "plug"
 ---
-
-<Frame caption="Settings → Integrations → External MCP with connected/disconnected servers">
-  <img
-    src="/images/settings-integrations-external-mcp-server-rows.png"
-    alt={`Settings → Integrations → External MCP panel showing three server rows: "github" (connected, green dot, 12 tools), "filesystem" (connected, green dot, 5 tools), and "ghost-os" (disconnected, grey dot). Each row has a chevron to expand a tool list and a "Test Connection" button.`}
-  />
-</Frame>
-
 ## What External MCP Is
 
 MCP (Model Context Protocol) is an open standard for AI tool servers. Any process that speaks the MCP JSON-RPC protocol can expose tools to AI agents. ADE ships with a built-in MCP server that exposes 35+ native tools, and it also lets you connect external MCP servers — services like GitHub, Slack, a filesystem server, or Ghost OS.
@@ -248,14 +240,6 @@ ADE watches `local.secret.yaml` for changes (debounced 500ms). The behavior when
 ## ADE Built-In MCP Tools
 
 ADE's own MCP server exposes the following native tools. These are always available to all agents and do not require any external server configuration.
-
-<Frame caption="External MCP tool browser — built-in ADE tools by category">
-  <img
-    src="/images/settings-mcp-tool-browser-builtin-categories.png"
-    alt="The MCP tool browser in Settings → Integrations → External MCP, expanded to show ADE's built-in tool list with categories: File Operations, Git, Sessions, Lanes, Missions, Packs, Pull Requests. Each tool row shows the tool name and a one-line description."
-  />
-</Frame>
-
 <AccordionGroup>
   <Accordion title="File Operations" icon="folder-open">
     | Tool | Description |

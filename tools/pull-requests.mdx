@@ -4,10 +4,6 @@ description: "ADE's integrated PR management interface — create, review, and m
 icon: "code-pull-request"
 ---
 
-<Frame caption="PRs tab — split-pane with PR list, status badges, CI checks, and reviewer avatars">
-  <img src="/images/prs-overview.png" alt="PRs tab showing PR list with status badges on left, and PR detail with CI checks, reviewer avatars, and markdown description on right" />
-</Frame>
-
 ## What is the Pull Requests View?
 
 The PRs tab is ADE's full pull request management interface, connected directly to GitHub. It provides a complete view of every PR across all lanes in your project — their CI status, review state, and merge readiness — without requiring you to switch to a browser.
@@ -61,12 +57,6 @@ The PR status badge is visible in the lane list (left pane of the Lanes tab), th
     - **Reviewers** — any reviewers configured in the lane settings or in `.ade/ade.yaml`
     - **Labels** — labels mapped to the lane's associated Linear issue (if connected)
 
-    <Frame caption="Create PR form with draft toggle, intent, reviewers, and base branch">
-      <img
-        src="/images/create-pr-form-filled-draft-intent-reviewers.png"
-        alt={`The "Create PR" form filled in — title field showing "feat: add session expiry logic", description showing a formatted markdown body with an "Intent" section and an "Acceptance Criteria" checklist, base branch dropdown showing "main", and a "Reviewers" field with two user avatars. A "Draft PR" toggle should be visible and enabled.`}
-      />
-    </Frame>
   </Step>
   <Step title="Toggle draft mode if needed">
     If the work is not ready for review, enable the **Draft PR** toggle. Draft PRs are tracked by ADE but will not be auto-merged even if CI passes and all reviews are complete. Draft mode can be toggled per-lane in lane settings.
@@ -81,13 +71,6 @@ The PR status badge is visible in the lane list (left pane of the Lanes tab), th
 ## Stacked PRs
 
 ADE has first-class support for stacked PR workflows, where a series of lanes build on each other and their PRs target each other (rather than all targeting `main`).
-
-<Frame caption="Stacked PR list with dependency arrows, CI status, and approved/open/draft badges">
-  <img
-    src="/images/pr-list-stacked-three-prs-merge-order-ci.png"
-    alt={`The PR list showing a stack of 3 PRs — "auth-base", "auth-middleware", "auth-endpoints" — connected by vertical dependency arrows indicating merge order (bottom up). Each PR shows its CI status indicator. The bottom PR ("auth-base") has a green "Approved" badge, the middle is "Open", and the top is "Draft".`}
-  />
-</Frame>
 
 ### How Stacked PRs Are Structured
 
@@ -222,13 +205,6 @@ All PR actions are available from the detail view's action bar at the top of the
 ## CI/CD Integration
 
 ADE polls GitHub Actions for CI status on all linked PRs. The CI check list is visible in the PR Overview tab and as an icon badge on the PR list entry.
-
-<Frame caption="PR Overview CI checks with failed e2e log expanded and Ask CTO button">
-  <img
-    src="/images/pr-overview-ci-checks-e2e-failure-ask-cto.png"
-    alt={`The CI checks section of the PR Overview tab — showing 4 checks: "build" (green checkmark), "unit-tests" (green checkmark), "e2e-tests" (red X with "2 failures" label), "lint" (green checkmark). The "e2e-tests" row is expanded showing a truncated log output with red error lines. An "Ask CTO about this failure" button sits below the log.`}
-  />
-</Frame>
 
 ### Reading CI Status
 

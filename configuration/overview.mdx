@@ -3,14 +3,6 @@ title: "Configuration Overview"
 description: "ADE stores all project configuration in a .ade/ directory at your repository root. Three layered config files give you shared team settings, personal overrides, and secret management — all with a SHA-based trust model."
 icon: "folder-tree"
 ---
-
-<Frame caption=".ade/ file tree — ade.yaml, local files, and subdirectories">
-  <img
-    src="/images/ade-directory-file-tree-config-files.png"
-    alt="The .ade/ directory expanded in a file tree showing ade.yaml, local.yaml, local.secret.yaml, and subdirectories."
-  />
-</Frame>
-
 ## The `.ade/` Directory
 
 When you open a repository in ADE for the first time, ADE initializes a `.ade/` directory at the project root. This directory is the single source of truth for all ADE configuration, runtime artifacts, and worktree management for that project.
@@ -78,14 +70,6 @@ The layering order means a developer can override the team's default AI model (s
     The SHA of the approved `ade.yaml` is written to your `local.yaml`. Commands from this version of the config are now permitted to execute.
   </Step>
 </Steps>
-
-<Frame caption="Config approval dialog — ade.yaml diff with Approve and Reject">
-  <img
-    src="/images/config-approval-dialog-ade-yaml-diff-buttons.png"
-    alt="The config approval dialog showing a diff view of ade.yaml changes with Approve and Reject buttons."
-  />
-</Frame>
-
 <Warning>
 The approved SHA is machine-specific. If two developers need to approve the same change, each must approve it on their own machine. This is intentional — one person's trust cannot be delegated to another.
 </Warning>
@@ -307,14 +291,6 @@ If you update an API key in `local.secret.yaml` while an agent is mid-session, t
     Each project has its own `.ade/` directory with its own `local.yaml` and `local.secret.yaml`. You can use different API keys or different preferred models for different projects. Settings in one project's `.ade/` never affect another project.
   </Accordion>
 </AccordionGroup>
-
-<Frame caption="Settings — three config files, approved SHA, and Re-approve">
-  <img
-    src="/images/settings-config-files-approved-sha-reapprove.png"
-    alt="The Settings panel showing the three config files, the Approved SHA display, and the Re-approve button."
-  />
-</Frame>
-
 ---
 
 ## What's Next

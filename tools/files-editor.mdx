@@ -4,13 +4,6 @@ description: "An IDE-style workbench powered by Monaco — full syntax highlight
 icon: "file-code"
 ---
 
-<Frame caption="Files & Editor — explorer, Monaco with IntelliSense, diff, lane selector">
-  <img
-    src="/images/files-editor-three-pane-monaco-intellisense-diff.png"
-    alt="The Files & Editor view in 3-pane layout — left file explorer showing a project tree with git status annotations (M, A, ? badges), center Monaco editor with TypeScript code and IntelliSense dropdown open, right inspector showing the file diff. Include the workspace lane selector dropdown at the top."
-  />
-</Frame>
-
 ## Overview
 
 The Files & Editor view is ADE's built-in IDE workbench. It is powered by **Monaco** — the same editor engine that drives VS Code — giving you full syntax highlighting, IntelliSense code completion, multi-cursor editing, and find/replace across all major programming languages.
@@ -120,13 +113,6 @@ The editor renders in one of four modes depending on the file's state.
   </Tab>
 </Tabs>
 
-<Frame caption="3-way merge — Mine/Theirs, accept buttons, conflict badge in tree">
-  <img
-    src="/images/files-editor-3way-conflict-mine-theirs.png"
-    alt={`The 3-way conflict resolution view — left "Mine" pane and right "Theirs" pane showing a conflicting function, with the "Accept Mine" and "Accept Theirs" buttons visible above the hunk, and the conflict status badge (\`C\`) visible in the file explorer on the left.`}
-  />
-</Frame>
-
 ---
 
 ## Conflict Resolution Workflow
@@ -234,13 +220,6 @@ The breadcrumb bar at the top of the editor (just below the tab strip) shows the
 | `Cmd+\` | Split editor right |
 | `Cmd+K Cmd+0` | Fold all regions |
 | `Cmd+K Cmd+J` | Unfold all regions |
-
-<Frame caption="Monaco Diff Mode — base vs modified, green/red hunks, F7 navigation">
-  <img
-    src="/images/files-editor-monaco-diff-mode-typescript.png"
-    alt="The Monaco editor with a TypeScript file open in Diff Mode — left pane showing the base version, right pane showing the modified version with added lines highlighted in green and removed lines in red. The diff hunk navigation buttons (F7/Shift+F7) should be visible in the editor toolbar."
-  />
-</Frame>
 
 ---
 

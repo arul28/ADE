@@ -130,7 +130,7 @@ export async function prewarmCreateMissionDialogCache(): Promise<void> {
   if (shouldRefreshAiStatus) {
     tasks.push(
       window.ade.ai.getStatus().then((status) => {
-        const ids = deriveConfiguredModelIds(status);
+        const ids = deriveConfiguredModelIds(status, { includeCursor: true });
         createMissionDialogCache.aiStatus = {
           detectedAuth: status.detectedAuth ?? [],
           availableModelIds: ids,
@@ -503,7 +503,7 @@ function CreateMissionDialogInner({
       if (cancelled) return;
       void window.ade.ai.getStatus().then((status) => {
         if (cancelled) return;
-        const ids = deriveConfiguredModelIds(status);
+        const ids = deriveConfiguredModelIds(status, { includeCursor: true });
         const cachedStatus: CreateMissionDialogAiStatusCache = {
           detectedAuth: status.detectedAuth ?? [],
           availableModelIds: ids,

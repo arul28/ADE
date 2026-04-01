@@ -81,10 +81,10 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
-function resolveCliRegistryModelId(provider: "codex" | "claude", value: string | null | undefined): string | null {
+function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor", value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
-  const family = provider === "codex" ? "openai" : "anthropic";
+  const family = provider === "codex" ? "openai" : provider === "cursor" ? "cursor" : "anthropic";
   const match = MODEL_REGISTRY.find(
     (model) =>
       model.isCliWrapped
@@ -117,8 +117,8 @@ function hasConfiguredNonCliAuth(model: ModelDescriptor, detectedAuth: AiDetecte
 }
 
 function deriveConfiguredCliModelIdsFromStatus(status: {
-  availableProviders: { codex: boolean; claude: boolean };
-  models: { codex: Array<{ id: string }>; claude: Array<{ id: string }> };
+  availableProviders: { codex: boolean; claude: boolean; cursor: boolean };
+  models: { codex: Array<{ id: string }>; claude: Array<{ id: string }>; cursor: Array<{ id: string }> };
   detectedAuth?: AiDetectedAuth[];
 }): string[] {
   const available = new Set<string>();
@@ -135,6 +135,13 @@ function deriveConfiguredCliModelIdsFromStatus(status: {
   if (status.availableProviders.claude) {
     for (const model of status.models.claude ?? []) {
       const resolved = resolveCliRegistryModelId("claude", model.id);
+      if (resolved) available.add(resolved);
+    }
+  }
+
+  if (status.availableProviders.cursor) {
+    for (const model of status.models.cursor ?? []) {
+      const resolved = resolveCliRegistryModelId("cursor", model.id);
       if (resolved) available.add(resolved);
     }
   }

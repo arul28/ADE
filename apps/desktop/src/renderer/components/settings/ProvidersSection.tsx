@@ -136,6 +136,7 @@ function describeCredentialSource(connection: AiProviderConnectionStatus | null 
   if (localSource.source === "macos-keychain") return "Local credentials found in macOS Keychain.";
   if (localSource.source === "claude-credentials-file") return "Local credentials found in ~/.claude/.credentials.json.";
   if (localSource.source === "codex-auth-file") return "Local credentials found in ~/.codex/auth.json.";
+  if (localSource.source === "cursor-env") return "Detected via CURSOR_API_KEY environment variable.";
   return null;
 }
 

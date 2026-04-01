@@ -310,8 +310,10 @@ function resolveManagedPermissionMode(args: {
 }): AgentChatPermissionMode | undefined {
   if (args.readOnlyExecution) return "plan";
   const providers = args.permissionConfig?._providers;
-  const permKey = args.provider === "cursor" ? "unified" : args.provider;
-  const candidate = providers?.[permKey] as string | undefined;
+  const candidate =
+    args.provider === "cursor"
+      ? ((providers?.cursor ?? providers?.unified) as string | undefined)
+      : (providers?.[args.provider] as string | undefined);
   return typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
     ? candidate as AgentChatPermissionMode
     : undefined;

@@ -786,7 +786,7 @@ export function AgentChatPane({
   const refreshAvailableModels = useCallback(async () => {
     try {
       const status = await window.ade.ai.getStatus();
-      const available = deriveConfiguredModelIds(status);
+      const available = deriveConfiguredModelIds(status, { includeCursor: true });
       setAvailableModelIds(available);
       return available;
     } catch {
@@ -1744,6 +1744,7 @@ export function AgentChatPane({
         await window.ade.agentChat.steer({ sessionId, text: steerText });
       } else {
         try {
+          setOptimisticOutgoingMessage({ sessionId, envelope: optimisticEnvelope(sessionId) });
           await window.ade.agentChat.send({
             sessionId,
             text: finalText,

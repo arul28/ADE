@@ -327,6 +327,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         aiStatus.providerConnections?.cursor?.authAvailable ||
         aiStatus.availableProviders.claude ||
         aiStatus.availableProviders.codex ||
+        aiStatus.availableProviders.cursor ||
         (aiStatus.detectedAuth != null && aiStatus.detectedAuth.length > 0));
     set({ providerMode: configMode === "subscription" || hasProvider ? "subscription" : "guest" });
   },

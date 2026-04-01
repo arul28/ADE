@@ -12,10 +12,12 @@ function buildStatus(claudeRuntimeAvailable: boolean): AiSettingsStatus {
     availableProviders: {
       claude: claudeRuntimeAvailable,
       codex: true,
+      cursor: false,
     },
     models: {
       claude: [],
       codex: [],
+      cursor: [],
     },
     features: [],
     detectedAuth: [],

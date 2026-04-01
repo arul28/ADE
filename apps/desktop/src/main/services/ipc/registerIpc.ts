@@ -710,10 +710,12 @@ function getUnavailableAiStatus(): AiSettingsStatus {
     availableProviders: {
       claude: false,
       codex: false,
+      cursor: false,
     },
     models: {
       claude: [],
       codex: [],
+      cursor: [],
     },
     detectedAuth: [],
     providerConnections: {
