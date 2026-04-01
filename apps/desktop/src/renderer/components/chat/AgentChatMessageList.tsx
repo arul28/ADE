@@ -14,7 +14,6 @@ import {
   Circle,
   Checks,
   ListChecks,
-  User,
   Robot,
   Note,
   ChatCircleText,
@@ -221,13 +220,13 @@ function renderSubagentUsage(usage: {
 }
 
 const GLASS_CARD_CLASS =
-  "overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#121216]";
+  "overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#141220]";
 
 const WORK_LOG_CARD_CLASS =
-  "border border-white/[0.06] bg-[#111317]/70";
+  "border border-white/[0.06] bg-[#13111B]/70";
 
 const RECESSED_BLOCK_CLASS =
-  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09090b] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
+  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#0A090E] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
 
 function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
   if (toolName.startsWith("mcp__")) {
@@ -249,18 +248,18 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
 }
 
 const MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "rgba(245, 158, 11, 0.16)",
-  background: "#171412",
+  borderColor: "rgba(167, 139, 250, 0.14)",
+  background: "#191624",
 };
 
 const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
   borderColor: "rgba(255, 255, 255, 0.08)",
-  background: "#14161a",
+  background: "#16141E",
 };
 
 const ASSISTANT_MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "rgba(148, 163, 184, 0.14)",
-  background: "#101318",
+  borderColor: "rgba(148, 163, 184, 0.10)",
+  background: "#12101A",
 };
 
 function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
@@ -273,7 +272,7 @@ function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_
   if (event.deliveryState === "queued") {
     return {
       label: "queued",
-      className: "border-amber-500/18 bg-amber-500/[0.08] text-amber-300",
+      className: "border-violet-500/18 bg-violet-500/[0.08] text-violet-300",
     };
   }
   if (event.processed) {
@@ -1096,15 +1095,15 @@ function renderEvent(
       return (
         <div className="flex justify-end">
           <div
-            className={cn(GLASS_CARD_CLASS, "max-w-[88%] border-l-2 border-l-amber-400/40 px-4 py-3")}
+            className={cn(GLASS_CARD_CLASS, "max-w-[88%] border-l-2 border-l-violet-400/40 px-4 py-3")}
             style={SURFACE_INLINE_CARD_STYLE}
           >
             <div className="mb-1.5 flex items-center gap-2">
               <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400/60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" />
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400/60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-violet-400" />
               </span>
-              <span className="font-sans text-[10px] font-medium text-amber-200/80">
+              <span className="font-sans text-[10px] font-medium text-violet-200/80">
                 Queued — will be delivered after this turn
               </span>
               <span className="ml-auto font-sans text-[10px] text-fg/40">{formatTime(envelope.timestamp)}</span>
@@ -1119,21 +1118,14 @@ function renderEvent(
     }
     return (
       <div className="flex justify-end">
-        <div className={cn(GLASS_CARD_CLASS, "group max-w-[82%] px-4 py-3")} style={MESSAGE_CARD_STYLE}>
-          <div className="mb-2 flex items-center gap-2">
-            <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-amber-300/20 bg-amber-400/[0.10]">
-              <User size={10} weight="regular" className="text-amber-200/90" />
+        <div className={cn(GLASS_CARD_CLASS, "group relative max-w-[82%] px-4 py-2.5")} style={MESSAGE_CARD_STYLE}>
+          {deliveryChip ? (
+            <span className={cn("mb-1 inline-flex items-center border px-1.5 py-0.5 font-sans text-[9px] font-medium", deliveryChip.className)}>
+              {deliveryChip.label}
             </span>
-            <span className="font-sans text-[11px] font-medium text-amber-100/92">You</span>
-            {deliveryChip ? (
-              <span className={cn("inline-flex items-center border px-1.5 py-0.5 font-sans text-[9px] font-medium", deliveryChip.className)}>
-                {deliveryChip.label}
-              </span>
-            ) : null}
-            <div className="ml-auto flex items-center gap-2">
-              <MessageCopyButton value={event.text} className="opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100" />
-              <span className="font-sans text-[10px] text-amber-100/55">{formatTime(envelope.timestamp)}</span>
-            </div>
+          ) : null}
+          <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+            <MessageCopyButton value={event.text} />
           </div>
           <div className="whitespace-pre-wrap break-words text-[13px] leading-[1.7] text-fg/96">{event.text}</div>
           {event.attachments?.length ? (

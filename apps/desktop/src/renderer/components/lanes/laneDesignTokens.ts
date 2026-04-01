@@ -2,9 +2,9 @@ import type { CSSProperties } from "react";
 import type { ProcessRuntimeStatus } from "../../../shared/types";
 
 export const COLORS = {
-  pageBg: "#09080C",
+  pageBg: "#0C0B10",
   cardBg: "rgba(255,255,255,0.03)",
-  cardBgSolid: "#181423",
+  cardBgSolid: "#1C1926",
   recessedBg: "rgba(255,255,255,0.03)",
   hoverBg: "rgba(255,255,255,0.06)",
   border: "rgba(255,255,255,0.06)",
@@ -13,10 +13,10 @@ export const COLORS = {
   accent: "#A78BFA",
   accentSubtle: "rgba(167, 139, 250, 0.12)",
   accentBorder: "rgba(167, 139, 250, 0.20)",
-  textPrimary: "#FAFAFA",
-  textSecondary: "#A1A1AA",
-  textMuted: "#8B8B9A",
-  textDim: "#5A5670",
+  textPrimary: "#F0F0F2",
+  textSecondary: "#A8A8B4",
+  textMuted: "#908FA0",
+  textDim: "#5E5A70",
   success: "#22C55E",
   danger: "#EF4444",
   warning: "#F59E0B",

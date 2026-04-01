@@ -8,6 +8,13 @@ import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { ToolLogo } from "./ToolLogos";
 
+const LANE_COLORS = ["#A78BFA", "#F97316", "#22C55E", "#3B82F6", "#EC4899", "#14B8A6", "#EAB308", "#6366F1"];
+function laneColor(laneId: string): string {
+  let h = 0;
+  for (let i = 0; i < laneId.length; i++) h = ((h << 5) - h + laneId.charCodeAt(i)) | 0;
+  return LANE_COLORS[Math.abs(h) % LANE_COLORS.length]!;
+}
+
 function truncateSummary(text: string | null, maxWords = 8): string {
   if (!text) return "";
   const words = text.trim().split(/\s+/);
@@ -52,68 +59,71 @@ export const SessionCard = React.memo(function SessionCard({
       <button
         type="button"
         className={cn(
-          "relative w-full overflow-hidden text-left transition-all duration-100 rounded-md",
+          "relative w-full overflow-hidden text-left transition-all duration-100 rounded-lg",
           isSelected
-            ? "bg-white/[0.05] hover:bg-white/[0.06]"
+            ? "bg-white/[0.06] hover:bg-white/[0.07]"
             : "bg-transparent hover:bg-white/[0.03]",
         )}
         style={{
-          border: isSelected ? "1px solid rgba(255,255,255,0.08)" : "1px solid transparent",
+          border: isSelected ? "1px solid rgba(255,255,255,0.10)" : "1px solid transparent",
         }}
         onClick={() => onSelect(session.id)}
       >
-        <div className="px-2 py-1.5">
-          {/* Top row */}
-          <div className="flex items-center gap-2 min-w-0">
-            <span
-              title={dot.label}
-              className={cn("h-2 w-2 shrink-0 rounded-full", dot.cls, dot.spinning && "animate-spin")}
-            />
-            <ToolLogo toolType={session.toolType} size={11} />
-            <span
-              className="min-w-0 flex-1 truncate text-[11px]"
-              style={{ fontWeight: isSelected ? 500 : 400 }}
-            >
-              {primaryText}
-            </span>
+        <div className="flex items-start gap-2.5 px-2.5 py-2">
+          {/* Logo */}
+          <div className="shrink-0 mt-0.5">
+            <ToolLogo toolType={session.toolType} size={22} />
           </div>
 
-          {/* Bottom row */}
-          <div className="mt-0.5 flex items-center gap-1.5 pl-[18px] min-w-0">
-            <span className="shrink-0 text-[10px] text-muted-fg/50">
-              {session.laneName}
-            </span>
-            {secondaryText ? (
-              <span className="truncate text-[10px] text-muted-fg/70">
-                {secondaryText}
+          {/* Content */}
+          <div className="min-w-0 flex-1">
+            {/* Title row */}
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span
+                title={dot.label}
+                className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot.cls, dot.spinning && "animate-spin")}
+              />
+              <span
+                className="min-w-0 flex-1 truncate text-[11px] text-fg/90"
+                style={{ fontWeight: isSelected ? 500 : 400 }}
+              >
+                {primaryText}
               </span>
-            ) : null}
+            </div>
 
-            {delta && (delta.insertions > 0 || delta.deletions > 0) ? (
-              <>
-                <span
-                  className="border border-emerald-500/30 bg-emerald-500/15 px-1 py-0.5 text-emerald-300 leading-none shrink-0"
-                  style={DELTA_CHIP_STYLE}
-                >
-                  +{delta.insertions}
-                </span>
+            {/* Meta row */}
+            <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: laneColor(session.laneId) }} />
+              <span className="shrink-0 text-[10px] text-muted-fg/60">
+                {session.laneName}
+              </span>
+
+              {delta && (delta.insertions > 0 || delta.deletions > 0) ? (
+                <>
+                  <span
+                    className="border border-emerald-500/30 bg-emerald-500/15 px-1 py-0.5 text-emerald-300 leading-none shrink-0"
+                    style={DELTA_CHIP_STYLE}
+                  >
+                    +{delta.insertions}
+                  </span>
+                  <span
+                    className="border border-red-500/30 bg-red-500/15 px-1 py-0.5 text-red-300 leading-none shrink-0"
+                    style={DELTA_CHIP_STYLE}
+                  >
+                    -{delta.deletions}
+                  </span>
+                </>
+              ) : null}
+
+              {session.exitCode != null && session.exitCode !== 0 ? (
                 <span
                   className="border border-red-500/30 bg-red-500/15 px-1 py-0.5 text-red-300 leading-none shrink-0"
                   style={DELTA_CHIP_STYLE}
                 >
-                  -{delta.deletions}
+                  EXIT {session.exitCode}
                 </span>
-              </>
-            ) : null}
-
-            {session.exitCode != null && session.exitCode !== 0 ? (
-              <span
-                className="border border-red-500/30 bg-red-500/15 px-1 py-0.5 text-red-300 leading-none shrink-0"
-                style={DELTA_CHIP_STYLE}
-              >
-                EXIT {session.exitCode}
-              </span>
-            ) : null}
+              ) : null}
+            </div>
           </div>
         </div>
       </button>

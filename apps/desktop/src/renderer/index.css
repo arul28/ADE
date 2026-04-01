@@ -54,43 +54,43 @@
 
 :root,
 [data-theme="dark"] {
-  --color-bg: #09080C;
-  --color-fg: #FAFAFA;
-  --color-surface: #14111D;
-  --color-card: #181423;
-  --color-card-fg: #FAFAFA;
-  --color-card-rgb: 24, 20, 35;
-  --color-secondary: #231F30;
-  --color-secondary-fg: #A1A1AA;
-  --color-muted: #1C1828;
-  --color-muted-fg: #8B8B9A;
-  --color-border: #2D2840;
+  --color-bg: #0C0B10;
+  --color-fg: #F0F0F2;
+  --color-surface: #16141E;
+  --color-card: #1C1926;
+  --color-card-fg: #F0F0F2;
+  --color-card-rgb: 28, 25, 38;
+  --color-secondary: #252232;
+  --color-secondary-fg: #A8A8B4;
+  --color-muted: #1E1B28;
+  --color-muted-fg: #908FA0;
+  --color-border: #302C42;
   --color-accent: #A78BFA;
-  --color-accent-fg: #09080C;
+  --color-accent-fg: #0C0B10;
   --color-accent-muted: rgba(167, 139, 250, 0.20);
-  --color-surface-raised: #1E1A2C;
-  --color-surface-recessed: #0B0A0F;
-  --color-surface-overlay: #1E1A2C;
-  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.6);
-  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.5);
-  --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.7);
-  --color-separator: #2D2840;
+  --color-surface-raised: #211E2E;
+  --color-surface-recessed: #0A090E;
+  --color-surface-overlay: #211E2E;
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.4);
+  --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.6);
+  --color-separator: #302C42;
   --color-separator-active: #A78BFA;
-  --border-separator: #352F4A;
-  --gradient-surface: linear-gradient(180deg, #14111D 0%, #09080C 100%);
-  --gradient-panel: linear-gradient(180deg, #1E1A2C 0%, #14111D 100%);
-  --color-glow: rgba(167, 139, 250, 0.25);
-  --pane-bg: rgba(24, 20, 35, 0.94);
-  --pane-border: rgba(45, 40, 64, 0.6);
-  --chat-shell-shadow: 0 24px 60px -34px rgba(0, 0, 0, 0.86), 0 0 0 1px rgba(167, 139, 250, 0.12);
-  --chat-card-shadow: 0 16px 32px -24px rgba(0, 0, 0, 0.8);
-  --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.8);
-  --chat-glass-bg: rgba(24, 20, 35, 0.7);
+  --border-separator: #38334E;
+  --gradient-surface: linear-gradient(180deg, #16141E 0%, #0C0B10 100%);
+  --gradient-panel: linear-gradient(180deg, #211E2E 0%, #16141E 100%);
+  --color-glow: rgba(167, 139, 250, 0.22);
+  --pane-bg: rgba(28, 25, 38, 0.94);
+  --pane-border: rgba(48, 44, 66, 0.6);
+  --chat-shell-shadow: 0 24px 60px -34px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(167, 139, 250, 0.10);
+  --chat-card-shadow: 0 16px 32px -24px rgba(0, 0, 0, 0.7);
+  --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.7);
+  --chat-glass-bg: rgba(28, 25, 38, 0.7);
   --chat-glass-border: rgba(255, 255, 255, 0.08);
-  --chat-panel-bg: rgba(24, 20, 35, 0.82);
+  --chat-panel-bg: rgba(28, 25, 38, 0.82);
   --chat-panel-border: rgba(255, 255, 255, 0.10);
-  --chat-panel-bg-strong: rgba(24, 20, 35, 0.92);
-  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  --chat-panel-bg-strong: rgba(28, 25, 38, 0.92);
+  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(255,255,255,0.07), transparent);
   --color-success: #22c55e;
   --color-warning: #f59e0b;
   --color-error: #ef4444;
@@ -103,14 +103,14 @@
   --shell-header-height: 40px;
   --shell-header-padding-start: 80px;
   --shell-header-padding-end: 14px;
-  --shell-header-bg: rgba(14, 12, 20, 0.82);
+  --shell-header-bg: rgba(12, 11, 16, 0.82);
   --shell-header-fg: var(--color-fg);
   --shell-header-border: rgba(255, 255, 255, 0.04);
   --shell-header-divider: rgba(255, 255, 255, 0.04);
 
   --shell-sidebar-collapsed-width: 52px;
   --shell-sidebar-expanded-width: 168px;
-  --shell-sidebar-bg: linear-gradient(180deg, rgba(20, 17, 29, 0.88) 0%, rgba(9, 8, 12, 0.92) 100%);
+  --shell-sidebar-bg: linear-gradient(180deg, rgba(22, 20, 30, 0.88) 0%, rgba(12, 11, 16, 0.92) 100%);
   --shell-sidebar-border: rgba(255, 255, 255, 0.04);
   --shell-sidebar-item-height: 36px;
   --shell-sidebar-item-fg: rgba(255, 255, 255, 0.45);
@@ -168,9 +168,9 @@
   --work-sidebar-bg: rgba(255, 255, 255, 0.025);
 
   /* Work tab combobox / popover */
-  --work-popover-bg: rgba(20, 17, 29, 0.96);
+  --work-popover-bg: rgba(22, 20, 30, 0.96);
   --work-popover-border: rgba(255, 255, 255, 0.10);
-  --work-popover-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.08);
+  --work-popover-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
   --work-popover-item-hover: rgba(255, 255, 255, 0.06);
   --work-popover-item-active: rgba(167, 139, 250, 0.12);
 }
