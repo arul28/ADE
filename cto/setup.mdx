@@ -16,7 +16,12 @@ icon: "wand-magic-sparkles"
     2. **Project scanning** — the CTO reads your repository structure, existing PRD/architecture docs, recent git history, and `.ade/` state to build its initial Project Pack. This takes 30–90 seconds on a typical project.
     3. **Integration handoff** — optionally connect Linear (OAuth or manual token) and configure the heartbeat schedule.
 
-    <Info>**Screenshot: The CTO onboarding wizard on step 2 ("Project Scanning") — showing a progress indicator with items being checked off: "Reading repository structure ✓", "Analyzing recent commits ✓", "Loading existing packs... (in progress)", "Connecting to Linear (skipped)".</Info>
+    <Frame caption="CTO onboarding step 2 — project scanning checklist progress">
+      <img
+        src="/images/cto-onboarding-wizard-project-scanning-step.png"
+        alt={`The CTO onboarding wizard on step 2 ("Project Scanning") — showing a progress indicator with items being checked off: "Reading repository structure ✓", "Analyzing recent commits ✓", "Loading existing packs... (in progress)", "Connecting to Linear (skipped)".`}
+      />
+    </Frame>
   </Step>
   <Step title="Configure the heartbeat">
     In **CTO > Settings**, set the heartbeat interval. The default is every 15 minutes. You can also configure event-based triggers (e.g., "run when a PR is opened", "run when a lane enters conflict status").

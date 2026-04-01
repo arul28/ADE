@@ -4,7 +4,12 @@ import type { TerminalSessionSummary } from "../../shared/types";
 
 /** Returns true if the tool type represents an AI chat session. */
 export function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
+  return (
+    toolType === "codex-chat"
+    || toolType === "claude-chat"
+    || toolType === "ai-chat"
+    || toolType === "cursor"
+  );
 }
 
 export function isRunOwnedToolType(toolType: string | null | undefined): boolean {
@@ -24,6 +29,7 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "claude-chat") return "Claude chat";
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "ai-chat") return "AI chat";
+  if (toolType === "cursor") return "Cursor chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   return "Session";
@@ -36,6 +42,7 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "claude-chat") return "Claude chat";
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "ai-chat") return "AI chat";
+  if (toolType === "cursor") return "Cursor chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   if (toolType === "run-shell") return "Run inspector";
@@ -97,6 +104,7 @@ export function isGenericSessionTitle(session: TerminalSessionSummary, value: st
     normalized === "ai chat" ||
     normalized === "claude chat" ||
     normalized === "codex chat" ||
+    normalized === "cursor chat" ||
     normalized === "ai worker" ||
     normalized === "claude worker" ||
     normalized === "codex worker"

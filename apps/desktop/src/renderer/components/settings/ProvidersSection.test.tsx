@@ -49,6 +49,17 @@ function buildStatus(claudeRuntimeAvailable: boolean): AiSettingsStatus {
         lastCheckedAt: "2026-03-17T19:00:00.000Z",
         sources: [],
       },
+      cursor: {
+        provider: "cursor",
+        authAvailable: false,
+        runtimeDetected: false,
+        runtimeAvailable: false,
+        usageAvailable: false,
+        path: null,
+        blocker: "No Cursor CLI (`agent`) or Cursor credentials were found locally.",
+        lastCheckedAt: "2026-03-17T19:00:00.000Z",
+        sources: [],
+      },
     },
     apiKeyStore: {
       secureStorageAvailable: true,

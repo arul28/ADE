@@ -974,6 +974,7 @@ app.whenReady().then(async () => {
     let openclawBridgeServiceRef: ReturnType<typeof createOpenclawBridgeService> | null = null;
     let linearSyncServiceRef: ReturnType<typeof createLinearSyncService> | null = null;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null = null;
+    let externalMcpServiceRef: ReturnType<typeof createExternalMcpService> | null = null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -1412,7 +1413,21 @@ app.whenReady().then(async () => {
           }).catch(() => {});
         }
       },
-      onSessionEnded: onTrackedSessionEnded
+      onSessionEnded: onTrackedSessionEnded,
+      getExternalMcpConfigs: () => externalMcpServiceRef?.getRawConfigs() ?? [],
+      getDirtyFileTextForPath: async (absPath: string) => {
+        const trimmed = absPath.trim();
+        if (!trimmed) return undefined;
+        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+        if (!win?.webContents || win.webContents.isDestroyed()) return undefined;
+        try {
+          const js = `typeof window.__ADE_GET_DIRTY_FILE_TEXT__ === "function" ? window.__ADE_GET_DIRTY_FILE_TEXT__(${JSON.stringify(trimmed)}) : undefined`;
+          const result: unknown = await win.webContents.executeJavaScript(js, true);
+          return typeof result === "string" ? result : undefined;
+        } catch {
+          return undefined;
+        }
+      },
     });
     agentChatServiceRef = agentChatService;
 
@@ -1622,6 +1637,7 @@ app.whenReady().then(async () => {
       authService: externalConnectionAuthService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.externalMcpEvent, event),
     });
+    externalMcpServiceRef = externalMcpService;
     scheduleBackgroundProjectTask(
       "lanes.port_allocation_recovery",
       () => recoverPortAllocations(),

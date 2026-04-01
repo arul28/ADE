@@ -4,7 +4,9 @@ description: "The global process management center for your project — start yo
 icon: "house"
 ---
 
-<Info>**Screenshot: The Project Home (Run tab) view — showing a "Backend" process group with postgres (green, running), rails server (green, running), and sidekiq (green, running), a "Frontend" group with a Next.js dev server, the Stack button in the header (green "Stack Running" state), CPU/memory usage indicators next to each process, and a test suite panel on the right side.</Info>
+<Frame caption="Run tab — process groups, Stack button, CPU/memory stats, and test suite panel">
+  <img src="/images/run-project-home.png" alt="Project Home showing Backend and Frontend process groups running, Stack Running button, resource usage, and test panel" />
+</Frame>
 
 ## Overview
 
@@ -127,7 +129,12 @@ Click any process row to expand its **log panel** inline, showing a live-streami
 - **Searchable**: Press `Cmd+F` inside the log panel to search the log buffer
 - **Buffered**: The last 10,000 lines are kept in memory; older lines are written to disk and still searchable
 
-<Info>**Screenshot: A single expanded process log panel — showing the Rails server log with color-coded entries (green INFO lines, yellow WARN lines, red ERROR line), the process metadata row above it (PID, CPU 2.1%, Memory 312 MB, Running for 4m 32s), and a search bar overlaid on the log.</Info>
+<Frame caption="Expanded process log with Rails color levels, metadata row, and search bar">
+  <img
+    src="/images/process-log-panel-rails-metadata-search.png"
+    alt="A single expanded process log panel — showing the Rails server log with color-coded entries (green INFO lines, yellow WARN lines, red ERROR line), the process metadata row above it (PID, CPU 2.1%, Memory 312 MB, Running for 4m 32s), and a search bar overlaid on the log."
+  />
+</Frame>
 
 ---
 
@@ -314,7 +321,12 @@ Use the lane selector when you have per-lane process configurations (e.g., a sta
   </Accordion>
 </AccordionGroup>
 
-<Info>**Screenshot: The Project Home Config Editor tab — showing a table of environment variables with key names in the left column, masked values (••••••) in the middle column for sensitive entries like API keys, eye-toggle icons on the right of each row, a "+ Add Variable" button at the bottom, and a lane-specific override column showing one override in the active lane highlighted in blue.</Info>
+<Frame caption="Project Home Config Editor — env vars table, masked secrets, lane overrides">
+  <img
+    src="/images/project-home-config-editor-env-vars-overrides.png"
+    alt={`The Project Home Config Editor tab — showing a table of environment variables with key names in the left column, masked values (••••••) in the middle column for sensitive entries like API keys, eye-toggle icons on the right of each row, a "+ Add Variable" button at the bottom, and a lane-specific override column showing one override in the active lane highlighted in blue.`}
+  />
+</Frame>
 
 ---
 

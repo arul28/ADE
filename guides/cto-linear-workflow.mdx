@@ -1,9 +1,15 @@
 ---
-title: "CTO Agent + Linear Integration"
+title: "Guide: CTO + Linear workflow"
+sidebarTitle: "CTO + Linear Workflow"
 description: "Connect the CTO agent to Linear for automated issue triage, task delegation, and status syncing."
+icon: "graduation-cap"
 ---
 
 The CTO agent can sync with your Linear workspace to read incoming issues, triage them, delegate work to AI agents, and update issue statuses as work progresses. This guide walks you through connecting Linear and configuring the CTO for automated workflows.
+
+<Frame caption="CTO agent triaging a Linear issue and spawning a worker to handle it">
+  <img src="/images/guide-cto-linear.png" alt="CTO chat showing Linear issue triage with worker delegation" />
+</Frame>
 
 ---
 
@@ -45,7 +51,19 @@ Navigate to **CTO** in the sidebar to access the CTO agent's settings and chat i
   </Step>
 </Steps>
 
-*Coming soon: detailed reference for all CTO configuration options.*
+### Workflow targets
+
+The CTO can route incoming Linear issues to different execution surfaces:
+
+| Target | When to use |
+|--------|------------|
+| `employee_session` | Simple tasks a single worker can handle in one session |
+| `worker_run` | Tasks that need a dedicated lane but not full mission structure |
+| `mission` | Complex multi-step work requiring planning, validation, and audit |
+| `pr_resolution` | PR review comments or failing checks that need fixing |
+| `review_gate` | Work that should be reviewed by the CTO before proceeding |
+
+The CTO chooses the target based on issue complexity, your delegation policy, and available budget.
 
 ---
 
@@ -94,7 +112,19 @@ As work progresses, ADE keeps Linear updated:
 | Worker failed | Issue flagged with a comment describing the failure |
 | Intervention needed | Issue comment requesting human input |
 
-*Coming soon: custom status mapping between ADE states and Linear workflow states.*
+### Custom status mapping
+
+Configure status mappings in **Settings → Integrations → Linear**:
+
+| ADE state | Default Linear status | Configurable |
+|-----------|----------------------|--------------|
+| Worker started | In Progress | Yes |
+| PR opened | In Review | Yes |
+| Mission completed | Done | Yes |
+| Worker failed | Blocked | Yes |
+| Intervention needed | Blocked | Yes |
+
+You can also configure `activeStateTypes` (which Linear states trigger CTO attention) and `terminalStateTypes` (which states mean the issue is done) to match your team's Linear workflow.
 
 ---
 

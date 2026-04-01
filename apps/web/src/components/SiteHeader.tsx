@@ -66,10 +66,11 @@ export function SiteHeader() {
           <div className="flex items-center gap-3">
             <Link className="focus-ring inline-flex items-center gap-3 rounded-lg" to="/">
               <img
-                src="/logo.png"
-                alt="ADE"
-                className="h-7"
+                src="/images/ade-mark.svg"
+                alt=""
+                className="h-8"
               />
+              <span className="font-bold text-lg tracking-tight">ADE</span>
             </Link>
           </div>
 

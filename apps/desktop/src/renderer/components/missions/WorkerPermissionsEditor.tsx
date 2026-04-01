@@ -19,7 +19,7 @@ import {
 } from "../shared/permissionOptions";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 
-export type PermFamilyKey = "claude" | "codex" | "unified";
+export type PermFamilyKey = "claude" | "codex" | "unified" | "cursor";
 
 /** Derive unique model families in use from orchestrator + phase card models */
 export function deriveActivePermFamilies(
@@ -38,7 +38,7 @@ export function deriveActivePermFamilies(
       seen.add(familyToPermissionKey(desc.family, desc.isCliWrapped));
     }
   }
-  const order: PermFamilyKey[] = ["claude", "codex", "unified"];
+  const order: PermFamilyKey[] = ["claude", "codex", "cursor", "unified"];
   return order.filter((k) => seen.has(k));
 }
 

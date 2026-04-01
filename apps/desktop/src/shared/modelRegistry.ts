@@ -14,7 +14,8 @@ export type ProviderFamily =
   | "openrouter"
   | "ollama"
   | "lmstudio"
-  | "vllm";
+  | "vllm"
+  | "cursor";
 
 export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio" | "vllm">;
 
@@ -51,10 +52,10 @@ export type ModelDescriptor = {
 };
 
 export type WorkerExecutionPath = "cli" | "api" | "local";
-export type ModelProviderGroup = "claude" | "codex" | "unified";
+export type ModelProviderGroup = "claude" | "codex" | "unified" | "cursor";
 
 export function isModelProviderGroup(value: string | null | undefined): value is ModelProviderGroup {
-  return value === "claude" || value === "codex" || value === "unified";
+  return value === "claude" || value === "codex" || value === "unified" || value === "cursor";
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +332,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     outputPricePer1M: 2,
     costTier: "low",
   },
+
+  // ---- Cursor CLI models: discovered at runtime via `agent models` (see cursorModelsDiscovery + getResolvedAvailableModels) ----
+
   // ---- OpenAI (API key direct) ----
   {
     id: "openai/gpt-5.4-pro",
@@ -774,14 +778,128 @@ export function getLocalProviderDefaultEndpoint(provider: LocalProviderFamily): 
 }
 
 // ---------------------------------------------------------------------------
+// Cursor CLI — dynamic descriptors (`cursor/<sdkModelId>` from `agent models`)
+// ---------------------------------------------------------------------------
+
+export type CursorCliLineGroup = "auto" | "anthropic" | "composer" | "openai" | "google" | "grok" | "other";
+
+/** Order of Cursor CLI sub-sections inside the subscription bucket model picker. */
+export const CURSOR_CLI_LINE_ORDER: CursorCliLineGroup[] = [
+  "auto",
+  "anthropic",
+  "composer",
+  "openai",
+  "google",
+  "grok",
+  "other",
+];
+
+export function cursorCliLineGroupFromSdkId(sdkModelId: string): CursorCliLineGroup {
+  const s = sdkModelId.trim().toLowerCase();
+  if (s === "auto") return "auto";
+  if (s.includes("composer")) return "composer";
+  if (/claude|sonnet|opus|haiku/.test(s)) return "anthropic";
+  if (/gemini/.test(s)) return "google";
+  if (/grok/.test(s)) return "grok";
+  if (/^gpt|^o\d|codex/.test(s)) return "openai";
+  return "other";
+}
+
+export function cursorCliLineGroupLabel(group: CursorCliLineGroup): string {
+  const labels: Record<CursorCliLineGroup, string> = {
+    auto: "Auto",
+    anthropic: "Anthropic (via Cursor)",
+    composer: "Cursor Composer",
+    openai: "OpenAI (via Cursor)",
+    google: "Google (via Cursor)",
+    grok: "xAI Grok (via Cursor)",
+    other: "Other (via Cursor)",
+  };
+  return labels[group] ?? "Cursor";
+}
+
+function formatCursorSdkFallbackDisplayName(sdkModelId: string): string {
+  return sdkModelId
+    .split(/[-_/]+/g)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+function colorForCursorSdkId(sdkModelId: string): string {
+  const s = sdkModelId.toLowerCase();
+  if (s === "auto") return "#A78BFA";
+  if (/claude|sonnet|opus|haiku/.test(s)) return "#D97706";
+  if (/composer/.test(s)) return "#8B5CF6";
+  if (/gemini/.test(s)) return "#4285F4";
+  if (/grok/.test(s)) return "#1DA1F2";
+  if (/^gpt|^o\d|codex/.test(s)) return "#10A37F";
+  return "#71717A";
+}
+
+export function parseDynamicCursorModelRef(modelId: string): { sdkModelId: string } | null {
+  const trimmed = modelId.trim();
+  const lower = trimmed.toLowerCase();
+  if (!lower.startsWith("cursor/")) return null;
+  const sdk = trimmed.slice("cursor/".length).trim();
+  if (!sdk.length) return null;
+  if (!/^[\w.-]+$/i.test(sdk)) return null;
+  return { sdkModelId: sdk };
+}
+
+export function createDynamicCursorCliModelDescriptor(
+  sdkModelId: string,
+  cliDisplayName?: string | null,
+): ModelDescriptor {
+  const id = `cursor/${sdkModelId}`;
+  const display =
+    typeof cliDisplayName === "string" && cliDisplayName.trim().length
+      ? cliDisplayName.trim()
+      : formatCursorSdkFallbackDisplayName(sdkModelId);
+  return {
+    id,
+    shortId: sdkModelId,
+    displayName: display,
+    family: "cursor",
+    authTypes: ["cli-subscription"],
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+    capabilities: ALL_CAPS,
+    color: colorForCursorSdkId(sdkModelId),
+    sdkProvider: "@agentclientprotocol/sdk",
+    sdkModelId,
+    cliCommand: "cursor",
+    isCliWrapped: true,
+  };
+}
+
+/** Sort Cursor CLI models for pickers: line group order, then display name. */
+export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]): ModelDescriptor[] {
+  const rank = (g: CursorCliLineGroup) => {
+    const i = CURSOR_CLI_LINE_ORDER.indexOf(g);
+    return i === -1 ? CURSOR_CLI_LINE_ORDER.length : i;
+  };
+  return [...descriptors].sort((a, b) => {
+    const ga = cursorCliLineGroupFromSdkId(a.sdkModelId);
+    const gb = cursorCliLineGroupFromSdkId(b.sdkModelId);
+    const ra = rank(ga);
+    const rb = rank(gb);
+    if (ra !== rb) return ra - rb;
+    return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
 
 export function getModelById(id: string): ModelDescriptor | undefined {
   const cached = byId.get(id);
   if (cached) return cached;
-  const dynamic = parseDynamicLocalModelRef(id);
-  return dynamic ? createDynamicLocalModelDescriptor(dynamic.provider, dynamic.modelId) : undefined;
+  const local = parseDynamicLocalModelRef(id);
+  if (local) return createDynamicLocalModelDescriptor(local.provider, local.modelId);
+  const cursor = parseDynamicCursorModelRef(id);
+  return cursor ? createDynamicCursorCliModelDescriptor(cursor.sdkModelId) : undefined;
 }
 
 export function getAvailableModels(
@@ -794,6 +912,7 @@ export function getAvailableModels(
     openai: "codex",
     anthropic: "claude",
     google: "gemini",
+    cursor: "cursor",
   };
 
   const hasMappedCli = (family: ProviderFamily): boolean => {
@@ -870,7 +989,14 @@ export function resolveModelDescriptorForProvider(
       || descriptor.sdkModelId.toLowerCase() === normalized
       || (descriptor.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized);
   });
-  if (!candidates.length) return undefined;
+  if (!candidates.length) {
+    if (providerHint === "cursor") {
+      const prefixed = normalized.includes("/") ? normalized : `cursor/${normalized}`;
+      const direct = getModelById(prefixed);
+      if (direct && !direct.deprecated) return direct;
+    }
+    return undefined;
+  }
 
   const exactShortId = candidates.find((descriptor) => descriptor.shortId.toLowerCase() === normalized);
   if (exactShortId) return exactShortId;
@@ -892,15 +1018,16 @@ export function resolveModelIdForProvider(
 
 export function resolveCliProviderForModel(
   descriptor: ModelDescriptor,
-): "claude" | "codex" | null {
+): "claude" | "codex" | "cursor" | null {
   if (!descriptor.isCliWrapped) return null;
+  if (descriptor.family === "cursor") return "cursor";
   if (descriptor.family === "anthropic") return "claude";
   if (descriptor.family === "openai") return "codex";
   return null;
 }
 
 /**
- * Resolve a model descriptor to its provider group ("claude" | "codex" | "unified").
+ * Resolve a model descriptor to its provider group ("claude" | "codex" | "cursor" | "unified").
  * CLI-wrapped models map to their CLI runtime; all others map to "unified".
  */
 export function resolveProviderGroupForModel(
@@ -920,6 +1047,9 @@ export function getRuntimeModelRefForDescriptor(
   if (provider === "claude") {
     return descriptor.shortId;
   }
+  if (provider === "cursor") {
+    return descriptor.sdkModelId;
+  }
   return descriptor.id;
 }
 
@@ -936,6 +1066,7 @@ function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescript
     if (descriptor.deprecated) return false;
     if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
     if (provider === "codex") return descriptor.isCliWrapped && descriptor.family === "openai";
+    if (provider === "cursor") return descriptor.isCliWrapped && descriptor.family === "cursor";
     return !descriptor.isCliWrapped;
   });
 }
@@ -1006,19 +1137,34 @@ function pickDefaultUnifiedModel(models: ModelDescriptor[]): ModelDescriptor | u
   ]);
 }
 
+/** Default when choosing among Cursor CLI models from `agent models` (prefers Auto, then Sonnet, Composer, GPT‑5.4). */
+export function pickDefaultCursorDescriptorFromCliList(models: ModelDescriptor[]): ModelDescriptor | undefined {
+  return pickPreferredModel(models, [
+    (m) => m.sdkModelId === "auto",
+    (m) => /sonnet/i.test(m.sdkModelId) || /sonnet/i.test(m.displayName),
+    (m) => /composer/i.test(m.sdkModelId),
+    (m) => /gpt-5\.4/i.test(m.sdkModelId),
+  ]);
+}
+
 function pickDefaultModelForProvider(
   provider: ModelProviderGroup,
   models: ModelDescriptor[],
 ): ModelDescriptor | undefined {
   if (provider === "claude") return pickDefaultClaudeModel(models);
   if (provider === "codex") return pickDefaultCodexModel(models);
+  if (provider === "cursor") return pickDefaultCursorDescriptorFromCliList(models);
   return pickDefaultUnifiedModel(models);
 }
 
 export function getDefaultModelDescriptor(
   provider: ModelProviderGroup,
 ): ModelDescriptor | undefined {
-  return pickDefaultModelForProvider(provider, listProviderModelsInternal(provider));
+  const models = listProviderModelsInternal(provider);
+  if (provider === "cursor" && models.length === 0) {
+    return pickDefaultCursorDescriptorFromCliList([createDynamicCursorCliModelDescriptor("auto", "Auto")]);
+  }
+  return pickDefaultModelForProvider(provider, models);
 }
 
 export function listModelDescriptorsForProvider(

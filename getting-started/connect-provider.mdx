@@ -8,34 +8,76 @@ icon: "key"
 
 Press `Cmd+,` or open **Settings** and select **AI Providers**.
 
+<Frame caption="Settings → AI showing provider cards with connection status">
+  <img src="/images/settings-ai-providers.png" alt="AI Providers settings panel showing Anthropic, OpenAI, and Cursor cards" />
+</Frame>
+
+---
+
 ## Add one provider first
 
-ADE works best once you have at least one verified provider configured.
+ADE works best once you have at least one verified provider configured. There are two types:
 
-<CardGroup cols={2}>
-  <Card title="Anthropic" icon="sparkles">
-    Good default for Claude-backed chat, missions, and orchestration.
-  </Card>
-  <Card title="OpenAI-compatible" icon="server">
-    Works for OpenAI and other endpoints that expose the same API shape.
-  </Card>
-</CardGroup>
+<Tabs>
+  <Tab title="API key providers">
+    Paste an API key and ADE verifies the connection immediately.
 
-## Save and verify
+    <CardGroup cols={3}>
+      <Card title="Anthropic (Claude)" icon="sparkles" color="#7C3AED">
+        Best default — works with chat, missions, CTO, and automations. Keys start with `sk-ant-`.
+      </Card>
+      <Card title="OpenAI (GPT)" icon="circle" color="#059669">
+        Good for structured output and GPT-family models. Keys start with `sk-`.
+      </Card>
+      <Card title="OpenRouter" icon="shuffle" color="#2563EB">
+        Route to hundreds of models through one key. Great for cost optimization.
+      </Card>
+    </CardGroup>
 
-<Steps>
-  <Step title="Paste the API key">
-    Enter the credential into the correct provider field.
-  </Step>
-  <Step title="Save it">
-    Click **Save** so ADE can store the credential locally.
-  </Step>
-  <Step title="Verify the connection">
-    ADE runs a lightweight check to confirm the credential works before you start a real task.
-  </Step>
-</Steps>
+    <Steps>
+      <Step title="Paste the API key">
+        Enter the credential into the correct provider field.
+      </Step>
+      <Step title="Save">
+        Click **Save** — ADE stores the credential locally in `.ade/local.secret.yaml` (never committed to git).
+      </Step>
+      <Step title="Verify">
+        ADE runs a lightweight check to confirm the credential works. A green indicator means you're ready.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="CLI-based providers">
+    ADE detects installed CLIs and checks their auth status automatically.
+
+    <CardGroup cols={3}>
+      <Card title="Claude Code" icon="terminal" color="#7C3AED">
+        Install the `claude` CLI and sign in. ADE detects it automatically.
+      </Card>
+      <Card title="Codex" icon="terminal" color="#059669">
+        Install the `codex` CLI globally (`npm i -g @openai/codex`) and authenticate.
+      </Card>
+      <Card title="Cursor" icon="arrow-pointer" color="#2563EB">
+        Install Cursor and sign in. ADE uses Cursor's agent via the ACP protocol.
+      </Card>
+    </CardGroup>
+
+    <Note>
+    CLI-based providers are detected during onboarding and on each app launch. If you install a CLI after starting ADE, go to **Settings → AI** and click **Refresh** to re-detect.
+    </Note>
+  </Tab>
+</Tabs>
+
+---
+
+## Which provider should I start with?
+
+| If you want... | Use this | Why |
+|----------------|----------|-----|
+| The most complete ADE experience | **Anthropic (Claude)** | Works everywhere — chat, missions, CTO, automations |
+| You already use Cursor daily | **Cursor** | ADE integrates via ACP — no extra API key needed |
+| Cost flexibility | **OpenRouter** | Route different agent roles to different models |
+| Privacy / offline work | **Ollama (local)** | No API key, runs entirely on your machine |
 
 <Warning>
-ADE is local-first. Provider calls go directly from your machine to the model provider.
+ADE is local-first. Provider calls go directly from your machine to the model provider. ADE never proxies your requests through its own servers.
 </Warning>
-

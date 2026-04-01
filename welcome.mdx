@@ -1,0 +1,121 @@
+---
+title: "Welcome to ADE"
+description: "ADE is the Agentic Development Environment — a desktop app that orchestrates parallel AI coding agents from one control plane."
+icon: "hand-wave"
+---
+
+<Frame caption="ADE's workspace with multiple lanes running agents in parallel">
+  <img src="/images/hero-workspace.png" alt="ADE workspace overview showing lanes, agents, and the workspace graph" />
+</Frame>
+
+## What is ADE?
+
+ADE (Agentic Development Environment) is a **macOS desktop application** that lets you run multiple AI coding agents against the same repository without losing control. Each task gets its own isolated workspace (a **lane**), agents stay context-aware through durable **packs**, and ADE watches for merge conflicts before they become cleanup work.
+
+ADE is not another AI code editor. It is the **orchestration layer** that sits between you and your agents — whether they run through Claude, Codex, Cursor, or any other tool.
+
+<Tip>
+Think of ADE the way you think about a CI/CD dashboard — except instead of watching pipelines, you're watching AI agents build features across multiple branches simultaneously.
+</Tip>
+
+---
+
+## Who is ADE for?
+
+<CardGroup cols={3}>
+  <Card title="Solo developers" icon="user" color="#7C3AED">
+    Run 3–5 agents in parallel across different features. Ship a full day's work in an hour.
+  </Card>
+  <Card title="Small teams" icon="users" color="#2563EB">
+    Share lane templates, automation rules, and AI budgets through a committed `ade.yaml`. Each developer keeps their own API keys and preferences locally.
+  </Card>
+  <Card title="Agent power users" icon="rocket" color="#059669">
+    Orchestrate multi-step missions with planning, validation, and cost tracking. Use the CTO agent to delegate work to specialized workers automatically.
+  </Card>
+</CardGroup>
+
+---
+
+## How ADE works
+
+<Steps>
+  <Step title="You define the work" icon="pencil">
+    Describe what you want built — a feature, a fix, a refactor. ADE handles the rest.
+  </Step>
+  <Step title="ADE creates isolated lanes" icon="code-branch">
+    Each task gets its own git worktree. Agents never block each other or step on shared files.
+  </Step>
+  <Step title="AI agents execute in parallel" icon="robot">
+    Claude, Codex, Cursor, or any configured provider works simultaneously across lanes.
+  </Step>
+  <Step title="ADE tracks everything" icon="chart-line">
+    Context, conflicts, budgets, sessions, and artifacts — all in one place.
+  </Step>
+  <Step title="You review and merge" icon="check">
+    Inspect diffs, approve PRs, and land results with full audit trails.
+  </Step>
+</Steps>
+
+<Frame caption="Demo: Creating a lane and launching an agent in under 30 seconds">
+  <img src="/images/demo-create-lane.gif" alt="Animated demo of creating a lane and starting an agent chat" />
+</Frame>
+
+---
+
+## Core principles
+
+<CardGroup cols={3}>
+  <Card title="Parallel by default" icon="arrows-left-right" color="#7C3AED">
+    Every task gets its own git worktree. Agents never block each other or step on shared files.
+  </Card>
+  <Card title="Context-aware" icon="brain" color="#2563EB">
+    Durable context packs carry project knowledge into every agent session so agents start informed, not cold.
+  </Card>
+  <Card title="Local-first" icon="shield-check" color="#059669">
+    Source code, API keys, and artifacts stay on your machine. Nothing leaves through ADE's infrastructure.
+  </Card>
+</CardGroup>
+
+---
+
+## The app at a glance
+
+ADE's sidebar mirrors this documentation. Each tab in the app has a matching section in the **App Guide**:
+
+<Frame caption="ADE's sidebar navigation — each tab maps to a section in these docs">
+  <img src="/images/app-sidebar.png" alt="ADE sidebar showing Run, Lanes, Work, Files, Graph, PRs, History, Automations, Missions, CTO, and Settings tabs" />
+</Frame>
+
+| App tab | What it does | Docs |
+|---------|-------------|------|
+| <Icon icon="play" /> **Run** | Start your dev stack, manage processes, run tests | [Run →](/tools/project-home) |
+| <Icon icon="code-branch" /> **Lanes** | Create and manage isolated workspaces | [Lanes →](/lanes/overview) |
+| <Icon icon="comments" /> **Chat** | Talk to AI agents scoped to a lane, mission, or the CTO | [Chat →](/chat/overview) |
+| <Icon icon="rectangle-terminal" /> **Work** | Terminal sessions with transcripts and checkpoints | [Terminals →](/tools/terminals) |
+| <Icon icon="file-code" /> **Files** | Monaco editor with lane-scoped file trees and diffs | [Files →](/tools/files-editor) |
+| <Icon icon="diagram-project" /> **Graph** | Visual topology of lanes, branches, PRs, and conflicts | [Graph →](/tools/workspace-graph) |
+| <Icon icon="code-pull-request" /> **PRs** | GitHub PR management with stacked PR support | [PRs →](/tools/pull-requests) |
+| <Icon icon="clock-rotate-left" /> **History** | Timeline of all operations, sessions, and checkpoints | [History →](/tools/history) |
+| <Icon icon="bolt" /> **Automations** | Trigger-driven AI rules for PR review, testing, and more | [Automations →](/automations/overview) |
+| <Icon icon="bullseye" /> **Missions** | Structured multi-step AI execution with audit trails | [Missions →](/missions/overview) |
+| <Icon icon="crown" /> **CTO** | Always-on project agent with memory, workers, and Linear sync | [CTO →](/cto/overview) |
+| <Icon icon="gear" /> **Settings** | AI providers, integrations, permissions, budgets | [Settings →](/configuration/settings) |
+
+---
+
+## Start here
+
+<CardGroup cols={2}>
+  <Card title="Install and set up" icon="download" href="/getting-started/install" color="#7C3AED">
+    Download ADE, connect a provider, and open your first project. Takes about 5 minutes.
+  </Card>
+  <Card title="Learn the concepts" icon="lightbulb" href="/key-concepts" color="#2563EB">
+    Understand lanes, packs, missions, the CTO, and how they fit together before diving in.
+  </Card>
+  <Card title="Follow the quickstart" icon="rocket" href="/quickstart" color="#059669">
+    A checklist that walks you from install to your first working agent in one session.
+  </Card>
+  <Card title="Explore the app guide" icon="grid-2" href="/tools/project-home" color="#D97706">
+    Jump straight into the feature documentation organized by app tab.
+  </Card>
+</CardGroup>

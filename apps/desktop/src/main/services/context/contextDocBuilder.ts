@@ -399,13 +399,21 @@ function inferContextDocSource(content: string, persistedSource: ContextDocOutpu
   return looksDeterministic ? "deterministic" : "ai";
 }
 
+/** Ensures generated markdown opens with the canonical doc title (models often skip the `# …` line). */
+function ensureCanonicalContextDocTitle(id: ContextDocId, content: string): string {
+  const spec = docSpecFor(id);
+  const trimmed = content.trim();
+  if (!trimmed.length) return trimmed;
+  if (trimmed.startsWith(spec.title)) return trimmed;
+  return `${spec.title}\n\n${trimmed}`;
+}
+
 function validateContextDoc(id: ContextDocId, content: string): { valid: boolean; reasons: string[] } {
   const reasons: string[] = [];
   const spec = docSpecFor(id);
   const normalized = content.trim();
   if (!normalized) reasons.push("empty");
   if (normalized.length > CONTEXT_DOC_MAX_CHARS) reasons.push("too_long");
-  if (!normalized.startsWith(spec.title)) reasons.push("missing_title");
   const lowered = normalized.toLowerCase();
   const missingHeadings = spec.requiredHeadings.filter((heading) => !lowered.includes(heading.toLowerCase()));
   if (missingHeadings.length > 0) reasons.push(`missing_headings:${missingHeadings.join("|")}`);
@@ -414,11 +422,10 @@ function validateContextDoc(id: ContextDocId, content: string): { valid: boolean
 }
 
 function compactGeneratedContextDoc(id: ContextDocId, content: string): string {
-  const normalized = content.trim();
+  const normalized = ensureCanonicalContextDocTitle(id, content);
   if (normalized.length <= CONTEXT_DOC_MAX_CHARS) return normalized;
 
   const spec = docSpecFor(id);
-  if (!normalized.startsWith(spec.title)) return normalized;
 
   const headingOffsets = spec.requiredHeadings.map((heading) => normalized.indexOf(heading));
   if (headingOffsets.some((offset) => offset < 0)) return normalized;

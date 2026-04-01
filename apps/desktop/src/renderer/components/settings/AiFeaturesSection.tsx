@@ -166,6 +166,7 @@ export function AiFeaturesSection() {
   }, [loadStatus]);
 
   const availableModelIds = React.useMemo(() => deriveConfiguredModelIds(status), [status]);
+
   const featureRowHoverCss = `.ai-feature-row:hover { background: ${COLORS.hoverBg}; }`;
 
   const saveChatTitleSettings = useCallback(async (patch: Partial<NonNullable<AiConfig["chat"]>>) => {
@@ -299,8 +300,8 @@ export function AiFeaturesSection() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "44px 1fr auto 60px",
-              gap: 12,
+              gridTemplateColumns: "44px minmax(0, 1.2fr) minmax(130px, 1fr) 52px",
+              gap: "10px 12px",
               alignItems: "center",
               padding: "10px 16px",
               borderBottom: `1px solid ${COLORS.border}`,
@@ -326,8 +327,8 @@ export function AiFeaturesSection() {
                 className="ai-feature-row"
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "44px 1fr auto 60px",
-                  gap: 12,
+                  gridTemplateColumns: "44px minmax(0, 1.2fr) minmax(130px, 1fr) 52px",
+                  gap: "10px 12px",
                   alignItems: "center",
                   padding: "12px 16px",
                   borderBottom: index < FEATURES.length - 1 ? `1px solid ${COLORS.border}` : undefined,
@@ -335,9 +336,9 @@ export function AiFeaturesSection() {
                   transition: "background 150ms ease",
                 }}
               >
-                <Toggle checked={enabled} onChange={(value) => handleToggle(feature.key, value)} />
+                <Toggle checked={enabled} onChange={(value) => void handleToggle(feature.key, value)} />
 
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
                   <IconComponent
                     size={18}
                     weight="duotone"
@@ -347,7 +348,7 @@ export function AiFeaturesSection() {
                       marginTop: 1,
                     }}
                   />
-                  <div>
+                  <div style={{ minWidth: 0, overflow: "hidden" }}>
                     <div
                       style={{
                         fontSize: 12,
@@ -365,6 +366,8 @@ export function AiFeaturesSection() {
                         color: COLORS.textDim,
                         marginTop: 2,
                         lineHeight: 1.4,
+                        overflowWrap: "break-word",
+                        wordBreak: "break-word",
                       }}
                     >
                       {feature.subtitle}
@@ -416,8 +419,8 @@ export function AiFeaturesSection() {
             className="ai-feature-row"
             style={{
               display: "grid",
-              gridTemplateColumns: "44px 1fr auto 60px",
-              gap: 12,
+              gridTemplateColumns: "44px minmax(0, 1.2fr) minmax(130px, 1fr) 52px",
+              gap: "10px 12px",
               alignItems: "center",
               padding: "12px 16px",
               borderTop: `1px solid ${COLORS.border}`,
@@ -430,7 +433,7 @@ export function AiFeaturesSection() {
               onChange={(value) => void saveChatTitleSettings({ autoTitleEnabled: value })}
             />
 
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
               <ChatText
                 size={18}
                 weight="duotone"
@@ -440,7 +443,7 @@ export function AiFeaturesSection() {
                   marginTop: 1,
                 }}
               />
-              <div>
+              <div style={{ minWidth: 0, overflow: "hidden" }}>
                 <div>
                   <div
                     style={{
@@ -459,6 +462,8 @@ export function AiFeaturesSection() {
                       color: COLORS.textDim,
                       marginTop: 2,
                       lineHeight: 1.4,
+                      overflowWrap: "break-word",
+                      wordBreak: "break-word",
                     }}
                   >
                     Tabs automatically get descriptive names based on conversation content

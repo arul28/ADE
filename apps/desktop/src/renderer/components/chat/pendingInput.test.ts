@@ -116,6 +116,51 @@ describe("derivePendingInputRequests", () => {
     expect(result[0]!.request.questions[0]!.id).toBe("q1");
   });
 
+  it("preserves Cursor structured permission requests", () => {
+    const structuredRequest = {
+      requestId: "req-cursor-1",
+      itemId: "item-cursor-1",
+      source: "cursor",
+      kind: "permissions",
+      title: "Cursor permission required",
+      description: "Cursor wants to run a shell command.",
+      questions: [],
+      allowsFreeform: false,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      options: [
+        { label: "Allow once", value: "allow-once" },
+        { label: "Allow for session", value: "allow-session", recommended: true },
+      ],
+      providerMetadata: {
+        toolCall: {
+          title: "Run npm test",
+        },
+      },
+    };
+    const events: AgentChatEventEnvelope[] = [
+      envelope({
+        type: "approval_request",
+        itemId: "item-cursor-1",
+        kind: "tool_call",
+        description: "Cursor permission required",
+        turnId: "turn-1",
+        detail: { request: structuredRequest },
+      }),
+    ];
+
+    const result = derivePendingInputRequests(events);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.request.source).toBe("cursor");
+    expect(result[0]!.request.kind).toBe("permissions");
+    expect(result[0]!.request.options?.[1]?.recommended).toBe(true);
+    expect(result[0]!.request.providerMetadata).toMatchObject({
+      toolCall: {
+        title: "Run npm test",
+      },
+    });
+  });
+
   // ---- approval_request legacy AskUser ----------------------------------
 
   it("builds legacy pending input from AskUser tool", () => {

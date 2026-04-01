@@ -4,7 +4,12 @@ description: "ADE's layered security model — trust boundaries, SHA-based confi
 icon: "shield-check"
 ---
 
-<Info>**Screenshot: Settings → Permissions panel showing four sub-sections stacked vertically: "File Path Restrictions" with a glob input and an allowed-paths list, "Terminal Commands" with allow-list and block-list fields, "Git Restrictions" showing the protected-branches field set to "main|master|production", and "Network Access" with a policy dropdown set to "Allow All."</Info>
+<Frame caption="Permissions — paths, terminal lists, protected branches, network policy">
+  <img
+    src="/images/settings-permissions-panel-four-sections.png"
+    alt={`Settings → Permissions panel showing four sub-sections stacked vertically: "File Path Restrictions" with a glob input and an allowed-paths list, "Terminal Commands" with allow-list and block-list fields, "Git Restrictions" showing the protected-branches field set to "main|master|production", and "Network Access" with a policy dropdown set to "Allow All."`}
+  />
+</Frame>
 
 ## Core Security Principle
 
@@ -67,7 +72,12 @@ ADE is built on a **local-first, trust boundary model**. Your source code, API k
   </Step>
 </Steps>
 
-<Info>**Screenshot: The config approval dialog showing: a two-column diff view with the old `ade.yaml` on the left and new on the right. A changed `automations[0].prompt` is highlighted in the diff. A warning banner at the top reads "Review this config change before command execution resumes." Approve and Reject buttons are visible at the bottom right.</Info>
+<Frame caption="Config approval dialog — ade.yaml diff, warning banner, Approve/Reject">
+  <img
+    src="/images/config-approval-dialog-ade-yaml-automations-diff.png"
+    alt={`The config approval dialog showing: a two-column diff view with the old \`ade.yaml\` on the left and new on the right. A changed \`automations[0].prompt\` is highlighted in the diff. A warning banner at the top reads "Review this config change before command execution resumes." Approve and Reject buttons are visible at the bottom right.`}
+  />
+</Frame>
 
 <Warning>
 Do not edit `trust.approvedSha` manually. ADE treats any mismatch between the stored SHA and the current file as an unapproved change and will suspend commands until the approval flow completes. If `local.yaml` becomes inconsistent, use Settings → Config → Re-approve current config.
@@ -372,7 +382,12 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
 - **Location**: `.ade/artifacts/audit.log` in the project directory
 - **Rotation**: Logs rotate at 50MB. Up to 10 rotated files are retained before the oldest is deleted.
 
-<Info>**Screenshot: The History tab filtered to show "Audit Events" — a chronological list of agent actions with columns for: timestamp, agent ID, action type (color-coded: file write = blue, git = purple, permission denied = red), and a one-line description. One "permission denied" row is expanded to show full detail.</Info>
+<Frame caption="History — Audit Events with color-coded actions and expanded denial">
+  <img
+    src="/images/history-tab-audit-events-agent-actions.png"
+    alt={`The History tab filtered to show "Audit Events" — a chronological list of agent actions with columns for: timestamp, agent ID, action type (color-coded: file write = blue, git = purple, permission denied = red), and a one-line description. One "permission denied" row is expanded to show full detail.`}
+  />
+</Frame>
 
 ---
 

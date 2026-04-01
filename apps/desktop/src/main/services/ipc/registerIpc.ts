@@ -739,6 +739,17 @@ function getUnavailableAiStatus(): AiSettingsStatus {
         lastCheckedAt: new Date(0).toISOString(),
         sources: [],
       },
+      cursor: {
+        provider: "cursor",
+        authAvailable: false,
+        runtimeDetected: false,
+        runtimeAvailable: false,
+        usageAvailable: false,
+        path: null,
+        blocker: "AI integration service unavailable.",
+        lastCheckedAt: new Date(0).toISOString(),
+        sources: [],
+      },
     },
     features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
       feature,
@@ -1214,7 +1225,7 @@ function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial
 
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat" || toolType === "cursor";
 }
 
 function inferPrAiProvider(modelId: string): "codex" | "claude" {
@@ -3740,13 +3751,15 @@ export function registerIpc({
         }
         const chats = allChats.filter((chat) => !chat.identityKey);
         if (chats.length === 0) return sessions;
-        const chatStatusBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat.status] as const));
+        const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
         return sessions.map((session) => {
           if (!isChatToolType(session.toolType)) return session;
           if (session.status !== "running") return session;
-          const chatStatus = chatStatusBySessionId.get(session.id);
-          if (chatStatus === "active") return { ...session, runtimeState: "running" as const };
-          if (chatStatus === "idle") return { ...session, runtimeState: "waiting-input" as const };
+          const chat = chatSummaryBySessionId.get(session.id);
+          if (!chat) return session;
+          if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const };
+          if (chat.status === "active") return { ...session, runtimeState: "running" as const };
+          if (chat.status === "idle") return { ...session, runtimeState: "idle" as const };
           return session;
         });
       },
@@ -3812,7 +3825,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {
     const ctx = getCtx();
-    await ctx.agentChatService.sendMessage(arg);
+    await ctx.agentChatService.sendMessage(arg, { awaitDispatch: true });
   });
 
   ipcMain.handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<void> => {

@@ -136,6 +136,43 @@ describe("chatTranscriptRows", () => {
     expect(rows[0]!.event.entry.result).toEqual({ stdout: "/tmp/project" });
   });
 
+  it("preserves the richer tool identity when Cursor updates fall back to generic tool names", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "tool_call",
+          tool: "mcp__ade__memory_search",
+          args: { query: "stash", title: "mcp__ade__memory_search", kind: "other" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "tool_result",
+          tool: "other",
+          result: { totalMatches: 3 },
+          itemId: "tool-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.type).toBe("work_log_entry");
+    if (rows[0]!.event.type !== "work_log_entry") {
+      throw new Error("Expected a work log entry");
+    }
+    expect(rows[0]!.event.entry.toolName).toBe("mcp__ade__memory_search");
+    expect(rows[0]!.event.entry.label).toBe("mcp__ade__memory_search");
+    expect(rows[0]!.event.entry.status).toBe("completed");
+  });
+
   it("keeps assistant text deltas stable by logical message id across adjacent events", () => {
     const rows = collapseChatTranscriptEvents([
       {
@@ -691,6 +728,49 @@ describe("chatTranscriptRows edge cases", () => {
           type: "system_notice",
           noticeKind: "info",
           message: "Session ready",
+        },
+      },
+    ]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it("filters out duplicate identical system notices within the same turn", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Agent mode: plan",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Agent mode: plan",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+  });
+
+  it("filters standalone whitespace-only assistant text chunks", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: "\n\n\n",
+          messageId: "msg-1",
+          itemId: "text-1",
+          turnId: "turn-1",
         },
       },
     ]);

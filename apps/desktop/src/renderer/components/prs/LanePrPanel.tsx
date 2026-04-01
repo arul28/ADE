@@ -457,6 +457,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                       showReasoning
                       reasoningEffort={prDescReasoningEffort}
                       onReasoningEffortChange={setPrDescReasoningEffort}
+                      onOpenAiSettings={() => navigate("/settings?tab=ai#ai-providers")}
                     />
                   </div>
                   <Button size="sm" variant="primary" className="h-7" disabled={loading || !createDraft.title.trim()} onClick={() => void createPr()}>
@@ -537,6 +538,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
               showReasoning
               reasoningEffort={prDescReasoningEffort}
               onReasoningEffortChange={setPrDescReasoningEffort}
+              onOpenAiSettings={() => navigate("/settings?tab=ai#ai-providers")}
             />
             <select
               value={mergeMethod}

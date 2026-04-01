@@ -46,6 +46,40 @@ type GenerationRunMeta = {
   reasoningEffort?: string | null;
 };
 
+const CONTEXT_DOC_LOG_MESSAGE_MAX = 2_000;
+
+function logMetaForContextGenerateResult(
+  result: ContextGenerateDocsResult,
+  meta: GenerationRunMeta,
+): Record<string, unknown> {
+  const clip = (msg: string) =>
+    msg.length > CONTEXT_DOC_LOG_MESSAGE_MAX ? `${msg.slice(0, CONTEXT_DOC_LOG_MESSAGE_MAX)}…` : msg;
+  return {
+    source: meta.source ?? null,
+    event: meta.event ?? null,
+    reason: meta.reason ?? null,
+    provider: meta.provider ?? null,
+    modelId: meta.modelId ?? null,
+    reasoningEffort: meta.reasoningEffort ?? null,
+    degraded: result.degraded,
+    usedFallbackPath: result.usedFallbackPath,
+    generatedAt: result.generatedAt,
+    warningCount: result.warnings.length,
+    warnings: result.warnings.map((w) => ({
+      code: w.code,
+      message: clip(String(w.message ?? "")),
+      ...(w.actionLabel ? { actionLabel: w.actionLabel } : {}),
+      ...(w.actionPath ? { actionPath: w.actionPath } : {}),
+    })),
+    docResults: result.docResults.map((d) => ({
+      id: d.id,
+      health: d.health,
+      source: d.source,
+      sizeBytes: d.sizeBytes,
+    })),
+  };
+}
+
 const CONTEXT_DOC_PREFS_KEY = "context:docs:preferences.v1";
 const CONTEXT_DOC_LAST_RUN_KEY = "context:docs:lastRun.v1";
 const CONTEXT_DOC_GENERATION_STATUS_KEY = "context:docs:generationStatus.v1";
@@ -380,6 +414,12 @@ export function createContextDocService(args: {
     const run = async (): Promise<ContextGenerateDocsResult> => {
       try {
         const result = await runContextDocGenerationImpl(projectPackBuilderDeps, docArgs);
+        const completeMeta = logMetaForContextGenerateResult(result, meta);
+        if (result.warnings.length > 0 || result.degraded) {
+          logger.warn("context_docs.generate.complete", completeMeta);
+        } else {
+          logger.info("context_docs.generate.complete", completeMeta);
+        }
         writeGenerationStatus(
           buildGenerationStatus({
             state: "succeeded",

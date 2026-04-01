@@ -8,7 +8,7 @@ import {
   resolveExecutableFromKnownLocations,
 } from "./cliExecutableResolver";
 
-type CliName = "claude" | "codex";
+type CliName = "claude" | "codex" | "cursor";
 
 type ApiKeySource = "config" | "env" | "store";
 
@@ -27,6 +27,8 @@ export type CliAuthStatus = {
   path: string | null;
   authenticated: boolean;
   verified: boolean;
+  /** Cursor CLI only — when false, user is on free/hobby tier. */
+  paidPlan?: boolean;
 };
 
 export type DetectedAuth =
@@ -36,6 +38,8 @@ export type DetectedAuth =
       path: string;
       authenticated: boolean;
       verified: boolean;
+      /** Cursor: false when CLI reports hobby/free tier (chat may still open with a notice). */
+      paidPlan?: boolean;
     }
   | { type: "api-key"; provider: string; key: string; source: ApiKeySource }
   | { type: "openrouter"; key: string; source: ApiKeySource }
@@ -54,7 +58,15 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
   codex: [
     ["login", "status"],
   ],
+  cursor: [
+    ["status", "--json"],
+    ["status"],
+  ],
 };
+
+function cliSpawnCommand(cli: CliName): string {
+  return cli === "cursor" ? "agent" : cli;
+}
 
 const AUTH_INDICATORS = [
   /logged in/i,
@@ -266,6 +278,106 @@ async function inspectCliAuthentication(
   }
 
   return { authenticated: false, verified: false };
+}
+
+function inferCursorPaidPlanFromJson(json: Record<string, unknown>): boolean {
+  const plan = String(json.plan ?? json.subscription ?? json.tier ?? json.accountType ?? "").toLowerCase();
+  const sub = String(json.subscriptionType ?? json.billing ?? "").toLowerCase();
+  const combined = `${plan} ${sub}`;
+  if (
+    /\bfree\b|\bhobby\b|\btrial\b|no[_-]?subscription|personal[_-]?free/.test(combined)
+    && !/pro|plus|ultra|business|team/.test(combined)
+  ) {
+    return false;
+  }
+  if (/pro|plus|ultra|business|team|enterprise|paid/.test(combined)) {
+    return true;
+  }
+  return true;
+}
+
+async function inspectCursorCliAuthentication(command: string): Promise<{
+  authenticated: boolean;
+  verified: boolean;
+  paidPlan: boolean;
+}> {
+  const probes = CLI_AUTH_PROBES.cursor ?? [];
+  let sawUnsupported = false;
+
+  for (const args of probes) {
+    try {
+      const result = await spawnAsync(command, args, { timeout: 8_000 });
+      const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+      const normalized = output.toLowerCase();
+
+      try {
+        const json = JSON.parse(result.stdout?.trim() || "") as Record<string, unknown>;
+        if (json && typeof json === "object") {
+          const jsonAuth = parseJsonAuthStatus(result.stdout ?? "");
+          if (jsonAuth) {
+            return {
+              authenticated: jsonAuth.authenticated,
+              verified: true,
+              paidPlan: inferCursorPaidPlanFromJson(json),
+            };
+          }
+        }
+      } catch {
+        // not JSON
+      }
+
+      const jsonResult = parseJsonAuthStatus(result.stdout ?? "");
+      if (jsonResult) {
+        let paidPlan = true;
+        try {
+          const parsed = JSON.parse(result.stdout?.trim() || "") as Record<string, unknown>;
+          if (parsed && typeof parsed === "object") {
+            paidPlan = inferCursorPaidPlanFromJson(parsed);
+          }
+        } catch {
+          // Not JSON — fall back to paidPlan = true
+        }
+        return {
+          authenticated: jsonResult.authenticated,
+          verified: true,
+          paidPlan,
+        };
+      }
+
+      const matchesStrongUnauth = hasPattern(normalized, STRONG_UNAUTH_INDICATORS);
+      if (matchesStrongUnauth) {
+        return { authenticated: false, verified: true, paidPlan: false };
+      }
+
+      const matchesAuth = hasPattern(normalized, AUTH_INDICATORS);
+      const matchesWeakUnauth = hasPattern(normalized, WEAK_UNAUTH_INDICATORS);
+      if (matchesAuth) {
+        return { authenticated: true, verified: true, paidPlan: true };
+      }
+      if (matchesWeakUnauth) {
+        return { authenticated: false, verified: true, paidPlan: false };
+      }
+
+      if (result.status === 0 && normalized.length === 0) {
+        return { authenticated: true, verified: true, paidPlan: true };
+      }
+
+      // If exit 0 with non-empty output reached here, all regex branches above
+      // already returned, so a separate `normalized.length > 0` check is unreachable.
+
+      if (hasPattern(normalized, UNSUPPORTED_INDICATORS)) {
+        sawUnsupported = true;
+      }
+    } catch {
+      // continue
+    }
+  }
+
+  if (sawUnsupported) {
+    return { authenticated: true, verified: false, paidPlan: true };
+  }
+
+  return { authenticated: false, verified: false, paidPlan: false };
 }
 
 const ENV_KEY_MAP: Record<string, string> = {
@@ -613,16 +725,36 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
     await refreshProcessPathFromShell();
   }
 
-  const cliChecks: CliName[] = ["claude", "codex"];
+  const cliChecks: CliName[] = ["claude", "codex", "cursor"];
 
   // Probe all CLIs in parallel
   const statuses = await Promise.all(
     cliChecks.map(async (cli) => {
-      const installed = await commandExists(cli);
-      const path = installed ? await commandPath(cli) : null;
-      const auth = installed
-        ? await inspectCliAuthentication(cli, path ?? cli)
-        : { authenticated: false, verified: false };
+      const spawnName = cliSpawnCommand(cli);
+      const installed = await commandExists(spawnName);
+      const path = installed ? await commandPath(spawnName) : null;
+      const cmd = path ?? spawnName;
+      if (!installed) {
+        return {
+          cli,
+          installed,
+          path,
+          authenticated: false,
+          verified: false,
+        };
+      }
+      if (cli === "cursor") {
+        const auth = await inspectCursorCliAuthentication(cmd);
+        return {
+          cli,
+          installed,
+          path,
+          authenticated: auth.authenticated,
+          verified: auth.verified,
+          paidPlan: auth.paidPlan,
+        };
+      }
+      const auth = await inspectCliAuthentication(cli, cmd);
       return {
         cli,
         installed,
@@ -646,16 +778,33 @@ export async function detectAllAuth(
   // 1. CLI subscriptions (connected and authenticated)
   const cliStatuses = await detectCliAuthStatuses(options);
   for (const cli of cliStatuses) {
-    if (cli.cli !== "claude" && cli.cli !== "codex") continue;
+    if (cli.cli !== "claude" && cli.cli !== "codex" && cli.cli !== "cursor") continue;
     if (!cli.installed) continue;
     if (!cli.authenticated && cli.verified) continue;
     results.push({
       type: "cli-subscription",
       cli: cli.cli,
-      path: cli.path ?? cli.cli,
+      path: cli.path ?? cliSpawnCommand(cli.cli),
       authenticated: cli.authenticated,
       verified: cli.verified,
+      ...(cli.cli === "cursor" && typeof cli.paidPlan === "boolean" ? { paidPlan: cli.paidPlan } : {}),
     });
+  }
+
+  const cursorKey = process.env.CURSOR_API_KEY?.trim() || process.env.CURSOR_AUTH_TOKEN?.trim();
+  if (cursorKey) {
+    const hasCursorCli = results.some((r) => r.type === "cli-subscription" && r.cli === "cursor");
+    if (!hasCursorCli) {
+      const resolved = resolveExecutableFromKnownLocations("agent");
+      results.push({
+        type: "cli-subscription",
+        cli: "cursor",
+        path: resolved?.path ?? "agent",
+        authenticated: true,
+        verified: true,
+        paidPlan: true,
+      });
+    }
   }
 
   // 2. API keys from config + secure local store

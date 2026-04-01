@@ -13,7 +13,11 @@ const mockState = vi.hoisted(() => ({
   uuidCounter: 0,
   codexThreadCounter: 0,
   codexTurnCounter: 0,
+  cursorSessionCounter: 0,
   codexLineHandler: null as ((line: string) => void) | null,
+  cursorAcquireCalls: [] as Array<Record<string, unknown>>,
+  cursorNewSessionCalls: [] as Array<Record<string, unknown>>,
+  cursorPromptCalls: [] as Array<Record<string, unknown>>,
   emitCodexPayload(payload: Record<string, unknown>) {
     mockState.codexLineHandler?.(JSON.stringify(payload));
   },
@@ -170,6 +174,10 @@ vi.mock("../ai/claudeCodeExecutable", () => ({
   resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/usr/local/bin/claude", source: "path" })),
 }));
 
+vi.mock("../ai/cursorAgentExecutable", () => ({
+  resolveCursorAgentExecutable: vi.fn(() => ({ path: "/usr/local/bin/agent", source: "path" })),
+}));
+
 vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => []),
 }));
@@ -206,6 +214,49 @@ vi.mock("../../../shared/chatTranscript", () => ({
   parseAgentChatTranscript: vi.fn(() => []),
 }));
 
+vi.mock("./cursorAcpPool", () => ({
+  acquireCursorAcpConnection: vi.fn(async (args: Record<string, unknown>) => {
+    mockState.cursorAcquireCalls.push(args);
+    return {
+      connection: {
+        newSession: vi.fn(async (params: Record<string, unknown>) => {
+          mockState.cursorNewSessionCalls.push(params);
+          mockState.cursorSessionCounter += 1;
+          return {
+            sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+            modes: { currentModeId: "edit" },
+            models: { currentModelId: "auto" },
+            configOptions: [],
+          };
+        }),
+        prompt: vi.fn(async (params: Record<string, unknown>) => {
+          mockState.cursorPromptCalls.push(params);
+          return {
+            stopReason: "end_turn",
+            usage: { inputTokens: 3, outputTokens: 5 },
+          };
+        }),
+        cancel: vi.fn(),
+        unstable_closeSession: vi.fn(),
+      },
+      bridge: {
+        onPermission: null,
+        onSessionUpdate: null,
+        getRootPath: () => "",
+        getDirtyFileText: null,
+        onTerminalOutputDelta: null,
+        flushTerminalOutput: null,
+        onTerminalDisposed: null,
+      },
+      terminals: new Map(),
+      terminalWorkLogBindings: new Map(),
+      terminalOutputTimers: new Map(),
+      dispose: vi.fn(),
+    };
+  }),
+  releaseCursorAcpConnection: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Import system under test (after mocks)
 // ---------------------------------------------------------------------------
@@ -224,6 +275,7 @@ import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAd
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { mapPermissionToClaude } from "../orchestrator/permissionMapping";
+import { acquireCursorAcpConnection } from "./cursorAcpPool";
 import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
@@ -435,7 +487,11 @@ beforeEach(() => {
   mockState.uuidCounter = 0;
   mockState.codexThreadCounter = 0;
   mockState.codexTurnCounter = 0;
+  mockState.cursorSessionCounter = 0;
   mockState.codexLineHandler = null;
+  mockState.cursorAcquireCalls = [];
+  mockState.cursorNewSessionCalls = [];
+  mockState.cursorPromptCalls = [];
   vi.mocked(streamText).mockReset();
   vi.mocked(generateText).mockReset();
   vi.mocked(unstable_v2_createSession).mockReset();
@@ -939,6 +995,54 @@ describe("createAgentChatService", () => {
       await service.runSessionTurn({
         sessionId: session.id,
         text: "thanks",
+      });
+
+      expect(memoryService.search).not.toHaveBeenCalled();
+      expect(onEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "memory",
+          }),
+        }),
+      );
+    });
+
+    it("skips memory search for obvious test-message pings", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const memoryService = {
+        search: vi.fn(async () => []),
+      } as any;
+      const onEvent = vi.fn();
+      const { service } = createService({
+        memoryService,
+        onEvent,
+        computerUseArtifactBrokerService: {
+          getBackendStatus: vi.fn(() => ({
+            backends: [],
+            localFallback: {
+              available: false,
+              detail: "disabled",
+              supportedKinds: [],
+            },
+          })),
+        } as any,
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "anthropic/claude-sonnet-4-6-api",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "this is a test message",
       });
 
       expect(memoryService.search).not.toHaveBeenCalled();
@@ -3867,5 +3971,342 @@ describe("createAgentChatService", () => {
 
     releaseStream();
     await sendPromise;
+  });
+
+  it("initializes the Cursor runtime before validating the first turn", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "auto",
+      modelId: "cursor/auto",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Explain the failing test setup.",
+    }, { awaitDispatch: true });
+
+    const completedEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+      } => event.event.type === "status" && event.event.turnStatus === "completed",
+    );
+
+    expect(completedEvent.sessionId).toBe(session.id);
+    expect(vi.mocked(acquireCursorAcpConnection)).toHaveBeenCalledTimes(1);
+    expect(mockState.cursorNewSessionCalls).toHaveLength(1);
+    expect(mockState.cursorPromptCalls).toHaveLength(1);
+    expect(
+      events.some((event) => event.event.type === "error" && event.event.message.includes("No runtime initialized")),
+    ).toBe(false);
+  });
+
+  it("emits the Cursor user bubble before ACP warmup completes", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    type CursorNewSessionResult = {
+      sessionId: string;
+      modes: { currentModeId: string };
+      models: {
+        currentModelId: string;
+        availableModels: Array<{ modelId: string; name: string }>;
+      };
+      configOptions: Array<Record<string, unknown>>;
+    };
+    let resolveNewSession: ((value: CursorNewSessionResult) => void) | null = null;
+
+    vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+      mockState.cursorAcquireCalls.push(args);
+      return {
+        connection: {
+          newSession: vi.fn(() => new Promise<CursorNewSessionResult>((resolve) => {
+            resolveNewSession = resolve;
+          })),
+          loadSession: vi.fn(async () => ({
+            modes: { currentModeId: "edit" },
+            models: {
+              currentModelId: "auto",
+              availableModels: [{ modelId: "auto", name: "Auto" }],
+            },
+            configOptions: [],
+          })),
+          prompt: vi.fn(async () => ({
+            stopReason: "end_turn",
+            usage: { inputTokens: 3, outputTokens: 5 },
+          })),
+          cancel: vi.fn(),
+          unstable_closeSession: vi.fn(),
+        },
+        bridge: {
+          onPermission: null,
+          onSessionUpdate: null,
+          getRootPath: () => "",
+          getDirtyFileText: null,
+          onTerminalOutputDelta: null,
+          flushTerminalOutput: null,
+          onTerminalDisposed: null,
+        },
+        terminals: new Map(),
+        terminalWorkLogBindings: new Map(),
+        terminalOutputTimers: new Map(),
+        dispose: vi.fn(),
+      } as any;
+    });
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "auto",
+      modelId: "cursor/auto",
+    });
+
+    let sendResolved = false;
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Start the work.",
+    }, { awaitDispatch: true }).then(() => {
+      sendResolved = true;
+    });
+
+    for (let i = 0; i < 5 && !sendResolved; i += 1) {
+      await Promise.resolve();
+    }
+
+    expect(sendResolved).toBe(true);
+    expect(
+      events.filter((event) => event.event.type === "user_message"),
+    ).toHaveLength(1);
+    expect(
+      events.some(
+        (event) => event.event.type === "status" && event.event.turnStatus === "started",
+      ),
+    ).toBe(true);
+
+    for (let i = 0; i < 20 && !resolveNewSession; i += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    expect(resolveNewSession).toBeTruthy();
+
+    const settleNewSession = resolveNewSession as unknown as (value: CursorNewSessionResult) => void;
+    settleNewSession({
+      sessionId: "cursor-acp-session-1",
+      modes: { currentModeId: "edit" },
+      models: {
+        currentModelId: "auto",
+        availableModels: [{ modelId: "auto", name: "Auto" }],
+      },
+      configOptions: [],
+    });
+
+    const completedEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+      } => event.event.type === "done" && event.sessionId === session.id,
+    );
+
+    await sendPromise;
+
+    expect(completedEvent.event.status).toBe("completed");
+    expect(
+      events.filter((event) => event.event.type === "user_message"),
+    ).toHaveLength(1);
+  });
+
+  it("refreshes the Cursor session model from ACP after a turn completes", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+
+    vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+      mockState.cursorAcquireCalls.push(args);
+      return {
+        connection: {
+          newSession: vi.fn(async (params: Record<string, unknown>) => {
+            mockState.cursorNewSessionCalls.push(params);
+            mockState.cursorSessionCounter += 1;
+            return {
+              sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+              modes: { currentModeId: "edit" },
+              models: {
+                currentModelId: "claude-4-sonnet",
+                availableModels: [
+                  { modelId: "auto", name: "Auto" },
+                  { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
+                ],
+              },
+              configOptions: [],
+            };
+          }),
+          prompt: vi.fn(async (params: Record<string, unknown>) => {
+            mockState.cursorPromptCalls.push(params);
+            return {
+              stopReason: "end_turn",
+              usage: { inputTokens: 2, outputTokens: 4 },
+            };
+          }),
+          loadSession: vi.fn(async () => ({
+            modes: { currentModeId: "edit" },
+            models: {
+              currentModelId: "auto",
+              availableModels: [
+                { modelId: "auto", name: "Auto" },
+                { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
+              ],
+            },
+            configOptions: [],
+          })),
+          cancel: vi.fn(),
+          unstable_closeSession: vi.fn(),
+        },
+        bridge: {
+          onPermission: null,
+          onSessionUpdate: null,
+          getRootPath: () => "",
+          getDirtyFileText: null,
+          onTerminalOutputDelta: null,
+          flushTerminalOutput: null,
+          onTerminalDisposed: null,
+        },
+        terminals: new Map(),
+        terminalWorkLogBindings: new Map(),
+        terminalOutputTimers: new Map(),
+        dispose: vi.fn(),
+      } as any;
+    });
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "claude-4-sonnet",
+      modelId: "cursor/claude-4-sonnet",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Confirm the active model.",
+    }, { awaitDispatch: true });
+
+    const doneEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+      } => event.event.type === "done" && event.sessionId === session.id,
+    );
+    const updated = await service.getSessionSummary(session.id);
+
+    expect(updated?.model).toBe("auto");
+    expect(updated?.modelId).toBe("cursor/auto");
+    expect(doneEvent?.event.model).toBe("auto");
+    expect(doneEvent?.event.modelId).toBe("cursor/auto");
+  });
+
+  it("keeps the selected Cursor model when ACP reports an invalid current model id", async () => {
+    vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+      mockState.cursorAcquireCalls.push(args);
+      return {
+        connection: {
+          newSession: vi.fn(async (params: Record<string, unknown>) => {
+            mockState.cursorNewSessionCalls.push(params);
+          mockState.cursorSessionCounter += 1;
+          return {
+            sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+            modes: { currentModeId: "edit" },
+            models: {
+              currentModelId: "default[]",
+              availableModels: [
+                { modelId: "default[]", name: "Default" },
+                { modelId: "auto", name: "Auto" },
+                { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
+              ],
+            },
+              configOptions: [],
+            };
+          }),
+          prompt: vi.fn(async (params: Record<string, unknown>) => {
+            mockState.cursorPromptCalls.push(params);
+            return {
+              stopReason: "end_turn",
+              usage: { inputTokens: 2, outputTokens: 4 },
+            };
+          }),
+          cancel: vi.fn(),
+          unstable_closeSession: vi.fn(),
+        },
+        bridge: {
+          onPermission: null,
+          onSessionUpdate: null,
+          getRootPath: () => "",
+          getDirtyFileText: null,
+          onTerminalOutputDelta: null,
+          flushTerminalOutput: null,
+          onTerminalDisposed: null,
+        },
+        terminals: new Map(),
+        terminalWorkLogBindings: new Map(),
+        terminalOutputTimers: new Map(),
+        dispose: vi.fn(),
+      } as any;
+    });
+
+    const { service } = createService();
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "auto",
+      modelId: "cursor/auto",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Run the next step.",
+    }, { awaitDispatch: true });
+
+    const updated = await service.getSessionSummary(session.id);
+    const persisted = readPersistedChatState(session.id);
+
+    expect(updated?.model).toBe("auto");
+    expect(updated?.modelId).toBe("cursor/auto");
+    expect(persisted.model).toBe("auto");
+    expect(persisted.modelId).toBe("cursor/auto");
+  });
+
+  it("prefers an explicit Cursor mode over legacy full-auto launch settings", async () => {
+    const { service } = createService();
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "auto",
+      modelId: "cursor/auto",
+      cursorModeId: "ask",
+      unifiedPermissionMode: "full-auto",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Answer read-only.",
+    }, { awaitDispatch: true });
+
+    expect(mockState.cursorAcquireCalls).toHaveLength(1);
+    expect(mockState.cursorAcquireCalls[0]?.launchSettings).toEqual({
+      mode: "ask",
+      sandbox: "enabled",
+      force: false,
+      approveMcps: false,
+    });
   });
 });

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowClockwise as RefreshCw, Lightning } from "@phosphor-icons/react";
-import type { AiProviderConnectionStatus, BudgetCapConfig, ExtraUsage, UsageSnapshot, UsageWindow } from "../../../shared/types";
+import type {
+  AiProviderConnectionStatus,
+  AiProviderConnections,
+  BudgetCapConfig,
+  ExtraUsage,
+  UsageSnapshot,
+  UsageWindow,
+} from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { BudgetCapEditor } from "../automations/components/BudgetCapEditor";
@@ -46,10 +53,7 @@ export function UsageGuardrailsSection({
   const [error, setError] = useState<string | null>(null);
   const [budgetSaving, setBudgetSaving] = useState(false);
   const [budgetError, setBudgetError] = useState<string | null>(null);
-  const [providerConnections, setProviderConnections] = useState<{
-    claude: AiProviderConnectionStatus;
-    codex: AiProviderConnectionStatus;
-  } | null>(null);
+  const [providerConnections, setProviderConnections] = useState<AiProviderConnections | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const load = useCallback(async () => {
@@ -144,11 +148,12 @@ export function UsageGuardrailsSection({
     () => ({
       claude: providerConnections?.claude ?? null,
       codex: providerConnections?.codex ?? null,
+      cursor: providerConnections?.cursor ?? null,
     }),
     [providerConnections]
   );
   const showEmptyQuotaWarning =
-    (cliAuth.claude?.authAvailable || cliAuth.codex?.authAvailable) &&
+    (cliAuth.claude?.authAvailable || cliAuth.codex?.authAvailable || cliAuth.cursor?.authAvailable) &&
     claudeWindows.length === 0 &&
     codexWindows.length === 0 &&
     (snapshot?.errors.length ?? 0) === 0;
@@ -162,7 +167,7 @@ export function UsageGuardrailsSection({
         <div className="min-w-0">
           <div className="text-sm font-semibold text-fg">Provider limits & automation guardrails</div>
           <div className="mt-0.5 text-xs text-muted-fg">
-            Live Claude/Codex quota polling plus the shared budget rules that govern automation runs.
+            Live CLI provider quota polling plus the shared budget rules that govern automation runs.
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-3">
             {snapshot?.pacing ? (
@@ -186,6 +191,7 @@ export function UsageGuardrailsSection({
       <div className="mt-3 flex flex-wrap gap-2">
         <AuthChip label="Claude" entry={cliAuth.claude} />
         <AuthChip label="Codex" entry={cliAuth.codex} />
+        <AuthChip label="Cursor" entry={cliAuth.cursor} />
       </div>
 
       {error ? (
@@ -194,7 +200,7 @@ export function UsageGuardrailsSection({
 
       {showEmptyQuotaWarning ? (
         <div className="mt-3 rounded-lg bg-amber-500/10 p-3 text-xs text-amber-200">
-          Claude/Codex login is detected, but the quota poll returned no provider windows. If you just pulled these changes,
+          Provider login is detected, but the quota poll returned no provider windows. If you just pulled these changes,
           restart the ADE app fully so the Electron main process picks up the updated usage parser.
         </div>
       ) : null}

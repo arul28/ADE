@@ -4,7 +4,12 @@ description: "Configure Anthropic, OpenAI, OpenRouter, and local models in ADE. 
 icon: "microchip"
 ---
 
-<Info>**Screenshot: Settings → AI Providers panel showing four provider cards (Anthropic, OpenAI, OpenRouter, Local Models), each with a connection status indicator, a masked API key field, and a "Test Connection" button. Anthropic should show "Connected" in green.</Info>
+<Frame caption="AI Providers — four cards with status, masked keys, Test Connection">
+  <img
+    src="/images/settings-ai-providers-four-provider-cards.png"
+    alt={`Settings → AI Providers panel showing four provider cards (Anthropic, OpenAI, OpenRouter, Local Models), each with a connection status indicator, a masked API key field, and a "Test Connection" button. Anthropic should show "Connected" in green.`}
+  />
+</Frame>
 
 ## Supported Providers
 
@@ -186,7 +191,12 @@ Local models have significantly smaller context windows than cloud models (typic
 
 ## Model Reference
 
-<Info>**Screenshot: The model selection dropdown in the Mission creation dialog, showing models grouped by provider (Anthropic, OpenAI, OpenRouter, Local) with context window sizes and cost-per-token indicators beside each model name.</Info>
+<Frame caption="Mission dialog model picker — grouped by provider with context and cost">
+  <img
+    src="/images/mission-creation-model-dropdown-by-provider.png"
+    alt="The model selection dropdown in the Mission creation dialog, showing models grouped by provider (Anthropic, OpenAI, OpenRouter, Local) with context window sizes and cost-per-token indicators beside each model name."
+  />
+</Frame>
 
 ### Anthropic (Claude)
 
@@ -289,7 +299,12 @@ Some providers handle large contexts better than others. If you notice quality d
 
 ## API Key Security
 
-<Info>**Screenshot: The API key field in Settings → AI Providers showing a masked key ("sk-ant-••••••••••••1234") with a "Rotate" button and a "Revoke" button, alongside a small info badge reading "Stored in local.secret.yaml — never committed to git."</Info>
+<Frame caption="Masked API key with Rotate/Revoke and local.secret.yaml badge">
+  <img
+    src="/images/settings-ai-providers-api-key-masked-rotate-revoke.png"
+    alt={`The API key field in Settings → AI Providers showing a masked key ("sk-ant-••••••••••••1234") with a "Rotate" button and a "Revoke" button, alongside a small info badge reading "Stored in local.secret.yaml — never committed to git."`}
+  />
+</Frame>
 
 API keys are handled according to ADE's trust boundary model:
 

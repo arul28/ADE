@@ -4,7 +4,9 @@ description: "ADE's integrated PR management interface — create, review, and m
 icon: "code-pull-request"
 ---
 
-<Info>**Screenshot: The PRs tab in full split-pane layout — left panel showing a PR list with status badges (open, approved, draft, changes_requested) and lane name tags, right panel showing a PR detail view with the Overview tab active, displaying CI check status indicators, reviewer avatars, and a description rendered from markdown. A stacked PR dependency arrow should be visible between two items in the list.</Info>
+<Frame caption="PRs tab — split-pane with PR list, status badges, CI checks, and reviewer avatars">
+  <img src="/images/prs-overview.png" alt="PRs tab showing PR list with status badges on left, and PR detail with CI checks, reviewer avatars, and markdown description on right" />
+</Frame>
 
 ## What is the Pull Requests View?
 
@@ -59,7 +61,12 @@ The PR status badge is visible in the lane list (left pane of the Lanes tab), th
     - **Reviewers** — any reviewers configured in the lane settings or in `.ade/ade.yaml`
     - **Labels** — labels mapped to the lane's associated Linear issue (if connected)
 
-    <Info>**Screenshot: The "Create PR" form filled in — title field showing "feat: add session expiry logic", description showing a formatted markdown body with an "Intent" section and an "Acceptance Criteria" checklist, base branch dropdown showing "main", and a "Reviewers" field with two user avatars. A "Draft PR" toggle should be visible and enabled.</Info>
+    <Frame caption="Create PR form with draft toggle, intent, reviewers, and base branch">
+      <img
+        src="/images/create-pr-form-filled-draft-intent-reviewers.png"
+        alt={`The "Create PR" form filled in — title field showing "feat: add session expiry logic", description showing a formatted markdown body with an "Intent" section and an "Acceptance Criteria" checklist, base branch dropdown showing "main", and a "Reviewers" field with two user avatars. A "Draft PR" toggle should be visible and enabled.`}
+      />
+    </Frame>
   </Step>
   <Step title="Toggle draft mode if needed">
     If the work is not ready for review, enable the **Draft PR** toggle. Draft PRs are tracked by ADE but will not be auto-merged even if CI passes and all reviews are complete. Draft mode can be toggled per-lane in lane settings.
@@ -75,7 +82,12 @@ The PR status badge is visible in the lane list (left pane of the Lanes tab), th
 
 ADE has first-class support for stacked PR workflows, where a series of lanes build on each other and their PRs target each other (rather than all targeting `main`).
 
-<Info>**Screenshot: The PR list showing a stack of 3 PRs — "auth-base", "auth-middleware", "auth-endpoints" — connected by vertical dependency arrows indicating merge order (bottom up). Each PR shows its CI status indicator. The bottom PR ("auth-base") has a green "Approved" badge, the middle is "Open", and the top is "Draft".</Info>
+<Frame caption="Stacked PR list with dependency arrows, CI status, and approved/open/draft badges">
+  <img
+    src="/images/pr-list-stacked-three-prs-merge-order-ci.png"
+    alt={`The PR list showing a stack of 3 PRs — "auth-base", "auth-middleware", "auth-endpoints" — connected by vertical dependency arrows indicating merge order (bottom up). Each PR shows its CI status indicator. The bottom PR ("auth-base") has a green "Approved" badge, the middle is "Open", and the top is "Draft".`}
+  />
+</Frame>
 
 ### How Stacked PRs Are Structured
 
@@ -211,7 +223,12 @@ All PR actions are available from the detail view's action bar at the top of the
 
 ADE polls GitHub Actions for CI status on all linked PRs. The CI check list is visible in the PR Overview tab and as an icon badge on the PR list entry.
 
-<Info>**Screenshot: The CI checks section of the PR Overview tab — showing 4 checks: "build" (green checkmark), "unit-tests" (green checkmark), "e2e-tests" (red X with "2 failures" label), "lint" (green checkmark). The "e2e-tests" row is expanded showing a truncated log output with red error lines. An "Ask CTO about this failure" button sits below the log.</Info>
+<Frame caption="PR Overview CI checks with failed e2e log expanded and Ask CTO button">
+  <img
+    src="/images/pr-overview-ci-checks-e2e-failure-ask-cto.png"
+    alt={`The CI checks section of the PR Overview tab — showing 4 checks: "build" (green checkmark), "unit-tests" (green checkmark), "e2e-tests" (red X with "2 failures" label), "lint" (green checkmark). The "e2e-tests" row is expanded showing a truncated log output with red error lines. An "Ask CTO about this failure" button sits below the log.`}
+  />
+</Frame>
 
 ### Reading CI Status
 
@@ -333,7 +350,34 @@ If you have multiple PR templates (in `.github/PULL_REQUEST_TEMPLATE/`), ADE pre
 
 ---
 
-## Configuration Reference
+## PR issue resolution
+
+ADE includes a built-in **PR issue resolution** workflow for addressing review comments and failing CI checks directly from the PRs tab.
+
+### How it works
+
+1. **Issue inventory** — ADE scans the PR for failing checks, review comments requesting changes, and merge conflicts. Each item becomes an entry in the issue inventory.
+2. **Resolution modal** — Click **Resolve issues** on a PR to open the resolution modal. It lists all open issues with their type and severity.
+3. **AI resolution** — Select issues and click **Fix with AI**. ADE launches an agent session scoped to the PR's lane with the issue context pre-loaded. The agent reads the failing check output or review comment, makes fixes, and commits them.
+4. **Convergence rounds** — For PRs with multiple issues, ADE can run multiple resolution rounds automatically. Configure `maxRounds` in pipeline settings to cap the number of iterations.
+
+### Pipeline settings
+
+Configure PR convergence behavior per-project:
+
+```yaml
+# .ade/ade.yaml
+prs:
+  convergence:
+    autoMerge: false              # auto-merge when all checks pass
+    mergeMethod: "squash"         # merge | squash | rebase
+    maxRounds: 3                  # max AI resolution rounds
+    onRebaseNeeded: "auto"        # auto | ask | skip
+```
+
+---
+
+## Configuration reference
 
 Key PR-related settings in `.ade/ade.yaml`:
 

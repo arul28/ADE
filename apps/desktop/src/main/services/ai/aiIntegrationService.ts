@@ -23,6 +23,8 @@ import { getApiKeyStoreStatus } from "./apiKeyStore";
 import type { createMemoryService } from "../memory/memoryService";
 import type { CompactionFlushService } from "../memory/compactionFlushService";
 import { discoverLocalModels } from "./localModelDiscovery";
+import { discoverCursorCliModelDescriptors, clearCursorCliModelsCache } from "../chat/cursorModelsDiscovery";
+import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { probeClaudeRuntimeHealth, resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
@@ -65,7 +67,7 @@ export type AiIntegrationStatus = {
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "openrouter" | "local";
-    cli?: "claude" | "codex";
+    cli?: "claude" | "codex" | "cursor";
     provider?: string;
     source?: "config" | "env" | "store";
     path?: string;
@@ -377,7 +379,12 @@ export function createAiIntegrationService(args: {
     if (args.snapshot.effective.providerMode === "subscription") {
       return "subscription";
     }
-    if (args.providerConnections && (args.providerConnections.claude.authAvailable || args.providerConnections.codex.authAvailable)) {
+    if (
+      args.providerConnections
+      && (args.providerConnections.claude.authAvailable
+        || args.providerConnections.codex.authAvailable
+        || args.providerConnections.cursor.authAvailable)
+    ) {
       return "subscription";
     }
     if (args.auth && hasUsableDetectedAuth(args.auth)) {
@@ -414,7 +421,27 @@ export function createAiIntegrationService(args: {
   };
 
   const getResolvedAvailableModels = async (auth: DetectedAuth[]) => {
-    const available = getAvailableModels(auth);
+    let available = getAvailableModels(auth);
+
+    const hasCursorCliAuth = auth.some(
+      (entry) =>
+        entry.type === "cli-subscription"
+        && entry.cli === "cursor"
+        && entry.authenticated !== false,
+    );
+    if (hasCursorCliAuth) {
+      try {
+        const { path: agentPath } = resolveCursorAgentExecutable();
+        const cursorModels = await discoverCursorCliModelDescriptors(agentPath);
+        available = [
+          ...available.filter((descriptor) => !(descriptor.family === "cursor" && descriptor.isCliWrapped)),
+          ...cursorModels,
+        ];
+      } catch {
+        // Cursor CLI missing or `agent models` failed — omit dynamic Cursor list
+      }
+    }
+
     const discoveredLocalModels = await discoverLocalModels(auth);
     if (discoveredLocalModels.length === 0) {
       return available;
@@ -863,6 +890,7 @@ export function createAiIntegrationService(args: {
       if (options?.force) {
         resetProviderRuntimeHealth();
         resetClaudeRuntimeProbeCache();
+        clearCursorCliModelsCache();
         runtimeHealthVersion = getProviderRuntimeHealthVersion();
       }
       const auth = await detectAuth(options);
@@ -888,6 +916,7 @@ export function createAiIntegrationService(args: {
         if (!descriptor.isCliWrapped) return true;
         if (descriptor.family === "anthropic") return providerConnections.claude.runtimeAvailable;
         if (descriptor.family === "openai") return providerConnections.codex.runtimeAvailable;
+        if (descriptor.family === "cursor") return providerConnections.cursor.runtimeAvailable;
         return true;
       });
       const result: AiIntegrationStatus = {

@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import { getModelById } from "../../../../shared/modelRegistry";
 import type { AiPermissionMode, AgentChatPermissionMode } from "../../../../shared/types";
 import { deriveConfiguredModelIds } from "../../../lib/modelOptions";
@@ -36,6 +37,7 @@ export function PrResolverLaunchControls({
   permissionLocked = false,
   className,
 }: PrResolverLaunchControlsProps) {
+  const navigate = useNavigate();
   const [availableModelIds, setAvailableModelIds] = React.useState<string[]>([]);
 
   React.useEffect(() => {
@@ -70,6 +72,7 @@ export function PrResolverLaunchControls({
         showReasoning
         reasoningEffort={reasoningEffort}
         onReasoningEffortChange={(next) => onReasoningEffortChange(next ?? "")}
+        onOpenAiSettings={() => navigate("/settings?tab=ai#ai-providers")}
       />
       <div className="flex items-center gap-px border border-border/10 bg-surface-recessed/40">
         {permissionOptions.map((option) => {

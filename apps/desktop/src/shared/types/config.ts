@@ -824,7 +824,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "openrouter" | "local";
-  cli?: "claude" | "codex";
+  cli?: "claude" | "codex" | "cursor";
   provider?: string;
   source?: "config" | "env" | "store";
   path?: string;
@@ -846,7 +846,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "cursor";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -860,6 +860,7 @@ export type AiProviderConnectionStatus = {
 export type AiProviderConnections = {
   claude: AiProviderConnectionStatus;
   codex: AiProviderConnectionStatus;
+  cursor: AiProviderConnectionStatus;
 };
 
 export type AiApiKeyVerificationResult = {

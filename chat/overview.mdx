@@ -4,13 +4,28 @@ description: "Conversational AI with real project access — read files, run com
 icon: "comments"
 ---
 
-<Info>Screenshot: Agent Chat pane in a Lane view showing the chat composer, a conversation with tool call blocks, the context meter, and the MCP tool indicator.</Info>
+<Frame caption="Agent Chat — conversation with tool call blocks, context meter, and MCP indicator">
+  <img src="/images/chat-overview.png" alt="Agent Chat pane showing a conversation with code tool calls, the context usage meter, and model selector" />
+</Frame>
 
 ## What is Agent Chat?
 
 **Agent Chat** is ADE's conversational interface for working with AI agents in the context of your actual project. Unlike a generic AI chat, Agent Chat is wired directly into your development environment: the agent can read and write real files, run terminal commands, create branches and PRs, query your project's context pack, and spawn a Mission when the task grows beyond what a single conversation can handle.
 
 Every chat session is recorded with a full transcript, tool call log, and timing data. Sessions are resumable and their artifacts can be promoted into the lane's persistent context.
+
+### Supported providers
+
+Agent Chat works across multiple provider backends:
+
+| Provider | Backend | Auth |
+|----------|---------|------|
+| **Claude** | Anthropic SDK v2 sessions | API key |
+| **Codex** | OpenAI app-server JSON-RPC | API key |
+| **Cursor** | ACP (Agent Control Protocol) | Cursor CLI auth |
+| **Unified** | Vercel AI SDK (in-process) | API key |
+
+ADE detects which providers are available and lets you switch between them per-session using the model selector in the chat header. Each provider has its own session lifecycle, timeout behavior, and interrupt semantics.
 
 <CardGroup cols={2}>
   <Card title="What Chat is for" icon="message">
@@ -96,7 +111,9 @@ Chat in ADE is always scoped — it operates within a defined context boundary t
 
 ## Computer Use Policy
 
-<Info>Screenshot: Chat header close-up showing the computer-use policy chip, MCP tool count badge, model selector, and context meter.</Info>
+<Frame caption="Chat header — computer-use policy chip, MCP badge, model selector, and context meter">
+  <img src="/images/chat-header.png" alt="Close-up of chat header showing CU policy toggle, tool count, model dropdown, and context usage bar" />
+</Frame>
 
 The chat header displays the current **computer-use policy** for the session. This controls whether and how the agent can invoke computer-use capabilities (browser automation, screenshot capture, desktop interaction).
 
@@ -128,7 +145,35 @@ When computer use is active, a **monitoring panel** expands below the chat. It s
 
 ---
 
-## Explore More
+---
+
+## Session behavior
+
+### Auto-titling
+
+ADE automatically generates descriptive session titles using AI. Controlled by:
+- `ai.chat.autoTitleEnabled` — toggle auto-titling on or off
+- `autoTitleReasoningEffort` — depth of analysis for title generation
+- `autoTitleRefreshOnComplete` — regenerate the title when the session ends
+
+### Interrupting agents
+
+Press **Escape** or click the **Stop** button to interrupt a running agent. Behavior varies by provider:
+- **Claude** — graceful interrupt; agent reports partial results
+- **Codex** — session terminates; partial output is preserved in the transcript
+- **Cursor (ACP)** — session cancel via ACP protocol
+
+### Steering and editing
+
+You can **steer** an in-progress agent by sending a follow-up message before the current turn completes. ADE queues the steer message and delivers it at the next turn boundary. You can also **edit** a previous message to re-run the conversation from that point.
+
+### Memory integration
+
+Chat sessions can read from and write to ADE's project memory. A **memory guard** prevents writes during tool-heavy turns to avoid noisy memory entries. Memory entries created during a session are promoted to project-level memory at compaction boundaries.
+
+---
+
+## Explore more
 
 <CardGroup cols={2}>
   <Card title="Chat Capabilities" icon="toolbox" href="/chat/capabilities">

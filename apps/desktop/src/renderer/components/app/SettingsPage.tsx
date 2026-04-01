@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useLocation } from "react-router-dom";
 import { Brain, GearSix, Lightning, Stack, Database, FolderSimple, Plus, X, Plugs, DesktopTower } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
@@ -440,6 +440,7 @@ function PhaseProfilesSection() {
 /* ──────────────── Main Settings Page ──────────────── */
 
 export function SettingsPage() {
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
   const canonicalTab = tabParam && SECTIONS.some((s) => s.id === tabParam)
@@ -471,6 +472,14 @@ export function SettingsPage() {
     nextParams.set("tab", next);
     setSearchParams(nextParams, { replace: true });
   }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (section !== "ai" || location.hash !== "#ai-providers") return;
+    const id = window.requestAnimationFrame(() => {
+      document.getElementById("ai-providers")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [section, location.hash]);
 
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>

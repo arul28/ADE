@@ -262,19 +262,21 @@ export function safetyColors(safety: SafetyLevel) {
  * Only CLI-wrapped anthropic → "claude" and CLI-wrapped openai → "codex".
  * All API / local models (even anthropic-api or openai-api) use "unified".
  */
-export function familyToPermissionKey(family: string, isCliWrapped: boolean): "claude" | "codex" | "unified" {
+export function familyToPermissionKey(family: string, isCliWrapped: boolean): "claude" | "codex" | "unified" | "cursor" {
   if (isCliWrapped) {
     if (family === "anthropic") return "claude";
     if (family === "openai") return "codex";
+    if (family === "cursor") return "cursor";
   }
   return "unified";
 }
 
 /** Human-readable label for a permission family key */
-export function permissionFamilyLabel(key: "claude" | "codex" | "unified"): string {
+export function permissionFamilyLabel(key: "claude" | "codex" | "cursor" | "unified"): string {
   switch (key) {
     case "claude": return "Claude Code workers";
     case "codex": return "Codex workers";
+    case "cursor": return "Cursor workers";
     case "unified": return "API / Local model workers";
   }
 }

@@ -141,6 +141,23 @@ describe("deriveConfiguredModelIds", () => {
     }
   });
 
+  it("includes Cursor CLI models from availableModelIds when cursor CLI is authenticated", () => {
+    const status = makeStatus({
+      detectedAuth: [{ type: "cli-subscription", cli: "cursor", authenticated: true }],
+      availableModelIds: ["cursor/auto", "cursor/composer-2", "openai/gpt-5.4-pro"],
+    });
+    const ids = deriveConfiguredModelIds(status);
+    expect(ids).toContain("cursor/auto");
+    expect(ids).toContain("cursor/composer-2");
+    for (const id of ids) {
+      if (!String(id).startsWith("cursor/")) continue;
+      const descriptor = getModelById(id);
+      expect(descriptor).toBeTruthy();
+      expect(descriptor!.family).toBe("cursor");
+      expect(descriptor!.isCliWrapped).toBe(true);
+    }
+  });
+
   it("skips unauthenticated CLI subscriptions", () => {
     const status = makeStatus({
       detectedAuth: [{ type: "cli-subscription", cli: "claude", authenticated: false }],

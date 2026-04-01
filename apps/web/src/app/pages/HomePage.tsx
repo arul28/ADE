@@ -24,6 +24,9 @@ import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
+import { HeroVisual } from "../../components/ui/HeroVisual";
+import { CanvasDemo } from "../../components/ui/CanvasDemo";
+
 /* ──────────────────────────────────────────────
    Competitor apps that ADE replaces
    ────────────────────────────────────────────── */
@@ -45,6 +48,45 @@ const COMPETITORS = [
    Feature data
    ────────────────────────────────────────────── */
 
+/* ──────────────────────────────────────────────
+   Feature Placeholder (until real screenshots)
+   ────────────────────────────────────────────── */
+
+function FeaturePlaceholder({ colorClass }: { colorClass: string }) {
+  return (
+    <div className="relative w-full h-full bg-[#0a0a0f] overflow-hidden flex flex-col">
+      {/* Abstract background glow */}
+      <div className={cn("absolute -top-10 -right-10 w-32 h-32 rounded-full blur-[40px] opacity-20", colorClass.replace("text-", "bg-"))} />
+      <div className={cn("absolute -bottom-10 -left-10 w-32 h-32 rounded-full blur-[40px] opacity-10", colorClass.replace("text-", "bg-"))} />
+      
+      {/* Mock Window Header */}
+      <div className="h-6 border-b border-white/5 flex items-center px-3 gap-1.5 shrink-0 bg-white/[0.02]">
+        <div className="w-1.5 h-1.5 rounded-full bg-white/20" />
+        <div className="w-1.5 h-1.5 rounded-full bg-white/20" />
+        <div className="w-1.5 h-1.5 rounded-full bg-white/20" />
+      </div>
+      
+      {/* Mock content */}
+      <div className="flex-1 p-4 flex flex-col gap-3">
+        <div className="flex items-center gap-3 w-full">
+          <div className="w-8 h-8 rounded-lg bg-white/5 shrink-0" />
+          <div className="space-y-1.5 flex-1">
+            <div className="h-2 w-1/3 bg-white/10 rounded-full" />
+            <div className="h-2 w-1/4 bg-white/5 rounded-full" />
+          </div>
+        </div>
+        <div className="flex-1 rounded-lg border border-white/5 bg-white/[0.01] p-3 flex flex-col gap-2">
+           <div className="h-1.5 w-full bg-white/5 rounded-full" />
+           <div className="h-1.5 w-[90%] bg-white/5 rounded-full" />
+           <div className="h-1.5 w-[95%] bg-white/5 rounded-full" />
+           <div className="h-1.5 w-[80%] bg-white/5 rounded-full" />
+           <div className={cn("h-1.5 w-[40%] rounded-full mt-auto opacity-40", colorClass.replace("text-", "bg-"))} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const FEATURES = [
   {
     icon: Terminal,
@@ -55,7 +97,6 @@ const FEATURES = [
     color: "text-sky-400",
     bgColor: "bg-sky-500/10",
     borderColor: "border-sky-500/20",
-    screenshotLabel: "Agent Chat Session",
   },
   {
     icon: GitBranch,
@@ -66,7 +107,6 @@ const FEATURES = [
     color: "text-violet-400",
     bgColor: "bg-violet-500/10",
     borderColor: "border-violet-500/20",
-    screenshotLabel: "Lanes View",
   },
   {
     icon: Target,
@@ -77,7 +117,6 @@ const FEATURES = [
     color: "text-amber-400",
     bgColor: "bg-amber-500/10",
     borderColor: "border-amber-500/20",
-    screenshotLabel: "Mission Planner",
   },
   {
     icon: Bot,
@@ -88,7 +127,6 @@ const FEATURES = [
     color: "text-emerald-400",
     bgColor: "bg-emerald-500/10",
     borderColor: "border-emerald-500/20",
-    screenshotLabel: "CTO Agent Chat",
   },
   {
     icon: Zap,
@@ -99,7 +137,6 @@ const FEATURES = [
     color: "text-rose-400",
     bgColor: "bg-rose-500/10",
     borderColor: "border-rose-500/20",
-    screenshotLabel: "Automation Rules",
   },
   {
     icon: Package,
@@ -110,7 +147,6 @@ const FEATURES = [
     color: "text-indigo-400",
     bgColor: "bg-indigo-500/10",
     borderColor: "border-indigo-500/20",
-    screenshotLabel: "Memory Browser",
   },
 ] as const;
 
@@ -120,43 +156,6 @@ const CAPABILITIES = [
   { icon: Settings2, label: "Multi-Provider", detail: "Claude, Codex, Gemini, local models via BYOK" },
   { icon: Play, label: "Process Monitor", detail: "Track every terminal command and its output" },
 ];
-
-/* ──────────────────────────────────────────────
-   Screenshot placeholder slot
-   ────────────────────────────────────────────── */
-
-function ScreenshotSlot({
-  label,
-  aspectClass = "aspect-video",
-  className,
-}: {
-  label: string;
-  aspectClass?: string;
-  className?: string;
-}) {
-  return (
-    <div
-      className={cn(
-        "relative rounded-xl border border-dashed border-border/40 bg-surface/30 overflow-hidden",
-        aspectClass,
-        className,
-      )}
-    >
-      <div
-        className="absolute inset-0 opacity-[0.03]"
-        style={{
-          backgroundImage:
-            "linear-gradient(rgba(255,255,255,.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.1) 1px, transparent 1px)",
-          backgroundSize: "32px 32px",
-        }}
-      />
-      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
-        <MonitorCheck className="h-5 w-5 text-muted-fg/30" />
-        <span className="text-[11px] text-muted-fg/30">Add screenshot: {label}</span>
-      </div>
-    </div>
-  );
-}
 
 /* ──────────────────────────────────────────────
    Quickstart copy command
@@ -250,14 +249,14 @@ export function HomePage() {
                     </span>
                   )}
                   <div className="flex flex-col items-center gap-0.5 shrink-0">
-                    <div className="h-11 w-11 sm:h-14 sm:w-14 rounded-xl border border-border/50 bg-white/[0.05] p-1 sm:p-1.5 flex items-center justify-center overflow-hidden transition-all hover:scale-110 hover:border-accent/30 hover:bg-white/[0.1]">
+                    <div className="group/logo h-11 w-11 sm:h-14 sm:w-14 rounded-xl border border-border/50 bg-white/[0.05] p-1 sm:p-1.5 flex items-center justify-center overflow-hidden transition-all duration-300 hover:scale-110 hover:border-accent/50 hover:bg-white/[0.1] hover:shadow-[0_0_20px_rgba(124,58,237,0.2)]">
                       <img
                         src={app.logo}
                         alt={app.name}
                         className="h-full w-full object-contain rounded-lg"
                       />
                     </div>
-                    <span className="text-[8px] sm:text-[9px] text-muted-fg/40 text-center leading-tight max-w-[48px] sm:max-w-[56px]">
+                    <span className="text-[8px] sm:text-[9px] text-muted-fg/40 text-center leading-tight max-w-[48px] sm:max-w-[56px] mt-1">
                       {app.name}
                     </span>
                   </div>
@@ -272,7 +271,7 @@ export function HomePage() {
               <span className="text-2xl sm:text-3xl font-black text-accent/70 mb-2">=</span>
               <div className="relative">
                 <img
-                  src="/app-icon.png"
+                  src="/images/ade-mark.svg"
                   alt="ADE"
                   className="relative h-20 w-20 sm:h-24 sm:w-24 drop-shadow-[0_4px_20px_rgba(124,58,237,0.35)]"
                 />
@@ -318,20 +317,10 @@ export function HomePage() {
             </div>
           </Reveal>
 
-          {/* Hero app screenshot */}
+          {/* Hero app visual */}
           <Reveal delay={0.26}>
-            <div className="mt-8">
-              <div className="rounded-xl border border-border/60 bg-card/50 p-1.5">
-                <div className="flex items-center gap-2 px-3 py-2">
-                  <div className="flex gap-1.5">
-                    <div className="h-3 w-3 rounded-full bg-[#ff5f57]" />
-                    <div className="h-3 w-3 rounded-full bg-[#febc2e]" />
-                    <div className="h-3 w-3 rounded-full bg-[#28c840]" />
-                  </div>
-                  <div className="mx-auto text-xs text-muted-fg/50">ADE Desktop</div>
-                </div>
-                <ScreenshotSlot label="ADE Workspace Overview" aspectClass="aspect-[16/9]" />
-              </div>
+            <div className="mt-12 lg:mt-16 w-full flex justify-center">
+              <HeroVisual />
             </div>
           </Reveal>
         </Container>
@@ -370,13 +359,33 @@ export function HomePage() {
                   <p className="mt-4 flex-1 text-sm leading-relaxed text-muted-fg">
                     {f.description}
                   </p>
-                  <div className="mt-5">
-                    <ScreenshotSlot label={f.screenshotLabel} aspectClass="aspect-[4/3]" />
+                  <div className="mt-5 overflow-hidden rounded-xl border border-border/40 bg-surface/30 aspect-[4/3] group-hover:border-border/80 transition-colors relative">
+                    <FeaturePlaceholder colorClass={f.color} />
                   </div>
                 </Card>
               </Reveal>
             ))}
           </div>
+        </Container>
+      </section>
+
+      {/* ── INTERACTIVE CANVAS DEMO ────────────── */}
+      <section className="py-16 sm:py-24 overflow-hidden relative">
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-accent/5 to-transparent pointer-events-none" />
+        <Container>
+          <Reveal>
+            <div className="text-center mb-10">
+              <h2 className="text-3xl font-bold tracking-tight text-fg sm:text-4xl">Merge features instantly</h2>
+              <p className="mt-3 mx-auto max-w-xl text-base text-muted-fg">
+                Drag a feature branch onto main to see how ADE handles automatic context merging.
+              </p>
+            </div>
+          </Reveal>
+          <Reveal delay={0.1}>
+            <div className="max-w-5xl mx-auto">
+              <CanvasDemo />
+            </div>
+          </Reveal>
         </Container>
       </section>
 

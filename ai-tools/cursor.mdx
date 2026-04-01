@@ -1,19 +1,98 @@
 ---
-title: "Cursor"
-description: "Open your project in Cursor from ADE and track the session."
+title: "Cursor Integration"
+description: "Use Cursor as an agent provider in ADE — launch sessions, route models, and track work through the Agent Control Protocol (ACP)."
 icon: "arrow-pointer"
 ---
 
 ## Overview
 
-ADE can launch [Cursor](https://cursor.com) for your project directly from the Run tab. When launched through ADE, the session is tracked as a managed session in the lane for visibility in the History view.
+ADE integrates with [Cursor](https://cursor.com) in two ways:
+
+1. **Launch Cursor from ADE** — open your project or a lane's worktree in Cursor from the Run tab
+2. **Cursor as an agent provider** — use Cursor's AI agent as a chat provider inside ADE via the Agent Control Protocol (ACP)
+
+The ACP integration means Cursor's agent capabilities are available directly in ADE's chat interface, alongside Claude, Codex, and other providers. You can switch between providers per-session.
+
+---
 
 ## Requirements
 
-- Cursor installed on your machine
+| Requirement | Details |
+|------------|---------|
+| **Cursor installed** | Cursor desktop app must be installed on your machine |
+| **Cursor CLI** | The `cursor` CLI or agent executable must be in your PATH |
+| **Authentication** | Cursor must be authenticated (sign in through the Cursor app) |
+
+ADE automatically detects Cursor's CLI executable and checks authentication status during onboarding and in **Settings → AI**.
+
+---
 
 ## Launching Cursor from ADE
 
-Open the **Run** tab or **Project Home** and click the **Cursor** launcher. ADE opens the current project (or the selected lane's worktree) in Cursor as a separate application window.
+Open the **Run** tab and click the **Cursor** launcher. ADE opens the current project (or the selected lane's worktree) in Cursor as a separate application window.
 
-The session is linked back to the active lane for tracking purposes. File changes made in Cursor are visible in the lane's diff view as soon as they are saved.
+The session is linked back to the active lane for tracking. File changes made in Cursor appear in the lane's diff view as soon as they are saved.
+
+---
+
+## Cursor as an agent provider (ACP)
+
+When Cursor's agent executable is detected, ADE can use it as a chat provider through the **Agent Control Protocol (ACP)**.
+
+### How it works
+
+1. ADE resolves the Cursor agent executable path (checks standard install locations and PATH)
+2. An ACP session pool manages connections to the Cursor agent process
+3. Chat messages are routed through the ACP protocol with MCP bridging
+4. Model discovery queries Cursor for available models and capabilities
+
+### Selecting Cursor in chat
+
+In any Agent Chat session, use the **model selector** in the chat header to choose a Cursor-provided model. Models discovered from Cursor appear alongside Claude, GPT, and other configured providers.
+
+### Model discovery
+
+ADE queries Cursor for its available models at startup and caches the result. The discovered models appear in:
+- The chat model selector
+- The mission model configuration
+- The unified model selector throughout the app
+
+### Session behavior
+
+| Behavior | Details |
+|----------|---------|
+| **Session lifecycle** | Managed by the ACP pool; sessions are reused when possible |
+| **Event mapping** | ACP events are mapped to ADE's chat event model for consistent UI |
+| **MCP bridging** | ADE's MCP tools are available to Cursor agents through the ACP-MCP bridge |
+| **Interrupts** | Supported via ACP session cancel |
+
+---
+
+## Connection status
+
+ADE shows Cursor's connection status in **Settings → AI**:
+
+| Status | Meaning |
+|--------|---------|
+| **Connected** (green) | Cursor agent executable found, authenticated, and ready |
+| **CLI found, not authenticated** (amber) | Cursor is installed but not signed in — sign in through the Cursor app |
+| **Not found** (gray) | Cursor CLI not detected — install Cursor or add it to PATH |
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Cursor not detected" icon="circle-question">
+    ADE checks standard installation paths for the Cursor agent executable. If Cursor is installed in a non-standard location, ensure the `cursor` command is available in your PATH. You can verify with `which cursor` in a terminal.
+  </Accordion>
+  <Accordion title="Authentication failed" icon="lock">
+    Open the Cursor desktop app and sign in. ADE detects Cursor's auth status through the CLI — it does not manage Cursor credentials directly.
+  </Accordion>
+  <Accordion title="Models not appearing" icon="list">
+    Model discovery runs at ADE startup. If you installed Cursor after starting ADE, restart ADE or go to **Settings → AI** and click **Refresh** to re-run model discovery.
+  </Accordion>
+  <Accordion title="Session errors" icon="circle-exclamation">
+    If ACP sessions fail, check that Cursor is running and authenticated. The ACP pool retries connections with backoff. Check ADE's developer logs (**Settings → Developer → Log file**) for detailed ACP error messages.
+  </Accordion>
+</AccordionGroup>

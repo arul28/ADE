@@ -1,13 +1,28 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "motion/react";
 import {
   MODEL_REGISTRY,
   resolveModelDescriptor,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
+import { fadeScale } from "../../lib/motion";
 import { cn } from "../ui/cn";
 import { CaretDown, Check, MagnifyingGlass, X } from "@phosphor-icons/react";
-import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
+import { ModelRowLogo, ProviderLogo } from "./ProviderLogos";
+import {
+  buildSourceBlocksForModels,
+  classifySourceSection,
+  createModelOrderMap,
+  matchesQuery,
+  PROVIDER_BADGE_COLORS,
+  subsectionKeyForModel,
+  sourceSectionLabel,
+  type ModelProviderBlock,
+  type ModelSourceBlock,
+  type ModelSubsection,
+  type SourceSectionKey,
+} from "./unifiedModelSelectorGrouping";
 
 type UnifiedModelSelectorProps = {
   value: string;
@@ -19,96 +34,55 @@ type UnifiedModelSelectorProps = {
   showReasoning?: boolean;
   reasoningEffort?: string | null;
   onReasoningEffortChange?: (effort: string | null) => void;
+  /** Opens AI / provider settings (e.g. navigate to `/settings?tab=ai#ai-providers`). */
+  onOpenAiSettings?: () => void;
+  /** @deprecated Use `onOpenAiSettings` */
   onConfigureMore?: () => void;
 };
 
-type SelectorBucket = "subscription" | "api" | "local";
-
-type ProviderSection = {
-  key: string;
-  label: string;
-  models: ModelDescriptor[];
-};
-
-type BucketGroup = {
-  key: SelectorBucket;
-  label: string;
-  badgeColor: string;
-  sections: ProviderSection[];
-};
-
-type PopupLayout = {
-  mode: "anchored" | "modal";
-  top: number;
-  left: number;
-  width: number;
-  maxHeight: number;
-};
-
-const BUCKET_META: Record<SelectorBucket, { label: string; badgeColor: string }> = {
-  subscription: { label: "Subscription", badgeColor: "#A78BFA" },
-  api: { label: "API", badgeColor: "#22C55E" },
-  local: { label: "Local", badgeColor: "#F59E0B" },
-};
-
-const PROVIDER_LABELS: Record<string, string> = {
-  anthropic: "Anthropic",
-  openai: "OpenAI",
-  google: "Google",
-  deepseek: "DeepSeek",
-  mistral: "Mistral",
-  xai: "xAI",
-  openrouter: "OpenRouter",
-  ollama: "Ollama",
-  lmstudio: "LM Studio",
-  vllm: "vLLM",
-  groq: "Groq",
-  together: "Together",
-  meta: "Meta",
-};
-
-const PROVIDER_ORDER: string[] = [
-  "anthropic",
-  "openai",
-  "google",
-  "deepseek",
-  "mistral",
-  "xai",
-  "openrouter",
-  "ollama",
-  "lmstudio",
-  "vllm",
-];
+const SOURCE_KEYS: SourceSectionKey[] = ["subscription", "api", "local"];
 
 const selectCls = cn(
   "h-8 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 font-sans text-[11px] text-fg/70",
   "outline-none focus:border-white/[0.14]",
 );
 
-function classifyBucket(model: ModelDescriptor): SelectorBucket {
-  if (model.isCliWrapped) return "subscription";
-  if (model.authTypes.includes("local")) return "local";
-  return "api";
+function rgbaFromHex(hex: string, alpha: number): string {
+  const n = hex.replace("#", "").trim();
+  if (n.length !== 6) return `rgba(167,139,250,${alpha})`;
+  const r = Number.parseInt(n.slice(0, 2), 16);
+  const g = Number.parseInt(n.slice(2, 4), 16);
+  const b = Number.parseInt(n.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function providerLabel(family: string): string {
-  return PROVIDER_LABELS[family] ?? family;
+function providerAccent(family: string, fallback?: string): string {
+  return PROVIDER_BADGE_COLORS[family] ?? fallback ?? "#A78BFA";
+}
+
+function subsectionTabTitle(sub: ModelSubsection): string {
+  const name = sub.subsectionLabel || sub.label;
+  return name.trim() || "Models";
 }
 
 function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): string {
   if (isAvailable) {
+    if (model.family === "cursor" && model.isCliWrapped) return "Cursor CLI ready";
     if (model.isCliWrapped) return "Subscription ready";
-    if (model.authTypes.includes("local")) return "Local runtime ready";
+    if (model.authTypes.includes("local")) return "Local ready";
     if (model.authTypes.includes("api-key")) return "API ready";
     if (model.authTypes.includes("oauth")) return "OAuth ready";
     if (model.authTypes.includes("openrouter")) return "OpenRouter ready";
     return "Ready";
   }
-  if (model.isCliWrapped) return "Subscription only · not configured";
-  if (model.authTypes.includes("local")) return "Local runtime only · not configured";
-  if (model.authTypes.includes("api-key")) return "API only · not configured";
-  if (model.authTypes.includes("oauth")) return "OAuth only · not configured";
-  if (model.authTypes.includes("openrouter")) return "OpenRouter only · not configured";
+  if (model.family === "cursor" && model.isCliWrapped) {
+    return "Cursor CLI · run `agent login` or set CURSOR_API_KEY / CURSOR_AUTH_TOKEN";
+  }
+  if (model.isCliWrapped) return "Subscription · not configured";
+  if (model.authTypes.includes("local")) return "Local · not configured";
+  if (model.authTypes.includes("api-key")) return "API · not configured";
+  if (model.authTypes.includes("oauth")) return "OAuth · not configured";
+  if (model.authTypes.includes("openrouter")) return "OpenRouter · not configured";
   return "Not configured";
 }
 
@@ -117,38 +91,27 @@ function tierLabel(tier: string): string {
   return tier.charAt(0).toUpperCase() + tier.slice(1);
 }
 
-function ModelGlyph({ model, size = 12 }: { model: ModelDescriptor; size?: number }) {
-  if (model.family === "anthropic" || model.cliCommand === "claude") {
-    return <ClaudeLogo size={size} className="shrink-0" />;
-  }
-  if (model.cliCommand === "codex") {
-    return <CodexLogo size={size} className="shrink-0 text-fg/80" />;
-  }
-  return (
-    <span
-      className="inline-block shrink-0 rounded-full"
-      style={{ width: size * 0.55, height: size * 0.55, backgroundColor: model.color ?? "#A78BFA" }}
-    />
-  );
-}
-
-function matchesQuery(model: ModelDescriptor, query: string): boolean {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized.length) return true;
-  return [
-    model.displayName,
-    model.id,
-    model.shortId,
-    model.sdkModelId,
-    ...(model.aliases ?? []),
-  ]
-    .join(" ")
-    .toLowerCase()
-    .includes(normalized);
-}
-
 function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
   console.warn(`[UnifiedModelSelector] Unknown model ID "${modelId}" — not found in registry. Creating placeholder.`);
+  const cursorCli = modelId.startsWith("cursor/");
+  if (cursorCli) {
+    const tail = modelId.slice("cursor/".length);
+    return {
+      id: modelId,
+      shortId: tail || modelId,
+      displayName: tail || modelId,
+      family: "cursor",
+      authTypes: ["cli-subscription"],
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+      color: "#A78BFA",
+      sdkProvider: "@agentclientprotocol/sdk",
+      sdkModelId: tail || modelId,
+      cliCommand: "cursor",
+      isCliWrapped: true,
+    };
+  }
   return {
     id: modelId,
     shortId: modelId,
@@ -172,26 +135,35 @@ function mergeSelectorModels(
 ): ModelDescriptor[] {
   const merged = new Map<string, ModelDescriptor>();
   const selectedId = String(selectedModelId ?? "").trim();
+  const availableIdSet = new Set(
+    (availableModelIds ?? [])
+      .map((entry) => String(entry ?? "").trim())
+      .filter(Boolean),
+  );
+  const hasAvailableModels = availableIdSet.size > 0;
 
   for (const model of MODEL_REGISTRY) {
     if (model.deprecated) continue;
+    if (hasAvailableModels && model.family === "cursor" && !availableIdSet.has(model.id)) {
+      continue;
+    }
     if (filter && !filter(model)) continue;
     merged.set(model.id, model);
   }
-  for (const rawId of availableModelIds ?? []) {
-    const modelId = String(rawId ?? "").trim();
-    if (!modelId.length) continue;
-    const descriptor = resolveModelDescriptor(modelId);
+
+  for (const rawId of availableIdSet) {
+    const descriptor = resolveModelDescriptor(rawId);
     if (descriptor) {
       if (descriptor.deprecated) continue;
       if (filter && !filter(descriptor)) continue;
       merged.set(descriptor.id, descriptor);
     } else {
-      const placeholder = createUnknownModelPlaceholder(modelId);
+      const placeholder = createUnknownModelPlaceholder(rawId);
       if (filter && !filter(placeholder)) continue;
       merged.set(placeholder.id, placeholder);
     }
   }
+
   if (selectedId && !merged.has(selectedId)) {
     const selectedDescriptor = resolveModelDescriptor(selectedId);
     if (selectedDescriptor && !selectedDescriptor.deprecated && (!filter || filter(selectedDescriptor))) {
@@ -206,6 +178,10 @@ function mergeSelectorModels(
   return [...merged.values()];
 }
 
+function flattenSourceBlocks(blocks: ModelSourceBlock[]): ModelDescriptor[] {
+  return blocks.flatMap((s) => s.providers.flatMap((p) => p.subsections.flatMap((sub) => sub.models)));
+}
+
 export function UnifiedModelSelector({
   value,
   onChange,
@@ -216,96 +192,123 @@ export function UnifiedModelSelector({
   showReasoning,
   reasoningEffort,
   onReasoningEffortChange,
+  onOpenAiSettings,
   onConfigureMore,
 }: UnifiedModelSelectorProps) {
+  const openSettings = onOpenAiSettings ?? onConfigureMore;
+
   const [open, setOpen] = useState(false);
-  const [activeBucket, setActiveBucket] = useState<SelectorBucket>("subscription");
+  const [activeSource, setActiveSource] = useState<SourceSectionKey>("subscription");
+  const [activeProvider, setActiveProvider] = useState<string>("anthropic");
+  const [activeSubsection, setActiveSubsection] = useState<string>("");
   const [query, setQuery] = useState("");
-  const [layout, setLayout] = useState<PopupLayout | null>(null);
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const pickerInitRef = useRef(false);
 
   const availableSet = useMemo(
     () => (availableModelIds ? new Set(availableModelIds.map((entry) => String(entry ?? "").trim()).filter(Boolean)) : null),
     [availableModelIds],
   );
-  const modelOrder = useMemo(
-    () => new Map(MODEL_REGISTRY.map((model, index) => [model.id, index])),
-    [],
-  );
+  const modelOrder = useMemo(() => createModelOrderMap(), []);
   const selectorModels = useMemo(
     () => mergeSelectorModels(availableModelIds, value, filter),
     [availableModelIds, filter, value],
   );
 
-  // Group models: bucket → provider → models
-  const grouped = useMemo(() => {
-    const byBucket = new Map<SelectorBucket, Map<string, ModelDescriptor[]>>();
-    for (const model of selectorModels) {
-      if (!matchesQuery(model, query)) continue;
-      const bucket = classifyBucket(model);
-      const sections = byBucket.get(bucket) ?? new Map<string, ModelDescriptor[]>();
-      const providerKey = model.family;
-      const list = sections.get(providerKey) ?? [];
-      list.push(model);
-      sections.set(providerKey, list);
-      byBucket.set(bucket, sections);
-    }
+  const fullTree = useMemo(
+    () => buildSourceBlocksForModels(selectorModels, modelOrder),
+    [selectorModels, modelOrder],
+  );
 
-    const orderedBuckets: SelectorBucket[] = ["subscription", "api", "local"];
-    return orderedBuckets
-      .map((bucket) => {
-        const sections = byBucket.get(bucket);
-        if (!sections?.size) return null;
-        const sortedSections = [...sections.entries()]
-          .map(([key, modelsForProvider]) => ({
-            key,
-            label: providerLabel(key),
-            models: [...modelsForProvider].sort((a, b) =>
-              (modelOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (modelOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER)
-            ),
-          }))
-          .sort((a, b) => {
-            const leftOrder = PROVIDER_ORDER.indexOf(a.key);
-            const rightOrder = PROVIDER_ORDER.indexOf(b.key);
-            const orderCompare =
-              (leftOrder === -1 ? Number.MAX_SAFE_INTEGER : leftOrder)
-              - (rightOrder === -1 ? Number.MAX_SAFE_INTEGER : rightOrder);
-            if (orderCompare !== 0) return orderCompare;
-            return a.label.localeCompare(b.label);
-          });
-        return {
-          key: bucket,
-          ...BUCKET_META[bucket],
-          sections: sortedSections,
-        } satisfies BucketGroup;
-      })
-      .filter((group): group is BucketGroup => group != null);
-  }, [modelOrder, query, selectorModels]);
+  const isSearchMode = query.trim().length > 0;
+  const searchTree = useMemo(() => {
+    const filtered = selectorModels.filter((m) => matchesQuery(m, query));
+    return buildSourceBlocksForModels(filtered, modelOrder);
+  }, [selectorModels, query, modelOrder]);
+
+  const sourceModelCounts = useMemo(() => {
+    const map = new Map<SourceSectionKey, number>();
+    for (const block of fullTree) {
+      const n = block.providers.reduce((acc, p) => acc + p.modelCount, 0);
+      map.set(block.key, n);
+    }
+    return map;
+  }, [fullTree]);
+
+  const providersInActiveSource = useMemo(() => {
+    return fullTree.find((s) => s.key === activeSource)?.providers ?? [];
+  }, [fullTree, activeSource]);
+
+  const activeProviderBlock: ModelProviderBlock | null = useMemo(() => {
+    if (!providersInActiveSource.length) return null;
+    return providersInActiveSource.find((p) => p.key === activeProvider) ?? providersInActiveSource[0] ?? null;
+  }, [providersInActiveSource, activeProvider]);
+
+  const flatModels = useMemo(() => {
+    if (isSearchMode) return flattenSourceBlocks(searchTree);
+    if (!activeProviderBlock) return [];
+    const sub =
+      activeProviderBlock.subsections.find((s) => s.key === activeSubsection) ?? activeProviderBlock.subsections[0];
+    return sub?.models ?? [];
+  }, [isSearchMode, searchTree, activeProviderBlock, activeSubsection]);
 
   const selectedModel = useMemo(
     () => resolveModelDescriptor(value) ?? (value ? createUnknownModelPlaceholder(value) : undefined),
     [value],
   );
   const reasoningTiers = selectedModel?.reasoningTiers ?? [];
-  const selectedBucket = useMemo(
-    () => grouped.find((bucket) => bucket.sections.some((section) => section.models.some((model) => model.id === selectedModel?.id)))?.key ?? grouped[0]?.key ?? "subscription",
-    [grouped, selectedModel?.id],
-  );
-  const activeGroup = grouped.find((bucket) => bucket.key === activeBucket) ?? grouped[0] ?? null;
 
-  /** Flat list of models visible in the active group, used for keyboard navigation. */
-  const flatModels = useMemo(
-    () => activeGroup?.sections.flatMap((section) => section.models) ?? [],
-    [activeGroup],
-  );
+  const selectedSource = selectedModel ? classifySourceSection(selectedModel) : null;
+  const selectedProviderKey = selectedModel?.family;
 
-  // Reset focused index when the active group, query, or open state changes.
+  useEffect(() => {
+    if (!open) {
+      pickerInitRef.current = false;
+      return;
+    }
+    if (fullTree.length === 0) return;
+    if (pickerInitRef.current) return;
+    pickerInitRef.current = true;
+    if (selectedModel && selectedSource && selectedProviderKey) {
+      const hasSource = fullTree.some((b) => b.key === selectedSource);
+      const sourceKey = hasSource ? selectedSource : fullTree[0]!.key;
+      setActiveSource(sourceKey);
+      const provs = fullTree.find((b) => b.key === sourceKey)?.providers ?? [];
+      const hasProv = provs.some((p) => p.key === selectedProviderKey);
+      const nextProvKey = hasProv ? selectedProviderKey : provs[0]?.key ?? "anthropic";
+      setActiveProvider(nextProvKey);
+      const provBlock = provs.find((p) => p.key === nextProvKey) ?? provs[0];
+      if (provBlock) {
+        const sk = subsectionKeyForModel(selectedModel, sourceKey);
+        setActiveSubsection(provBlock.subsections.some((s) => s.key === sk) ? sk : provBlock.subsections[0]?.key ?? "");
+      }
+    } else if (fullTree[0]) {
+      setActiveSource(fullTree[0].key);
+      const p0 = fullTree[0].providers[0];
+      setActiveProvider(p0?.key ?? "anthropic");
+      setActiveSubsection(p0?.subsections[0]?.key ?? "");
+    }
+  }, [open, selectedModel, selectedSource, selectedProviderKey, fullTree]);
+
+  useEffect(() => {
+    if (!providersInActiveSource.some((p) => p.key === activeProvider) && providersInActiveSource[0]) {
+      setActiveProvider(providersInActiveSource[0].key);
+    }
+  }, [activeSource, providersInActiveSource, activeProvider]);
+
+  useEffect(() => {
+    if (!activeProviderBlock) return;
+    const keys = activeProviderBlock.subsections.map((s) => s.key);
+    if (!keys.includes(activeSubsection)) {
+      setActiveSubsection(keys[0] ?? "");
+    }
+  }, [activeProviderBlock, activeSubsection]);
+
   useEffect(() => {
     setFocusedIndex(-1);
-  }, [activeBucket, query, open]);
+  }, [activeSource, activeProvider, activeSubsection, query, open, isSearchMode]);
 
   const handleSelect = useCallback(
     (modelId: string, isAvailable: boolean) => {
@@ -352,10 +355,9 @@ export function UnifiedModelSelector({
       }
       setFocusedIndex(nextIndex);
 
-      // Scroll the focused option into view.
       const panel = panelRef.current;
       if (panel) {
-        const options = panel.querySelectorAll("[role='option']");
+        const options = panel.querySelectorAll("[data-model-option='true']");
         options[nextIndex]?.scrollIntoView({ block: "nearest" });
       }
     },
@@ -383,15 +385,6 @@ export function UnifiedModelSelector({
   }, [open]);
 
   useEffect(() => {
-    setActiveBucket((current) => {
-      if (grouped.some((bucket) => bucket.key === current)) {
-        return current;
-      }
-      return selectedBucket;
-    });
-  }, [grouped, selectedBucket]);
-
-  useEffect(() => {
     if (!open) {
       setQuery("");
     }
@@ -403,260 +396,353 @@ export function UnifiedModelSelector({
     }
   }, [disabled, open]);
 
-  const recomputeLayout = useCallback(() => {
-    if (!open || !triggerRef.current || typeof window === "undefined") return;
-    const rect = triggerRef.current.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const useModal = viewportWidth < 720 || rect.width > viewportWidth - 80;
+  const stripAccentColor = activeProviderBlock
+    ? providerAccent(activeProviderBlock.key, activeProviderBlock.badgeColor)
+    : "var(--color-accent)";
 
-    if (useModal) {
-      const width = Math.min(460, viewportWidth - 24);
-      const top = Math.max(12, Math.round(viewportHeight * 0.08));
-      setLayout({
-        mode: "modal",
-        top,
-        left: Math.round((viewportWidth - width) / 2),
-        width,
-        maxHeight: Math.max(260, viewportHeight - top - 12),
-      });
-      return;
-    }
+  const renderModelRow = (model: ModelDescriptor, keyPrefix: string) => {
+    const isSelected = model.id === selectedModel?.id;
+    const isAvailable = !availableSet || availableSet.has(model.id);
+    const isFocused = focusedIndex >= 0 && flatModels[focusedIndex]?.id === model.id;
+    const isUnknown = model.sdkProvider === "unknown";
+    const accent = providerAccent(model.family, model.color);
+    const borderLeft = `3px solid ${accent}`;
+    const bgSelected = rgbaFromHex(accent, 0.1);
+    const bgFocused = isFocused && isAvailable ? rgbaFromHex(accent, 0.08) : undefined;
 
-    const width = Math.min(Math.max(rect.width + 110, 400), viewportWidth - 24);
-    const left = Math.max(12, Math.min(rect.left, viewportWidth - width - 12));
-    const estimatedHeight = Math.min(panelRef.current?.offsetHeight ?? 420, viewportHeight - 24);
-    const spaceBelow = viewportHeight - rect.bottom - 12;
-    const spaceAbove = rect.top - 12;
-    const openUpwards = spaceBelow < 300 && spaceAbove > spaceBelow;
-    const top = openUpwards
-      ? Math.max(12, rect.top - estimatedHeight - 8)
-      : Math.min(viewportHeight - estimatedHeight - 12, rect.bottom + 8);
-    const maxHeight = Math.max(240, openUpwards ? rect.top - 20 : viewportHeight - rect.bottom - 20);
-    setLayout({
-      mode: "anchored",
-      top,
-      left,
-      width,
-      maxHeight,
-    });
-  }, [open]);
+    const rowClass = cn(
+      "mx-1.5 flex w-[calc(100%-12px)] flex-col gap-1 rounded-xl px-3 py-2 text-left font-sans text-[11px] transition-[background-color,color] duration-150",
+      isAvailable ? "text-fg/90" : "text-muted-fg/22",
+      isAvailable &&
+        !isSelected &&
+        "hover:[background-color:color-mix(in_srgb,var(--model-row-accent)_5%,transparent)]",
+    );
 
-  useLayoutEffect(() => {
-    recomputeLayout();
-  }, [recomputeLayout, grouped, open, query]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = () => recomputeLayout();
-    const triggerElement = triggerRef.current;
-    const resizeObserver = typeof ResizeObserver !== "undefined" && triggerElement
-      ? new ResizeObserver(() => recomputeLayout())
-      : null;
-    if (resizeObserver && triggerElement) {
-      resizeObserver.observe(triggerElement);
-    }
-    window.addEventListener("resize", handler);
-    window.addEventListener("scroll", handler, true);
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", handler);
-      window.removeEventListener("scroll", handler, true);
+    const rowStyle: React.CSSProperties & { "--model-row-accent"?: string } = {
+      "--model-row-accent": accent,
+      borderLeft,
+      backgroundColor: isSelected
+        ? bgSelected
+        : isFocused && isAvailable
+          ? bgFocused
+          : isFocused && !isAvailable
+            ? "rgba(255,255,255,0.02)"
+            : undefined,
     };
-  }, [open, recomputeLayout]);
 
-  const panel = open && layout ? createPortal(
-    <>
-      {layout.mode === "modal" ? (
-        <div className="fixed inset-0 z-[79] bg-black/40 backdrop-blur-sm" />
-      ) : null}
-      <div
-        ref={panelRef}
-        role="presentation"
-        className={cn(
-          "fixed z-[80] overflow-hidden rounded-xl border border-white/[0.08] bg-[#1a1a1e] shadow-[var(--shadow-float)] backdrop-blur-xl outline-none",
-          layout.mode === "modal" ? "w-full" : "",
-        )}
-        style={{
-          top: layout.top,
-          left: layout.left,
-          width: layout.width,
-          maxHeight: layout.maxHeight,
-        }}
-      >
-        {/* Header: tabs + search */}
-        <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="grid grid-cols-3 gap-1.5 flex-1">
-              {(["subscription", "api", "local"] as SelectorBucket[]).map((bucketKey) => {
-                const bucket = grouped.find((entry) => entry.key === bucketKey);
-                const isActive = activeGroup?.key === bucketKey;
-                const meta = BUCKET_META[bucketKey];
-                const modelCount = bucket
-                  ? bucket.sections.reduce((count, section) => count + section.models.length, 0)
-                  : 0;
-                return (
-                  <button
-                    key={bucketKey}
-                    type="button"
-                    disabled={!bucket}
-                    className={cn(
-                      "rounded-[12px] border px-2.5 py-2 text-left transition-colors",
-                      bucket
-                        ? isActive
-                          ? "border-accent/35 bg-white/[0.06]"
-                          : "border-border/10 bg-white/[0.02] hover:border-border/20 hover:bg-white/[0.04]"
-                        : "cursor-not-allowed border-border/6 bg-white/[0.01] opacity-35",
-                    )}
-                    onClick={() => bucket && setActiveBucket(bucketKey)}
-                  >
-                    <div
-                      className="font-sans text-[9px] font-semibold uppercase tracking-[0.16em]"
-                      style={{ color: meta.badgeColor }}
-                    >
-                      {meta.label}
-                    </div>
-                    <div className="mt-1 font-sans text-[9px] text-muted-fg/42">
-                      {bucket ? `${modelCount} model${modelCount === 1 ? "" : "s"}` : "Unavailable"}
-                    </div>
-                  </button>
-                );
-              })}
+    const inner = (
+      <>
+        <div className="flex items-center gap-2">
+          <span className={cn("inline-flex flex-shrink-0 items-center justify-center", !isAvailable && "opacity-40 grayscale")}>
+            <ModelRowLogo modelFamily={model.family} cliCommand={model.cliCommand} modelId={model.id} sdkModelId={model.sdkModelId} size={12} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <div className="truncate font-medium">{model.displayName}</div>
+              {isUnknown ? (
+                <span className="inline-flex shrink-0 items-center rounded-full border border-zinc-400/25 bg-zinc-400/10 px-1.5 py-0.5 font-sans text-[8px] font-semibold uppercase tracking-[0.14em] text-zinc-300">
+                  Unknown
+                </span>
+              ) : null}
             </div>
-            {layout.mode === "modal" ? (
-              <button
-                type="button"
-                className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-border/12 text-muted-fg/55 transition-colors hover:border-border/24 hover:text-fg/80"
-                onClick={() => setOpen(false)}
-                aria-label="Close model picker"
-              >
-                <X size={12} weight="bold" />
-              </button>
-            ) : null}
+            <div className="truncate text-[9px] uppercase tracking-[0.12em] text-muted-fg/42">
+              {modelAvailabilityLabel(model, isAvailable)}
+            </div>
           </div>
-          <div className="flex items-center gap-2 rounded-[14px] border border-border/10 bg-black/10 px-2.5 py-2">
-            <MagnifyingGlass size={12} className="text-muted-fg/45" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={handleListKeyDown}
-              placeholder="Search models, ids, aliases..."
-              className="min-w-0 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/28"
-              autoFocus
-              role="combobox"
-              aria-controls="model-selector-listbox"
-              aria-expanded={true}
-              aria-activedescendant={focusedIndex >= 0 && flatModels[focusedIndex] ? `model-option-${flatModels[focusedIndex].id}` : undefined}
-            />
+          <div className="flex shrink-0 items-center gap-1.5">
+            {isAvailable ? (
+              <span className="font-sans text-[9px] font-semibold uppercase tracking-wide text-muted-fg/50">Ready</span>
+            ) : null}
+            {isSelected ? <Check size={12} weight="bold" style={{ color: accent }} /> : <span className="w-[12px]" />}
           </div>
         </div>
-
-        {/* Model list: provider sections within the active tab */}
-        {activeGroup ? (
-          <div
-            id="model-selector-listbox"
-            role="listbox"
-            className="overflow-y-auto"
-            style={{ maxHeight: layout.maxHeight - 120 }}
+        {!isAvailable && openSettings ? (
+          <button
+            type="button"
+            className="ml-7 text-left font-sans text-[10px] text-accent/70 underline-offset-2 hover:text-accent hover:underline"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              openSettings();
+            }}
           >
-            {activeGroup.sections.length > 0 ? activeGroup.sections.map((section) => (
-              <div key={`${activeGroup.key}:${section.key}`} className="border-b border-border/8 last:border-b-0">
-                <div className="px-3 pt-2.5 font-sans text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-fg/35">
-                  {section.label}
+            Not configured — open AI settings
+          </button>
+        ) : null}
+      </>
+    );
+
+    if (isAvailable) {
+      return (
+        <button
+          key={`${keyPrefix}:${model.id}`}
+          id={`model-option-${model.id}`}
+          type="button"
+          role="option"
+          data-model-option="true"
+          aria-selected={isSelected}
+          aria-disabled={false}
+          className={rowClass}
+          style={rowStyle}
+          onMouseEnter={() => {
+            const idx = flatModels.findIndex((m) => m.id === model.id);
+            if (idx >= 0) setFocusedIndex(idx);
+          }}
+          onClick={() => handleSelect(model.id, true)}
+        >
+          {inner}
+        </button>
+      );
+    }
+
+    return (
+      <div
+        key={`${keyPrefix}:${model.id}`}
+        id={`model-option-${model.id}`}
+        role="option"
+        data-model-option="true"
+        aria-selected={isSelected}
+        aria-disabled
+        className={rowClass}
+        style={rowStyle}
+        onMouseEnter={() => {
+          const idx = flatModels.findIndex((m) => m.id === model.id);
+          if (idx >= 0) setFocusedIndex(idx);
+        }}
+      >
+        {inner}
+      </div>
+    );
+  };
+
+  const listContent = (() => {
+    if (isSearchMode) {
+      if (!searchTree.length) {
+        return <div className="px-4 py-5 font-sans text-[11px] text-muted-fg/45">No models match this search.</div>;
+      }
+      return searchTree.map((sourceBlock) => (
+        <div key={sourceBlock.key} className="border-b border-border/10 last:border-b-0">
+          <div className="sticky top-0 z-[1] border-b border-white/[0.06] px-3 py-2 backdrop-blur-sm" style={{ background: "var(--gradient-panel)" }}>
+            <div className="font-sans text-[10px] font-bold uppercase tracking-[0.2em] text-fg/55">{sourceBlock.label}</div>
+          </div>
+          {sourceBlock.providers.map((prov) => (
+            <div key={`${sourceBlock.key}:${prov.key}`} className="border-b border-border/6 last:border-b-0">
+              <div className="flex items-center gap-2 px-3 pt-3">
+                <ProviderLogo family={prov.key} size={16} />
+                <span className="font-sans text-[11px] font-semibold text-fg/80">{prov.label}</span>
+                <span className="font-sans text-[9px] text-muted-fg/40">{prov.modelCount} models</span>
+              </div>
+              {prov.subsections.map((sub) => (
+                <div key={`${sourceBlock.key}:${prov.key}:${sub.key}`}>
+                  {sub.subsectionLabel || sub.label ? (
+                    <div className="px-3 pt-2 font-sans text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-fg/32">
+                      {subsectionTabTitle(sub)}
+                    </div>
+                  ) : null}
+                  <div className="py-1.5">{sub.models.map((m) => renderModelRow(m, `${sourceBlock.key}:${prov.key}`))}</div>
                 </div>
-                <div className="py-1.5">
-                  {section.models.map((model) => {
-                    const isSelected = model.id === selectedModel?.id;
-                    const isAvailable = !availableSet || availableSet.has(model.id);
-                    const isFocused = focusedIndex >= 0 && flatModels[focusedIndex]?.id === model.id;
-                    const isUnknown = model.sdkProvider === "unknown";
+              ))}
+            </div>
+          ))}
+        </div>
+      ));
+    }
+
+    if (!activeProviderBlock) {
+      return (
+        <div className="px-4 py-5 font-sans text-[11px] text-muted-fg/45">
+          No models in this category. Try another source or search.
+        </div>
+      );
+    }
+
+    if (!flatModels.length) {
+      return <div className="px-4 py-5 font-sans text-[11px] text-muted-fg/45">No models in this group.</div>;
+    }
+
+    return <div className="py-1.5">{flatModels.map((m) => renderModelRow(m, activeProviderBlock.key))}</div>;
+  })();
+
+  const panel = createPortal(
+    <AnimatePresence>
+      {open ? (
+        <>
+          <motion.div
+            key="model-picker-backdrop"
+            className="fixed inset-0 z-[79] bg-black/50 backdrop-blur-sm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            aria-hidden
+            onClick={() => setOpen(false)}
+          />
+          <div className="pointer-events-none fixed inset-0 z-[80] flex items-start justify-center pt-[12vh]">
+            <motion.div
+              key="model-picker-panel"
+              ref={panelRef}
+              role="presentation"
+              className={cn(
+                "pointer-events-auto flex w-full max-w-[520px] flex-col overflow-hidden rounded-2xl border border-[color:var(--pane-border)] shadow-[var(--shadow-float)] outline-none",
+                "max-h-[min(520px,70vh)]",
+              )}
+              style={{ background: "var(--gradient-panel)" }}
+              variants={fadeScale}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+            >
+              <div className="h-[3px] w-full shrink-0" style={{ backgroundColor: stripAccentColor }} />
+
+              <div className="shrink-0 space-y-3 px-4 pb-3 pt-4">
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1 rounded-xl border-2 border-transparent bg-black/15 px-3 py-2.5 transition-colors focus-within:border-accent/40">
+                    <div className="flex items-center gap-2">
+                      <MagnifyingGlass size={14} className="shrink-0 text-muted-fg/45" />
+                      <input
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                        onKeyDown={handleListKeyDown}
+                        placeholder="Search models, ids, aliases…"
+                        className="min-w-0 flex-1 bg-transparent font-sans text-[12px] text-fg/90 outline-none placeholder:text-muted-fg/30"
+                        autoFocus
+                        role="combobox"
+                        aria-controls="model-selector-listbox"
+                        aria-expanded={true}
+                        aria-activedescendant={
+                          focusedIndex >= 0 && flatModels[focusedIndex] ? `model-option-${flatModels[focusedIndex].id}` : undefined
+                        }
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.04] text-muted-fg/55 transition-colors hover:border-white/[0.14] hover:bg-white/[0.06] hover:text-fg/80"
+                    onClick={() => setOpen(false)}
+                    aria-label="Close model picker"
+                  >
+                    <X size={14} weight="bold" />
+                  </button>
+                </div>
+
+                <div
+                  className={cn(
+                    "flex gap-0 rounded-lg border border-white/[0.06] bg-black/20 p-0.5",
+                    isSearchMode && "opacity-45",
+                  )}
+                >
+                  {SOURCE_KEYS.map((key) => {
+                    const count = sourceModelCounts.get(key) ?? 0;
+                    const segActive = activeSource === key && !isSearchMode;
+                    const empty = count === 0;
                     return (
                       <button
-                        key={model.id}
-                        id={`model-option-${model.id}`}
+                        key={key}
                         type="button"
-                        role="option"
-                        aria-selected={isSelected}
-                        aria-disabled={!isAvailable}
+                        disabled={empty || isSearchMode}
+                        title={empty ? `No ${sourceSectionLabel(key).toLowerCase()} models` : undefined}
                         className={cn(
-                          "mx-1.5 flex w-[calc(100%-12px)] items-center gap-2 rounded-[12px] px-3 py-2 text-left font-sans text-[11px] transition-colors",
-                          isSelected
-                            ? "bg-accent/10 text-fg"
-                            : isAvailable
-                              ? "text-fg/72 hover:bg-border/8 hover:text-fg/92"
-                              : "cursor-not-allowed text-muted-fg/28",
-                          isFocused && "ring-1 ring-accent/40 bg-border/8",
+                          "flex-1 py-1.5 px-3 text-center font-sans text-[10px] font-semibold uppercase tracking-wide transition-colors",
+                          isSearchMode && "cursor-not-allowed",
+                          !isSearchMode && segActive && "rounded-md bg-accent/15 text-fg shadow-[inset_0_-2px_0_0_var(--color-accent)]",
+                          !isSearchMode && !segActive && !empty && "text-muted-fg/45 hover:text-fg/60",
+                          !isSearchMode && !segActive && empty && "cursor-not-allowed text-muted-fg/25",
                         )}
-                        onClick={() => handleSelect(model.id, isAvailable)}
-                        onMouseEnter={() => {
-                          const idx = flatModels.findIndex((m) => m.id === model.id);
-                          if (idx >= 0) setFocusedIndex(idx);
+                        onClick={() => {
+                          if (isSearchMode) return;
+                          setActiveSource(key);
                         }}
                       >
-                        <span className={cn("inline-flex flex-shrink-0 items-center justify-center", !isAvailable && "opacity-45")}>
-                          <ModelGlyph model={model} size={13} />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            <div className="truncate">{model.displayName}</div>
-                            {isUnknown ? (
-                              <span
-                                className="inline-flex shrink-0 items-center rounded-full border border-zinc-400/25 bg-zinc-400/10 px-1.5 py-0.5 font-sans text-[8px] font-semibold uppercase tracking-[0.14em] text-zinc-300"
-                              >
-                                Unknown
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="truncate text-[9px] uppercase tracking-[0.12em] text-muted-fg/35">
-                            {modelAvailabilityLabel(model, isAvailable)}
-                          </div>
-                        </div>
-                        {isSelected ? (
-                          <Check size={11} weight="bold" className="flex-shrink-0 text-accent" />
-                        ) : (
-                          <span className="w-[11px]" />
-                        )}
+                        {sourceSectionLabel(key)}
                       </button>
                     );
                   })}
                 </div>
-              </div>
-            )) : (
-              <div className="px-4 py-5 font-sans text-[11px] text-muted-fg/45">
-                No models match this search.
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="px-4 py-5 font-sans text-[11px] text-muted-fg/45">
-            No models available in this category.
-          </div>
-        )}
 
-        {onConfigureMore ? (
-          <div className="border-t border-border/12 px-3 py-2">
-            <button
-              type="button"
-              className="font-sans text-[10px] text-accent/60 hover:text-accent"
-              onClick={() => {
-                setOpen(false);
-                onConfigureMore();
-              }}
-            >
-              + Configure more models...
-            </button>
+                {!isSearchMode ? (
+                  <div className="flex gap-2 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {providersInActiveSource.map((prov) => {
+                      const isProvActive = activeProviderBlock?.key === prov.key;
+                      const fill = providerAccent(prov.key, prov.badgeColor);
+                      return (
+                        <button
+                          key={prov.key}
+                          type="button"
+                          className={cn(
+                            "flex shrink-0 items-center gap-2 rounded-xl py-2 pl-3 pr-3 text-left transition-colors",
+                            isProvActive
+                              ? "text-white shadow-md"
+                              : "border border-white/[0.08] bg-white/[0.04] text-fg/75 hover:border-white/[0.12] hover:bg-white/[0.06]",
+                          )}
+                          style={isProvActive ? { backgroundColor: fill } : undefined}
+                          onClick={() => setActiveProvider(prov.key)}
+                        >
+                          <ProviderLogo family={prov.key} size={18} />
+                          <span className="font-sans text-[11px] font-semibold">{prov.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="font-sans text-[10px] font-medium uppercase tracking-wide text-muted-fg/50">Search results (all sources)</div>
+                )}
+
+                {!isSearchMode && activeProviderBlock && activeProviderBlock.subsections.length > 1 ? (
+                  <div className="flex gap-1 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {activeProviderBlock.subsections.map((sub) => {
+                      const tabActive = activeSubsection === sub.key;
+                      const count = sub.models.length;
+                      return (
+                        <button
+                          key={sub.key}
+                          type="button"
+                          className={cn(
+                            "shrink-0 rounded-full px-2.5 py-1 font-sans text-[10px] font-medium transition-colors",
+                            tabActive ? "bg-white/[0.08] text-fg" : "text-muted-fg/40 hover:text-fg/60",
+                          )}
+                          onClick={() => setActiveSubsection(sub.key)}
+                        >
+                          {subsectionTabTitle(sub)} ({count})
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+
+              <div id="model-selector-listbox" role="listbox" className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1">
+                {listContent}
+              </div>
+
+              {openSettings ? (
+                <div
+                  className="shrink-0 px-4 py-2.5"
+                  style={{ borderTop: `1px solid color-mix(in srgb, ${stripAccentColor} 15%, transparent)` }}
+                >
+                  <button
+                    type="button"
+                    className="font-sans text-[10px] text-accent/65 hover:text-accent"
+                    onClick={() => {
+                      setOpen(false);
+                      openSettings();
+                    }}
+                  >
+                    Open AI settings…
+                  </button>
+                </div>
+              ) : null}
+            </motion.div>
           </div>
-        ) : null}
-      </div>
-    </>,
+        </>
+      ) : null}
+    </AnimatePresence>,
     document.body,
-  ) : null;
+  );
 
   return (
     <div className={cn("flex max-w-full flex-wrap items-center gap-1.5", className)}>
       <div ref={containerRef} className="relative min-w-0">
         <button
-          ref={triggerRef}
           type="button"
           disabled={disabled}
           onClick={() => {
@@ -670,11 +756,19 @@ export function UnifiedModelSelector({
             disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.08] hover:bg-white/[0.04]",
           )}
           aria-label="Select model"
-          aria-haspopup="dialog"
+          aria-haspopup="listbox"
           aria-expanded={open}
         >
-          {selectedModel ? <ModelGlyph model={selectedModel} size={14} /> : null}
-          <span className={cn("flex-1 truncate text-left", !selectedModel && !value && "text-muted-fg/40")}>
+          {selectedModel ? (
+            <ModelRowLogo
+              modelFamily={selectedModel.family}
+              cliCommand={selectedModel.cliCommand}
+              modelId={selectedModel.id}
+              sdkModelId={selectedModel.sdkModelId}
+              size={14}
+            />
+          ) : null}
+          <span className={cn("min-w-0 flex-1 truncate text-left", !selectedModel && !value && "text-muted-fg/40")}>
             {selectedModel?.displayName ?? (value || "Select model")}
           </span>
           <CaretDown

@@ -4,6 +4,8 @@ import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
   type AgentChatClaudePermissionMode,
+  type AgentChatCursorConfigOption,
+  type AgentChatCursorModeSnapshot,
   type AgentChatCodexApprovalPolicy,
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
@@ -130,6 +132,30 @@ const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode;
   { value: "full-auto", label: "Full auto" },
 ];
 
+const CURSOR_MODE_LABELS: Record<string, string> = {
+  agent: "Agent",
+  default: "Agent",
+  ask: "Ask",
+  plan: "Plan",
+  debug: "Debug",
+};
+
+function cursorModeLabel(modeId: string): string {
+  const normalized = modeId.trim().toLowerCase();
+  if (!normalized.length) return "Agent";
+  if (CURSOR_MODE_LABELS[normalized]) return CURSOR_MODE_LABELS[normalized];
+  return normalized
+    .split(/[-_/]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
+  if (!snapshot?.configOptions?.length) return null;
+  return snapshot.configOptions.find((option) => option.id === snapshot.modeConfigId || option.category === "mode") ?? null;
+}
+
 /** Inline display of a single pending (queued) steer message with cancel and edit controls. */
 function PendingSteerItem({
   steer,
@@ -251,6 +277,7 @@ export function AgentChatComposer({
   draft,
   attachments,
   pendingInput,
+  approvalResponding,
   turnActive,
   sendOnEnter,
   busy,
@@ -261,6 +288,7 @@ export function AgentChatComposer({
   codexSandbox,
   codexConfigSource,
   unifiedPermissionMode,
+  cursorModeSnapshot,
   executionMode,
   computerUsePolicy,
   computerUseSnapshot,
@@ -289,6 +317,8 @@ export function AgentChatComposer({
   onCodexSandboxChange,
   onCodexConfigSourceChange,
   onUnifiedPermissionModeChange,
+  onCursorModeChange,
+  onCursorConfigChange,
   includeProjectDocs,
   onIncludeProjectDocsChange,
   onComputerUsePolicyChange,
@@ -300,6 +330,7 @@ export function AgentChatComposer({
   pendingSteers = [],
   onCancelSteer,
   onEditSteer,
+  onOpenAiSettings,
 }: {
   surfaceMode?: ChatSurfaceMode;
   sdkSlashCommands?: AgentChatSlashCommand[];
@@ -309,6 +340,7 @@ export function AgentChatComposer({
   draft: string;
   attachments: AgentChatFileRef[];
   pendingInput: PendingInputRequest | null;
+  approvalResponding?: boolean;
   turnActive: boolean;
   sendOnEnter: boolean;
   busy: boolean;
@@ -319,6 +351,7 @@ export function AgentChatComposer({
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
   computerUsePolicy: ComputerUsePolicy;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
@@ -351,6 +384,8 @@ export function AgentChatComposer({
   onCodexSandboxChange?: (sandbox: AgentChatCodexSandbox) => void;
   onCodexConfigSourceChange?: (source: AgentChatCodexConfigSource) => void;
   onUnifiedPermissionModeChange?: (mode: AgentChatUnifiedPermissionMode) => void;
+  onCursorModeChange?: (modeId: string) => void;
+  onCursorConfigChange?: (configId: string, value: string | boolean) => void;
   includeProjectDocs?: boolean;
   onIncludeProjectDocsChange?: (checked: boolean) => void;
   onComputerUsePolicyChange: (policy: ComputerUsePolicy) => void;
@@ -362,6 +397,7 @@ export function AgentChatComposer({
   pendingSteers?: Array<{ steerId: string; text: string }>;
   onCancelSteer?: (steerId: string) => void;
   onEditSteer?: (steerId: string, text: string) => void;
+  onOpenAiSettings?: () => void;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -495,8 +531,8 @@ export function AgentChatComposer({
     // Local-only commands handled client-side
     if (cmd.command === "/clear" && onClearEvents) { onClearEvents(); onDraftChange(""); return; }
     // SDK and all other commands: set as draft text to be sent to the agent
-    const hint = cmd.argumentHint ? ` ` : " ";
-    onDraftChange(`${cmd.command}${hint}`);
+    const suffix = cmd.argumentHint ? ` ${cmd.argumentHint}` : "";
+    onDraftChange(`${cmd.command}${suffix} `);
   };
 
   const nativeControlsDisabled = permissionModeLocked;
@@ -684,9 +720,103 @@ export function AgentChatComposer({
       );
     }
 
+    const cursorModeOption = resolveCursorModeOption(cursorModeSnapshot);
+    const cursorExtraOptions = (cursorModeSnapshot?.configOptions ?? []).filter((option) => {
+      if (option.id === cursorModeSnapshot?.modelConfigId) return false;
+      if (option.id === cursorModeOption?.id) return false;
+      return true;
+    });
+
+    if (sessionProvider === "cursor" && (cursorModeSnapshot?.availableModeIds?.length || cursorModeOption)) {
+      const modeValue = typeof cursorModeOption?.currentValue === "string"
+        ? cursorModeOption.currentValue
+        : cursorModeSnapshot?.currentModeId ?? "";
+      const modeChoices = cursorModeOption?.options?.length
+        ? cursorModeOption.options.map((option) => ({ value: option.value, label: option.label }))
+        : (cursorModeSnapshot?.availableModeIds ?? []).map((modeId) => ({
+            value: modeId,
+            label: cursorModeLabel(modeId),
+          }));
+      return (
+        <div className="flex flex-wrap items-center gap-2">
+          {modeChoices.length ? (
+            <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
+              <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">Mode</span>
+              <select
+                value={modeValue}
+                disabled={nativeControlsDisabled || !onCursorModeChange}
+                onChange={(event) => onCursorModeChange?.(event.target.value)}
+                className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
+              >
+                {modeChoices.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {cursorExtraOptions.map((option) => {
+            if (option.type === "boolean") {
+              const active = option.currentValue === true;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  disabled={nativeControlsDisabled || !onCursorConfigChange}
+                  onClick={() => onCursorConfigChange?.(option.id, !active)}
+                  className={cn(
+                    "inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 font-sans text-[11px] transition-colors",
+                    active
+                      ? "border-emerald-500/24 bg-emerald-500/[0.10] text-emerald-100/88"
+                      : "border-white/[0.06] bg-[#1a1a22] text-fg/72",
+                    nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:border-white/[0.1] hover:text-fg/86",
+                  )}
+                  title={option.description ?? option.name}
+                  aria-pressed={active}
+                >
+                  <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/45">
+                    {active ? "On" : "Off"}
+                  </span>
+                  <span>{option.name}</span>
+                </button>
+              );
+            }
+
+            const choices = option.options ?? [];
+            if (!choices.length) return null;
+            return (
+              <label
+                key={option.id}
+                className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5"
+                title={option.description ?? option.name}
+              >
+                <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">
+                  {option.name}
+                </span>
+                <select
+                  value={typeof option.currentValue === "string" ? option.currentValue : ""}
+                  disabled={nativeControlsDisabled || !onCursorConfigChange}
+                  onChange={(event) => onCursorConfigChange?.(option.id, event.target.value)}
+                  className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
+                >
+                  {choices.map((choice) => (
+                    <option key={`${option.id}:${choice.value}`} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            );
+          })}
+        </div>
+      );
+    }
+
+    const runtimeLabel = sessionProvider === "cursor" ? "Cursor" : "ADE";
     return (
       <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
-        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">ADE</span>
+        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>
         <select
           value={unifiedPermissionMode}
           disabled={nativeControlsDisabled || !onUnifiedPermissionModeChange}
@@ -715,7 +845,10 @@ export function AgentChatComposer({
     onClaudeModeChange,
     onClaudePermissionModeChange,
     onInteractionModeChange,
+    onCursorConfigChange,
+    onCursorModeChange,
     onUnifiedPermissionModeChange,
+    cursorModeSnapshot,
     sessionProvider,
     unifiedPermissionMode,
   ]);
@@ -824,8 +957,8 @@ export function AgentChatComposer({
               {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent has prepared a plan."}
             </div>
             <div className="flex items-center gap-1.5">
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-emerald-400/30 bg-emerald-500/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-emerald-200/80 transition-colors hover:bg-emerald-500/20" onClick={() => onApproval("accept")}>Approve &amp; Implement</button>
-              <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Reject &amp; Revise</button>
+              <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-emerald-400/30 bg-emerald-500/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-emerald-200/80 transition-colors hover:bg-emerald-500/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : "Approve & Implement"}</button>
+              <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Reject &amp; Revise</button>
             </div>
           </div>
         ) : (
@@ -843,9 +976,9 @@ export function AgentChatComposer({
             </div>
             {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
               <div className="flex items-center gap-1.5">
-                <button type="button" className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20" onClick={() => onApproval("accept")}>Accept</button>
-                <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10" onClick={() => onApproval("accept_for_session")}>Accept all</button>
-                <button type="button" className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10" onClick={() => onApproval("decline")}>Decline</button>
+                <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : "Accept"}</button>
+                <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>Accept all</button>
+                <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
               </div>
             ) : (
               <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
@@ -993,6 +1126,7 @@ export function AgentChatComposer({
                 showReasoning
                 reasoningEffort={reasoningEffort}
                 onReasoningEffortChange={onReasoningEffortChange}
+                onOpenAiSettings={onOpenAiSettings}
               />
             </div>
           </div>
