@@ -3,9 +3,6 @@ title: "AI Providers"
 description: "Configure Anthropic, OpenAI, OpenRouter, and local models in ADE. Manage API keys, set budget caps, and control which model each agent uses."
 icon: "microchip"
 ---
-
-<Info>**Screenshot: Settings → AI Providers panel showing four provider cards (Anthropic, OpenAI, OpenRouter, Local Models), each with a connection status indicator, a masked API key field, and a "Test Connection" button. Anthropic should show "Connected" in green.</Info>
-
 ## Supported Providers
 
 ADE supports four AI provider categories. You can configure any combination — agents can use different providers depending on the task.
@@ -185,9 +182,6 @@ Local models have significantly smaller context windows than cloud models (typic
 ---
 
 ## Model Reference
-
-<Info>**Screenshot: The model selection dropdown in the Mission creation dialog, showing models grouped by provider (Anthropic, OpenAI, OpenRouter, Local) with context window sizes and cost-per-token indicators beside each model name.</Info>
-
 ### Anthropic (Claude)
 
 | Model | Context Window | Best For |
@@ -288,9 +282,6 @@ Some providers handle large contexts better than others. If you notice quality d
 ---
 
 ## API Key Security
-
-<Info>**Screenshot: The API key field in Settings → AI Providers showing a masked key ("sk-ant-••••••••••••1234") with a "Rotate" button and a "Revoke" button, alongside a small info badge reading "Stored in local.secret.yaml — never committed to git."</Info>
-
 API keys are handled according to ADE's trust boundary model:
 
 - **Storage**: Keys live only in `local.secret.yaml` on disk. ADE reads them into main process memory at startup.

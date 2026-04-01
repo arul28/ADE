@@ -49,6 +49,7 @@ const CtoPage = React.lazy(() =>
 );
 
 import { useAppStore } from "../../state/appStore";
+import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 
 const StartupSplashScreen = (
   <div className="flex h-full w-full flex-col items-center justify-center relative overflow-hidden" style={{ background: "var(--color-bg)" }}>
@@ -178,6 +179,14 @@ function ShellLayout() {
 
 export function App() {
   const theme = useAppStore((s) => s.theme);
+
+  React.useEffect(() => {
+    const w = window as Window & { __ADE_GET_DIRTY_FILE_TEXT__?: (p: string) => string | undefined };
+    w.__ADE_GET_DIRTY_FILE_TEXT__ = (absPath: string) => getDirtyFileTextForWindow(absPath);
+    return () => {
+      delete w.__ADE_GET_DIRTY_FILE_TEXT__;
+    };
+  }, []);
 
   React.useEffect(() => {
     // Keep theme consistent for portals mounted outside the app root.

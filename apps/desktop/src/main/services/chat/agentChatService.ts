@@ -41,7 +41,14 @@ import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
-import { fileSizeOrZero, isEnoentError, nowIso, readFileWithinRootSecure, resolvePathWithinRoot } from "../shared/utils";
+import {
+  fileSizeOrZero,
+  hasNullByte,
+  isEnoentError,
+  nowIso,
+  readFileWithinRootSecure,
+  resolvePathWithinRoot,
+} from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import {
   createDefaultComputerUsePolicy,
@@ -81,6 +88,9 @@ import type {
   AgentChatSurface,
   AgentChatSteerArgs,
   AgentChatSendArgs,
+  AgentChatCursorConfigOption,
+  AgentChatCursorConfigValue,
+  AgentChatCursorModeSnapshot,
   AgentChatUnifiedPermissionMode,
   PendingInputQuestion,
   PendingInputRequest,
@@ -98,7 +108,9 @@ import {
   getAvailableModels as getRegistryModels,
   listModelDescriptorsForProvider,
   MODEL_REGISTRY,
+  pickDefaultCursorDescriptorFromCliList,
   resolveModelAlias,
+  resolveModelDescriptorForProvider,
   resolveProviderGroupForModel,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
@@ -133,6 +145,23 @@ import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUs
 import { createProofObserver } from "../computerUse/proofObserver";
 import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
 import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "../orchestrator/unifiedOrchestratorAdapter";
+import type { McpServer, PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
+import type { ExternalMcpServerConfig } from "../../../shared/types/externalMcp";
+import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
+import { externalMcpConfigsToAcpStdio } from "./cursorAcpMcp";
+import {
+  acquireCursorAcpConnection,
+  releaseCursorAcpConnection,
+  type CursorAcpLaunchSettings,
+  type CursorAcpPooled,
+} from "./cursorAcpPool";
+import { discoverCursorCliModelDescriptors } from "./cursorModelsDiscovery";
+import {
+  mapAcpSessionNotificationToChatEvents,
+  mapStopReasonToTerminalEvents,
+  parseAcpTerminalIdFromCommandItemId,
+} from "./cursorAcpEventMapper";
+import { readCursorAcpConfigSnapshot } from "./cursorAcpConfigState";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { MemoryWriteEvent, TurnMemoryPolicyState } from "../ai/tools/memoryTools";
@@ -177,6 +206,9 @@ type PersistedChatState = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  cursorModeSnapshot?: AgentChatCursorModeSnapshot;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
   permissionMode?: AgentChatSession["permissionMode"];
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
@@ -186,6 +218,8 @@ type PersistedChatState = {
   computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   threadId?: string;
+  /** Cursor ACP session id for resume across app restarts (best-effort). */
+  acpSessionId?: string;
   sdkSessionId?: string;
   messages?: PersistedClaudeMessage[];
   recentConversationEntries?: PersistedRecentConversationEntry[];
@@ -297,7 +331,33 @@ type UnifiedRuntime = {
   modelDescriptor: ModelDescriptor;
 };
 
-type ChatRuntime = CodexRuntime | ClaudeRuntime | UnifiedRuntime;
+type CursorPermissionWaiter = {
+  options: PermissionOption[];
+  resolve: (value: RequestPermissionResponse) => void;
+};
+
+type CursorRuntime = {
+  kind: "cursor";
+  poolKey: string;
+  pooled: CursorAcpPooled | null;
+  acpSessionId: string | null;
+  activeTurnId: string | null;
+  busy: boolean;
+  interrupted: boolean;
+  modelSdkId: string;
+  modelConfigId: string | null;
+  currentModelId: string | null;
+  availableModelIds: string[];
+  pendingSteers: Array<{ steerId: string; text: string }>;
+  permissionWaiters: Map<string, CursorPermissionWaiter>;
+  modeConfigId: string | null;
+  currentModeId: string | null;
+  availableModeIds: string[];
+  defaultModeId: string | null;
+  configOptions: AgentChatCursorConfigOption[];
+};
+
+type ChatRuntime = CodexRuntime | ClaudeRuntime | UnifiedRuntime | CursorRuntime;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -446,9 +506,26 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   if (managed.closed) return { ready: false, reason: "Session is disposed" };
   if (!managed.runtime) return { ready: false, reason: "No runtime initialized" };
   const rt = managed.runtime;
-  if ((rt.kind === "unified" || rt.kind === "claude") && rt.busy) return { ready: false, reason: "Turn already active" };
+  if ((rt.kind === "unified" || rt.kind === "claude" || rt.kind === "cursor") && rt.busy) {
+    return { ready: false, reason: "Turn already active" };
+  }
   if (rt.kind === "unified" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
+  if (rt.kind === "cursor" && rt.permissionWaiters.size > 0) {
+    return { ready: false, reason: "Pending permissions not resolved" };
+  }
   return { ready: true };
+}
+
+function hasLivePendingInput(managed: ManagedChatSession | null | undefined): boolean {
+  if (!managed) return false;
+  if (managed.localPendingInputs.size > 0) return true;
+  const runtime = managed.runtime;
+  if (!runtime) return false;
+  if (runtime.kind === "codex") return runtime.approvals.size > 0;
+  if (runtime.kind === "claude") return runtime.approvals.size > 0;
+  if (runtime.kind === "unified") return runtime.pendingApprovals.size > 0;
+  if (runtime.kind === "cursor") return runtime.permissionWaiters.size > 0;
+  return false;
 }
 
 function isSignalPermissionError(error: unknown): boolean {
@@ -666,6 +743,8 @@ type PreparedSendMessage = {
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
   onDispatched?: () => void;
+  turnId?: string;
+  optimisticCursorTurnStart?: boolean;
 };
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
@@ -692,9 +771,11 @@ const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
 const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
 const DEFAULT_UNIFIED_DESCRIPTOR = getDefaultModelDescriptor("unified");
+const DEFAULT_CURSOR_DESCRIPTOR = getDefaultModelDescriptor("cursor");
 const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.sdkModelId ?? "gpt-5.4";
 const DEFAULT_CLAUDE_MODEL = DEFAULT_CLAUDE_DESCRIPTOR?.sdkModelId ?? DEFAULT_CLAUDE_DESCRIPTOR?.shortId ?? "sonnet";
 const DEFAULT_UNIFIED_MODEL_ID = DEFAULT_UNIFIED_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-4-6-api";
+const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.sdkModelId ?? "auto";
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5-api";
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
@@ -788,6 +869,21 @@ function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescript
     ) ?? null;
   }
 
+  if (session.provider === "cursor") {
+    if (session.modelId) {
+      const byStoredId = getModelById(session.modelId) ?? resolveModelAlias(session.modelId);
+      if (byStoredId) return byStoredId;
+    }
+    if (session.model) {
+      return (
+        getModelById(`cursor/${session.model}`)
+        ?? resolveModelDescriptorForProvider(session.model, "cursor")
+        ?? null
+      );
+    }
+    return null;
+  }
+
   return getModelById(session.model) ?? resolveModelAlias(session.model) ?? null;
 }
 
@@ -861,18 +957,29 @@ function describeCodexModel(value: string): string | null {
   return null;
 }
 
-function isChatToolType(toolType: TerminalToolType | null | undefined): toolType is "codex-chat" | "claude-chat" | "ai-chat" {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat";
+function isChatToolType(
+  toolType: TerminalToolType | null | undefined,
+): toolType is "codex-chat" | "claude-chat" | "ai-chat" | "cursor" {
+  return (
+    toolType === "codex-chat"
+    || toolType === "claude-chat"
+    || toolType === "ai-chat"
+    || toolType === "cursor"
+  );
 }
 
 function providerFromToolType(toolType: TerminalToolType | null | undefined): AgentChatProvider {
   if (toolType === "ai-chat") return "unified";
-  return toolType === "claude-chat" ? "claude" : "codex";
+  if (toolType === "claude-chat") return "claude";
+  if (toolType === "cursor") return "cursor";
+  return "codex";
 }
 
-function toolTypeFromProvider(provider: AgentChatProvider): "codex-chat" | "claude-chat" | "ai-chat" {
+function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
   if (provider === "unified") return "ai-chat";
-  return provider === "claude" ? "claude-chat" : "codex-chat";
+  if (provider === "claude") return "claude-chat";
+  if (provider === "cursor") return "cursor";
+  return "codex-chat";
 }
 
 function mapTerminalStatusToChatStatus(status: TerminalSessionStatus): AgentChatSession["status"] {
@@ -982,10 +1089,11 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
 function defaultChatSessionTitle(provider: AgentChatProvider): string {
   if (provider === "codex") return "Codex Chat";
   if (provider === "claude") return "Claude Chat";
+  if (provider === "cursor") return "Cursor Chat";
   return "AI Chat";
 }
 
-const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat"]);
+const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat"]);
 
 function hasCustomChatSessionTitle(title: string | null | undefined, provider: AgentChatProvider): boolean {
   const normalized = String(title ?? "").trim();
@@ -995,6 +1103,7 @@ function hasCustomChatSessionTitle(title: string | null | undefined, provider: A
 function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string): string {
   if (provider === "codex") return "chat:codex";
   if (provider === "unified") return `chat:unified:${sessionId}`;
+  if (provider === "cursor") return `chat:cursor:${sessionId}`;
   return `chat:claude:${sessionId}`;
 }
 
@@ -1054,6 +1163,7 @@ function resolveModelIdFromStoredValue(
     if (providerHint === "codex" && !(aliasMatch.family === "openai" && aliasMatch.isCliWrapped)) return undefined;
     if (providerHint === "claude" && !(aliasMatch.family === "anthropic" && aliasMatch.isCliWrapped)) return undefined;
     if (providerHint === "unified" && aliasMatch.isCliWrapped) return undefined;
+    if (providerHint === "cursor" && aliasMatch.family !== "cursor") return undefined;
     return aliasMatch.id;
   }
 
@@ -1072,6 +1182,8 @@ function resolveModelIdFromStoredValue(
     preferred = matches.find((entry) => entry.isCliWrapped && entry.family === "anthropic");
   } else if (providerHint === "unified") {
     preferred = matches.find((entry) => !entry.isCliWrapped);
+  } else if (providerHint === "cursor") {
+    preferred = matches.find((entry) => entry.isCliWrapped && entry.family === "cursor");
   }
 
   return preferred?.id ?? matches[0]?.id;
@@ -1122,6 +1234,7 @@ function resolveClaudeTurnModelPayload(
 function fallbackModelForProvider(provider: AgentChatProvider): string {
   if (provider === "codex") return DEFAULT_CODEX_MODEL;
   if (provider === "claude") return DEFAULT_CLAUDE_MODEL;
+  if (provider === "cursor") return DEFAULT_CURSOR_MODEL;
   return DEFAULT_UNIFIED_MODEL_ID;
 }
 
@@ -1692,6 +1805,125 @@ function resolveSessionUnifiedPermissionMode(
     ?? fallback;
 }
 
+function resolveCursorSessionModeId(
+  session: Pick<AgentChatSession, "cursorModeId" | "unifiedPermissionMode" | "permissionMode">,
+): string | null {
+  const explicit = typeof session.cursorModeId === "string" ? session.cursorModeId.trim() : "";
+  if (explicit.length) {
+    return explicit === "agent" || explicit === "default" ? null : explicit;
+  }
+  return resolveSessionUnifiedPermissionMode(session, "edit") === "plan" ? "plan" : null;
+}
+
+function resolveCursorAcpLaunchSettings(
+  session: Pick<AgentChatSession, "cursorModeId" | "unifiedPermissionMode" | "permissionMode">,
+): CursorAcpLaunchSettings {
+  const explicitCursorModeId = typeof session.cursorModeId === "string"
+    ? session.cursorModeId.trim().toLowerCase()
+    : "";
+  if (!explicitCursorModeId.length) {
+    const legacyMode = resolveSessionUnifiedPermissionMode(session, "edit");
+    if (legacyMode === "full-auto") {
+      return {
+        mode: null,
+        sandbox: "disabled",
+        force: true,
+        approveMcps: true,
+      };
+    }
+  }
+  return {
+    mode: (() => {
+      const desiredModeId = resolveCursorSessionModeId(session);
+      return desiredModeId === "ask" || desiredModeId === "plan" ? desiredModeId : null;
+    })(),
+    sandbox: "enabled",
+    force: false,
+    approveMcps: false,
+  };
+}
+
+function normalizeCursorConfigValueRecord(
+  value: unknown,
+): Record<string, AgentChatCursorConfigValue> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const normalized: Record<string, AgentChatCursorConfigValue> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (!key.length) continue;
+    if (typeof rawValue === "boolean") {
+      normalized[key] = rawValue;
+      continue;
+    }
+    if (typeof rawValue === "string") {
+      const trimmed = rawValue.trim();
+      if (trimmed.length) normalized[key] = trimmed;
+    }
+  }
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function buildCursorModeSnapshotFromRuntime(runtime: CursorRuntime): AgentChatCursorModeSnapshot | undefined {
+  const hasData =
+    Boolean(runtime.modeConfigId)
+    || Boolean(runtime.currentModeId)
+    || runtime.availableModeIds.length > 0
+    || Boolean(runtime.modelConfigId)
+    || Boolean(runtime.currentModelId)
+    || runtime.availableModelIds.length > 0
+    || runtime.configOptions.length > 0;
+  if (!hasData) return undefined;
+  return {
+    ...(runtime.modeConfigId ? { modeConfigId: runtime.modeConfigId } : {}),
+    currentModeId: runtime.currentModeId,
+    availableModeIds: runtime.availableModeIds,
+    ...(runtime.modelConfigId ? { modelConfigId: runtime.modelConfigId } : {}),
+    ...(runtime.currentModelId ? { currentModelId: runtime.currentModelId } : {}),
+    ...(runtime.availableModelIds.length ? { availableModelIds: runtime.availableModelIds } : {}),
+    ...(runtime.configOptions.length ? { configOptions: runtime.configOptions } : {}),
+  };
+}
+
+function syncCursorModeSnapshot(managed: ManagedChatSession, runtime: CursorRuntime): void {
+  const snapshot = buildCursorModeSnapshotFromRuntime(runtime);
+  if (snapshot) {
+    managed.session.cursorModeSnapshot = snapshot;
+    return;
+  }
+  delete managed.session.cursorModeSnapshot;
+}
+
+function resolveCursorRuntimeModelSdkId(
+  session: Pick<AgentChatSession, "model" | "modelId">,
+): string {
+  const byModelId = session.modelId ? getModelById(session.modelId) ?? resolveModelAlias(session.modelId) : null;
+  if (byModelId?.family === "cursor") {
+    return byModelId.sdkModelId;
+  }
+
+  const rawModel = String(session.model ?? "").trim();
+  if (rawModel.length) {
+    const resolved = getModelById(`cursor/${rawModel}`) ?? resolveModelDescriptorForProvider(rawModel, "cursor");
+    if (resolved?.family === "cursor") {
+      return resolved.sdkModelId;
+    }
+  }
+
+  return DEFAULT_CURSOR_MODEL;
+}
+
+function normalizeCursorReportedModelId(
+  modelId: string | null | undefined,
+  availableModelIds: readonly string[] = [],
+): string | null {
+  const trimmed = String(modelId ?? "").trim();
+  if (!trimmed.length) return null;
+  const looksLikeSdkModelId = /^[\w.-]+$/i.test(trimmed);
+  if (availableModelIds.includes(trimmed) && looksLikeSdkModelId) return trimmed;
+  const descriptor = getModelById(`cursor/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "cursor");
+  return descriptor?.family === "cursor" ? descriptor.sdkModelId : null;
+}
+
 function normalizeSessionNativePermissionControls(
   session: Pick<
     AgentChatSession,
@@ -1811,7 +2043,7 @@ function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefin
 }
 
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
-  return provider === "codex" || provider === "claude" ? "full_mcp" : "fallback";
+  return provider === "codex" || provider === "claude" || provider === "cursor" ? "full_mcp" : "fallback";
 }
 
 function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
@@ -1867,6 +2099,8 @@ export function createAgentChatService(args: {
   appVersion: string;
   onEvent?: (event: AgentChatEventEnvelope) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
+  getExternalMcpConfigs: () => ExternalMcpServerConfig[];
+  getDirtyFileTextForPath: (absPath: string) => string | undefined | Promise<string | undefined>;
 }) {
   const {
     projectRoot,
@@ -1897,8 +2131,17 @@ export function createAgentChatService(args: {
     logger,
     appVersion,
     onEvent,
-    onSessionEnded
+    onSessionEnded,
+    getExternalMcpConfigs,
+    getDirtyFileTextForPath,
   } = args;
+
+  if (!getExternalMcpConfigs) {
+    throw new Error("createAgentChatService: getExternalMcpConfigs is required");
+  }
+  if (!getDirtyFileTextForPath) {
+    throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
+  }
 
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
 
@@ -1926,6 +2169,8 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  const cursorAcpSessionOwners = new Map<string, ManagedChatSession>();
+  const cursorAcpBridgeWired = new WeakSet<CursorAcpPooled>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
   const AUTO_MEMORY_CATEGORY_ALLOWLIST = new Set([
@@ -1986,6 +2231,7 @@ export function createAgentChatService(args: {
   const CLAUDE_MUTATING_TOOL_RE = /\b(?:bash|write|edit|multiedit|notebookedit)\b/;
   const CHAT_MEMORY_GUARD_MESSAGE = "Search memory before mutating files or running mutating commands for this turn.";
   const CLAUDE_MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
+  const AUTO_MEMORY_TEST_MESSAGE_RE = /^(?:this is\s+)?(?:just\s+)?(?:a\s+)?test message[.!?]*$|^(?:just\s+)?testing[.!?]*$/i;
 
   const classifyAutoMemoryTurn = (
     promptText: string,
@@ -1994,6 +2240,7 @@ export function createAgentChatService(args: {
     const trimmed = promptText.trim();
     if (trimmed.length < 12) return "none";
     if (trimmed.startsWith("/")) return "none";
+    if (AUTO_MEMORY_TEST_MESSAGE_RE.test(trimmed)) return "none";
     if (/^before context compaction runs\b/i.test(trimmed)) return "none";
     if (/^review this conversation and persist\b/i.test(trimmed)) return "none";
     if (attachmentCount > 0) return "required";
@@ -2492,6 +2739,30 @@ export function createAgentChatService(args: {
         env: launch.env
       }
     }) ?? {};
+  };
+
+  const buildCursorAcpMcpServers = (managed: ManagedChatSession): McpServer[] => {
+    const list: McpServer[] = [];
+    const external = getExternalMcpConfigs();
+    list.push(...externalMcpConfigsToAcpStdio(external));
+    const adeWrapped = buildAdeMcpServers(
+      managed.laneWorktreePath,
+      "claude",
+      managed.session.identityKey === "cto" ? "cto" : "agent",
+      resolveWorkerIdentityAgentId(managed.session.identityKey),
+      managed.session.id,
+      managed.session.computerUse,
+    );
+    for (const [name, cfg] of Object.entries(adeWrapped)) {
+      const r = cfg as Record<string, unknown>;
+      const command = typeof r.command === "string" ? r.command : "";
+      if (!command.trim()) continue;
+      const args = Array.isArray(r.args) ? (r.args as unknown[]).map((x) => String(x)) : [];
+      const envRec = r.env && typeof r.env === "object" ? (r.env as Record<string, string>) : {};
+      const env = Object.entries(envRec).map(([n, v]) => ({ name: n, value: String(v ?? "") }));
+      list.push({ name, command, args, env });
+    }
+    return list;
   };
 
   const summarizeAdeMcpLaunch = (args: {
@@ -3430,7 +3701,13 @@ export function createAgentChatService(args: {
     });
     const laneWorktreeChanged = managed.laneWorktreePath !== launchContext.laneWorktreePath;
     managed.laneWorktreePath = launchContext.laneWorktreePath;
-    if (laneWorktreeChanged && (managed.runtime?.kind === "claude" || managed.runtime?.kind === "codex" || managed.runtime?.kind === "unified")) {
+    if (
+      laneWorktreeChanged
+      && (managed.runtime?.kind === "claude"
+        || managed.runtime?.kind === "codex"
+        || managed.runtime?.kind === "unified"
+        || managed.runtime?.kind === "cursor")
+    ) {
       teardownRuntime(managed);
       refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
     }
@@ -3466,6 +3743,9 @@ export function createAgentChatService(args: {
       ...(managed.session.codexSandbox ? { codexSandbox: managed.session.codexSandbox } : {}),
       ...(managed.session.codexConfigSource ? { codexConfigSource: managed.session.codexConfigSource } : {}),
       ...(managed.session.unifiedPermissionMode ? { unifiedPermissionMode: managed.session.unifiedPermissionMode } : {}),
+      ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
+      ...(managed.session.cursorModeId !== undefined ? { cursorModeId: managed.session.cursorModeId } : {}),
+      ...(managed.session.cursorConfigValues ? { cursorConfigValues: managed.session.cursorConfigValues } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
       ...(managed.session.surface ? { surface: managed.session.surface } : {}),
@@ -3475,6 +3755,9 @@ export function createAgentChatService(args: {
       ...(managed.session.computerUse ? { computerUse: managed.session.computerUse } : {}),
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+      ...(managed.runtime?.kind === "cursor" && managed.runtime.acpSessionId
+        ? { acpSessionId: managed.runtime.acpSessionId }
+        : {}),
       ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined } : {}),
       ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
         ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
@@ -3527,7 +3810,9 @@ export function createAgentChatService(args: {
       const record = parsed as Partial<PersistedChatState>;
       if (record.version !== 1 && record.version !== 2) return null;
       const provider = record.provider;
-      if (provider !== "codex" && provider !== "claude" && provider !== "unified") return null;
+      if (provider !== "codex" && provider !== "claude" && provider !== "unified" && provider !== "cursor") {
+        return null;
+      }
       const laneId = String(record.laneId ?? "").trim();
       const model = String(record.model ?? "").trim();
       const modelId = typeof record.modelId === "string" && record.modelId.trim().length
@@ -3544,6 +3829,15 @@ export function createAgentChatService(args: {
       const codexSandbox = normalizePersistedCodexSandbox(record.codexSandbox);
       const codexConfigSource = normalizePersistedCodexConfigSource(record.codexConfigSource);
       const unifiedPermissionMode = normalizePersistedUnifiedPermissionMode(record.unifiedPermissionMode);
+      const cursorModeSnapshot = record.cursorModeSnapshot && typeof record.cursorModeSnapshot === "object"
+        ? record.cursorModeSnapshot as AgentChatCursorModeSnapshot
+        : undefined;
+      const cursorModeId = typeof record.cursorModeId === "string"
+        ? (record.cursorModeId.trim() || null)
+        : record.cursorModeId === null
+          ? null
+          : undefined;
+      const cursorConfigValues = normalizeCursorConfigValueRecord(record.cursorConfigValues);
       const identityKey = normalizeIdentityKey(record.identityKey);
       const surface = record.surface === "automation" ? "automation" : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
@@ -3589,6 +3883,9 @@ export function createAgentChatService(args: {
         ...(codexSandbox ? { codexSandbox } : {}),
         ...(codexConfigSource ? { codexConfigSource } : {}),
         ...(unifiedPermissionMode ? { unifiedPermissionMode } : {}),
+        ...(cursorModeSnapshot ? { cursorModeSnapshot } : {}),
+        ...(cursorModeId !== undefined ? { cursorModeId } : {}),
+        ...(cursorConfigValues ? { cursorConfigValues } : {}),
         ...(permissionMode ? { permissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         surface,
@@ -3603,6 +3900,9 @@ export function createAgentChatService(args: {
         ...(completion ? { completion } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
+          : {}),
+        ...(typeof record.acpSessionId === "string" && record.acpSessionId.trim().length
+          ? { acpSessionId: record.acpSessionId.trim() }
           : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
@@ -4203,6 +4503,19 @@ export function createAgentChatService(args: {
       managed.runtime.pendingApprovals.clear();
       managed.runtime = null;
     }
+    if (managed.runtime?.kind === "cursor") {
+      const rt = managed.runtime;
+      if (rt.acpSessionId) {
+        cursorAcpSessionOwners.delete(rt.acpSessionId);
+        void rt.pooled?.connection.unstable_closeSession?.({ sessionId: rt.acpSessionId }).catch(() => {});
+      }
+      for (const [, w] of rt.permissionWaiters) {
+        w.resolve({ outcome: { outcome: "cancelled" } });
+      }
+      rt.permissionWaiters.clear();
+      if (rt.pooled) releaseCursorAcpConnection(rt.poolKey);
+      managed.runtime = null;
+    }
     clearLaneDirectiveKey(managed);
   };
 
@@ -4411,7 +4724,11 @@ export function createAgentChatService(args: {
     const fallbackModel = persisted?.model ?? fallbackModelForProvider(provider);
     const hydratedModelId = persisted?.modelId
       ?? resolveModelIdFromStoredValue(fallbackModel, provider)
-      ?? (provider === "unified" ? DEFAULT_UNIFIED_MODEL_ID : undefined);
+      ?? (provider === "unified"
+        ? DEFAULT_UNIFIED_MODEL_ID
+        : provider === "cursor"
+          ? DEFAULT_CURSOR_DESCRIPTOR?.id
+          : undefined);
     const model = provider === "unified" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     const lane = laneService.getLaneBaseAndBranch(row.laneId);
 
@@ -4431,6 +4748,9 @@ export function createAgentChatService(args: {
         ...(persisted?.codexSandbox ? { codexSandbox: persisted.codexSandbox } : {}),
         ...(persisted?.codexConfigSource ? { codexConfigSource: persisted.codexConfigSource } : {}),
         ...(persisted?.unifiedPermissionMode ? { unifiedPermissionMode: persisted.unifiedPermissionMode } : {}),
+        ...(persisted?.cursorModeSnapshot ? { cursorModeSnapshot: persisted.cursorModeSnapshot } : {}),
+        ...(persisted?.cursorModeId !== undefined ? { cursorModeId: persisted.cursorModeId } : {}),
+        ...(persisted?.cursorConfigValues ? { cursorConfigValues: persisted.cursorConfigValues } : {}),
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
@@ -8454,6 +8774,8 @@ export function createAgentChatService(args: {
     codexSandbox: requestedCodexSandbox,
     codexConfigSource: requestedCodexConfigSource,
     unifiedPermissionMode: requestedUnifiedPermissionMode,
+    cursorModeId: requestedCursorModeId,
+    cursorConfigValues: requestedCursorConfigValues,
     permissionMode: requestedPermMode,
     identityKey,
     surface,
@@ -8480,7 +8802,9 @@ export function createAgentChatService(args: {
         ? DEFAULT_CODEX_MODEL
         : provider === "claude"
           ? DEFAULT_CLAUDE_MODEL
-          : "");
+          : provider === "cursor"
+            ? DEFAULT_CURSOR_MODEL
+            : "");
     // Resolve modelId from registry if provided
     const resolvedModelId = modelId && getModelById(modelId)
       ? modelId
@@ -8488,6 +8812,10 @@ export function createAgentChatService(args: {
 
     if (provider === "unified" && !resolvedModelId) {
       throw new Error("Unified chat requires a known model ID. Select a model from the registry.");
+    }
+
+    if (provider === "cursor" && !resolvedModelId) {
+      throw new Error("Cursor chat requires a known model. Pick a Cursor model from the model list.");
     }
 
     const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
@@ -8514,7 +8842,15 @@ export function createAgentChatService(args: {
       : normalizeReasoningEffort(reasoningEffort);
     const normalizedReasoningEffort = effectiveProvider === "unified"
       ? rawEffort
-      : validateReasoningEffort(effectiveProvider === "claude" ? "claude" : "codex", rawEffort);
+      : effectiveProvider === "cursor"
+        ? null
+        : validateReasoningEffort(effectiveProvider === "claude" ? "claude" : "codex", rawEffort);
+    const normalizedCursorModeId = typeof requestedCursorModeId === "string"
+      ? (requestedCursorModeId.trim() || null)
+      : requestedCursorModeId === null
+        ? null
+        : undefined;
+    const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
     const computerUsePolicy = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
     const effectivePermissionMode = identityKey
@@ -8555,6 +8891,17 @@ export function createAgentChatService(args: {
             ?? legacyPermissionModeToCodexSandbox(effectivePermissionMode)
             ?? chatConfig.codexSandboxMode,
           codexConfigSource,
+        };
+      }
+      if (effectiveProvider === "cursor") {
+        return {
+          unifiedPermissionMode: requestedUnifiedPermissionMode
+            ?? legacyPermissionModeToUnifiedPermissionMode(effectivePermissionMode)
+            ?? chatConfig.unifiedPermissionMode,
+          ...(normalizedCursorModeId !== undefined ? { cursorModeId: normalizedCursorModeId } : {}),
+          ...(normalizedCursorConfigValues
+            ? { cursorConfigValues: normalizedCursorConfigValues }
+            : {}),
         };
       }
       return {
@@ -8832,6 +9179,10 @@ export function createAgentChatService(args: {
       refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
     }
 
+    if (managed.session.provider === "cursor" && managed.session.status === "active") {
+      throw new Error("Turn is already active.");
+    }
+
     if (!managed.autoTitleSeed) {
       managed.autoTitleSeed = visibleText;
       void maybeAutoTitleSession(managed, {
@@ -8885,7 +9236,7 @@ export function createAgentChatService(args: {
     if (managed.closed) return;
 
     const message = error instanceof Error ? error.message : String(error);
-    const turnId = randomUUID();
+    const turnId = prepared.turnId ?? randomUUID();
 
     // If the failure is "turn already active", the original turn is still running.
     // Do NOT clear activeTurnId or runtime state — that would corrupt the in-flight
@@ -8915,6 +9266,10 @@ export function createAgentChatService(args: {
       managed.runtime.activeTurnId = null;
       managed.runtime.activeQuery = null;
     }
+    if (managed.runtime?.kind === "cursor" && !isBusyError) {
+      managed.runtime.busy = false;
+      managed.runtime.activeTurnId = null;
+    }
 
     emitChatEvent(managed, {
       type: "error",
@@ -8942,6 +9297,872 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  const cursorPoolKeyFor = (managed: ManagedChatSession): string => {
+    const launch = resolveCursorAcpLaunchSettings(managed.session);
+    return [
+      managed.session.laneId,
+      managed.laneWorktreePath,
+      managed.session.model,
+      launch.mode ?? "default",
+      launch.sandbox,
+      launch.force ? "force" : "guarded",
+      launch.approveMcps ? "mcp-auto" : "mcp-ask",
+    ].join(":");
+  };
+
+  const mapChatDecisionToCursorPermission = (
+    decision: AgentChatApprovalDecision | undefined,
+    options: PermissionOption[],
+    answers?: Record<string, string | string[]>,
+  ): RequestPermissionResponse => {
+    // If the caller provided an explicit optionId (e.g. from a structured
+    // selection), resolve it directly instead of the coarse decision mapping.
+    if (answers) {
+      const explicit = Object.values(answers).flat()[0];
+      const match = explicit ? options.find((o) => o.optionId === explicit) : undefined;
+      if (match) return { outcome: { outcome: "selected", optionId: match.optionId } };
+    }
+    const pick = (kind: PermissionOption["kind"]) => options.find((o) => o.kind === kind)?.optionId;
+    if (decision === "cancel") return { outcome: { outcome: "cancelled" } };
+    if (decision === "accept_for_session") {
+      const id = pick("allow_always") ?? pick("allow_once");
+      if (id) return { outcome: { outcome: "selected", optionId: id } };
+    } else if (decision === "accept") {
+      const id = pick("allow_once") ?? pick("allow_always");
+      if (id) return { outcome: { outcome: "selected", optionId: id } };
+    } else if (decision === "decline") {
+      const id = pick("reject_once") ?? pick("reject_always");
+      if (id) return { outcome: { outcome: "selected", optionId: id } };
+    }
+    return { outcome: { outcome: "cancelled" } };
+  };
+
+  const cursorPermissionOptionLabel = (kind: PermissionOption["kind"]): string => {
+    switch (kind) {
+      case "allow_once":
+        return "Allow once";
+      case "allow_always":
+        return "Allow for session";
+      case "reject_once":
+        return "Reject once";
+      case "reject_always":
+        return "Reject for session";
+      default:
+        return kind;
+    }
+  };
+
+  const buildCursorPendingInputRequest = (
+    itemId: string,
+    req: RequestPermissionRequest,
+    turnId?: string | null,
+  ): PendingInputRequest => ({
+    requestId: itemId,
+    itemId,
+    source: "cursor",
+    kind: "permissions",
+    title: req.toolCall.title ?? "Cursor permission required",
+    description: req.toolCall.title ?? "Cursor needs approval before continuing.",
+    questions: [],
+    allowsFreeform: false,
+    blocking: true,
+    canProceedWithoutAnswer: false,
+    options: req.options.map((option) => ({
+      label: cursorPermissionOptionLabel(option.kind),
+      value: option.optionId,
+      ...(option.kind === "allow_always" ? { recommended: true } : {}),
+    })),
+    providerMetadata: {
+      toolCall: req.toolCall,
+      options: req.options,
+    },
+    turnId: turnId ?? null,
+  });
+
+  const syncCursorSessionDescriptor = (
+    managed: ManagedChatSession,
+    sdkModelId: string,
+  ): void => {
+    const trimmed = sdkModelId.trim();
+    if (!trimmed.length) return;
+    managed.session.model = trimmed;
+    const descriptor = getModelById(`cursor/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "cursor");
+    if (descriptor) {
+      managed.session.modelId = descriptor.id;
+      if (managed.runtime?.kind === "cursor") {
+        managed.runtime.modelSdkId = descriptor.sdkModelId;
+      }
+      return;
+    }
+    delete managed.session.modelId;
+    if (managed.runtime?.kind === "cursor") {
+      managed.runtime.modelSdkId = trimmed;
+    }
+  };
+
+  const applyCursorConfigSnapshot = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    configOptions: ReturnType<typeof readCursorAcpConfigSnapshot>,
+  ): void => {
+    runtime.modeConfigId = configOptions.modeConfigId;
+    runtime.availableModeIds = configOptions.availableModeIds;
+    runtime.modelConfigId = configOptions.modelConfigId;
+    runtime.availableModelIds = configOptions.availableModelIds;
+    runtime.configOptions = configOptions.configOptions;
+
+    const currentModeId = configOptions.currentModeId?.trim() ?? "";
+    if (currentModeId.length) {
+      runtime.currentModeId = currentModeId;
+      if (currentModeId !== "plan") {
+        runtime.defaultModeId = currentModeId;
+      }
+    }
+
+    const currentModelId = normalizeCursorReportedModelId(configOptions.currentModelId, runtime.availableModelIds);
+    if (currentModelId) {
+      runtime.currentModelId = currentModelId;
+      syncCursorSessionDescriptor(managed, currentModelId);
+    }
+    syncCursorModeSnapshot(managed, runtime);
+  };
+
+  const ensureCursorSessionState = async (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+  ): Promise<void> => {
+    const sessionId = runtime.acpSessionId?.trim();
+    if (!sessionId || !runtime.pooled) return;
+
+    const requestedModeId = resolveCursorSessionModeId(managed.session);
+    const desiredModeId = requestedModeId ?? runtime.defaultModeId?.trim() ?? null;
+    if (desiredModeId && runtime.currentModeId !== desiredModeId) {
+      let modeUpdated = false;
+      if (runtime.modeConfigId && runtime.availableModeIds.includes(desiredModeId)) {
+        try {
+          const response = await runtime.pooled.connection.setSessionConfigOption({
+            sessionId,
+            configId: runtime.modeConfigId,
+            value: desiredModeId,
+          });
+          applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(response.configOptions));
+          modeUpdated = true;
+        } catch (error) {
+          logger.warn("agent_chat.cursor_set_session_mode_config_failed", {
+            sessionId: managed.session.id,
+            acpSessionId: sessionId,
+            desiredModeId,
+            configId: runtime.modeConfigId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (!modeUpdated) {
+        try {
+          await runtime.pooled.connection.setSessionMode({
+            sessionId,
+            modeId: desiredModeId,
+          });
+          runtime.currentModeId = desiredModeId;
+          if (desiredModeId !== "plan" && !runtime.defaultModeId) {
+            runtime.defaultModeId = desiredModeId;
+          }
+          syncCursorModeSnapshot(managed, runtime);
+        } catch (error) {
+          logger.warn("agent_chat.cursor_set_session_mode_failed", {
+            sessionId: managed.session.id,
+            acpSessionId: sessionId,
+            desiredModeId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    const desiredModelId = runtime.modelSdkId.trim() || managed.session.model.trim();
+    if (!desiredModelId.length) {
+      syncCursorModeSnapshot(managed, runtime);
+      return;
+    }
+
+    if (runtime.currentModelId === desiredModelId) {
+      syncCursorSessionDescriptor(managed, desiredModelId);
+    } else {
+      let modelUpdated = false;
+      if (runtime.modelConfigId && runtime.availableModelIds.includes(desiredModelId)) {
+        try {
+          const response = await runtime.pooled.connection.setSessionConfigOption({
+            sessionId,
+            configId: runtime.modelConfigId,
+            value: desiredModelId,
+          });
+          applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(response.configOptions));
+          if (!normalizeCursorReportedModelId(runtime.currentModelId, runtime.availableModelIds)) {
+            runtime.currentModelId = desiredModelId;
+            syncCursorSessionDescriptor(managed, desiredModelId);
+          }
+          modelUpdated = true;
+        } catch (error) {
+          logger.warn("agent_chat.cursor_set_session_model_config_failed", {
+            sessionId: managed.session.id,
+            acpSessionId: sessionId,
+            desiredModelId,
+            configId: runtime.modelConfigId,
+            currentModelId: runtime.currentModelId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      if (!modelUpdated) {
+        try {
+          await runtime.pooled.connection.unstable_setSessionModel({
+            sessionId,
+            modelId: desiredModelId,
+          });
+          runtime.currentModelId = desiredModelId;
+          syncCursorSessionDescriptor(managed, desiredModelId);
+          syncCursorModeSnapshot(managed, runtime);
+        } catch (error) {
+          logger.warn("agent_chat.cursor_set_session_model_failed", {
+            sessionId: managed.session.id,
+            acpSessionId: sessionId,
+            desiredModelId,
+            currentModelId: runtime.currentModelId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          const normalizedCurrentModelId = normalizeCursorReportedModelId(runtime.currentModelId, runtime.availableModelIds);
+          if (normalizedCurrentModelId) {
+            runtime.currentModelId = normalizedCurrentModelId;
+            syncCursorSessionDescriptor(managed, normalizedCurrentModelId);
+          }
+        }
+      }
+    }
+
+    const desiredConfigValues = managed.session.cursorConfigValues ?? {};
+    for (const option of runtime.configOptions) {
+      if (option.id === runtime.modeConfigId || option.id === runtime.modelConfigId) continue;
+      const desiredValue = desiredConfigValues[option.id];
+      if (desiredValue === undefined || desiredValue === option.currentValue) continue;
+      try {
+        const response = await runtime.pooled.connection.setSessionConfigOption({
+          sessionId,
+          configId: option.id,
+          ...(typeof desiredValue === "boolean"
+            ? { type: "boolean" as const, value: desiredValue }
+            : { value: desiredValue }),
+        });
+        applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(response.configOptions));
+      } catch (error) {
+        logger.warn("agent_chat.cursor_set_session_config_failed", {
+          sessionId: managed.session.id,
+          acpSessionId: sessionId,
+          configId: option.id,
+          desiredValue,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    syncCursorModeSnapshot(managed, runtime);
+  };
+
+  const refreshCursorSessionState = async (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    reason: "after_prompt" | "manual_sync",
+  ): Promise<void> => {
+    const sessionId = runtime.acpSessionId?.trim();
+    if (!sessionId || !runtime.pooled) return;
+
+    const loadSession = runtime.pooled.connection.loadSession?.bind(runtime.pooled.connection);
+    if (!loadSession) return;
+
+    try {
+      const loaded = await loadSession({
+        sessionId,
+        cwd: managed.laneWorktreePath,
+        mcpServers: buildCursorAcpMcpServers(managed),
+      });
+      const loadedAvailableModelIds = loaded.models?.availableModels
+        ?.map((entry) => String(entry?.modelId ?? "").trim())
+        .filter(Boolean) ?? [];
+      if (loadedAvailableModelIds.length) {
+        runtime.availableModelIds = Array.from(new Set([...runtime.availableModelIds, ...loadedAvailableModelIds]));
+      }
+      runtime.currentModeId = loaded.modes?.currentModeId ?? runtime.currentModeId;
+      runtime.defaultModeId = loaded.modes?.currentModeId ?? runtime.defaultModeId;
+      runtime.currentModelId = normalizeCursorReportedModelId(
+        loaded.models?.currentModelId,
+        runtime.availableModelIds,
+      ) ?? runtime.currentModelId;
+      applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(loaded.configOptions));
+      if (runtime.currentModelId) {
+        syncCursorSessionDescriptor(managed, runtime.currentModelId);
+      }
+      syncCursorModeSnapshot(managed, runtime);
+    } catch (error) {
+      logger.warn("agent_chat.cursor_load_session_failed", {
+        sessionId: managed.session.id,
+        acpSessionId: sessionId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const guessImageMimeForPath = (p: string): string => {
+    const lower = p.toLowerCase();
+    if (lower.endsWith(".png")) return "image/png";
+    if (lower.endsWith(".webp")) return "image/webp";
+    if (lower.endsWith(".gif")) return "image/gif";
+    return "image/jpeg";
+  };
+
+  /** Maximum bytes to inline for a non-image attachment in a Cursor ACP prompt. */
+  const MAX_INLINE_BYTES = 512 * 1024; // 512 KB
+
+  const buildCursorAcpPromptBlocks = (
+    promptText: string,
+    resolvedAttachments: ResolvedAgentChatFileRef[],
+  ): Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> => {
+    const blocks: Array<
+      { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+    > = [{ type: "text", text: promptText }];
+    for (const attachment of resolvedAttachments) {
+      try {
+        // Check file size before reading the full contents into memory.
+        let fileSize: number;
+        try {
+          fileSize = fs.statSync(attachment._resolvedPath).size;
+        } catch {
+          // stat failed -- skip unreadable attachment
+          continue;
+        }
+
+        if (attachment.type === "image") {
+          const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+          blocks.push({
+            type: "image",
+            data: buf.toString("base64"),
+            mimeType: guessImageMimeForPath(attachment._resolvedPath),
+          });
+        } else if (fileSize <= MAX_INLINE_BYTES) {
+          // Non-image file attachment -- include content as text if not binary
+          const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+          if (hasNullByte(buf)) {
+            blocks.push({
+              type: "text",
+              text: `[File: ${attachment.path} omitted: binary or unsupported type]`,
+            });
+          } else {
+            const text = buf.toString("utf-8");
+            blocks.push({
+              type: "text",
+              text: `[File: ${attachment.path}]\n${text}`,
+            });
+          }
+        } else {
+          // File is too large to inline -- push a placeholder with a truncated preview.
+          blocks.push({
+            type: "text",
+            text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
+          });
+        }
+      } catch {
+        // skip unreadable attachment
+      }
+    }
+    return blocks;
+  };
+
+  const emitCursorTerminalCommandIfBound = (
+    pooled: CursorAcpPooled,
+    acpSessionId: string,
+    terminalId: string,
+  ): void => {
+    const owner = cursorAcpSessionOwners.get(acpSessionId);
+    if (!owner?.runtime || owner.runtime.kind !== "cursor") return;
+    const binding = pooled.terminalWorkLogBindings.get(terminalId);
+    if (!binding) return;
+    const t = pooled.terminals.get(terminalId);
+    if (!t) return;
+    const output = t.truncated ? `${t.output}\n…(output truncated)` : t.output;
+    const cmdStatus = t.exited ? (t.exitCode === 0 ? "completed" : "failed") : "running";
+    emitChatEvent(owner, {
+      type: "command",
+      command: binding.command,
+      cwd: binding.cwd,
+      output,
+      itemId: binding.itemId,
+      turnId: binding.turnId,
+      status: cmdStatus,
+      ...(t.exited ? { exitCode: t.exitCode } : {}),
+    });
+  };
+
+  const scheduleCursorTerminalEmit = (
+    pooled: CursorAcpPooled,
+    terminalId: string,
+    acpSessionId: string,
+  ): void => {
+    const existing = pooled.terminalOutputTimers.get(terminalId);
+    if (existing) clearTimeout(existing);
+    const DEBOUNCE_MS = 80;
+    pooled.terminalOutputTimers.set(
+      terminalId,
+      setTimeout(() => {
+        pooled.terminalOutputTimers.delete(terminalId);
+        emitCursorTerminalCommandIfBound(pooled, acpSessionId, terminalId);
+      }, DEBOUNCE_MS),
+    );
+  };
+
+  const wireCursorAcpBridgeHandlers = (pooled: CursorAcpPooled): void => {
+    if (cursorAcpBridgeWired.has(pooled)) return;
+    cursorAcpBridgeWired.add(pooled);
+    pooled.bridge.onSessionUpdate = (note) => {
+      const owner = cursorAcpSessionOwners.get(note.sessionId);
+      if (!owner?.runtime || owner.runtime.kind !== "cursor") return;
+      const previousModeId = owner.runtime.currentModeId;
+      if (note.update.sessionUpdate === "current_mode_update") {
+        owner.runtime.currentModeId = note.update.currentModeId;
+        if (note.update.currentModeId !== "plan") {
+          owner.runtime.defaultModeId = note.update.currentModeId;
+        }
+        // Sync session-level mode fields so ensureCursorSessionState won't
+        // revert Cursor back to the old mode on the next turn.
+        owner.session.cursorModeId = note.update.currentModeId;
+        if (note.update.currentModeId === "plan") {
+          owner.session.unifiedPermissionMode = "plan";
+        } else if (!owner.session.unifiedPermissionMode || owner.session.unifiedPermissionMode === "plan") {
+          owner.session.unifiedPermissionMode = "edit";
+        }
+        syncCursorModeSnapshot(owner, owner.runtime);
+        persistChatState(owner);
+      } else if (note.update.sessionUpdate === "config_option_update") {
+        applyCursorConfigSnapshot(owner, owner.runtime, readCursorAcpConfigSnapshot(note.update.configOptions));
+        persistChatState(owner);
+      }
+      const turnId = owner.runtime.activeTurnId ?? "";
+      const resolveTerminal = (tid: string) => {
+        const t = pooled.terminals.get(tid);
+        if (!t) return null;
+        return {
+          output: t.output,
+          cwd: t.cwd,
+          commandLine: t.command,
+          exited: t.exited,
+          exitCode: t.exitCode,
+          truncated: t.truncated,
+        };
+      };
+      const events = mapAcpSessionNotificationToChatEvents(note, { turnId, previousModeId }, resolveTerminal);
+      for (const ev of events) {
+        if (ev.type === "command") {
+          const termId = parseAcpTerminalIdFromCommandItemId(ev.itemId);
+          if (termId && pooled.terminals.has(termId)) {
+            pooled.terminalWorkLogBindings.set(termId, {
+              itemId: ev.itemId,
+              turnId: ev.turnId ?? "",
+              command: ev.command,
+              cwd: ev.cwd,
+            });
+          }
+        }
+        emitChatEvent(owner, ev);
+      }
+    };
+    pooled.bridge.onTerminalOutputDelta = (terminalId, acpSessionId) => {
+      scheduleCursorTerminalEmit(pooled, terminalId, acpSessionId);
+    };
+    pooled.bridge.flushTerminalOutput = (terminalId, acpSessionId) => {
+      const pending = pooled.terminalOutputTimers.get(terminalId);
+      if (pending) {
+        clearTimeout(pending);
+        pooled.terminalOutputTimers.delete(terminalId);
+      }
+      emitCursorTerminalCommandIfBound(pooled, acpSessionId, terminalId);
+    };
+    pooled.bridge.onTerminalDisposed = (terminalId) => {
+      const pending = pooled.terminalOutputTimers.get(terminalId);
+      if (pending) {
+        clearTimeout(pending);
+        pooled.terminalOutputTimers.delete(terminalId);
+      }
+      pooled.terminalWorkLogBindings.delete(terminalId);
+    };
+    pooled.bridge.onPermission = async (req) => {
+      const owner = cursorAcpSessionOwners.get(req.sessionId);
+      if (!owner || owner.runtime?.kind !== "cursor") {
+        return { outcome: { outcome: "cancelled" } };
+      }
+      const cursorRt = owner.runtime;
+      const itemId = randomUUID();
+      return new Promise<RequestPermissionResponse>((outerResolve) => {
+        cursorRt.permissionWaiters.set(itemId, {
+          options: req.options,
+          resolve: (resp: RequestPermissionResponse) => {
+            cursorRt.permissionWaiters.delete(itemId);
+            outerResolve(resp);
+          },
+        });
+        const request = buildCursorPendingInputRequest(itemId, req, cursorRt.activeTurnId ?? null);
+        emitChatEvent(owner, {
+          type: "approval_request",
+          itemId,
+          kind: "tool_call",
+          description: req.toolCall.title ?? "Permission required",
+          turnId: cursorRt.activeTurnId ?? undefined,
+          detail: { cursorAcp: true, request, toolCall: req.toolCall, options: req.options },
+        });
+      });
+    };
+  };
+
+  const ensureCursorRuntime = async (managed: ManagedChatSession): Promise<CursorRuntime> => {
+    const poolKey = cursorPoolKeyFor(managed);
+    const launchModelSdkId = resolveCursorRuntimeModelSdkId(managed.session);
+    const shouldSyncSessionModel = managed.session.model !== launchModelSdkId || !managed.session.modelId;
+    if (shouldSyncSessionModel) {
+      syncCursorSessionDescriptor(managed, launchModelSdkId);
+      persistChatState(managed);
+    }
+    if (managed.runtime?.kind === "cursor") {
+      const existing = managed.runtime;
+      if (existing.poolKey !== poolKey) {
+        if (existing.acpSessionId) {
+          cursorAcpSessionOwners.delete(existing.acpSessionId);
+          try {
+            await existing.pooled?.connection.unstable_closeSession?.({ sessionId: existing.acpSessionId });
+          } catch {
+            // ignore
+          }
+        }
+        for (const [, w] of existing.permissionWaiters) {
+          w.resolve({ outcome: { outcome: "cancelled" } });
+        }
+        existing.permissionWaiters.clear();
+        if (existing.pooled) releaseCursorAcpConnection(existing.poolKey);
+        managed.runtime = null;
+      } else {
+        if (!existing.pooled) throw new Error("Cursor ACP connection not available");
+        wireCursorAcpBridgeHandlers(existing.pooled);
+        existing.pooled.bridge.getRootPath = () => managed.laneWorktreePath;
+        existing.pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
+        return existing;
+      }
+    } else if (managed.runtime) {
+      teardownRuntime(managed);
+    }
+
+    const pooled = await acquireCursorAcpConnection({
+      poolKey,
+      agentPath: resolveCursorAgentExecutable().path,
+      workspacePath: managed.laneWorktreePath,
+      modelSdkId: launchModelSdkId,
+      launchSettings: resolveCursorAcpLaunchSettings(managed.session),
+      appVersion,
+    });
+    wireCursorAcpBridgeHandlers(pooled);
+    pooled.bridge.getRootPath = () => managed.laneWorktreePath;
+    pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
+
+    const rt: CursorRuntime = {
+      kind: "cursor",
+      poolKey,
+      pooled,
+      acpSessionId: null,
+      activeTurnId: null,
+      busy: false,
+      interrupted: false,
+      modelSdkId: launchModelSdkId,
+      modelConfigId: null,
+      currentModelId: null,
+      availableModelIds: [],
+      pendingSteers: [],
+      permissionWaiters: new Map(),
+      modeConfigId: null,
+      currentModeId: null,
+      availableModeIds: [],
+      defaultModeId: null,
+      configOptions: [],
+    };
+    managed.runtime = rt;
+
+    const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
+    if (persistedAcp && typeof pooled.connection.unstable_resumeSession === "function") {
+      try {
+        const resumed = await pooled.connection.unstable_resumeSession({
+          sessionId: persistedAcp,
+          cwd: managed.laneWorktreePath,
+          mcpServers: buildCursorAcpMcpServers(managed),
+        });
+        const resumedAvailableModelIds = resumed.models?.availableModels
+          ?.map((entry) => String(entry?.modelId ?? "").trim())
+          .filter(Boolean) ?? [];
+        if (resumedAvailableModelIds.length) {
+          rt.availableModelIds = Array.from(new Set([...rt.availableModelIds, ...resumedAvailableModelIds]));
+        }
+        rt.acpSessionId = persistedAcp;
+        rt.currentModeId = resumed.modes?.currentModeId ?? rt.currentModeId;
+        rt.defaultModeId = resumed.modes?.currentModeId ?? rt.defaultModeId;
+        rt.currentModelId = normalizeCursorReportedModelId(
+          resumed.models?.currentModelId,
+          rt.availableModelIds,
+        ) ?? rt.currentModelId;
+        applyCursorConfigSnapshot(managed, rt, readCursorAcpConfigSnapshot(resumed.configOptions));
+        if (rt.currentModelId) {
+          syncCursorSessionDescriptor(managed, rt.currentModelId);
+        }
+        syncCursorModeSnapshot(managed, rt);
+        cursorAcpSessionOwners.set(persistedAcp, managed);
+      } catch {
+        // stale session id — create a new ACP session on first prompt
+      }
+    }
+
+    return rt;
+  };
+
+  const runCursorTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      displayText: string;
+      attachments: AgentChatFileRef[];
+      resolvedAttachments: ResolvedAgentChatFileRef[];
+      laneDirectiveKey?: string | null;
+      turnId?: string;
+      optimisticCursorTurnStart?: boolean;
+      onDispatched?: () => void;
+    },
+  ): Promise<void> => {
+    const runtime = await ensureCursorRuntime(managed);
+    const validation = validateSessionReadyForTurn(managed);
+    if (!validation.ready) {
+      throw new Error(validation.reason);
+    }
+
+    const turnId = args.turnId ?? randomUUID();
+    runtime.interrupted = false;
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    managed.session.status = "active";
+
+    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    if (!args.optimisticCursorTurnStart) {
+      emitPreparedUserMessage(managed, {
+        text: displayText,
+        attachments: args.attachments,
+        turnId,
+        laneDirectiveKey: args.laneDirectiveKey,
+        onDispatched: args.onDispatched,
+      });
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    }
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+      turnId,
+    });
+
+    const turnStartedAt = Date.now();
+    try {
+      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, args.attachments);
+      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+      if (autoMemoryNotice) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "memory",
+          message: autoMemoryNotice.message,
+          detail: autoMemoryNotice.detail,
+          turnId,
+        });
+      }
+
+      let composed = args.promptText;
+      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
+      if (reconstructionContext.length) {
+        composed = [
+          "System context (CTO reconstruction, do not echo verbatim):",
+          reconstructionContext,
+          "",
+          composed,
+        ].join("\n");
+        managed.pendingReconstructionContext = null;
+      }
+      if (autoMemoryPlan.contextText.length) {
+        composed = `${autoMemoryPlan.contextText}\n\n${composed}`;
+      }
+
+      const promptBlocks = buildCursorAcpPromptBlocks(composed, args.resolvedAttachments);
+
+      if (!runtime.acpSessionId) {
+        if (!runtime.pooled) throw new Error("Cursor ACP connection not available");
+        const created = await runtime.pooled.connection.newSession({
+          cwd: managed.laneWorktreePath,
+          mcpServers: buildCursorAcpMcpServers(managed),
+        });
+        const createdAvailableModelIds = created.models?.availableModels
+          ?.map((entry) => String(entry?.modelId ?? "").trim())
+          .filter(Boolean) ?? [];
+        if (createdAvailableModelIds.length) {
+          runtime.availableModelIds = Array.from(new Set([...runtime.availableModelIds, ...createdAvailableModelIds]));
+        }
+        const sid = created.sessionId;
+        runtime.acpSessionId = sid;
+        runtime.currentModeId = created.modes?.currentModeId ?? runtime.currentModeId;
+        runtime.defaultModeId = created.modes?.currentModeId ?? runtime.defaultModeId;
+        runtime.currentModelId = normalizeCursorReportedModelId(
+          created.models?.currentModelId,
+          runtime.availableModelIds,
+        ) ?? runtime.currentModelId;
+        applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(created.configOptions));
+        if (runtime.currentModelId) {
+          syncCursorSessionDescriptor(managed, runtime.currentModelId);
+        }
+        syncCursorModeSnapshot(managed, runtime);
+        cursorAcpSessionOwners.set(sid, managed);
+        persistChatState(managed);
+      }
+
+      await ensureCursorSessionState(managed, runtime);
+      persistChatState(managed);
+
+      logger.info("agent_chat.cursor_prompt_start", {
+        sessionId: managed.session.id,
+        turnId,
+        model: managed.session.model,
+        durationMs: Date.now() - turnStartedAt,
+      });
+
+      if (!runtime.pooled) throw new Error("Cursor ACP connection not available");
+
+      // Signal dispatch completion before awaiting the prompt so the dispatch
+      // resolves as soon as the request is sent rather than after it returns.
+      if (args.onDispatched) {
+        args.onDispatched();
+        args.onDispatched = undefined;
+      }
+
+      const promptRes = await runtime.pooled.connection.prompt({
+        sessionId: runtime.acpSessionId!,
+        prompt: promptBlocks,
+      });
+
+      await refreshCursorSessionState(managed, runtime, "after_prompt");
+
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+
+      const descriptor = resolveSessionModelDescriptor(managed.session);
+      const usage = promptRes.usage
+        ? {
+            inputTokens: promptRes.usage.inputTokens,
+            outputTokens: promptRes.usage.outputTokens,
+            cacheReadTokens: promptRes.usage.cachedReadTokens ?? null,
+            cacheCreationTokens: promptRes.usage.cachedWriteTokens ?? null,
+          }
+        : undefined;
+
+      if (runtime.interrupted || promptRes.stopReason === "cancelled") {
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        for (const ev of mapStopReasonToTerminalEvents({
+          stopReason: "cancelled",
+          turnId,
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          usage,
+        })) {
+          emitChatEvent(managed, ev);
+        }
+      } else {
+        managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+        for (const ev of mapStopReasonToTerminalEvents({
+          stopReason: promptRes.stopReason,
+          turnId,
+          model: managed.session.model,
+          ...(managed.session.modelId
+            ? { modelId: managed.session.modelId }
+            : descriptor
+              ? { modelId: descriptor.id }
+              : {}),
+          usage,
+        })) {
+          emitChatEvent(managed, ev);
+        }
+      }
+
+      appendWorkerActivityToCto(managed, {
+        activityType: "chat_turn",
+        summary: "Cursor agent turn completed.",
+      });
+      persistChatState(managed);
+
+      if (!managed.closed && runtime.pendingSteers.length) {
+        const nextSteer = runtime.pendingSteers.shift();
+        const steerText = nextSteer?.text ?? "";
+        if (steerText.trim().length) {
+          const preparedSteer = prepareSendMessage({
+            sessionId: managed.session.id,
+            text: steerText,
+            displayText: steerText,
+            attachments: [],
+          });
+          if (preparedSteer) await executePreparedSendMessage(preparedSteer);
+        }
+      }
+    } catch (error) {
+      managed.session.status = "idle";
+      const msg = error instanceof Error ? error.message : String(error);
+
+      // Drain pending permission waiters so they don't block future sends.
+      for (const [, w] of runtime.permissionWaiters) {
+        w.resolve({ outcome: { outcome: "cancelled" } });
+      }
+      runtime.permissionWaiters.clear();
+
+      // Drop queued steers so they don't replay on the next turn.
+      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+
+      if (runtime.interrupted) {
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        for (const ev of mapStopReasonToTerminalEvents({
+          stopReason: "cancelled",
+          turnId,
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        })) {
+          emitChatEvent(managed, ev);
+        }
+      } else {
+        emitChatEvent(managed, { type: "error", message: msg, turnId });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "failed",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
+        appendWorkerActivityToCto(managed, {
+          activityType: "chat_turn",
+          summary: `Turn failed: ${msg}`,
+        });
+      }
+      persistChatState(managed);
+    } finally {
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      if (managed.session.status === "active") {
+        managed.session.status = "idle";
+      }
+    }
+  };
+
   const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => {
     const {
       sessionId,
@@ -8953,6 +10174,8 @@ export function createAgentChatService(args: {
       reasoningEffort,
       laneDirectiveKey,
       onDispatched,
+      turnId,
+      optimisticCursorTurnStart,
     } = prepared;
 
     // Unified runtime dispatch
@@ -8986,6 +10209,26 @@ export function createAgentChatService(args: {
         attachments,
         resolvedAttachments,
         laneDirectiveKey,
+        onDispatched,
+      });
+      return;
+    }
+
+    if (managed.session.provider === "cursor") {
+      const chatConfig = resolveChatConfig();
+      managed.session.unifiedPermissionMode = resolveSessionUnifiedPermissionMode(
+        managed.session,
+        chatConfig.unifiedPermissionMode,
+      );
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      await runCursorTurn(managed, {
+        promptText,
+        displayText: visibleText,
+        attachments,
+        resolvedAttachments,
+        laneDirectiveKey,
+        turnId,
+        optimisticCursorTurnStart,
         onDispatched,
       });
       return;
@@ -9119,6 +10362,25 @@ export function createAgentChatService(args: {
         })
       : null;
 
+    if (prepared.managed.session.provider === "cursor") {
+      const turnId = randomUUID();
+      prepared.turnId = turnId;
+      prepared.optimisticCursorTurnStart = true;
+      emitChatEvent(prepared.managed, {
+        type: "user_message",
+        text: prepared.visibleText,
+        attachments: prepared.attachments,
+        turnId,
+      });
+      emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
+      prepared.managed.session.status = "active";
+      persistChatState(prepared.managed);
+      // NOTE: onDispatched is NOT called here. It will be called inside
+      // runCursorTurn after the real ACP prompt has been initiated, so the
+      // caller's awaitDispatch promise resolves only once the backend has
+      // acknowledged the prompt.
+    }
+
     logger.info("agent_chat.turn_dispatch_ack", {
       sessionId: prepared.sessionId,
       provider: prepared.managed.session.provider,
@@ -9152,6 +10414,49 @@ export function createAgentChatService(args: {
       const runtime = managed.runtime;
       if (runtime.busy) {
         enqueueSteerOrDrop(managed, runtime, sessionId, randomUUID(), trimmed);
+        return;
+      }
+      const preparedSteer = prepareSendMessage({
+        sessionId,
+        text: trimmed,
+        displayText: trimmed,
+        attachments: [],
+      });
+      if (!preparedSteer) return;
+      await executePreparedSendMessage(preparedSteer);
+      return;
+    }
+
+    if (managed.session.provider === "cursor") {
+      if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
+        const rt = managed.runtime;
+        if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
+          logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
+            turnId: rt.activeTurnId ?? undefined,
+          });
+          return;
+        }
+        const steerId = randomUUID();
+        rt.pendingSteers.push({ steerId, text: trimmed });
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: trimmed,
+          steerId,
+          turnId: rt.activeTurnId ?? undefined,
+          deliveryState: "queued",
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          steerId,
+          message: "Message queued — will be sent when the current turn completes.",
+          turnId: rt.activeTurnId ?? undefined,
+        });
+        persistChatState(managed);
         return;
       }
       const preparedSteer = prepareSendMessage({
@@ -9274,6 +10579,24 @@ export function createAgentChatService(args: {
         approval.resolve({ decision: "decline" });
         managed.runtime.pendingApprovals.delete(itemId);
       }
+      return;
+    }
+
+    if (managed.runtime?.kind === "cursor") {
+      const rt = managed.runtime;
+      rt.interrupted = true;
+      if (rt.acpSessionId) {
+        try {
+          await rt.pooled?.connection.cancel({ sessionId: rt.acpSessionId });
+        } catch {
+          // ignore
+        }
+      }
+      for (const [, w] of rt.permissionWaiters) {
+        w.resolve({ outcome: { outcome: "cancelled" } });
+      }
+      rt.permissionWaiters.clear();
+      cancelQueuedSteers(managed, rt, "interrupted");
       return;
     }
 
@@ -9401,6 +10724,11 @@ export function createAgentChatService(args: {
       managed.session.codexSandbox = persisted?.codexSandbox ?? managed.session.codexSandbox;
       managed.session.codexConfigSource = persisted?.codexConfigSource ?? managed.session.codexConfigSource;
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+    } else if (managed.session.provider === "cursor") {
+      await ensureCursorRuntime(managed);
+      managed.session.unifiedPermissionMode = persisted?.unifiedPermissionMode ?? managed.session.unifiedPermissionMode;
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      sessionService.setResumeCommand(sessionId, `chat:cursor:${sessionId}`);
     } else if (managed.runtime?.kind === "unified" || (managed.session.modelId && !providerResolver.isModelCliWrapped(managed.session.modelId))) {
       // Unified runtime resume — re-resolve the model
       const result = await startUnifiedSession(managed);
@@ -9455,13 +10783,18 @@ export function createAgentChatService(args: {
     row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
   ): AgentChatSessionSummary => {
     const persisted = readPersistedState(row.id);
-    const liveSession = managedSessions.get(row.id)?.session ?? null;
+    const liveManaged = managedSessions.get(row.id) ?? null;
+    const liveSession = liveManaged?.session ?? null;
     const provider = liveSession?.provider ?? persisted?.provider ?? providerFromToolType(row.toolType);
     const fallbackModel = liveSession?.model ?? persisted?.model ?? fallbackModelForProvider(provider);
     const hydratedModelId = liveSession?.modelId
       ?? persisted?.modelId
       ?? resolveModelIdFromStoredValue(fallbackModel, provider)
-      ?? (provider === "unified" ? DEFAULT_UNIFIED_MODEL_ID : undefined);
+      ?? (provider === "unified"
+        ? DEFAULT_UNIFIED_MODEL_ID
+        : provider === "cursor"
+          ? DEFAULT_CURSOR_DESCRIPTOR?.id
+          : undefined);
     const model = provider === "unified" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     return {
       sessionId: row.id,
@@ -9490,6 +10823,12 @@ export function createAgentChatService(args: {
       ...(liveSession?.unifiedPermissionMode || persisted?.unifiedPermissionMode
         ? { unifiedPermissionMode: liveSession?.unifiedPermissionMode ?? persisted?.unifiedPermissionMode }
         : {}),
+      ...(liveSession?.cursorModeSnapshot || persisted?.cursorModeSnapshot
+        ? { cursorModeSnapshot: liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot }
+        : {}),
+      ...(liveSession?.cursorModeId !== undefined || persisted?.cursorModeId !== undefined
+        ? { cursorModeId: liveSession?.cursorModeId ?? persisted?.cursorModeId ?? null }
+        : {}),
       ...(liveSession?.permissionMode || persisted?.permissionMode
         ? { permissionMode: liveSession?.permissionMode ?? persisted?.permissionMode }
         : {}),
@@ -9508,6 +10847,7 @@ export function createAgentChatService(args: {
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? liveSession?.completion?.summary ?? persisted?.completion?.summary ?? null,
+      ...(hasLivePendingInput(liveManaged) ? { awaitingInput: true } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
         : {})
@@ -9774,6 +11114,21 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (managed.runtime?.kind === "cursor") {
+      const pending = managed.runtime.permissionWaiters.get(itemId);
+      if (!pending) {
+        // Treat missing waiter as a benign race (e.g. the Cursor turn already
+        // resolved or was cancelled before the user responded). Simply no-op.
+        logger.debug("agent_chat.cursor_permission_waiter_missing", {
+          sessionId,
+          itemId,
+        });
+        return;
+      }
+      pending.resolve(mapChatDecisionToCursorPermission(decision, pending.options, answers));
+      return;
+    }
+
     throw new Error(`Session '${sessionId}' does not have a live runtime for approvals.`);
   };
 
@@ -9802,6 +11157,26 @@ export function createAgentChatService(args: {
     }
     if (provider === "claude") {
       return listClaudeModelsFromSdk();
+    }
+
+    if (provider === "cursor") {
+      try {
+        const agentPath = resolveCursorAgentExecutable().path;
+        const ordered = await discoverCursorCliModelDescriptors(agentPath);
+        const preferred = pickDefaultCursorDescriptorFromCliList(ordered);
+        return ordered.map((d) => ({
+          id: d.id,
+          displayName: d.displayName,
+          description: `${d.displayName} (Cursor CLI)`,
+          isDefault: preferred ? d.id === preferred.id : false,
+          reasoningEfforts: d.reasoningTiers?.map((tier) => ({
+            effort: tier,
+            description: `${tier} reasoning`,
+          })) ?? [],
+        }));
+      } catch {
+        return [];
+      }
     }
 
     // For unified/non-CLI providers: return all models with valid auth.
@@ -9857,6 +11232,18 @@ export function createAgentChatService(args: {
       }
     }
 
+    if (managed.runtime?.kind === "cursor") {
+      managed.runtime.interrupted = true;
+      cancelQueuedSteers(managed, managed.runtime, "disposed");
+      if (managed.runtime.acpSessionId) {
+        try {
+          await managed.runtime.pooled?.connection.cancel({ sessionId: managed.runtime.acpSessionId });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
     // Mark streaming runtimes as interrupted so the catch block handles gracefully
     if (managed.runtime?.kind === "claude" || managed.runtime?.kind === "unified") {
       managed.runtime.interrupted = true;
@@ -9890,6 +11277,8 @@ export function createAgentChatService(args: {
     codexSandbox,
     codexConfigSource,
     unifiedPermissionMode,
+    cursorModeId,
+    cursorConfigValues,
     permissionMode,
     computerUse,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
@@ -10046,6 +11435,19 @@ export function createAgentChatService(args: {
       managed.session.unifiedPermissionMode = unifiedPermissionMode;
     }
 
+    if (cursorModeId !== undefined) {
+      managed.session.cursorModeId = typeof cursorModeId === "string"
+        ? (cursorModeId.trim() || null)
+        : null;
+    }
+
+    if (cursorConfigValues !== undefined) {
+      managed.session.cursorConfigValues = normalizeCursorConfigValueRecord(cursorConfigValues);
+      if (!managed.session.cursorConfigValues) {
+        delete managed.session.cursorConfigValues;
+      }
+    }
+
     if (
       permissionMode !== undefined
       || interactionMode !== undefined
@@ -10054,6 +11456,8 @@ export function createAgentChatService(args: {
       || codexSandbox !== undefined
       || codexConfigSource !== undefined
       || unifiedPermissionMode !== undefined
+      || cursorModeId !== undefined
+      || cursorConfigValues !== undefined
     ) {
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
       if (managed.runtime?.kind === "unified") {
@@ -10067,6 +11471,9 @@ export function createAgentChatService(args: {
         if (typeof managed.runtime.v2Session.setPermissionMode === "function") {
           await managed.runtime.v2Session.setPermissionMode(turnPermissionMode);
         }
+      }
+      if (managed.runtime?.kind === "cursor" && !managed.runtime.busy) {
+        await ensureCursorSessionState(managed, managed.runtime);
       }
     }
 
@@ -10133,8 +11540,49 @@ export function createAgentChatService(args: {
     const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
     if (!descriptor) return;
 
+    const isCursorCli = descriptor.family === "cursor" && descriptor.isCliWrapped;
     const isAnthropicCli = descriptor.family === "anthropic" && descriptor.isCliWrapped;
-    if (!isAnthropicCli) return;
+    if (!isAnthropicCli && !isCursorCli) return;
+
+    if (isCursorCli) {
+      if (managed.session.provider !== "cursor") return;
+      if (managed.session.modelId !== descriptor.id) return;
+      if (managed.session.status === "active") return;
+      if (managed.runtime && managed.runtime.kind !== "cursor") return;
+      if (managed.runtime?.kind === "cursor" && managed.runtime.busy) return;
+
+      const runtime = await ensureCursorRuntime(managed);
+      if (!runtime.pooled) return;
+      if (!runtime.acpSessionId) {
+        const created = await runtime.pooled.connection.newSession({
+          cwd: managed.laneWorktreePath,
+          mcpServers: buildCursorAcpMcpServers(managed),
+        });
+        const createdAvailableModelIds = created.models?.availableModels
+          ?.map((entry) => String(entry?.modelId ?? "").trim())
+          .filter(Boolean) ?? [];
+        if (createdAvailableModelIds.length) {
+          runtime.availableModelIds = Array.from(new Set([...runtime.availableModelIds, ...createdAvailableModelIds]));
+        }
+        const sid = created.sessionId;
+        runtime.acpSessionId = sid;
+        runtime.currentModeId = created.modes?.currentModeId ?? runtime.currentModeId;
+        runtime.defaultModeId = created.modes?.currentModeId ?? runtime.defaultModeId;
+        runtime.currentModelId = normalizeCursorReportedModelId(
+          created.models?.currentModelId,
+          runtime.availableModelIds,
+        ) ?? runtime.currentModelId;
+        applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(created.configOptions));
+        if (runtime.currentModelId) {
+          syncCursorSessionDescriptor(managed, runtime.currentModelId);
+        }
+        syncCursorModeSnapshot(managed, runtime);
+        cursorAcpSessionOwners.set(sid, managed);
+      }
+      await ensureCursorSessionState(managed, runtime);
+      persistChatState(managed);
+      return;
+    }
 
     // Warmup should never rewrite the live session model. It's only allowed to
     // prime the currently-selected Claude runtime when the backend session is

@@ -1,6 +1,8 @@
 ---
-title: "Stacked PR Workflows"
+title: "Guide: Stacked PRs"
+sidebarTitle: "Stacked PR Workflows"
 description: "Use ADE lanes to create, manage, and land stacked pull requests with conflict detection and queue-based landing."
+icon: "layer-group"
 ---
 
 Stacked PRs break large features into a chain of small, reviewable pull requests that build on each other. ADE's lane system makes this workflow natural — each PR lives in its own lane, and the stack topology is tracked automatically.
@@ -59,7 +61,7 @@ The graph shows:
 - **Status badges** — whether each lane has uncommitted changes, open PRs, or conflicts
 - **Agent indicators** — which lanes have active agents running
 
-*Coming soon: screenshot walkthrough of the Workspace Graph stack visualization.*
+Drag-reparent lanes in the Graph to reorganize your stack. ADE updates the base-branch relationships automatically when you move a lane from one parent to another.
 
 ---
 
@@ -91,7 +93,7 @@ Open a PR for each lane in the stack, starting from the bottom:
   </Step>
 </Steps>
 
-*Coming soon: automated PR description generation with stack context.*
+ADE auto-generates PR descriptions that include the stack context — which PR this builds on, what the full stack looks like, and where this PR fits in the chain. Reviewers see the dependency structure without needing to trace branches manually.
 
 ---
 
@@ -111,7 +113,9 @@ Land stacked PRs from the bottom up. ADE provides queue-based landing to handle 
   </Step>
 </Steps>
 
-*Coming soon: one-click stack landing with automatic retargeting and rebase.*
+ADE supports queue-aware rebase for stacked PRs. When a base PR merges, ADE detects the change and offers to retarget and rebase the next PR in the stack automatically. The `RebaseNeed` system distinguishes between `lane_base` (upstream lane changed) and `pr_target` (PR target branch moved), so you always know why a rebase is needed.
+
+For force-push-after-rebase workflows, ADE handles the `forcePushAfterRebase` flag automatically when the rebase succeeds.
 
 ---
 

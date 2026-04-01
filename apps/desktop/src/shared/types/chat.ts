@@ -374,7 +374,33 @@ export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "tea
 export type AgentChatInteractionMode = "default" | "plan";
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
 export type AgentChatSurface = "work" | "automation";
-export type PendingInputSource = "claude" | "codex" | "unified" | "mission" | "ade";
+export type AgentChatCursorConfigValue = string | boolean;
+export type AgentChatCursorConfigSelectOption = {
+  value: string;
+  label: string;
+  description?: string | null;
+  groupId?: string | null;
+  groupLabel?: string | null;
+};
+export type AgentChatCursorConfigOption = {
+  id: string;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  type: "select" | "boolean";
+  currentValue: AgentChatCursorConfigValue | null;
+  options?: AgentChatCursorConfigSelectOption[];
+};
+export type AgentChatCursorModeSnapshot = {
+  modeConfigId?: string | null;
+  currentModeId: string | null;
+  availableModeIds: string[];
+  modelConfigId?: string | null;
+  currentModelId?: string | null;
+  availableModelIds?: string[];
+  configOptions?: AgentChatCursorConfigOption[];
+};
+export type PendingInputSource = "claude" | "codex" | "cursor" | "unified" | "mission" | "ade";
 export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval";
 
 export type PendingInputOption = {
@@ -428,6 +454,9 @@ export type AgentChatSession = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  cursorModeSnapshot?: AgentChatCursorModeSnapshot;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -461,6 +490,8 @@ export type AgentChatSessionSummary = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  cursorModeSnapshot?: AgentChatCursorModeSnapshot;
+  cursorModeId?: string | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -474,6 +505,7 @@ export type AgentChatSessionSummary = {
   lastActivityAt: string;
   lastOutputPreview: string | null;
   summary: string | null;
+  awaitingInput?: boolean;
   threadId?: string;
 };
 
@@ -543,6 +575,8 @@ export type AgentChatCreateArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -645,6 +679,8 @@ export type AgentChatUpdateSessionArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   computerUse?: ComputerUsePolicy | null;
 };
 

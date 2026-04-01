@@ -16,7 +16,7 @@ ai:
     orchestrator: true
     initial_context: true
   featureModelOverrides:
-    commit_messages: anthropic/claude-haiku-4-5
+    commit_messages: openai/gpt-5.3-codex-spark
     pr_descriptions: openai/gpt-5.3-codex-spark
     terminal_summaries: openai/gpt-5.3-codex-spark
   chat:

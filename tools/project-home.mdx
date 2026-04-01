@@ -4,8 +4,6 @@ description: "The global process management center for your project — start yo
 icon: "house"
 ---
 
-<Info>**Screenshot: The Project Home (Run tab) view — showing a "Backend" process group with postgres (green, running), rails server (green, running), and sidekiq (green, running), a "Frontend" group with a Next.js dev server, the Stack button in the header (green "Stack Running" state), CPU/memory usage indicators next to each process, and a test suite panel on the right side.</Info>
-
 ## Overview
 
 **Project Home** is ADE's global process management center. It is the first place you look when you sit down to start working on your project — and the place you return to when something is not running correctly.
@@ -126,8 +124,6 @@ Click any process row to expand its **log panel** inline, showing a live-streami
 - **Color-coded**: ADE detects log levels (INFO, WARN, ERROR) and colors accordingly
 - **Searchable**: Press `Cmd+F` inside the log panel to search the log buffer
 - **Buffered**: The last 10,000 lines are kept in memory; older lines are written to disk and still searchable
-
-<Info>**Screenshot: A single expanded process log panel — showing the Rails server log with color-coded entries (green INFO lines, yellow WARN lines, red ERROR line), the process metadata row above it (PID, CPU 2.1%, Memory 312 MB, Running for 4m 32s), and a search bar overlaid on the log.</Info>
 
 ---
 
@@ -313,8 +309,6 @@ Use the lane selector when you have per-lane process configurations (e.g., a sta
     The Stack Button is only active if at least one process has a `Startup order` value configured and is in a `stopped` state. If all processes are already running, the button shows "Stop Stack". If no processes have a startup order, ADE cannot determine a safe ordering and the Stack Button remains disabled — assign startup orders in each process's configuration.
   </Accordion>
 </AccordionGroup>
-
-<Info>**Screenshot: The Project Home Config Editor tab — showing a table of environment variables with key names in the left column, masked values (••••••) in the middle column for sensitive entries like API keys, eye-toggle icons on the right of each row, a "+ Add Variable" button at the bottom, and a lane-specific override column showing one override in the active lane highlighted in blue.</Info>
 
 ---
 

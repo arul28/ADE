@@ -1,4 +1,4 @@
-import { motion, useAnimation, useDragControls } from "framer-motion";
+import { AnimatePresence, motion, useAnimation } from "framer-motion";
 import { GitBranch, GitMerge, Check, AlertCircle } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { cn } from "../../lib/cn";
@@ -19,40 +19,40 @@ export function CanvasDemo() {
         { id: "feat-a", label: "feat/auth-flow", type: "feature", x: -150, y: 120 },
         { id: "feat-b", label: "feat/ui-redesign", type: "feature", x: 150, y: 120 },
     ]);
-    const [mergeStatus, setMergeStatus] = useState<string | null>(null); // null, 'merging', 'success'
+    const [mergeStatus, setMergeStatus] = useState<"merging" | "success" | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const timerRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+    useEffect(() => {
+        return () => {
+            timerRefs.current.forEach(clearTimeout);
+            timerRefs.current = [];
+        };
+    }, []);
 
     const handleDragEnd = (id: string, point: { x: number; y: number }) => {
-        // Simple collision detection with the "main" node (which is at center 0,0 relative to container center)
-        // We need to translate the point relative to the container center
         if (!containerRef.current) return;
-
-        // In this simplified demo, we just check if it's close to the center
-        // The point returned by framer-motion is relative to the viewport or parent, 
-        // but for this demo let's use a simpler distance check if we can, 
-        // or just rely on visual overlapping approximate coordinates.
-
-        // Actually, let's just check if the dropped item is close to (0,0) in our local coordinate system
-        // We'll reset the node position if it's not a merge, or animate merge if it is.
 
         const distance = Math.sqrt(point.x * point.x + point.y * point.y);
 
         if (distance < 100) {
+            // Clear any lingering timers from a previous merge
+            timerRefs.current.forEach(clearTimeout);
+            timerRefs.current = [];
+
             // Trigger Merge
             setMergeStatus("merging");
-            setTimeout(() => {
+            timerRefs.current.push(setTimeout(() => {
                 setMergeStatus("success");
-                // Remove the node visually or mark it merged
                 setNodes(prev => prev.map(n => n.id === id ? { ...n, status: "merged" } : n));
 
-                setTimeout(() => {
+                timerRefs.current.push(setTimeout(() => {
                     setMergeStatus(null);
-                    // Reset for replayability after a delay
-                    setTimeout(() => {
+                    timerRefs.current.push(setTimeout(() => {
                         setNodes(prev => prev.map(n => n.id === id ? { ...n, status: "idle", x: n.id === 'feat-a' ? -150 : 150, y: 120 } : n));
-                    }, 2000);
-                }, 2000);
-            }, 1500);
+                    }, 2000));
+                }, 2000));
+            }, 1500));
         }
     };
 
@@ -76,27 +76,29 @@ export function CanvasDemo() {
                 ))}
 
                 {/* Merge Toast/Status */}
-                {mergeStatus && (
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0 }}
-                        className="absolute top-8 px-4 py-2 bg-white/10 backdrop-blur-md border border-white/10 rounded-full flex items-center gap-2 text-sm font-medium z-50"
-                    >
-                        {mergeStatus === 'merging' && (
-                            <>
-                                <GitMerge className="w-4 h-4 animate-spin" />
-                                <span>Simulating Merge...</span>
-                            </>
-                        )}
-                        {mergeStatus === 'success' && (
-                            <>
-                                <Check className="w-4 h-4 text-green-400" />
-                                <span>Merged Successfully</span>
-                            </>
-                        )}
-                    </motion.div>
-                )}
+                <AnimatePresence>
+                    {mergeStatus && (
+                        <motion.div
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0 }}
+                            className="absolute top-8 px-4 py-2 bg-white/10 backdrop-blur-md border border-white/10 rounded-full flex items-center gap-2 text-sm font-medium z-50"
+                        >
+                            {mergeStatus === 'merging' && (
+                                <>
+                                    <GitMerge className="w-4 h-4 animate-spin" />
+                                    <span>Simulating Merge...</span>
+                                </>
+                            )}
+                            {mergeStatus === 'success' && (
+                                <>
+                                    <Check className="w-4 h-4 text-green-400" />
+                                    <span>Merged Successfully</span>
+                                </>
+                            )}
+                        </motion.div>
+                    )}
+                </AnimatePresence>
 
                 <div className="absolute bottom-6 text-muted-fg text-xs">
                     Try dragging a feature branch onto main to merge.

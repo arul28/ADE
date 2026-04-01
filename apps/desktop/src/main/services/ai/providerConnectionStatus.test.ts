@@ -21,6 +21,20 @@ vi.mock("./providerRuntimeHealth", () => ({
 
 let buildProviderConnections: (cliStatuses: CliAuthStatus[]) => Promise<AiProviderConnections>;
 
+/** buildProviderConnections expects all CLIs; tests historically passed only claude/codex. */
+function mergeCliStatuses(overrides: CliAuthStatus[]): CliAuthStatus[] {
+  const defaults: CliAuthStatus[] = [
+    { cli: "claude", installed: false, path: null, authenticated: false, verified: false },
+    { cli: "codex", installed: false, path: null, authenticated: false, verified: false },
+    { cli: "cursor", installed: false, path: null, authenticated: false, verified: false },
+  ];
+  const map = new Map(defaults.map((s) => [s.cli, { ...s }]));
+  for (const o of overrides) {
+    map.set(o.cli, o);
+  }
+  return Array.from(map.values());
+}
+
 beforeEach(async () => {
   vi.resetModules();
   mockState.readClaudeCredentials.mockReset();
@@ -43,22 +57,24 @@ describe("buildProviderConnections", () => {
       source: "claude-credentials-file",
     });
 
-    const result = await buildProviderConnections([
-      {
-        cli: "claude",
-        installed: true,
-        path: "/Users/arul/.local/bin/claude",
-        authenticated: false,
-        verified: true,
-      },
-      {
-        cli: "codex",
-        installed: false,
-        path: null,
-        authenticated: false,
-        verified: false,
-      },
-    ]);
+    const result = await buildProviderConnections(
+      mergeCliStatuses([
+        {
+          cli: "claude",
+          installed: true,
+          path: "/Users/arul/.local/bin/claude",
+          authenticated: false,
+          verified: true,
+        },
+        {
+          cli: "codex",
+          installed: false,
+          path: null,
+          authenticated: false,
+          verified: false,
+        },
+      ]),
+    );
 
     expect(result.claude.authAvailable).toBe(true);
     expect(result.claude.runtimeDetected).toBe(true);
@@ -73,22 +89,24 @@ describe("buildProviderConnections", () => {
       source: "claude-credentials-file",
     });
 
-    const result = await buildProviderConnections([
-      {
-        cli: "claude",
-        installed: true,
-        path: "/Users/arul/.local/bin/claude",
-        authenticated: false,
-        verified: false,
-      },
-      {
-        cli: "codex",
-        installed: false,
-        path: null,
-        authenticated: false,
-        verified: false,
-      },
-    ]);
+    const result = await buildProviderConnections(
+      mergeCliStatuses([
+        {
+          cli: "claude",
+          installed: true,
+          path: "/Users/arul/.local/bin/claude",
+          authenticated: false,
+          verified: false,
+        },
+        {
+          cli: "codex",
+          installed: false,
+          path: null,
+          authenticated: false,
+          verified: false,
+        },
+      ]),
+    );
 
     expect(result.claude.authAvailable).toBe(true);
     expect(result.claude.runtimeAvailable).toBe(true);
@@ -101,22 +119,24 @@ describe("buildProviderConnections", () => {
       source: "codex-auth-file",
     });
 
-    const result = await buildProviderConnections([
-      {
-        cli: "claude",
-        installed: false,
-        path: null,
-        authenticated: false,
-        verified: false,
-      },
-      {
-        cli: "codex",
-        installed: true,
-        path: "/Users/arul/.local/bin/codex",
-        authenticated: false,
-        verified: true,
-      },
-    ]);
+    const result = await buildProviderConnections(
+      mergeCliStatuses([
+        {
+          cli: "claude",
+          installed: false,
+          path: null,
+          authenticated: false,
+          verified: false,
+        },
+        {
+          cli: "codex",
+          installed: true,
+          path: "/Users/arul/.local/bin/codex",
+          authenticated: false,
+          verified: true,
+        },
+      ]),
+    );
 
     expect(result.codex.authAvailable).toBe(true);
     expect(result.codex.runtimeDetected).toBe(true);
@@ -142,22 +162,24 @@ describe("buildProviderConnections", () => {
       return null;
     });
 
-    const result = await buildProviderConnections([
-      {
-        cli: "claude",
-        installed: true,
-        path: "/Users/arul/.local/bin/claude",
-        authenticated: true,
-        verified: true,
-      },
-      {
-        cli: "codex",
-        installed: false,
-        path: null,
-        authenticated: false,
-        verified: false,
-      },
-    ]);
+    const result = await buildProviderConnections(
+      mergeCliStatuses([
+        {
+          cli: "claude",
+          installed: true,
+          path: "/Users/arul/.local/bin/claude",
+          authenticated: true,
+          verified: true,
+        },
+        {
+          cli: "codex",
+          installed: false,
+          path: null,
+          authenticated: false,
+          verified: false,
+        },
+      ]),
+    );
 
     expect(result.claude.authAvailable).toBe(true);
     expect(result.claude.runtimeDetected).toBe(true);
@@ -182,26 +204,53 @@ describe("buildProviderConnections", () => {
       return null;
     });
 
-    const result = await buildProviderConnections([
-      {
-        cli: "claude",
-        installed: true,
-        path: "/Users/arul/.local/bin/claude",
-        authenticated: true,
-        verified: true,
-      },
-      {
-        cli: "codex",
-        installed: false,
-        path: null,
-        authenticated: false,
-        verified: false,
-      },
-    ]);
+    const result = await buildProviderConnections(
+      mergeCliStatuses([
+        {
+          cli: "claude",
+          installed: true,
+          path: "/Users/arul/.local/bin/claude",
+          authenticated: true,
+          verified: true,
+        },
+        {
+          cli: "codex",
+          installed: false,
+          path: null,
+          authenticated: false,
+          verified: false,
+        },
+      ]),
+    );
 
     expect(result.claude.authAvailable).toBe(true);
     expect(result.claude.runtimeDetected).toBe(true);
     expect(result.claude.runtimeAvailable).toBe(false);
     expect(result.claude.blocker).toBe("ADE could not launch the Claude runtime from this packaged app session.");
+  });
+
+  it("marks Cursor runtime unavailable when agent is missing even if env API key is set", async () => {
+    const prevKey = process.env.CURSOR_API_KEY;
+    process.env.CURSOR_API_KEY = "test-key";
+    try {
+      const result = await buildProviderConnections(
+        mergeCliStatuses([
+          {
+            cli: "cursor",
+            installed: false,
+            path: null,
+            authenticated: false,
+            verified: false,
+          },
+        ]),
+      );
+      expect(result.cursor.authAvailable).toBe(true);
+      expect(result.cursor.runtimeDetected).toBe(false);
+      expect(result.cursor.runtimeAvailable).toBe(false);
+      expect(result.cursor.blocker).toContain("could not find the `agent` binary");
+    } finally {
+      if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = prevKey;
+    }
   });
 });

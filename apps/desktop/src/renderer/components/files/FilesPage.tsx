@@ -35,6 +35,7 @@ import type {
 import { MonacoDiffView } from "../lanes/MonacoDiffView";
 import { LaneTerminalsPanel } from "../lanes/LaneTerminalsPanel";
 import { useAppStore } from "../../state/appStore";
+import { replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { revealLabel } from "../../lib/platform";
 import type { PaneConfig, PaneSplit } from "../ui/PaneTilingLayout";
@@ -397,6 +398,11 @@ export function FilesPage() {
   const activeWorkspace = useMemo(() => workspaces.find((ws) => ws.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const activeTab = useMemo(() => openTabs.find((tab) => tab.path === activeTabPath) ?? null, [openTabs, activeTabPath]);
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
+
+  useEffect(() => {
+    if (!activeWorkspace?.rootPath) return;
+    replaceDirtyBuffersForWorkspace(activeWorkspace.rootPath, openTabs);
+  }, [activeWorkspace?.rootPath, openTabs]);
 
   const prevSessionKeyRef = useRef(sessionKey);
 

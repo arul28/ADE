@@ -81,10 +81,19 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
-function resolveCliRegistryModelId(provider: "codex" | "claude", value: string | null | undefined): string | null {
+/**
+ * Resolve a model ID against the static MODEL_REGISTRY for CLI-wrapped providers.
+ *
+ * NOTE: This intentionally only checks the static registry and does not handle
+ * dynamic Cursor models (those resolved at runtime via getModelById /
+ * resolveModelDescriptorForProvider in AgentChatPane.tsx). The conflict resolver
+ * only needs to map well-known CLI model IDs; dynamic Cursor models are not
+ * applicable in this context.
+ */
+function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor", value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
-  const family = provider === "codex" ? "openai" : "anthropic";
+  const family = provider === "codex" ? "openai" : provider === "cursor" ? "cursor" : "anthropic";
   const match = MODEL_REGISTRY.find(
     (model) =>
       model.isCliWrapped
@@ -117,8 +126,8 @@ function hasConfiguredNonCliAuth(model: ModelDescriptor, detectedAuth: AiDetecte
 }
 
 function deriveConfiguredCliModelIdsFromStatus(status: {
-  availableProviders: { codex: boolean; claude: boolean };
-  models: { codex: Array<{ id: string }>; claude: Array<{ id: string }> };
+  availableProviders: { codex: boolean; claude: boolean; cursor: boolean };
+  models: { codex: Array<{ id: string }>; claude: Array<{ id: string }>; cursor: Array<{ id: string }> };
   detectedAuth?: AiDetectedAuth[];
 }): string[] {
   const available = new Set<string>();
@@ -139,6 +148,9 @@ function deriveConfiguredCliModelIdsFromStatus(status: {
     }
   }
 
+  // Cursor models are excluded: the resolver terminal only supports Claude CLI and Codex CLI;
+  // cursor/* IDs would be misclassified by inferProviderFromModel and cannot be launched here.
+
   const detectedAuth = status.detectedAuth ?? [];
   if (detectedAuth.length) {
     for (const model of MODEL_REGISTRY) {
@@ -153,6 +165,14 @@ function deriveConfiguredCliModelIdsFromStatus(status: {
   return MODEL_REGISTRY
     .filter((model) => model.isCliWrapped && !model.deprecated && available.has(model.id))
     .map((model) => model.id);
+}
+
+function isCursorModel(modelId: string): boolean {
+  return modelId.startsWith("cursor/");
+}
+
+function filterOutCursorModels(ids: string[]): string[] {
+  return ids.filter((id) => !isCursorModel(id));
 }
 
 function inferProviderFromModel(modelId: string): ExternalConflictResolverProvider {
@@ -280,14 +300,14 @@ export function ResolverTerminalModal({
   const [phase, setPhase] = React.useState<ResolverModalPhase>("configure");
   const [resolverModel, setResolverModel] = React.useState(initialModel ?? "");
   const [resolverReasoningEffort, setResolverReasoningEffort] = React.useState<string | null>(initialReasoningEffort ?? "medium");
-  const [availableModelIds, setAvailableModelIds] = React.useState<string[]>(availableModelIdsProp ?? []);
-  const provider: ExternalConflictResolverProvider = inferProviderFromModel(resolverModel);
+  const [availableModelIds, setAvailableModelIds] = React.useState<string[]>(filterOutCursorModels(availableModelIdsProp ?? []));
+  const provider: ExternalConflictResolverProvider = isCursorModel(resolverModel) ? "claude" : inferProviderFromModel(resolverModel);
   const [permissionMode, setPermissionMode] = React.useState<AiPermissionMode>("guarded_edit");
   const [anticipatedRepoPath, setAnticipatedRepoPath] = React.useState<string | null>(null);
   const [keptRunningInBackground, setKeptRunningInBackground] = React.useState(false);
   const selectedModelDescriptor = getModelById(resolverModel);
   const reasoningTiers = selectedModelDescriptor?.reasoningTiers ?? [];
-  const effectiveAvailableModelIds = availableModelIdsProp?.length ? availableModelIdsProp : availableModelIds;
+  const effectiveAvailableModelIds = filterOutCursorModels(availableModelIdsProp?.length ? availableModelIdsProp : availableModelIds);
   const [postResolution, setPostResolution] = React.useState<PostResolutionBehavior>(() => ({
     autoCommit: postResolutionDefaults?.autoCommit === true,
     autoPush: postResolutionDefaults?.autoPush === true,
@@ -325,7 +345,7 @@ export function ResolverTerminalModal({
           window.ade.projectConfig.get(),
           window.ade.lanes.list({ includeStatus: false }).catch(() => []),
         ]);
-        const configuredCliModelIds = deriveConfiguredCliModelIdsFromStatus(s);
+        const configuredCliModelIds = filterOutCursorModels(deriveConfiguredCliModelIdsFromStatus(s));
         setAvailableModelIds(configuredCliModelIds);
         const effectiveAiRaw = snapshot.effective?.ai;
         const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
@@ -558,6 +578,10 @@ export function ResolverTerminalModal({
     if (!targetLaneId) return;
     if (!resolverModel) {
       setErrorMsg("Select a configured model before starting.");
+      return;
+    }
+    if (isCursorModel(resolverModel)) {
+      setErrorMsg("Cursor models are not supported in the resolver terminal. Please select a Claude or Codex model.");
       return;
     }
 

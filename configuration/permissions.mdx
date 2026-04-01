@@ -3,9 +3,6 @@ title: "Permissions & Security"
 description: "ADE's layered security model — trust boundaries, SHA-based config approval, per-agent permissions, file path restrictions, command policies, secret protection, and the audit trail."
 icon: "shield-check"
 ---
-
-<Info>**Screenshot: Settings → Permissions panel showing four sub-sections stacked vertically: "File Path Restrictions" with a glob input and an allowed-paths list, "Terminal Commands" with allow-list and block-list fields, "Git Restrictions" showing the protected-branches field set to "main|master|production", and "Network Access" with a policy dropdown set to "Allow All."</Info>
-
 ## Core Security Principle
 
 ADE is built on a **local-first, trust boundary model**. Your source code, API keys, and agent outputs never leave your machine through ADE's infrastructure. All sensitive operations are confined to the Electron main process, which is isolated from the renderer UI by a strictly typed IPC bridge.
@@ -66,9 +63,6 @@ ADE is built on a **local-first, trust boundary model**. Your source code, API k
     On approval, ADE writes the SHA of the approved file to `local.yaml` under `trust.approvedSha`. This is machine-specific — teammates must approve the same change on their own machines.
   </Step>
 </Steps>
-
-<Info>**Screenshot: The config approval dialog showing: a two-column diff view with the old `ade.yaml` on the left and new on the right. A changed `automations[0].prompt` is highlighted in the diff. A warning banner at the top reads "Review this config change before command execution resumes." Approve and Reject buttons are visible at the bottom right.</Info>
-
 <Warning>
 Do not edit `trust.approvedSha` manually. ADE treats any mismatch between the stored SHA and the current file as an unapproved change and will suspend commands until the approval flow completes. If `local.yaml` becomes inconsistent, use Settings → Config → Re-approve current config.
 </Warning>
@@ -371,9 +365,6 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
 - **Retention**: 30 days by default; configurable in Settings → Developer → Audit Log Retention
 - **Location**: `.ade/artifacts/audit.log` in the project directory
 - **Rotation**: Logs rotate at 50MB. Up to 10 rotated files are retained before the oldest is deleted.
-
-<Info>**Screenshot: The History tab filtered to show "Audit Events" — a chronological list of agent actions with columns for: timestamp, agent ID, action type (color-coded: file write = blue, git = purple, permission denied = red), and a one-line description. One "permission denied" row is expanded to show full detail.</Info>
-
 ---
 
 ## Best Practices for Teams

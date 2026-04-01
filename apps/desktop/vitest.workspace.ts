@@ -1,4 +1,15 @@
+import path from "node:path";
 import { defineWorkspace } from "vitest/config";
+
+const emojiDataStub = path.resolve(
+  __dirname,
+  "src/test/__mocks__/emoji-mart-data.js",
+);
+
+const lobeIconsStub = path.resolve(
+  __dirname,
+  "src/test/__mocks__/lobehub-icons.js",
+);
 
 const shared = {
   testTimeout: 20_000,
@@ -9,10 +20,24 @@ const shared = {
     forks: { maxForks: 4 },
   },
   environment: "node" as const,
+  deps: {
+    inline: [/@emoji-mart\//, /@lobehub\//],
+  },
+  server: {
+    deps: {
+      inline: [/@emoji-mart\//, /@lobehub\//],
+    },
+  },
+};
+
+const sharedResolveAlias = {
+  "@emoji-mart/data": emojiDataStub,
+  "@lobehub/icons": lobeIconsStub,
 };
 
 export default defineWorkspace([
   {
+    resolve: { alias: sharedResolveAlias },
     test: {
       ...shared,
       name: "unit-main",
@@ -20,6 +45,7 @@ export default defineWorkspace([
     },
   },
   {
+    resolve: { alias: sharedResolveAlias },
     test: {
       ...shared,
       name: "unit-renderer",
@@ -27,6 +53,7 @@ export default defineWorkspace([
     },
   },
   {
+    resolve: { alias: sharedResolveAlias },
     test: {
       ...shared,
       name: "unit-shared",

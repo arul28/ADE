@@ -13,7 +13,8 @@ import {
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
-import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
+import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
+import { ProviderLogo } from "../shared/ProviderLogos";
 import {
   COLORS,
   MONO_FONT,
@@ -24,7 +25,7 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 
-type CliName = "claude" | "codex";
+type CliName = "claude" | "codex" | "cursor";
 type ApiKeySource = "config" | "env" | "store";
 
 const CLI_TOOLS: Array<{
@@ -47,6 +48,13 @@ const CLI_TOOLS: Array<{
     description: "OpenAI Codex subscription",
     loginCmd: "codex login",
     installHint: "npm install -g @openai/codex",
+  },
+  {
+    cli: "cursor",
+    label: "Cursor",
+    description: "Cursor CLI (agent), ACP work chat",
+    loginCmd: "agent login",
+    installHint: "Install Cursor and enable the cursor CLI from Cursor Settings > General",
   },
 ];
 
@@ -83,6 +91,7 @@ const sectionLabelStyle: React.CSSProperties = {
 
 function CliLogo({ cli }: { cli: CliName }) {
   if (cli === "claude") return <ClaudeLogo size={24} />;
+  if (cli === "cursor") return <CursorAgentLogo size={24} />;
   return <CodexLogo size={24} className="text-zinc-100" />;
 }
 
@@ -127,6 +136,7 @@ function describeCredentialSource(connection: AiProviderConnectionStatus | null 
   if (localSource.source === "macos-keychain") return "Local credentials found in macOS Keychain.";
   if (localSource.source === "claude-credentials-file") return "Local credentials found in ~/.claude/.credentials.json.";
   if (localSource.source === "codex-auth-file") return "Local credentials found in ~/.codex/auth.json.";
+  if (localSource.source === "cursor-env") return "Detected via CURSOR_API_KEY environment variable.";
   return null;
 }
 
@@ -160,6 +170,7 @@ const AUTH_ERROR_SIGNALS = [
   "status 401",
   "claude auth login",
   "codex login",
+  "agent login",
   "/login",
 ];
 
@@ -335,7 +346,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+    <div id="ai-providers" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       {notice && (
         <div
           style={{
@@ -381,14 +392,14 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         </div>
       )}
 
-      <div style={groupLabelStyle}>CONNECTIONS</div>
+      <div style={groupLabelStyle}>AI providers</div>
 
       <section style={cardStyle()}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
           <div>
-            <div style={sectionLabelStyle}>CLI CONNECTIONS</div>
+            <div style={sectionLabelStyle}>Subscription (CLI)</div>
             <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-              ADE now separates local auth detection from runtime launchability so Claude and Codex can explain what is actually blocked.
+              Claude Code, Codex, and Cursor CLI — same buckets as the model picker. ADE separates auth detection from whether the runtime can launch from this app.
             </div>
           </div>
           <button
@@ -401,9 +412,10 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
           </button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 12 }}>
           {CLI_TOOLS.map((tool) => {
             const connection = providerConnections?.[tool.cli] ?? null;
+            const credentialSourceDesc = describeCredentialSource(connection);
             const tone = isInitialCheckInFlight
               ? { color: COLORS.info, label: "Checking" }
               : getStatusTone(connection);
@@ -422,16 +434,26 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                   display: "flex",
                   flexDirection: "column",
                   gap: 10,
+                  minWidth: 0,
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
                     <CliLogo cli={tool.cli} />
-                    <div>
+                    <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>
                         {tool.label}
                       </div>
-                      <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                      <div
+                        style={{
+                          fontSize: 10,
+                          fontFamily: MONO_FONT,
+                          color: COLORS.textMuted,
+                          lineHeight: 1.35,
+                          overflowWrap: "break-word",
+                          wordBreak: "break-word",
+                        }}
+                      >
                         {tool.description}
                       </div>
                     </div>
@@ -452,25 +474,40 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                   </div>
                 </div>
 
-                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontFamily: MONO_FONT,
+                    color: COLORS.textMuted,
+                    lineHeight: 1.5,
+                    overflowWrap: "break-word",
+                    wordBreak: "break-word",
+                  }}
+                >
                   {message}
                 </div>
 
-                {describeCredentialSource(connection) && !connection?.runtimeAvailable && !isInitialCheckInFlight ? (
+                {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? (
                   <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info }}>
-                    {describeCredentialSource(connection)}
+                    {credentialSourceDesc}
                   </div>
                 ) : null}
 
                 {connection?.path && !isInitialCheckInFlight ? (
                   <code
                     style={{
+                      display: "block",
+                      width: "100%",
+                      boxSizing: "border-box",
+                      minWidth: 0,
                       fontSize: 10,
                       fontFamily: MONO_FONT,
                       color: COLORS.textSecondary,
                       background: `${COLORS.textDim}12`,
                       border: `1px solid ${COLORS.border}`,
-                      padding: "3px 6px",
+                      padding: "6px 8px",
+                      overflowWrap: "anywhere",
+                      wordBreak: "break-all",
                     }}
                   >
                     {connection.path}
@@ -483,7 +520,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       </section>
 
       <section style={cardStyle()}>
-        <div style={sectionLabelStyle}>API KEYS</div>
+        <div style={sectionLabelStyle}>Cloud API keys</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {API_KEY_PROVIDERS.map((provider) => {
             const keySource = apiKeySources.get(provider.provider) ?? (storedProviders.includes(provider.provider) ? "store" : undefined);
@@ -504,14 +541,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div
-                    style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: "50%",
-                      background: provider.accent,
-                    }}
-                  />
+                  <ProviderLogo family={provider.provider} size={22} />
                   <div>
                     <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
                       {provider.label}
@@ -615,7 +645,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       </section>
 
       <section style={cardStyle()}>
-        <div style={sectionLabelStyle}>LOCAL MODEL ENDPOINTS</div>
+        <div style={sectionLabelStyle}>Local runtimes</div>
         {localEndpoints.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {localEndpoints.map((entry) => (

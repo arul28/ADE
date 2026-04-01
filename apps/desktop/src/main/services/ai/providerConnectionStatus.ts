@@ -9,7 +9,7 @@ import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { nowIso } from "../shared/utils";
 
 function createUnavailableStatus(
-  provider: "claude" | "codex",
+  provider: "claude" | "codex" | "cursor",
   checkedAt: string,
 ): AiProviderConnectionStatus {
   return {
@@ -87,8 +87,9 @@ export async function buildProviderConnections(
   // surface that as not runtime-available even when auth artifacts exist.
   function applyRuntimeHealth(
     status: AiProviderConnectionStatus,
-    health: ReturnType<typeof getProviderRuntimeHealth>,
+    health: ReturnType<typeof getProviderRuntimeHealth> | null,
   ): void {
+    if (!health) return;
     if (health?.state === "auth-failed" || health?.state === "runtime-failed") {
       status.runtimeAvailable = false;
       status.blocker = health.message
@@ -103,7 +104,7 @@ export async function buildProviderConnections(
   }
 
   function buildStatus(args: {
-    provider: "claude" | "codex";
+    provider: "claude" | "codex" | "cursor";
     flags: ReturnType<typeof deriveProviderFlags>;
     usageAvailable: boolean;
     cli: CliAuthStatus | null;
@@ -167,5 +168,60 @@ export async function buildProviderConnections(
     health: codexRuntimeHealth,
   });
 
-  return { claude, codex };
+  const cursorCli = cliStatuses.find((entry) => entry.cli === "cursor") ?? null;
+  const cursorEnvAuth = Boolean(
+    process.env.CURSOR_API_KEY?.trim() || process.env.CURSOR_AUTH_TOKEN?.trim(),
+  );
+  const cursorRuntimeDetected = Boolean(cursorCli?.installed);
+  const cursorCliAuthenticated = Boolean(cursorCli?.installed && cursorCli.authenticated);
+  const cursorExplicitlyUnauthenticated = Boolean(
+    cursorCli?.installed && cursorCli.verified && !cursorCli.authenticated,
+  );
+  const cursorAuthAvailable = Boolean(cursorCliAuthenticated || cursorEnvAuth);
+  const cursorRuntimeAvailable = Boolean(
+    cursorAuthAvailable && cursorRuntimeDetected && !(cursorExplicitlyUnauthenticated && !cursorEnvAuth),
+  );
+  const cursorFlags = {
+    runtimeDetected: cursorRuntimeDetected,
+    cliAuthenticated: cursorCliAuthenticated,
+    cliExplicitlyUnauthenticated: cursorExplicitlyUnauthenticated,
+    localCredsDetected: cursorEnvAuth,
+    authAvailable: cursorAuthAvailable,
+    runtimeAvailable: cursorRuntimeAvailable,
+  };
+
+  let cursorBlocker: string | null = null;
+  if (!cursorFlags.authAvailable && !cursorFlags.runtimeDetected) {
+    cursorBlocker = "No Cursor CLI (`agent`) or Cursor credentials were found locally.";
+  } else if (cursorFlags.cliExplicitlyUnauthenticated && !cursorEnvAuth) {
+    cursorBlocker = "Cursor CLI (`agent`) is installed but no login was detected. Run: agent login";
+  } else if (!cursorFlags.authAvailable) {
+    cursorBlocker = "Cursor CLI (`agent`) is installed but no login was detected. Run: agent login";
+  } else if (!cursorFlags.runtimeDetected) {
+    cursorBlocker =
+      "Cursor credentials exist, but ADE could not find the `agent` binary. Add Cursor’s CLI install directory to your PATH and refresh.";
+  }
+
+  const cursor: AiProviderConnectionStatus = {
+    ...createUnavailableStatus("cursor", checkedAt),
+    authAvailable: cursorFlags.authAvailable,
+    runtimeDetected: cursorFlags.runtimeDetected,
+    runtimeAvailable: cursorFlags.runtimeAvailable,
+    usageAvailable: cursorFlags.runtimeAvailable,
+    path: cursorCli?.path ?? null,
+    sources: [
+      { kind: "local-credentials", detected: cursorEnvAuth, source: cursorEnvAuth ? "cursor-env" : undefined },
+      {
+        kind: "cli",
+        detected: Boolean(cursorCli?.installed),
+        authenticated: cursorCli?.authenticated,
+        verified: cursorCli?.verified,
+        path: cursorCli?.path ?? null,
+      },
+    ],
+    blocker: cursorBlocker,
+  };
+  // Cursor has no runtime-health probe yet.
+
+  return { claude, codex, cursor };
 }

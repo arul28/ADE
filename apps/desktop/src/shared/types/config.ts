@@ -824,7 +824,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "openrouter" | "local";
-  cli?: "claude" | "codex";
+  cli?: "claude" | "codex" | "cursor";
   provider?: string;
   source?: "config" | "env" | "store";
   path?: string;
@@ -833,7 +833,7 @@ export type AiDetectedAuth = {
   verified?: boolean;
 };
 
-export type AiProviderCredentialSource = "macos-keychain" | "claude-credentials-file" | "codex-auth-file";
+export type AiProviderCredentialSource = "macos-keychain" | "claude-credentials-file" | "codex-auth-file" | "cursor-env";
 
 export type AiProviderConnectionSource = {
   kind: "cli" | "local-credentials";
@@ -846,7 +846,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "cursor";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -860,6 +860,7 @@ export type AiProviderConnectionStatus = {
 export type AiProviderConnections = {
   claude: AiProviderConnectionStatus;
   codex: AiProviderConnectionStatus;
+  cursor: AiProviderConnectionStatus;
 };
 
 export type AiApiKeyVerificationResult = {
@@ -877,10 +878,12 @@ export type AiSettingsStatus = {
   availableProviders: {
     claude: boolean;
     codex: boolean;
+    cursor: boolean;
   };
   models: {
     claude: AiModelDescriptor[];
     codex: AiModelDescriptor[];
+    cursor: AiModelDescriptor[];
   };
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
@@ -1046,10 +1049,12 @@ export type AiIntegrationStatus = {
   availableProviders: {
     claude: boolean;
     codex: boolean;
+    cursor: boolean;
   };
   models: {
     claude: AgentChatModelInfo[];
     codex: AgentChatModelInfo[];
+    cursor: AgentChatModelInfo[];
   };
   // New unified fields
   detectedAuth?: AiDetectedAuth[];

@@ -15,8 +15,8 @@ import {
 function makeStatus(overrides: Partial<AiSettingsStatus> = {}): AiSettingsStatus {
   return {
     mode: "guest",
-    availableProviders: { claude: false, codex: false },
-    models: { claude: [], codex: [] },
+    availableProviders: { claude: false, codex: false, cursor: false },
+    models: { claude: [], codex: [], cursor: [] },
     features: [],
     detectedAuth: [],
     ...overrides,
@@ -138,6 +138,36 @@ describe("deriveConfiguredModelIds", () => {
       expect(descriptor).toBeTruthy();
       expect(descriptor!.family).toBe("openai");
       expect(descriptor!.isCliWrapped).toBe(true);
+    }
+  });
+
+  it("includes Cursor CLI models from availableModelIds when includeCursor is true", () => {
+    const status = makeStatus({
+      detectedAuth: [{ type: "cli-subscription", cli: "cursor", authenticated: true }],
+      availableModelIds: ["cursor/auto", "cursor/composer-2", "openai/gpt-5.4-pro"],
+    });
+    const ids = deriveConfiguredModelIds(status, { includeCursor: true });
+    expect(ids).toContain("cursor/auto");
+    expect(ids).toContain("cursor/composer-2");
+    for (const id of ids) {
+      if (!String(id).startsWith("cursor/")) continue;
+      const descriptor = getModelById(id);
+      expect(descriptor).toBeTruthy();
+      expect(descriptor!.family).toBe("cursor");
+      expect(descriptor!.isCliWrapped).toBe(true);
+    }
+  });
+
+  it("excludes Cursor CLI models by default (includeCursor defaults to false)", () => {
+    const status = makeStatus({
+      detectedAuth: [{ type: "cli-subscription", cli: "cursor", authenticated: true }],
+      availableModelIds: ["cursor/auto", "cursor/composer-2"],
+    });
+    const ids = deriveConfiguredModelIds(status);
+    expect(ids).not.toContain("cursor/auto");
+    expect(ids).not.toContain("cursor/composer-2");
+    for (const id of ids) {
+      expect(String(id).startsWith("cursor/")).toBe(false);
     }
   });
 

@@ -20,22 +20,33 @@ When ADE opens a repository for the first time, it creates a local `.ade/` direc
 
 ## First-run onboarding
 
-ADE walks through a short onboarding flow:
+When ADE opens a new repository, it launches the **project setup wizard** — a 7-step flow that configures your development tools, AI providers, GitHub, Linear, and context docs.
 
 <Steps>
-  <Step title="Detect repository defaults">
-    ADE reads local Git settings and common project signals.
+  <Step title="Dev tools check">
+    ADE checks for Git, GitHub CLI, and Node.js.
   </Step>
-  <Step title="Review project config">
-    ADE proposes a starting config for the repository.
+  <Step title="AI connections">
+    Connect API key providers (Anthropic, OpenAI) or CLI-based providers (Claude Code, Codex, Cursor).
   </Step>
-  <Step title="Import existing branches">
-    ADE can register existing branches as attached lanes.
+  <Step title="Background helpers">
+    Enable auto-titling, context doc generation, and auto-refresh.
   </Step>
-  <Step title="Generate context">
-    ADE builds an initial context baseline so new agents do not start completely cold.
+  <Step title="GitHub">
+    Authenticate for PR management, CI sync, and stacked PR workflows.
+  </Step>
+  <Step title="Semantic search">
+    Build a local embedding index for faster context retrieval.
+  </Step>
+  <Step title="Linear">
+    Connect for bidirectional issue tracking with the CTO agent.
+  </Step>
+  <Step title="Context docs">
+    Generate baseline PRD and architecture docs from your codebase.
   </Step>
 </Steps>
+
+You can skip any step and configure it later in Settings. For a detailed walkthrough of each step, see [Project Setup & Onboarding](/getting-started/project-setup).
 
 <Tip>
 If `.ade/` is not already ignored, add it to `.gitignore`.

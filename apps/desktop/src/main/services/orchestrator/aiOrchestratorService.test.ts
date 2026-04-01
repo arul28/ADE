@@ -683,7 +683,7 @@ function createMockAiIntegrationService(overrides: {
   executeTask?: (...args: any[]) => Promise<any>;
 } = {}) {
   return {
-    getAvailability: () => ({ claude: true, codex: true }),
+    getAvailability: () => ({ claude: true, codex: true, cursor: false }),
     getMode: () => "subscription",
     getFeatureFlag: () => true,
     getDailyBudgetLimit: () => null,

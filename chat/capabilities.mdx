@@ -36,6 +36,9 @@ The chat agent has access to a broad tool palette. The exact tools available dep
   <Card title="External MCP tools" icon="plug">
     If external MCP servers are configured and permitted for the session, the agent can call their tools. Toggle MCP tool groups in the chat header.
   </Card>
+  <Card title="PR issue resolution" icon="wrench">
+    Four specialized workflow tools for fixing PR issues: read failing check output, read review comments, apply fixes, and verify the fix resolves the issue. Available when a lane has an open PR.
+  </Card>
 </CardGroup>
 
 <Note>
@@ -45,9 +48,6 @@ The chat agent has access to a broad tool palette. The exact tools available dep
 ---
 
 ## Creating a PR from Chat
-
-<Info>**Screenshot: PR creation flow in chat — show the agent's message proposing a PR, the pre-filled PR form with auto-generated title and description, and the "Create PR" confirm button.</Info>
-
 The most common workflow is: make changes in chat → have the agent create a PR.
 
 <Steps>

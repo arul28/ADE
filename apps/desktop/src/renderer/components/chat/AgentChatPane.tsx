@@ -22,10 +22,17 @@ import {
   type AgentChatSessionSummary,
   type ComputerUseOwnerSnapshot,
   type ComputerUsePolicy,
+  type TerminalToolType,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
-import { MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../shared/modelRegistry";
+import {
+  MODEL_REGISTRY,
+  getModelById,
+  resolveModelDescriptorForProvider,
+  type ModelDescriptor,
+} from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
+import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
@@ -147,6 +154,8 @@ type NativeControlState = {
   codexSandbox: AgentChatCodexSandbox;
   codexConfigSource: AgentChatCodexConfigSource;
   unifiedPermissionMode: AgentChatUnifiedPermissionMode;
+  cursorModeId: string | null;
+  cursorConfigValues: Record<string, string | boolean>;
 };
 
 function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
@@ -158,6 +167,8 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
       codexSandbox: "danger-full-access",
       codexConfigSource: "flags",
       unifiedPermissionMode: "full-auto",
+      cursorModeId: "agent",
+      cursorConfigValues: {},
     };
   }
   return {
@@ -167,15 +178,32 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
     codexSandbox: "workspace-write",
     codexConfigSource: "flags",
     unifiedPermissionMode: "edit",
+    cursorModeId: "agent",
+    cursorConfigValues: {},
   };
 }
 
+type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "unified";
+
+function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
+  if (!desc?.isCliWrapped) return "unified";
+  if (desc.family === "openai") return "codex";
+  if (desc.family === "cursor") return "cursor";
+  return "claude";
+}
+
+function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registryModelId: string): string {
+  if (!desc?.isCliWrapped) return registryModelId;
+  if (desc.family === "cursor" || desc.family === "openai") return desc.sdkModelId || registryModelId;
+  return desc.shortId ?? registryModelId;
+}
+
 function summarizeNativeControls(
-  provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "unified",
+  provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "unified" | "cursor",
   controls: NativeControlState,
 ): Pick<
   AgentChatSessionSummary,
-  "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode" | "permissionMode"
+  "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode" | "permissionMode" | "cursorModeId"
 > {
   if (provider === "claude") {
     let permissionMode: AgentChatSessionSummary["permissionMode"];
@@ -212,9 +240,26 @@ function summarizeNativeControls(
       ...(permissionMode ? { permissionMode } : {}),
     };
   }
+  if (provider === "cursor") {
+    return {
+      ...(controls.cursorModeId != null ? { cursorModeId: controls.cursorModeId } : {}),
+    };
+  }
   return {
     unifiedPermissionMode: controls.unifiedPermissionMode,
     permissionMode: controls.unifiedPermissionMode,
+  };
+}
+
+/**
+ * Build a fallback CursorModeSnapshot when the Cursor ACP provider hasn't
+ * reported its own snapshot yet.
+ */
+function buildFallbackCursorModeSnapshot(modeId: string | null | undefined): NonNullable<AgentChatSessionSummary["cursorModeSnapshot"]> {
+  const normalized = typeof modeId === "string" && modeId.trim().length ? modeId.trim() : "agent";
+  return {
+    currentModeId: normalized,
+    availableModeIds: [...CURSOR_AVAILABLE_MODE_IDS],
   };
 }
 
@@ -302,10 +347,12 @@ function resolveAssistantLabel(
   model: ModelDescriptor | null | undefined,
   sessionProvider: string | null | undefined,
 ): string {
+  if (model?.family === "cursor" || model?.cliCommand === "cursor") return "Cursor";
   if (model?.family === "anthropic" || model?.cliCommand === "claude") return "Claude";
   if (model?.family === "openai" || model?.cliCommand === "codex") return "Codex";
   if (sessionProvider === "claude") return "Claude";
   if (sessionProvider === "codex") return "Codex";
+  if (sessionProvider === "cursor") return "Cursor";
   return "Assistant";
 }
 
@@ -371,9 +418,15 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
-function resolveCliRegistryModelId(provider: "codex" | "claude", value: string | null | undefined): string | null {
+function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor", value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
+  if (provider === "cursor") {
+    const fullId = normalized.startsWith("cursor/") ? normalized : `cursor/${normalized}`;
+    const dynamic = getModelById(fullId) ?? resolveModelDescriptorForProvider(normalized.replace(/^cursor\//, ""), "cursor");
+    if (dynamic && dynamic.family === "cursor" && dynamic.isCliWrapped) return dynamic.id;
+    return null;
+  }
   const family = provider === "codex" ? "openai" : "anthropic";
   const match = MODEL_REGISTRY.find(
     (model) =>
@@ -388,10 +441,11 @@ function resolveCliRegistryModelId(provider: "codex" | "claude", value: string |
   return match?.id ?? null;
 }
 
-function chatToolTypeForProvider(provider: string | null | undefined): "codex-chat" | "claude-chat" | "ai-chat" {
+function chatToolTypeForProvider(provider: string | null | undefined): TerminalToolType {
   switch (provider) {
     case "codex": return "codex-chat";
     case "claude": return "claude-chat";
+    case "cursor": return "cursor";
     default: return "ai-chat";
   }
 }
@@ -499,6 +553,9 @@ export function AgentChatPane({
   onSessionCreated?: (sessionId: string) => void | Promise<void>;
 }) {
   const navigate = useNavigate();
+  const openAiProvidersSettings = useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   const selectLane = useAppStore((s) => s.selectLane);
   const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs && initialSessionSummary);
   const forceDraft = forceDraftMode || forceNewSession;
@@ -512,6 +569,7 @@ export function AgentChatPane({
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
+  const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
   const [modelId, setModelId] = useState<string>("");
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
@@ -523,10 +581,13 @@ export function AgentChatPane({
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
   const [codexConfigSource, setCodexConfigSource] = useState<AgentChatCodexConfigSource>(initialNativeControls.codexConfigSource);
   const [unifiedPermissionMode, setUnifiedPermissionMode] = useState<AgentChatUnifiedPermissionMode>(initialNativeControls.unifiedPermissionMode);
+  const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
+  const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, string | boolean>>(initialNativeControls.cursorConfigValues);
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
   const [providerConnections, setProviderConnections] = useState<{
     claude: AiProviderConnectionStatus | null;
     codex: AiProviderConnectionStatus | null;
+    cursor: AiProviderConnectionStatus | null;
   } | null>(null);
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [includeProjectDocs, setIncludeProjectDocs] = useState(false);
@@ -543,6 +604,10 @@ export function AgentChatPane({
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
+  const [optimisticOutgoingMessage, setOptimisticOutgoingMessage] = useState<{
+    sessionId: string;
+    envelope: AgentChatEventEnvelope;
+  } | null>(null);
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
@@ -564,6 +629,7 @@ export function AgentChatPane({
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const handoffRef = useRef<HTMLDivElement | null>(null);
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
+  const cursorWarmupKeyRef = useRef<string | null>(null);
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
@@ -578,14 +644,30 @@ export function AgentChatPane({
   }, [selectedSession]);
 
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
+  const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
+  const selectedEventsForDisplay = useMemo(() => {
+    if (!optimisticOutgoingMessage || optimisticOutgoingMessage.sessionId !== selectedSessionId) {
+      return selectedEvents;
+    }
+    return [...selectedEvents, optimisticOutgoingMessage.envelope];
+  }, [optimisticOutgoingMessage, selectedEvents, selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const activeProviderConnection = selectedSession?.provider === "claude"
     ? (providerConnections?.claude ?? null)
     : selectedSession?.provider === "codex"
       ? (providerConnections?.codex ?? null)
-      : null;
+      : selectedSession?.provider === "cursor"
+        ? (providerConnections?.cursor ?? null)
+        : null;
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
+  const pendingApprovalIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of pendingInputsBySession[selectedSessionId ?? ""] ?? []) {
+      ids.add(entry.itemId);
+    }
+    return ids;
+  }, [pendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
@@ -596,12 +678,25 @@ export function AgentChatPane({
 
   const sessionProvider = useMemo(() => {
     if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
-    const desc = getModelById(modelId);
-    if (!desc) return "unified";
-    if (desc.family === "openai" && desc.isCliWrapped) return "codex";
-    if (desc.family === "anthropic" && desc.isCliWrapped) return "claude";
-    return "unified";
+    return resolveChatRuntimeProvider(getModelById(modelId));
   }, [selectedSession, modelSelectionDiffersFromSession, modelId]);
+  const effectiveCursorModeSnapshot = useMemo(() => {
+    if (sessionProvider !== "cursor") return null;
+    const base = selectedSession?.cursorModeSnapshot ?? buildFallbackCursorModeSnapshot(cursorModeId);
+    return {
+      ...base,
+      currentModeId: cursorModeId ?? base.currentModeId,
+      configOptions: base.configOptions?.map((option) => {
+        if (option.id === base.modeConfigId) {
+          return { ...option, currentValue: cursorModeId ?? option.currentValue };
+        }
+        if (Object.prototype.hasOwnProperty.call(cursorConfigValues, option.id)) {
+          return { ...option, currentValue: cursorConfigValues[option.id] ?? option.currentValue };
+        }
+        return option;
+      }),
+    };
+  }, [cursorConfigValues, cursorModeId, selectedSession?.cursorModeSnapshot, sessionProvider]);
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
@@ -611,6 +706,8 @@ export function AgentChatPane({
       setCodexSandbox(initialNativeControls.codexSandbox);
       setCodexConfigSource(initialNativeControls.codexConfigSource);
       setUnifiedPermissionMode(initialNativeControls.unifiedPermissionMode);
+      setCursorModeId(initialNativeControls.cursorModeId);
+      setCursorConfigValues(initialNativeControls.cursorConfigValues);
       return;
     }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
@@ -625,6 +722,14 @@ export function AgentChatPane({
     setCodexSandbox(session.codexSandbox ?? initialNativeControls.codexSandbox);
     setCodexConfigSource(session.codexConfigSource ?? initialNativeControls.codexConfigSource);
     setUnifiedPermissionMode(session.unifiedPermissionMode ?? initialNativeControls.unifiedPermissionMode);
+    setCursorModeId(session.cursorModeId ?? session.cursorModeSnapshot?.currentModeId ?? initialNativeControls.cursorModeId);
+    setCursorConfigValues(
+      Object.fromEntries(
+        (session.cursorModeSnapshot?.configOptions ?? [])
+          .filter((option) => option.id !== session.cursorModeSnapshot?.modeConfigId)
+          .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
+      ),
+    );
     setComputerUsePolicy(session.computerUse ?? createDefaultComputerUsePolicy());
   }, [initialNativeControls]);
   const executionModeOptions = useMemo(
@@ -686,7 +791,7 @@ export function AgentChatPane({
   const refreshAvailableModels = useCallback(async () => {
     try {
       const status = await window.ade.ai.getStatus();
-      const available = deriveConfiguredModelIds(status);
+      const available = deriveConfiguredModelIds(status, { includeCursor: true });
       setAvailableModelIds(available);
       return available;
     } catch {
@@ -694,9 +799,10 @@ export function AgentChatPane({
     }
 
     try {
-      const [codexModels, claudeModels, unifiedModels] = await Promise.all([
+      const [codexModels, claudeModels, cursorModels, unifiedModels] = await Promise.all([
         window.ade.agentChat.models({ provider: "codex" }).catch(() => []),
         window.ade.agentChat.models({ provider: "claude" }).catch(() => []),
+        window.ade.agentChat.models({ provider: "cursor" }).catch(() => []),
         window.ade.agentChat.models({ provider: "unified" }).catch(() => []),
       ]);
       const available = new Set<string>();
@@ -709,14 +815,27 @@ export function AgentChatPane({
         const resolved = resolveCliRegistryModelId("claude", model.id);
         if (resolved) available.add(resolved);
       }
+      for (const model of cursorModels) {
+        const resolved = resolveCliRegistryModelId("cursor", model.id);
+        if (resolved) available.add(resolved);
+      }
       for (const model of unifiedModels) {
         const resolved = resolveRegistryModelId(model.id);
         if (resolved) available.add(resolved);
       }
 
-      const ordered = MODEL_REGISTRY.filter((model) => !model.deprecated && available.has(model.id)).map((model) => model.id);
-      setAvailableModelIds(ordered);
-      return ordered;
+      const ordered = MODEL_REGISTRY
+        .filter((model) => !model.deprecated && available.has(model.id))
+        .map((model) => model.id);
+      const extra = [...available].filter((modelId) => !ordered.includes(modelId));
+      extra.sort((left, right) => {
+        const leftLabel = getModelById(left)?.displayName ?? left;
+        const rightLabel = getModelById(right)?.displayName ?? right;
+        return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+      });
+      const allAvailable = [...ordered, ...extra];
+      setAvailableModelIds(allAvailable);
+      return allAvailable;
     } catch {
       setAvailableModelIds([]);
       return [];
@@ -729,6 +848,7 @@ export function AgentChatPane({
       setProviderConnections({
         claude: status.providerConnections?.claude ?? null,
         codex: status.providerConnections?.codex ?? null,
+        cursor: status.providerConnections?.cursor ?? null,
       });
     } catch {
       setProviderConnections(null);
@@ -959,6 +1079,7 @@ export function AgentChatPane({
     optimisticSessionIdsRef.current.clear();
     pendingSelectedSessionIdRef.current = null;
     appliedInitialSessionIdRef.current = initialSessionId ?? null;
+    eagerCreateFiredRef.current = false;
     if (forceDraft && !lockSessionId) {
       draftSelectionLockedRef.current = true;
       setSelectedSessionId(null);
@@ -975,6 +1096,26 @@ export function AgentChatPane({
   useEffect(() => {
     syncComposerToSession(selectedSession);
   }, [selectedSession?.sessionId, selectedSessionModelId, syncComposerToSession]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !selectedSessionModelId || turnActive) return;
+    const desc = getModelById(selectedSessionModelId);
+    if (!desc?.isCliWrapped || desc.family !== "cursor") return;
+    const warmupKey = `${selectedSessionId}:${selectedSessionModelId}:${selectedSession?.cursorModeSnapshot?.currentModeId ?? cursorModeId ?? "agent"}`;
+    if (cursorWarmupKeyRef.current === warmupKey) return;
+    cursorWarmupKeyRef.current = warmupKey;
+    window.ade.agentChat.warmupModel({
+      sessionId: selectedSessionId,
+      modelId: selectedSessionModelId,
+    }).then(() => refreshSessions()).catch(() => {});
+  }, [
+    cursorModeId,
+    refreshSessions,
+    selectedSession?.cursorModeSnapshot?.currentModeId,
+    selectedSessionId,
+    selectedSessionModelId,
+    turnActive,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1108,7 +1249,12 @@ export function AgentChatPane({
     setPromptSuggestion(null);
     setHandoffOpen(false);
     setHandoffBusy(false);
+    setOptimisticOutgoingMessage(null);
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    optimisticOutgoingMessageRef.current = optimisticOutgoingMessage;
+  }, [optimisticOutgoingMessage]);
 
   // Fetch SDK slash commands when session changes
   useEffect(() => {
@@ -1208,6 +1354,12 @@ export function AgentChatPane({
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
+      if (
+        optimisticOutgoingMessageRef.current?.sessionId === envelope.sessionId
+        && envelope.event.type === "user_message"
+      ) {
+        setOptimisticOutgoingMessage(null);
+      }
       if (!knownSessionIdsRef.current.has(envelope.sessionId)) return;
       pendingEventQueueRef.current.push(envelope);
       const touchTimestamp = getChatSessionLocalTouchTimestampForEvent(envelope);
@@ -1383,6 +1535,8 @@ export function AgentChatPane({
     codexSandbox,
     codexConfigSource,
     unifiedPermissionMode,
+    cursorModeId,
+    cursorConfigValues,
   }), [
     interactionMode,
     claudePermissionMode,
@@ -1390,21 +1544,24 @@ export function AgentChatPane({
     codexSandbox,
     codexConfigSource,
     unifiedPermissionMode,
+    cursorModeId,
+    cursorConfigValues,
   ]);
   const nativeControlsRef = useRef<NativeControlState>(currentNativeControls);
   useEffect(() => {
     nativeControlsRef.current = currentNativeControls;
   }, [currentNativeControls]);
 
-  const buildNativeControlPayload = useCallback((provider: "claude" | "codex" | "unified") => {
-    return summarizeNativeControls(provider, currentNativeControls);
+  const buildNativeControlPayload = useCallback((provider: ChatRuntimeProviderKey) => {
+    return {
+      ...summarizeNativeControls(provider, currentNativeControls),
+      ...(provider === "cursor" ? { cursorConfigValues: currentNativeControls.cursorConfigValues } : {}),
+    };
   }, [currentNativeControls]);
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
     const nextDesc = getModelById(nextModelId);
-    const nextProvider: "claude" | "codex" | "unified" = nextDesc?.isCliWrapped
-      ? (nextDesc.family === "openai" ? "codex" : "claude")
-      : "unified";
-    const nextModel = nextProvider === "unified" ? nextModelId : (nextDesc?.shortId ?? nextModelId);
+    const nextProvider = resolveChatRuntimeProvider(nextDesc);
+    const nextModel = nextProvider === "unified" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
     const tiers = nextDesc?.reasoningTiers ?? [];
     const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
     const nextReasoningEffort = selectReasoningEffort({ tiers, preferred });
@@ -1431,10 +1588,8 @@ export function AgentChatPane({
     if (!laneId) return null;
     const createPromise = (async () => {
       const desc = getModelById(modelId);
-      const provider = desc?.isCliWrapped
-        ? (desc.family === "openai" ? "codex" : "claude")
-        : "unified";
-      const model = provider === "unified" ? modelId : (desc?.shortId ?? modelId);
+      const provider = resolveChatRuntimeProvider(desc);
+      const model = provider === "unified" ? modelId : runtimeFacingModelId(desc, modelId);
       const sessionProfile = resolveChatSessionProfile(computerUsePolicy);
       const created = await window.ade.agentChat.create({
         laneId,
@@ -1452,6 +1607,12 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = false;
       touchSession(created.id);
       setSelectedSessionId(created.id);
+      if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
+        window.ade.agentChat.warmupModel({
+          sessionId: created.id,
+          modelId,
+        }).then(() => refreshSessions()).catch(() => { /* warmup is best-effort */ });
+      }
       // Await tab navigation and session-list refresh before returning so the
       // caller doesn't send the first message while the user is still on the
       // blank "new chat" screen.
@@ -1541,12 +1702,22 @@ export function AgentChatPane({
         Boolean(selectedSessionId)
         && Boolean(selectedSessionModelId)
         && selectedSessionModelId !== modelId;
+      const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
+      const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
+        sessionId: nextSessionId,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "user_message",
+          text: finalText,
+          ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
+          deliveryState: "queued",
+        },
+      });
 
       if (sessionId && !turnActive && (selectedModelChanged || hasComputerUseSelectionChanged || shouldPromoteLightSession)) {
+        setOptimisticOutgoingMessage({ sessionId, envelope: optimisticEnvelope(sessionId) });
         const desc = getModelById(modelId);
-        const provider = desc?.isCliWrapped
-          ? (desc.family === "openai" ? "codex" : "claude")
-          : "unified";
+        const provider = resolveChatRuntimeProvider(desc);
         await window.ade.agentChat.updateSession({
           sessionId,
           modelId,
@@ -1554,11 +1725,15 @@ export function AgentChatPane({
           ...buildNativeControlPayload(provider),
           computerUse: computerUsePolicy,
         });
-        await refreshSessions();
+        void refreshSessions().catch(() => {});
       } else if (!sessionId) {
         // No session yet — create one
         sessionId = await createSession();
+        if (!sessionId) {
+          throw new Error("Unable to create chat session.");
+        }
         justCreatedSession = true;
+        setOptimisticOutgoingMessage({ sessionId, envelope: optimisticEnvelope(sessionId) });
       }
       if (!sessionId) {
         throw new Error("Unable to create chat session.");
@@ -1566,14 +1741,15 @@ export function AgentChatPane({
 
       touchSession(sessionId);
 
-      const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       const steerText = selectedAttachments.length
         ? `${finalText}\n\nAttached context:\n${selectedAttachments.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
         : finalText;
       if (turnActiveBySession[sessionId]) {
+        setOptimisticOutgoingMessage(null);
         await window.ade.agentChat.steer({ sessionId, text: steerText });
       } else {
         try {
+          setOptimisticOutgoingMessage({ sessionId, envelope: optimisticEnvelope(sessionId) });
           await window.ade.agentChat.send({
             sessionId,
             text: finalText,
@@ -1601,10 +1777,12 @@ export function AgentChatPane({
       if (!justCreatedSession) {
         await refreshSessions().catch(() => {});
       }
+      setOptimisticOutgoingMessage(null);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
       setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+      setOptimisticOutgoingMessage(null);
       setError(message);
       if (
         /ade chat could not authenticate/i.test(message)
@@ -1632,8 +1810,8 @@ export function AgentChatPane({
     launchModeEditable,
     modelId,
     reasoningEffort,
+    refreshAvailableModels,
     refreshSessions,
-    selectedEvents.length,
     selectedSessionId,
     selectedSessionModelId,
     sessionProvider,
@@ -1652,6 +1830,35 @@ export function AgentChatPane({
     }
   }, [selectedSessionId, touchSession]);
 
+  const handleApproval = useCallback(async (
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+    responseText?: string | null,
+    answers?: Record<string, string | string[]>,
+  ) => {
+    if (!selectedSessionId) return;
+    try {
+      touchSession(selectedSessionId);
+      setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
+      await window.ade.agentChat.respondToInput({
+        sessionId: selectedSessionId,
+        itemId,
+        decision,
+        responseText,
+        ...(answers ? { answers } : {}),
+      });
+      setPendingInputsBySession((prev) => ({
+        ...prev,
+        [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId)
+      }));
+      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
+      await refreshSessions().catch(() => {});
+    } catch (approvalError) {
+      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
+      setError(approvalError instanceof Error ? approvalError.message : String(approvalError));
+    }
+  }, [refreshSessions, selectedSessionId, touchSession]);
+
   const approve = useCallback(async (
     decision: AgentChatApprovalDecision,
     responseText?: string | null,
@@ -1660,23 +1867,8 @@ export function AgentChatPane({
     if (!selectedSessionId) return;
     const request = pendingInputsBySession[selectedSessionId]?.[0];
     if (!request) return;
-    try {
-      touchSession(selectedSessionId);
-      await window.ade.agentChat.respondToInput({
-        sessionId: selectedSessionId,
-        itemId: request.itemId,
-        decision,
-        responseText,
-        ...(answers ? { answers } : {}),
-      });
-      setPendingInputsBySession((prev) => ({
-        ...prev,
-        [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== request.itemId)
-      }));
-    } catch (approvalError) {
-      setError(approvalError instanceof Error ? approvalError.message : String(approvalError));
-    }
-  }, [pendingInputsBySession, selectedSessionId, touchSession]);
+    await handleApproval(request.itemId, decision, responseText, answers);
+  }, [handleApproval, pendingInputsBySession, selectedSessionId]);
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -1693,11 +1885,16 @@ export function AgentChatPane({
     setCodexSandbox(nextControls.codexSandbox);
     setCodexConfigSource(nextControls.codexConfigSource);
     setUnifiedPermissionMode(nextControls.unifiedPermissionMode);
+    setCursorModeId(nextControls.cursorModeId);
+    setCursorConfigValues(nextControls.cursorConfigValues);
 
     if (!selectedSessionId) return;
 
     const provider = selectedSession?.provider ?? sessionProvider;
-    const nextSummary = summarizeNativeControls(provider, nextControls);
+    const nextSummary = {
+      ...summarizeNativeControls(provider, nextControls),
+      ...(provider === "cursor" ? { cursorConfigValues: nextControls.cursorConfigValues } : {}),
+    };
     patchSessionSummary(selectedSessionId, nextSummary);
     if (isPersistentIdentitySurface) {
       setSessionMutationKind("permission");
@@ -1818,6 +2015,7 @@ export function AgentChatPane({
                       onChange={setHandoffModelId}
                       availableModelIds={handoffAvailableModelIds}
                       showReasoning={false}
+                      onOpenAiSettings={openAiProvidersSettings}
                     />
                   </div>
                   <div className="mt-3 flex items-center justify-end gap-2">
@@ -1959,6 +2157,7 @@ export function AgentChatPane({
             draft={draft}
             attachments={attachments}
             pendingInput={pendingInput?.request ?? null}
+            approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
             busy={busy}
@@ -1969,6 +2168,7 @@ export function AgentChatPane({
             codexSandbox={codexSandbox}
             codexConfigSource={codexConfigSource}
             unifiedPermissionMode={unifiedPermissionMode}
+            cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
             computerUsePolicy={computerUsePolicy}
             computerUseSnapshot={computerUseSnapshot}
@@ -1987,8 +2187,18 @@ export function AgentChatPane({
             onCodexSandboxChange={(value) => { void updateNativeControls({ codexSandbox: value }); }}
             onCodexConfigSourceChange={(value) => { void updateNativeControls({ codexConfigSource: value }); }}
             onUnifiedPermissionModeChange={(value) => { void updateNativeControls({ unifiedPermissionMode: value }); }}
+            onCursorModeChange={(value) => { void updateNativeControls({ cursorModeId: value }); }}
+            onCursorConfigChange={(configId, value) => {
+              void updateNativeControls({
+                cursorConfigValues: {
+                  ...nativeControlsRef.current.cursorConfigValues,
+                  [configId]: value,
+                },
+              });
+            }}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
             onToggleProof={() => setProofDrawerOpen((current) => !current)}
+            onOpenAiSettings={openAiProvidersSettings}
             onModelChange={(nextModelId) => {
               if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
                 return;
@@ -1999,7 +2209,11 @@ export function AgentChatPane({
               const snapshot = buildModelSelectionSnapshot(nextModelId);
               if (!selectedSessionId || turnActive) {
                 applyModelSelectionSnapshot(snapshot);
-                if (selectedSessionId && snapshot.nextDesc?.family === "anthropic" && snapshot.nextDesc.isCliWrapped) {
+                if (
+                  selectedSessionId
+                  && snapshot.nextDesc?.isCliWrapped
+                  && (snapshot.nextDesc.family === "anthropic" || snapshot.nextDesc.family === "cursor")
+                ) {
                   window.ade.agentChat.warmupModel({
                     sessionId: selectedSessionId,
                     modelId: nextModelId,
@@ -2029,12 +2243,17 @@ export function AgentChatPane({
                   codexSandbox: updatedSession.codexSandbox,
                   codexConfigSource: updatedSession.codexConfigSource,
                   unifiedPermissionMode: updatedSession.unifiedPermissionMode,
+                  cursorModeId: updatedSession.cursorModeId,
+                  cursorModeSnapshot: updatedSession.cursorModeSnapshot,
                   computerUse: updatedSession.computerUse,
                 });
                 window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
                   .then(setSdkSlashCommands)
                   .catch(() => {});
-                if (snapshot.nextDesc?.family === "anthropic" && snapshot.nextDesc.isCliWrapped) {
+                if (
+                  snapshot.nextDesc?.isCliWrapped
+                  && (snapshot.nextDesc.family === "anthropic" || snapshot.nextDesc.family === "cursor")
+                ) {
                   window.ade.agentChat.warmupModel({
                     sessionId: selectedSessionId,
                     modelId: nextModelId,
@@ -2077,7 +2296,7 @@ export function AgentChatPane({
             }}
             promptSuggestion={promptSuggestion}
             subagentSnapshots={selectedSubagentSnapshots}
-            chatHasMessages={selectedEvents.some(env => env.event.type === "user_message" || env.event.type === "text")}
+            chatHasMessages={selectedEventsForDisplay.some((env) => env.event.type === "user_message" || env.event.type === "text")}
             pendingSteers={pendingSteers}
             onCancelSteer={(steerId) => {
               if (selectedSessionId) {
@@ -2098,13 +2317,17 @@ export function AgentChatPane({
             {error}
           </div>
         ) : null}
-        {selectedSessionId && activeProviderConnection?.blocker && !activeProviderConnection.runtimeAvailable ? (
+        {selectedSessionId && !activeProviderConnection?.runtimeAvailable && (activeProviderConnection?.blocker || activeProviderConnection?.provider === "cursor") ? (
           <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-              {activeProviderConnection.provider === "claude" ? "Claude runtime" : "Codex runtime"}
+              {activeProviderConnection.provider === "claude"
+                ? "Claude runtime"
+                : activeProviderConnection.provider === "cursor"
+                  ? "Cursor runtime"
+                  : "Codex runtime"}
             </div>
             <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-              {activeProviderConnection.blocker}
+              {activeProviderConnection.blocker || "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."}
             </div>
           </div>
         ) : null}
@@ -2152,23 +2375,16 @@ export function AgentChatPane({
               ) : null}
               <AgentChatMessageList
                 key={selectedSessionId ?? "chat-draft"}
-                events={selectedEvents}
+                events={selectedEventsForDisplay}
                 showStreamingIndicator={turnActive}
                 className="min-h-0 border-0"
                 surfaceMode={surfaceMode}
                 surfaceProfile={surfaceProfile}
                 assistantLabel={assistantLabel}
+                respondingApprovalIds={respondingApprovalIds}
+                pendingApprovalIds={pendingApprovalIds}
                 onApproval={(itemId, decision, responseText) => {
-                  if (!selectedSessionId) return;
-                  touchSession(selectedSessionId);
-                  window.ade.agentChat.respondToInput({ sessionId: selectedSessionId, itemId, decision, responseText }).then(() => {
-                    setPendingInputsBySession((prev) => ({
-                      ...prev,
-                      [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((e) => e.itemId !== itemId)
-                    }));
-                  }).catch((err) => {
-                    setError(err instanceof Error ? err.message : String(err));
-                  });
+                  void handleApproval(itemId, decision, responseText);
                 }}
               />
               {sessionDelta ? (

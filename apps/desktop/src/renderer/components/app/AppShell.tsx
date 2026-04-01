@@ -408,7 +408,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (!aiStatus) return false;
     const runtimeOrLocal =
       aiStatus.providerConnections?.claude.authAvailable
-      || aiStatus.providerConnections?.codex.authAvailable;
+      || aiStatus.providerConnections?.codex.authAvailable
+      || aiStatus.providerConnections?.cursor?.authAvailable;
     return Boolean(runtimeOrLocal || (aiStatus.detectedAuth?.length ?? 0) > 0);
   }, [aiStatus]);
 

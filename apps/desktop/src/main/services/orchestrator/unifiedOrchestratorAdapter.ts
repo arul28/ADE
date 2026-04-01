@@ -304,20 +304,23 @@ function cleanupStaleMcpConfigFiles(projectRoot: string): void {
 const VALID_PERMISSION_MODES = new Set<string>(["default", "plan", "edit", "full-auto", "config-toml"]);
 
 function resolveManagedPermissionMode(args: {
-  provider: "claude" | "codex" | "unified";
+  provider: "claude" | "codex" | "unified" | "cursor";
   permissionConfig: LegacyPermissionConfig | undefined;
   readOnlyExecution: boolean;
 }): AgentChatPermissionMode | undefined {
   if (args.readOnlyExecution) return "plan";
   const providers = args.permissionConfig?._providers;
-  const candidate = providers?.[args.provider] as string | undefined;
+  const candidate =
+    args.provider === "cursor"
+      ? ((providers?.cursor ?? providers?.unified) as string | undefined)
+      : (providers?.[args.provider] as string | undefined);
   return typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
     ? candidate as AgentChatPermissionMode
     : undefined;
 }
 
 function mapPermissionModeToNativeFields(
-  provider: "claude" | "codex" | "unified",
+  provider: "claude" | "codex" | "unified" | "cursor",
   mode: AgentChatPermissionMode | undefined,
 ): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "unifiedPermissionMode">> {
   if (!mode) return {};
@@ -349,9 +352,12 @@ function mapPermissionModeToNativeFields(
 }
 
 function resolveManagedExecutionMode(args: {
-  provider: "claude" | "codex" | "unified";
+  provider: "claude" | "codex" | "unified" | "cursor";
   teamRuntime?: TeamRuntimeConfig;
 }): AgentChatExecutionMode {
+  if (args.provider === "cursor") {
+    return "focused";
+  }
   if (args.provider === "claude") {
     if (
       args.teamRuntime?.enabled

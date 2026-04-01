@@ -36,6 +36,8 @@ export type MissionProviderPermissions = {
   claude?: AgentChatPermissionMode;
   /** Permission mode for Codex CLI workers */
   codex?: AgentChatPermissionMode;
+  /** Permission mode for Cursor CLI workers */
+  cursor?: AgentChatPermissionMode;
   /** Permission mode for API/unified model workers */
   unified?: AgentChatPermissionMode;
   /** Codex sandbox level (only relevant for codex) */

@@ -23,6 +23,8 @@ import { getApiKeyStoreStatus } from "./apiKeyStore";
 import type { createMemoryService } from "../memory/memoryService";
 import type { CompactionFlushService } from "../memory/compactionFlushService";
 import { discoverLocalModels } from "./localModelDiscovery";
+import { discoverCursorCliModelDescriptors, clearCursorCliModelsCache } from "../chat/cursorModelsDiscovery";
+import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { probeClaudeRuntimeHealth, resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
@@ -58,14 +60,16 @@ export type AiIntegrationStatus = {
   availableProviders: {
     claude: boolean;
     codex: boolean;
+    cursor: boolean;
   };
   models: {
     claude: AgentModelDescriptor[];
     codex: AgentModelDescriptor[];
+    cursor: AgentModelDescriptor[];
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "openrouter" | "local";
-    cli?: "claude" | "codex";
+    cli?: "claude" | "codex" | "cursor";
     provider?: string;
     source?: "config" | "env" | "store";
     path?: string;
@@ -255,10 +259,11 @@ function extractConfiguredApiKeys(snapshot: ReturnType<ReturnType<typeof createP
   return out;
 }
 
-function toCliAvailability(auth: DetectedAuth[]): { claude: boolean; codex: boolean } {
+function toCliAvailability(auth: DetectedAuth[]): { claude: boolean; codex: boolean; cursor: boolean } {
   return {
     claude: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "claude"),
     codex: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "codex"),
+    cursor: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "cursor"),
   };
 }
 
@@ -377,7 +382,12 @@ export function createAiIntegrationService(args: {
     if (args.snapshot.effective.providerMode === "subscription") {
       return "subscription";
     }
-    if (args.providerConnections && (args.providerConnections.claude.authAvailable || args.providerConnections.codex.authAvailable)) {
+    if (
+      args.providerConnections
+      && (args.providerConnections.claude.authAvailable
+        || args.providerConnections.codex.authAvailable
+        || args.providerConnections.cursor.authAvailable)
+    ) {
       return "subscription";
     }
     if (args.auth && hasUsableDetectedAuth(args.auth)) {
@@ -397,9 +407,11 @@ export function createAiIntegrationService(args: {
     const statuses = getCachedCliAuthStatuses();
     const claude = statuses.find((entry) => entry.cli === "claude");
     const codex = statuses.find((entry) => entry.cli === "codex");
+    const cursor = statuses.find((entry) => entry.cli === "cursor");
     return {
       claude: Boolean(claude?.installed && (claude.authenticated || !claude.verified)),
       codex: Boolean(codex?.installed && (codex.authenticated || !codex.verified)),
+      cursor: Boolean(cursor?.installed && (cursor.authenticated || !cursor.verified)),
     };
   };
 
@@ -414,7 +426,27 @@ export function createAiIntegrationService(args: {
   };
 
   const getResolvedAvailableModels = async (auth: DetectedAuth[]) => {
-    const available = getAvailableModels(auth);
+    let available = getAvailableModels(auth);
+
+    const hasCursorCliAuth = auth.some(
+      (entry) =>
+        entry.type === "cli-subscription"
+        && entry.cli === "cursor"
+        && entry.authenticated !== false,
+    );
+    if (hasCursorCliAuth) {
+      try {
+        const { path: agentPath } = resolveCursorAgentExecutable();
+        const cursorModels = await discoverCursorCliModelDescriptors(agentPath);
+        available = [
+          ...available.filter((descriptor) => !(descriptor.family === "cursor" && descriptor.isCliWrapped)),
+          ...cursorModels,
+        ];
+      } catch {
+        // Cursor CLI missing or `agent models` failed — omit dynamic Cursor list
+      }
+    }
+
     const discoveredLocalModels = await discoverLocalModels(auth);
     if (discoveredLocalModels.length === 0) {
       return available;
@@ -797,7 +829,7 @@ export function createAiIntegrationService(args: {
 
     const auth = await detectAuth();
     const available = await getResolvedAvailableModels(auth);
-    const family = provider === "codex" ? "openai" : "anthropic";
+    const family = provider === "codex" ? "openai" : provider === "cursor" ? "cursor" : "anthropic";
     const models = available
       .filter((descriptor) => descriptor.family === family)
       .map((descriptor) => ({
@@ -813,7 +845,7 @@ export function createAiIntegrationService(args: {
 
     const fallback = provider === "codex"
       ? CODEX_FALLBACK_MODELS
-      : listModelDescriptorsForProvider("claude")
+      : listModelDescriptorsForProvider(provider)
           .map((descriptor) => ({ id: descriptor.id, label: descriptor.displayName }));
     modelListCache.set(provider, { models: fallback, cachedAt: now });
     return fallback;
@@ -863,6 +895,8 @@ export function createAiIntegrationService(args: {
       if (options?.force) {
         resetProviderRuntimeHealth();
         resetClaudeRuntimeProbeCache();
+        clearCursorCliModelsCache();
+        modelListCache.clear();
         runtimeHealthVersion = getProviderRuntimeHealthVersion();
       }
       const auth = await detectAuth(options);
@@ -883,11 +917,13 @@ export function createAiIntegrationService(args: {
       const availability = {
         claude: providerConnections.claude.runtimeAvailable,
         codex: providerConnections.codex.runtimeAvailable,
+        cursor: providerConnections.cursor.runtimeAvailable,
       };
       const runtimeFilteredAvailable = available.filter((descriptor) => {
         if (!descriptor.isCliWrapped) return true;
         if (descriptor.family === "anthropic") return providerConnections.claude.runtimeAvailable;
         if (descriptor.family === "openai") return providerConnections.codex.runtimeAvailable;
+        if (descriptor.family === "cursor") return providerConnections.cursor.runtimeAvailable;
         return true;
       });
       const result: AiIntegrationStatus = {
@@ -895,7 +931,8 @@ export function createAiIntegrationService(args: {
         availableProviders: availability,
         models: {
           claude: availability.claude ? await listModels("claude") : [],
-          codex: availability.codex ? await listModels("codex") : []
+          codex: availability.codex ? await listModels("codex") : [],
+          cursor: availability.cursor ? await listModels("cursor") : [],
         },
         detectedAuth: redactDetectedAuth(auth, cliStatuses),
         providerConnections,

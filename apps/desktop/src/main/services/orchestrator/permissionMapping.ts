@@ -130,6 +130,7 @@ export function normalizeMissionPermissions(config: MissionPermissionConfig | un
     const p = config.providers;
     if (p.claude && VALID_PROVIDER_MODES.has(p.claude)) result.claude = p.claude;
     if (p.codex && VALID_PROVIDER_MODES.has(p.codex)) result.codex = p.codex;
+    if (p.cursor && VALID_PROVIDER_MODES.has(p.cursor)) result.cursor = p.cursor;
     if (p.unified && VALID_PROVIDER_MODES.has(p.unified)) result.unified = p.unified;
     if (p.codexSandbox === "read-only" || p.codexSandbox === "workspace-write" || p.codexSandbox === "danger-full-access") {
       result.codexSandbox = p.codexSandbox;

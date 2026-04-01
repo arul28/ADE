@@ -155,6 +155,7 @@ export function augmentPathWithKnownCliDirs(
     pathValue,
     getKnownBinDirs("claude", env).join(path.delimiter),
     getKnownBinDirs("codex", env).join(path.delimiter),
+    getKnownBinDirs("agent", env).join(path.delimiter),
   );
 }
 

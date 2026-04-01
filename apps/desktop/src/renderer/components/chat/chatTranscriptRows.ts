@@ -118,6 +118,18 @@ export function readRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function isGenericToolIdentifier(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return !normalized.length || normalized === "other" || normalized === "tool";
+}
+
+function readToolTitle(value: unknown): string | null {
+  const record = readRecord(value);
+  if (!record) return null;
+  const title = typeof record.title === "string" ? record.title.trim() : "";
+  return title.length ? title : null;
+}
+
 export function formatStructuredValue(value: unknown): string {
   if (typeof value === "string") return value;
   try {
@@ -204,18 +216,21 @@ function buildToolWorkLogEvent(
   timestamp: string,
 ): WorkLogRenderEvent {
   const status = event.type === "tool_call" ? "running" : (event.status ?? "completed");
-  const collapseKey = buildCollapseKey("tool", event, event.tool);
+  const titleFallback = readToolTitle(event.type === "tool_call" ? event.args : event.result);
+  const resolvedToolName = isGenericToolIdentifier(event.tool) && titleFallback ? titleFallback : event.tool;
+  const collapseKey = buildCollapseKey("tool", event);
   return {
     type: "work_log_entry",
     collapseKey,
     entry: {
       id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
-      label: event.tool,
+      label: resolvedToolName,
       tone: deriveTone(status, "tool"),
       status,
       entryKind: "tool",
-      toolName: event.tool,
+      toolName: resolvedToolName,
+      ...(titleFallback && titleFallback !== resolvedToolName ? { detail: titleFallback } : {}),
       ...(event.type === "tool_call" ? { args: event.args } : {}),
       ...(event.type === "tool_result" ? { result: event.result } : {}),
       ...(event.itemId ? { itemId: event.itemId } : {}),
@@ -346,13 +361,20 @@ function mergeWorkLogEntries(previous: ChatWorkLogEntry, next: ChatWorkLogEntry)
   const detail = next.detail ?? previous.detail;
   const command = next.command ?? previous.command;
   const result = eventHasPayload(next.result) ? next.result : previous.result;
+  const toolName = isGenericToolIdentifier(next.toolName) && !isGenericToolIdentifier(previous.toolName)
+    ? previous.toolName
+    : (next.toolName ?? previous.toolName);
+  const label = isGenericToolIdentifier(next.label) && !isGenericToolIdentifier(previous.label)
+    ? previous.label
+    : (next.label || previous.label);
 
   return {
     ...previous,
     ...next,
     createdAt: previous.createdAt,
-    label: next.label || previous.label,
+    label,
     tone: next.status === "failed" ? "error" : next.tone ?? previous.tone,
+    ...(toolName ? { toolName } : {}),
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
@@ -477,6 +499,7 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "text") {
+    if (!event.text.trim().length) return;
     const previous = rows[rows.length - 1];
     if (previous?.event.type === "text" && shouldMergeTextRows(previous.event, event)) {
       const nextTurn = event.turnId ?? null;
@@ -492,6 +515,19 @@ export function appendCollapsedChatTranscriptEvent(
           ...(event.messageId && !previous.event.messageId ? { messageId: event.messageId } : {}),
         },
       };
+      return;
+    }
+  }
+
+  if (event.type === "system_notice") {
+    const previous = rows[rows.length - 1];
+    if (
+      previous?.event.type === "system_notice"
+      && previous.event.noticeKind === event.noticeKind
+      && previous.event.message.trim() === event.message.trim()
+      && JSON.stringify(previous.event.detail ?? null) === JSON.stringify(event.detail ?? null)
+      && (previous.event.turnId ?? null) === (event.turnId ?? null)
+    ) {
       return;
     }
   }

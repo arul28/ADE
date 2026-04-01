@@ -150,6 +150,7 @@ describe("AppShell", () => {
           providerConnections: {
             claude: { authAvailable: true },
             codex: { authAvailable: true },
+            cursor: { authAvailable: false },
           },
         })),
       },

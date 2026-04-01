@@ -1,6 +1,8 @@
 ---
-title: "Running Multiple Agents"
+title: "Guide: Running multiple agents"
+sidebarTitle: "Multi-Agent Setup"
 description: "Run parallel AI agents across lanes, monitor them from the Workspace Graph, and handle conflicts between concurrent work."
+icon: "graduation-cap"
 ---
 
 ADE is built for parallel agent execution. This guide covers creating lanes for parallel work, assigning agents to each, monitoring everything from the Workspace Graph, and dealing with conflicts when agents touch overlapping files.
@@ -69,7 +71,9 @@ Navigate to **Workspace Graph** in the sidebar. You will see:
 - **Branch relationships** — edges connect lanes to their base branches
 - **Conflict warnings** — overlapping file indicators appear between lane pairs with predicted conflicts
 
-*Coming soon: screenshot walkthrough of the Workspace Graph with multiple active agents.*
+The Graph uses staged hydration — it loads topology first (lane nodes and branch edges), then overlays conflict predictions, PR status, and agent activity indicators in a second pass. This keeps the graph responsive even with many active lanes.
+
+Use keyboard shortcuts in the Graph: `Cmd+F` to search for a lane, `Cmd+0` to fit all nodes, and `Cmd+Click` to select multiple lanes for bulk operations.
 
 ---
 

@@ -16,6 +16,7 @@ import {
   X
 } from "@phosphor-icons/react";
 import type { FileTreeNode, FilesWorkspace } from "../../../shared/types";
+import { replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
 import { cn } from "../ui/cn";
 
 type OpenTab = {
@@ -194,6 +195,11 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
     () => workspaces.find((workspace) => workspace.id === workspaceId) ?? null,
     [workspaces, workspaceId]
   );
+
+  React.useEffect(() => {
+    if (!activeWorkspace?.rootPath) return;
+    replaceDirtyBuffersForWorkspace(activeWorkspace.rootPath, openTabs);
+  }, [activeWorkspace?.rootPath, openTabs]);
 
   const canEdit = React.useMemo(() => {
     if (!activeWorkspace) return false;

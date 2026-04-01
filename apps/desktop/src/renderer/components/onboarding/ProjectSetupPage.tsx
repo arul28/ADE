@@ -54,7 +54,10 @@ const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
 /* Step header — short title on top, subtitle below */
 const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
   tools: { heading: "Developer Tools", sub: "ADE needs git for version control. GitHub CLI unlocks PR creation, review requests, and CI checks." },
-  ai: { heading: "Connect AI Providers", sub: "Link your AI accounts so ADE can power chat, code generation, and background automations." },
+  ai: {
+    heading: "Connect AI providers",
+    sub: "Link API keys and CLIs (Claude Code, Codex, Cursor agent) so ADE can power chat, codegen, and background automations. After the CLI is installed and signed in, Cursor models appear in work chat automatically.",
+  },
   helpers: { heading: "Background Helpers", sub: "These lightweight AI automations run in the background while you work. All are optional and can be changed anytime in Settings." },
   github: { heading: "GitHub Integration", sub: "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." },
   embeddings: { heading: "Semantic Search", sub: "A small local model that enables meaning-based memory search instead of just keyword matching." },

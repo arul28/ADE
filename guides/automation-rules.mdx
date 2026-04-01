@@ -1,6 +1,8 @@
 ---
-title: "Setting Up Automation Rules"
+title: "Guide: Setting up automation rules"
+sidebarTitle: "Setting Up Rules"
 description: "Create event-driven automations that trigger AI agents in response to git pushes, PRs, cron schedules, and file changes."
+icon: "graduation-cap"
 ---
 
 Automations let you wire up triggers to AI execution surfaces so that work happens without manual intervention. This guide covers creating a rule, choosing triggers, selecting executors, and setting guardrails.
@@ -71,7 +73,18 @@ The executor determines how the triggered work runs. Choose one:
 
 For agent sessions, you provide a **prompt template** — the instruction the agent receives when the trigger fires. Use `{{branch}}`, `{{files}}`, and `{{event}}` placeholders to inject trigger context into the prompt.
 
-*Coming soon: detailed prompt template reference with all available placeholders.*
+### Available prompt placeholders
+
+| Placeholder | Description |
+|------------|-------------|
+| `{{branch}}` | The branch name that triggered the event |
+| `{{files}}` | List of changed files (for git push and file change triggers) |
+| `{{event}}` | The raw event type (e.g., `git.push`, `git.pr_opened`) |
+| `{{pr.title}}` | PR title (PR triggers only) |
+| `{{pr.body}}` | PR description body (PR triggers only) |
+| `{{pr.url}}` | PR URL on GitHub (PR triggers only) |
+| `{{lane}}` | The lane name where the trigger fired |
+| `{{timestamp}}` | ISO 8601 timestamp of the trigger event |
 
 ---
 
@@ -103,7 +116,9 @@ Beyond budgets, guardrails control what the automation is allowed to do:
 - **Tool allowlist** — limit the MCP tools available to the agent
 - **Approval gate** — require human approval before the agent commits or pushes
 
-*Coming soon: detailed guardrail configuration reference.*
+Guardrails are set per-rule and work independently of global permissions. A rule's guardrails can be more restrictive than the global policy but never more permissive.
+
+For the complete guardrails reference, see [Automations → Guardrails](/automations/guardrails).
 
 ---
 

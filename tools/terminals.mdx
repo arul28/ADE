@@ -4,8 +4,6 @@ description: "Real PTY terminal sessions per lane — full xterm.js emulation, s
 icon: "terminal"
 ---
 
-<Info>**Screenshot: The Terminals panel showing 3 session tabs at the top of a terminal — one labeled "shell" (white), one labeled "npm dev" (purple, Managed), one labeled "Agent: claude-3-7" (blue tint, Agent session). The active terminal should show command output. The lane name should be visible in the panel header.</Info>
-
 ## Overview
 
 ADE provides real **PTY (pseudo-terminal) sessions** for every lane. These are not simulated command runners or output capture panels — they are full terminal emulators backed by xterm.js, with complete VT100/ANSI support, interactive programs, color output, and all the keyboard controls you expect from a native terminal.
@@ -81,8 +79,6 @@ ADE categorizes terminal sessions into three types. The type determines how the 
     </Warning>
   </Accordion>
 </AccordionGroup>
-
-<Info>**Screenshot: Side-by-side comparison of the three session types in the tab strip — an Interactive session (white label, "shell"), a Managed session (purple label, "npm dev · running"), and an Agent session (blue tinted tab, "Agent: claude-3-7-sonnet · active") — with the agent session terminal showing a stream of tool call output.</Info>
 
 ---
 
@@ -265,8 +261,6 @@ The dialog shows the full content to be pasted. You can confirm, edit it, or can
     The Primary lane's terminal sessions run in the main repository root directory, not in a worktree. Changes made via Primary lane sessions affect the main working tree directly. If you have agents running in Worktree lanes simultaneously, their changes are invisible to the Primary lane until merged.
   </Accordion>
 </AccordionGroup>
-
-<Info>**Screenshot: The terminal session Smart Paste dialog — a modal showing "Multi-line paste detected (5 lines)" with a preview of the pasted commands in a code block, and "Cancel", "Edit", and "Run" buttons at the bottom.</Info>
 
 ---
 

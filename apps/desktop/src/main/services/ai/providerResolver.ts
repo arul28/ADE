@@ -305,6 +305,12 @@ async function resolveCliWrapped(
     return provider(descriptor.sdkModelId) as LanguageModel;
   }
 
+  if (cli === "cursor") {
+    throw new Error(
+      "Cursor models run in the work chat via the Cursor CLI (ACP), not through this API path. Pick Cursor in the work tab chat provider.",
+    );
+  }
+
   throw new Error(`Unknown CLI command "${cli}" for model "${descriptor.id}".`);
 }
 

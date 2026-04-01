@@ -8,6 +8,7 @@ import {
   Warning,
   Terminal,
   FileCode,
+  Check,
   CheckCircle,
   XCircle,
   Circle,
@@ -42,7 +43,7 @@ import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresenta
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { getToolMeta } from "./chatToolAppearance";
-import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
+import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
@@ -837,10 +838,12 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
 function resolveModelMeta(modelId?: string, model?: string): { label: string | null; family: string | null; cliCommand: string | null } {
   const key = modelId ?? model;
   const descriptor = key ? (getModelById(key) ?? resolveModelDescriptor(key)) : undefined;
+  const idHint = String(modelId ?? model ?? "").trim();
+  const inferredCursor = !descriptor && idHint.startsWith("cursor/");
   return {
     label: resolveModelLabel(modelId, model),
-    family: descriptor?.family ?? null,
-    cliCommand: descriptor?.cliCommand ?? null,
+    family: descriptor?.family ?? (inferredCursor ? "cursor" : null),
+    cliCommand: descriptor?.cliCommand ?? (inferredCursor ? "cursor" : null),
   };
 }
 
@@ -905,6 +908,9 @@ function ModelGlyph({
   className?: string;
 }) {
   const meta = resolveModelMeta(modelId, model);
+  if (meta.family === "cursor" || meta.cliCommand === "cursor") {
+    return <CursorAgentLogo size={size} className={className} />;
+  }
   if (meta.family === "anthropic" || meta.cliCommand === "claude") {
     return <ClaudeLogo size={size} className={className} />;
   }
@@ -933,14 +939,18 @@ function resolveAssistantPresentation({
       ? "Claude"
       : modelMeta.cliCommand === "codex"
         ? "Codex"
-        : null;
-  const fallbackProviderLabel = customLabel === "Claude" || customLabel === "Codex" ? customLabel : null;
+        : modelMeta.family === "cursor" || modelMeta.cliCommand === "cursor"
+          ? "Cursor"
+          : null;
+  const fallbackProviderLabel =
+    customLabel === "Claude" || customLabel === "Codex" || customLabel === "Cursor" ? customLabel : null;
   const hardOverrideLabel =
     customLabel.length > 0
       && customLabel !== "Agent"
       && customLabel !== "Assistant"
       && customLabel !== "Claude"
       && customLabel !== "Codex"
+      && customLabel !== "Cursor"
       ? customLabel
       : null;
   const resolvedProviderLabel = providerLabel ?? fallbackProviderLabel;
@@ -949,7 +959,9 @@ function resolveAssistantPresentation({
     ? <ClaudeLogo size={10} className="text-fg/70" />
     : resolvedProviderLabel === "Codex"
       ? <CodexLogo size={10} className="text-fg/70" />
-      : <Robot size={10} weight="bold" className="text-fg/70" />;
+      : resolvedProviderLabel === "Cursor"
+        ? <CursorAgentLogo size={10} className="text-fg/70" />
+        : <Robot size={10} weight="bold" className="text-fg/70" />;
   return { label, glyph };
 }
 
@@ -1057,6 +1069,8 @@ function renderEvent(
     assistantLabel?: string;
     turnActive?: boolean;
     onOpenWorkspacePath?: (path: string) => void;
+    respondingApprovalIds?: Set<string>;
+    pendingApprovalIds?: Set<string>;
   }
 ) {
   const event = envelope.event;
@@ -1753,6 +1767,9 @@ function renderEvent(
   /* ── Approval request ── */
   if (event.type === "approval_request") {
     const handleApproval = options?.onApproval ? (d: AgentChatApprovalDecision) => options.onApproval?.(event.itemId, d) : undefined;
+    const isResponding = options?.respondingApprovalIds?.has(event.itemId) ?? false;
+    const isPending = options?.pendingApprovalIds?.has(event.itemId) ?? true;
+    const isResolved = !isPending && !isResponding;
     const detail = readRecord(event.detail);
     const request = readRecord(detail?.request);
     const requestKind = typeof request?.kind === "string" ? request.kind.trim() : "";
@@ -1858,51 +1875,73 @@ function renderEvent(
         {handleApproval && !isAskUser ? (
           isPlanApproval ? (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                className="border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-200 transition-colors hover:bg-emerald-500/25"
-                onClick={() => handleApproval("accept")}
-              >
-                Approve &amp; Implement
-              </button>
-              <button
-                type="button"
-                className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
-                onClick={() => handleApproval("decline")}
-              >
-                Reject &amp; Revise
-              </button>
+              {isResolved ? (
+                <span className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border border-emerald-500/20 bg-emerald-500/8 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-300/70">
+                  <Check size={12} weight="bold" /> Responded
+                </span>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    disabled={isResponding}
+                    className="border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-200 transition-colors hover:bg-emerald-500/25 disabled:opacity-40 disabled:pointer-events-none"
+                    onClick={() => handleApproval("accept")}
+                  >
+                    {isResponding ? "Processing..." : "Approve & Implement"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isResponding}
+                    className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15 disabled:opacity-40 disabled:pointer-events-none"
+                    onClick={() => handleApproval("decline")}
+                  >
+                    Reject &amp; Revise
+                  </button>
+                </>
+              )}
             </div>
           ) : (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                className="border border-accent/40 bg-accent/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-accent/25"
-                onClick={() => handleApproval("accept")}
-              >
-                Accept
-              </button>
-              <button
-                type="button"
-                className="border border-accent/20 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/10"
-                onClick={() => handleApproval("accept_for_session")}
-              >
-                Accept All
-              </button>
-              <button
-                type="button"
-                className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
-                onClick={() => handleApproval("decline")}
-              >
-                Decline
-              </button>
-              <button
-                type="button"
-                className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15"
-                onClick={() => handleApproval("cancel")}
-              >
-                Dismiss
-              </button>
+              {isResolved ? (
+                <span className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border border-emerald-500/20 bg-emerald-500/8 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-300/70">
+                  <Check size={12} weight="bold" /> Responded
+                </span>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    disabled={isResponding}
+                    className="border border-accent/40 bg-accent/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-accent/25 disabled:opacity-40 disabled:pointer-events-none"
+                    onClick={() => handleApproval("accept")}
+                  >
+                    {isResponding ? "Processing..." : "Accept"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isResponding}
+                    className="border border-accent/20 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/10 disabled:opacity-40 disabled:pointer-events-none"
+                    onClick={() => handleApproval("accept_for_session")}
+                  >
+                    Accept All
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isResponding}
+                    className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15 disabled:opacity-40 disabled:pointer-events-none"
+                    onClick={() => handleApproval("decline")}
+                  >
+                    Decline
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isResponding}
+                    className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15 disabled:opacity-40 disabled:pointer-events-none"
+                    onClick={() => handleApproval("cancel")}
+                  >
+                    Dismiss
+                  </button>
+                </>
+              )}
             </div>
           )
         ) : null}
@@ -2024,21 +2063,23 @@ function renderEvent(
         : "border-amber-500/15 bg-amber-500/[0.05] text-amber-300";
 
     return (
-      <div className={cn("flex flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 font-sans text-[10px]", statusTone)}>
-        <span className="font-medium text-fg/40">Usage</span>
-        {modelLabel ? (
-          <span className="inline-flex items-center gap-1.5 text-fg/35">
-            <ModelGlyph modelId={event.modelId} model={event.model} size={10} className="text-fg/40" />
-            <span>{modelLabel}</span>
-          </span>
-        ) : null}
-        {inputTokens ? <span className="text-fg/30">In {inputTokens}</span> : null}
-        {outputTokens ? <span className="text-fg/30">Out {outputTokens}</span> : null}
-        {cacheRead ? <span className="text-emerald-400/35">Cache {cacheRead}</span> : null}
-        {cacheCreation ? <span className="text-violet-400/35">New cache {cacheCreation}</span> : null}
-        {costLabel ? <span className="text-fg/30">{costLabel}</span> : null}
+      <div className={cn("flex items-start justify-between gap-3 rounded-lg border px-3 py-1.5 font-sans text-[10px]", statusTone)}>
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="font-medium text-fg/40">Usage</span>
+          {modelLabel ? (
+            <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-fg/35">
+              <ModelGlyph modelId={event.modelId} model={event.model} size={10} className="shrink-0 text-fg/40" />
+              <span className="min-w-0 break-words">{modelLabel}</span>
+            </span>
+          ) : null}
+          {inputTokens ? <span className="text-fg/30">In {inputTokens}</span> : null}
+          {outputTokens ? <span className="text-fg/30">Out {outputTokens}</span> : null}
+          {cacheRead ? <span className="text-emerald-400/35">Cache {cacheRead}</span> : null}
+          {cacheCreation ? <span className="text-violet-400/35">New cache {cacheCreation}</span> : null}
+          {costLabel ? <span className="text-fg/30">{costLabel}</span> : null}
+        </div>
         {event.status !== "completed" ? (
-          <span className="ml-auto text-[9px] text-current">{event.status}</span>
+          <span className="shrink-0 self-center text-[9px] font-medium uppercase tracking-wide text-current">{event.status}</span>
         ) : null}
       </div>
     );
@@ -2335,6 +2376,8 @@ type EventRowProps = {
   turnActive?: boolean;
   onOpenWorkspacePath?: (path: string) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
+  respondingApprovalIds?: Set<string>;
+  pendingApprovalIds?: Set<string>;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -2349,6 +2392,8 @@ const EventRow = React.memo(function EventRow({
   turnActive,
   onOpenWorkspacePath,
   onNavigateSuggestion,
+  respondingApprovalIds,
+  pendingApprovalIds,
 }: EventRowProps) {
   return (
     <div className="space-y-3">
@@ -2375,7 +2420,7 @@ const EventRow = React.memo(function EventRow({
             onNavigateSuggestion={onNavigateSuggestion}
           />
         )
-        : renderEvent(envelope as RenderEnvelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive, onOpenWorkspacePath })}
+        : renderEvent(envelope as RenderEnvelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive, onOpenWorkspacePath, respondingApprovalIds, pendingApprovalIds })}
     </div>
   );
 });
@@ -2524,6 +2569,8 @@ export function AgentChatMessageList({
   surfaceProfile = "standard",
   assistantLabel,
   onOpenWorkspacePath,
+  respondingApprovalIds,
+  pendingApprovalIds,
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -2533,6 +2580,8 @@ export function AgentChatMessageList({
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
+  respondingApprovalIds?: Set<string>;
+  pendingApprovalIds?: Set<string>;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
@@ -2768,6 +2817,8 @@ export function AgentChatMessageList({
           turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
           onOpenWorkspacePath={openWorkspacePath}
           onNavigateSuggestion={handleNavigateSuggestion}
+          respondingApprovalIds={respondingApprovalIds}
+          pendingApprovalIds={pendingApprovalIds}
         />
       );
     }
@@ -2786,9 +2837,11 @@ export function AgentChatMessageList({
         turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
         onOpenWorkspacePath={openWorkspacePath}
         onNavigateSuggestion={handleNavigateSuggestion}
+        respondingApprovalIds={respondingApprovalIds}
+        pendingApprovalIds={pendingApprovalIds}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

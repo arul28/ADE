@@ -27,28 +27,41 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Docs",
-        "icon": "book",
+        "tab": "Get Started",
+        "icon": "rocket",
         "groups": [
           {
-            "group": "Overview",
-            "icon": "rocket",
+            "group": "Welcome",
+            "icon": "hand-wave",
             "expanded": true,
             "pages": [
-              "introduction",
-              "key-concepts"
+              "welcome",
+              "key-concepts",
+              "quickstart"
             ]
           },
           {
-            "group": "Getting Started",
+            "group": "Setup",
             "icon": "flag-checkered",
             "pages": [
-              "quickstart",
               "getting-started/install",
               "getting-started/connect-provider",
-              "getting-started/open-project",
+              "getting-started/project-setup",
               "getting-started/first-lane",
               "getting-started/first-agent"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "App Guide",
+        "icon": "grid-2",
+        "groups": [
+          {
+            "group": "Run",
+            "icon": "play",
+            "pages": [
+              "tools/project-home"
             ]
           },
           {
@@ -59,28 +72,8 @@
               "lanes/creating",
               "lanes/stacks",
               "lanes/packs",
-              "lanes/environment"
-            ]
-          },
-          {
-            "group": "CTO Agent",
-            "icon": "crown",
-            "pages": [
-              "cto/overview",
-              "cto/setup",
-              "cto/memory",
-              "cto/linear",
-              "cto/workers"
-            ]
-          },
-          {
-            "group": "Missions",
-            "icon": "bullseye",
-            "pages": [
-              "missions/overview",
-              "missions/creating",
-              "missions/workers",
-              "missions/budget"
+              "lanes/environment",
+              "guides/multi-agent-setup"
             ]
           },
           {
@@ -93,13 +86,98 @@
             ]
           },
           {
+            "group": "Terminals",
+            "icon": "rectangle-terminal",
+            "pages": [
+              "tools/terminals"
+            ]
+          },
+          {
+            "group": "Files",
+            "icon": "file-code",
+            "pages": [
+              "tools/files-editor"
+            ]
+          },
+          {
+            "group": "Graph",
+            "icon": "diagram-project",
+            "pages": [
+              "tools/workspace-graph"
+            ]
+          },
+          {
+            "group": "Pull Requests",
+            "icon": "code-pull-request",
+            "pages": [
+              "tools/pull-requests",
+              "tools/conflicts",
+              "guides/stacked-prs"
+            ]
+          },
+          {
+            "group": "History",
+            "icon": "clock-rotate-left",
+            "pages": [
+              "tools/history"
+            ]
+          },
+          {
             "group": "Automations",
             "icon": "bolt",
             "pages": [
               "automations/overview",
               "automations/executors",
               "automations/templates",
-              "automations/guardrails"
+              "automations/guardrails",
+              "guides/automation-rules"
+            ]
+          },
+          {
+            "group": "Missions",
+            "icon": "bullseye",
+            "pages": [
+              "missions/overview",
+              "missions/creating",
+              "missions/workers",
+              "missions/budget",
+              "guides/first-mission"
+            ]
+          },
+          {
+            "group": "CTO Agent",
+            "icon": "crown",
+            "pages": [
+              "cto/overview",
+              "cto/setup",
+              "cto/memory",
+              "cto/linear",
+              "cto/workers",
+              "guides/cto-linear-workflow"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Settings",
+        "icon": "gear",
+        "groups": [
+          {
+            "group": "Settings Reference",
+            "icon": "sliders",
+            "expanded": true,
+            "pages": [
+              "configuration/settings",
+              "configuration/ai-providers",
+              "configuration/mcp-servers"
+            ]
+          },
+          {
+            "group": "Project Configuration",
+            "icon": "folder-tree",
+            "pages": [
+              "configuration/overview",
+              "configuration/permissions"
             ]
           },
           {
@@ -122,54 +200,12 @@
             ]
           },
           {
-            "group": "Workspace",
-            "icon": "chart-network",
-            "pages": [
-              "tools/workspace-graph",
-              "tools/project-home",
-              "tools/files-editor",
-              "tools/terminals",
-              "tools/pull-requests",
-              "tools/conflicts",
-              "tools/history"
-            ]
-          },
-          {
-            "group": "Configuration",
-            "icon": "gear",
-            "pages": [
-              "configuration/overview",
-              "configuration/ai-providers",
-              "configuration/mcp-servers",
-              "configuration/settings",
-              "configuration/permissions"
-            ]
-          },
-          {
-            "group": "AI Tools",
+            "group": "AI Tool Integrations",
             "icon": "wand-magic-sparkles",
             "pages": [
               "ai-tools/claude-code",
               "ai-tools/cursor",
               "ai-tools/windsurf"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Guides",
-        "icon": "map",
-        "groups": [
-          {
-            "group": "Workflow Guides",
-            "icon": "route",
-            "expanded": true,
-            "pages": [
-              "guides/first-mission",
-              "guides/automation-rules",
-              "guides/stacked-prs",
-              "guides/cto-linear-workflow",
-              "guides/multi-agent-setup"
             ]
           }
         ]
@@ -238,9 +274,9 @@
       {
         "header": "Resources",
         "items": [
-          { "label": "Documentation", "href": "/introduction" },
+          { "label": "Documentation", "href": "/welcome" },
           { "label": "Quick start", "href": "/quickstart" },
-          { "label": "Guides", "href": "/guides/first-mission" }
+          { "label": "App Guide", "href": "/tools/project-home" }
         ]
       },
       {

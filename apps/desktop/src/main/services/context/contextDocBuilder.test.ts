@@ -40,6 +40,56 @@ function buildValidPrdDoc(summary = "ADE is a local-first desktop workspace for 
   ].join("\n");
 }
 
+function buildValidPrdDocWithoutCanonicalTitle(summary = "ADE is a local-first desktop workspace for orchestrating coding agents."): string {
+  return [
+    "## What this is",
+    summary,
+    "",
+    "## Who it's for",
+    "- Solo AI-native developers coordinating multiple agents.",
+    "- Small teams working across parallel lanes and PRs.",
+    "",
+    "## Feature areas",
+    "- Lanes, missions, PR workflows, and proof capture.",
+    "- CTO and MCP-backed operator flows.",
+    "",
+    "## Current state",
+    "- Desktop app is the main product surface.",
+    "- Context docs are bounded agent bootstrap cards.",
+    "",
+    "## Working norms",
+    "- Prefer service-first fixes over renderer-only workarounds.",
+    "- Keep IPC, preload, shared types, and renderer code aligned.",
+    "",
+  ].join("\n");
+}
+
+function buildValidArchitectureDocWithoutCanonicalTitle(
+  summary = "ADE uses a trusted Electron main process, typed preload bridge, and untrusted renderer.",
+): string {
+  return [
+    "## System shape",
+    summary,
+    "",
+    "## Core services",
+    "- Main-process services own git, files, processes, missions, and context generation.",
+    "- The MCP server reuses shared ADE services.",
+    "",
+    "## Data and state",
+    "- Project state lives under `.ade/`.",
+    "- Runtime metadata primarily lives in `.ade/ade.db`.",
+    "",
+    "## Integration points",
+    "- Renderer talks to trusted services over typed IPC.",
+    "- External AI, GitHub, and Linear connect through service adapters.",
+    "",
+    "## Key patterns",
+    "- Enforce trust boundaries in code paths.",
+    "- Keep generated context distinct from canonical docs.",
+    "",
+  ].join("\n");
+}
+
 function buildValidArchitectureDoc(summary = "ADE uses a trusted Electron main process, typed preload bridge, and untrusted renderer."): string {
   return [
     "# ARCHITECTURE.ade",
@@ -200,6 +250,42 @@ describe("contextDocBuilder", () => {
       { id: "prd_ade", health: "ready", source: "ai" },
       { id: "architecture_ade", health: "ready", source: "ai" },
     ]);
+  });
+
+  it("canonicalizes model output that omits the leading # title and still writes ready ai docs", async () => {
+    const fixture = await createFixture();
+    cleanupRoots.push(fixture.projectRoot);
+    cleanupDbs.push(fixture.db);
+
+    const ai = createAiIntegrationService(JSON.stringify({
+      prd: buildValidPrdDocWithoutCanonicalTitle(),
+      architecture: buildValidArchitectureDocWithoutCanonicalTitle(),
+    }));
+
+    const result = await runContextDocGeneration({
+      db: fixture.db,
+      logger: createLogger() as any,
+      projectRoot: fixture.projectRoot,
+      projectId: "project-1",
+      packsDir: fixture.packsDir,
+      laneService: {} as any,
+      projectConfigService: {} as any,
+      aiIntegrationService: ai as any,
+    }, {
+      provider: "unified",
+    });
+
+    expect(result.degraded).toBe(false);
+    expect(result.warnings.filter((w) => w.code === "generator_invalid_prd" || w.code === "generator_invalid_architecture")).toEqual([]);
+    expect(result.docResults).toEqual([
+      expect.objectContaining({ id: "prd_ade", health: "ready", source: "ai" }),
+      expect.objectContaining({ id: "architecture_ade", health: "ready", source: "ai" }),
+    ]);
+
+    const prdBody = fs.readFileSync(path.join(fixture.projectRoot, ".ade", "context", "PRD.ade.md"), "utf8");
+    const archBody = fs.readFileSync(path.join(fixture.projectRoot, ".ade", "context", "ARCHITECTURE.ade.md"), "utf8");
+    expect(prdBody.startsWith("# PRD.ade\n")).toBe(true);
+    expect(archBody.startsWith("# ARCHITECTURE.ade\n")).toBe(true);
   });
 
   it("preserves previous good docs when replacement output is invalid", async () => {

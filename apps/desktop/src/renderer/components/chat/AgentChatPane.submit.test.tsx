@@ -221,6 +221,13 @@ function renderTabbedPane(session: AgentChatSessionSummary) {
   );
 }
 
+async function clickEnabledModelOption(name: RegExp | string) {
+  const options = await screen.findAllByRole("option", { name });
+  const enabledOption = options.find((option) => option.getAttribute("aria-disabled") !== "true");
+  expect(enabledOption).toBeTruthy();
+  fireEvent.click(enabledOption!);
+}
+
 function expectSessionTabOrder(expectedTitles: string[]) {
   const tabs = screen.getAllByRole("button")
     .filter((button) => expectedTitles.includes(button.textContent?.trim() ?? ""));
@@ -270,6 +277,41 @@ describe("AgentChatPane submit recovery", () => {
       }));
       expect(list).toHaveBeenCalled();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    });
+  });
+
+  it("shows an optimistic queued bubble immediately for Cursor-style sends", async () => {
+    const session = buildSession("session-1");
+    let resolveSend!: () => void;
+    const send = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    const list = vi.fn().mockResolvedValue([session]);
+    installAdeMocks({
+      sessions: [session],
+    });
+    window.ade.agentChat.send = send as any;
+    window.ade.agentChat.list = list as any;
+
+    renderPane(session);
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Ship the optimistic bubble." } });
+    fireEvent.click(screen.getByTitle("Send"));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Queued — will be delivered after this turn/i)).toBeTruthy();
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Ship the optimistic bubble.",
+      }));
+    });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+
+    resolveSend();
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Queued — will be delivered after this turn/i)).toBeNull();
     });
   });
 
@@ -415,7 +457,8 @@ describe("AgentChatPane submit recovery", () => {
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("option", { name: nextLabelPattern }));
+    fireEvent.click(await screen.findByRole("button", { name: /Anthropic/i }));
+    await clickEnabledModelOption(nextLabelPattern);
 
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -471,7 +514,8 @@ describe("AgentChatPane submit recovery", () => {
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("option", { name: nextLabelPattern }));
+    fireEvent.click(await screen.findByRole("button", { name: /Anthropic/i }));
+    await clickEnabledModelOption(nextLabelPattern);
 
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({

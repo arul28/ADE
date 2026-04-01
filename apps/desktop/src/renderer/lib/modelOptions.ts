@@ -41,17 +41,30 @@ function addKnownModelIds(ids: Set<ModelId>, family: string, includeCliWrapped: 
   }
 }
 
-export function deriveConfiguredModelIds(status: AiSettingsStatus | null | undefined): ModelId[] {
+export interface DeriveModelOptions {
+  /** Include cursor/* models in the result. Defaults to `false`. */
+  includeCursor?: boolean;
+}
+
+export function deriveConfiguredModelIds(
+  status: AiSettingsStatus | null | undefined,
+  options?: DeriveModelOptions,
+): ModelId[] {
   if (!status) return [];
 
-  // Derive available models entirely from detectedAuth — do NOT trust
-  // status.availableModelIds or status.models.* from the backend, as those
-  // may be populated before auth is fully confirmed.
+  const { includeCursor = false } = options ?? {};
+
+  // Derive available models from detectedAuth. For Cursor CLI, merge in
+  // `status.availableModelIds` entries under `cursor/*` (main lists them after
+  // `agent models`); other providers still use registry + auth only.
   const ids = new Set<ModelId>();
 
   for (const auth of status.detectedAuth ?? []) {
     if (auth.type === "cli-subscription") {
       if (!auth.authenticated) continue;
+      if (auth.cli === "cursor") {
+        continue;
+      }
       const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
       const family = auth.cli ? familyMap[auth.cli] : undefined;
       if (family) addKnownModelIds(ids, family, true);
@@ -75,13 +88,35 @@ export function deriveConfiguredModelIds(status: AiSettingsStatus | null | undef
     }
   }
 
-  return MODEL_REGISTRY
+  if (includeCursor) {
+    const cursorCliAuthed = status.detectedAuth?.some(
+      (a) => a.type === "cli-subscription" && a.cli === "cursor" && a.authenticated !== false,
+    );
+    if (cursorCliAuthed && status.availableModelIds?.length) {
+      for (const raw of status.availableModelIds) {
+        const id = String(raw ?? "").trim();
+        if (id.startsWith("cursor/")) ids.add(id as ModelId);
+      }
+    }
+  }
+
+  const registryOrdered = MODEL_REGISTRY
     .filter((model) => !model.deprecated && ids.has(model.id))
     .map((model) => model.id);
+  const extra = [...ids].filter((id) => !registryOrdered.includes(id));
+  extra.sort((a, b) => {
+    const da = getModelById(a)?.displayName ?? a;
+    const db = getModelById(b)?.displayName ?? b;
+    return da.localeCompare(db, undefined, { sensitivity: "base" });
+  });
+  return [...registryOrdered, ...extra];
 }
 
-export function deriveConfiguredModelOptions(status: AiSettingsStatus | null | undefined): AiModelDescriptor[] {
-  return deriveConfiguredModelIds(status).flatMap((modelId) => {
+export function deriveConfiguredModelOptions(
+  status: AiSettingsStatus | null | undefined,
+  options?: DeriveModelOptions,
+): AiModelDescriptor[] {
+  return deriveConfiguredModelIds(status, options).flatMap((modelId) => {
     const descriptor = getModelById(modelId);
     return descriptor ? [descriptorToModelOption(descriptor)] : [];
   });

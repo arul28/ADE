@@ -1,11 +1,13 @@
 ---
-title: "Your First Mission"
+title: "Guide: Your first mission"
+sidebarTitle: "Your First Mission"
 description: "A step-by-step walkthrough of creating and running a multi-step mission in ADE."
+icon: "graduation-cap"
 ---
 
 Missions are ADE's structured execution unit for complex, multi-step AI work. This guide walks you through creating your first mission, reviewing its plan, and monitoring workers as they execute.
 
-<Info>Before starting, make sure you have at least one AI provider configured in **Settings > AI Providers** and a project open with a valid `ade.yaml`.</Info>
+<Info>Before starting, make sure you have at least one AI provider configured in **Settings → AI** and a project open with a valid `ade.yaml`.</Info>
 
 ---
 
@@ -55,7 +57,16 @@ Once approved, workers begin executing the plan steps. Navigate to the **Mission
 - **Live terminal** — click any running step to see its agent's terminal output in real time
 - **Artifacts** — completed steps surface artifacts (code changes, test results, summaries) in the Artifacts tab
 
-*Coming soon: detailed walkthrough of the step detail panel and artifact inspection.*
+### Step detail panel
+
+Click any step in the step list to open its detail panel. The panel shows:
+
+- **Agent terminal** — live-streaming output from the worker agent
+- **File changes** — a diff view of files modified by this step
+- **Tool calls** — a log of every MCP tool the agent invoked, with parameters and results
+- **Timing** — start time, elapsed duration, and token usage
+
+If a step is running in parallel with others, each step has its own independent terminal view. Switch between running steps by clicking their rows in the step list.
 
 ---
 
@@ -84,7 +95,11 @@ Review the results:
 - **Chat tab** — the full conversation history between the coordinator and workers
 - **Cost summary** — total tokens and estimated cost for the mission
 
-*Coming soon: exporting mission results and linking artifacts to PRs.*
+### Linking results to PRs
+
+After a mission completes, you can create a PR directly from the mission's result lane. The PR description is pre-filled with the mission summary, step outcomes, and links to proof artifacts. Reviewers see exactly what the AI did and what evidence supports it.
+
+To export the full mission audit bundle: **Mission detail → Actions → Export audit bundle**. The bundle includes the plan, all step transcripts, artifacts, cost breakdown, and timing data.
 
 ---
 
