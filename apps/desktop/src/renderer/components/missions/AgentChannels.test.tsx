@@ -82,8 +82,8 @@ describe("AgentChannels", () => {
       expect(globalThis.window.ade.orchestrator.getThreadMessages).toHaveBeenCalled();
     });
 
-    expect(await screen.findByText("Tool calls (1)")).toBeTruthy();
-    expect(await screen.findByText("Work log (1)")).toBeTruthy();
+    expect(await screen.findByText("Run pwd")).toBeTruthy();
+    expect((await waitFor(() => findButtonByTextContent(/foo\.ts/i))).textContent).toContain("Edited");
     expect(screen.queryByText("Tool Call")).toBeNull();
     expect(screen.queryByText("File Edit")).toBeNull();
 

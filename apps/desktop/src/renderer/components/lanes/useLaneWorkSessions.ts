@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkViewMode } from "../../state/appStore";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
-import { isRunOwnedSession } from "../../lib/sessions";
+import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import { defaultTrackedCliStartupCommand } from "../terminals/cliLaunch";
 
 const EMPTY_WORK_STATE: WorkProjectViewState = {
@@ -143,6 +143,22 @@ export function useLaneWorkSessions(laneId: string | null) {
     }, delayMs);
   }, [refresh]);
 
+  const upsertOptimisticChatSession = useCallback((session: AgentChatSession) => {
+    const laneName = currentLane?.name ?? lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId;
+    const optimistic = buildOptimisticChatSessionSummary({
+      session,
+      laneName,
+    });
+    hasLoadedOnceRef.current = true;
+    setSessions((prev) => {
+      const next = [optimistic, ...prev.filter((entry) => entry.id !== session.id)];
+      next.sort((left, right) => (
+        new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
+      ));
+      return next;
+    });
+  }, [currentLane?.name, lanes]);
+
   useEffect(() => {
     setSessions([]);
     hasLoadedOnceRef.current = false;
@@ -224,6 +240,11 @@ export function useLaneWorkSessions(laneId: string | null) {
       .map((sessionId) => sessionsById.get(sessionId))
       .filter((session): session is TerminalSessionSummary => session != null);
   }, [laneOpenItemIds, sessionsById]);
+
+  const gridLayoutId = useMemo(
+    () => `work:grid:v1:${projectRoot ?? "global"}::${laneId ?? "none"}`,
+    [laneId, projectRoot],
+  );
 
   // Validate lane-local activeItemId/selectedItemId against the derived open items.
   // openItemIds are managed at the project level, so we only fix up lane-local pointers here.
@@ -429,14 +450,13 @@ export function useLaneWorkSessions(laneId: string | null) {
     [focusSession, openSessionTab, refresh, selectLane],
   );
 
-  const handleOpenChatSession = useCallback(async (sessionId: string) => {
-    if (!laneId) return;
-    selectLane(laneId);
-    // Refresh first so the session is in the list before we activate the tab.
-    await refresh({ showLoading: false, force: true });
-    focusSession(sessionId);
-    openSessionTab(sessionId);
-  }, [focusSession, laneId, openSessionTab, refresh, selectLane]);
+  const handleOpenChatSession = useCallback((session: AgentChatSession) => {
+    selectLane(session.laneId);
+    upsertOptimisticChatSession(session);
+    focusSession(session.id);
+    openSessionTab(session.id);
+    void refresh({ showLoading: false, force: true });
+  }, [focusSession, openSessionTab, refresh, selectLane, upsertOptimisticChatSession]);
 
   const closePtySession = useCallback(async (ptyId: string) => {
     setClosingPtyIds((prev) => {
@@ -461,6 +481,7 @@ export function useLaneWorkSessions(laneId: string | null) {
     loading,
     sessions,
     visibleSessions,
+    gridLayoutId,
     activeItemId: laneViewState.activeItemId,
     viewMode: laneViewState.viewMode,
     draftKind: laneViewState.draftKind,

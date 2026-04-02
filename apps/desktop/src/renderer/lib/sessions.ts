@@ -1,6 +1,6 @@
 /** Shared session/terminal utilities for the renderer. */
 
-import type { TerminalSessionSummary } from "../../shared/types";
+import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 
 /** Returns true if the tool type represents an AI chat session. */
 export function isChatToolType(toolType: string | null | undefined): boolean {
@@ -10,6 +10,15 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
     || toolType === "ai-chat"
     || toolType === "cursor"
   );
+}
+
+export function chatToolTypeForProvider(provider: AgentChatProvider | string | null | undefined): TerminalToolType {
+  switch (provider) {
+    case "claude": return "claude-chat";
+    case "codex": return "codex-chat";
+    case "cursor": return "cursor";
+    default: return "ai-chat";
+  }
 }
 
 export function isRunOwnedToolType(toolType: string | null | undefined): boolean {
@@ -33,6 +42,37 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   return "Session";
+}
+
+export function buildOptimisticChatSessionSummary(args: {
+  session: Pick<AgentChatSession, "id" | "laneId" | "provider" | "status" | "createdAt" | "lastActivityAt">;
+  laneName?: string | null;
+}): TerminalSessionSummary {
+  const toolType = chatToolTypeForProvider(args.session.provider);
+  const isEnded = args.session.status === "ended";
+
+  return {
+    id: args.session.id,
+    laneId: args.session.laneId,
+    laneName: args.laneName?.trim() || args.session.laneId,
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    goal: null,
+    toolType,
+    title: defaultSessionLabel(toolType),
+    status: isEnded ? "completed" : "running",
+    startedAt: args.session.createdAt,
+    endedAt: isEnded ? args.session.lastActivityAt : null,
+    exitCode: null,
+    transcriptPath: "",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: null,
+    summary: null,
+    runtimeState: isEnded ? "exited" : args.session.status === "active" ? "running" : "idle",
+    resumeCommand: null,
+  };
 }
 
 export function formatToolTypeLabel(toolType: string | null | undefined): string {

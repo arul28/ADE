@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { chatSurfaceVars } from "./chatSurfaceTheme";
@@ -11,6 +11,7 @@ export function ChatSurfaceShell({
   children,
   className,
   bodyClassName,
+  containerRef,
 }: {
   mode: ChatSurfaceMode;
   accentColor?: string | null;
@@ -19,9 +20,11 @@ export function ChatSurfaceShell({
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
+  containerRef?: Ref<HTMLElement>;
 }) {
   return (
     <section
+      ref={containerRef}
       className={cn(
         "relative flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--chat-radius-shell)] border border-[color:var(--chat-panel-border)] bg-[var(--chat-surface-bg)] shadow-[var(--chat-shell-shadow)]",
         className,

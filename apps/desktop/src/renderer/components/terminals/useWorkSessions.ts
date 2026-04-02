@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
+import type { AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import {
   useAppStore,
   type WorkDraftKind,
@@ -10,8 +10,8 @@ import {
   type WorkViewMode,
 } from "../../state/appStore";
 import { listSessionsCached } from "../../lib/sessionListCache";
-import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
-import { isChatToolType, isRunOwnedSession } from "../../lib/sessions";
+import { sessionStatusBucket } from "../../lib/terminalAttention";
+import { buildOptimisticChatSessionSummary, isChatToolType, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { defaultTrackedCliStartupCommand, withCodexNoAltScreen } from "./cliLaunch";
 
@@ -71,7 +71,7 @@ export function useWorkSessions() {
   const [closingChatSessionId, setClosingChatSessionId] = useState<string | null>(null);
   const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
   const refreshInFlightRef = useRef(false);
-  const refreshQueuedRef = useRef(false);
+  const refreshQueuedRef = useRef<{ showLoading: boolean; force: boolean } | null>(null);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
@@ -259,27 +259,52 @@ export function useWorkSessions() {
     [setProjectViewState],
   );
 
-  const refresh = useCallback(async (options: { showLoading?: boolean } = {}) => {
+  const refresh = useCallback(async (options: { showLoading?: boolean; force?: boolean } = {}) => {
     const showLoading = options.showLoading ?? true;
     if (refreshInFlightRef.current) {
-      refreshQueuedRef.current = true;
+      refreshQueuedRef.current = {
+        showLoading: (refreshQueuedRef.current?.showLoading ?? false) || showLoading,
+        force: (refreshQueuedRef.current?.force ?? false) || Boolean(options.force),
+      };
       return;
     }
     refreshInFlightRef.current = true;
     if (showLoading) setLoading(true);
     try {
-      const rows = (await listSessionsCached({ limit: 500 })).filter((session) => !isRunOwnedSession(session));
+      const rows = (
+        await listSessionsCached(
+          { limit: 500 },
+          options.force ? { force: true } : undefined,
+        )
+      ).filter((session) => !isRunOwnedSession(session));
       setSessions(rows);
       hasLoadedOnceRef.current = true;
     } finally {
       if (showLoading) setLoading(false);
       refreshInFlightRef.current = false;
-      if (refreshQueuedRef.current) {
-        refreshQueuedRef.current = false;
-        void refresh({ showLoading: false });
+      const queued = refreshQueuedRef.current;
+      refreshQueuedRef.current = null;
+      if (queued) {
+        void refresh(queued);
       }
     }
   }, []);
+
+  const upsertOptimisticChatSession = useCallback((session: AgentChatSession) => {
+    const laneName = lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId;
+    const optimistic = buildOptimisticChatSessionSummary({
+      session,
+      laneName,
+    });
+    hasLoadedOnceRef.current = true;
+    setSessions((prev) => {
+      const next = [optimistic, ...prev.filter((entry) => entry.id !== session.id)];
+      next.sort((left, right) => (
+        new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
+      ));
+      return next;
+    });
+  }, [lanes]);
 
   const scheduleBackgroundRefresh = useCallback((delayMs = 450) => {
     if (backgroundRefreshTimerRef.current != null) return;
@@ -497,6 +522,11 @@ export function useWorkSessions() {
       .filter((session): session is TerminalSessionSummary => session != null);
   }, [openItemIds, sessionsById]);
 
+  const gridLayoutId = useMemo(
+    () => `work:grid:v1:${projectRoot ?? "global"}`,
+    [projectRoot],
+  );
+
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.id === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId],
@@ -681,7 +711,7 @@ export function useWorkSessions() {
       // Refresh the session list before activating the tab so the new
       // session is in sessionsById when the UI resolves activeSession.
       try {
-        await refresh();
+        await refresh({ force: true });
       } catch {
         // Best-effort: if refresh fails the session was still created,
         // so proceed to focus/open it.
@@ -702,6 +732,7 @@ export function useWorkSessions() {
     endedFiltered,
     runningSessions,
     visibleSessions,
+    gridLayoutId,
     selectedSession,
     loading,
 
@@ -739,6 +770,7 @@ export function useWorkSessions() {
     resumingSessionId,
 
     refresh,
+    upsertOptimisticChatSession,
     closeSession,
     closeAllRunning,
     resumeSession,

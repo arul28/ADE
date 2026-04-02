@@ -834,6 +834,33 @@ describe("createAgentChatService", () => {
       expect(opts?.allowedTools).toContain("mcp__ade__*");
     });
 
+    it("requests HTML previews for Claude AskUserQuestion", async () => {
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-ask-user-preview",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
+        toolConfig?: { askUserQuestion?: { previewFormat?: string } };
+      } | undefined;
+      expect(opts?.toolConfig?.askUserQuestion?.previewFormat).toBe("html");
+    });
+
     it("attaches ADE MCP servers through the Claude V2 query controls", async () => {
       vi.mocked(providerResolver.normalizeCliMcpServers).mockImplementation((_provider, servers) => servers ?? {});
       const setMcpServers = vi.fn().mockResolvedValue({
@@ -3374,6 +3401,227 @@ describe("createAgentChatService", () => {
         service.resumeSession({ sessionId: "unknown-session-id" }),
       ).rejects.toThrow(/not found/i);
     });
+
+    it("preserves Claude V2 session continuity after an idle timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let primaryStreamCall = 0;
+        let primaryClosed = false;
+        const primarySend = vi.fn().mockResolvedValue(undefined);
+        const resumedSend = vi.fn().mockResolvedValue(undefined);
+        const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+
+        const primarySession = {
+          send: primarySend,
+          stream: vi.fn(() => (async function* () {
+            primaryStreamCall += 1;
+            if (primaryStreamCall === 1) {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "sdk-session-1",
+                slash_commands: [],
+              };
+              yield {
+                type: "result",
+                usage: { input_tokens: 1, output_tokens: 1 },
+              };
+              return;
+            }
+
+            yield {
+              type: "assistant",
+              session_id: "sdk-session-1",
+              message: {
+                content: [{ type: "text", text: "Partial answer" }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+
+            while (!primaryClosed) {
+              await new Promise((resolve) => setTimeout(resolve, 1_000));
+            }
+
+            throw new Error("aborted by user");
+          })()),
+          close: vi.fn(() => {
+            primaryClosed = true;
+          }),
+          sessionId: "sdk-session-1",
+          setPermissionMode,
+        };
+
+        const resumedSession = {
+          send: resumedSend,
+          stream: vi.fn(() => (async function* () {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-session-1",
+              slash_commands: [],
+            };
+            yield {
+              type: "assistant",
+              session_id: "sdk-session-1",
+              message: {
+                content: [{ type: "text", text: "You were asking about the new chat buttons." }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+          })()),
+          close: vi.fn(),
+          sessionId: "sdk-session-1",
+          setPermissionMode,
+        };
+
+        vi.mocked(unstable_v2_createSession).mockReturnValue(primarySession as any);
+        vi.mocked(unstable_v2_resumeSession).mockReturnValue(resumedSession as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "Add the new chat button",
+          timeoutMs: 120_000,
+        });
+        await vi.advanceTimersByTimeAsync(76_000);
+        await firstTurn;
+
+        const persistedAfterTimeout = readPersistedChatState(session.id);
+        expect(persistedAfterTimeout.sdkSessionId).toBe("sdk-session-1");
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              event: expect.objectContaining({
+                type: "error",
+                message: expect.stringContaining("turn was reset so you can retry"),
+              }),
+            }),
+            expect.objectContaining({
+              event: expect.objectContaining({
+                type: "status",
+                turnStatus: "failed",
+              }),
+            }),
+          ]),
+        );
+
+        events.length = 0;
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "what happened?",
+          timeoutMs: 15_000,
+        });
+
+        expect(unstable_v2_resumeSession).toHaveBeenCalledWith(
+          "sdk-session-1",
+          expect.objectContaining({ model: "sonnet" }),
+        );
+        expect(resumedSend).toHaveBeenCalledTimes(1);
+        expect(followUp.outputText).toContain("new chat buttons");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not abort Claude turns solely because they run longer than five minutes", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const send = vi.fn().mockResolvedValue(undefined);
+        const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+        let streamCall = 0;
+
+        const sessionHandle = {
+          send,
+          stream: vi.fn(() => (async function* () {
+            streamCall += 1;
+            if (streamCall === 1) {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "sdk-session-long-running",
+                slash_commands: [],
+              };
+              yield {
+                type: "result",
+                usage: { input_tokens: 1, output_tokens: 1 },
+              };
+              return;
+            }
+
+            for (let index = 0; index < 6; index += 1) {
+              yield {
+                type: "assistant",
+                session_id: "sdk-session-long-running",
+                message: {
+                  content: [{ type: "text", text: `Chunk ${index + 1}. ` }],
+                  usage: { input_tokens: 1, output_tokens: 1 },
+                },
+              };
+              await new Promise((resolve) => setTimeout(resolve, 60_000));
+            }
+
+            yield {
+              type: "assistant",
+              session_id: "sdk-session-long-running",
+              message: {
+                content: [{ type: "text", text: "Finished after a long run." }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+          })()),
+          close: vi.fn(),
+          sessionId: "sdk-session-long-running",
+          setPermissionMode,
+        };
+
+        vi.mocked(unstable_v2_createSession).mockReturnValue(sessionHandle as any);
+        vi.mocked(unstable_v2_resumeSession).mockReturnValue(sessionHandle as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const turn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "Keep working until the implementation is done.",
+          timeoutMs: 500_000,
+        });
+
+        await vi.advanceTimersByTimeAsync(361_000);
+        const result = await turn;
+
+        expect(result.outputText).toContain("Finished after a long run.");
+        expect(events.find((event) => event.event.type === "status" && event.event.turnStatus === "failed")).toBeUndefined();
+        expect(events.find((event) => event.event.type === "status" && event.event.turnStatus === "interrupted")).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -4244,6 +4492,316 @@ describe("createAgentChatService", () => {
 
     releaseStream();
     await sendPromise;
+  });
+
+  it("emits completed Claude tool_result rows when tool_use_summary arrives", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-tool-summary",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-use-1",
+            name: "Read",
+            input: { file_path: "apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx" },
+          },
+        },
+      };
+      yield {
+        type: "tool_use_summary",
+        summary: "Checked the shared chat renderer",
+        preceding_tool_use_ids: ["tool-use-1"],
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-tool-summary",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Inspect the shared chat renderer.",
+    });
+
+    const completedToolResults = events.filter((event) =>
+      event.event.type === "tool_result"
+      && event.event.itemId === "tool-use-1"
+      && event.event.status === "completed"
+    );
+
+    expect(completedToolResults).toHaveLength(1);
+    expect(completedToolResults[0]!.event.type).toBe("tool_result");
+    if (completedToolResults[0]!.event.type !== "tool_result") {
+      throw new Error("Expected tool_result");
+    }
+    expect(completedToolResults[0]!.event.result).toMatchObject({
+      synthetic: true,
+      source: "claude_tool_use_summary",
+      summary: "Checked the shared chat renderer",
+    });
+  });
+
+  it("emits completed Claude tool_result rows for open tools when the turn ends without a tool summary", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-tool-fallback",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-use-2",
+            name: "Read",
+            input: { file_path: "apps/desktop/src/renderer/components/chat/ChatWorkLogBlock.tsx" },
+          },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-tool-fallback",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Inspect the grouped work log renderer.",
+    });
+
+    const completedToolResults = events.filter((event) =>
+      event.event.type === "tool_result"
+      && event.event.itemId === "tool-use-2"
+      && event.event.status === "completed"
+    );
+
+    expect(completedToolResults).toHaveLength(1);
+    expect(completedToolResults[0]!.event.type).toBe("tool_result");
+    if (completedToolResults[0]!.event.type !== "tool_result") {
+      throw new Error("Expected tool_result");
+    }
+    expect(completedToolResults[0]!.event.result).toMatchObject({
+      synthetic: true,
+      source: "claude_turn_finalization",
+      finalTurnStatus: "completed",
+    });
+  });
+
+  it("bridges Claude AskUserQuestion through ADE's question UI", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    let permissionResult: Record<string, unknown> | null = null;
+
+    const askInput = {
+      questions: [
+        {
+          question: "What should we do about the two task list views?",
+          header: "Task views",
+          options: [
+            {
+              label: "Remove the TurnSummaryCard tasks",
+              description: "Keep only the inline task list.",
+              preview: "<div><strong>Inline only</strong><p>Compact stream, no bottom summary card.</p></div>",
+            },
+            {
+              label: "Keep both, improve summary",
+              description: "Keep both task views, but make the summary less intrusive.",
+              preview: "<div><strong>Hybrid</strong><p>Inline progress plus a compact summary card.</p></div>",
+            },
+          ],
+          multiSelect: false,
+        },
+        {
+          question: "Should the inline task list pin while tasks are active?",
+          header: "Inline pinning",
+          options: [
+            { label: "Yes, pin while active" },
+            { label: "No, let it scroll" },
+          ],
+          multiSelect: false,
+        },
+      ],
+    };
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-ask-user",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      const sessionOpts = vi.mocked(unstable_v2_createSession).mock.calls.at(-1)?.[0] as any;
+      permissionResult = await sessionOpts.canUseTool("AskUserQuestion", askInput, {
+        signal: new AbortController().signal,
+        toolUseID: "tool-ask-user-1",
+      });
+
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "Thanks, I can continue now." }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-ask-user",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      permissionMode: "plan",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Figure out the task list UX and ask any clarifying questions you need.",
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && typeof (event.event.detail as { request?: { providerMetadata?: { tool?: string } } } | undefined)?.request?.providerMetadata?.tool === "string"
+        && ((event.event.detail as { request?: { providerMetadata?: { tool?: string } } }).request?.providerMetadata?.tool === "AskUserQuestion"),
+    );
+
+    const request = (approvalEvent.event.detail as {
+      request: {
+        kind: string;
+        questions: Array<{
+          id: string;
+          question: string;
+          options?: Array<{ preview?: string; previewFormat?: string }>;
+        }>;
+      };
+    }).request;
+    expect(request.kind).toBe("structured_question");
+    expect(request.questions.map((question) => question.question)).toEqual([
+      "What should we do about the two task list views?",
+      "Should the inline task list pin while tasks are active?",
+    ]);
+    expect(request.questions[0]?.options?.[0]).toMatchObject({
+      preview: "<div><strong>Inline only</strong><p>Compact stream, no bottom summary card.</p></div>",
+      previewFormat: "html",
+    });
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      answers: {
+        "What should we do about the two task list views?": "Keep both, improve summary",
+        "Should the inline task list pin while tasks are active?": "Yes, pin while active",
+      },
+    });
+
+    await sendPromise;
+
+    expect(permissionResult).toMatchObject({
+      behavior: "allow",
+      updatedInput: {
+        answers: {
+          "What should we do about the two task list views?": "Keep both, improve summary",
+          "Should the inline task list pin while tasks are active?": "Yes, pin while active",
+        },
+      },
+    });
   });
 
   it("initializes the Cursor runtime before validating the first turn", async () => {

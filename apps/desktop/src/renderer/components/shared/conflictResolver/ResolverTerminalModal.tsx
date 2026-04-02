@@ -882,7 +882,7 @@ export function ResolverTerminalModal({
                 </div>
               )}
               <div className="h-[480px] w-full overflow-hidden rounded-lg border border-border">
-                <TerminalView ptyId={ptyId} sessionId={sessionId} />
+                <TerminalView ptyId={ptyId} sessionId={sessionId} isActive />
               </div>
               <div className="mt-3 flex justify-end">
                 <Button size="sm" variant="outline" onClick={() => void handleCancel()}>
@@ -954,7 +954,7 @@ export function ResolverTerminalModal({
               {/* Show terminal output in smaller view */}
               {ptyId && sessionId && (
                 <div className="h-[300px] w-full overflow-hidden rounded-lg border border-border">
-                  <TerminalView ptyId={ptyId} sessionId={sessionId} />
+                  <TerminalView ptyId={ptyId} sessionId={sessionId} isActive />
                 </div>
               )}
 

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { CaretDown, CaretRight, Terminal, MagnifyingGlass, Funnel } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Terminal, MagnifyingGlass, Funnel, Plus } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
@@ -82,7 +82,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   selectedSessionId,
   draftKind: _draftKind,
   showingDraft: _showingDraft,
-  onShowDraftKind: _onShowDraftKind,
+  onShowDraftKind,
   onSelectSession,
   onResume,
   resumingSessionId,
@@ -264,6 +264,23 @@ export const SessionListPane = React.memo(function SessionListPane({
               onChange={(e) => setQ(e.target.value)}
             />
           </div>
+          <button
+            type="button"
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors"
+            style={{
+              border: "1px solid rgba(168,130,255,0.35)",
+              background: "rgba(168,130,255,0.08)",
+              color: "rgba(168,130,255,0.9)",
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+            onClick={() => onShowDraftKind("chat")}
+            title="New Chat"
+            aria-label="Start a new chat"
+          >
+            <Plus size={10} weight="bold" />
+            New Chat
+          </button>
           <button
             type="button"
             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"

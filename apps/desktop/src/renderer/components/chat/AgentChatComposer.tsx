@@ -263,6 +263,8 @@ function PendingSteerItem({
 
 export function AgentChatComposer({
   surfaceMode = "standard",
+  layoutVariant = "standard",
+  composerMaxHeightPx = null,
   sdkSlashCommands = [],
   modelId,
   availableModelIds,
@@ -320,12 +322,15 @@ export function AgentChatComposer({
   promptSuggestion,
   subagentSnapshots = [],
   chatHasMessages = false,
+  restrictModelCatalogToAvailable = false,
   pendingSteers = [],
   onCancelSteer,
   onEditSteer,
   onOpenAiSettings,
 }: {
   surfaceMode?: ChatSurfaceMode;
+  layoutVariant?: "standard" | "grid-tile";
+  composerMaxHeightPx?: number | null;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
@@ -387,6 +392,7 @@ export function AgentChatComposer({
   promptSuggestion?: string | null;
   subagentSnapshots?: ChatSubagentSnapshot[];
   chatHasMessages?: boolean;
+  restrictModelCatalogToAvailable?: boolean;
   pendingSteers?: Array<{ steerId: string; text: string }>;
   onCancelSteer?: (steerId: string) => void;
   onEditSteer?: (steerId: string, text: string) => void;
@@ -934,7 +940,10 @@ export function AgentChatComposer({
     <>
       <ChatComposerShell
       mode={surfaceMode}
-      className="m-3 mt-0 rounded-[var(--chat-radius-shell)]"
+      className={cn(
+        "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
+        layoutVariant === "grid-tile" ? "m-0 rounded-none border-0 bg-transparent shadow-none" : "",
+      )}
       pendingBanner={pendingInput ? (
         pendingInput.kind === "plan_approval" ? (
           <div className="px-4 py-3">
@@ -1112,6 +1121,7 @@ export function AgentChatComposer({
               value={modelId}
               onChange={onModelChange}
               availableModelIds={availableModelIds}
+              catalogMode={restrictModelCatalogToAvailable ? "available-only" : "all"}
               disabled={modelSelectionLocked}
               showReasoning
               reasoningEffort={reasoningEffort}
@@ -1306,9 +1316,14 @@ export function AgentChatComposer({
               if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
             }}
             className={cn(
-              "min-h-[44px] max-h-[200px] w-full resize-none bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+              "min-h-[44px] w-full bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+              layoutVariant === "grid-tile" ? "resize-y" : "max-h-[200px] resize-none",
               dragActive ? "opacity-30" : "",
             )}
+            style={layoutVariant === "grid-tile" && composerMaxHeightPx != null
+              ? { maxHeight: `${composerMaxHeightPx}px` }
+              : undefined}
+            data-chat-layout-variant={layoutVariant}
             placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Message the assistant..."))}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}

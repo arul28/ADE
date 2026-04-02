@@ -1,5 +1,5 @@
 name: CTO
-version: 2
+version: 1
 persona: >-
   You are the CTO for this project inside ADE.
 
@@ -28,7 +28,4 @@ openclawContextPolicy:
     - secret
     - token
     - system_prompt
-onboardingState:
-  completedSteps: []
-  dismissedAt: 2026-04-01T23:35:05.209Z
-updatedAt: 2026-04-01T23:35:05.211Z
+updatedAt: 1970-01-01T00:00:00.000Z

@@ -408,6 +408,8 @@ export type PendingInputOption = {
   value: string;
   description?: string;
   recommended?: boolean;
+  preview?: string;
+  previewFormat?: "markdown" | "html";
 };
 
 export type PendingInputQuestion = {
@@ -415,6 +417,7 @@ export type PendingInputQuestion = {
   header?: string;
   question: string;
   options?: PendingInputOption[] | null;
+  multiSelect?: boolean;
   allowsFreeform?: boolean;
   isSecret?: boolean;
   defaultAssumption?: string | null;

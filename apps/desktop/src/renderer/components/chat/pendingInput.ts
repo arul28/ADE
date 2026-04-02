@@ -25,6 +25,12 @@ function readPendingInputOption(value: unknown): PendingInputOption | null {
       ? { description: record.description.trim() }
       : {}),
     ...(record.recommended === true ? { recommended: true } : {}),
+    ...(typeof record.preview === "string" && record.preview.trim().length
+      ? { preview: record.preview }
+      : {}),
+    ...(record.previewFormat === "html" || record.previewFormat === "markdown"
+      ? { previewFormat: record.previewFormat }
+      : {}),
   };
 }
 
@@ -38,6 +44,7 @@ function readPendingInputQuestion(value: unknown): PendingInputQuestion | null {
     id,
     question,
     ...(typeof record.header === "string" && record.header.trim().length ? { header: record.header.trim() } : {}),
+    ...(record.multiSelect === true ? { multiSelect: true } : {}),
     ...(record.allowsFreeform === true ? { allowsFreeform: true } : {}),
     ...(record.isSecret === true ? { isSecret: true } : {}),
     ...(typeof record.defaultAssumption === "string" && record.defaultAssumption.trim().length

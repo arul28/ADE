@@ -539,7 +539,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   }, [onOpenWorkspacePath, workspaceLaneId]);
 
   return (
-    <div className="prose prose-invert max-w-none text-[13px] leading-[1.78] text-fg/92 prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-3 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1 prose-strong:text-fg prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-blockquote:text-fg/78 prose-hr:my-5 prose-hr:border-white/[0.08] prose-table:my-4 prose-th:border-white/[0.08] prose-th:bg-white/[0.03] prose-th:px-3 prose-th:py-2 prose-td:border-white/[0.06] prose-td:px-3 prose-td:py-2">
+    <div className="ade-prose-themed prose prose-invert max-w-none text-[13px] leading-[1.8] text-fg/96 prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-3 prose-p:text-fg/88 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-blockquote:text-fg/76 prose-hr:my-5 prose-hr:border-white/[0.08]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -555,9 +555,22 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             </blockquote>
           ),
           table: ({ children }) => (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-[12px]">{children}</table>
+            <div className="my-4 overflow-x-auto rounded-xl border border-white/[0.08] bg-black/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+              <table className="min-w-full border-separate border-spacing-0 text-[12px]">{children}</table>
             </div>
+          ),
+          thead: ({ children }) => <thead className="bg-white/[0.04]">{children}</thead>,
+          tbody: ({ children }) => <tbody>{children}</tbody>,
+          tr: ({ children }) => <tr className="align-top">{children}</tr>,
+          th: ({ children }) => (
+            <th className="border-b border-white/[0.08] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl">
+              {children}
+            </th>
+          ),
+          td: ({ children }) => (
+            <td className="border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0">
+              {children}
+            </td>
           ),
           pre: ({ children }) => (
             <pre className={cn("my-3 max-h-80", RECESSED_BLOCK_CLASS)}>
@@ -1147,7 +1160,7 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "group max-w-[94%] px-4 py-3",
+            "group w-full max-w-[78ch] px-5 py-4",
             options?.turnActive && "min-h-[5.5rem]",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
@@ -1608,6 +1621,7 @@ function renderEvent(
   if (event.type === "reasoning") {
     const reasoningText = event.text.trim();
     const isLive = Boolean(options?.turnActive);
+    const reasoningPreview = summarizeInlineText(reasoningText, 108);
 
     // Compute duration if we have timestamps
     const startTs = (event as any).startTimestamp ?? envelope.timestamp;
@@ -1620,14 +1634,26 @@ function renderEvent(
         defaultOpen={false}
         forceOpen={isLive ? true : undefined}
         summary={
-          <span className="font-mono text-[12px] text-fg/52">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
             {isLive ? (
               <span className="flex items-center gap-2">
                 <ThinkingDots toneClass="bg-fg/40" />
                 Thinking...
               </span>
             ) : (
-              `Thought for ${durationLabel}`
+              <>
+                <span className="font-medium text-fg/62">Thought</span>
+                {durationLabel ? (
+                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[9px] text-fg/42">
+                    {durationLabel}
+                  </span>
+                ) : null}
+                {reasoningPreview ? (
+                  <span className="max-w-[32rem] truncate text-[10px] text-fg/40">
+                    {reasoningPreview}
+                  </span>
+                ) : null}
+              </>
             )}
           </span>
         }
@@ -2261,74 +2287,147 @@ function TurnSummaryCard({
   const completedCount = summary.tasks.filter((task) => task.status === "completed").length;
   const totalCount = summary.tasks.length;
   const filesLabel = summary.files.length
-    ? `${summary.files.length} file${summary.files.length === 1 ? "" : "s"} changed`
+    ? `${summary.files.length} file${summary.files.length === 1 ? "" : "s"}`
     : null;
   const agentsLabel = summary.backgroundAgentCount
-    ? `${summary.backgroundAgentCount} background agent${summary.backgroundAgentCount === 1 ? "" : "s"}`
+    ? `${summary.backgroundAgentCount} agent${summary.backgroundAgentCount === 1 ? "" : "s"}`
     : null;
+  const taskLabel = totalCount ? `${completedCount}/${totalCount} complete` : null;
+  const hasDetails = summary.tasks.length > 0 || summary.files.length > 0 || summary.backgroundAgentCount > 0;
 
-  return (
-    <div className="overflow-hidden rounded-[20px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(26,26,29,0.92),rgba(19,19,22,0.94))] shadow-[0_24px_80px_-48px_rgba(0,0,0,0.85)]">
-      <div className="border-b border-white/[0.05] px-4 py-3">
-        <div className="flex items-center gap-2">
-          <ListChecks size={13} weight="bold" className="text-fg/58" />
-          <span className="font-sans text-[13px] font-medium text-fg/86">
-            {totalCount
-              ? `${completedCount} of ${totalCount} tasks completed`
-              : filesLabel ?? agentsLabel ?? "Turn summary"}
-          </span>
-          {summary.turnModel?.label ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] text-fg/45">
-              <ModelGlyph modelId={summary.turnModel.modelId} model={summary.turnModel.model} size={10} className="text-fg/35" />
-              <span>{summary.turnModel.label}</span>
-            </span>
-          ) : null}
-          {onReviewChanges && summary.files.length > 0 ? (
-            <button
-              type="button"
-              className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-fg/70 transition-colors hover:bg-white/[0.05] hover:text-fg/88"
-              onClick={onReviewChanges}
-            >
-              Review changes
-            </button>
-          ) : null}
-        </div>
-      </div>
+  const summaryHeader = (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px] text-fg/46">
+      <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-fg/44">
+        <ListChecks size={10} weight="bold" className="text-fg/44" />
+        Turn recap
+      </span>
+      {taskLabel ? (
+        <span className="font-medium text-fg/74">{taskLabel}</span>
+      ) : null}
+      {filesLabel ? (
+        <span className="text-fg/56">
+          {filesLabel}
+          {summary.totalAdditions > 0 ? <span className="ml-1.5 text-emerald-300/70">+{summary.totalAdditions}</span> : null}
+          {summary.totalDeletions > 0 ? <span className="ml-1 text-red-300/70">-{summary.totalDeletions}</span> : null}
+        </span>
+      ) : null}
+      {agentsLabel ? (
+        <span className="text-fg/56">
+          {agentsLabel}
+          {summary.activeBackgroundAgentCount > 0 ? <span className="ml-1.5 text-sky-300/60">{summary.activeBackgroundAgentCount} active</span> : null}
+        </span>
+      ) : null}
+      {summary.turnModel?.label ? (
+        <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-fg/42">
+          <ModelGlyph modelId={summary.turnModel.modelId} model={summary.turnModel.model} size={10} className="text-fg/32" />
+          <span>{summary.turnModel.label}</span>
+        </span>
+      ) : null}
+    </div>
+  );
 
-      {summary.tasks.length ? (
-        <div className="space-y-1 border-b border-white/[0.05] px-4 py-3">
-          {summary.tasks.map((task, index) => (
-            <div key={task.id || `${task.description}:${index}`} className="flex items-start gap-2.5 py-1">
-              <div className="mt-0.5 shrink-0">
-                <PlanStepIcon status={task.status} />
+  const details = hasDetails ? (
+    <div className="space-y-3 pb-0.5">
+      {summary.tasks.length > 0 ? (
+        <div className="space-y-1.5">
+          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Tasks</div>
+          <div className="space-y-1.5">
+            {summary.tasks.map((task) => (
+              <div
+                key={task.id}
+                className="flex items-start gap-2 rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2"
+              >
+                <div className="mt-0.5 flex-shrink-0">
+                  <PlanStepIcon status={task.status} />
+                </div>
+                <div
+                  className={cn(
+                    "min-w-0 flex-1 text-[12px] leading-5",
+                    task.status === "completed" ? "text-fg/45 line-through decoration-fg/15" : "text-fg/78",
+                  )}
+                >
+                  {task.description}
+                </div>
+                <span
+                  className={cn(
+                    "inline-flex shrink-0 items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]",
+                    todoItemStatusClass(task.status),
+                  )}
+                >
+                  {task.status.replace("_", " ")}
+                </span>
               </div>
-              <div className={cn(
-                "flex-1 text-[12px] leading-6",
-                task.status === "completed" ? "text-fg/42 line-through decoration-fg/15" : "text-fg/82",
-              )}>
-                {task.description}
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       ) : null}
-
-      <div className="flex flex-wrap items-center gap-3 px-4 py-3 font-mono text-[10px] text-fg/44">
-        {filesLabel ? (
-          <span>
-            {filesLabel}
-            {summary.totalAdditions > 0 ? <span className="ml-2 text-emerald-300/70">+{summary.totalAdditions}</span> : null}
-            {summary.totalDeletions > 0 ? <span className="ml-1 text-red-300/70">-{summary.totalDeletions}</span> : null}
-          </span>
-        ) : null}
-        {agentsLabel ? (
-          <span>
-            {agentsLabel}
-            {summary.activeBackgroundAgentCount > 0 ? <span className="ml-2 text-sky-300/60">{summary.activeBackgroundAgentCount} active</span> : null}
-          </span>
-        ) : null}
-      </div>
+      {summary.files.length > 0 ? (
+        <div className="space-y-1.5">
+          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Files</div>
+          <div className="space-y-1.5">
+            {summary.files.map((file) => {
+              const basename = basenamePathLabel(file.path);
+              const dirname = dirnamePathLabel(file.path);
+              return (
+                <div
+                  key={`${file.path}:${file.kind}`}
+                  className="flex items-start gap-2 rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2"
+                >
+                  <div className="mt-0.5 flex-shrink-0">
+                    <FileCode size={12} weight="regular" className="text-fg/38" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-5 text-fg/78">
+                      <span className="font-medium">{formatFileAction(file.kind)}</span>
+                      <span>{basename}</span>
+                      {file.additions > 0 ? <span className="text-emerald-300/70">+{file.additions}</span> : null}
+                      {file.deletions > 0 || file.kind === "delete" ? <span className="text-red-300/70">-{file.deletions}</span> : null}
+                    </div>
+                    {dirname ? (
+                      <div className="truncate font-mono text-[10px] text-fg/34">
+                        {dirname}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      {summary.backgroundAgentCount > 0 ? (
+        <div className="rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2">
+          <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Background agents</div>
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-fg/72">
+            <Robot size={12} weight="regular" className="text-fg/38" />
+            <span>
+              {summary.backgroundAgentCount} running in the background
+              {summary.activeBackgroundAgentCount > 0 ? `, ${summary.activeBackgroundAgentCount} currently active` : ""}
+            </span>
+          </div>
+        </div>
+      ) : null}
+      {onReviewChanges && summary.files.length > 0 ? (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-fg/70 transition-colors hover:bg-white/[0.05] hover:text-fg/88"
+            onClick={onReviewChanges}
+          >
+            Review changes
+          </button>
+        </div>
+      ) : null}
     </div>
+  ) : null;
+
+  return (
+    <InlineDisclosureRow
+      summary={summaryHeader}
+      className="rounded-xl border border-white/[0.05] bg-[#0f1116]/66 px-1 py-0.5"
+    >
+      {details}
+    </InlineDisclosureRow>
   );
 }
 
@@ -2361,7 +2460,7 @@ function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
 function getGroupedTurnId(envelope: TranscriptGroupedEnvelope | undefined): string | null {
   if (!envelope) return null;
   if (envelope.event.type === "work_log_group") {
-    return envelope.event.entries[0]?.turnId ?? null;
+    return envelope.event.turnId ?? envelope.event.entries[0]?.turnId ?? null;
   }
   return "turnId" in envelope.event ? envelope.event.turnId ?? null : null;
 }
@@ -2421,6 +2520,7 @@ const EventRow = React.memo(function EventRow({
         ? (
           <ChatWorkLogBlock
             entries={envelope.event.entries}
+            summary={envelope.event.summary}
             onNavigateSuggestion={onNavigateSuggestion}
           />
         )

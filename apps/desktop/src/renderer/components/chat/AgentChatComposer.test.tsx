@@ -216,4 +216,29 @@ describe("AgentChatComposer", () => {
 
     expect(screen.queryByTitle("Include project context (PRD + architecture) with first message")).toBeNull();
   });
+
+  it("uses a constrained resizable textarea in grid-tile mode", () => {
+    renderComposer({
+      layoutVariant: "grid-tile",
+      composerMaxHeightPx: 128,
+    });
+
+    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
+    expect(textarea.dataset.chatLayoutVariant).toBe("grid-tile");
+    expect(textarea.style.maxHeight).toBe("128px");
+    expect(textarea.className).toContain("resize-y");
+  });
+
+  it("shows only the available session models when the chat catalog is restricted", () => {
+    renderComposer({
+      availableModelIds: ["openai/gpt-5.4-codex", "openai/gpt-5.2-codex"],
+      restrictModelCatalogToAvailable: true,
+      turnActive: false,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+
+    expect(screen.getByText("GPT-5.2-Codex")).toBeTruthy();
+    expect(screen.queryByText("Claude Sonnet 4.6")).toBeNull();
+  });
 });

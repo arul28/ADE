@@ -3,7 +3,7 @@ import {
   Terminal,
   ArrowRight,
 } from "@phosphor-icons/react";
-import type { LaneSummary, AgentChatPermissionMode } from "../../../shared/types";
+import type { AgentChatPermissionMode, AgentChatSession, LaneSummary } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "../chat/AgentChatPane";
@@ -16,7 +16,7 @@ import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
   lanes: LaneSummary[];
-  onOpenChatSession: (sessionId: string) => void | Promise<void>;
+  onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
     profile: "claude" | "codex" | "shell";

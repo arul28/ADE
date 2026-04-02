@@ -29,6 +29,7 @@ type UnifiedModelSelectorProps = {
   onChange: (modelId: string) => void;
   filter?: (model: ModelDescriptor) => boolean;
   availableModelIds?: string[];
+  catalogMode?: "all" | "available-only";
   className?: string;
   disabled?: boolean;
   showReasoning?: boolean;
@@ -131,6 +132,7 @@ function mergeSelectorModels(
   availableModelIds?: string[],
   selectedModelId?: string,
   filter?: (model: ModelDescriptor) => boolean,
+  catalogMode: "all" | "available-only" = "all",
 ): ModelDescriptor[] {
   const merged = new Map<string, ModelDescriptor>();
   const selectedId = String(selectedModelId ?? "").trim();
@@ -139,10 +141,12 @@ function mergeSelectorModels(
       .map((entry) => String(entry ?? "").trim())
       .filter(Boolean),
   );
-  for (const model of MODEL_REGISTRY) {
-    if (model.deprecated) continue;
-    if (filter && !filter(model)) continue;
-    merged.set(model.id, model);
+  if (catalogMode === "all") {
+    for (const model of MODEL_REGISTRY) {
+      if (model.deprecated) continue;
+      if (filter && !filter(model)) continue;
+      merged.set(model.id, model);
+    }
   }
 
   for (const rawId of availableIdSet) {
@@ -181,6 +185,7 @@ export function UnifiedModelSelector({
   onChange,
   filter,
   availableModelIds,
+  catalogMode = "all",
   className,
   disabled = false,
   showReasoning,
@@ -207,8 +212,8 @@ export function UnifiedModelSelector({
   );
   const modelOrder = useMemo(() => createModelOrderMap(), []);
   const selectorModels = useMemo(
-    () => mergeSelectorModels(availableModelIds, value, filter),
-    [availableModelIds, filter, value],
+    () => mergeSelectorModels(availableModelIds, value, filter, catalogMode),
+    [availableModelIds, catalogMode, filter, value],
   );
 
   const fullTree = useMemo(

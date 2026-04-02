@@ -267,10 +267,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.getByText("Work log (2)")).toBeTruthy();
-
-    // Only the most recent entry is visible by default; expand to reveal the older one
-    fireEvent.click(screen.getByRole("button", { name: "Show 1 more" }));
+    expect(screen.getByText("Ran shell")).toBeTruthy();
 
     fireEvent.click(findButtonByTextContent(/npm test/i));
     fireEvent.click(findButtonByTextContent(/npm run lint/i));
@@ -309,10 +306,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.getByText("Work log (2)")).toBeTruthy();
-
-    // Only the most recent entry is visible by default; expand to reveal the older one
-    fireEvent.click(screen.getByRole("button", { name: "Show 1 more" }));
+    expect(screen.getByText("Edited files")).toBeTruthy();
 
     fireEvent.click(findButtonByTextContent(/foo\.ts/i));
     fireEvent.click(findButtonByTextContent(/bar\.ts/i));
@@ -322,7 +316,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(body).toContain("bar.ts");
   });
 
-  it("shows only the most recent work-log entry by default and expands overflow on demand", () => {
+  it("shows the four most recent work-log entries by default and expands overflow on demand", () => {
     renderMessageList(
       Array.from({ length: 7 }, (_, index) => ({
         sessionId: "session-1",
@@ -340,14 +334,96 @@ describe("AgentChatMessageList transcript rendering", () => {
       })),
     );
 
-    expect(screen.getByText("Work log (7)")).toBeTruthy();
-    expect(screen.getByText("Show 6 more")).toBeTruthy();
-    expect(screen.queryByText(/Shell - echo 1/i)).toBeNull();
+    expect(screen.getByText("Ran shell")).toBeTruthy();
+    expect(screen.getByText("Show 3 earlier")).toBeTruthy();
+    expect(screen.queryByText(/echo 3/i)).toBeNull();
+    expect(findButtonByTextContent(/echo 4/i)).toBeTruthy();
     expect(findButtonByTextContent(/echo 7/i)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show 6 more" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 3 earlier" }));
 
     expect(findButtonByTextContent(/echo 1/i)).toBeTruthy();
+  });
+
+  it("uses a bounded assistant bubble width for long markdown responses", () => {
+    const view = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: "Streaming response",
+          itemId: "text-1",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(view.container.innerHTML).toContain("max-w-[78ch]");
+  });
+
+  it("renders markdown tables inside a dedicated scroll shell", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: [
+            "| Aspect | ADE | Other UI |",
+            "| --- | --- | --- |",
+            "| Task progress | Flat tool cards | Step-based progress |",
+          ].join("\n"),
+          itemId: "text-table",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    const table = screen.getByRole("table");
+    expect(table.parentElement?.className).toContain("overflow-x-auto");
+    expect(screen.getByText("Task progress")).toBeTruthy();
+  });
+
+  it("absorbs tool summaries into the grouped work-log header instead of rendering a separate row", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "tool_call",
+          tool: "functions.exec_command",
+          args: { cmd: "pwd" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "tool_result",
+          tool: "functions.exec_command",
+          result: { stdout: "/tmp/project" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "tool_use_summary",
+          summary: "Checked the current working directory",
+          toolUseIds: ["tool-1"],
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Checked the current working directory")).toBeTruthy();
+    expect(screen.queryByText("Tool summary")).toBeNull();
   });
 
   it("makes workspace markdown links open the Files tab", () => {
@@ -623,13 +699,16 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    expect(screen.getAllByText("1 of 2 tasks completed").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/1 file changed/i).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/1 background agent/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Turn recap")).toBeTruthy();
+    expect(screen.getAllByText("1/2 complete").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/^1 file$/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/^1 agent$/i).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("1 active").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("-1").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
 
+    fireEvent.click(screen.getByText("Turn recap"));
     fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
 
     expect(screen.getByTestId("location").textContent).toBe("/files::{\"laneId\":\"lane-123\"}");
@@ -819,12 +898,15 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    expect(screen.getAllByText("1 of 2 tasks completed").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Turn recap")).toBeTruthy();
+    expect(screen.getAllByText("1/2 complete").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Inspect shared renderer").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Implement calmer transcript rows").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/1 file changed/i).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/1 background agent/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/^1 file$/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/^1 agent$/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("button", { name: /Review changes/i })).toBeNull();
 
+    fireEvent.click(screen.getByText("Turn recap"));
     fireEvent.click(screen.getByRole("button", { name: /Review changes/i }));
 
     expect(screen.getByTestId("location").textContent).toBe(
@@ -857,7 +939,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.getByText("1 of 1 tasks completed")).toBeTruthy();
+    expect(screen.getByText("Turn recap")).toBeTruthy();
+    expect(screen.getAllByText("1/1 complete").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThanOrEqual(1);
   });
 
@@ -896,14 +979,14 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    const reasoningButtons = screen.getAllByRole("button", { name: /Thought for/i });
+    const reasoningButtons = screen.getAllByRole("button", { name: /Thought/i });
     expect(reasoningButtons).toHaveLength(2);
 
     fireEvent.click(reasoningButtons[0]!);
     fireEvent.click(reasoningButtons[1]!);
 
-    expect(screen.getByText("First thought.")).toBeTruthy();
-    expect(screen.getByText("Second thought.")).toBeTruthy();
+    expect(screen.getAllByText("First thought.")).toHaveLength(2);
+    expect(screen.getAllByText("Second thought.")).toHaveLength(2);
     expect(screen.queryByText("First thought.Second thought.")).toBeNull();
   });
 });

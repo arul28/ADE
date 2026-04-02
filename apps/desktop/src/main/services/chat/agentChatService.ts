@@ -816,7 +816,7 @@ const MAX_TRANSCRIPT_READ_CHARS = 40_000;
 const AUTO_TITLE_MAX_CHARS = 48;
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
-const TURN_TIMEOUT_MS = 300_000; // 5 minutes – overall turn-level timeout
+const RUN_SESSION_TURN_WAIT_TIMEOUT_MS = 300_000; // default wait for programmatic runSessionTurn callers
 const CLAUDE_STREAM_IDLE_TIMEOUT_MS = 75_000;
 const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
 Return only the title text.
@@ -2493,6 +2493,110 @@ export function createAgentChatService(args: {
     return headline;
   };
 
+  const hasClaudeAskUserAnswers = (input: Record<string, unknown>): boolean => {
+    const answers = asRecord(input.answers);
+    if (!answers) return false;
+    return Object.values(answers).some((value) => typeof value === "string" && value.trim().length > 0);
+  };
+
+  const buildClaudeAskUserPendingRequest = (
+    runtime: ClaudeRuntime,
+    input: Record<string, unknown>,
+    sdkOptions?: { toolUseID?: string },
+  ): PendingInputRequest | null => {
+    const rawQuestions = Array.isArray(input.questions) ? input.questions : [];
+    const questions: PendingInputQuestion[] = [];
+
+    for (const rawQuestion of rawQuestions) {
+      const questionRecord = asRecord(rawQuestion);
+      if (!questionRecord) continue;
+
+      const question = typeof questionRecord.question === "string" ? questionRecord.question.trim() : "";
+      if (!question.length) continue;
+
+      const header = typeof questionRecord.header === "string" ? questionRecord.header.trim() : "";
+      const isMultiSelect = questionRecord.multiSelect === true;
+      const options = Array.isArray(questionRecord.options)
+        ? questionRecord.options
+          .map((rawOption) => {
+            const optionRecord = asRecord(rawOption);
+            if (!optionRecord) return null;
+            const label = typeof optionRecord.label === "string" ? optionRecord.label.trim() : "";
+            if (!label.length) return null;
+            const description = typeof optionRecord.description === "string" ? optionRecord.description.trim() : "";
+            const preview = typeof optionRecord.preview === "string" ? optionRecord.preview : "";
+            return {
+              label,
+              value: label,
+              ...(description.length ? { description } : {}),
+              ...(label.endsWith("(Recommended)") ? { recommended: true } : {}),
+              ...(preview.trim().length ? { preview, previewFormat: "html" as const } : {}),
+            };
+          })
+          .filter((option): option is NonNullable<typeof option> => option != null)
+        : [];
+
+      questions.push({
+        id: question,
+        question,
+        ...(header.length ? { header } : {}),
+        ...(options.length ? { options } : {}),
+        ...(isMultiSelect ? { multiSelect: true } : {}),
+        allowsFreeform: true,
+        ...(isMultiSelect
+          ? {
+              impact:
+                "This question allows multiple selections. If you want more than one option, type them as a comma-separated answer.",
+            }
+          : {}),
+      });
+    }
+
+    if (questions.length === 0) return null;
+
+    const firstQuestion = questions[0];
+    const hasStructuredChoices = questions.length > 1 || questions.some((question) => (question.options?.length ?? 0) > 0);
+    const itemId = randomUUID();
+    return {
+      requestId: itemId,
+      itemId,
+      source: "claude",
+      kind: hasStructuredChoices ? "structured_question" : "question",
+      title: questions.length === 1 ? "Question from Claude" : "Questions from Claude",
+      description: questions.length === 1
+        ? firstQuestion?.question ?? "Claude needs an answer before it can continue."
+        : "Claude needs a few answers before it can continue.",
+      questions,
+      allowsFreeform: true,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: {
+        tool: "AskUserQuestion",
+        questionCount: questions.length,
+        ...(sdkOptions?.toolUseID ? { toolUseID: sdkOptions.toolUseID } : {}),
+      },
+      turnId: runtime.activeTurnId ?? null,
+    };
+  };
+
+  const buildClaudeAskUserUpdatedInput = (
+    input: Record<string, unknown>,
+    request: PendingInputRequest,
+    response: { answers?: Record<string, string | string[]>; responseText?: string | null },
+  ): Record<string, unknown> => {
+    const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
+    const mappedAnswers = Object.fromEntries(
+      Object.entries(normalizedAnswers)
+        .map(([questionId, values]) => [questionId, values.join(", ").trim()] as const)
+        .filter(([, answer]) => answer.length > 0),
+    );
+
+    return {
+      ...input,
+      ...(Object.keys(mappedAnswers).length > 0 ? { answers: mappedAnswers } : {}),
+    };
+  };
+
   const buildClaudeCanUseTool = (
     runtime: ClaudeRuntime,
     managed: ManagedChatSession,
@@ -2587,6 +2691,57 @@ export function createAgentChatService(args: {
         message: feedback.length > 0
           ? `The user rejected your plan with feedback: "${feedback}". Please revise and try again.`
           : "The user rejected your plan. Please revise your approach and try again.",
+      };
+    }
+
+    if (toolName === "AskUserQuestion") {
+      if (hasClaudeAskUserAnswers(input)) {
+        return { behavior: "allow" };
+      }
+
+      const request = buildClaudeAskUserPendingRequest(runtime, input, sdkOptions);
+      if (!request) {
+        return { behavior: "allow" };
+      }
+
+      const approvalItemId = request.itemId ?? request.requestId;
+      emitPendingInputRequest(managed, request, {
+        kind: "tool_call",
+        description: request.description ?? "Claude needs input before it can continue.",
+        detail: {
+          tool: "AskUserQuestion",
+          questionCount: request.questions.length,
+          ...(sdkOptions?.toolUseID ? { toolUseID: sdkOptions.toolUseID } : {}),
+        },
+      });
+
+      let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
+      try {
+        response = await new Promise<typeof response>((resolve) => {
+          runtime.approvals.set(approvalItemId, { kind: "question", resolve, request });
+        });
+      } finally {
+        runtime.approvals.delete(approvalItemId);
+      }
+
+      if (response.decision === "cancel" || response.decision === "decline") {
+        return {
+          behavior: "deny",
+          message: "The user declined to answer the questions.",
+        };
+      }
+
+      const updatedInput = buildClaudeAskUserUpdatedInput(input, request, response);
+      if (!hasClaudeAskUserAnswers(updatedInput)) {
+        return {
+          behavior: "deny",
+          message: "The user did not provide answers to the questions.",
+        };
+      }
+
+      return {
+        behavior: "allow",
+        updatedInput,
       };
     }
 
@@ -5506,9 +5661,54 @@ export function createAgentChatService(args: {
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedSyntheticItemIds = new Set<string>();
+    const openClaudeToolUses = new Map<string, { toolName: string }>();
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
     const emittedClaudeTodoIds = new Set<string>();
+    const emitClaudeToolCompletion = (
+      itemId: string,
+      result: Record<string, unknown>,
+    ): void => {
+      const toolMeta = openClaudeToolUses.get(itemId);
+      if (!toolMeta) return;
+      openClaudeToolUses.delete(itemId);
+      emitChatEvent(managed, {
+        type: "tool_result",
+        tool: toolMeta.toolName,
+        result,
+        itemId,
+        turnId,
+        status: "completed",
+      });
+    };
+    const completeClaudeToolUsesFromSummary = (
+      toolUseIds: string[],
+      summaryText: string,
+    ): void => {
+      const cleanedSummary = summaryText.trim();
+      for (const toolUseId of toolUseIds) {
+        const normalizedToolUseId = toolUseId.trim();
+        if (!normalizedToolUseId || !openClaudeToolUses.has(normalizedToolUseId)) continue;
+        emitClaudeToolCompletion(normalizedToolUseId, {
+          synthetic: true,
+          source: "claude_tool_use_summary",
+          summary: cleanedSummary || `Completed ${openClaudeToolUses.get(normalizedToolUseId)?.toolName ?? "tool"}.`,
+        });
+      }
+    };
+    const flushOpenClaudeToolUses = (
+      finalTurnStatus: "completed" | "failed" | "interrupted",
+    ): void => {
+      const remainingToolUses = [...openClaudeToolUses.entries()];
+      for (const [itemId, toolMeta] of remainingToolUses) {
+        emitClaudeToolCompletion(itemId, {
+          synthetic: true,
+          source: "claude_turn_finalization",
+          finalTurnStatus,
+          summary: `Completed ${toolMeta.toolName} when the Claude turn ended.`,
+        });
+      }
+    };
     const maybeEmitTodoUpdate = (toolName: string, input: unknown, itemId: string): void => {
       if (toolName !== "TodoWrite") return;
       if (emittedClaudeTodoIds.has(itemId)) return;
@@ -5517,7 +5717,6 @@ export function createAgentChatService(args: {
       emittedClaudeTodoIds.add(itemId);
       emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
     };
-    let turnTimeout: ReturnType<typeof setTimeout> | undefined;
     let idleTimeout: ReturnType<typeof setTimeout> | undefined;
     let timeoutError: Error | null = null;
     const buildDoneModelPayload = (): { model: string; modelId?: string } =>
@@ -5548,10 +5747,6 @@ export function createAgentChatService(args: {
       return `claude-${kind}:${turnId}:${contentIndex}`;
     };
     const clearClaudeTurnTimers = (): void => {
-      if (turnTimeout) {
-        clearTimeout(turnTimeout);
-        turnTimeout = undefined;
-      }
       if (idleTimeout) {
         clearTimeout(idleTimeout);
         idleTimeout = undefined;
@@ -5567,7 +5762,8 @@ export function createAgentChatService(args: {
       });
       cancelClaudeWarmup(managed, runtime, "timeout");
       try { runtime.v2Session?.close(); } catch { /* ignore */ }
-      runtime.sdkSessionId = null;
+      // Keep the persisted Claude V2 session id so the next turn can resume
+      // the same conversation after this local process is torn down.
     };
     const bumpClaudeIdleDeadline = (): void => {
       if (idleTimeout) {
@@ -5582,13 +5778,6 @@ export function createAgentChatService(args: {
     };
 
     try {
-      turnTimeout = setTimeout(() => {
-        failClaudeTurn(
-          `Claude turn exceeded ${Math.round(TURN_TIMEOUT_MS / 1000)}s. The runtime was reset so you can retry.`,
-          "timeout",
-        );
-      }, TURN_TIMEOUT_MS);
-
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
       const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
       const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
@@ -5959,6 +6148,7 @@ export function createAgentChatService(args: {
                 const nextActivity = activityForToolName(toolName);
                 if (!emittedClaudeToolIds.has(itemId)) {
                   emittedClaudeToolIds.add(itemId);
+                  openClaudeToolUses.set(itemId, { toolName });
                   emitChatEvent(managed, {
                     type: "activity",
                     activity: nextActivity.activity,
@@ -6075,6 +6265,7 @@ export function createAgentChatService(args: {
               const nextActivity = activityForToolName(toolName);
               if (!emittedClaudeToolIds.has(itemId)) {
                 emittedClaudeToolIds.add(itemId);
+                openClaudeToolUses.set(itemId, { toolName });
                 emitChatEvent(managed, {
                   type: "activity",
                   activity: nextActivity.activity,
@@ -6204,10 +6395,12 @@ export function createAgentChatService(args: {
         // tool_use_summary — summarizes groups of tool calls
         if ((msg as any).type === "tool_use_summary") {
           const summaryMsg = msg as any;
+          const toolUseIds = Array.isArray(summaryMsg.preceding_tool_use_ids) ? summaryMsg.preceding_tool_use_ids.map(String) : [];
+          completeClaudeToolUsesFromSummary(toolUseIds, String(summaryMsg.summary ?? ""));
           emitChatEvent(managed, {
             type: "tool_use_summary",
             summary: String(summaryMsg.summary ?? ""),
-            toolUseIds: Array.isArray(summaryMsg.preceding_tool_use_ids) ? summaryMsg.preceding_tool_use_ids.map(String) : [],
+            toolUseIds,
             turnId,
           });
           continue;
@@ -6247,6 +6440,7 @@ export function createAgentChatService(args: {
 
       // ── Turn completion ──
       clearClaudeTurnTimers();
+      flushOpenClaudeToolUses(runtime.interrupted ? "interrupted" : "completed");
       // Note: v2Session is NOT closed here — it stays alive for the next turn
       runtime.activeQuery = null;
       runtime.busy = false;
@@ -6300,6 +6494,12 @@ export function createAgentChatService(args: {
       runtime.busy = false;
       runtime.activeTurnId = null;
       runtime.turnMemoryPolicyState = null;
+      const effectiveError = timeoutError ?? error;
+      const finalToolStatus: "completed" | "failed" | "interrupted" =
+        runtime.interrupted || isAbortRelatedError(effectiveError)
+          ? "interrupted"
+          : "failed";
+      flushOpenClaudeToolUses(finalToolStatus);
 
       // Close V2 session on error so the next turn starts fresh
       try { runtime.v2Session?.close(); } catch { /* ignore */ }
@@ -6317,7 +6517,28 @@ export function createAgentChatService(args: {
           status: "interrupted",
           ...doneModel,
         });
-      } else if (isAbortRelatedError(error)) {
+      } else if (timeoutError) {
+        managed.session.status = "idle";
+        const errorMessage = effectiveError instanceof Error ? effectiveError.message : String(effectiveError);
+        reportProviderRuntimeFailure("claude", errorMessage);
+        emitChatEvent(managed, {
+          type: "error",
+          message: errorMessage,
+          turnId,
+        });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "failed",
+          ...doneModel,
+        });
+
+        appendWorkerActivityToCto(managed, {
+          activityType: "chat_turn",
+          summary: `Turn failed: ${errorMessage}`,
+        });
+      } else if (isAbortRelatedError(effectiveError)) {
         // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
         // Treat as interruption to avoid surfacing raw SDK messages like "aborted by user".
         managed.session.status = "idle";
@@ -6330,10 +6551,10 @@ export function createAgentChatService(args: {
         });
       } else {
         managed.session.status = "idle";
-        const isAuthFailure = isClaudeRuntimeAuthError(error);
+        const isAuthFailure = isClaudeRuntimeAuthError(effectiveError);
         const errorMessage = isAuthFailure
           ? CLAUDE_RUNTIME_AUTH_ERROR
-          : (error instanceof Error ? error.message : String(error));
+          : (effectiveError instanceof Error ? effectiveError.message : String(effectiveError));
         if (isAuthFailure) {
           reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
         } else {
@@ -6358,11 +6579,11 @@ export function createAgentChatService(args: {
         });
 
         // If resume failed, clear sessionId and the caller can retry fresh
-        if (runtime.sdkSessionId && String(error).includes("session")) {
+        if (runtime.sdkSessionId && String(effectiveError).includes("session")) {
           logger.warn("agent_chat.claude_sdk_session_error", {
             sessionId: managed.session.id,
             sdkSessionId: runtime.sdkSessionId,
-            error: error instanceof Error ? error.message : String(error),
+            error: effectiveError instanceof Error ? effectiveError.message : String(effectiveError),
           });
           runtime.sdkSessionId = null;
           managed.runtimeInvalidated = true;
@@ -6449,8 +6670,6 @@ export function createAgentChatService(args: {
       });
     };
 
-    let turnTimeout: ReturnType<typeof setTimeout> | undefined;
-
     try {
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
       const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
@@ -6489,22 +6708,6 @@ export function createAgentChatService(args: {
 
       const abortController = new AbortController();
       runtime.abortController = abortController;
-
-      // Turn-level timeout: abort if the entire turn exceeds the limit
-      turnTimeout = setTimeout(() => {
-        logger.warn("agent_chat.turn_timeout", {
-          sessionId: managed.session.id,
-          turnId,
-          timeoutMs: TURN_TIMEOUT_MS,
-        });
-        emitChatEvent(managed, {
-          type: "error",
-          message: `Turn timed out after ${TURN_TIMEOUT_MS / 1000}s. The agent loop was aborted.`,
-          turnId,
-        });
-        runtime.interrupted = true;
-        abortController.abort();
-      }, TURN_TIMEOUT_MS);
 
       const streamMessages = runtime.messages.map((message, index): ModelMessage => {
         const isCurrentUserMessage = index === runtime.messages.length - 1 && message.role === "user";
@@ -7031,7 +7234,6 @@ export function createAgentChatService(args: {
 
       // ── Shared turn completion ──
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
-      clearTimeout(turnTimeout);
       if (runtime.interrupted) {
         runtime.busy = false;
         runtime.activeTurnId = null;
@@ -7086,7 +7288,6 @@ export function createAgentChatService(args: {
         }
       }
     } catch (error) {
-      clearTimeout(turnTimeout);
       runtime.busy = false;
       runtime.activeTurnId = null;
       runtime.abortController = null;
@@ -7298,7 +7499,8 @@ export function createAgentChatService(args: {
           question?: string;
           isOther?: boolean;
           isSecret?: boolean;
-          options?: Array<{ label?: string; description?: string }> | null;
+          multiSelect?: boolean;
+          options?: Array<{ label?: string; description?: string; preview?: string; previewFormat?: "markdown" | "html" }> | null;
         }>;
       } | null) ?? {};
       const itemId = String(params.itemId ?? randomUUID());
@@ -7312,10 +7514,12 @@ export function createAgentChatService(args: {
                   const label = typeof option?.label === "string" ? option.label.trim() : "";
                   if (!label.length) return [];
                   const description = typeof option?.description === "string" ? option.description.trim() : "";
+                  const preview = typeof option?.preview === "string" ? option.preview : "";
                   return [{
                     label,
                     value: label,
                     ...(description ? { description } : {}),
+                    ...(preview.trim().length ? { preview, ...(option?.previewFormat ? { previewFormat: option.previewFormat } : {}) } : {}),
                   }];
                 })
               : [];
@@ -7323,6 +7527,7 @@ export function createAgentChatService(args: {
               id: questionId,
               header: typeof question?.header === "string" && question.header.trim().length ? question.header.trim() : `Question ${index + 1}`,
               question: questionText,
+              ...(question?.multiSelect === true ? { multiSelect: true } : {}),
               allowsFreeform: question?.isOther === true || options.length === 0,
               isSecret: question?.isSecret === true,
               ...(options.length ? { options } : {}),
@@ -8482,6 +8687,11 @@ export function createAgentChatService(args: {
       pathToClaudeCodeExecutable: claudeExecutable.path,
     };
     if (!lightweight) {
+      opts.toolConfig = {
+        askUserQuestion: {
+          previewFormat: "html",
+        },
+      };
       opts.systemPrompt = {
         type: "preset",
         preset: "claude_code",
@@ -12259,7 +12469,7 @@ export function createAgentChatService(args: {
     attachments = [],
     reasoningEffort,
     executionMode,
-    timeoutMs = 300_000,
+    timeoutMs = RUN_SESSION_TURN_WAIT_TIMEOUT_MS,
   }: AgentChatSendArgs & { timeoutMs?: number }): Promise<{
     sessionId: string;
     provider: AgentChatProvider;
