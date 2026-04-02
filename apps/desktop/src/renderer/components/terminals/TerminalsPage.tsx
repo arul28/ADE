@@ -79,11 +79,13 @@ export function TerminalsPage() {
         activeItemId={work.activeItemId}
         viewMode={work.viewMode}
         draftKind={work.draftKind}
+        showingDraft={work.activeItemId == null}
         setViewMode={work.setViewMode}
         onSelectItem={work.setActiveItemId}
         onCloseItem={work.closeTab}
         onOpenChatSession={handleOpenChatSession}
         onLaunchPtySession={work.launchPtySession}
+        onShowDraftKind={work.showDraftKind}
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
       />
@@ -95,6 +97,7 @@ export function TerminalsPage() {
       work.activeItemId,
       work.viewMode,
       work.draftKind,
+      work.showDraftKind,
       work.setViewMode,
       work.setActiveItemId,
       work.closeTab,

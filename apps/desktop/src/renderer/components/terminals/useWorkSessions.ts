@@ -24,7 +24,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   laneFilter: "all",
   statusFilter: "all",
   search: "",
-  sessionListOrganization: "all-lanes-by-status",
+  sessionListOrganization: "by-time",
   workCollapsedLaneIds: [],
   workFocusSessionsHidden: false,
 };
@@ -103,7 +103,7 @@ export function useWorkSessions() {
   const filterStatus = projectViewState.statusFilter;
   const q = projectViewState.search;
   const sessionListOrganization: WorkSessionListOrganization =
-    projectViewState.sessionListOrganization ?? "all-lanes-by-status";
+    projectViewState.sessionListOrganization ?? "by-time";
   const workCollapsedLaneIds = projectViewState.workCollapsedLaneIds ?? [];
   const workFocusSessionsHidden = projectViewState.workFocusSessionsHidden ?? false;
 
@@ -309,13 +309,14 @@ export function useWorkSessions() {
     }));
   }, [lanes, searchParams, setProjectViewState]);
 
-  // Migrate legacy org modes to the two supported modes
+  // Migrate legacy org modes to supported modes
   useEffect(() => {
     if (
       sessionListOrganization !== "all-lanes-by-status" &&
-      sessionListOrganization !== "by-lane"
+      sessionListOrganization !== "by-lane" &&
+      sessionListOrganization !== "by-time"
     ) {
-      setProjectViewState({ sessionListOrganization: "all-lanes-by-status" });
+      setProjectViewState({ sessionListOrganization: "by-time" });
     }
   }, [sessionListOrganization, setProjectViewState]);
 

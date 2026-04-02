@@ -53,6 +53,44 @@ function SessionSurface({
   );
 }
 
+const MODE_OPTIONS: Array<{ kind: WorkDraftKind; label: string }> = [
+  { kind: "chat", label: "Chat" },
+  { kind: "cli", label: "CLI" },
+  { kind: "shell", label: "Shell" },
+];
+
+function ModeSwitcherPills({
+  draftKind,
+  onShowDraftKind,
+}: {
+  draftKind: WorkDraftKind;
+  onShowDraftKind: (kind: WorkDraftKind) => void;
+}) {
+  return (
+    <div className="inline-flex items-center rounded-full p-0.5" style={{ background: "rgba(255,255,255,0.04)" }}>
+      {MODE_OPTIONS.map((opt) => {
+        const active = draftKind === opt.kind;
+        return (
+          <button
+            key={opt.kind}
+            type="button"
+            className="rounded-full px-3 py-1 text-[11px] font-medium transition-all"
+            style={{
+              background: active ? "rgba(255,255,255,0.10)" : "transparent",
+              color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
+              cursor: "pointer",
+              border: "none",
+            }}
+            onClick={() => onShowDraftKind(opt.kind)}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function WorkViewArea({
   lanes,
   sessions,
@@ -60,11 +98,13 @@ export function WorkViewArea({
   activeItemId,
   viewMode,
   draftKind,
+  showingDraft,
   setViewMode,
   onSelectItem,
   onCloseItem,
   onOpenChatSession,
   onLaunchPtySession,
+  onShowDraftKind,
   closingPtyIds,
   onContextMenu,
 }: {
@@ -74,6 +114,7 @@ export function WorkViewArea({
   activeItemId: string | null;
   viewMode: WorkViewMode;
   draftKind: WorkDraftKind;
+  showingDraft: boolean;
   setViewMode: (mode: WorkViewMode) => void;
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
@@ -85,6 +126,7 @@ export function WorkViewArea({
     startupCommand?: string;
     tracked?: boolean;
   }) => Promise<unknown>;
+  onShowDraftKind: (kind: WorkDraftKind) => void;
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
 }) {
@@ -122,12 +164,19 @@ export function WorkViewArea({
         </div>
 
         {displaySessions.length === 0 ? (
-          <WorkStartSurface
-            draftKind={draftKind}
-            lanes={lanes}
-            onOpenChatSession={onOpenChatSession}
-            onLaunchPtySession={onLaunchPtySession}
-          />
+          <div className="flex h-full flex-col">
+            <div className="flex shrink-0 items-center justify-center py-2">
+              <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
+            </div>
+            <div className="min-h-0 flex-1">
+              <WorkStartSurface
+                draftKind={draftKind}
+                lanes={lanes}
+                onOpenChatSession={onOpenChatSession}
+                onLaunchPtySession={onLaunchPtySession}
+              />
+            </div>
+          </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-auto p-2">
             <div className="grid gap-2" style={{
@@ -314,12 +363,20 @@ export function WorkViewArea({
             </div>
           )
         ) : (
-          <WorkStartSurface
-            draftKind={draftKind}
-            lanes={lanes}
-            onOpenChatSession={onOpenChatSession}
-            onLaunchPtySession={onLaunchPtySession}
-          />
+          <div className="absolute inset-0 flex flex-col">
+            {/* Mode switcher pills */}
+            <div className="flex shrink-0 items-center justify-center py-2">
+              <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
+            </div>
+            <div className="min-h-0 flex-1">
+              <WorkStartSurface
+                draftKind={draftKind}
+                lanes={lanes}
+                onOpenChatSession={onOpenChatSession}
+                onLaunchPtySession={onLaunchPtySession}
+              />
+            </div>
+          </div>
         )}
       </div>
     </div>

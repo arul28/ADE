@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ChatCircleDots,
   Terminal,
   ArrowRight,
 } from "@phosphor-icons/react";
@@ -134,15 +133,7 @@ export function WorkStartSurface({
   if (draftKind === "chat") {
     return (
       <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
-        <div
-          className="flex shrink-0 items-center gap-2.5 px-3 py-1.5"
-          style={{ borderBottom: "1px solid var(--work-pane-border)" }}
-        >
-          <ChatCircleDots size={13} weight="regular" style={{ color: "var(--color-accent)", flexShrink: 0 }} />
-          <span className="text-[11px] font-medium text-muted-fg shrink-0">New chat</span>
-          <LaneCombobox lanes={lanes} value={selectedLaneId} onChange={setLaneAndSync} compact />
-        </div>
-        <div className="min-h-0 flex-1 overflow-hidden px-1 pb-1">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <AgentChatPane
             laneId={selectedLaneId}
             laneLabel={selectedLane?.name ?? selectedLaneId}

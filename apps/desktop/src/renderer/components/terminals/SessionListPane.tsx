@@ -1,21 +1,11 @@
-import React, { useMemo } from "react";
-import { CaretDown, CaretRight, ChatCircleText, Command, Terminal } from "@phosphor-icons/react";
+import React, { useMemo, useState } from "react";
+import { CaretDown, CaretRight, Terminal, MagnifyingGlass, Funnel } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import type { WorkDraftKind, WorkSessionListOrganization, WorkStatusFilter } from "../../state/appStore";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
-
-const ENTRY_OPTIONS: Array<{
-  kind: WorkDraftKind;
-  label: string;
-  icon: typeof ChatCircleText;
-}> = [
-  { kind: "chat", label: "Chat", icon: ChatCircleText },
-  { kind: "cli", label: "CLI", icon: Command },
-  { kind: "shell", label: "Shell", icon: Terminal },
-];
 
 function bucketSessions(sessions: TerminalSessionSummary[]) {
   const running: TerminalSessionSummary[] = [];
@@ -32,6 +22,23 @@ function bucketSessions(sessions: TerminalSessionSummary[]) {
     else ended.push(s);
   }
   return { running, awaiting, ended };
+}
+
+function bucketByTime(sessions: TerminalSessionSummary[]) {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterdayStart = todayStart - 86400000;
+  const today: TerminalSessionSummary[] = [];
+  const yesterday: TerminalSessionSummary[] = [];
+  const older: TerminalSessionSummary[] = [];
+  const sorted = [...sessions].sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+  for (const s of sorted) {
+    const t = new Date(s.startedAt).getTime();
+    if (t >= todayStart) today.push(s);
+    else if (t >= yesterdayStart) yesterday.push(s);
+    else older.push(s);
+  }
+  return { today, yesterday, older };
 }
 
 function SessionSection({
@@ -73,9 +80,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   q,
   setQ,
   selectedSessionId,
-  draftKind,
-  showingDraft,
-  onShowDraftKind,
+  draftKind: _draftKind,
+  showingDraft: _showingDraft,
+  onShowDraftKind: _onShowDraftKind,
   onSelectSession,
   onResume,
   resumingSessionId,
@@ -119,6 +126,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length > 0;
 
   const isByLane = sessionListOrganization === "by-lane";
+  const isByTime = sessionListOrganization === "by-time";
+  const [filterOpen, setFilterOpen] = useState(false);
+
+  const allSessions = useMemo(
+    () => [...runningFiltered, ...awaitingInputFiltered, ...endedFiltered],
+    [runningFiltered, awaitingInputFiltered, endedFiltered],
+  );
+  const timeBuckets = useMemo(() => bucketByTime(allSessions), [allSessions]);
 
   const renderCards = (list: TerminalSessionSummary[]) =>
     list.map((session) => (
@@ -201,79 +216,108 @@ export const SessionListPane = React.memo(function SessionListPane({
     </div>
   );
 
+  const byTimeList = (
+    <div className="px-1.5 pb-2">
+      {timeBuckets.today.length > 0 ? (
+        <div className="mt-1 first:mt-0">
+          <div className="px-2 py-1">
+            <span className="text-[10px] font-medium text-fg/50">Today</span>
+          </div>
+          <div className="space-y-px">{renderCards(timeBuckets.today)}</div>
+        </div>
+      ) : null}
+      {timeBuckets.yesterday.length > 0 ? (
+        <div className="mt-1">
+          <div className="px-2 py-1">
+            <span className="text-[10px] font-medium text-fg/50">Yesterday</span>
+          </div>
+          <div className="space-y-px">{renderCards(timeBuckets.yesterday)}</div>
+        </div>
+      ) : null}
+      {timeBuckets.older.length > 0 ? (
+        <div className="mt-1">
+          <div className="px-2 py-1">
+            <span className="text-[10px] font-medium text-fg/50">Older</span>
+          </div>
+          <div className="space-y-px">{renderCards(timeBuckets.older)}</div>
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: "var(--work-sidebar-bg)" }}>
-      {/* Toolbar */}
+      {/* Compact toolbar */}
       <div className="shrink-0 px-2 pt-2 pb-1.5 space-y-1.5">
-        {/* Entry buttons */}
-        <div className="flex items-center gap-1">
-          {ENTRY_OPTIONS.map((entry) => {
-            const Icon = entry.icon;
-            const active = showingDraft && draftKind === entry.kind;
-            return (
-              <button
-                key={entry.kind}
-                type="button"
-                onClick={() => onShowDraftKind(entry.kind)}
-                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md transition-colors"
-                style={{
-                  height: 28,
-                  border: "none",
-                  background: active ? "var(--color-accent-muted)" : "rgba(255,255,255,0.03)",
-                  color: active ? "var(--color-accent)" : "var(--color-muted-fg)",
-                  cursor: "pointer",
-                  fontSize: 11,
-                  fontWeight: active ? 500 : 400,
-                }}
-              >
-                <Icon size={12} weight="regular" />
-                {entry.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* View toggle: By status / By lane */}
-        <div className="ade-work-segmented">
+        {/* Search + filter row */}
+        <div className="flex items-center gap-1.5">
+          <div className="relative flex-1 min-w-0">
+            <MagnifyingGlass size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-fg/40" />
+            <input
+              className="h-7 w-full rounded-lg border pl-7 pr-2 text-[11px] text-fg outline-none placeholder:text-muted-fg/30"
+              style={{
+                borderColor: "rgba(255,255,255,0.06)",
+                background: "rgba(255,255,255,0.03)",
+              }}
+              placeholder="Search..."
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </div>
           <button
             type="button"
-            className="ade-work-segmented-item"
-            data-active={!isByLane ? "true" : undefined}
-            onClick={() => setSessionListOrganization("all-lanes-by-status")}
-            style={{ flex: 1 }}
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
+            style={{
+              border: "1px solid rgba(255,255,255,0.06)",
+              background: filterOpen ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.03)",
+              color: filterOpen ? "var(--color-fg)" : "var(--color-muted-fg)",
+            }}
+            onClick={() => setFilterOpen(!filterOpen)}
+            title="Filters"
           >
-            By status
-          </button>
-          <button
-            type="button"
-            className="ade-work-segmented-item"
-            data-active={isByLane ? "true" : undefined}
-            onClick={() => setSessionListOrganization("by-lane")}
-            style={{ flex: 1 }}
-          >
-            By lane
+            <Funnel size={12} weight={filterOpen ? "fill" : "regular"} />
           </button>
         </div>
 
-        {/* Lane filter */}
-        <LaneCombobox
-          lanes={orderedLanes}
-          value={filterLaneId}
-          onChange={setFilterLaneId}
-          showAllOption
-        />
-
-        {/* Search */}
-        <input
-          className="h-7 w-full rounded-md border px-2.5 text-[11px] text-fg outline-none"
-          style={{
-            borderColor: "rgba(255,255,255,0.06)",
-            background: "rgba(255,255,255,0.03)",
-          }}
-          placeholder="Search sessions..."
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
+        {/* Expandable filter panel */}
+        {filterOpen ? (
+          <div className="space-y-1.5 rounded-lg p-2" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)" }}>
+            <div className="flex items-center gap-1">
+              <span className="text-[9px] font-medium text-muted-fg/50 uppercase tracking-wider shrink-0 w-10">Group</span>
+              <div className="flex items-center gap-0.5 flex-1">
+                {([
+                  { key: "by-time" as const, label: "Time" },
+                  { key: "all-lanes-by-status" as const, label: "Status" },
+                  { key: "by-lane" as const, label: "Lane" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    className="flex-1 rounded-md px-2 py-1 text-[10px] font-medium transition-colors"
+                    style={{
+                      background: sessionListOrganization === opt.key ? "rgba(255,255,255,0.08)" : "transparent",
+                      color: sessionListOrganization === opt.key ? "var(--color-fg)" : "var(--color-muted-fg)",
+                    }}
+                    onClick={() => setSessionListOrganization(opt.key)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-[9px] font-medium text-muted-fg/50 uppercase tracking-wider shrink-0 w-10">Lane</span>
+              <div className="flex-1">
+                <LaneCombobox
+                  lanes={orderedLanes}
+                  value={filterLaneId}
+                  onChange={setFilterLaneId}
+                  showAllOption
+                />
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {/* Divider */}
@@ -281,7 +325,7 @@ export const SessionListPane = React.memo(function SessionListPane({
 
       {/* Session list */}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-1">
-        {!hasAnySessions && !isByLane ? (
+        {!hasAnySessions ? (
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/15 mb-2" />
             <div className="text-[11px] font-medium text-fg/70">No sessions</div>
@@ -289,6 +333,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               Start a new session above.
             </div>
           </div>
+        ) : isByTime ? (
+          byTimeList
         ) : isByLane ? (
           byLaneList
         ) : (

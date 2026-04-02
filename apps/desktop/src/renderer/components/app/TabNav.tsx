@@ -18,10 +18,10 @@ import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
 
 const mainItems = [
-  { to: "/project", label: "Run", icon: PlayCircle },
-  { to: "/lanes", label: "Lanes", icon: GitBranch },
   { to: "/work", label: "Work", icon: Terminal },
+  { to: "/lanes", label: "Lanes", icon: GitBranch },
   { to: "/files", label: "Files", icon: FileCode },
+  { to: "/project", label: "Run", icon: PlayCircle },
   { to: "/graph", label: "Graph", icon: Graph },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
   { to: "/history", label: "History", icon: ClockCounterClockwise },

@@ -1104,158 +1104,147 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="space-y-2 px-3 py-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-              {nativeControlPanel}
-            </div>
-
-            <div className="min-w-0 shrink">
-              <UnifiedModelSelector
-                value={modelId}
-                onChange={onModelChange}
-                availableModelIds={availableModelIds}
-                disabled={modelSelectionLocked}
-                showReasoning
-                reasoningEffort={reasoningEffort}
-                onReasoningEffortChange={onReasoningEffortChange}
-                onOpenAiSettings={onOpenAiSettings}
-              />
-            </div>
+        <div className="flex items-center gap-2 px-3 py-1.5">
+          {/* Left: permission + model controls */}
+          <div className="flex min-w-0 items-center gap-1.5">
+            {nativeControlPanel}
+            <UnifiedModelSelector
+              value={modelId}
+              onChange={onModelChange}
+              availableModelIds={availableModelIds}
+              disabled={modelSelectionLocked}
+              showReasoning
+              reasoningEffort={reasoningEffort}
+              onReasoningEffortChange={onReasoningEffortChange}
+              onOpenAiSettings={onOpenAiSettings}
+            />
           </div>
-          {claudeControlDetail ? (
-            <div className="px-1 text-[10px] leading-5 text-muted-fg/40">
-              {claudeControlDetail}
-            </div>
-          ) : null}
-          {codexControlDetail ? (
-            <div className="px-1 text-[10px] leading-5 text-muted-fg/40">
-              {codexControlDetail}
-            </div>
-          ) : null}
 
-          <div className="flex items-center gap-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-1">
+          {/* Right: attachment, commands, proof, context, send */}
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/30 transition-colors hover:bg-white/5 hover:text-muted-fg/60"
+              disabled={!canAttach}
+              onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
+              title="Attach files or images (@)"
+              aria-label="Open attachment picker"
+            >
+              @
+            </button>
+            <button
+              type="button"
+              className="rounded-md px-1 py-1 text-muted-fg/30 transition-colors hover:bg-white/5 hover:text-muted-fg/60"
+              disabled={!canAttach}
+              onClick={openUploadPicker}
+              title="Upload file from disk"
+              aria-label="Upload file from disk"
+            >
+              <Paperclip size={11} />
+            </button>
+            <button
+              type="button"
+              className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/30 transition-colors hover:bg-white/5 hover:text-muted-fg/60"
+              onClick={() => { const d = textareaRef.current?.value ?? ""; if (!d.length) { onDraftChange("/"); } setSlashPickerOpen(true); setSlashQuery(d.startsWith("/") ? d.slice(1) : ""); setSlashCursor(0); textareaRef.current?.focus(); }}
+              title="Commands (/)"
+              aria-label="Open command picker"
+            >
+              /
+            </button>
+
+            {/* Proof drawer toggle */}
+            {onToggleProof ? (
               <button
                 type="button"
-                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                disabled={!canAttach}
-                onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-                title="Attach files or images (@)"
+                className={cn(
+                  "relative inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-sans text-[10px] font-medium transition-colors",
+                  proofOpen
+                    ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-200/80"
+                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-white/[0.10] hover:text-fg/60",
+                )}
+                onClick={onToggleProof}
+                title={proofOpen ? "Close proof drawer" : "Open proof drawer"}
+                aria-label={proofOpen ? "Close proof drawer" : "Open proof drawer"}
+                aria-pressed={proofOpen}
               >
-                @
+                <Cube size={11} weight={proofOpen ? "fill" : "regular"} />
+                {proofArtifactCount > 0 ? (
+                  <span className="inline-flex h-[12px] min-w-[12px] items-center justify-center rounded-full bg-emerald-500/20 px-0.5 font-mono text-[8px] font-bold text-emerald-200/90">
+                    {proofArtifactCount}
+                  </span>
+                ) : null}
               </button>
+            ) : null}
+
+            {/* Include context toggle */}
+            {!chatHasMessages && onIncludeProjectDocsChange ? (
               <button
                 type="button"
-                className="rounded-md px-1.5 py-1 text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                disabled={!canAttach}
-                onClick={openUploadPicker}
-                title="Upload file from disk"
+                className={cn(
+                  "inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-sans text-[10px] font-medium transition-colors",
+                  includeProjectDocs
+                    ? "border-accent/22 bg-accent/10 text-accent"
+                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-white/[0.10] hover:text-fg/60",
+                )}
+                onClick={() => onIncludeProjectDocsChange(!includeProjectDocs)}
+                title="Include project context (PRD + architecture) with first message"
+                aria-pressed={!!includeProjectDocs}
               >
-                <Paperclip size={12} />
+                <BookOpen size={11} weight={includeProjectDocs ? "fill" : "regular"} />
+                <span>Context</span>
               </button>
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 font-sans text-[10px] text-muted-fg/22 transition-colors hover:bg-white/5 hover:text-muted-fg/55"
-                onClick={() => { const d = textareaRef.current?.value ?? ""; if (!d.length) { onDraftChange("/"); } setSlashPickerOpen(true); setSlashQuery(d.startsWith("/") ? d.slice(1) : ""); setSlashCursor(0); textareaRef.current?.focus(); }}
-                title="Commands (/)"
-              >
-                /
-              </button>
-            </div>
+            ) : null}
 
-            <div className="ml-auto flex shrink-0 items-center gap-1.5">
-              {/* Proof drawer toggle */}
-              {onToggleProof ? (
-                <button
-                  type="button"
-                  className={cn(
-                    "relative inline-flex h-7 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors",
-                    proofOpen
-                      ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-200/80"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.12] hover:text-fg/68",
-                  )}
-                  onClick={onToggleProof}
-                  title={proofOpen ? "Close proof drawer" : "Open proof drawer"}
-                  aria-pressed={proofOpen}
-                >
-                  <Cube size={12} weight={proofOpen ? "fill" : "regular"} />
-                  {proofArtifactCount > 0 ? (
-                    <span className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-emerald-500/20 px-1 font-mono text-[8px] font-bold text-emerald-200/90">
-                      {proofArtifactCount}
-                    </span>
-                  ) : null}
-                </button>
-              ) : null}
-
-              {/* Include context toggle -- only before first message */}
-              {!chatHasMessages && onIncludeProjectDocsChange ? (
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex h-7 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors",
-                    includeProjectDocs
-                      ? "border-accent/22 bg-accent/10 text-accent"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.12] hover:text-fg/68",
-                  )}
-                  onClick={() => onIncludeProjectDocsChange(!includeProjectDocs)}
-                  title="Include project context (PRD + architecture) with first message"
-                  aria-pressed={!!includeProjectDocs}
-                >
-                  <BookOpen size={12} weight={includeProjectDocs ? "fill" : "regular"} />
-                  <span>Context</span>
-                </button>
-              ) : null}
-
-              {turnActive ? (
-                <>
-                  {draft.trim().length > 0 && onClearDraft ? (
-                    <button
-                      type="button"
-                      className="inline-flex h-7 items-center justify-center rounded-md border border-white/[0.06] px-2 font-sans text-[10px] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
-                      onClick={onClearDraft}
-                      title="Clear draft only"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                  {draft.trim().length > 0 ? (
-                    <button
-                      type="button"
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-                      onClick={onSubmit}
-                      title="Send steer message"
-                    >
-                      <PaperPlaneTilt size={11} weight="fill" />
-                    </button>
-                  ) : null}
+            {turnActive ? (
+              <>
+                {draft.trim().length > 0 && onClearDraft ? (
                   <button
                     type="button"
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-500/20 bg-red-500/[0.06] text-red-400/70 transition-all hover:border-red-500/35 hover:bg-red-500/12 hover:text-red-400"
-                    title="Stop the active turn only (Cmd+.)"
-                    onClick={onInterrupt}
+                    className="inline-flex h-6 items-center justify-center rounded-md border border-white/[0.06] px-1.5 font-sans text-[10px] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
+                    onClick={onClearDraft}
+                    title="Clear draft only"
                   >
-                    <Square size={10} weight="fill" />
+                    Clear
                   </button>
-                </>
-              ) : (
+                ) : null}
+                {draft.trim().length > 0 ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
+                    onClick={onSubmit}
+                    title="Send steer message"
+                    aria-label="Send steer message"
+                  >
+                    <PaperPlaneTilt size={10} weight="fill" />
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  className={cn(
-                    "inline-flex h-7 items-center justify-center rounded-md border px-3 transition-all",
-                    busy || !draft.trim().length || !modelId
-                      ? "border-white/[0.04] text-muted-fg/12"
-                      : "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]",
-                  )}
-                  disabled={busy || !draft.trim().length || !modelId}
-                  onClick={onSubmit}
-                  title={!modelId ? "Select a model first" : "Send"}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-red-500/20 bg-red-500/[0.06] text-red-400/70 transition-all hover:border-red-500/35 hover:bg-red-500/12 hover:text-red-400"
+                  title="Stop the active turn only (Cmd+.)"
+                  aria-label="Stop active turn"
+                  onClick={onInterrupt}
                 >
-                  <PaperPlaneTilt size={11} weight="fill" />
-                  <span className="ml-1 font-sans text-[10px]">Send</span>
+                  <Square size={9} weight="fill" />
                 </button>
-              )}
-            </div>
+              </>
+            ) : (
+              <button
+                type="button"
+                className={cn(
+                  "inline-flex h-6 items-center justify-center rounded-md border px-2.5 transition-all",
+                  busy || !draft.trim().length || !modelId
+                    ? "border-white/[0.04] text-muted-fg/12"
+                    : "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]",
+                )}
+                disabled={busy || !draft.trim().length || !modelId}
+                onClick={onSubmit}
+                title={!modelId ? "Select a model first" : "Send"}
+              >
+                <PaperPlaneTilt size={10} weight="fill" />
+                <span className="ml-1 font-sans text-[10px]">Send</span>
+              </button>
+            )}
           </div>
         </div>
       }
@@ -1296,7 +1285,7 @@ export function AgentChatComposer({
           {/* Ghost suggestion overlay */}
           {promptSuggestion && !draft.length && !turnActive ? (
             <div
-              className="pointer-events-none absolute inset-0 flex items-start px-4 py-3"
+              className="pointer-events-none absolute inset-0 flex items-start px-4 py-2.5"
               aria-hidden="true"
             >
               <span className="text-[13px] leading-[1.6] text-fg/18 italic">
@@ -1317,7 +1306,7 @@ export function AgentChatComposer({
               if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
             }}
             className={cn(
-              "min-h-[52px] max-h-[40vh] w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+              "min-h-[44px] max-h-[200px] w-full resize-none bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
               dragActive ? "opacity-30" : "",
             )}
             placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Message the assistant..."))}

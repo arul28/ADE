@@ -11,7 +11,8 @@ export type WorkDraftKind = "chat" | "cli" | "shell";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
   | "all-lanes-by-status"
-  | "by-lane";
+  | "by-lane"
+  | "by-time";
 export type WorkProjectViewState = {
   openItemIds: string[];
   activeItemId: string | null;
@@ -59,7 +60,7 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     laneFilter: "all",
     statusFilter: "all",
     search: "",
-    sessionListOrganization: "all-lanes-by-status",
+    sessionListOrganization: "by-time",
     workCollapsedLaneIds: [],
     workFocusSessionsHidden: false,
   };

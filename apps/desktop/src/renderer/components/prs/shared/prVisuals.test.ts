@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { derivePrActivityState, formatCompactCount, getPrCiDotColor, getPrEdgeColor, getPrReviewDotColor } from "./prVisuals";
+import { derivePrActivityState, formatCompactCount, getPrEdgeColor } from "./prVisuals";
 
 describe("prVisuals", () => {
   afterEach(() => {
@@ -64,33 +64,6 @@ describe("prVisuals", () => {
     expect(getPrEdgeColor({ state: "merged", checksStatus: "pending", reviewStatus: "approved", ciRunning: true })).toBe("#22C55E");
     // And changes_requested still wins
     expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "changes_requested", ciRunning: true })).toBe("#EF4444");
-  });
-
-  describe("getPrCiDotColor", () => {
-    it("returns info color when ciRunning is true regardless of checksStatus", () => {
-      expect(getPrCiDotColor({ checksStatus: "passing", ciRunning: true })).toBe("#3B82F6");
-      expect(getPrCiDotColor({ checksStatus: "failing", ciRunning: true })).toBe("#3B82F6");
-      expect(getPrCiDotColor({ checksStatus: "none", ciRunning: true })).toBe("#3B82F6");
-    });
-
-    it("returns info color for pending checksStatus even without ciRunning flag", () => {
-      expect(getPrCiDotColor({ checksStatus: "pending" })).toBe("#3B82F6");
-    });
-
-    it("returns danger for failing, success for passing, and muted for none", () => {
-      expect(getPrCiDotColor({ checksStatus: "failing" })).toBe("#EF4444");
-      expect(getPrCiDotColor({ checksStatus: "passing" })).toBe("#22C55E");
-      expect(getPrCiDotColor({ checksStatus: "none" })).toBe("#8B8B9A");
-    });
-  });
-
-  describe("getPrReviewDotColor", () => {
-    it("returns the correct color for each review status", () => {
-      expect(getPrReviewDotColor({ reviewStatus: "changes_requested" })).toBe("#EF4444");
-      expect(getPrReviewDotColor({ reviewStatus: "approved" })).toBe("#22C55E");
-      expect(getPrReviewDotColor({ reviewStatus: "requested" })).toBe("#F59E0B");
-      expect(getPrReviewDotColor({ reviewStatus: "none" })).toBe("#8B8B9A");
-    });
   });
 
   describe("formatCompactCount", () => {

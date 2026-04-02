@@ -1963,33 +1963,45 @@ export function AgentChatPane({
   }
   const draftAccent = selectedModelDesc?.color ?? "#A1A1AA";
   const shellHeader = (
-    <div className="space-y-3 px-4 py-3">
-      <div className="flex flex-wrap items-start gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="font-sans text-[13px] font-semibold text-fg/50">
-            {resolvedTitle}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-1.5">
-          {laneId && laneDisplayLabel && laneDisplayLabel !== laneId ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] px-2 py-1 font-sans text-[11px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg/70"
-              title={`Go to lane: ${laneDisplayLabel}`}
-              onClick={() => {
-                selectLane(laneId);
-                navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
-              }}
+    <div className="space-y-2 px-4 py-2">
+      {/* Clean single-row header */}
+      <div className="flex items-center gap-3">
+        <span className="min-w-0 truncate font-sans text-[13px] font-medium text-fg/80">
+          {resolvedTitle}
+        </span>
+
+        {laneId && laneDisplayLabel && laneDisplayLabel !== laneId ? (
+          <button
+            type="button"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.06] px-2.5 py-0.5 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg/70"
+            title={`Go to lane: ${laneDisplayLabel}`}
+            onClick={() => {
+              selectLane(laneId);
+              navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
+            }}
+          >
+            <GitBranch size={10} weight="regular" />
+            <span className="max-w-[120px] truncate">{laneDisplayLabel}</span>
+          </button>
+        ) : null}
+
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {resolvedChips.map((chip) => (
+            <span
+              key={`${chip.label}:${chip.tone ?? "accent"}`}
+              className={cn(
+                "inline-flex items-center rounded-full border px-2 py-0.5 font-sans text-[9px] font-medium",
+                chatChipToneClass(chip.tone),
+              )}
             >
-              <GitBranch size={11} weight="regular" />
-              <span className="max-w-[140px] truncate">{laneDisplayLabel}</span>
-            </button>
-          ) : null}
+              {chip.label}
+            </span>
+          ))}
           {canShowHandoff ? (
             <div ref={handoffRef} className="relative">
               <button
                 type="button"
-                className="inline-flex items-center rounded-md border border-white/[0.06] px-2.5 py-1 font-sans text-[11px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex items-center rounded-md border border-white/[0.06] px-2 py-0.5 font-sans text-[10px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={() => {
                   setError(null);
                   setHandoffOpen((current) => !current);
@@ -1997,10 +2009,10 @@ export function AgentChatPane({
                 disabled={handoffBlocked}
                 title={handoffButtonTitle}
               >
-                Chat handoff
+                Handoff
               </button>
               {handoffOpen ? (
-                <div className="absolute right-0 top-full z-30 mt-2 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(18,20,28,0.98),rgba(10,12,18,0.98))] p-3 shadow-[0_24px_90px_-40px_rgba(0,0,0,0.88)] backdrop-blur-xl">
+                <div className="absolute right-0 top-full z-30 mt-2 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-white/[0.08] bg-card/98 p-3 shadow-float backdrop-blur-xl">
                   <div className="space-y-1">
                     <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
                     <div className="text-[11px] leading-5 text-fg/54">
@@ -2042,7 +2054,7 @@ export function AgentChatPane({
           {isPersistentIdentitySurface && selectedSessionId ? (
             <button
               type="button"
-              className="inline-flex items-center rounded-md border border-white/[0.06] px-2.5 py-1 font-sans text-[11px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg"
+              className="inline-flex items-center rounded-md border border-white/[0.06] px-2 py-0.5 font-sans text-[10px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg"
               onClick={() => {
                 clearSessionView(selectedSessionId);
               }}
@@ -2050,17 +2062,6 @@ export function AgentChatPane({
               Clear view
             </button>
           ) : null}
-          {resolvedChips.map((chip) => (
-            <span
-              key={`${chip.label}:${chip.tone ?? "accent"}`}
-              className={cn(
-                "inline-flex items-center rounded-md border px-2 py-1 font-sans text-[10px] font-medium",
-                chatChipToneClass(chip.tone),
-              )}
-            >
-              {chip.label}
-            </span>
-          ))}
         </div>
       </div>
 
@@ -2343,52 +2344,52 @@ export function AgentChatPane({
               </div>
             </div>
           ) : selectedSessionId ? (
-            <div className="flex h-full min-h-0 flex-col overflow-hidden">
+            <div className="flex h-full min-h-0 overflow-hidden">
+              {/* Chat column */}
+              <div className="flex min-h-0 min-w-[280px] flex-1 flex-col overflow-hidden">
+                <AgentChatMessageList
+                  key={selectedSessionId ?? "chat-draft"}
+                  events={selectedEventsForDisplay}
+                  showStreamingIndicator={turnActive}
+                  className="min-h-0 border-0"
+                  surfaceMode={surfaceMode}
+                  surfaceProfile={surfaceProfile}
+                  assistantLabel={assistantLabel}
+                  respondingApprovalIds={respondingApprovalIds}
+                  pendingApprovalIds={pendingApprovalIds}
+                  onApproval={(itemId, decision, responseText) => {
+                    void handleApproval(itemId, decision, responseText);
+                  }}
+                />
+                {sessionDelta ? (
+                  <div className="flex items-center gap-3 border-t border-white/[0.04] px-4 py-1.5 font-mono text-[11px]">
+                    <span className="text-emerald-400/70">+{sessionDelta.insertions}</span>
+                    <span className="text-red-400/70">-{sessionDelta.deletions}</span>
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Proof panel (push) */}
               {proofDrawerOpen ? (
-                <div className="border-b border-white/[0.05] bg-[linear-gradient(180deg,rgba(12,17,28,0.92),rgba(9,12,20,0.88))]">
-                  <div className="flex items-center justify-between gap-3 px-4 py-3">
-                    <div>
-                      <div className="font-sans text-[12px] font-medium text-fg/82">Proof drawer</div>
-                      <div className="mt-1 text-[11px] text-fg/54">
-                        Inspect retained screenshots, traces, logs, and verification output for this chat.
-                      </div>
-                    </div>
+                <div className="flex h-full w-[40%] min-w-[280px] max-w-[480px] shrink-0 flex-col border-l border-white/[0.06] bg-surface/80">
+                  <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
+                    <span className="font-sans text-[12px] font-medium text-fg/80">Artifacts</span>
                     <button
                       type="button"
-                      className="rounded-[var(--chat-radius-pill)] border border-white/[0.08] bg-white/[0.03] px-3 py-1 font-sans text-[11px] font-medium text-fg/58 transition-colors hover:text-fg/82"
+                      className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
                       onClick={() => setProofDrawerOpen(false)}
-                      title="Hide proof drawer"
+                      title="Close artifacts panel"
                     >
-                      Hide proof
+                      Close
                     </button>
                   </div>
-                  <div className="max-h-[48vh] overflow-auto px-4 pb-4">
+                  <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
                     <ChatComputerUsePanel
                       sessionId={selectedSessionId}
                       snapshot={computerUseSnapshot}
                       onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
                     />
                   </div>
-                </div>
-              ) : null}
-              <AgentChatMessageList
-                key={selectedSessionId ?? "chat-draft"}
-                events={selectedEventsForDisplay}
-                showStreamingIndicator={turnActive}
-                className="min-h-0 border-0"
-                surfaceMode={surfaceMode}
-                surfaceProfile={surfaceProfile}
-                assistantLabel={assistantLabel}
-                respondingApprovalIds={respondingApprovalIds}
-                pendingApprovalIds={pendingApprovalIds}
-                onApproval={(itemId, decision, responseText) => {
-                  void handleApproval(itemId, decision, responseText);
-                }}
-              />
-              {sessionDelta ? (
-                <div className="flex items-center gap-3 border-t border-white/[0.04] px-4 py-1.5 font-mono text-[11px]">
-                  <span className="text-emerald-400/70">+{sessionDelta.insertions}</span>
-                  <span className="text-red-400/70">-{sessionDelta.deletions}</span>
                 </div>
               ) : null}
             </div>
