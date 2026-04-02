@@ -1,6 +1,6 @@
 ---
 title: "v1.0.3"
-description: "Release notes for ADE v1.0.3 — April 1, 2026"
+description: "Release notes for ADE v1.0.3 — April 2, 2026"
 ---
 
 ## Added
@@ -14,6 +14,14 @@ description: "Release notes for ADE v1.0.3 — April 1, 2026"
 - **ADE MCP tool namespacing** — PR issue resolution tools exposed with `ade:` prefix in agent sessions
 - **Codex MCP override mapping** — ADE server settings correctly forwarded to Codex MCP launches
 - **Reusable JSON-RPC server** — Refactored MCP socket handling into a shared server module
+- **Packed session grid** — Resizable tile layout for the Work view with drag-handle resizing and bin-packing arrangement
+- **Multi-select agent questions** — Agent question modal supports toggling multiple options with Markdown/HTML preview
+- **New Chat quick-create** — Faster optimistic session opening with immediate tab activation
+- **Turn recap UI** — Summary row at the end of each turn showing tool invocation counts and task progress
+- **Claude tool-use tracking** — Per-invocation lifecycle tracking with start/complete events for work log status indicators
+- **MCP initialize probe** — Pre-checks MCP server availability before starting Claude sessions
+- **Inline AskUserQuestion UI** — Agent questions now render inline in the chat transcript with a unified `ask_user` tool, replacing the modal-only flow. Supports both single-select and multi-select answers with Markdown preview.
+- **AskUserQuestion tool_result emission** — Agent receives the user's answer as a proper `tool_result` message, enabling the agent to continue its workflow without re-prompting
 
 ## Changed
 
@@ -24,6 +32,12 @@ description: "Release notes for ADE v1.0.3 — April 1, 2026"
 - **MCP config hardening** — ADE query controls enforced across all MCP tool invocations
 - **Chat abort handling** — Aborts treated as interruptions that preserve chat state instead of clearing it
 - **Rebase route selection** — Active rebase needs now correctly resolved when selecting navigation routes
+- **Terminal renderer** — Simplified from WebGL/canvas/DOM to WebGL-first with DOM fallback; added fit recovery with retry on invalid dimensions
+- **Work log headings** — Human-readable labels replace generic tool identifiers; default visible entries increased to 4
+- **Model catalog filtering** — Model selector supports `available-only` mode to restrict picker to configured providers
+- **Git stash actions** — Pop, drop, and clear now refresh workspace metadata after completion
+- **Composer sizing** — New compact and grid-tile sizing modes
+- **Stale session detection** — Session expiry checks now also match "session expired" error strings, preventing zombie sessions from blocking new agent launches
 
 ## Fixed
 
@@ -33,3 +47,5 @@ description: "Release notes for ADE v1.0.3 — April 1, 2026"
 - **Thinking indicator positioning** — Fixed CSS positioning of the thinking/reasoning indicator in chat messages
 - **Artifact URL handling** — Textual artifact URLs are now ignored (only real PR branch pushes trigger updates)
 - **projectRoot forwarding** — Codex MCP launches now correctly receive the project root path
+- **Tree refresh stale closure** — Fixed stale closure in the FilesPage tree refresh drain loop that caused flaky re-renders and test failures
+- **Database backup tracking** — Removed tracked `.bak` database files from the repository and added `*.bak` to `.gitignore`

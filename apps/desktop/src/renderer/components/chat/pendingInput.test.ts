@@ -1,9 +1,12 @@
 /* @vitest-environment jsdom */
 
 import { describe, expect, it } from "vitest";
-import type { AgentChatEventEnvelope } from "../../../shared/types";
-import { derivePendingInputRequests } from "./pendingInput";
-import type { DerivedPendingInput } from "./pendingInput";
+import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../shared/types";
+import {
+  derivePendingInputRequests,
+  getPendingInputQuestionCount,
+  hasPendingInputOptions,
+} from "./pendingInput";
 
 // ---------------------------------------------------------------------------
 // Helpers for building test envelopes
@@ -114,6 +117,35 @@ describe("derivePendingInputRequests", () => {
     expect(result[0]!.request.title).toBe("Approve deploy");
     expect(result[0]!.request.questions).toHaveLength(1);
     expect(result[0]!.request.questions[0]!.id).toBe("q1");
+  });
+
+  it("recognizes options anywhere in a pending request", () => {
+    const request = {
+      requestId: "req-options",
+      source: "codex",
+      kind: "structured_question",
+      questions: [
+        {
+          id: "q1",
+          question: "What should we inspect first?",
+          allowsFreeform: true,
+        },
+        {
+          id: "q2",
+          question: "Which option should we use?",
+          allowsFreeform: true,
+          options: [
+            { label: "Question flow", value: "question_flow" },
+          ],
+        },
+      ],
+      allowsFreeform: true,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+    } satisfies PendingInputRequest;
+
+    expect(getPendingInputQuestionCount(request)).toBe(2);
+    expect(hasPendingInputOptions(request)).toBe(true);
   });
 
   it("preserves Cursor structured permission requests", () => {
@@ -702,6 +734,42 @@ describe("derivePendingInputRequests", () => {
     expect(opts[2]!.recommended).toBeUndefined();
   });
 
+  it("preserves option previews and preview formats", () => {
+    const structuredRequest = {
+      requestId: "req-preview",
+      source: "mission",
+      kind: "structured_question",
+      questions: [
+        {
+          id: "q-preview",
+          question: "Compare layouts",
+          options: [
+            { label: "Cards", value: "cards", preview: "<div><strong>Cards</strong></div>", previewFormat: "html" },
+            { label: "Table", value: "table", preview: "```md\n| A | B |\n```", previewFormat: "markdown" },
+            { label: "None", value: "none", preview: "" },
+          ],
+        },
+      ],
+    };
+    const events: AgentChatEventEnvelope[] = [
+      envelope({
+        type: "approval_request",
+        itemId: "item-preview",
+        kind: "tool_call",
+        description: "test",
+        turnId: "turn-1",
+        detail: { request: structuredRequest },
+      }),
+    ];
+
+    const result = derivePendingInputRequests(events);
+    const opts = result[0]!.request.questions[0]!.options!;
+    expect(opts[0]!.preview).toBe("<div><strong>Cards</strong></div>");
+    expect(opts[0]!.previewFormat).toBe("html");
+    expect(opts[1]!.previewFormat).toBe("markdown");
+    expect(opts[2]!.preview).toBeUndefined();
+  });
+
   // ---- Question parsing with optional fields ----------------------------
 
   it("parses question with all optional fields", () => {
@@ -714,6 +782,7 @@ describe("derivePendingInputRequests", () => {
           id: "q-full",
           question: "What next?",
           header: "Decision Point",
+          multiSelect: true,
           allowsFreeform: true,
           isSecret: true,
           defaultAssumption: "Continue as planned",
@@ -738,6 +807,7 @@ describe("derivePendingInputRequests", () => {
     expect(q.id).toBe("q-full");
     expect(q.question).toBe("What next?");
     expect(q.header).toBe("Decision Point");
+    expect(q.multiSelect).toBe(true);
     expect(q.allowsFreeform).toBe(true);
     expect(q.isSecret).toBe(true);
     expect(q.defaultAssumption).toBe("Continue as planned");
@@ -775,6 +845,7 @@ describe("derivePendingInputRequests", () => {
     const result = derivePendingInputRequests(events);
     const q = result[0]!.request.questions[0]!;
     expect(q.header).toBeUndefined();
+    expect(q.multiSelect).toBeUndefined();
     expect(q.allowsFreeform).toBeUndefined();
     expect(q.isSecret).toBeUndefined();
     expect(q.defaultAssumption).toBeUndefined();

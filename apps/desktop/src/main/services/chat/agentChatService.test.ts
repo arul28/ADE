@@ -15,6 +15,7 @@ const mockState = vi.hoisted(() => ({
   codexTurnCounter: 0,
   cursorSessionCounter: 0,
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
+  codexCollaborationModes: [{ mode: "default" }, { mode: "plan" }] as Array<Record<string, unknown> | string>,
   codexLineHandler: null as ((line: string) => void) | null,
   cursorAcquireCalls: [] as Array<Record<string, unknown>>,
   cursorNewSessionCalls: [] as Array<Record<string, unknown>>,
@@ -57,6 +58,10 @@ vi.mock("node:child_process", () => ({
           } else if (payload.method === "turn/start" || payload.method === "review/start") {
             mockState.codexTurnCounter += 1;
             result = { turn: { id: `turn-${mockState.codexTurnCounter}` } };
+          } else if (payload.method === "collaborationMode/list") {
+            result = {
+              collaborationModes: mockState.codexCollaborationModes,
+            };
           } else if (payload.method === "skills/list") {
             result = { skills: [] };
           } else if (payload.method === "account/rateLimits/read") {
@@ -584,6 +589,18 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
   throw new Error("Timed out waiting for agent chat event.");
 }
 
+function expectResolvedMcpLaunchesToUseStandardProxyFlow(): void {
+  const calls = vi.mocked(resolveAdeMcpServerLaunch).mock.calls;
+  expect(calls.length).toBeGreaterThan(0);
+  for (const [args] of calls) {
+    // Regression guard: packaged chat surfaces must not force the direct
+    // headless MCP path. A previous refactor set preferBundledProxy=false,
+    // which bypassed the working ADE proxy path and broke Claude/Codex chat
+    // MCP initialization before the first turn could start.
+    expect((args as { preferBundledProxy?: boolean }).preferBundledProxy).toBeUndefined();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -599,6 +616,7 @@ beforeEach(() => {
   mockState.codexTurnCounter = 0;
   mockState.cursorSessionCounter = 0;
   mockState.codexRequestPayloads = [];
+  mockState.codexCollaborationModes = [{ mode: "default" }, { mode: "plan" }];
   mockState.codexLineHandler = null;
   mockState.cursorAcquireCalls = [];
   mockState.cursorNewSessionCalls = [];
@@ -806,6 +824,7 @@ describe("createAgentChatService", () => {
 
     it("pre-approves ADE MCP tools for Claude SDK sessions", async () => {
       vi.mocked(providerResolver.normalizeCliMcpServers).mockImplementation((_provider, servers) => servers ?? {});
+      vi.mocked(resolveAdeMcpServerLaunch).mockClear();
       vi.mocked(unstable_v2_createSession).mockReturnValue({
         send: vi.fn(),
         stream: vi.fn(async function* () {
@@ -832,6 +851,36 @@ describe("createAgentChatService", () => {
       } | undefined;
       expect(opts?.mcpServers).toHaveProperty("ade");
       expect(opts?.allowedTools).toContain("mcp__ade__*");
+      // This explicitly protects the Claude chat surface, which shares the
+      // same MCP launch helper as the other chat providers.
+      expectResolvedMcpLaunchesToUseStandardProxyFlow();
+    });
+
+    it("requests markdown previews for Claude AskUserQuestion by default", async () => {
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-ask-user-preview",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
+        toolConfig?: { askUserQuestion?: { previewFormat?: string } };
+      } | undefined;
+      expect(opts?.toolConfig?.askUserQuestion?.previewFormat).toBe("markdown");
     });
 
     it("attaches ADE MCP servers through the Claude V2 query controls", async () => {
@@ -1391,6 +1440,10 @@ describe("createAgentChatService", () => {
         expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
       });
 
+      // Codex app-server was the first place this surfaced in production, so
+      // keep a dedicated assertion on the actual Codex chat path too.
+      expectResolvedMcpLaunchesToUseStandardProxyFlow();
+
       const workspaceRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
         .map(([args]) => (args as { workspaceRoot?: string }).workspaceRoot)
         .filter((value): value is string => typeof value === "string");
@@ -1422,6 +1475,7 @@ describe("createAgentChatService", () => {
       vi.mocked(createUniversalToolSet).mockClear();
       vi.mocked(createWorkflowTools).mockClear();
       vi.mocked(buildCodingAgentSystemPrompt).mockClear();
+      vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
       const selectedLaneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(selectedLaneRootPath, { recursive: true });
@@ -1447,6 +1501,12 @@ describe("createAgentChatService", () => {
       expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
         expect.objectContaining({ cwd: selectedLaneRoot }),
       );
+      await vi.waitFor(() => {
+        expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
+      });
+      // Unified/API-backed chats also inject ADE MCP through the same launch
+      // resolver, so guard them here as well.
+      expectResolvedMcpLaunchesToUseStandardProxyFlow();
 
       const firstMessages = Array.isArray(streamCalls[0]?.messages)
         ? (streamCalls[0]!.messages as Array<{ role: string; content: unknown }>)
@@ -1663,7 +1723,7 @@ describe("createAgentChatService", () => {
       expect(session.permissionMode).toBe("plan");
     });
 
-    it("does not reuse a foreign-lane identity session and retires it during migration", async () => {
+    it("does not reuse a foreign-lane identity session or auto-close it during migration", async () => {
       const { service, sessionService } = createService();
 
       const legacy = await service.createSession({
@@ -1681,7 +1741,7 @@ describe("createAgentChatService", () => {
 
       expect(canonical.id).not.toBe(legacy.id);
       expect(canonical.laneId).toBe("lane-1");
-      expect(sessionService.get(legacy.id)?.status).toBe("ended");
+      expect(sessionService.get(legacy.id)?.status).not.toBe("ended");
 
       const reused = await service.ensureIdentitySession({
         identityKey: "cto",
@@ -3345,6 +3405,114 @@ describe("createAgentChatService", () => {
       expect(session.interactionMode).toBe("plan");
       expect(session.claudePermissionMode).toBe("default");
     });
+
+    it("sends Codex plan collaboration mode on turn start for plan sessions", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+      expect(session.permissionMode).toBe("plan");
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Ask one planning question before coding.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "collaborationMode/list")).toBe(true);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as { collaborationMode?: Record<string, unknown> } | undefined;
+      const collaborationMode = params?.collaborationMode as
+        | { mode?: unknown; settings?: { model?: unknown; reasoning_effort?: unknown; developer_instructions?: unknown } }
+        | undefined;
+
+      expect(collaborationMode?.mode).toBe("plan");
+      expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
+      expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
+      expect(collaborationMode?.settings?.developer_instructions).toBeNull();
+    });
+
+    it("sends Codex default collaboration mode on turn start outside plan mode", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Inspect the repo.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as { collaborationMode?: Record<string, unknown> } | undefined;
+      const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
+
+      expect(collaborationMode?.mode).toBe("default");
+    });
+
+    it("does not auto-upgrade default Codex chats into plan mode", async () => {
+      mockState.codexCollaborationModes = [{ mode: "plan" }];
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Inspect the repo.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as { collaborationMode?: Record<string, unknown> } | undefined;
+      expect(params?.collaborationMode).toBeUndefined();
+    });
+
+    it("falls back to default collaboration mode when plan is not advertised", async () => {
+      mockState.codexCollaborationModes = [{ mode: "default" }];
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Ask one planning question before coding.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "collaborationMode/list")).toBe(true);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as { collaborationMode?: Record<string, unknown> } | undefined;
+      const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
+
+      expect(collaborationMode?.mode).toBe("default");
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -3373,6 +3541,227 @@ describe("createAgentChatService", () => {
       await expect(
         service.resumeSession({ sessionId: "unknown-session-id" }),
       ).rejects.toThrow(/not found/i);
+    });
+
+    it("preserves Claude V2 session continuity after an idle timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let primaryStreamCall = 0;
+        let primaryClosed = false;
+        const primarySend = vi.fn().mockResolvedValue(undefined);
+        const resumedSend = vi.fn().mockResolvedValue(undefined);
+        const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+
+        const primarySession = {
+          send: primarySend,
+          stream: vi.fn(() => (async function* () {
+            primaryStreamCall += 1;
+            if (primaryStreamCall === 1) {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "sdk-session-1",
+                slash_commands: [],
+              };
+              yield {
+                type: "result",
+                usage: { input_tokens: 1, output_tokens: 1 },
+              };
+              return;
+            }
+
+            yield {
+              type: "assistant",
+              session_id: "sdk-session-1",
+              message: {
+                content: [{ type: "text", text: "Partial answer" }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+
+            while (!primaryClosed) {
+              await new Promise((resolve) => setTimeout(resolve, 1_000));
+            }
+
+            throw new Error("aborted by user");
+          })()),
+          close: vi.fn(() => {
+            primaryClosed = true;
+          }),
+          sessionId: "sdk-session-1",
+          setPermissionMode,
+        };
+
+        const resumedSession = {
+          send: resumedSend,
+          stream: vi.fn(() => (async function* () {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-session-1",
+              slash_commands: [],
+            };
+            yield {
+              type: "assistant",
+              session_id: "sdk-session-1",
+              message: {
+                content: [{ type: "text", text: "You were asking about the new chat buttons." }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+          })()),
+          close: vi.fn(),
+          sessionId: "sdk-session-1",
+          setPermissionMode,
+        };
+
+        vi.mocked(unstable_v2_createSession).mockReturnValue(primarySession as any);
+        vi.mocked(unstable_v2_resumeSession).mockReturnValue(resumedSession as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "Add the new chat button",
+          timeoutMs: 120_000,
+        });
+        await vi.advanceTimersByTimeAsync(76_000);
+        await firstTurn;
+
+        const persistedAfterTimeout = readPersistedChatState(session.id);
+        expect(persistedAfterTimeout.sdkSessionId).toBe("sdk-session-1");
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              event: expect.objectContaining({
+                type: "error",
+                message: expect.stringContaining("chat stayed open so you can retry"),
+              }),
+            }),
+            expect.objectContaining({
+              event: expect.objectContaining({
+                type: "status",
+                turnStatus: "failed",
+              }),
+            }),
+          ]),
+        );
+
+        events.length = 0;
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "what happened?",
+          timeoutMs: 15_000,
+        });
+
+        expect(unstable_v2_resumeSession).toHaveBeenCalledWith(
+          "sdk-session-1",
+          expect.objectContaining({ model: "sonnet" }),
+        );
+        expect(resumedSend).toHaveBeenCalledTimes(1);
+        expect(followUp.outputText).toContain("new chat buttons");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not abort Claude turns solely because they run longer than five minutes", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const send = vi.fn().mockResolvedValue(undefined);
+        const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+        let streamCall = 0;
+
+        const sessionHandle = {
+          send,
+          stream: vi.fn(() => (async function* () {
+            streamCall += 1;
+            if (streamCall === 1) {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "sdk-session-long-running",
+                slash_commands: [],
+              };
+              yield {
+                type: "result",
+                usage: { input_tokens: 1, output_tokens: 1 },
+              };
+              return;
+            }
+
+            for (let index = 0; index < 6; index += 1) {
+              yield {
+                type: "assistant",
+                session_id: "sdk-session-long-running",
+                message: {
+                  content: [{ type: "text", text: `Chunk ${index + 1}. ` }],
+                  usage: { input_tokens: 1, output_tokens: 1 },
+                },
+              };
+              await new Promise((resolve) => setTimeout(resolve, 60_000));
+            }
+
+            yield {
+              type: "assistant",
+              session_id: "sdk-session-long-running",
+              message: {
+                content: [{ type: "text", text: "Finished after a long run." }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+          })()),
+          close: vi.fn(),
+          sessionId: "sdk-session-long-running",
+          setPermissionMode,
+        };
+
+        vi.mocked(unstable_v2_createSession).mockReturnValue(sessionHandle as any);
+        vi.mocked(unstable_v2_resumeSession).mockReturnValue(sessionHandle as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const turn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "Keep working until the implementation is done.",
+          timeoutMs: 500_000,
+        });
+
+        await vi.advanceTimersByTimeAsync(361_000);
+        const result = await turn;
+
+        expect(result.outputText).toContain("Finished after a long run.");
+        expect(events.find((event) => event.event.type === "status" && event.event.turnStatus === "failed")).toBeUndefined();
+        expect(events.find((event) => event.event.type === "status" && event.event.turnStatus === "interrupted")).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -4246,8 +4635,616 @@ describe("createAgentChatService", () => {
     await sendPromise;
   });
 
+  it("emits completed Claude tool_result rows when tool_use_summary arrives", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-tool-summary",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-use-1",
+            name: "Read",
+            input: { file_path: "apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx" },
+          },
+        },
+      };
+      yield {
+        type: "tool_use_summary",
+        summary: "Checked the shared chat renderer",
+        preceding_tool_use_ids: ["tool-use-1"],
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-tool-summary",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Inspect the shared chat renderer.",
+    });
+
+    const completedToolResults = events.filter((event) =>
+      event.event.type === "tool_result"
+      && event.event.itemId === "tool-use-1"
+      && event.event.status === "completed"
+    );
+
+    expect(completedToolResults).toHaveLength(1);
+    expect(completedToolResults[0]!.event.type).toBe("tool_result");
+    if (completedToolResults[0]!.event.type !== "tool_result") {
+      throw new Error("Expected tool_result");
+    }
+    expect(completedToolResults[0]!.event.result).toMatchObject({
+      synthetic: true,
+      source: "claude_tool_use_summary",
+      summary: "Checked the shared chat renderer",
+    });
+  });
+
+  it("emits completed Claude tool_result rows for open tools when the turn ends without a tool summary", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-tool-fallback",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-use-2",
+            name: "Read",
+            input: { file_path: "apps/desktop/src/renderer/components/chat/ChatWorkLogBlock.tsx" },
+          },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-tool-fallback",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Inspect the grouped work log renderer.",
+    });
+
+    const completedToolResults = events.filter((event) =>
+      event.event.type === "tool_result"
+      && event.event.itemId === "tool-use-2"
+      && event.event.status === "completed"
+    );
+
+    expect(completedToolResults).toHaveLength(1);
+    expect(completedToolResults[0]!.event.type).toBe("tool_result");
+    if (completedToolResults[0]!.event.type !== "tool_result") {
+      throw new Error("Expected tool_result");
+    }
+    expect(completedToolResults[0]!.event.result).toMatchObject({
+      synthetic: true,
+      source: "claude_turn_finalization",
+      finalTurnStatus: "completed",
+    });
+  });
+
+  it("bridges Claude AskUserQuestion through ADE's question UI", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    let permissionResult: Record<string, unknown> | null = null;
+
+    const askInput = {
+      questions: [
+        {
+          question: "What should we do about the two task list views?",
+          header: "Task views",
+          options: [
+            {
+              label: "Remove the TurnSummaryCard tasks",
+              description: "Keep only the inline task list.",
+              preview: "<div><strong>Inline only</strong><p>Compact stream, no bottom summary card.</p></div>",
+            },
+            {
+              label: "Keep both, improve summary",
+              description: "Keep both task views, but make the summary less intrusive.",
+              preview: "<div><strong>Hybrid</strong><p>Inline progress plus a compact summary card.</p></div>",
+            },
+          ],
+          multiSelect: false,
+        },
+        {
+          question: "Should the inline task list pin while tasks are active?",
+          header: "Inline pinning",
+          options: [
+            { label: "Yes, pin while active" },
+            { label: "No, let it scroll" },
+          ],
+          multiSelect: false,
+        },
+      ],
+    };
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-ask-user",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      const sessionOpts = vi.mocked(unstable_v2_createSession).mock.calls.at(-1)?.[0] as any;
+      permissionResult = await sessionOpts.canUseTool("AskUserQuestion", askInput, {
+        signal: new AbortController().signal,
+        toolUseID: "tool-ask-user-1",
+      });
+
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "Thanks, I can continue now." }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-ask-user",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      permissionMode: "plan",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Figure out the task list UX and ask any clarifying questions you need.",
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && typeof (event.event.detail as { request?: { providerMetadata?: { tool?: string } } } | undefined)?.request?.providerMetadata?.tool === "string"
+        && ((event.event.detail as { request?: { providerMetadata?: { tool?: string } } }).request?.providerMetadata?.tool === "AskUserQuestion"),
+    );
+
+    const request = (approvalEvent.event.detail as {
+      request: {
+        kind: string;
+        questions: Array<{
+          id: string;
+          question: string;
+          options?: Array<{ preview?: string; previewFormat?: string }>;
+        }>;
+      };
+    }).request;
+    expect(request.kind).toBe("structured_question");
+    expect(request.questions.map((question) => question.question)).toEqual([
+      "What should we do about the two task list views?",
+      "Should the inline task list pin while tasks are active?",
+    ]);
+    expect(request.questions[0]?.options?.[0]).toMatchObject({
+      preview: "<div><strong>Inline only</strong><p>Compact stream, no bottom summary card.</p></div>",
+      previewFormat: "markdown",
+    });
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      answers: {
+        question_1: "Keep both, improve summary",
+        question_2: "Yes, pin while active",
+      },
+    });
+
+    await sendPromise;
+
+    expect(permissionResult).toMatchObject({
+      behavior: "allow",
+      updatedInput: {
+        answers: {
+          "What should we do about the two task list views?": "Keep both, improve summary",
+          "Should the inline task list pin while tasks are active?": "Yes, pin while active",
+        },
+      },
+    });
+  });
+
+  it("keeps standalone ask_user declines explicit without emitting a fake cleanup tool_result", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Planning question",
+      body: "Which part of the planning UI should we test first?",
+      questions: [{
+        id: "answer",
+        header: "Question 1",
+        question: "Which part of the planning UI should we test first?",
+        options: [
+          { label: "Question flow", value: "question_flow" },
+          { label: "Plan updates", value: "plan_updates" },
+        ],
+        allowsFreeform: true,
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Planning question";
+      },
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "decline",
+    });
+
+    const result = await requestPromise;
+    expect(result.decision).toBe("decline");
+    expect(events.filter((event) => event.event.type === "tool_result")).toHaveLength(0);
+  });
+
+  it("maps freeform replies to the single pending question when only one answer is needed", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Single question",
+      body: "Which area should we test first?",
+      questions: [{
+        id: "answer",
+        header: "Question 1",
+        question: "Which area should we test first?",
+        allowsFreeform: true,
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Single question";
+      },
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      responseText: "Question flow",
+    });
+
+    await expect(requestPromise).resolves.toMatchObject({
+      decision: "accept",
+      answers: { answer: ["Question flow"] },
+      responseText: "Question flow",
+    });
+  });
+
+  it("does not fan a single freeform reply out across multiple structured questions", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Multiple questions",
+      body: "Tell me which plan we should use and whether to pin tasks.",
+      questions: [
+        {
+          id: "plan_focus",
+          header: "Plan focus",
+          question: "What kind of planning scenario should I use?",
+          allowsFreeform: true,
+        },
+        {
+          id: "task_pinning",
+          header: "Task pinning",
+          question: "Should the inline task list stay pinned?",
+          allowsFreeform: true,
+        },
+      ],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Multiple questions";
+      },
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      responseText: "Start with the UI planning case.",
+    });
+
+    await expect(requestPromise).resolves.toMatchObject({
+      decision: "accept",
+      answers: { response: ["Start with the UI planning case."] },
+      responseText: "Start with the UI planning case.",
+    });
+  });
+
+  it("responds to native Codex requestUserInput declines with empty answers instead of interrupting the turn", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      codexApprovalPolicy: "untrusted",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Ask one planning question before coding.",
+    }, { awaitDispatch: true });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "native-request-1",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-question-1",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        questions: [
+          {
+            id: "plan_focus",
+            header: "Plan focus",
+            question: "What kind of planning scenario should I use?",
+            isOther: true,
+            options: [
+              { label: "UI planning" },
+              { label: "Bug fix planning" },
+            ],
+          },
+        ],
+      },
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "codex-question-1",
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "cancel",
+    });
+
+    expect(
+      mockState.codexRequestPayloads.some((payload) => payload.method === "turn/interrupt"),
+    ).toBe(false);
+    expect(
+      mockState.codexRequestPayloads.find((payload) => payload.id === "native-request-1"),
+    ).toMatchObject({
+      jsonrpc: "2.0",
+      id: "native-request-1",
+      result: {
+        answers: {},
+      },
+    });
+  });
+
+  it("responds to Codex MCP elicitations with action/content payloads", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Wait for a structured MCP question.",
+    }, { awaitDispatch: true });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "elicitation-1",
+      method: "mcpServer/elicitation/request",
+      params: {
+        serverName: "ade",
+        message: "Confirm whether we should continue.",
+        turnId: "turn-1",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            confirmed: {
+              type: "boolean",
+              description: "Should ADE continue?",
+            },
+          },
+        },
+      },
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && (
+          (event.event.detail as { request?: { title?: string } } | undefined)?.request?.title === "Question from ade"
+        ),
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      answers: {
+        confirmed: "true",
+      },
+    });
+
+    const elicitationResponse = mockState.codexRequestPayloads.find((payload) => payload.id === "elicitation-1");
+    expect(elicitationResponse?.result).toEqual({
+      action: "accept",
+      content: {
+        confirmed: true,
+      },
+    });
+  });
+
   it("initializes the Cursor runtime before validating the first turn", async () => {
     const events: AgentChatEventEnvelope[] = [];
+    vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
     const { service } = createService({
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -4276,6 +5273,13 @@ describe("createAgentChatService", () => {
     expect(vi.mocked(acquireCursorAcpConnection)).toHaveBeenCalledTimes(1);
     expect(mockState.cursorNewSessionCalls).toHaveLength(1);
     expect(mockState.cursorPromptCalls).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
+    });
+    // Cursor chat used the same shared MCP launch path, so we keep a separate
+    // assertion to ensure future chat refactors do not regress just one
+    // surface while leaving the others green.
+    expectResolvedMcpLaunchesToUseStandardProxyFlow();
     expect(
       events.some((event) => event.event.type === "error" && event.event.message.includes("No runtime initialized")),
     ).toBe(false);

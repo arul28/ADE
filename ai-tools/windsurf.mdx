@@ -1,19 +1,104 @@
 ---
 title: "Windsurf"
-description: "Open your project in Windsurf from ADE and track the session."
+description: "Launch Windsurf from ADE to edit code in a lane's worktree with session tracking and environment inheritance."
 icon: "water"
 ---
 
 ## Overview
 
-ADE can launch [Windsurf](https://codeium.com/windsurf) for your project directly from the Run tab. When launched through ADE, the session is tracked as a managed session in the lane for visibility in the History view.
+ADE can launch [Windsurf](https://codeium.com/windsurf) (by Codeium) as an external editor for any lane. When you open Windsurf through ADE, the session is tracked in the lane's history, the correct worktree directory is opened, and any file changes you make in Windsurf appear in the lane's diff view as soon as they are saved.
+
+This is a one-way integration — ADE launches Windsurf and tracks the session, but does not route AI agent requests through Windsurf or manage Windsurf's internal AI features. You use Windsurf's built-in AI capabilities directly within the Windsurf editor.
+
+---
 
 ## Requirements
 
-- Windsurf installed on your machine
+| Requirement | Details |
+|------------|---------|
+| **Windsurf installed** | The Windsurf desktop app must be installed on your machine |
+| **CLI available** | The `windsurf` command must be available in your PATH. Windsurf typically adds this during installation. Verify with `which windsurf` in a terminal. |
+
+---
 
 ## Launching Windsurf from ADE
 
-Open the **Run** tab or **Project Home** and click the **Windsurf** launcher (if configured). ADE opens the current project (or the selected lane's worktree) in Windsurf as a separate application window.
+<Steps>
+  <Step title="Select a lane">
+    Navigate to the lane you want to work in. Windsurf will open the lane's worktree directory — not the primary checkout.
+  </Step>
+  <Step title="Open the Run tab or Project Home">
+    Click the **Run** tab in the lane's toolbar, or open **Project Home** from the sidebar.
+  </Step>
+  <Step title="Click the Windsurf launcher">
+    If Windsurf is detected or configured, a **Windsurf** button appears alongside other external tool launchers (Cursor, VS Code, Claude Code, etc.). Click it.
+  </Step>
+  <Step title="Windsurf opens">
+    ADE launches Windsurf pointed at the lane's worktree path. The session is registered in ADE's history system.
+  </Step>
+</Steps>
 
-Configure custom CLI launchers in **Settings > Project Home > Custom CLI Launchers** if Windsurf does not appear by default.
+---
+
+## What ADE Tracks
+
+When you launch Windsurf through ADE:
+
+- **Session registration** — the launch is recorded as a managed session in the lane, visible in the History view
+- **File change detection** — ADE watches the lane's worktree for filesystem changes. Edits made in Windsurf appear in the lane's diff view in real time.
+- **Environment inheritance** — Windsurf inherits the lane's environment variable overlays and port assignments
+
+ADE does not monitor Windsurf's internal AI usage, chat history, or token consumption. Those are managed entirely within Windsurf.
+
+---
+
+## Configuring a Custom Launcher
+
+If Windsurf does not appear in the Run tab by default, you can add it as a custom CLI launcher:
+
+<Steps>
+  <Step title="Open Settings">
+    Navigate to **Settings > Project Home > Custom CLI Launchers**.
+  </Step>
+  <Step title="Add a new launcher">
+    Click **Add Launcher** and configure:
+    - **Name:** `Windsurf`
+    - **Command:** `windsurf` (or the full path to the Windsurf executable if it is not in PATH)
+    - **Arguments:** `{worktreePath}` — ADE substitutes the lane's worktree directory at launch time
+  </Step>
+  <Step title="Save and verify">
+    Save the launcher. It now appears in the Run tab for all lanes.
+  </Step>
+</Steps>
+
+---
+
+## Windsurf vs. Cursor vs. Claude Code
+
+ADE supports multiple external AI tools. Here is how Windsurf compares:
+
+| Capability | Windsurf | Cursor | Claude Code |
+|-----------|----------|--------|-------------|
+| **Launch from ADE** | Yes | Yes | Yes |
+| **Session tracking** | Yes | Yes | Yes |
+| **Agent provider in ADE chat** | No | Yes (via ACP) | Yes (via CLI) |
+| **MCP tool bridging** | No | Yes | Yes |
+| **Model routing through ADE** | No | Yes | Yes |
+
+Windsurf is a good choice when you want to use Codeium's AI features directly in the editor while keeping the session tracked in ADE. For deeper integration where ADE manages the AI agent lifecycle, use Cursor (via ACP) or Claude Code (via CLI).
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Windsurf launcher does not appear" icon="circle-question">
+    ADE may not detect Windsurf automatically. Add it as a custom CLI launcher in **Settings > Project Home > Custom CLI Launchers** using the `windsurf` command.
+  </Accordion>
+  <Accordion title="Windsurf opens the wrong directory" icon="folder">
+    Verify you selected the correct lane before launching. If Windsurf opens the primary checkout instead of the lane worktree, check that the lane was created as a Worktree Lane (not the primary lane).
+  </Accordion>
+  <Accordion title="File changes not appearing in ADE" icon="file">
+    ADE watches the lane's worktree for filesystem changes. If changes are not appearing, check that you are editing files inside the lane's worktree path (visible in the lane detail header), not in a different directory.
+  </Accordion>
+</AccordionGroup>

@@ -25,6 +25,7 @@ export type DesktopAdeMcpLaunchArgs = {
   runId?: string;
   stepId?: string;
   attemptId?: string;
+  chatSessionId?: string;
   defaultRole?: string;
   ownerId?: string;
   computerUsePolicy?: ComputerUsePolicy | null;
@@ -100,7 +101,7 @@ function buildLaunchEnv(args: {
   projectRoot: string;
   workspaceRoot: string;
   socketPath: string;
-} & Pick<DesktopAdeMcpLaunchArgs, "missionId" | "runId" | "stepId" | "attemptId" | "defaultRole" | "ownerId" | "computerUsePolicy">): Record<string, string> {
+} & Pick<DesktopAdeMcpLaunchArgs, "missionId" | "runId" | "stepId" | "attemptId" | "chatSessionId" | "defaultRole" | "ownerId" | "computerUsePolicy">): Record<string, string> {
   return {
     ADE_PROJECT_ROOT: args.projectRoot,
     ADE_WORKSPACE_ROOT: args.workspaceRoot,
@@ -109,6 +110,7 @@ function buildLaunchEnv(args: {
     ADE_RUN_ID: args.runId ?? "",
     ADE_STEP_ID: args.stepId ?? "",
     ADE_ATTEMPT_ID: args.attemptId ?? "",
+    ADE_CHAT_SESSION_ID: args.chatSessionId ?? "",
     ADE_DEFAULT_ROLE: args.defaultRole ?? "agent",
     ADE_OWNER_ID: args.ownerId ?? "",
     ADE_COMPUTER_USE_MODE: args.computerUsePolicy?.mode ?? "",
@@ -136,6 +138,7 @@ export function resolveDesktopAdeMcpLaunch(args: DesktopAdeMcpLaunchArgs): AdeMc
     runId: args.runId,
     stepId: args.stepId,
     attemptId: args.attemptId,
+    chatSessionId: args.chatSessionId,
     defaultRole: args.defaultRole,
     ownerId: args.ownerId,
     socketPath,

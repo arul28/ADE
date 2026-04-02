@@ -244,6 +244,7 @@ export function LanesPage() {
         status: session.status,
         lastOutputPreview: session.lastOutputPreview,
         runtimeState: session.runtimeState,
+        toolType: session.toolType,
       });
       if (bucket === "running") laneSummary.runningCount += 1;
       else if (bucket === "awaiting-input") laneSummary.awaitingInputCount += 1;
@@ -464,22 +465,6 @@ export function LanesPage() {
 
   /* ---- Effects ---- */
 
-  useEffect(() => {
-    const laneId = params.get("laneId");
-    const sessionId = params.get("sessionId");
-    const inspectorTabParam = params.get("inspectorTab");
-    if (laneId) {
-      selectLane(laneId);
-      if (params.get("focus") === "single") {
-        setActiveLaneIds([laneId]);
-      }
-      if (inspectorTabParam) {
-        setLaneInspectorTab(laneId, inspectorTabParam as LaneInspectorTab);
-      }
-    }
-    if (sessionId) focusSession(sessionId);
-  }, [params, selectLane, focusSession, setLaneInspectorTab]);
-
   useEffect(() => { void loadConflictStatuses(); }, [loadConflictStatuses, lanes.length]);
 
   useEffect(() => {
@@ -531,6 +516,7 @@ export function LanesPage() {
         status: session.status,
         lastOutputPreview: session.lastOutputPreview,
         runtimeState: session.runtimeState,
+        toolType: session.toolType,
       });
       return bucket === "running" || bucket === "awaiting-input";
     });
@@ -1140,6 +1126,28 @@ export function LanesPage() {
     });
     setCreateOpen(true);
   }, [lanes]);
+
+  // Intentionally ignore prepareCreateDialog churn so an open ?action=create URL
+  // doesn't reopen and reset the dialog when lanes refresh.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const laneId = params.get("laneId");
+    const sessionId = params.get("sessionId");
+    const inspectorTabParam = params.get("inspectorTab");
+    if (params.get("action") === "create") {
+      prepareCreateDialog();
+    }
+    if (laneId) {
+      selectLane(laneId);
+      if (params.get("focus") === "single") {
+        setActiveLaneIds([laneId]);
+      }
+      if (inspectorTabParam) {
+        setLaneInspectorTab(laneId, inspectorTabParam as LaneInspectorTab);
+      }
+    }
+    if (sessionId) focusSession(sessionId);
+  }, [params, selectLane, focusSession, setLaneInspectorTab]);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     if (!open && createBusy) return;

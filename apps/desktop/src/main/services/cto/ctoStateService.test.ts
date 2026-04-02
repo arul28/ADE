@@ -543,17 +543,25 @@ describe("ctoStateService", () => {
     });
 
     const preview = service.previewSystemPrompt();
-    expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "personality", "memory", "capabilities"]);
+    expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "personality", "memory", "knowledge", "capabilities"]);
     expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside ADE.");
     expect(preview.sections[1]?.content).toContain("Operate as a strategic CTO.");
     expect(preview.sections[2]?.content).toContain("Immutable doctrine");
     expect(preview.sections[2]?.content).toContain("Use memoryUpdateCore only when the standing project brief changes");
     expect(preview.sections[2]?.content).toContain("Do not write ephemeral turn-by-turn status");
-    expect(preview.sections[3]?.content).toContain("ADE operator capability manifest");
-    expect(preview.sections[3]?.content).toContain("UI navigation is suggestion-only.");
+    // Knowledge section: ADE environment glossary, chat vs terminal disambiguation, task routing
+    expect(preview.sections[3]?.content).toContain("ADE environment glossary");
+    expect(preview.sections[3]?.content).toContain("spawnChat");
+    expect(preview.sections[3]?.content).toContain("createTerminal");
+    expect(preview.sections[3]?.content).toContain("spawn_agent is an MCP tool");
+    // Capabilities section: concrete tool list
+    expect(preview.sections[4]?.content).toContain("ADE operator tools");
+    expect(preview.sections[4]?.content).toContain("listLanes, inspectLane, createLane");
+    expect(preview.sections[4]?.content).toContain("UI navigation is suggestion-only.");
     expect(preview.prompt).toContain("Immutable ADE doctrine");
     expect(preview.prompt).toContain("Selected personality overlay");
-    expect(preview.prompt).toContain("ADE operator capability manifest");
+    expect(preview.prompt).toContain("ADE environment knowledge");
+    expect(preview.prompt).toContain("ADE operator tools");
 
     fixture.db.close();
   });

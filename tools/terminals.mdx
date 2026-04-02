@@ -194,6 +194,23 @@ The profile script runs in every new terminal session in this project, including
 
 ---
 
+## Work View Grid
+
+The Work tab offers two grid modes for arranging terminal and chat sessions:
+
+- **Standard grid**: Fluid CSS Grid layout where session cards auto-fill available width. Good for uniform-sized sessions.
+- **Packed grid**: Resizable tile layout where each session has its own column and row span. Drag any edge or corner to resize a tile. The grid uses bin-packing to keep tiles compact and avoid wasted space. Tile sizes persist across session switches.
+
+Toggle between modes using the view-mode selector in the Work tab header.
+
+---
+
+## Terminal Renderer
+
+ADE uses **WebGL-first rendering** for terminal output, falling back to a **DOM-based renderer** if WebGL initialization fails (GPU issues, context loss, etc.). When a terminal is resized or moved between tiles, ADE validates the computed dimensions and retries the fit if they are too small — this prevents blank terminals during rapid layout transitions.
+
+---
+
 ## Terminal Themes
 
 All terminal sessions inherit ADE's global terminal theme. Change it in `Settings → Appearance → Terminal Theme`. Available themes:

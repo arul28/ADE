@@ -3,7 +3,7 @@ import {
   Terminal,
   ArrowRight,
 } from "@phosphor-icons/react";
-import type { LaneSummary, AgentChatPermissionMode } from "../../../shared/types";
+import type { AgentChatPermissionMode, AgentChatSession, LaneSummary } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "../chat/AgentChatPane";
@@ -16,7 +16,7 @@ import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
   lanes: LaneSummary[];
-  onOpenChatSession: (sessionId: string) => void | Promise<void>;
+  onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
     profile: "claude" | "codex" | "shell";
@@ -141,6 +141,8 @@ export function WorkStartSurface({
             forceDraftMode
             embeddedWorkLayout
             onSessionCreated={onOpenChatSession}
+            availableLanes={lanes}
+            onLaneChange={setLaneAndSync}
           />
         </div>
       </div>
@@ -151,13 +153,8 @@ export function WorkStartSurface({
   if (draftKind === "cli") {
     return (
       <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
-        <div
-          className="flex w-full max-w-sm flex-col gap-4 rounded-lg p-5"
-          style={{
-            background: "var(--color-surface)",
-            border: "1px solid var(--work-pane-border)",
-          }}
-        >
+        <LogoGlow size="lg" />
+        <GlassCard>
           {/* Lane */}
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-muted-fg/60 shrink-0">Lane</span>
@@ -229,7 +226,7 @@ export function WorkStartSurface({
             Open {cliProvider === "claude" ? "Claude Code" : "Codex CLI"}
             <ArrowRight size={12} weight="regular" />
           </button>
-        </div>
+        </GlassCard>
       </div>
     );
   }
@@ -237,13 +234,8 @@ export function WorkStartSurface({
   /* ---- Shell draft ---- */
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
-      <div
-        className="flex w-full max-w-sm flex-col gap-4 rounded-lg p-5"
-        style={{
-          background: "var(--color-surface)",
-          border: "1px solid var(--work-pane-border)",
-        }}
-      >
+      <LogoGlow size="sm" />
+      <GlassCard>
         {/* Lane */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-muted-fg/60 shrink-0">Lane</span>
@@ -279,7 +271,47 @@ export function WorkStartSurface({
           Open Shell
           <ArrowRight size={12} weight="regular" />
         </button>
-      </div>
+      </GlassCard>
+    </div>
+  );
+}
+
+const LOGO_SIZES = {
+  lg: { glow: "h-[400px] w-[400px]", blur: "blur(100px)", img: "w-64 h-64" },
+  sm: { glow: "h-[200px] w-[200px]", blur: "blur(80px)", img: "h-[140px] w-[140px]" },
+} as const;
+
+function LogoGlow({ size }: { size: "lg" | "sm" }) {
+  const s = LOGO_SIZES[size];
+  return (
+    <div className="relative mb-6">
+      <div
+        className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 ${s.glow} rounded-full pointer-events-none`}
+        style={{ background: "var(--color-accent)", opacity: 0.08, filter: s.blur }}
+      />
+      <img
+        src="./logo.png"
+        alt="ADE"
+        className={`relative z-10 ${s.img} object-contain`}
+        style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
+      />
+    </div>
+  );
+}
+
+function GlassCard({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="flex w-full max-w-sm flex-col gap-4 rounded-lg p-5"
+      style={{
+        backdropFilter: "blur(20px)",
+        WebkitBackdropFilter: "blur(20px)",
+        background: "rgba(30, 30, 40, 0.7)",
+        border: "1px solid rgba(255, 255, 255, 0.08)",
+        boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
+      }}
+    >
+      {children}
     </div>
   );
 }

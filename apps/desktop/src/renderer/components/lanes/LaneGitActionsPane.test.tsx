@@ -5,7 +5,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DiffChanges, GitConflictState, GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
+import type { DiffChanges, GitConflictState, GitStashSummary, GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
 import { __resetLaneGitActionRuntimeForTests, LaneGitActionsPane } from "./LaneGitActionsPane";
 
 vi.mock("./CommitTimeline", () => ({
@@ -63,11 +63,21 @@ function buildLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   };
 }
 
+function buildStash(ref: string, subject: string, createdAt = "2026-03-31T12:00:00.000Z"): GitStashSummary {
+  return {
+    ref,
+    subject,
+    createdAt,
+  };
+}
+
 describe("LaneGitActionsPane rescue action", () => {
   const originalAde = globalThis.window.ade;
   let mockChangesByLaneId: Record<string, DiffChanges>;
+  let mockStashesByLaneId: Record<string, GitStashSummary[]>;
   let mockConflictState: GitConflictState;
   let mockSyncStatus: GitUpstreamSyncStatus;
+  let failDiffRefresh: boolean;
 
   beforeEach(() => {
     mockStoreState = {
@@ -101,6 +111,10 @@ describe("LaneGitActionsPane rescue action", () => {
         unstaged: [],
       },
     };
+    mockStashesByLaneId = {
+      "lane-1": [],
+      "lane-2": [],
+    };
     mockConflictState = {
       laneId: "lane-1",
       kind: null,
@@ -118,15 +132,26 @@ describe("LaneGitActionsPane rescue action", () => {
       recommendedAction: "push",
     };
     mockAutoRebaseStatuses = [];
+    failDiffRefresh = false;
 
     globalThis.window.ade = {
       diff: {
-        getChanges: vi.fn(async ({ laneId }: { laneId: string }) => mockChangesByLaneId[laneId] ?? { staged: [], unstaged: [] }),
+        getChanges: vi.fn(async ({ laneId }: { laneId: string }) => {
+          if (failDiffRefresh) {
+            throw new Error("diff refresh noisy");
+          }
+          return mockChangesByLaneId[laneId] ?? { staged: [], unstaged: [] };
+        }),
       },
       git: {
         commit: vi.fn(async () => ({ operationId: "git-commit", preHeadSha: "abc", postHeadSha: "def" })),
         generateCommitMessage: vi.fn(async () => ({ message: "feat: auto", model: "openai/gpt-5.4-mini" })),
-        stashList: vi.fn(async () => []),
+        stashList: vi.fn(async ({ laneId }: { laneId: string }) => mockStashesByLaneId[laneId] ?? []),
+        stashPush: vi.fn(async () => ({ operationId: "stash-push", preHeadSha: "abc", postHeadSha: "abc" })),
+        stashApply: vi.fn(async () => ({ operationId: "stash-apply", preHeadSha: "abc", postHeadSha: "abc" })),
+        stashPop: vi.fn(async () => ({ operationId: "stash-pop", preHeadSha: "abc", postHeadSha: "abc" })),
+        stashDrop: vi.fn(async () => ({ operationId: "stash-drop", preHeadSha: "abc", postHeadSha: "abc" })),
+        stashClear: vi.fn(async () => ({ operationId: "stash-clear", preHeadSha: "abc", postHeadSha: "abc" })),
         getSyncStatus: vi.fn(async () => mockSyncStatus),
         getConflictState: vi.fn(async () => mockConflictState),
       },
@@ -276,6 +301,137 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(rebaseTabButton);
 
     expect(resolveRebaseConflict).toHaveBeenCalledWith("lane-1", "lane-main");
+  });
+
+  it("updates the stash count after deleting a stash", async () => {
+    const user = userEvent.setup();
+    mockStashesByLaneId["lane-1"] = [
+      buildStash("stash@{0}", "drop me"),
+      buildStash("stash@{1}", "keep me", "2026-03-30T12:00:00.000Z"),
+    ];
+    (window.ade.git.stashDrop as any).mockImplementationOnce(async ({ stashRef }: { stashRef: string }) => {
+      expect(stashRef).toBe("stash@{0}");
+      mockStashesByLaneId["lane-1"] = [buildStash("stash@{0}", "keep me", "2026-03-30T12:00:00.000Z")];
+      return { operationId: "stash-drop", preHeadSha: "abc", postHeadSha: "abc" };
+    });
+
+    renderPane();
+
+    await screen.findByText("2 saved");
+    expect(screen.getByText("drop me")).toBeTruthy();
+
+    await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
+
+    await waitFor(() => {
+      expect(window.ade.git.stashDrop).toHaveBeenCalledWith({ laneId: "lane-1", stashRef: "stash@{0}" });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("1 saved")).toBeTruthy();
+    });
+    expect(screen.queryByText("drop me")).toBeNull();
+    expect(screen.getByText("keep me")).toBeTruthy();
+  });
+
+  it("updates the stash count after restoring a stash", async () => {
+    const user = userEvent.setup();
+    mockStashesByLaneId["lane-1"] = [
+      buildStash("stash@{0}", "restore me"),
+      buildStash("stash@{1}", "keep me", "2026-03-30T12:00:00.000Z"),
+    ];
+    (window.ade.git.stashPop as any).mockImplementationOnce(async ({ stashRef }: { stashRef: string }) => {
+      expect(stashRef).toBe("stash@{0}");
+      mockStashesByLaneId["lane-1"] = [buildStash("stash@{0}", "keep me", "2026-03-30T12:00:00.000Z")];
+      return { operationId: "stash-pop", preHeadSha: "abc", postHeadSha: "abc" };
+    });
+
+    renderPane();
+
+    await screen.findByText("2 saved");
+    expect(screen.getByText("restore me")).toBeTruthy();
+
+    await user.click(screen.getAllByRole("button", { name: "RESTORE" })[0]);
+
+    await waitFor(() => {
+      expect(window.ade.git.stashPop).toHaveBeenCalledWith({ laneId: "lane-1", stashRef: "stash@{0}" });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("1 saved")).toBeTruthy();
+    });
+    expect(screen.queryByText("restore me")).toBeNull();
+    expect(screen.getByText("keep me")).toBeTruthy();
+  });
+
+  it("updates the stash section even if the broader refresh fails afterward", async () => {
+    const user = userEvent.setup();
+    mockStashesByLaneId["lane-1"] = [
+      buildStash("stash@{0}", "drop me"),
+      buildStash("stash@{1}", "keep me", "2026-03-30T12:00:00.000Z"),
+    ];
+    (window.ade.git.stashDrop as any).mockImplementationOnce(async () => {
+      mockStashesByLaneId["lane-1"] = [buildStash("stash@{0}", "keep me", "2026-03-30T12:00:00.000Z")];
+      failDiffRefresh = true;
+      return { operationId: "stash-drop", preHeadSha: "abc", postHeadSha: "abc" };
+    });
+
+    renderPane();
+
+    await screen.findByText("2 saved");
+    await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText("1 saved")).toBeTruthy();
+    });
+    await waitFor(() => {
+      expect(screen.getByText("ERROR: diff refresh noisy")).toBeTruthy();
+    });
+    expect(screen.getByText("keep me")).toBeTruthy();
+  });
+
+  it("clears all stash entries after confirmation", async () => {
+    const user = userEvent.setup();
+    mockStashesByLaneId["lane-1"] = [
+      buildStash("stash@{0}", "drop me"),
+      buildStash("stash@{1}", "keep me", "2026-03-30T12:00:00.000Z"),
+    ];
+    (window.ade.git.stashClear as any).mockImplementationOnce(async () => {
+      mockStashesByLaneId["lane-1"] = [];
+      return { operationId: "stash-clear", preHeadSha: "abc", postHeadSha: "abc" };
+    });
+
+    renderPane();
+
+    await screen.findByText("2 saved");
+    await user.click(screen.getByRole("button", { name: "CLEAR ALL" }));
+    await user.type(await screen.findByPlaceholderText("Type 2 to confirm"), "2");
+    await user.click(screen.getByRole("button", { name: "DELETE ALL" }));
+
+    await waitFor(() => {
+      expect(window.ade.git.stashClear).toHaveBeenCalledWith({ laneId: "lane-1" });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("None saved")).toBeTruthy();
+    });
+  });
+
+  it("leaves the stash list unchanged when deleting a stash fails", async () => {
+    const user = userEvent.setup();
+    mockStashesByLaneId["lane-1"] = [
+      buildStash("stash@{0}", "drop me"),
+      buildStash("stash@{1}", "keep me", "2026-03-30T12:00:00.000Z"),
+    ];
+    (window.ade.git.stashDrop as any).mockRejectedValueOnce(new Error("drop failed"));
+
+    renderPane();
+
+    await screen.findByText("2 saved");
+    await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText("ERROR: drop failed")).toBeTruthy();
+    });
+    expect(screen.getByText("2 saved")).toBeTruthy();
+    expect(screen.getByText("drop me")).toBeTruthy();
+    expect(screen.getByText("keep me")).toBeTruthy();
   });
 
   it("keeps the generating commit state when leaving and returning to the lane", async () => {

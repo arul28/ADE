@@ -45,13 +45,37 @@ function resolveRuntimeRoots(): RuntimeRoots {
   return { projectRoot, workspaceRoot };
 }
 
+function asBoolFlag(value: string | undefined): boolean | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed === "1" ? true : trimmed === "0" ? false : null;
+}
+
 function resolveProxyIdentityFromEnv(): ProxyIdentity {
+  const computerUseMode = asTrimmed(process.env.ADE_COMPUTER_USE_MODE);
+  const allowLocalFallback = asBoolFlag(process.env.ADE_COMPUTER_USE_ALLOW_LOCAL_FALLBACK);
+  const retainArtifacts = asBoolFlag(process.env.ADE_COMPUTER_USE_RETAIN_ARTIFACTS);
+  const preferredBackend = asTrimmed(process.env.ADE_COMPUTER_USE_PREFERRED_BACKEND);
+  const hasComputerUsePolicy =
+    computerUseMode
+    || typeof allowLocalFallback === "boolean"
+    || typeof retainArtifacts === "boolean"
+    || preferredBackend;
   return {
+    chatSessionId: asTrimmed(process.env.ADE_CHAT_SESSION_ID),
     missionId: asTrimmed(process.env.ADE_MISSION_ID),
     runId: asTrimmed(process.env.ADE_RUN_ID),
     stepId: asTrimmed(process.env.ADE_STEP_ID),
     attemptId: asTrimmed(process.env.ADE_ATTEMPT_ID),
+    ownerId: asTrimmed(process.env.ADE_OWNER_ID),
     role: asTrimmed(process.env.ADE_DEFAULT_ROLE),
+    computerUsePolicy: hasComputerUsePolicy
+      ? {
+          mode: computerUseMode,
+          allowLocalFallback,
+          retainArtifacts,
+          preferredBackend,
+        }
+      : null,
   };
 }
 

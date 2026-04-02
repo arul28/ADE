@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@lobehub/icons-static-svg": "^1.84.0",
     "clsx": "^2.1.1",
     "framer-motion": "^12.34.2",
     "lucide-react": "^0.563.0",
@@ -31,4 +32,3 @@
     "vite": "^4.5.3"
   }
 }
-

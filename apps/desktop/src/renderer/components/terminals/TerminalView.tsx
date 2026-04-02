@@ -7,13 +7,14 @@ import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { useAppStore, type ThemeId } from "../../state/appStore";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
-type TerminalRendererMode = "webgl" | "canvas" | "dom";
+type TerminalRendererMode = "webgl" | "dom";
 
 export type TerminalHealthCounters = {
   fitFailures: number;
   zeroDimFits: number;
   rendererFallbacks: number;
   droppedChunks: number;
+  fitRecoveries: number;
 };
 
 type RuntimeSnapshot = {
@@ -61,12 +62,21 @@ type CachedRuntime = {
   termDataSub: { dispose: () => void } | null;
   rendererInitStarted: boolean;
   inputEnabled: boolean;
+  active: boolean;
+  visible: boolean;
+  invalidFitRetryTimer: ReturnType<typeof setTimeout> | null;
+  fitWarningLogged: boolean;
 };
 
 const HYDRATE_TAIL_BYTES = 240_000;
 const MAX_PENDING_HYDRATION_BYTES = 400_000;
 const MAX_FRAME_WRITE_BYTES = 450_000;
 const EXITED_RUNTIME_KEEPALIVE_MS = 8_000;
+const MIN_VALID_COLS = 20;
+const MIN_VALID_ROWS = 6;
+const MIN_HOST_WIDTH_PX = 120;
+const MIN_HOST_HEIGHT_PX = 48;
+const INVALID_FIT_RETRY_MS = 90;
 
 const runtimeCache = new Map<string, CachedRuntime>();
 let parkedRoot: HTMLDivElement | null = null;
@@ -97,9 +107,21 @@ function cloneHealth(health: TerminalHealthCounters): TerminalHealthCounters {
     fitFailures: health.fitFailures,
     zeroDimFits: health.zeroDimFits,
     rendererFallbacks: health.rendererFallbacks,
-    droppedChunks: health.droppedChunks
+    droppedChunks: health.droppedChunks,
+    fitRecoveries: health.fitRecoveries
   };
 }
+
+type HostMeasurement = {
+  width: number;
+  height: number;
+  visible: boolean;
+};
+
+type TerminalDims = {
+  cols: number;
+  rows: number;
+};
 
 function computeSuffixPrefixOverlap(left: string, right: string, maxChars = 12_000): number {
   if (!left.length || !right.length) return 0;
@@ -142,6 +164,68 @@ function ensureParkedRoot(): HTMLDivElement {
   return next;
 }
 
+function measureHost(host: HTMLDivElement): HostMeasurement {
+  const rect = host.getBoundingClientRect();
+  const width = Math.max(rect.width, host.clientWidth, host.offsetWidth, 0);
+  const height = Math.max(rect.height, host.clientHeight, host.offsetHeight, 0);
+  return {
+    width,
+    height,
+    visible: host.isConnected && width >= MIN_HOST_WIDTH_PX && height >= MIN_HOST_HEIGHT_PX
+  };
+}
+
+function hasValidDims(dims: TerminalDims | null | undefined): dims is TerminalDims {
+  return Boolean(
+    dims
+    && Number.isFinite(dims.cols)
+    && Number.isFinite(dims.rows)
+    && dims.cols >= MIN_VALID_COLS
+    && dims.rows >= MIN_VALID_ROWS
+  );
+}
+
+function clearTextureAtlas(runtime: CachedRuntime) {
+  try {
+    runtime.term.clearTextureAtlas();
+  } catch {
+    // ignore when the active renderer doesn't support the texture atlas API
+  }
+}
+
+function restoreTerminalDims(runtime: CachedRuntime, dims: TerminalDims) {
+  try {
+    runtime.term.resize(dims.cols, dims.rows);
+  } catch {
+    // ignore restore failures after disposal
+  }
+}
+
+function scheduleInvalidFitRetry(runtime: CachedRuntime) {
+  if (runtime.disposed || runtime.invalidFitRetryTimer) return;
+  runtime.invalidFitRetryTimer = setTimeout(() => {
+    runtime.invalidFitRetryTimer = null;
+    if (runtime.disposed) return;
+    scheduleFit(runtime);
+  }, INVALID_FIT_RETRY_MS);
+}
+
+function warnInvalidFitOnce(runtime: CachedRuntime, args: {
+  measurement: HostMeasurement;
+  nextDims: TerminalDims;
+  previousDims: TerminalDims | null;
+}) {
+  if (runtime.fitWarningLogged) return;
+  runtime.fitWarningLogged = true;
+  console.warn("[TerminalView] rejected implausible fit result", {
+    sessionId: runtime.sessionId,
+    ptyId: runtime.ptyId,
+    measurement: args.measurement,
+    nextDims: args.nextDims,
+    previousDims: args.previousDims
+  });
+}
+
 function notifyRuntime(runtime: CachedRuntime) {
   const snapshot: RuntimeSnapshot = {
     exitCode: runtime.exitCode,
@@ -176,6 +260,7 @@ function parkRuntime(runtime: CachedRuntime) {
 }
 
 function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
+  runtime.active = active;
   runtime.inputEnabled = active;
   try {
     runtime.host.tabIndex = active ? 0 : -1;
@@ -194,6 +279,10 @@ function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
   }
 }
 
+function setRuntimeVisibilityState(runtime: CachedRuntime, visible: boolean) {
+  runtime.visible = visible;
+}
+
 function teardownRuntime(runtime: CachedRuntime) {
   runtime.disposed = true;
   clearDisposeTimer(runtime);
@@ -203,6 +292,7 @@ function teardownRuntime(runtime: CachedRuntime) {
   if (runtime.settleTimer2) clearTimeout(runtime.settleTimer2);
   if (runtime.hydrateTimer) clearTimeout(runtime.hydrateTimer);
   if (runtime.hydrateRetryTimer) clearTimeout(runtime.hydrateRetryTimer);
+  if (runtime.invalidFitRetryTimer) clearTimeout(runtime.invalidFitRetryTimer);
 
   try {
     runtime.ptyDataUnsub?.();
@@ -249,8 +339,8 @@ function scheduleRuntimeDispose(runtime: CachedRuntime, delayMs: number) {
 function ensureOpen(runtime: CachedRuntime): boolean {
   if (runtime.disposed) return false;
   if (runtime.term.element) return true;
-  if (!runtime.host.isConnected) return false;
-  if (runtime.host.clientWidth <= 0 || runtime.host.clientHeight <= 0) return false;
+  if (!runtime.visible) return false;
+  if (!measureHost(runtime.host).visible) return false;
   try {
     runtime.term.open(runtime.host);
     runtime.opened = true;
@@ -262,8 +352,15 @@ function ensureOpen(runtime: CachedRuntime): boolean {
 
 function doFit(runtime: CachedRuntime, forcePtyResize = false) {
   if (runtime.disposed) return;
+  if (!runtime.visible && runtime.hasFittedOnce) return;
   if (!ensureOpen(runtime)) return;
-  if (!runtime.host.isConnected || runtime.host.clientWidth <= 0 || runtime.host.clientHeight <= 0) return;
+  const measurement = measureHost(runtime.host);
+  if (!measurement.visible) return;
+  const previousDims = hasValidDims(runtime.lastDims)
+    ? runtime.lastDims
+    : hasValidDims({ cols: runtime.term.cols, rows: runtime.term.rows })
+      ? { cols: runtime.term.cols, rows: runtime.term.rows }
+      : null;
 
   // Hide cursor before fit to prevent ghost cursor artifact at stale position
   const cursorLayer = runtime.host.querySelector<HTMLElement>(".xterm-cursor-layer");
@@ -278,13 +375,30 @@ function doFit(runtime: CachedRuntime, forcePtyResize = false) {
   }
 
   const next = { cols: runtime.term.cols, rows: runtime.term.rows };
-  if (!Number.isFinite(next.cols) || !Number.isFinite(next.rows) || next.cols <= 0 || next.rows <= 0) {
-    incrementHealth(runtime, "zeroDimFits");
+  const zeroDimFit =
+    !Number.isFinite(next.cols) || !Number.isFinite(next.rows) || next.cols <= 0 || next.rows <= 0;
+  const implausibleFit = zeroDimFit || next.cols < MIN_VALID_COLS || next.rows < MIN_VALID_ROWS;
+  if (implausibleFit) {
+    if (zeroDimFit) incrementHealth(runtime, "zeroDimFits");
+    incrementHealth(runtime, "fitRecoveries");
+    if (previousDims) restoreTerminalDims(runtime, previousDims);
+    warnInvalidFitOnce(runtime, { measurement, nextDims: next, previousDims });
+    scheduleInvalidFitRetry(runtime);
+    try {
+      runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
+    } catch {
+      // ignore refresh failures after dispose
+    }
+    if (cursorLayer) {
+      requestAnimationFrame(() => {
+        cursorLayer.style.visibility = "";
+      });
+    }
     return;
   }
 
   runtime.hasFittedOnce = true;
-  const prev = runtime.lastDims;
+  const prev = previousDims;
   if (!prev || prev.cols !== next.cols || prev.rows !== next.rows || forcePtyResize) {
     runtime.lastDims = next;
     window.ade.pty.resize({ ptyId: runtime.ptyId, cols: next.cols, rows: next.rows }).catch(() => {});
@@ -325,6 +439,8 @@ function doFit(runtime: CachedRuntime, forcePtyResize = false) {
 
 function scheduleFit(runtime: CachedRuntime, forcePtyResize = false) {
   if (runtime.disposed) return;
+  if (!runtime.visible && runtime.hasFittedOnce) return;
+  if (forcePtyResize && !runtime.visible) return;
   runtime.pendingForceResize = runtime.pendingForceResize || forcePtyResize;
   if (runtime.fitRafId != null) return;
   runtime.fitRafId = requestAnimationFrame(() => {
@@ -456,9 +572,7 @@ async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): 
     return true;
   }
 
-  const moduleName = mode === "webgl" ? "@xterm/addon-webgl" : "@xterm/addon-canvas";
-  const exportName = mode === "webgl" ? "WebglAddon" : "CanvasAddon";
-  const Ctor = await loadAddonCtor(moduleName, exportName);
+  const Ctor = await loadAddonCtor("@xterm/addon-webgl", "WebglAddon");
   if (!Ctor) return false;
 
   try {
@@ -476,11 +590,10 @@ async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): 
       const maybeOnContextLoss = (addon as { onContextLoss?: (cb: () => void) => void }).onContextLoss;
       if (typeof maybeOnContextLoss === "function") {
         maybeOnContextLoss(() => {
+          clearTextureAtlas(runtime);
           incrementHealth(runtime, "rendererFallbacks");
-          void setRenderer(runtime, "canvas").then((ok) => {
-            if (!ok) {
-              void setRenderer(runtime, "dom");
-            }
+          void setRenderer(runtime, "dom").finally(() => {
+            scheduleFit(runtime, runtime.active);
           });
         });
       }
@@ -499,11 +612,6 @@ async function initRendererChain(runtime: CachedRuntime) {
 
   const webgl = await setRenderer(runtime, "webgl");
   if (webgl) return;
-  const canvas = await setRenderer(runtime, "canvas");
-  if (canvas) {
-    incrementHealth(runtime, "rendererFallbacks");
-    return;
-  }
   incrementHealth(runtime, "rendererFallbacks");
   await setRenderer(runtime, "dom");
 }
@@ -517,6 +625,7 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
     convertEol: true,
     cursorBlink: true,
     cursorInactiveStyle: "none",
+    documentOverride: document,
     scrollback: 6000,
     fontFamily: MONO_FONT,
     fontSize: 13,
@@ -541,7 +650,7 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
     exitCode: null,
     renderer: "dom",
     rendererAddon: null,
-    health: { fitFailures: 0, zeroDimFits: 0, rendererFallbacks: 0, droppedChunks: 0 },
+    health: { fitFailures: 0, zeroDimFits: 0, rendererFallbacks: 0, droppedChunks: 0, fitRecoveries: 0 },
     lastDims: null,
     pendingForceResize: false,
     fitRafId: null,
@@ -563,7 +672,11 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
     ptyExitUnsub: null,
     termDataSub: null,
     rendererInitStarted: false,
-    inputEnabled: true
+    inputEnabled: true,
+    active: true,
+    visible: true,
+    invalidFitRetryTimer: null,
+    fitWarningLogged: false
   };
 
   // Capture-phase paste listener on host: intercepts ALL paste sources (Cmd+V,
@@ -713,13 +826,33 @@ function ensureRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
   return runtime;
 }
 
-export function getTerminalRuntimeHealth(sessionId: string): TerminalHealthCounters | null {
+export function getTerminalRuntimeSnapshot(sessionId: string): RuntimeSnapshot | null {
   const runtime = runtimeCache.get(sessionId);
   if (!runtime || runtime.disposed) return null;
-  return cloneHealth(runtime.health);
+  return {
+    exitCode: runtime.exitCode,
+    renderer: runtime.renderer,
+    health: cloneHealth(runtime.health)
+  };
 }
 
-export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId: string; sessionId: string; className?: string; isActive?: boolean }) {
+export function getTerminalRuntimeHealth(sessionId: string): TerminalHealthCounters | null {
+  return getTerminalRuntimeSnapshot(sessionId)?.health ?? null;
+}
+
+export function TerminalView({
+  ptyId,
+  sessionId,
+  className,
+  isActive,
+  isVisible = isActive,
+}: {
+  ptyId: string;
+  sessionId: string;
+  className?: string;
+  isActive: boolean;
+  isVisible?: boolean;
+}) {
   const appTheme = useAppStore((s) => s.theme);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -727,15 +860,20 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
   const [exited, setExited] = useState<number | null>(null);
 
   const termTheme = useMemo(() => terminalThemes[isDarkTheme(appTheme) ? "dark" : "light"], [appTheme]);
+  const mountConfigRef = useRef({ isActive, isVisible, theme: termTheme });
+  mountConfigRef.current = { isActive, isVisible, theme: termTheme };
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    const runtime = ensureRuntime({ ptyId, sessionId, theme: termTheme });
+    const mountConfig = mountConfigRef.current;
+    const runtime = ensureRuntime({ ptyId, sessionId, theme: mountConfig.theme });
     runtimeRef.current = runtime;
     runtime.refs += 1;
     clearDisposeTimer(runtime);
+    setRuntimeInteractionState(runtime, mountConfig.isActive);
+    setRuntimeVisibilityState(runtime, mountConfig.isVisible);
 
     const onRuntimeSnapshot: RuntimeListener = (snapshot) => {
       setExited(snapshot.exitCode);
@@ -749,14 +887,14 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
 
     const schedule = (forceResize = false) => scheduleFit(runtime, forceResize);
 
-    schedule(true);
+    schedule(mountConfig.isVisible);
     runtime.settleTimer1 = setTimeout(() => {
       runtime.settleTimer1 = null;
-      schedule(true);
+      schedule(mountConfig.isVisible);
     }, 120);
     runtime.settleTimer2 = setTimeout(() => {
       runtime.settleTimer2 = null;
-      schedule(true);
+      schedule(mountConfig.isVisible);
     }, 320);
 
     startHydration(runtime);
@@ -797,6 +935,7 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
 
     const onVisibilityChange = () => {
       if (document.hidden) return;
+      clearTextureAtlas(runtime);
       requestAnimationFrame(() => schedule(true));
     };
     const onWindowFocus = () => {
@@ -810,22 +949,13 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
     window.addEventListener("resize", onWindowResize);
     window.visualViewport?.addEventListener("resize", onWindowResize);
 
-    const mutObs = new MutationObserver(() => {
-      requestAnimationFrame(() => schedule(true));
-    });
-
-    let ancestor: HTMLElement | null = el.parentElement;
-    for (let depth = 0; depth < 4 && ancestor; depth++) {
-      mutObs.observe(ancestor, { attributes: true, attributeFilter: ["class", "style"] });
-      ancestor = ancestor.parentElement;
-    }
-
     const setupDprListener = () => {
       let cleanup: (() => void) | null = null;
       const query = `(resolution: ${window.devicePixelRatio}dppx)`;
       const media = window.matchMedia(query);
       const onDprChange = () => {
         if (cleanup) cleanup();
+        clearTextureAtlas(runtime);
         requestAnimationFrame(() => schedule(true));
       };
 
@@ -863,11 +993,6 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
       }
       try {
         intObs.disconnect();
-      } catch {
-        // ignore
-      }
-      try {
-        mutObs.disconnect();
       } catch {
         // ignore
       }
@@ -910,13 +1035,13 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
     const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
     if (!runtime || runtime.disposed) return;
 
-    const active = isActive !== false;
     const wrapper = wrapperRef.current;
-    setRuntimeInteractionState(runtime, active);
+    setRuntimeInteractionState(runtime, isActive);
+    setRuntimeVisibilityState(runtime, isVisible);
 
     if (wrapper) {
       wrapper.tabIndex = -1;
-      if (active) {
+      if (isVisible) {
         wrapper.removeAttribute("aria-hidden");
         wrapper.removeAttribute("inert");
       } else {
@@ -925,7 +1050,13 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
       }
     }
 
-    if (!active) {
+    if (isVisible) {
+      requestAnimationFrame(() => {
+        scheduleFit(runtime, false);
+      });
+    }
+
+    if (!isActive) {
       try {
         runtime.term.blur();
       } catch {
@@ -937,7 +1068,7 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
         // ignore
       }
     }
-  }, [isActive, sessionId]);
+  }, [isActive, isVisible, sessionId]);
 
   useEffect(() => {
     const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
@@ -959,23 +1090,29 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
     if (!runtime || runtime.disposed) return;
 
     const raf = requestAnimationFrame(() => {
+      clearTextureAtlas(runtime);
       doFit(runtime, true);
-      try {
-        runtime.term.focus();
-        runtime.term.scrollToBottom();
-      } catch {
-        // ignore
+      if (isVisible) {
+        try {
+          runtime.term.focus();
+          runtime.term.scrollToBottom();
+        } catch {
+          // ignore
+        }
       }
     });
 
     // Second settle pass after CSS transitions complete
     const timer = setTimeout(() => {
       if (runtime.disposed) return;
+      clearTextureAtlas(runtime);
       doFit(runtime, true);
-      try {
-        runtime.term.focus();
-      } catch {
-        // ignore
+      if (isVisible) {
+        try {
+          runtime.term.focus();
+        } catch {
+          // ignore
+        }
       }
     }, 100);
 
@@ -983,7 +1120,7 @@ export function TerminalView({ ptyId, sessionId, className, isActive }: { ptyId:
       cancelAnimationFrame(raf);
       clearTimeout(timer);
     };
-  }, [isActive, sessionId]);
+  }, [isActive, isVisible, sessionId]);
 
   return (
     <div

@@ -12,6 +12,17 @@ export type DerivedPendingInput = {
   request: PendingInputRequest;
 };
 
+export function getPendingInputQuestionCount(request: PendingInputRequest | null | undefined): number {
+  return request?.questions?.length ?? 0;
+}
+
+export function hasPendingInputOptions(request: PendingInputRequest | null | undefined): boolean {
+  if (!request) return false;
+  if (Array.isArray(request.options) && request.options.length > 0) return true;
+  return Array.isArray(request.questions)
+    && request.questions.some((question) => Array.isArray(question.options) && question.options.length > 0);
+}
+
 function readPendingInputOption(value: unknown): PendingInputOption | null {
   const record = readRecord(value);
   if (!record) return null;
@@ -25,6 +36,12 @@ function readPendingInputOption(value: unknown): PendingInputOption | null {
       ? { description: record.description.trim() }
       : {}),
     ...(record.recommended === true ? { recommended: true } : {}),
+    ...(typeof record.preview === "string" && record.preview.trim().length
+      ? { preview: record.preview }
+      : {}),
+    ...(record.previewFormat === "html" || record.previewFormat === "markdown"
+      ? { previewFormat: record.previewFormat }
+      : {}),
   };
 }
 
@@ -38,6 +55,7 @@ function readPendingInputQuestion(value: unknown): PendingInputQuestion | null {
     id,
     question,
     ...(typeof record.header === "string" && record.header.trim().length ? { header: record.header.trim() } : {}),
+    ...(record.multiSelect === true ? { multiSelect: true } : {}),
     ...(record.allowsFreeform === true ? { allowsFreeform: true } : {}),
     ...(record.isSecret === true ? { isSecret: true } : {}),
     ...(typeof record.defaultAssumption === "string" && record.defaultAssumption.trim().length
@@ -175,7 +193,20 @@ export function derivePendingInputRequests(events: AgentChatEventEnvelope[]): De
     const event = envelope.event;
 
     if (event.type === "done") {
-      pending.clear();
+      if (event.status !== "completed") {
+        pending.clear();
+        continue;
+      }
+      for (const [itemId, entry] of pending) {
+        if ((entry.request.turnId ?? null) !== event.turnId) continue;
+        const keepAfterCompletedTurn =
+          entry.request.kind === "question"
+          || entry.request.kind === "structured_question"
+          || entry.request.kind === "plan_approval";
+        if (!keepAfterCompletedTurn) {
+          pending.delete(itemId);
+        }
+      }
       continue;
     }
 
@@ -199,6 +230,11 @@ export function derivePendingInputRequests(events: AgentChatEventEnvelope[]): De
         itemId: event.itemId,
         request,
       });
+      continue;
+    }
+
+    if (event.type === "pending_input_resolved") {
+      pending.delete(event.itemId);
       continue;
     }
 

@@ -1,6 +1,6 @@
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 
-export type ChatWorkLogStatus = "running" | "completed" | "failed";
+export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search";
 export type ChatWorkLogEntryTone = "tool" | "info" | "error";
 
@@ -42,7 +42,8 @@ type HiddenTranscriptEvent =
   | Extract<AgentChatEvent, { type: "command" }>
   | Extract<AgentChatEvent, { type: "file_change" }>
   | Extract<AgentChatEvent, { type: "web_search" }>
-  | Extract<AgentChatEvent, { type: "reasoning" }>;
+  | Extract<AgentChatEvent, { type: "reasoning" }>
+  | Extract<AgentChatEvent, { type: "pending_input_resolved" }>;
 
 type ChatTranscriptVisibleEvent = Exclude<AgentChatEvent, HiddenTranscriptEvent>;
 
@@ -54,6 +55,14 @@ type WorkLogRenderEvent = {
   type: "work_log_entry";
   entry: ChatWorkLogEntry;
   collapseKey?: string;
+};
+
+export type ChatWorkLogGroupEvent = {
+  type: "work_log_group";
+  entries: ChatWorkLogEntry[];
+  summary?: string;
+  toolUseIds?: string[];
+  turnId?: string | null;
 };
 
 export type ChatTranscriptRenderEvent =
@@ -70,12 +79,7 @@ export type ChatTranscriptRenderEnvelope = {
 export type ChatTranscriptGroupedEnvelope = {
   key: string;
   timestamp: string;
-  event:
-    | ChatTranscriptRenderEvent
-    | {
-        type: "work_log_group";
-        entries: ChatWorkLogEntry[];
-      };
+  event: ChatTranscriptRenderEvent | ChatWorkLogGroupEvent;
 };
 
 export function summarizeInlineText(value: string, maxChars = 120): string {
@@ -185,6 +189,14 @@ function shouldMergeTextRows(
   if (turnAndItemMatch(previous, next)) return true;
 
   return !previous.turnId && !next.turnId && !previous.itemId && !next.itemId;
+}
+
+function shouldMergePlanTextRows(
+  previous: Extract<AgentChatEvent, { type: "plan_text" }>,
+  next: Extract<AgentChatEvent, { type: "plan_text" }>,
+): boolean {
+  return turnAndItemMatch(previous, next)
+    || (!previous.turnId && !next.turnId && !previous.itemId && !next.itemId);
 }
 
 function buildCollapseKey(
@@ -432,7 +444,7 @@ export function appendCollapsedChatTranscriptEvent(
 ): void {
   const { event } = envelope;
 
-  if (event.type === "step_boundary" || event.type === "activity") {
+  if (event.type === "step_boundary" || event.type === "activity" || event.type === "pending_input_resolved") {
     return;
   }
 
@@ -530,6 +542,24 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
+  if (event.type === "plan_text") {
+    if (!event.text.trim().length) return;
+    const previous = rows[rows.length - 1];
+    if (previous?.event.type === "plan_text" && shouldMergePlanTextRows(previous.event, event)) {
+      rows[rows.length - 1] = {
+        ...previous,
+        timestamp: envelope.timestamp,
+        event: {
+          ...previous.event,
+          text: mergeStreamingText(previous.event.text, event.text),
+          ...(event.turnId && !previous.event.turnId ? { turnId: event.turnId } : {}),
+          ...(event.itemId && !previous.event.itemId ? { itemId: event.itemId } : {}),
+        },
+      };
+      return;
+    }
+  }
+
   if (event.type === "system_notice") {
     const previous = rows[rows.length - 1];
     if (
@@ -568,6 +598,37 @@ export function appendCollapsedChatTranscriptEvent(
       event,
     });
     return;
+  }
+
+  if (event.type === "plan") {
+    const nextTurn = event.turnId ?? null;
+    if (nextTurn !== null) {
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const candidate = rows[index];
+        if (
+          candidate?.event.type === "plan_text"
+          && (candidate.event.turnId ?? null) === nextTurn
+        ) {
+          rows.splice(index, 1);
+        }
+      }
+
+      const matchIndex = [...rows]
+        .reverse()
+        .findIndex((candidate) =>
+          candidate.event.type === "plan"
+          && (candidate.event.turnId ?? null) === nextTurn,
+        );
+      if (matchIndex >= 0) {
+        const actualIndex = rows.length - 1 - matchIndex;
+        rows[actualIndex] = {
+          ...rows[actualIndex]!,
+          timestamp: envelope.timestamp,
+          event,
+        };
+        return;
+      }
+    }
   }
 
   if (event.type === "subagent_progress") {
@@ -650,8 +711,58 @@ export function groupConsecutiveWorkLogRows(
   const grouped: ChatTranscriptGroupedEnvelope[] = [];
   let index = 0;
 
+  const absorbToolSummary = (
+    toolSummary: Extract<AgentChatEvent, { type: "tool_use_summary" }>,
+  ): boolean => {
+    const summary = toolSummary.summary.trim();
+    const toolUseIds = toolSummary.toolUseIds.filter((id) => id.trim().length > 0);
+    const candidate = grouped[grouped.length - 1];
+    if (!candidate || candidate.event.type !== "work_log_group") return false;
+
+    const candidateEvent = candidate.event;
+    const candidateTurnId = candidateEvent.turnId ?? candidateEvent.entries[0]?.turnId ?? null;
+    if (toolSummary.turnId && candidateTurnId && candidateTurnId !== toolSummary.turnId) return false;
+
+    if (toolUseIds.length > 0) {
+      const candidateToolIds = new Set(
+        candidateEvent.entries
+          .filter((entry) => entry.entryKind === "tool" && typeof entry.itemId === "string" && entry.itemId.trim().length > 0)
+          .map((entry) => entry.itemId!.trim()),
+      );
+      const hasMatch = toolUseIds.some((toolUseId) => candidateToolIds.has(toolUseId));
+      if (!hasMatch) return false;
+    }
+
+    grouped[grouped.length - 1] = {
+      ...candidate,
+      event: {
+        ...candidateEvent,
+        ...(summary.length > 0 ? { summary } : {}),
+        ...(toolUseIds.length > 0
+          ? {
+              toolUseIds: [
+                ...(candidateEvent.toolUseIds ?? []),
+                ...toolUseIds.filter((toolUseId) => !(candidateEvent.toolUseIds ?? []).includes(toolUseId)),
+              ],
+            }
+          : {}),
+        turnId: candidateTurnId ?? toolSummary.turnId ?? null,
+      },
+    };
+    return true;
+  };
+
   while (index < rows.length) {
     const row = rows[index]!;
+    if (row.event.type === "tool_use_summary") {
+      const prevRow = index > 0 ? rows[index - 1] : null;
+      const prevIsWorkLog = prevRow?.event.type === "work_log_entry";
+      if (prevIsWorkLog && absorbToolSummary(row.event)) {
+        index += 1;
+        continue;
+      }
+    }
+
     if (row.event.type === "work_log_entry") {
       const entries: ChatWorkLogEntry[] = [];
       let cursor = index;
@@ -665,6 +776,7 @@ export function groupConsecutiveWorkLogRows(
         event: {
           type: "work_log_group",
           entries,
+          turnId: entries[0]?.turnId ?? null,
         },
       });
       index = cursor;

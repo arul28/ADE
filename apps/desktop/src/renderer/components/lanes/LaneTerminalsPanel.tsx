@@ -318,7 +318,8 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
               const indicator = sessionIndicatorState({
                 status: s.status,
                 lastOutputPreview: s.lastOutputPreview,
-                runtimeState: s.runtimeState
+                runtimeState: s.runtimeState,
+                toolType: s.toolType,
               });
               const dotClass = statusDotCls(indicator);
               const dotSpin = !profileColor && indicator === "running-active";

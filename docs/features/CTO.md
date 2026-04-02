@@ -213,15 +213,18 @@ For desktop portability, treat these differently:
 
 ### Identity system prompt
 
-The CTO prompt model is now explicit and split into three layers:
+The CTO prompt model is now explicit and split into four layers:
 
 - **Immutable ADE doctrine** -- defines who the CTO is, what ADE is, how memory/compaction work, and that the CTO is the project's technical/operator lead. This layer is ADE-owned, always present, and not compacted away.
 - **Personality overlay** -- selected from presets or one custom personality field. This is the only user-editable identity layer.
 - **Memory and continuity model** -- explains the long-term CTO brief, current working context, and durable searchable memory.
+- **ADE environment knowledge** -- a glossary and task-routing guide injected into the CTO system prompt. This layer explains ADE's core entities (lanes, native chats vs. PTY terminals, missions, workers, convergence), the critical distinction between `spawnChat` (native ADE chat sessions) and `createTerminal` (PTY shells) and `spawn_agent` (MCP CLI subprocesses), tool calling conventions (call MCP tools directly by name, do not use ToolSearch), and common task-routing patterns (e.g., "start a chat" maps to `spawnChat`, "open a terminal" maps to `createTerminal`).
+
+The capability manifest section now lists the complete CTO operator tool surface organized by domain (lanes, chats, missions, workers, git, PRs, convergence, conflicts, files, context, processes, tests, terminals, Linear, automations, events, project health, computer use, budget, memory) rather than a high-level summary.
 
 Project-specific summary, conventions, focus, and recent continuity live in memory layers, not inside the immutable doctrine.
 
-The prompt preview in onboarding and settings reflects those same three sections so the UI now matches the actual runtime model.
+The prompt preview in onboarding and settings reflects those same sections so the UI now matches the actual runtime model.
 
 ### Daily logs
 

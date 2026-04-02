@@ -81,13 +81,13 @@ export function LaneWorkPane({
 
       <div className="min-h-0 flex-1">
         <WorkViewArea
+          gridLayoutId={work.gridLayoutId}
           lanes={laneList}
           sessions={work.sessions}
           visibleSessions={work.visibleSessions}
           activeItemId={work.activeItemId}
           viewMode={work.viewMode}
           draftKind={work.draftKind}
-          showingDraft={work.activeItemId == null}
           setViewMode={work.setViewMode}
           onSelectItem={work.setActiveItemId}
           onCloseItem={work.closeTab}

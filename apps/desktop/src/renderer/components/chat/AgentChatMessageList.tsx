@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   CaretDown,
@@ -23,6 +24,7 @@ import {
   Globe,
   ShieldCheck,
   CopySimple,
+  Brain,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -58,6 +60,7 @@ import {
 } from "./chatTranscriptRows";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
+type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
 
 function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSuggestion | null {
   const record = readRecord(value);
@@ -345,7 +348,8 @@ function MessageCopyButton({
 
 /* ── Status indicators ── */
 
-function StatusIcon({ status }: { status: "running" | "completed" | "failed" }) {
+function StatusIcon({ status }: { status: "running" | "completed" | "failed" | "interrupted" }) {
+  if (status === "interrupted") return <ChatStatusGlyph status="waiting" size={13} />;
   if (status === "completed" || status === "failed") return <ChatStatusGlyph status={status} size={13} />;
   return <ChatStatusGlyph status="working" size={13} />;
 }
@@ -372,6 +376,7 @@ function statusColorClass(status: string | undefined): string {
   switch (status) {
     case "failed":
       return "text-red-400/70";
+    case "interrupted":
     case "running":
       return "text-amber-400/70";
     default:
@@ -539,7 +544,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   }, [onOpenWorkspacePath, workspaceLaneId]);
 
   return (
-    <div className="prose prose-invert max-w-none text-[13px] leading-[1.78] text-fg/92 prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-3 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1 prose-strong:text-fg prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-blockquote:text-fg/78 prose-hr:my-5 prose-hr:border-white/[0.08] prose-table:my-4 prose-th:border-white/[0.08] prose-th:bg-white/[0.03] prose-th:px-3 prose-th:py-2 prose-td:border-white/[0.06] prose-td:px-3 prose-td:py-2">
+    <div className="ade-prose-themed prose prose-invert max-w-none text-[13px] leading-[1.8] text-fg/96 prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-3 prose-p:text-fg/88 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-blockquote:text-fg/76 prose-hr:my-5 prose-hr:border-white/[0.08]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -555,9 +560,22 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             </blockquote>
           ),
           table: ({ children }) => (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-[12px]">{children}</table>
+            <div className="my-4 overflow-x-auto rounded-xl border border-white/[0.08] bg-black/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+              <table className="min-w-full border-separate border-spacing-0 text-[12px]">{children}</table>
             </div>
+          ),
+          thead: ({ children, node: _, ...props }) => <thead className="bg-white/[0.04]" {...props}>{children}</thead>,
+          tbody: ({ children, node: _, ...props }) => <tbody {...props}>{children}</tbody>,
+          tr: ({ children, node: _, ...props }) => <tr className="align-top" {...props}>{children}</tr>,
+          th: ({ children, node: _, ...props }) => (
+            <th className="border-b border-white/[0.08] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl" {...props}>
+              {children}
+            </th>
+          ),
+          td: ({ children, node: _, ...props }) => (
+            <td className="border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0" {...props}>
+              {children}
+            </td>
           ),
           pre: ({ children }) => (
             <pre className={cn("my-3 max-h-80", RECESSED_BLOCK_CLASS)}>
@@ -626,7 +644,8 @@ function CollapsibleCard({
   defaultOpen = false,
   forceOpen,
   summary,
-  className
+  className,
+  style: styleProp,
 }: {
   children: React.ReactNode;
   defaultOpen?: boolean;
@@ -634,6 +653,7 @@ function CollapsibleCard({
   forceOpen?: boolean;
   summary: React.ReactNode;
   className?: string;
+  style?: React.CSSProperties;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   // Track whether the user explicitly collapsed while forceOpen is active
@@ -657,12 +677,12 @@ function CollapsibleCard({
   const isOpen = forceOpen === true ? !userCollapsed : open;
 
   return (
-    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={SURFACE_INLINE_CARD_STYLE}>
+    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={styleProp ?? SURFACE_INLINE_CARD_STYLE}>
       <button
         type="button"
         aria-expanded={isOpen}
         aria-controls={panelId}
-        className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-mono text-[11px]"
+        className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-sans text-[11px]"
         onClick={() => {
           if (forceOpen === true) {
             setUserCollapsed((v) => !v);
@@ -739,7 +759,7 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
 
   return (
-    <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
+    <div className="flex items-center gap-2 py-1 font-sans text-[12px] text-emerald-200/75">
       <ThinkingDots toneClass="bg-emerald-300/75" />
       <span className="truncate">{displayText}</span>
     </div>
@@ -1075,7 +1095,7 @@ function FileChangeEventCard({
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
-    onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+    onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
     surfaceProfile?: ChatSurfaceProfile;
@@ -1084,6 +1104,7 @@ function renderEvent(
     onOpenWorkspacePath?: (path: string) => void;
     respondingApprovalIds?: Set<string>;
     pendingApprovalIds?: Set<string>;
+    resolvedInputStates?: Map<string, PendingInputResolution>;
   }
 ) {
   const event = envelope.event;
@@ -1117,7 +1138,17 @@ function renderEvent(
       );
     }
     return (
-      <div className="flex justify-end">
+      <motion.div
+        className="flex justify-end"
+        initial={{ opacity: 0.7, y: 20, scale: 1.02 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{
+          type: "spring",
+          stiffness: 300,
+          damping: 24,
+          mass: 0.8,
+        }}
+      >
         <div className={cn(GLASS_CARD_CLASS, "group relative max-w-[82%] px-4 py-2.5")} style={MESSAGE_CARD_STYLE}>
           {deliveryChip ? (
             <span className={cn("mb-1 inline-flex items-center border px-1.5 py-0.5 font-sans text-[9px] font-medium", deliveryChip.className)}>
@@ -1132,7 +1163,7 @@ function renderEvent(
             <ChatAttachmentTray attachments={event.attachments} mode={options?.surfaceMode ?? "standard"} className="mt-1 px-0 py-0" />
           ) : null}
         </div>
-      </div>
+      </motion.div>
     );
   }
 
@@ -1147,7 +1178,7 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "group max-w-[94%] px-4 py-3",
+            "group max-w-[78ch] px-5 py-4",
             options?.turnActive && "min-h-[5.5rem]",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
@@ -1577,7 +1608,7 @@ function renderEvent(
         <CollapsibleCard
           defaultOpen={false}
           summary={
-            <div className="flex items-center gap-2 font-mono text-[11px]">
+            <div className="flex items-center gap-2 font-sans text-[11px]">
               <NoticeIcon size={12} weight="bold" className={style.text} />
               <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
                 {event.noticeKind.replace("_", " ")}
@@ -1594,12 +1625,12 @@ function renderEvent(
 
     return (
       <div className={cn(
-        "inline-flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
-        style.border, style.bg, style.text,
+        "inline-flex items-center gap-2 px-1 py-1 font-sans text-[10px]",
+        style.text,
       )}>
         <NoticeIcon size={11} weight="bold" />
-        <span className="text-[9px] font-bold">{event.noticeKind.replace("_", " ")}</span>
-        <span className="normal-case tracking-normal text-fg/55">{event.message}</span>
+        <span className="text-[9px] font-bold uppercase tracking-[0.16em]">{event.noticeKind.replace("_", " ")}</span>
+        <span className="normal-case tracking-normal text-fg/45">{event.message}</span>
       </div>
     );
   }
@@ -1608,6 +1639,7 @@ function renderEvent(
   if (event.type === "reasoning") {
     const reasoningText = event.text.trim();
     const isLive = Boolean(options?.turnActive);
+    const reasoningPreview = summarizeInlineText(reasoningText, 108);
 
     // Compute duration if we have timestamps
     const startTs = (event as any).startTimestamp ?? envelope.timestamp;
@@ -1620,18 +1652,32 @@ function renderEvent(
         defaultOpen={false}
         forceOpen={isLive ? true : undefined}
         summary={
-          <span className="font-mono text-[12px] text-fg/52">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-[11px] text-fg/52">
+            <Brain size={13} weight="duotone" className="text-fg/40" />
             {isLive ? (
               <span className="flex items-center gap-2">
                 <ThinkingDots toneClass="bg-fg/40" />
                 Thinking...
               </span>
             ) : (
-              `Thought for ${durationLabel}`
+              <>
+                <span className="font-medium text-fg/62">Thought</span>
+                {durationLabel ? (
+                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[9px] text-fg/42">
+                    {durationLabel}
+                  </span>
+                ) : null}
+                {reasoningPreview ? (
+                  <span className="max-w-[32rem] truncate text-[10px] text-fg/40">
+                    {reasoningPreview}
+                  </span>
+                ) : null}
+              </>
             )}
           </span>
         }
-        className={WORK_LOG_CARD_CLASS}
+        className="border-0 bg-transparent rounded-none"
+        style={{ background: "transparent", border: "none" }}
       >
         <div className="text-fg/55 text-[12px] leading-relaxed">
           <MarkdownBlock markdown={reasoningText.length ? event.text : "Thinking..."} />
@@ -1773,7 +1819,8 @@ function renderEvent(
     const handleApproval = options?.onApproval ? (d: AgentChatApprovalDecision) => options.onApproval?.(event.itemId, d) : undefined;
     const isResponding = options?.respondingApprovalIds?.has(event.itemId) ?? false;
     const isPending = options?.pendingApprovalIds?.has(event.itemId) ?? true;
-    const isResolved = !isPending && !isResponding;
+    const resolvedState = options?.resolvedInputStates?.get(event.itemId) ?? null;
+    const isResolved = resolvedState != null || (!isPending && !isResponding);
     const detail = readRecord(event.detail);
     const request = readRecord(detail?.request);
     const requestKind = typeof request?.kind === "string" ? request.kind.trim() : "";
@@ -1782,20 +1829,45 @@ function renderEvent(
     const requestQuestions = Array.isArray(request?.questions)
       ? request.questions.map((question) => readRecord(question)).filter((question): question is Record<string, unknown> => question != null)
       : [];
-    const primaryQuestion = requestQuestions[0] ?? null;
-    const primaryQuestionText = typeof primaryQuestion?.question === "string" ? primaryQuestion.question.trim() : "";
-    const quickOptions = Array.isArray(primaryQuestion?.options)
-      ? primaryQuestion.options
-          .map((option) => readRecord(option))
-          .filter((option): option is Record<string, unknown> => option != null)
-          .map((option) => {
-            const label = typeof option.label === "string" ? option.label.trim() : "";
-            const value = typeof option.value === "string" ? option.value.trim() : label;
-            if (!label.length || !value.length) return null;
-            return { label, value };
-          })
-          .filter((option): option is { label: string; value: string } => option != null)
-      : [];
+    const questionCards = requestQuestions.map((question, index) => {
+      const header = typeof question.header === "string" && question.header.trim().length
+        ? question.header.trim()
+        : `Question ${index + 1}`;
+      const questionText = typeof question.question === "string" ? question.question.trim() : "";
+      const options = Array.isArray(question.options)
+        ? question.options
+            .map((option) => readRecord(option))
+            .filter((option): option is Record<string, unknown> => option != null)
+            .map((option) => {
+              const label = typeof option.label === "string" ? option.label.trim() : "";
+              const value = typeof option.value === "string" ? option.value.trim() : label;
+              if (!label.length || !value.length) return null;
+              return {
+                label,
+                value,
+                ...(typeof option.description === "string" && option.description.trim().length ? { description: option.description.trim() } : {}),
+                ...(option.recommended === true ? { recommended: true } : {}),
+              };
+            })
+            .filter((option): option is { label: string; value: string; description?: string; recommended?: boolean } => option != null)
+        : [];
+      return {
+        id: typeof question.id === "string" && question.id.trim().length ? question.id.trim() : `question_${index + 1}`,
+        header,
+        questionText,
+        options,
+        allowsFreeform: question.allowsFreeform !== false,
+        isSecret: question.isSecret === true,
+        defaultAssumption: typeof question.defaultAssumption === "string" && question.defaultAssumption.trim().length
+          ? question.defaultAssumption.trim()
+          : "",
+        impact: typeof question.impact === "string" && question.impact.trim().length
+          ? question.impact.trim()
+          : "",
+      };
+    });
+    const primaryQuestion = questionCards[0] ?? null;
+    const primaryQuestionText = primaryQuestion?.questionText ?? "";
     const detailTool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
     const question = typeof detail?.question === "string" ? detail.question.trim() : "";
     const normalizedTool = detailTool.toLowerCase();
@@ -1844,17 +1916,50 @@ function renderEvent(
         ) : (
           <div className="text-[12px] leading-relaxed text-fg/75">{bodyText}</div>
         )}
-        {isQuestionRequest && quickOptions.length > 0 && options?.onApproval ? (
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            {quickOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className="rounded-[var(--chat-radius-pill)] border border-accent/25 bg-accent/[0.08] px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/[0.16]"
-                onClick={() => options.onApproval?.(event.itemId, "accept", option.value)}
-              >
-                {option.label}
-              </button>
+        {isQuestionRequest && questionCards.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {questionCards.map((card) => (
+              <div key={card.id} className="rounded-[calc(var(--chat-radius-card)-6px)] border border-white/[0.06] bg-black/15 px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-amber-300/75">
+                    {card.header}
+                  </span>
+                  {card.allowsFreeform ? (
+                    <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg/30">
+                      Freeform allowed
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-1.5 text-[12px] leading-relaxed text-fg/78 whitespace-pre-wrap">
+                  {card.questionText}
+                </div>
+                {card.defaultAssumption.length || card.impact.length || card.isSecret ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-fg/32">
+                    {card.isSecret ? <span>Secret answer</span> : null}
+                    {card.defaultAssumption.length ? <span>Assumption: {card.defaultAssumption}</span> : null}
+                    {card.impact.length ? <span>Impact: {card.impact}</span> : null}
+                  </div>
+                ) : null}
+                {card.options.length > 0 && options?.onApproval && !isResolved ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {card.options.map((option) => (
+                      <button
+                        key={`${card.id}:${option.value}`}
+                        type="button"
+                        className={cn(
+                          "rounded-[var(--chat-radius-pill)] border px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                          option.recommended
+                            ? "border-emerald-400/30 bg-emerald-500/[0.10] text-emerald-100/85 hover:bg-emerald-500/[0.18]"
+                            : "border-accent/25 bg-accent/[0.08] text-fg/80 hover:bg-accent/[0.16]",
+                        )}
+                        onClick={() => options.onApproval?.(event.itemId, "accept", null, { [card.id]: [option.value] })}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             ))}
           </div>
         ) : null}
@@ -1871,9 +1976,43 @@ function renderEvent(
             </CollapsibleCard>
           </div>
         ) : null}
-        {isAskUser ? (
-          <div className="mt-3 border border-accent/15 bg-accent/[0.05] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-accent/65">
-            Answer this from the question modal to keep the agent moving.
+        {handleApproval && isAskUser && !isResolved ? (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              disabled={isResponding}
+              className="border border-red-400/30 bg-red-500/10 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-red-200/80 transition-colors hover:bg-red-500/20 disabled:opacity-40 disabled:pointer-events-none"
+              onClick={() => handleApproval("decline")}
+            >
+              Decline
+            </button>
+          </div>
+        ) : null}
+        {isAskUser && isResolved ? (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider",
+                resolvedState === "accepted"
+                  ? "border border-emerald-500/20 bg-emerald-500/8 text-emerald-300/70"
+                  : resolvedState === "declined"
+                    ? "border border-red-500/20 bg-red-500/8 text-red-300/75"
+                    : "border border-border/25 bg-transparent text-fg/45",
+              )}
+            >
+              {resolvedState === "accepted" ? (
+                <Check size={12} weight="bold" />
+              ) : resolvedState === "declined" ? (
+                <XCircle size={12} weight="bold" />
+              ) : (
+                <Circle size={12} weight="bold" />
+              )}
+              {resolvedState === "accepted"
+                ? "Answered"
+                : resolvedState === "declined"
+                  ? "Declined"
+                  : "Closed"}
+            </span>
           </div>
         ) : null}
         {handleApproval && !isAskUser ? (
@@ -2067,13 +2206,13 @@ function renderEvent(
         : "border-amber-500/15 bg-amber-500/[0.05] text-amber-300";
 
     return (
-      <div className={cn("flex items-start justify-between gap-3 rounded-lg border px-3 py-1.5 font-sans text-[10px]", statusTone)}>
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+      <div className={cn("flex items-center justify-center gap-3 rounded-lg border px-3 py-1.5 font-sans text-[10px]", statusTone)}>
+        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
           <span className="font-medium text-fg/40">Usage</span>
           {modelLabel ? (
-            <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-fg/35">
+            <span className="inline-flex items-center gap-1.5 text-fg/35">
               <ModelGlyph modelId={event.modelId} model={event.model} size={10} className="shrink-0 text-fg/40" />
-              <span className="min-w-0 break-words">{modelLabel}</span>
+              <span>{modelLabel}</span>
             </span>
           ) : null}
           {inputTokens ? <span className="text-fg/30">In {inputTokens}</span> : null}
@@ -2081,10 +2220,10 @@ function renderEvent(
           {cacheRead ? <span className="text-emerald-400/35">Cache {cacheRead}</span> : null}
           {cacheCreation ? <span className="text-violet-400/35">New cache {cacheCreation}</span> : null}
           {costLabel ? <span className="text-fg/30">{costLabel}</span> : null}
+          {event.status !== "completed" ? (
+            <span className="text-[9px] font-medium uppercase tracking-wide text-current">{event.status}</span>
+          ) : null}
         </div>
-        {event.status !== "completed" ? (
-          <span className="shrink-0 self-center text-[9px] font-medium uppercase tracking-wide text-current">{event.status}</span>
-        ) : null}
       </div>
     );
   }
@@ -2261,74 +2400,150 @@ function TurnSummaryCard({
   const completedCount = summary.tasks.filter((task) => task.status === "completed").length;
   const totalCount = summary.tasks.length;
   const filesLabel = summary.files.length
-    ? `${summary.files.length} file${summary.files.length === 1 ? "" : "s"} changed`
+    ? `${summary.files.length} file${summary.files.length === 1 ? "" : "s"}`
     : null;
   const agentsLabel = summary.backgroundAgentCount
-    ? `${summary.backgroundAgentCount} background agent${summary.backgroundAgentCount === 1 ? "" : "s"}`
+    ? `${summary.backgroundAgentCount} agent${summary.backgroundAgentCount === 1 ? "" : "s"}`
     : null;
+  const taskLabel = totalCount ? `${completedCount}/${totalCount} complete` : null;
+  const hasDetails = summary.tasks.length > 0 || summary.files.length > 0 || summary.backgroundAgentCount > 0;
 
-  return (
-    <div className="overflow-hidden rounded-[20px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(26,26,29,0.92),rgba(19,19,22,0.94))] shadow-[0_24px_80px_-48px_rgba(0,0,0,0.85)]">
-      <div className="border-b border-white/[0.05] px-4 py-3">
-        <div className="flex items-center gap-2">
-          <ListChecks size={13} weight="bold" className="text-fg/58" />
-          <span className="font-sans text-[13px] font-medium text-fg/86">
-            {totalCount
-              ? `${completedCount} of ${totalCount} tasks completed`
-              : filesLabel ?? agentsLabel ?? "Turn summary"}
-          </span>
-          {summary.turnModel?.label ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] text-fg/45">
-              <ModelGlyph modelId={summary.turnModel.modelId} model={summary.turnModel.model} size={10} className="text-fg/35" />
-              <span>{summary.turnModel.label}</span>
-            </span>
-          ) : null}
-          {onReviewChanges && summary.files.length > 0 ? (
-            <button
-              type="button"
-              className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-fg/70 transition-colors hover:bg-white/[0.05] hover:text-fg/88"
-              onClick={onReviewChanges}
-            >
-              Review changes
-            </button>
-          ) : null}
-        </div>
-      </div>
+  const summaryHeader = (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px] text-fg/46">
+      <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-fg/44">
+        <ListChecks size={10} weight="bold" className="text-fg/44" />
+        Turn recap
+      </span>
+      {taskLabel ? (
+        <span className="font-medium text-fg/74">{taskLabel}</span>
+      ) : null}
+      {filesLabel ? (
+        <span className="text-fg/56">
+          {filesLabel}
+          {summary.totalAdditions > 0 ? <span className="ml-1.5 text-emerald-300/70">+{summary.totalAdditions}</span> : null}
+          {summary.totalDeletions > 0 ? <span className="ml-1 text-red-300/70">-{summary.totalDeletions}</span> : null}
+        </span>
+      ) : null}
+      {agentsLabel ? (
+        <span className="text-fg/56">
+          {agentsLabel}
+          {summary.activeBackgroundAgentCount > 0 ? <span className="ml-1.5 text-sky-300/60">{summary.activeBackgroundAgentCount} active</span> : null}
+        </span>
+      ) : null}
+      {summary.turnModel?.label ? (
+        <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-fg/42">
+          <ModelGlyph modelId={summary.turnModel.modelId} model={summary.turnModel.model} size={10} className="text-fg/32" />
+          <span>{summary.turnModel.label}</span>
+        </span>
+      ) : null}
+    </div>
+  );
 
-      {summary.tasks.length ? (
-        <div className="space-y-1 border-b border-white/[0.05] px-4 py-3">
-          {summary.tasks.map((task, index) => (
-            <div key={task.id || `${task.description}:${index}`} className="flex items-start gap-2.5 py-1">
-              <div className="mt-0.5 shrink-0">
-                <PlanStepIcon status={task.status} />
+  const details = hasDetails ? (
+    <div className="space-y-3 pb-0.5">
+      {summary.tasks.length > 0 ? (
+        <div className="space-y-1.5">
+          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Tasks</div>
+          <div className="space-y-1.5">
+            {summary.tasks.map((task) => (
+              <div
+                key={task.id}
+                className="flex items-start gap-2 rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2"
+              >
+                <div className="mt-0.5 flex-shrink-0">
+                  <PlanStepIcon status={task.status} />
+                </div>
+                <div
+                  className={cn(
+                    "min-w-0 flex-1 text-[12px] leading-5",
+                    task.status === "completed" ? "text-fg/45 line-through decoration-fg/15" : "text-fg/78",
+                  )}
+                >
+                  {task.description}
+                </div>
+                <span
+                  className={cn(
+                    "inline-flex shrink-0 items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]",
+                    todoItemStatusClass(task.status),
+                  )}
+                >
+                  {task.status.replace("_", " ")}
+                </span>
               </div>
-              <div className={cn(
-                "flex-1 text-[12px] leading-6",
-                task.status === "completed" ? "text-fg/42 line-through decoration-fg/15" : "text-fg/82",
-              )}>
-                {task.description}
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       ) : null}
-
-      <div className="flex flex-wrap items-center gap-3 px-4 py-3 font-mono text-[10px] text-fg/44">
-        {filesLabel ? (
-          <span>
-            {filesLabel}
-            {summary.totalAdditions > 0 ? <span className="ml-2 text-emerald-300/70">+{summary.totalAdditions}</span> : null}
-            {summary.totalDeletions > 0 ? <span className="ml-1 text-red-300/70">-{summary.totalDeletions}</span> : null}
-          </span>
-        ) : null}
-        {agentsLabel ? (
-          <span>
-            {agentsLabel}
-            {summary.activeBackgroundAgentCount > 0 ? <span className="ml-2 text-sky-300/60">{summary.activeBackgroundAgentCount} active</span> : null}
-          </span>
-        ) : null}
-      </div>
+      {summary.files.length > 0 ? (
+        <div className="space-y-1.5">
+          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Files</div>
+          <div className="space-y-1.5">
+            {summary.files.map((file) => {
+              const basename = basenamePathLabel(file.path);
+              const dirname = dirnamePathLabel(file.path);
+              return (
+                <div
+                  key={`${file.path}:${file.kind}`}
+                  className="flex items-start gap-2 rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2"
+                >
+                  <div className="mt-0.5 flex-shrink-0">
+                    <FileCode size={12} weight="regular" className="text-fg/38" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-5 text-fg/78">
+                      <span className="font-medium">{formatFileAction(file.kind)}</span>
+                      <span>{basename}</span>
+                      {file.additions > 0 ? <span className="text-emerald-300/70">+{file.additions}</span> : null}
+                      {file.deletions > 0 || file.kind === "delete" ? <span className="text-red-300/70">-{file.deletions}</span> : null}
+                    </div>
+                    {dirname ? (
+                      <div className="truncate font-mono text-[10px] text-fg/34">
+                        {dirname}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      {summary.backgroundAgentCount > 0 ? (
+        <div className="rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2">
+          <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Background agents</div>
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-fg/72">
+            <Robot size={12} weight="regular" className="text-fg/38" />
+            <span>
+              {summary.activeBackgroundAgentCount === summary.backgroundAgentCount
+                ? `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"} running`
+                : summary.activeBackgroundAgentCount > 0
+                  ? `${summary.activeBackgroundAgentCount} of ${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"} still running`
+                  : `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"} completed`}
+            </span>
+          </div>
+        </div>
+      ) : null}
+      {onReviewChanges && summary.files.length > 0 ? (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-fg/70 transition-colors hover:bg-white/[0.05] hover:text-fg/88"
+            onClick={onReviewChanges}
+          >
+            Review changes
+          </button>
+        </div>
+      ) : null}
     </div>
+  ) : null;
+
+  return (
+    <InlineDisclosureRow
+      summary={summaryHeader}
+      className="rounded-xl border border-white/[0.05] bg-[#0f1116]/66 px-1 py-0.5"
+    >
+      {details}
+    </InlineDisclosureRow>
   );
 }
 
@@ -2361,7 +2576,7 @@ function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
 function getGroupedTurnId(envelope: TranscriptGroupedEnvelope | undefined): string | null {
   if (!envelope) return null;
   if (envelope.event.type === "work_log_group") {
-    return envelope.event.entries[0]?.turnId ?? null;
+    return envelope.event.turnId ?? envelope.event.entries[0]?.turnId ?? null;
   }
   return "turnId" in envelope.event ? envelope.event.turnId ?? null : null;
 }
@@ -2373,7 +2588,7 @@ type EventRowProps = {
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
   turnModel: { label: string; modelId?: string; model?: string } | null;
-  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -2382,6 +2597,7 @@ type EventRowProps = {
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
+  resolvedInputStates?: Map<string, PendingInputResolution>;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -2398,6 +2614,7 @@ const EventRow = React.memo(function EventRow({
   onNavigateSuggestion,
   respondingApprovalIds,
   pendingApprovalIds,
+  resolvedInputStates,
 }: EventRowProps) {
   return (
     <div className="space-y-3">
@@ -2421,10 +2638,22 @@ const EventRow = React.memo(function EventRow({
         ? (
           <ChatWorkLogBlock
             entries={envelope.event.entries}
+            summary={envelope.event.summary}
             onNavigateSuggestion={onNavigateSuggestion}
           />
         )
-        : renderEvent(envelope as RenderEnvelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive, onOpenWorkspacePath, respondingApprovalIds, pendingApprovalIds })}
+        : renderEvent(envelope as RenderEnvelope, {
+            onApproval,
+            turnModel,
+            surfaceMode,
+            surfaceProfile,
+            assistantLabel,
+            turnActive,
+            onOpenWorkspacePath,
+            respondingApprovalIds,
+            pendingApprovalIds,
+            resolvedInputStates,
+          })}
     </div>
   );
 });
@@ -2567,19 +2796,19 @@ export function reconcileMeasuredScrollTop({
 export function AgentChatMessageList({
   events,
   showStreamingIndicator = false,
-  className,
-  onApproval,
-  surfaceMode = "standard",
+    className,
+    onApproval,
+    surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
   onOpenWorkspacePath,
   respondingApprovalIds,
   pendingApprovalIds,
-}: {
+  }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   className?: string;
-  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -2598,6 +2827,16 @@ export function AgentChatMessageList({
   const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
   const stickToBottomRef = useRef(true);
   const onApprovalRef = useRef(onApproval);
+  const resolvedInputStates = useMemo(() => {
+    const resolved = new Map<string, PendingInputResolution>();
+    for (const envelope of events) {
+      if (envelope.event.type !== "pending_input_resolved") continue;
+      if (!resolved.has(envelope.event.itemId)) {
+        resolved.set(envelope.event.itemId, envelope.event.resolution);
+      }
+    }
+    return resolved;
+  }, [events]);
 
   // Virtualization scroll tracking
   const [scrollTop, setScrollTop] = useState(0);
@@ -2616,8 +2855,8 @@ export function AgentChatMessageList({
     onApprovalRef.current = onApproval;
   }, [onApproval]);
 
-  const handleApproval = useCallback((itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => {
-    onApprovalRef.current?.(itemId, decision, responseText);
+  const handleApproval = useCallback((itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => {
+    onApprovalRef.current?.(itemId, decision, responseText, answers);
   }, []);
 
   const rows = useMemo(() => {
@@ -2863,6 +3102,7 @@ export function AgentChatMessageList({
           onNavigateSuggestion={handleNavigateSuggestion}
           respondingApprovalIds={respondingApprovalIds}
           pendingApprovalIds={pendingApprovalIds}
+          resolvedInputStates={resolvedInputStates}
         />
       );
     }
@@ -2883,9 +3123,10 @@ export function AgentChatMessageList({
         onNavigateSuggestion={handleNavigateSuggestion}
         respondingApprovalIds={respondingApprovalIds}
         pendingApprovalIds={pendingApprovalIds}
+        resolvedInputStates={resolvedInputStates}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds, resolvedInputStates]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -2906,7 +3147,7 @@ export function AgentChatMessageList({
       {latestActivity ? (
         <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
       ) : (
-        <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
+        <div className="flex items-center gap-2 py-1 font-sans text-[12px] text-emerald-200/75">
           <ThinkingDots toneClass="bg-emerald-300/75" />
           <span>Working...</span>
         </div>
@@ -2925,18 +3166,7 @@ export function AgentChatMessageList({
       onScroll={handleScroll}
     >
       {rows.length === 0 && !streamingIndicator ? (
-        <div className="flex h-full flex-col items-center justify-center gap-5">
-          <div className="relative flex h-20 w-20 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)]">
-            <Robot size={34} weight="thin" className="text-[var(--chat-accent)]" />
-            <div className="absolute inset-0 animate-pulse rounded-full bg-[var(--chat-accent-glow)] blur-2xl" />
-          </div>
-          <div className="space-y-1 text-center">
-            <div className="font-sans text-[18px] font-semibold tracking-tight text-fg/78">Start a chat session</div>
-            <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/28">
-              {surfaceMode === "resolver" ? "Launch the resolver to start the transcript" : "Start a conversation"}
-            </span>
-          </div>
-        </div>
+        null
       ) : shouldVirtualize ? (
         /* ── Virtualized path: only render rows in / near the viewport ── */
         <div className="space-y-3">

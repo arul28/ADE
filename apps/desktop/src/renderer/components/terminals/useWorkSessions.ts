@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
+import type { AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import {
   useAppStore,
   type WorkDraftKind,
@@ -10,8 +10,8 @@ import {
   type WorkViewMode,
 } from "../../state/appStore";
 import { listSessionsCached } from "../../lib/sessionListCache";
-import { sessionMatchesStatusFilter, sessionStatusBucket } from "../../lib/terminalAttention";
-import { isChatToolType, isRunOwnedSession } from "../../lib/sessions";
+import { sessionStatusBucket } from "../../lib/terminalAttention";
+import { buildOptimisticChatSessionSummary, isChatToolType, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { defaultTrackedCliStartupCommand, withCodexNoAltScreen } from "./cliLaunch";
 
@@ -55,6 +55,16 @@ function mapUrlStatusFilter(statusParamRaw: string): WorkStatusFilter | null {
   return null;
 }
 
+type QueuedRefresh = {
+  showLoading: boolean;
+  force: boolean;
+  deferred: {
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (reason: unknown) => void;
+  };
+};
+
 export function useWorkSessions() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -71,7 +81,7 @@ export function useWorkSessions() {
   const [closingChatSessionId, setClosingChatSessionId] = useState<string | null>(null);
   const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
   const refreshInFlightRef = useRef(false);
-  const refreshQueuedRef = useRef(false);
+  const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
@@ -259,27 +269,64 @@ export function useWorkSessions() {
     [setProjectViewState],
   );
 
-  const refresh = useCallback(async (options: { showLoading?: boolean } = {}) => {
+  const refresh = useCallback(async (options: { showLoading?: boolean; force?: boolean } = {}) => {
     const showLoading = options.showLoading ?? true;
     if (refreshInFlightRef.current) {
-      refreshQueuedRef.current = true;
-      return;
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current.showLoading = refreshQueuedRef.current.showLoading || showLoading;
+        refreshQueuedRef.current.force = refreshQueuedRef.current.force || Boolean(options.force);
+        return refreshQueuedRef.current.deferred.promise;
+      }
+      let resolve!: () => void;
+      let reject!: (reason: unknown) => void;
+      const promise = new Promise<void>((nextResolve, nextReject) => {
+        resolve = nextResolve;
+        reject = nextReject;
+      });
+      refreshQueuedRef.current = {
+        showLoading,
+        force: Boolean(options.force),
+        deferred: { promise, resolve, reject },
+      };
+      return promise;
     }
     refreshInFlightRef.current = true;
     if (showLoading) setLoading(true);
     try {
-      const rows = (await listSessionsCached({ limit: 500 })).filter((session) => !isRunOwnedSession(session));
+      const rows = (
+        await listSessionsCached(
+          { limit: 500 },
+          options.force ? { force: true } : undefined,
+        )
+      ).filter((session) => !isRunOwnedSession(session));
       setSessions(rows);
       hasLoadedOnceRef.current = true;
     } finally {
       if (showLoading) setLoading(false);
       refreshInFlightRef.current = false;
-      if (refreshQueuedRef.current) {
-        refreshQueuedRef.current = false;
-        void refresh({ showLoading: false });
+      const queued = refreshQueuedRef.current;
+      refreshQueuedRef.current = null;
+      if (queued) {
+        void refresh({ showLoading: queued.showLoading, force: queued.force })
+          .then(queued.deferred.resolve, queued.deferred.reject);
       }
     }
   }, []);
+
+  const upsertOptimisticChatSession = useCallback((session: AgentChatSession) => {
+    const laneName = lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId;
+    const optimistic = buildOptimisticChatSessionSummary({
+      session,
+      laneName,
+    });
+    setSessions((prev) => {
+      const next = [optimistic, ...prev.filter((entry) => entry.id !== session.id)];
+      next.sort((left, right) => (
+        new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
+      ));
+      return next;
+    });
+  }, [lanes]);
 
   const scheduleBackgroundRefresh = useCallback((delayMs = 450) => {
     if (backgroundRefreshTimerRef.current != null) return;
@@ -430,44 +477,23 @@ export function useWorkSessions() {
     });
   }, [sessions, filterLaneId, q]);
 
-  const runningFiltered = useMemo(
-    () =>
-      filtered.filter(
-        (session) =>
-          sessionStatusBucket({
-            status: session.status,
-            lastOutputPreview: session.lastOutputPreview,
-            runtimeState: session.runtimeState,
-          }) === "running",
-      ),
-    [filtered],
-  );
-
-  const awaitingInputFiltered = useMemo(
-    () =>
-      filtered.filter(
-        (session) =>
-          sessionStatusBucket({
-            status: session.status,
-            lastOutputPreview: session.lastOutputPreview,
-            runtimeState: session.runtimeState,
-          }) === "awaiting-input",
-      ),
-    [filtered],
-  );
-
-  const endedFiltered = useMemo(
-    () =>
-      filtered.filter(
-        (session) =>
-          sessionStatusBucket({
-            status: session.status,
-            lastOutputPreview: session.lastOutputPreview,
-            runtimeState: session.runtimeState,
-          }) === "ended",
-      ),
-    [filtered],
-  );
+  const { runningFiltered, awaitingInputFiltered, endedFiltered } = useMemo(() => {
+    const running: TerminalSessionSummary[] = [];
+    const awaiting: TerminalSessionSummary[] = [];
+    const ended: TerminalSessionSummary[] = [];
+    for (const session of filtered) {
+      const bucket = sessionStatusBucket({
+        status: session.status,
+        lastOutputPreview: session.lastOutputPreview,
+        runtimeState: session.runtimeState,
+        toolType: session.toolType,
+      });
+      if (bucket === "running") running.push(session);
+      else if (bucket === "awaiting-input") awaiting.push(session);
+      else ended.push(session);
+    }
+    return { runningFiltered: running, awaitingInputFiltered: awaiting, endedFiltered: ended };
+  }, [filtered]);
 
   const sessionsGroupedByLane = useMemo(() => {
     if (sessionListOrganization !== "by-lane") return null;
@@ -496,6 +522,11 @@ export function useWorkSessions() {
       .map((id) => sessionsById.get(id))
       .filter((session): session is TerminalSessionSummary => session != null);
   }, [openItemIds, sessionsById]);
+
+  const gridLayoutId = useMemo(
+    () => `work:grid:v2:${projectRoot ?? "global"}`,
+    [projectRoot],
+  );
 
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.id === selectedSessionId) ?? null : null),
@@ -681,7 +712,7 @@ export function useWorkSessions() {
       // Refresh the session list before activating the tab so the new
       // session is in sessionsById when the UI resolves activeSession.
       try {
-        await refresh();
+        await refresh({ force: true });
       } catch {
         // Best-effort: if refresh fails the session was still created,
         // so proceed to focus/open it.
@@ -702,6 +733,7 @@ export function useWorkSessions() {
     endedFiltered,
     runningSessions,
     visibleSessions,
+    gridLayoutId,
     selectedSession,
     loading,
 
@@ -739,6 +771,7 @@ export function useWorkSessions() {
     resumingSessionId,
 
     refresh,
+    upsertOptimisticChatSession,
     closeSession,
     closeAllRunning,
     resumeSession,

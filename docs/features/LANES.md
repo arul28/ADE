@@ -169,7 +169,7 @@ The center pane is the main working area. The LanesPage uses `PaneTilingLayout` 
 
 **Sub-panes** within the center area (via PaneTilingLayout):
 - **Diff pane** (`LaneDiffPane`): Git diff viewer with Monaco side-by-side diffs, per-file stage/unstage/discard, commit diff viewing
-- **Git actions pane** (`LaneGitActionsPane`): Commit, stash, fetch, sync (merge/rebase), push operations with recent commits list, rebase button for stacked lanes. The Pull button flashes and shows a behind-count badge when the lane is behind its upstream. Stash buttons use user-friendly labels (Save Changes, Restore, Copy to Worktree, Delete) with inline explanations. The Save Changes button is disabled when there are no working tree changes. A Clear All button (with numeric confirmation) appears when stashes exist.
+- **Git actions pane** (`LaneGitActionsPane`): Commit, stash, fetch, sync (merge/rebase), push operations with recent commits list, rebase button for stacked lanes. The Pull button flashes and shows a behind-count badge when the lane is behind its upstream. Stash buttons use user-friendly labels (Save Changes, Restore, Copy to Worktree, Delete) with inline explanations. The Save Changes button is disabled when there are no working tree changes. A Clear All button (with numeric confirmation) appears when stashes exist. Stash pop, drop, and clear operations now refresh git metadata immediately after completion.
 - **Terminals pane** (`LaneTerminalsPanel`): Embedded terminal sessions with tab/tiling views, quick-launch profiles, session delta cards
 - **Work pane** (`LaneWorkPane`): Embedded terminal sessions and agent chat view (terminal/chat toggle)
 - **Stack pane** (`LaneStackPane`): Stack chain visualization and management

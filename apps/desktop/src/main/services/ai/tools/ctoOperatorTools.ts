@@ -46,7 +46,8 @@ import type { createPrService } from "../../prs/prService";
 import { isNoisyIssueComment, mapPermissionMode } from "../../prs/resolverUtils";
 import type { createProcessService } from "../../processes/processService";
 import type { createSessionService } from "../../sessions/sessionService";
-import { getErrorMessage, nowIso } from "../../shared/utils";
+import type { createCtoStateService } from "../../cto/ctoStateService";
+import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
@@ -86,7 +87,55 @@ export interface CtoOperatorToolDeps {
     triggerManually: (args: { id: string; dryRun?: boolean }) => Promise<AutomationRun>;
     listRuns: (args?: AutomationRunListArgs) => AutomationRun[];
   } | null;
+  gitService?: {
+    getSyncStatus: (args: { laneId: string }) => Promise<any>;
+    commit: (args: any) => Promise<any>;
+    push: (args: any) => Promise<any>;
+    pull: (args: { laneId: string }) => Promise<any>;
+    fetch: (args: { laneId: string }) => Promise<any>;
+    listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<any[]>;
+    listBranches: (args: any) => Promise<any[]>;
+    checkoutBranch: (args: any) => Promise<any>;
+    stashPush: (args: any) => Promise<any>;
+    stashPop: (args: any) => Promise<any>;
+    listStashes: (args: { laneId: string }) => Promise<any[]>;
+    getConflictState: (args: { laneId: string }) => Promise<any>;
+    rebaseContinue: (args: { laneId: string }) => Promise<any>;
+    rebaseAbort: (args: { laneId: string }) => Promise<any>;
+    mergeAbort: (args: { laneId: string }) => Promise<any>;
+  } | null;
+  conflictService?: {
+    getLaneStatus: (args: any) => Promise<any>;
+    getRiskMatrix: () => Promise<any[]>;
+    simulateMerge: (args: any) => Promise<any>;
+    runPrediction: (args?: any) => Promise<any>;
+    listProposals: (args: { laneId: string }) => Promise<any[]>;
+    requestProposal: (args: any) => Promise<any>;
+    applyProposal: (args: any) => Promise<any>;
+    undoProposal: (args: any) => Promise<any>;
+  } | null;
+  contextDocService?: {
+    getStatus: () => any;
+    generateDocs: (args: any) => Promise<any>;
+  } | null;
+  steerChat?: (args: { sessionId: string; instruction: string }) => Promise<void>;
+  cancelSteer?: (args: { sessionId: string }) => Promise<void>;
+  handoffChat?: (args: { sessionId: string; targetIdentityKey?: string; reason?: string }) => Promise<any>;
+  listSubagents?: (args: { sessionId: string }) => Promise<any[]>;
+  approveToolUse?: (args: { sessionId: string; toolUseId: string; decision: "accept" | "accept_for_session" | "decline" | "cancel" }) => Promise<void>;
+  computerUseArtifactBrokerService?: {
+    listArtifacts: (args?: any) => any[];
+    updateArtifactReview: (args: any) => any;
+  } | null;
+  workerBudgetService?: {
+    getBudgetSnapshot: (args: { monthKey?: string }) => any;
+    listCostEvents: (args: { agentId: string; monthKey?: string; limit?: number }) => any[];
+  } | null;
+  missionBudgetService?: {
+    getMissionBudgetStatus: (args: { missionId: string }) => Promise<any>;
+  } | null;
   issueTracker?: IssueTracker | null;
+  ctoStateService?: Pick<ReturnType<typeof createCtoStateService>, "getSessionLogs" | "getSubordinateActivityLogs"> | null;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
   getChatTranscript: (args: {
@@ -2066,6 +2115,112 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     },
   });
 
+  tools.getPullRequestDiff = tool({
+    description:
+      "Retrieve the code diff for an ADE-managed pull request. " +
+      "Returns per-file patches from GitHub. Use `files` to limit to specific paths. " +
+      "Output is truncated to `maxChars` (default 80 000) to stay within context budgets.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      files: z
+        .array(z.string().trim().min(1))
+        .optional()
+        .describe("Optional list of file paths to include. Omit for full diff."),
+      maxChars: z
+        .number()
+        .int()
+        .min(1000)
+        .max(400_000)
+        .optional()
+        .default(80_000)
+        .describe("Maximum total characters of patch text to return."),
+    }),
+    execute: async ({ prId, files: filterFiles, maxChars }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        let prFiles = await deps.prService.getFiles(prId);
+        if (filterFiles && filterFiles.length > 0) {
+          const allowed = new Set(filterFiles);
+          prFiles = prFiles.filter((f) => allowed.has(f.filename));
+        }
+        // Build bounded output
+        let totalChars = 0;
+        let truncated = false;
+        const patches: Array<{
+          filename: string;
+          status: string;
+          additions: number;
+          deletions: number;
+          patch: string | null;
+        }> = [];
+        for (const f of prFiles) {
+          const patchLen = f.patch?.length ?? 0;
+          if (totalChars + patchLen > maxChars && patches.length > 0) {
+            truncated = true;
+            break;
+          }
+          patches.push({
+            filename: f.filename,
+            status: f.status,
+            additions: f.additions,
+            deletions: f.deletions,
+            patch: f.patch,
+          });
+          totalChars += patchLen;
+        }
+        return {
+          success: true,
+          prId,
+          fileCount: prFiles.length,
+          returnedCount: patches.length,
+          truncated,
+          patches,
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.approvePullRequest = tool({
+    description: "Submit an APPROVE review on an ADE-managed pull request.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      body: z
+        .string()
+        .optional()
+        .default("")
+        .describe("Optional approval comment body."),
+    }),
+    execute: async ({ prId, body }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        await deps.prService.submitReview({ prId, event: "APPROVE", body });
+        return { success: true, prId, event: "APPROVE" };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.requestPrChanges = tool({
+    description:
+      "Submit a REQUEST_CHANGES review on an ADE-managed pull request with a comment explaining what needs to change.",
+    inputSchema: z.object({
+      prId: z.string().trim().min(1),
+      body: z.string().trim().min(1).describe("Review comment explaining the requested changes."),
+    }),
+    execute: async ({ prId, body }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        await deps.prService.submitReview({ prId, event: "REQUEST_CHANGES", body });
+        return { success: true, prId, event: "REQUEST_CHANGES" };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
   // ---------------------------------------------------------------------------
   // Lane Management
   // ---------------------------------------------------------------------------
@@ -2381,6 +2536,866 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       if (!deps.automationService) return { success: false, error: "Automation service is not available." };
       const runs = deps.automationService.listRuns({ limit });
       return { success: true, count: runs.length, runs };
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Git Operations
+  // ---------------------------------------------------------------------------
+
+  const resolveLaneId = (laneId?: string): string => laneId?.trim() || deps.defaultLaneId;
+
+  const gitGuard = async <T>(fn: () => Promise<T>): Promise<{ success: true } & T | { success: false; error: string }> => {
+    if (!deps.gitService) return { success: false, error: "Git service is not available." };
+    try {
+      return { success: true, ...(await fn()) } as { success: true } & T;
+    } catch (error) {
+      return { success: false, error: getErrorMessage(error) };
+    }
+  };
+
+  tools.gitStatus = tool({
+    description: "Get the git sync status for a lane (branch, ahead/behind, dirty state).",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.getSyncStatus({ laneId: resolveLaneId(laneId) })),
+  });
+
+  tools.gitCommit = tool({
+    description: "Create a git commit in a lane.",
+    inputSchema: z.object({ laneId: z.string().optional(), message: z.string().min(1), stageAll: z.boolean().optional().default(true) }),
+    execute: ({ laneId, message, stageAll }) => gitGuard(() => deps.gitService!.commit({ laneId: resolveLaneId(laneId), message, stageAll })),
+  });
+
+  tools.gitPush = tool({
+    description: "Push commits to the remote for a lane.",
+    inputSchema: z.object({ laneId: z.string().optional(), force: z.boolean().optional().default(false) }),
+    execute: ({ laneId, force }) => gitGuard(() => deps.gitService!.push({ laneId: resolveLaneId(laneId), force })),
+  });
+
+  tools.gitPull = tool({
+    description: "Pull from the remote for a lane.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.pull({ laneId: resolveLaneId(laneId) })),
+  });
+
+  tools.gitFetch = tool({
+    description: "Fetch remote refs for a lane.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.fetch({ laneId: resolveLaneId(laneId) })),
+  });
+
+  tools.gitListRecentCommits = tool({
+    description: "List recent commits in a lane.",
+    inputSchema: z.object({ laneId: z.string().optional(), limit: z.number().int().positive().max(100).optional().default(20) }),
+    execute: ({ laneId, limit }) => gitGuard(async () => {
+      const commits = await deps.gitService!.listRecentCommits({ laneId: resolveLaneId(laneId), limit });
+      return { count: commits.length, commits };
+    }),
+  });
+
+  tools.gitListBranches = tool({
+    description: "List git branches for a lane.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(async () => {
+      const branches = await deps.gitService!.listBranches({ laneId: resolveLaneId(laneId) });
+      return { count: branches.length, branches };
+    }),
+  });
+
+  tools.gitCheckoutBranch = tool({
+    description: "Switch to or create a git branch in a lane.",
+    inputSchema: z.object({ laneId: z.string().optional(), branch: z.string().min(1), create: z.boolean().optional().default(false) }),
+    execute: ({ laneId, branch, create }) => gitGuard(() => deps.gitService!.checkoutBranch({ laneId: resolveLaneId(laneId), branch, create })),
+  });
+
+  tools.gitStashPush = tool({
+    description: "Stash working changes in a lane.",
+    inputSchema: z.object({ laneId: z.string().optional(), message: z.string().optional() }),
+    execute: ({ laneId, message }) => gitGuard(() => deps.gitService!.stashPush({ laneId: resolveLaneId(laneId), ...(message?.trim() ? { message: message.trim() } : {}) })),
+  });
+
+  tools.gitStashPop = tool({
+    description: "Pop the latest stash in a lane.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.stashPop({ laneId: resolveLaneId(laneId) })),
+  });
+
+  tools.gitStashList = tool({
+    description: "List stashes in a lane.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(async () => {
+      const stashes = await deps.gitService!.listStashes({ laneId: resolveLaneId(laneId) });
+      return { count: stashes.length, stashes };
+    }),
+  });
+
+  tools.gitGetConflictState = tool({
+    description: "Check if a lane has merge or rebase conflicts in progress.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.getConflictState({ laneId: resolveLaneId(laneId) })),
+  });
+
+  tools.gitRebaseContinue = tool({
+    description: "Continue a rebase after resolving conflicts.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.rebaseContinue({ laneId: resolveLaneId(laneId) })),
+  });
+
+  tools.gitRebaseAbort = tool({
+    description: "Abort an in-progress rebase.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.rebaseAbort({ laneId: resolveLaneId(laneId) })),
+  });
+
+  tools.gitMergeAbort = tool({
+    description: "Abort an in-progress merge.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.mergeAbort({ laneId: resolveLaneId(laneId) })),
+  });
+
+  // ---------------------------------------------------------------------------
+  // Conflict Resolution
+  // ---------------------------------------------------------------------------
+
+  const conflictGuard = async <T>(fn: () => Promise<T>): Promise<{ success: true } & T | { success: false; error: string }> => {
+    if (!deps.conflictService) return { success: false, error: "Conflict service is not available." };
+    try {
+      return { success: true, ...(await fn()) } as { success: true } & T;
+    } catch (error) {
+      return { success: false, error: getErrorMessage(error) };
+    }
+  };
+
+  tools.getConflictStatus = tool({
+    description: "Check merge conflict status for a lane.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => conflictGuard(() => deps.conflictService!.getLaneStatus({ laneId: resolveLaneId(laneId) })),
+  });
+
+  tools.getConflictRiskMatrix = tool({
+    description: "Get the conflict risk matrix across all lanes.",
+    inputSchema: z.object({}),
+    execute: () => conflictGuard(async () => {
+      const matrix = await deps.conflictService!.getRiskMatrix();
+      return { count: matrix.length, entries: matrix };
+    }),
+  });
+
+  tools.simulateMerge = tool({
+    description: "Dry-run merge between two lanes to predict conflicts.",
+    inputSchema: z.object({ sourceLaneId: z.string().min(1), targetLaneId: z.string().optional() }),
+    execute: ({ sourceLaneId, targetLaneId }) => conflictGuard(() => deps.conflictService!.simulateMerge({ sourceLaneId, targetLaneId: targetLaneId?.trim() || undefined })),
+  });
+
+  tools.runConflictPrediction = tool({
+    description: "Run batch conflict prediction across all lanes.",
+    inputSchema: z.object({}),
+    execute: () => conflictGuard(() => deps.conflictService!.runPrediction()),
+  });
+
+  tools.listConflictProposals = tool({
+    description: "List AI-generated conflict resolution proposals for a lane.",
+    inputSchema: z.object({ laneId: z.string().min(1) }),
+    execute: ({ laneId }) => conflictGuard(async () => {
+      const proposals = await deps.conflictService!.listProposals({ laneId });
+      return { count: proposals.length, proposals };
+    }),
+  });
+
+  tools.requestConflictProposal = tool({
+    description: "Request an AI-generated resolution for a specific conflict.",
+    inputSchema: z.object({ laneId: z.string().min(1), filePath: z.string().optional() }),
+    execute: ({ laneId, filePath }) => conflictGuard(() => deps.conflictService!.requestProposal({ laneId, filePath: filePath?.trim() || undefined })),
+  });
+
+  tools.applyConflictProposal = tool({
+    description: "Apply an AI-generated conflict resolution proposal.",
+    inputSchema: z.object({ laneId: z.string().min(1), proposalId: z.string().min(1) }),
+    execute: ({ laneId, proposalId }) => conflictGuard(() => deps.conflictService!.applyProposal({ laneId, proposalId })),
+  });
+
+  tools.undoConflictProposal = tool({
+    description: "Undo an applied conflict resolution proposal.",
+    inputSchema: z.object({ laneId: z.string().min(1), proposalId: z.string().min(1) }),
+    execute: ({ laneId, proposalId }) => conflictGuard(() => deps.conflictService!.undoProposal({ laneId, proposalId })),
+  });
+
+  // ---------------------------------------------------------------------------
+  // Context Pack Export
+  // ---------------------------------------------------------------------------
+
+  tools.getContextStatus = tool({
+    description: "Check what ADE context docs exist and whether they are stale.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      if (!deps.contextDocService) return { success: false, error: "Context doc service is not available." };
+      try {
+        return { success: true, ...deps.contextDocService.getStatus() };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.generateContextDocs = tool({
+    description: "Generate bounded context packs for bootstrapping workers or exporting project state.",
+    inputSchema: z.object({
+      scope: z.string().optional(),
+      categories: z.array(z.string()).optional(),
+    }),
+    execute: async ({ scope, categories }) => {
+      if (!deps.contextDocService) return { success: false, error: "Context doc service is not available." };
+      try {
+        return { success: true, ...(await deps.contextDocService.generateDocs({ scope, categories })) };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Agent Chat Steering
+  // ---------------------------------------------------------------------------
+
+  tools.steerChat = tool({
+    description: "Inject a steering instruction into an active chat session.",
+    inputSchema: z.object({
+      sessionId: z.string().min(1),
+      instruction: z.string().min(1),
+    }),
+    execute: async ({ sessionId, instruction }) => {
+      if (!deps.steerChat) return { success: false, error: "Chat steering is not available." };
+      try {
+        await deps.steerChat({ sessionId, instruction });
+        return { success: true, sessionId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.cancelSteer = tool({
+    description: "Cancel a pending steer instruction on a chat session.",
+    inputSchema: z.object({
+      sessionId: z.string().min(1),
+    }),
+    execute: async ({ sessionId }) => {
+      if (!deps.cancelSteer) return { success: false, error: "Chat steering is not available." };
+      try {
+        await deps.cancelSteer({ sessionId });
+        return { success: true, sessionId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.handoffChat = tool({
+    description: "Hand off a chat session to a different agent identity.",
+    inputSchema: z.object({
+      sessionId: z.string().min(1),
+      targetIdentityKey: z.string().optional(),
+      reason: z.string().optional(),
+    }),
+    execute: async ({ sessionId, targetIdentityKey, reason }) => {
+      if (!deps.handoffChat) return { success: false, error: "Chat handoff is not available." };
+      try {
+        return { success: true, ...(await deps.handoffChat({ sessionId, targetIdentityKey, reason })) };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.listSubagents = tool({
+    description: "List sub-agents spawned by a chat session.",
+    inputSchema: z.object({
+      sessionId: z.string().min(1),
+    }),
+    execute: async ({ sessionId }) => {
+      if (!deps.listSubagents) return { success: false, error: "Sub-agent listing is not available." };
+      try {
+        const subagents = await deps.listSubagents({ sessionId });
+        return { success: true, count: subagents.length, subagents };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.approveToolUse = tool({
+    description: "Approve or deny a pending tool use in a chat session.",
+    inputSchema: z.object({
+      sessionId: z.string().min(1),
+      toolUseId: z.string().min(1),
+      decision: z.enum(["accept", "accept_for_session", "decline", "cancel"]),
+    }),
+    execute: async ({ sessionId, toolUseId, decision }) => {
+      if (!deps.approveToolUse) return { success: false, error: "Tool use approval is not available." };
+      try {
+        await deps.approveToolUse({ sessionId, toolUseId, decision });
+        return { success: true, sessionId, toolUseId, decision };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Unified Event Feed
+  // ---------------------------------------------------------------------------
+
+  type RecentEvent = {
+    type: string;
+    timestamp: string;
+    summary: string;
+    ids: Record<string, string | null>;
+  };
+
+  tools.getRecentEvents = tool({
+    description:
+      "Surface a unified feed of recent project events: CTO session completions, worker activity, " +
+      "test completions/failures, PR review activity, mission state transitions, and chat session events. " +
+      "Use this to stay aware of what happened while you were idle or to brief the user on recent activity.",
+    inputSchema: z.object({
+      since: z
+        .string()
+        .optional()
+        .describe("ISO 8601 timestamp. Only events after this time are returned. Defaults to 24 hours ago."),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(200)
+        .optional()
+        .default(50)
+        .describe("Maximum number of events to return."),
+    }),
+    execute: async ({ since, limit }) => {
+      const sinceEpoch = since
+        ? parseIsoToEpoch(since)
+        : Date.now() - 24 * 60 * 60 * 1000;
+      const safeLimit = Math.max(1, Math.min(200, limit));
+      const events: RecentEvent[] = [];
+
+      const afterCutoff = (ts: string | null | undefined): boolean => {
+        if (!ts) return false;
+        const epoch = parseIsoToEpoch(ts);
+        return Number.isFinite(epoch) && epoch >= sinceEpoch;
+      };
+
+      // 1. CTO session logs
+      if (deps.ctoStateService) {
+        try {
+          const logs = deps.ctoStateService.getSessionLogs(200);
+          for (const log of logs) {
+            if (!afterCutoff(log.createdAt)) continue;
+            events.push({
+              type: "cto_session",
+              timestamp: log.createdAt,
+              summary: log.summary,
+              ids: { sessionId: log.sessionId, logId: log.id },
+            });
+          }
+        } catch {
+          // CTO state service may not be fully initialized
+        }
+      }
+
+      // 2. Subordinate (worker) activity from CTO state
+      if (deps.ctoStateService) {
+        try {
+          const activities = deps.ctoStateService.getSubordinateActivityLogs(200);
+          for (const activity of activities) {
+            if (!afterCutoff(activity.createdAt)) continue;
+            events.push({
+              type: `worker_${activity.activityType}`,
+              timestamp: activity.createdAt,
+              summary: `[${activity.agentName}] ${activity.summary}`,
+              ids: {
+                agentId: activity.agentId,
+                sessionId: activity.sessionId ?? null,
+                taskKey: activity.taskKey ?? null,
+                issueKey: activity.issueKey ?? null,
+              },
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // 3. Worker runs from heartbeat service
+      if (deps.workerHeartbeatService) {
+        try {
+          const runs = deps.workerHeartbeatService.listRuns({ limit: 100 });
+          for (const run of runs) {
+            const ts = run.finishedAt ?? run.startedAt ?? run.createdAt;
+            if (!afterCutoff(ts)) continue;
+            events.push({
+              type: "worker_run",
+              timestamp: ts,
+              summary: `Worker run ${run.status}${run.taskKey ? ` (task: ${run.taskKey})` : ""}${run.errorMessage ? ` — ${run.errorMessage}` : ""}`,
+              ids: {
+                runId: run.id,
+                agentId: run.agentId,
+                taskKey: run.taskKey ?? null,
+                issueKey: run.issueKey ?? null,
+              },
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // 4. Test runs
+      if (deps.testService) {
+        try {
+          const runs = deps.testService.listRuns({ limit: 100 });
+          for (const run of runs) {
+            const ts = run.endedAt ?? run.startedAt;
+            if (!afterCutoff(ts)) continue;
+            const duration = run.durationMs != null ? ` (${Math.round(run.durationMs / 1000)}s)` : "";
+            events.push({
+              type: "test_run",
+              timestamp: ts,
+              summary: `${run.suiteName}: ${run.status}${duration}`,
+              ids: {
+                runId: run.id,
+                suiteId: run.suiteId,
+                laneId: run.laneId,
+              },
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // 5. Mission state transitions
+      if (deps.missionService) {
+        try {
+          const missions = deps.missionService.list({ limit: 50 });
+          for (const mission of missions) {
+            const ts = mission.completedAt ?? mission.updatedAt;
+            if (!afterCutoff(ts)) continue;
+            events.push({
+              type: "mission_update",
+              timestamp: ts,
+              summary: `Mission "${mission.title}": ${mission.status}${mission.outcomeSummary ? ` — ${mission.outcomeSummary}` : ""}`,
+              ids: {
+                missionId: mission.id,
+                laneId: mission.laneId,
+              },
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // 6. PR review activity (recent events from all tracked PRs)
+      if (deps.prService) {
+        try {
+          const prs = deps.prService.listAll();
+          // Fetch activity for the most recently updated PRs to avoid excessive API calls
+          const recentPrs = prs
+            .filter((pr) => afterCutoff(pr.updatedAt))
+            .slice(0, 5);
+          for (const pr of recentPrs) {
+            try {
+              const activity = await deps.prService.getActivity(pr.id);
+              for (const ev of activity) {
+                if (!afterCutoff(ev.timestamp)) continue;
+                events.push({
+                  type: `pr_${ev.type}`,
+                  timestamp: ev.timestamp,
+                  summary: `PR #${pr.githubPrNumber} "${pr.title}": ${ev.body ?? ev.type}${ev.author ? ` (${ev.author})` : ""}`,
+                  ids: {
+                    prId: pr.id,
+                    prNumber: String(pr.githubPrNumber),
+                    laneId: pr.laneId,
+                  },
+                });
+              }
+            } catch {
+              // individual PR activity fetch may fail
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // 7. Chat session events
+      try {
+        const chats = await deps.listChats(undefined, { includeIdentity: false, includeAutomation: true });
+        for (const chat of chats) {
+          const ts = chat.endedAt ?? chat.lastActivityAt;
+          if (!afterCutoff(ts)) continue;
+          events.push({
+            type: "chat_session",
+            timestamp: ts,
+            summary: `Chat "${chat.title ?? chat.sessionId}": ${chat.status}${chat.summary ? ` — ${chat.summary}` : ""}`,
+            ids: {
+              sessionId: chat.sessionId,
+              laneId: chat.laneId,
+            },
+          });
+        }
+      } catch {
+        // ignore
+      }
+
+      // Sort descending by timestamp and apply limit
+      events.sort((a, b) => parseIsoToEpoch(b.timestamp) - parseIsoToEpoch(a.timestamp));
+      const sliced = events.slice(0, safeLimit);
+
+      return {
+        success: true,
+        count: sliced.length,
+        totalBeforeLimit: events.length,
+        since: since ?? new Date(sinceEpoch).toISOString(),
+        events: sliced,
+      };
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Project Health Dashboard
+  // ---------------------------------------------------------------------------
+
+  tools.getProjectHealthSummary = tool({
+    description:
+      "Aggregate project health into a single snapshot: mission counts by status, worker utilization, test pass rates, PR status distribution, active lanes, and weekly budget burn.",
+    inputSchema: z.object({
+      testRunLimit: z
+        .number()
+        .int()
+        .positive()
+        .max(200)
+        .optional()
+        .default(50),
+    }),
+    execute: async ({ testRunLimit }) => {
+      let missions: {
+        byStatus: Record<string, number>;
+        total: number;
+        activeCount: number;
+        openInterventions: number;
+        weekly: { missions: number; successRate: number; avgDurationMs: number; totalCostUsd: number } | null;
+      } | null = null;
+      if (deps.missionService) {
+        const all = deps.missionService.list({ includeArchived: false, limit: 500 });
+        const byStatus: Record<string, number> = {};
+        let openInterventions = 0;
+        for (const m of all) {
+          byStatus[m.status] = (byStatus[m.status] ?? 0) + 1;
+          openInterventions += m.openInterventions;
+        }
+        const activeCount = all.filter(
+          (m) => m.status === "queued" || m.status === "planning" || m.status === "in_progress" || m.status === "intervention_required",
+        ).length;
+        let weekly: { missions: number; successRate: number; avgDurationMs: number; totalCostUsd: number } | null = null;
+        try {
+          const dashboard = (deps.missionService as any).getDashboard?.();
+          if (dashboard?.weekly) weekly = dashboard.weekly;
+        } catch { /* non-fatal */ }
+        missions = { byStatus, total: all.length, activeCount, openInterventions, weekly };
+      }
+
+      let workers: {
+        total: number;
+        byStatus: Record<string, number>;
+        totalBudgetMonthlyCents: number;
+        totalSpentMonthlyCents: number;
+        budgetUtilizationPct: number;
+      } | null = null;
+      if (deps.workerAgentService) {
+        const agents = deps.workerAgentService.listAgents();
+        const byStatus: Record<string, number> = {};
+        let totalBudget = 0;
+        let totalSpent = 0;
+        for (const a of agents) {
+          byStatus[a.status] = (byStatus[a.status] ?? 0) + 1;
+          totalBudget += (a as any).budgetMonthlyCents ?? 0;
+          totalSpent += (a as any).spentMonthlyCents ?? 0;
+        }
+        workers = {
+          total: agents.length,
+          byStatus,
+          totalBudgetMonthlyCents: totalBudget,
+          totalSpentMonthlyCents: totalSpent,
+          budgetUtilizationPct: totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 10000) / 100 : 0,
+        };
+      }
+
+      let tests: {
+        suiteCount: number;
+        recentRuns: number;
+        byStatus: Record<string, number>;
+        passRate: number;
+      } | null = null;
+      if (deps.testService) {
+        const suites = deps.testService.listSuites();
+        const runs = deps.testService.listRuns({ limit: testRunLimit });
+        const byStatus: Record<string, number> = {};
+        for (const r of runs) {
+          byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
+        }
+        const terminal = runs.filter((r) => r.status !== "running");
+        const passed = terminal.filter((r) => r.status === "passed").length;
+        tests = {
+          suiteCount: suites.length,
+          recentRuns: runs.length,
+          byStatus,
+          passRate: terminal.length > 0 ? Math.round((passed / terminal.length) * 10000) / 100 : 0,
+        };
+      }
+
+      let prs: {
+        total: number;
+        byState: Record<string, number>;
+        byChecksStatus: Record<string, number>;
+        byReviewStatus: Record<string, number>;
+      } | null = null;
+      if (deps.prService) {
+        const all = (deps.prService as any).listAll?.() ?? [];
+        const byState: Record<string, number> = {};
+        const byChecksStatus: Record<string, number> = {};
+        const byReviewStatus: Record<string, number> = {};
+        for (const pr of all) {
+          byState[pr.state] = (byState[pr.state] ?? 0) + 1;
+          if (pr.checksStatus) byChecksStatus[pr.checksStatus] = (byChecksStatus[pr.checksStatus] ?? 0) + 1;
+          if (pr.reviewStatus) byReviewStatus[pr.reviewStatus] = (byReviewStatus[pr.reviewStatus] ?? 0) + 1;
+        }
+        prs = { total: all.length, byState, byChecksStatus, byReviewStatus };
+      }
+
+      const allLanes = await deps.laneService.list({ includeArchived: false });
+      const activeLanes = allLanes.filter((l) => l.laneType !== "primary");
+      const lanes = {
+        total: allLanes.length,
+        active: activeLanes.length,
+        withMission: activeLanes.filter((l) => (l as any).missionId).length,
+      };
+
+      return {
+        success: true,
+        generatedAt: nowIso(),
+        missions,
+        workers,
+        tests,
+        prs,
+        lanes,
+      };
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Computer Use Artifact Oversight
+  // ---------------------------------------------------------------------------
+
+  tools.listComputerUseArtifacts = tool({
+    description:
+      "List computer-use artifacts (screenshots, videos, browser traces, console logs) across the project.",
+    inputSchema: z.object({
+      kind: z
+        .enum(["screenshot", "video_recording", "browser_trace", "browser_verification", "console_logs"])
+        .optional(),
+      ownerKind: z
+        .enum(["lane", "mission", "orchestrator_run", "orchestrator_step", "orchestrator_attempt", "chat_session", "automation_run", "github_pr", "linear_issue"])
+        .optional(),
+      ownerId: z.string().optional(),
+      limit: z.number().int().min(1).max(200).optional().default(50),
+    }),
+    execute: async ({ kind, ownerKind, ownerId, limit }) => {
+      if (!deps.computerUseArtifactBrokerService) {
+        return { success: false, error: "Computer-use artifact broker is not available." };
+      }
+      try {
+        const artifacts = deps.computerUseArtifactBrokerService.listArtifacts({
+          kind: kind ?? null,
+          ownerKind: ownerKind ?? undefined,
+          ownerId: ownerId ?? undefined,
+          limit,
+        });
+        return {
+          success: true,
+          count: artifacts.length,
+          artifacts: artifacts.map((a: any) => ({
+            id: a.id,
+            kind: a.kind,
+            title: a.title,
+            description: a.description,
+            uri: a.uri,
+            reviewState: a.reviewState,
+            workflowState: a.workflowState,
+            reviewNote: a.reviewNote,
+            createdAt: a.createdAt,
+            owners: (a.links ?? []).map((l: any) => ({ kind: l.ownerKind, id: l.ownerId, relation: l.relation })),
+          })),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.getArtifactPreview = tool({
+    description: "Get full details for a specific computer-use artifact by ID.",
+    inputSchema: z.object({
+      artifactId: z.string().min(1),
+    }),
+    execute: async ({ artifactId }) => {
+      if (!deps.computerUseArtifactBrokerService) {
+        return { success: false, error: "Computer-use artifact broker is not available." };
+      }
+      try {
+        const results = deps.computerUseArtifactBrokerService.listArtifacts({ artifactId });
+        if (results.length === 0) return { success: false, error: `Artifact not found: ${artifactId}` };
+        const a = results[0] as any;
+        return {
+          success: true,
+          artifact: {
+            id: a.id, kind: a.kind, title: a.title, description: a.description,
+            uri: a.uri, mimeType: a.mimeType, reviewState: a.reviewState,
+            workflowState: a.workflowState, reviewNote: a.reviewNote,
+            metadata: a.metadata, createdAt: a.createdAt,
+            links: (a.links ?? []).map((l: any) => ({
+              ownerKind: l.ownerKind, ownerId: l.ownerId, relation: l.relation,
+            })),
+          },
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.reviewArtifact = tool({
+    description: "Mark a computer-use artifact as approved, rejected, or needing more evidence.",
+    inputSchema: z.object({
+      artifactId: z.string().min(1),
+      reviewState: z.enum(["pending", "accepted", "needs_more", "dismissed"]),
+      workflowState: z.enum(["evidence_only", "promoted", "published", "dismissed"]).optional(),
+      reviewNote: z.string().max(2000).optional(),
+    }),
+    execute: async ({ artifactId, reviewState, workflowState, reviewNote }) => {
+      if (!deps.computerUseArtifactBrokerService) {
+        return { success: false, error: "Computer-use artifact broker is not available." };
+      }
+      try {
+        const updated = deps.computerUseArtifactBrokerService.updateArtifactReview({
+          artifactId,
+          reviewState,
+          workflowState: workflowState ?? null,
+          reviewNote: reviewNote ?? null,
+        });
+        return {
+          success: true,
+          artifact: { id: updated.id, kind: updated.kind, reviewState: updated.reviewState, workflowState: updated.workflowState, reviewNote: updated.reviewNote },
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Budget / Cost Visibility
+  // ---------------------------------------------------------------------------
+
+  tools.getProjectBudgetStatus = tool({
+    description: "Get project-wide budget status: total spend, budget remaining, per-worker summaries, and optional per-mission deep dive.",
+    inputSchema: z.object({
+      monthKey: z.string().optional().describe("YYYY-MM format. Defaults to current month."),
+      missionId: z.string().optional().describe("Include detailed budget for this mission."),
+    }),
+    execute: async ({ monthKey, missionId }) => {
+      if (!deps.workerBudgetService) return { success: false, error: "Worker budget service is not available." };
+      try {
+        const snapshot = deps.workerBudgetService.getBudgetSnapshot({ monthKey: monthKey?.trim() || undefined });
+        let missionBudget: any = null;
+        if (missionId?.trim() && deps.missionBudgetService) {
+          try {
+            missionBudget = await deps.missionBudgetService.getMissionBudgetStatus({ missionId: missionId.trim() });
+          } catch { /* non-fatal */ }
+        }
+        return {
+          success: true,
+          monthKey: snapshot.monthKey,
+          computedAt: snapshot.computedAt,
+          company: {
+            budgetMonthlyCents: snapshot.companyBudgetMonthlyCents,
+            spentMonthlyCents: snapshot.companySpentMonthlyCents,
+            remainingCents: snapshot.companyRemainingCents,
+          },
+          workerCount: snapshot.workers.length,
+          workerSummaries: snapshot.workers.map((w: any) => ({
+            agentId: w.agentId, name: w.name, budgetMonthlyCents: w.budgetMonthlyCents,
+            spentMonthlyCents: w.spentMonthlyCents, remainingCents: w.remainingCents, status: w.status,
+          })),
+          ...(missionBudget ? { missionBudget } : {}),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.getWorkerCostBreakdown = tool({
+    description: "Get per-worker monthly spend breakdown with token usage and model detail.",
+    inputSchema: z.object({
+      agentId: z.string().optional(),
+      monthKey: z.string().optional(),
+      limit: z.number().int().positive().optional().default(100),
+    }),
+    execute: async ({ agentId, monthKey, limit }) => {
+      if (!deps.workerBudgetService) return { success: false, error: "Worker budget service is not available." };
+      try {
+        const snapshot = deps.workerBudgetService.getBudgetSnapshot({ monthKey: monthKey?.trim() || undefined });
+        const targetWorkers = agentId?.trim()
+          ? snapshot.workers.filter((w: any) => w.agentId === agentId.trim())
+          : snapshot.workers;
+        if (agentId?.trim() && targetWorkers.length === 0) {
+          return { success: false, error: `Worker not found: ${agentId}` };
+        }
+        const breakdowns = targetWorkers.map((worker: any) => {
+          const events = deps.workerBudgetService!.listCostEvents({
+            agentId: worker.agentId,
+            monthKey: monthKey?.trim() || undefined,
+            limit,
+          });
+          const modelMap = new Map<string, { provider: string; modelId: string; totalCostCents: number; totalInputTokens: number; totalOutputTokens: number; eventCount: number }>();
+          for (const event of events) {
+            const key = `${event.provider}::${event.modelId ?? "unknown"}`;
+            const existing = modelMap.get(key);
+            if (existing) {
+              existing.totalCostCents += event.costCents;
+              existing.totalInputTokens += event.inputTokens ?? 0;
+              existing.totalOutputTokens += event.outputTokens ?? 0;
+              existing.eventCount += 1;
+            } else {
+              modelMap.set(key, {
+                provider: event.provider, modelId: event.modelId ?? "unknown",
+                totalCostCents: event.costCents, totalInputTokens: event.inputTokens ?? 0,
+                totalOutputTokens: event.outputTokens ?? 0, eventCount: 1,
+              });
+            }
+          }
+          return {
+            agentId: worker.agentId, name: worker.name, status: worker.status,
+            budgetMonthlyCents: worker.budgetMonthlyCents, spentMonthlyCents: worker.spentMonthlyCents,
+            remainingCents: worker.remainingCents,
+            modelBreakdown: Array.from(modelMap.values()),
+          };
+        });
+        return { success: true, monthKey: snapshot.monthKey, workerCount: breakdowns.length, breakdowns };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
     },
   });
 

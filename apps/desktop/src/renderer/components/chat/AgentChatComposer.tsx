@@ -25,6 +25,7 @@ import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
+import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingInput";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatSubagentStrip } from "./ChatSubagentStrip";
@@ -263,6 +264,8 @@ function PendingSteerItem({
 
 export function AgentChatComposer({
   surfaceMode = "standard",
+  layoutVariant = "standard",
+  composerMaxHeightPx = null,
   sdkSlashCommands = [],
   modelId,
   availableModelIds,
@@ -320,12 +323,15 @@ export function AgentChatComposer({
   promptSuggestion,
   subagentSnapshots = [],
   chatHasMessages = false,
+  restrictModelCatalogToAvailable = false,
   pendingSteers = [],
   onCancelSteer,
   onEditSteer,
   onOpenAiSettings,
 }: {
   surfaceMode?: ChatSurfaceMode;
+  layoutVariant?: "standard" | "grid-tile";
+  composerMaxHeightPx?: number | null;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
@@ -360,7 +366,7 @@ export function AgentChatComposer({
   onClearDraft?: () => void;
   onSubmit: () => void;
   onInterrupt: () => void;
-  onApproval: (decision: AgentChatApprovalDecision) => void;
+  onApproval: (decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   onRemoveAttachment: (path: string) => void;
   onSearchAttachments: (query: string) => Promise<AgentChatFileRef[]>;
@@ -387,6 +393,7 @@ export function AgentChatComposer({
   promptSuggestion?: string | null;
   subagentSnapshots?: ChatSubagentSnapshot[];
   chatHasMessages?: boolean;
+  restrictModelCatalogToAvailable?: boolean;
   pendingSteers?: Array<{ steerId: string; text: string }>;
   onCancelSteer?: (steerId: string) => void;
   onEditSteer?: (steerId: string, text: string) => void;
@@ -897,8 +904,7 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
-    if (busy || !modelId || !draft.trim().length) return;
-    onSubmit();
+    submitComposerDraft();
   };
 
   const openUploadPicker = () => {
@@ -930,11 +936,30 @@ export function AgentChatComposer({
     void addFileAttachments(event.dataTransfer.files);
   };
 
+  const submitComposerDraft = useCallback(() => {
+    const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
+    if (isQuestionPending) {
+      const answer = draft.trim();
+      if (!answer.length && !pendingInput.canProceedWithoutAnswer) return;
+      onApproval("accept", answer || null);
+      onDraftChange("");
+      return;
+    }
+    if (busy || !modelId || !draft.trim().length) return;
+    onSubmit();
+  }, [busy, draft, modelId, onApproval, onDraftChange, onSubmit, pendingInput]);
+
+  const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
+  const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
+
   return (
     <>
       <ChatComposerShell
       mode={surfaceMode}
-      className="m-3 mt-0 rounded-[var(--chat-radius-shell)]"
+      className={cn(
+        "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
+        layoutVariant === "grid-tile" ? "m-0 rounded-none border-0 bg-transparent shadow-none" : "",
+      )}
       pendingBanner={pendingInput ? (
         pendingInput.kind === "plan_approval" ? (
           <div className="px-4 py-3">
@@ -961,7 +986,11 @@ export function AgentChatComposer({
                 <ChatStatusGlyph status="waiting" size={11} />
               </span>
               <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200">
-                {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? "Approval" : "Input needed"} · {pendingInput.source}
+                {pendingInput.kind === "approval" || pendingInput.kind === "permissions"
+                  ? "Approval"
+                  : pendingQuestionCount > 1
+                    ? `${pendingQuestionCount} Questions`
+                    : "Input needed"} · {pendingInput.source}
               </span>
             </div>
             <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/68">
@@ -974,8 +1003,18 @@ export function AgentChatComposer({
                 <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
               </div>
             ) : (
-              <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
-                Open the question modal to answer and continue.
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
+                  {showPendingInputOptionsHint ? "Type your answer below or pick an option above." : "Type your answer below."}
+                </span>
+                <button
+                  type="button"
+                  disabled={approvalResponding}
+                  className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
+                  onClick={() => onApproval("decline")}
+                >
+                  Decline
+                </button>
               </div>
             )}
           </div>
@@ -1104,14 +1143,15 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="flex items-center gap-2 px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-2 px-3 py-1.5">
           {/* Left: permission + model controls */}
-          <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             {nativeControlPanel}
             <UnifiedModelSelector
               value={modelId}
               onChange={onModelChange}
               availableModelIds={availableModelIds}
+              catalogMode={restrictModelCatalogToAvailable ? "available-only" : "all"}
               disabled={modelSelectionLocked}
               showReasoning
               reasoningEffort={reasoningEffort}
@@ -1211,7 +1251,7 @@ export function AgentChatComposer({
                   <button
                     type="button"
                     className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-                    onClick={onSubmit}
+                    onClick={submitComposerDraft}
                     title="Send steer message"
                     aria-label="Send steer message"
                   >
@@ -1238,7 +1278,7 @@ export function AgentChatComposer({
                     : "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]",
                 )}
                 disabled={busy || !draft.trim().length || !modelId}
-                onClick={onSubmit}
+                onClick={submitComposerDraft}
                 title={!modelId ? "Select a model first" : "Send"}
               >
                 <PaperPlaneTilt size={10} weight="fill" />
@@ -1306,10 +1346,15 @@ export function AgentChatComposer({
               if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
             }}
             className={cn(
-              "min-h-[44px] max-h-[200px] w-full resize-none bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+              "min-h-[44px] w-full bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+              layoutVariant === "grid-tile" ? "resize-y" : "max-h-[200px] resize-none",
               dragActive ? "opacity-30" : "",
             )}
-            placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Message the assistant..."))}
+            style={layoutVariant === "grid-tile" && composerMaxHeightPx != null
+              ? { maxHeight: `${composerMaxHeightPx}px` }
+              : undefined}
+            data-chat-layout-variant={layoutVariant}
+            placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode..."))}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
           />

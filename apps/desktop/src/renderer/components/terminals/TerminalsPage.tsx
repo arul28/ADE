@@ -1,12 +1,12 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { SidebarSimple, Terminal } from "@phosphor-icons/react";
+import { SidebarSimple } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
@@ -49,14 +49,18 @@ export function TerminalsPage() {
   );
 
   const handleOpenChatSession = useCallback(
-    async (sessionId: string) => {
-      // Refresh first so the session is in the list before activating the tab.
-      try {
-        await work.refresh({ showLoading: false });
-      } catch {
-        // Best-effort: proceed to open the tab even if refresh fails
-      }
-      work.openSessionTab(sessionId);
+    (session: AgentChatSession) => {
+      work.selectLane(session.laneId);
+      work.upsertOptimisticChatSession(session);
+      work.focusSession(session.id);
+      work.openSessionTab(session.id);
+      void work.refresh({ showLoading: false, force: true }).catch((err: unknown) => {
+        console.error("[TerminalsPage] refresh after opening chat session failed", {
+          sessionId: session.id,
+          laneId: session.laneId,
+          err,
+        });
+      });
     },
     [work],
   );
@@ -73,13 +77,13 @@ export function TerminalsPage() {
   const workViewArea = useMemo(
     () => (
       <WorkViewArea
+        gridLayoutId={work.gridLayoutId}
         lanes={sortedLanes}
         sessions={work.sessions}
         visibleSessions={work.visibleSessions}
         activeItemId={work.activeItemId}
         viewMode={work.viewMode}
         draftKind={work.draftKind}
-        showingDraft={work.activeItemId == null}
         setViewMode={work.setViewMode}
         onSelectItem={work.setActiveItemId}
         onCloseItem={work.closeTab}
@@ -92,6 +96,7 @@ export function TerminalsPage() {
     ),
     [
       sortedLanes,
+      work.gridLayoutId,
       work.sessions,
       work.visibleSessions,
       work.activeItemId,

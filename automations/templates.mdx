@@ -6,46 +6,138 @@ icon: "layer-group"
 
 ## Automation Templates
 
-ADE ships with the following built-in templates. Enable them from **Automations → Templates**.
+Templates are pre-configured automation rules that you can enable with one click. Each template comes with a tested trigger, execution configuration, model settings, guardrails, and prompt — all editable after creation.
+
+Navigate to **Automations > Templates** to browse and activate templates.
+
+### Available Templates
 
 <CardGroup cols={2}>
-  <Card title="PR Reviewer" icon="code-pull-request">
-    **Trigger:** `git.pr_opened`
-    **Execution:** `agent-session`
+  <Card title="Daily Agent Brief" icon="chat-circle-text">
+    **Trigger:** `schedule` — weekdays at 9am
+    **Execution:** Agent session
 
-    Automatically reviews every PR opened in ADE. Checks for missing error handling, untested code paths, and obvious logic bugs. Posts a structured review comment.
+    Summarizes repo activity since the last weekday brief — commits, PRs, missions, and risks. Runs in an automation-only chat thread and saves the transcript in Automations history. Uses project memory and procedures as context sources.
   </Card>
-  <Card title="Test Guardian" icon="shield">
-    **Trigger:** `git.commit`
-    **Execution:** `agent-session`
+  <Card title="PR Review Session" icon="code-pull-request">
+    **Trigger:** `git.pr_opened` on `main`
+    **Execution:** Agent session
 
-    Runs your test suite on every commit. If tests fail, posts a comment on the associated PR with the failure summary and a suggested fix.
+    Reviews every new PR for risky changes, missing tests, and release impact. Posts concrete findings citing specific files and checks. Uses high thinking level for thorough analysis.
   </Card>
-  <Card title="Daily Standup" icon="sun">
-    **Trigger:** `schedule` — `0 9 * * 1-5`
-    **Execution:** `agent-session`
+  <Card title="Linear Triage Mission" icon="shield-check">
+    **Trigger:** `linear.issue_created` (team: ENG)
+    **Execution:** Mission
 
-    Every weekday morning, generates a summary of all lane activity from the previous day: commits made, PRs opened/merged, missions completed, and any active conflicts.
+    Launches a mission when new Linear issues arrive. The mission triages the issue — recommends an owner, severity level, and next action — using mission-level tooling for deeper context gathering.
   </Card>
-  <Card title="Dependency Updater" icon="arrow-rotate-right">
-    **Trigger:** `schedule` — `0 2 * * 0` (weekly, Sunday 2am)
-    **Execution:** `mission`
+  <Card title="Nightly Test Sweep" icon="test-tube">
+    **Trigger:** `schedule` — weekdays at 2am
+    **Execution:** Built-in task (run-tests)
 
-    Weekly check for outdated dependencies. Opens a draft PR with the proposed updates and a compatibility assessment for each changed package.
+    Runs your configured test suite on a nightly schedule without starting a mission or agent chat. Results are saved as automation artifacts. Requires a test suite ID to be configured.
+  </Card>
+  <Card title="Push Conflict Scan" icon="bug">
+    **Trigger:** `git.push` on `main`
+    **Execution:** Built-in task (predict-conflicts)
+
+    Runs conflict prediction after every push to the default branch. Surfaces lanes that are now at risk of merge conflicts so you can address them before they block work.
   </Card>
 </CardGroup>
 
 ---
 
+## Using a Template
+
+<Steps>
+  <Step title="Browse templates">
+    Open **Automations > Templates**. Each card shows the trigger type, execution kind, and a description of what the template does.
+  </Step>
+  <Step title="Click Use Template">
+    Click the **Use** button on any template. ADE creates a new automation rule pre-filled with the template's configuration.
+  </Step>
+  <Step title="Customize (optional)">
+    The rule opens in the automation editor where you can adjust:
+    - **Trigger conditions** — change the branch, schedule, team, or event type
+    - **Prompt** — refine what the agent should focus on
+    - **Model configuration** — change the model, thinking level, or permission mode
+    - **Guardrails** — adjust duration limits, confidence thresholds
+    - **Outputs** — change where results are routed
+  </Step>
+  <Step title="Enable the rule">
+    Toggle the rule to **enabled**. It will start firing on its next matching trigger.
+  </Step>
+</Steps>
+
+<Tip>
+Templates use `anthropic/claude-sonnet-4-6` as the default model with medium or high thinking levels. You can switch to any configured provider and model after creating the rule.
+</Tip>
+
+---
+
+## Template Anatomy
+
+Every template generates a rule with these fields:
+
+| Field | Description |
+|-------|-------------|
+| **Name** | Human-readable identifier shown in the Automations list |
+| **Trigger** | The event or schedule that fires the rule |
+| **Execution kind** | `agent-session`, `mission`, or `built-in` — determines what runs |
+| **Executor mode** | Always `automation-bot` for template-created rules |
+| **Prompt** | The instruction the agent receives (only for agent-session and mission kinds) |
+| **Model config** | Which model and thinking level to use |
+| **Tool palette** | Which MCP tool categories the agent can access (repo, git, github, linear, memory, mission, tests) |
+| **Context sources** | What context is injected (project-memory, procedures, lane packs) |
+| **Memory mode** | How the automation accesses ADE's memory system (`project`, `automation-plus-project`) |
+| **Guardrails** | Max duration, confidence threshold, and other safety limits |
+| **Outputs** | How results are delivered (comment-only, create artifact, etc.) |
+| **Review profile** | `quick` for lightweight checks, `full` for thorough analysis |
+| **Billing code** | Cost tracking identifier prefixed with `auto:` |
+
+---
+
 ## Outputs and Routing
 
-Automations can produce the following output types. Configure output routing in the automation settings to control where results land.
+Automations can produce several output types. Configure output routing in the automation rule's settings to control where results land.
 
-| Output Type | Description |
-|---|---|
-| Commits | Committed changes to a branch in a specific lane |
-| Pull Requests | New or updated PRs on GitHub |
-| Linear Updates | Issue status changes, comments, assignments |
-| Notifications | In-ADE toast notifications or macOS system notifications |
-| Lane Pack Updates | Triggers a refresh of a lane's context pack |
-| Chat Messages | Posts a message into a specific lane's chat |
+| Output Type | Description | Example |
+|-------------|-------------|---------|
+| **Commits** | Code changes committed to a branch in a specific lane | Test fixes, dependency updates |
+| **Pull Requests** | New or updated PRs on GitHub | Dependency update PRs, auto-generated feature PRs |
+| **Linear Updates** | Issue state changes, comments, label assignments | Moving a triaged issue to "Ready" |
+| **Notifications** | In-ADE toast notifications or macOS system notifications | "Nightly tests passed" or "3 lanes have conflicts" |
+| **Lane Pack Updates** | Triggers a refresh of a lane's context pack | After an automation modifies files in a lane |
+| **Chat Messages** | Posts a message into a specific lane's chat | Review findings posted to the PR's lane chat |
+| **Artifacts** | Saved output files (reports, logs, summaries) visible in Automations history | Test sweep results, daily brief summary |
+
+### Output Disposition
+
+Each rule's output disposition controls how the automation's findings are delivered:
+
+- **Comment-only** — results are saved as automation artifacts and optionally posted as comments (to PRs, Linear issues, or lane chats). No code changes are made.
+- **Commit** — the automation can make code changes and commit them. Use this for rules like dependency updates that produce actual code modifications.
+- **Draft PR** — the automation creates a draft PR with its changes for human review before merging.
+
+<Warning>
+Rules with `commit` or `draft PR` disposition can modify your codebase. Always use guardrails (max duration, confidence threshold) and consider starting with `review` mode, which pauses for your approval before the automation acts.
+</Warning>
+
+---
+
+## Creating Custom Templates
+
+ADE does not currently support saving your own automation rules as reusable templates. However, you can duplicate an existing rule (right-click > **Duplicate**) to create a copy with all settings preserved, then modify it for a different use case.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Automation Rules Guide" icon="scroll" href="/guides/automation-rules">
+    Step-by-step guide for creating custom automation rules from scratch.
+  </Card>
+  <Card title="Guardrails" icon="shield" href="/automations/guardrails">
+    Configure safety limits, review modes, and intervention policies for automation rules.
+  </Card>
+</CardGroup>

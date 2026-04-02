@@ -1,4 +1,5 @@
-import type { TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary } from "../../shared/types";
+import type { TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
+import { isChatToolType } from "./sessions";
 
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
 export type SessionStatusFilter = "all" | "running" | "awaiting-input" | "ended";
@@ -72,9 +73,11 @@ export function sessionIndicatorState(args: {
   status: TerminalSessionStatus;
   lastOutputPreview: string | null;
   runtimeState?: TerminalRuntimeState;
+  toolType?: TerminalToolType | null;
 }): SessionUiState {
   if (args.status === "running") {
     if (args.runtimeState === "waiting-input") return "running-needs-attention";
+    if (args.runtimeState === "idle" && isChatToolType(args.toolType)) return "running-needs-attention";
     return runningSessionNeedsAttention(args.lastOutputPreview) ? "running-needs-attention" : "running-active";
   }
   return "ended";
@@ -84,6 +87,7 @@ export function sessionStatusBucket(args: {
   status: TerminalSessionStatus;
   lastOutputPreview: string | null;
   runtimeState?: TerminalRuntimeState;
+  toolType?: TerminalToolType | null;
 }): SessionStatusBucket {
   const state = sessionIndicatorState(args);
   if (state === "running-active") return "running";
@@ -96,6 +100,7 @@ export function sessionMatchesStatusFilter(
     status: TerminalSessionStatus;
     lastOutputPreview: string | null;
     runtimeState?: TerminalRuntimeState;
+    toolType?: TerminalToolType | null;
   },
   filter: SessionStatusFilter,
 ): boolean {
@@ -114,13 +119,18 @@ export function sessionStatusDot(session: {
   status: TerminalSessionStatus;
   lastOutputPreview: string | null;
   runtimeState?: TerminalRuntimeState;
+  toolType?: TerminalToolType | null;
 }): SessionStatusDot {
   const indicator = sessionIndicatorState(session);
   if (indicator === "running-active") {
     return { cls: "border-2 border-emerald-400 border-t-transparent bg-transparent", spinning: true, label: "Running" };
   }
   if (indicator === "running-needs-attention") {
-    return { cls: "bg-amber-300", spinning: false, label: "Awaiting input" };
+    return {
+      cls: "bg-amber-300",
+      spinning: false,
+      label: session.runtimeState === "idle" && isChatToolType(session.toolType) ? "Ready" : "Awaiting input",
+    };
   }
   return { cls: "bg-red-400", spinning: false, label: "Ended" };
 }
@@ -136,6 +146,7 @@ export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): 
       status: session.status,
       lastOutputPreview: session.lastOutputPreview,
       runtimeState: session.runtimeState,
+      toolType: session.toolType,
     });
     if (indicator === "ended") continue;
     const lane = byLane[session.laneId] ?? { runningCount: 0, activeCount: 0, needsAttentionCount: 0 };

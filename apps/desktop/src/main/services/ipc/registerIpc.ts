@@ -11,6 +11,7 @@ import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
+import { toRecentProjectSummary } from "../projects/recentProjectSummary";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -770,33 +771,6 @@ function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
   const raw = typeof value === "string" ? value.trim() : "";
   if (raw === "shell" || raw === "manual" || raw === "unified") return raw;
   return "unified";
-}
-
-function toRecentProjectSummary(entry: { rootPath: string; displayName: string; lastOpenedAt: string }): RecentProjectSummary {
-  let laneCount: number | undefined;
-  try {
-    const gitPath = path.join(entry.rootPath, ".git");
-    const worktreesPath = path.join(gitPath, "worktrees");
-    if (fs.existsSync(gitPath)) {
-      laneCount = 1; // Primary lane
-      if (fs.existsSync(worktreesPath)) {
-        const wtCount = fs.readdirSync(worktreesPath, { withFileTypes: true })
-          .filter((dirent) => dirent.isDirectory())
-          .length;
-        laneCount += wtCount;
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  return {
-    rootPath: entry.rootPath,
-    displayName: entry.displayName,
-    lastOpenedAt: entry.lastOpenedAt,
-    exists: fs.existsSync(entry.rootPath),
-    laneCount,
-  };
 }
 
 type MemoryScope = "user" | "project" | "lane" | "mission";

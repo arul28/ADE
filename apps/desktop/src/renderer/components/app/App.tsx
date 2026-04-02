@@ -125,7 +125,7 @@ class PageErrorBoundaryInner extends React.Component<
 function PageErrorBoundary({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   return (
-    <PageErrorBoundaryInner onGoHome={() => navigate("/project")}>
+    <PageErrorBoundaryInner onGoHome={() => navigate("/work")}>
       {children}
     </PageErrorBoundaryInner>
   );
@@ -198,9 +198,9 @@ export function App() {
     <Router>
       <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
         <Routes>
-          <Route path="/startup" element={<Navigate to="/project" replace />} />
+          <Route path="/startup" element={<Navigate to="/work" replace />} />
           <Route element={<ShellLayout />}>
-            <Route path="/" element={<Navigate to="/project" replace />} />
+            <Route path="/" element={<Navigate to="/work" replace />} />
             <Route path="/project" element={guarded(<RunPage />)} />
             <Route path="/onboarding" element={guarded(<ProjectSetupPage />)} />
             <Route path="/lanes" element={guardedLazy(<LanesPage />)} />
@@ -213,7 +213,7 @@ export function App() {
             <Route path="/missions" element={guardedLazy(<MissionsPage />)} />
             <Route path="/cto" element={guardedLazy(<CtoPage />)} />
             <Route path="/settings" element={guardedLazy(<SettingsPage />)} />
-            <Route path="*" element={<Navigate to="/project" replace />} />
+            <Route path="*" element={<Navigate to="/work" replace />} />
           </Route>
         </Routes>
       </div>

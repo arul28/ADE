@@ -60,7 +60,7 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     laneFilter: "all",
     statusFilter: "all",
     search: "",
-    sessionListOrganization: "by-time",
+    sessionListOrganization: "all-lanes-by-status",
     workCollapsedLaneIds: [],
     workFocusSessionsHidden: false,
   };

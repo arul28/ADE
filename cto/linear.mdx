@@ -4,40 +4,193 @@ description: "Connect Linear for bidirectional issue sync — the CTO reads from
 icon: "arrow-right-arrow-left"
 ---
 
-## Linear Integration
+## How the CTO Uses Linear
 
-The CTO is the owner of ADE's bidirectional Linear integration. Connecting Linear unlocks a tight feedback loop between project management and development.
+The CTO is the owner of ADE's bidirectional Linear integration. Once connected, the CTO monitors your Linear workspace for issue changes, routes incoming issues to the right execution target (worker, mission, or PR convergence), and pushes updates back to Linear when work completes.
 
-### Connecting Linear
+This is not a simple webhook mirror — the CTO makes intelligent decisions about how to handle each issue based on configurable workflow definitions. It tracks issue state transitions, matches triggers against assignees/labels/priorities, and orchestrates the full lifecycle from intake to closeout.
+
+---
+
+## Connecting Linear
 
 <Steps>
   <Step title="Open CTO > Linear sub-tab">
-    Click the **Linear** sub-tab in the CTO tab.
+    Click the **Linear** sub-tab in the CTO tab from the sidebar.
   </Step>
   <Step title="Authenticate">
     Click **Connect Linear**. Choose between:
-    - **OAuth** (recommended) — authorizes ADE to access Linear on your behalf with scoped permissions
-    - **Personal Access Token** — paste a token from your Linear account settings
+    - **OAuth** (recommended) — authorizes ADE to access Linear on your behalf with scoped permissions. ADE stores the token securely using Electron's safeStorage.
+    - **Personal Access Token** — paste a token from your Linear account settings (`Settings > API > Personal API keys`)
   </Step>
-  <Step title="Select projects">
-    ADE discovers your Linear workspace and lists all accessible projects. Select the projects you want the CTO to monitor and sync.
+  <Step title="Select projects and teams">
+    ADE discovers your Linear workspace and lists accessible projects and teams. Select which ones the CTO should monitor. You can change this later without re-authenticating.
   </Step>
-  <Step title="Configure sync rules">
-    Set up workflow definitions: which Linear issue statuses map to which ADE actions (e.g., "In Progress" → spawn a worker, "In Review" → link the PR, "Done" → close the lane).
+  <Step title="Configure workflow definitions">
+    Set up workflow rules that map Linear events to ADE actions. Each workflow definition specifies:
+    - **Trigger conditions** — which issues match (assignee, labels, priority, team, state transitions)
+    - **Execution target** — what ADE does (launch a mission, start a worker session, open a PR convergence run)
+    - **Lane selection** — where the work happens (primary lane, fresh issue-specific lane, or operator-prompted)
+    - **Closeout policy** — what happens when the work completes (update issue state, add comments, apply labels)
   </Step>
 </Steps>
 
-### What the CTO can do with Linear
+---
 
-**Inbound (Linear → ADE)**:
-- Detect issues assigned to you or matching configured criteria and route them to missions or workers
-- React to status transitions (e.g., issue moved to "In Progress" → create a lane and start a worker)
-- Read issue descriptions, attachments, and comments as context for agent work
+## Workflow Definitions
 
-**Outbound (ADE → Linear)**:
-- Create new issues when the CTO identifies unreported work from code changes
-- Update issue status when PRs merge (e.g., move to "Done" automatically)
-- Add comments with agent analysis, PR links, and proof artifacts
-- Create sub-issues for discovered scope discovered during implementation
+A workflow definition is the core configuration unit for Linear integration. Each definition describes a complete automation pipeline: which issues to act on, how to process them, and what to do when they complete.
 
-<Note>Linear sync is owned entirely by the CTO. Automation rules that trigger on Linear events use the `linear-trigger` automation type (separate from the CTO's sync). The two systems are complementary: Automations handle simple event-response rules; the CTO handles stateful, intelligent Linear management.</Note>
+### Trigger Conditions
+
+Triggers filter which Linear issues a workflow applies to. You can combine multiple conditions — all must match for the workflow to fire.
+
+| Condition | Description |
+|-----------|-------------|
+| **Assignees** | Only issues assigned to specific users |
+| **Labels** | Only issues with specific Linear labels |
+| **Project slugs** | Only issues in specific Linear projects |
+| **Team keys** | Only issues belonging to specific teams |
+| **Priority** | Filter by priority level: urgent, high, normal, low, or none |
+| **State transitions** | Fire only when an issue moves between specific states (e.g., from "Backlog" to "In Progress") |
+| **Metadata tags** | Custom tags added by the CTO for internal routing |
+
+### Execution Targets
+
+When a workflow triggers, the CTO dispatches work to one of these targets:
+
+| Target | When to use |
+|--------|-------------|
+| **Mission** | Complex issues that need a structured plan, multiple steps, and validation |
+| **Employee session** | Issues where a single agent chat session can handle the work |
+| **Worker run** | Background worker execution managed by the CTO |
+| **PR resolution** | Issues that map directly to an existing PR that needs convergence work |
+| **Review gate** | Issues that need human review before the CTO proceeds |
+
+Each target can be configured with a worker selector (by ID, slug, or capability), model configuration, permission modes, and session templates.
+
+### Lane Selection
+
+| Mode | Behavior |
+|------|----------|
+| **Primary** | Work happens in the primary lane (the main checkout) |
+| **Fresh issue lane** | ADE creates a new lane specifically for this issue, branching from the default branch |
+| **Operator prompt** | The CTO asks the human operator which lane to use before starting |
+
+### PR Timing
+
+| Setting | Behavior |
+|---------|----------|
+| **None** | No PR is created automatically |
+| **After start** | A draft PR is opened as soon as the first commit lands |
+| **After target complete** | PR is opened only after the execution target reports success |
+
+### Closeout Policy
+
+When a workflow run completes (successfully or not), the closeout policy determines what happens in Linear:
+
+- **Success state** — move the issue to this Linear state (e.g., "Done")
+- **Failure state** — move the issue to this state on failure (e.g., "Blocked")
+- **Comments** — add a completion or failure comment with configurable templates
+- **Labels** — apply specific labels on completion
+- **Reopen on failure** — automatically reopen the issue if the workflow fails
+- **Artifact mode** — attach proof artifacts as Linear attachments or as links in comments
+
+---
+
+## Inbound Flow (Linear to ADE)
+
+When a Linear issue changes and matches a workflow trigger, the CTO processes it through a pipeline:
+
+<Steps>
+  <Step title="Intake">
+    The Linear sync service detects the issue change (new issue, state transition, assignment change). It normalizes the issue data and checks if it matches any enabled workflow.
+  </Step>
+  <Step title="Queue">
+    Matched issues enter a sync queue. The queue deduplicates rapid changes (e.g., multiple quick state updates) and batches processing for efficiency. Issues that are already being processed or have reached a terminal state are skipped.
+  </Step>
+  <Step title="Routing">
+    The CTO's routing service evaluates which workflow to apply, resolves the execution target and lane selection, and prepares the dispatch context.
+  </Step>
+  <Step title="Dispatch">
+    The dispatcher creates the execution target — starts a mission, opens a chat session, or launches a worker run. The issue's description, comments, and attachments are injected as context.
+  </Step>
+  <Step title="Tracking">
+    A workflow run is created with per-step status tracking. The CTO monitors the run and updates Linear as milestones are reached.
+  </Step>
+</Steps>
+
+### Reconciliation
+
+The sync service runs a periodic reconciliation loop (default: every 30 seconds) to catch any issues that were missed by event-based triggers. It compares the tracked issue state against Linear's current state and re-queues any discrepancies.
+
+---
+
+## Outbound Flow (ADE to Linear)
+
+The CTO pushes updates back to Linear through the outbound service:
+
+- **Issue state updates** — move issues to configured states when work completes or fails
+- **Workpad comments** — maintain a persistent "workpad" comment on each issue that the CTO updates with progress notes, PR links, and analysis results. The workpad uses content hashing to avoid duplicate updates.
+- **New sub-issues** — when the CTO discovers additional scope during implementation, it can create child issues in Linear
+- **Label management** — apply or remove labels based on workflow outcomes
+- **Proof artifacts** — attach mission artifacts, test reports, or screenshots as Linear attachments or comment links
+
+---
+
+## Sync Dashboard
+
+The Linear sub-tab in the CTO view shows a live sync dashboard with:
+
+- **Queue status** — how many issues are queued, processing, or completed
+- **Active workflow runs** — which issues have in-flight execution targets
+- **Recent sync events** — a timeline of all sync activity with issue IDs, event types, and outcomes
+- **Error log** — any sync failures with diagnostic details
+
+---
+
+## Linear vs. Automation Rules
+
+Both the CTO's Linear integration and Automation rules can react to Linear events. They serve different purposes:
+
+| Aspect | CTO Linear Integration | Automation Rules |
+|--------|----------------------|------------------|
+| **Intelligence** | Stateful — tracks issue lifecycle, makes routing decisions, manages workflow runs | Stateless — fires once per trigger, no memory of past events |
+| **Scope** | Full workflow from intake to closeout | Single action per trigger |
+| **Configuration** | Workflow definitions with triggers, targets, and closeout policies | Simple trigger-action pairs |
+| **Best for** | Ongoing issue management, complex routing, PR convergence | Simple notifications, one-shot tasks, scheduled checks |
+
+The two systems are complementary. Use automation rules for simple event-response patterns. Use the CTO's Linear integration for stateful, intelligent issue management.
+
+<Note>
+Automation rules that trigger on Linear events use the `linear.issue_created` or `linear.issue_updated` trigger types (separate from the CTO's sync). They do not conflict with the CTO's workflows — both can be active simultaneously.
+</Note>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Issues are not being picked up" icon="circle-question">
+    Check that: (1) the workflow is enabled, (2) the trigger conditions match the issue (assignee, labels, team, priority), and (3) the issue is not in a terminal state (completed, canceled). Review the sync dashboard's event log for diagnostic details.
+  </Accordion>
+  <Accordion title="OAuth token expired" icon="lock">
+    Re-authenticate from the Linear sub-tab. ADE stores tokens securely but cannot refresh expired OAuth tokens automatically in all cases. If re-auth fails, try disconnecting and reconnecting.
+  </Accordion>
+  <Accordion title="Duplicate comments on issues" icon="copy">
+    The outbound service uses content hashing to prevent duplicate workpad comments. If you see duplicates, check if multiple workflow runs are targeting the same issue simultaneously. The sync dashboard shows active runs per issue.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CTO-Linear Workflow Guide" icon="route" href="/guides/cto-linear-workflow">
+    Step-by-step guide for setting up a complete CTO-driven Linear workflow from issue creation to PR merge.
+  </Card>
+  <Card title="CTO Workers" icon="users" href="/cto/workers">
+    Learn how the CTO delegates execution to workers — the agents that do the actual coding work.
+  </Card>
+</CardGroup>

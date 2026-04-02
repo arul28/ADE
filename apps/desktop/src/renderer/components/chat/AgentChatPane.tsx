@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { AnimatePresence, motion } from "motion/react";
 import { GitBranch, Plus } from "@phosphor-icons/react";
 import {
   createDefaultComputerUsePolicy,
@@ -14,6 +15,7 @@ import {
   type AgentChatFileRef,
   type AgentChatInteractionMode,
   type AiProviderConnectionStatus,
+  type AgentChatSession,
   type AgentChatUnifiedPermissionMode,
   type AgentChatSessionProfile,
   type ChatSurfaceChip,
@@ -36,7 +38,6 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
-import { AgentQuestionModal } from "./AgentQuestionModal";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -534,7 +535,10 @@ export function AgentChatPane({
   permissionModeLocked = false,
   presentation,
   embeddedWorkLayout = false,
+  layoutVariant = "standard",
   onSessionCreated,
+  availableLanes,
+  onLaneChange,
 }: {
   laneId: string | null;
   laneLabel?: string | null;
@@ -550,7 +554,12 @@ export function AgentChatPane({
   presentation?: ChatSurfacePresentation;
   /** Work tab draft: flatter shell, no duplicate header chrome above the composer. */
   embeddedWorkLayout?: boolean;
-  onSessionCreated?: (sessionId: string) => void | Promise<void>;
+  layoutVariant?: "standard" | "grid-tile";
+  onSessionCreated?: (session: AgentChatSession) => void | Promise<void>;
+  /** Available lanes for the lane selector in empty state */
+  availableLanes?: Array<{ id: string; name: string; color?: string | null }>;
+  /** Callback when lane selection changes in empty state */
+  onLaneChange?: (laneId: string) => void;
 }) {
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
@@ -611,6 +620,10 @@ export function AgentChatPane({
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
+  const shellRef = useRef<HTMLElement | null>(null);
+  const [composerMaxHeightPx, setComposerMaxHeightPx] = useState<number | null>(null);
+  const composerMaxHeightPxRef = useRef<number | null>(null);
+  const sessionsRef = useRef<AgentChatSessionSummary[]>(sessions);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
@@ -652,6 +665,8 @@ export function AgentChatPane({
     return [...selectedEvents, optimisticOutgoingMessage.envelope];
   }, [optimisticOutgoingMessage, selectedEvents, selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
+  const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
+  const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const activeProviderConnection = selectedSession?.provider === "claude"
     ? (providerConnections?.claude ?? null)
@@ -660,7 +675,6 @@ export function AgentChatPane({
       : selectedSession?.provider === "cursor"
         ? (providerConnections?.cursor ?? null)
         : null;
-  const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
   const pendingApprovalIds = useMemo(() => {
     const ids = new Set<string>();
     for (const entry of pendingInputsBySession[selectedSessionId ?? ""] ?? []) {
@@ -673,6 +687,14 @@ export function AgentChatPane({
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
   const surfaceMode = presentation?.mode ?? "standard";
   const identitySessionSettingsBusy = isPersistentIdentitySurface && sessionMutationKind !== null;
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
+    composerMaxHeightPxRef.current = composerMaxHeightPx;
+  }, [composerMaxHeightPx]);
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
 
@@ -749,8 +771,7 @@ export function AgentChatPane({
     || (surfaceMode === "resolver" ? "AI Resolver" : selectedSession ? chatSessionTitle(selectedSession) : "New chat");
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
-  const messagePlaceholder = presentation?.messagePlaceholder?.trim()
-    || (assistantLabel === "Assistant" ? "Message the assistant..." : `Message ${assistantLabel}...`);
+  const messagePlaceholder = presentation?.messagePlaceholder?.trim() || "Type to vibecode...";
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
 
@@ -783,7 +804,7 @@ export function AgentChatPane({
       && !isPersistentIdentitySurface
       && (selectedSession.surface ?? "work") === "work",
   );
-  const handoffBlocked = turnActive || Boolean(pendingInput) || handoffBusy;
+  const handoffBlocked = turnActive || selectedSessionAwaitingInput || handoffBusy;
   const handoffButtonTitle = handoffBlocked
     ? "Wait for the current output or approval to finish before handing off this chat."
     : "Create a new work chat on another model and seed it with a summary of this chat.";
@@ -878,6 +899,17 @@ export function AgentChatPane({
     const rows = await window.ade.agentChat.list({ laneId });
     const nextRows = sortSessionSummariesByRecency(rows, localTouchBySessionRef.current);
     setSessions(nextRows);
+    setTurnActiveBySession((prev) => {
+      let next: Record<string, boolean> | null = null;
+      for (const row of nextRows) {
+        const shouldAppearRunning = row.status === "active" && row.awaitingInput !== true;
+        if ((prev[row.sessionId] ?? false) && !shouldAppearRunning) {
+          next ??= { ...prev };
+          next[row.sessionId] = false;
+        }
+      }
+      return next ?? prev;
+    });
     const nextSessionIds = new Set(nextRows.map((row) => row.sessionId));
     for (const sessionId of [...localTouchBySessionRef.current.keys()]) {
       if (!nextSessionIds.has(sessionId) && !optimisticSessionIdsRef.current.has(sessionId)) {
@@ -994,7 +1026,10 @@ export function AgentChatPane({
     }
   }, []);
 
-  const loadHistory = useCallback(async (sessionId: string) => {
+  const loadHistory = useCallback(async (sessionId: string, options?: { force?: boolean }) => {
+    if (options?.force) {
+      loadedHistoryRef.current.delete(sessionId);
+    }
     if (loadedHistoryRef.current.has(sessionId)) return;
     loadedHistoryRef.current.add(sessionId);
 
@@ -1027,15 +1062,18 @@ export function AgentChatPane({
       }
 
       const derived = deriveRuntimeState(merged);
+      const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
+        ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
+      const allowRunningFromSummary = sessionSummary?.status === "active" && sessionSummary.awaitingInput !== true;
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
-      setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: derived.turnActive }));
+      setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: allowRunningFromSummary ? derived.turnActive : false }));
       setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
       setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: derived.pendingSteers }));
     } catch {
       // Ignore transcript history failures.
     }
-  }, []);
+  }, [initialSessionSummary]);
 
   const clearSessionView = useCallback((sessionId: string) => {
     eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
@@ -1578,6 +1616,10 @@ export function AgentChatPane({
     setModelId(snapshot.nextModelId);
     setReasoningEffort(snapshot.nextReasoningEffort);
   }, []);
+  const notifySessionCreated = useCallback((session: AgentChatSession) => {
+    if (!onSessionCreated) return;
+    void Promise.resolve(onSessionCreated(session)).catch((err) => { console.error("notifySessionCreated failed:", err); });
+  }, [onSessionCreated]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -1611,11 +1653,8 @@ export function AgentChatPane({
           modelId,
         }).then(() => refreshSessions()).catch(() => { /* warmup is best-effort */ });
       }
-      // Await tab navigation and session-list refresh before returning so the
-      // caller doesn't send the first message while the user is still on the
-      // blank "new chat" screen.
-      await onSessionCreated?.(created.id);
-      await refreshSessions().catch(() => {});
+      notifySessionCreated(created);
+      void refreshSessions().catch(() => {});
       return created.id;
     })();
     createSessionPromiseRef.current = createPromise;
@@ -1626,7 +1665,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [buildNativeControlPayload, computerUsePolicy, laneId, modelId, onSessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, computerUsePolicy, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const handoffSession = useCallback(async () => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
@@ -1638,14 +1677,14 @@ export function AgentChatPane({
         targetModelId: handoffModelId,
       });
       setHandoffOpen(false);
-      await onSessionCreated?.(result.session.id);
+      notifySessionCreated(result.session);
       void refreshSessions().catch(() => {});
     } catch (handoffError) {
       setError(handoffError instanceof Error ? handoffError.message : String(handoffError));
     } finally {
       setHandoffBusy(false);
     }
-  }, [canShowHandoff, handoffBlocked, handoffModelId, onSessionCreated, refreshSessions, selectedSessionId]);
+  }, [canShowHandoff, handoffBlocked, handoffModelId, notifySessionCreated, refreshSessions, selectedSessionId]);
 
   // ── Eager session creation ──
   // Create a session as soon as we have a model + lane, so slash commands,
@@ -1952,6 +1991,26 @@ export function AgentChatPane({
     }
   }, [isPersistentIdentitySurface, patchSessionSummary, refreshComputerUseSnapshot, refreshSessions, selectedSessionId, sessionMutationKind]);
 
+  useEffect(() => {
+    if (layoutVariant !== "grid-tile") {
+      setComposerMaxHeightPx(null);
+      return;
+    }
+    const node = shellRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const next = Math.max(96, Math.min(168, Math.floor(entry.contentRect.height * 0.28)));
+      if (composerMaxHeightPxRef.current !== next) {
+        composerMaxHeightPxRef.current = next;
+        setComposerMaxHeightPx(next);
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [layoutVariant]);
+
   if (!laneId) {
     return (
       <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor}>
@@ -1962,6 +2021,29 @@ export function AgentChatPane({
     );
   }
   const draftAccent = selectedModelDesc?.color ?? "#A1A1AA";
+  const proofSessionId = selectedSessionId ?? "";
+  const proofPanelContent = (
+    <>
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
+        <span className="font-sans text-[12px] font-medium text-fg/80">Artifacts</span>
+        <button
+          type="button"
+          className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
+          onClick={() => setProofDrawerOpen(false)}
+          title="Close artifacts panel"
+        >
+          Close
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+        <ChatComputerUsePanel
+          sessionId={proofSessionId}
+          snapshot={computerUseSnapshot}
+          onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
+        />
+      </div>
+    </>
+  );
   const shellHeader = (
     <div className="space-y-2 px-4 py-2">
       {/* Clean single-row header */}
@@ -2024,6 +2106,7 @@ export function AgentChatPane({
                       value={handoffModelId}
                       onChange={setHandoffModelId}
                       availableModelIds={handoffAvailableModelIds}
+                      catalogMode="available-only"
                       showReasoning={false}
                       onOpenAiSettings={openAiProvidersSettings}
                     />
@@ -2071,9 +2154,19 @@ export function AgentChatPane({
             {sessions.map((session) => {
               const title = chatSessionTitle(session);
               const isActive = session.sessionId === selectedSessionId;
-              const isRunning = turnActiveBySession[session.sessionId] ?? false;
-              const sessionNeedsInput = Boolean(pendingInputsBySession[session.sessionId]?.length);
-              const sessionIndicatorStatus = sessionNeedsInput ? "waiting" : isRunning ? "working" : null;
+              const sessionNeedsInput = Boolean(pendingInputsBySession[session.sessionId]?.length) || session.awaitingInput === true;
+              const isRunning = !sessionNeedsInput && turnActiveBySession[session.sessionId] === true;
+              const sessionReadyForPrompt = !sessionNeedsInput && !isRunning && session.status === "idle";
+              const sessionIndicatorStatus = sessionNeedsInput || sessionReadyForPrompt
+                ? "waiting"
+                : isRunning
+                  ? "working"
+                  : null;
+              const sessionIndicatorLabel = sessionNeedsInput
+                ? "Waiting for your input"
+                : sessionReadyForPrompt
+                  ? "Ready for next prompt"
+                  : "Agent working";
               return (
                 <button
                   key={session.sessionId}
@@ -2106,8 +2199,8 @@ export function AgentChatPane({
                   ) : null}
                   {sessionIndicatorStatus ? (
                     <span
-                      aria-label={sessionIndicatorStatus === "working" ? "Agent working" : "Waiting for your input"}
-                      title={sessionIndicatorStatus === "working" ? "Agent working" : "Waiting for your input"}
+                      aria-label={sessionIndicatorLabel}
+                      title={sessionIndicatorLabel}
                       className="inline-flex h-3.5 w-3.5 items-center justify-center"
                     >
                       <ChatStatusGlyph status={sessionIndicatorStatus} size={11} />
@@ -2139,16 +2232,14 @@ export function AgentChatPane({
   );
 
   const embedDraft = embeddedWorkLayout && forceDraft;
-  return (
-    <>
-      <ChatSurfaceShell
-        mode={surfaceMode}
-        accentColor={presentation?.accentColor ?? draftAccent}
-        className={embedDraft ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
-        header={embedDraft ? undefined : shellHeader}
-        footer={
+  const compactShell = embedDraft || layoutVariant === "grid-tile";
+  const isEmptyState = !selectedSessionId;
+
+  const composerElement = (
           <AgentChatComposer
             surfaceMode={surfaceMode}
+            layoutVariant={layoutVariant}
+            composerMaxHeightPx={composerMaxHeightPx}
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}
@@ -2280,8 +2371,8 @@ export function AgentChatPane({
             onInterrupt={() => {
               void interrupt();
             }}
-            onApproval={(decision) => {
-              void approve(decision);
+            onApproval={(decision, responseText) => {
+              void approve(decision, responseText);
             }}
             onAddAttachment={addAttachment}
             onRemoveAttachment={removeAttachment}
@@ -2296,6 +2387,7 @@ export function AgentChatPane({
             promptSuggestion={promptSuggestion}
             subagentSnapshots={selectedSubagentSnapshots}
             chatHasMessages={selectedEventsForDisplay.some((env) => env.event.type === "user_message" || env.event.type === "text")}
+            restrictModelCatalogToAvailable={selectedEvents.length > 0}
             pendingSteers={pendingSteers}
             onCancelSteer={(steerId) => {
               if (selectedSessionId) {
@@ -2308,7 +2400,18 @@ export function AgentChatPane({
               }
             }}
           />
-        }
+  );
+
+  return (
+    <>
+      <ChatSurfaceShell
+        containerRef={shellRef}
+        mode={surfaceMode}
+        accentColor={presentation?.accentColor ?? draftAccent}
+        className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
+        header={compactShell ? undefined : shellHeader}
+        footer={isEmptyState ? undefined : composerElement}
+        footerClassName={compactShell ? "px-0 pb-0 pt-0" : undefined}
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {error ? (
@@ -2331,8 +2434,8 @@ export function AgentChatPane({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-hidden">
-          {loading ? (
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          {loading && !embedDraft && !selectedSessionId ? (
             <div className="flex h-full items-center justify-center">
               <div className="flex flex-col items-center gap-3">
                 <div className="flex items-center gap-1.5">
@@ -2343,104 +2446,134 @@ export function AgentChatPane({
                 <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/25">Loading sessions...</span>
               </div>
             </div>
-          ) : selectedSessionId ? (
-            <div className="flex h-full min-h-0 overflow-hidden">
-              {/* Chat column */}
-              <div className="flex min-h-0 min-w-[280px] flex-1 flex-col overflow-hidden">
-                <AgentChatMessageList
-                  key={selectedSessionId ?? "chat-draft"}
-                  events={selectedEventsForDisplay}
-                  showStreamingIndicator={turnActive}
-                  className="min-h-0 border-0"
-                  surfaceMode={surfaceMode}
-                  surfaceProfile={surfaceProfile}
-                  assistantLabel={assistantLabel}
-                  respondingApprovalIds={respondingApprovalIds}
-                  pendingApprovalIds={pendingApprovalIds}
-                  onApproval={(itemId, decision, responseText) => {
-                    void handleApproval(itemId, decision, responseText);
-                  }}
-                />
-                {sessionDelta ? (
-                  <div className="flex items-center gap-3 border-t border-white/[0.04] px-4 py-1.5 font-mono text-[11px]">
-                    <span className="text-emerald-400/70">+{sessionDelta.insertions}</span>
-                    <span className="text-red-400/70">-{sessionDelta.deletions}</span>
-                  </div>
-                ) : null}
-              </div>
-
-              {/* Proof panel (push) */}
-              {proofDrawerOpen ? (
-                <div className="flex h-full w-[40%] min-w-[280px] max-w-[480px] shrink-0 flex-col border-l border-white/[0.06] bg-surface/80">
-                  <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
-                    <span className="font-sans text-[12px] font-medium text-fg/80">Artifacts</span>
-                    <button
-                      type="button"
-                      className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
-                      onClick={() => setProofDrawerOpen(false)}
-                      title="Close artifacts panel"
-                    >
-                      Close
-                    </button>
-                  </div>
-                  <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
-                    <ChatComputerUsePanel
-                      sessionId={selectedSessionId}
-                      snapshot={computerUseSnapshot}
-                      onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
-                    />
-                  </div>
-                </div>
-              ) : null}
-            </div>
           ) : (
-            <div className="flex h-full flex-col items-center justify-center px-6">
-              <div className="flex flex-col items-center gap-4 text-center">
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: draftAccent }} />
-                  <span className="font-mono text-[10px] font-bold uppercase tracking-[2px] text-muted-fg/40">
-                    {laneDisplayLabel}
-                  </span>
-                </div>
-                <div className="font-sans text-[15px] font-medium tracking-tight text-fg/60">
-                  Start typing below
-                </div>
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  {[
-                    "Explain the project structure",
-                    "Review recent changes",
-                    "Plan the next feature",
-                    "Find bugs and propose fixes",
-                  ].map((prompt) => (
-                    <button
-                      key={prompt}
-                      type="button"
-                      className="rounded-[var(--chat-radius-pill)] border border-white/8 bg-black/10 px-3 py-2 text-left font-mono text-[10px] text-muted-fg/42 transition-colors hover:border-white/16 hover:text-fg/72"
-                      onClick={() => setDraft(prompt)}
+            <AnimatePresence mode="sync">
+              {selectedSessionId ? (
+                <motion.div
+                  key="chat-view"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.25, ease: "easeOut", delay: 0.15 }}
+                  className="absolute inset-0 flex min-h-0 overflow-hidden"
+                >
+                  {/* Chat column */}
+                  <div className={cn(
+                    "flex min-h-0 flex-1 flex-col overflow-hidden",
+                    layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
+                  )}>
+                    <AgentChatMessageList
+                      key={selectedSessionId ?? "chat-draft"}
+                      events={selectedEventsForDisplay}
+                      showStreamingIndicator={turnActive}
+                      className="min-h-0 border-0"
+                      surfaceMode={surfaceMode}
+                      surfaceProfile={surfaceProfile}
+                      assistantLabel={assistantLabel}
+                      respondingApprovalIds={respondingApprovalIds}
+                      pendingApprovalIds={pendingApprovalIds}
+                      onApproval={(itemId, decision, responseText, answers) => {
+                        void handleApproval(itemId, decision, responseText, answers);
+                      }}
+                    />
+                    {sessionDelta ? (
+                      <div className="flex items-center gap-3 border-t border-white/[0.04] px-4 py-1.5 font-mono text-[11px]">
+                        <span className="text-emerald-400/70">+{sessionDelta.insertions}</span>
+                        <span className="text-red-400/70">-{sessionDelta.deletions}</span>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {/* Proof panel (push) */}
+                  {proofDrawerOpen ? (
+                    layoutVariant === "grid-tile" ? (
+                      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
+                        {proofPanelContent}
+                      </div>
+                    ) : (
+                      <div className="flex h-full w-[40%] min-w-[280px] max-w-[480px] shrink-0 flex-col border-l border-white/[0.06] bg-surface/80">
+                        {proofPanelContent}
+                      </div>
+                    )
+                  ) : null}
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="empty-state"
+                  initial={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } }}
+                  className="absolute inset-0 flex flex-col items-center justify-center px-6"
+                >
+                  <div className="flex flex-col items-center text-center">
+                    {/* ADE logo with subtle glow */}
+                    <motion.div
+                      className="relative mb-5"
+                      exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                     >
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
+                      <div
+                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[400px] w-[400px] rounded-full pointer-events-none"
+                        style={{
+                          background: "var(--color-accent)",
+                          opacity: 0.08,
+                          filter: "blur(100px)",
+                        }}
+                      />
+                      <img
+                        src="./logo.png"
+                        alt="ADE"
+                        className="relative z-10 w-64 h-64 object-contain"
+                        style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
+                      />
+                    </motion.div>
+
+                    {/* Lane selector pill */}
+                    {availableLanes && availableLanes.length > 0 && onLaneChange ? (
+                      <motion.div
+                        className="mb-4"
+                        exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                      >
+                        <select
+                          aria-label="Select lane"
+                          value={laneId ?? ""}
+                          onChange={(e) => onLaneChange(e.target.value)}
+                          className="appearance-none rounded-full px-4 py-1.5 text-[11px] font-medium text-fg/70 outline-none transition-colors cursor-pointer"
+                          style={{
+                            background: "rgba(255,255,255,0.04)",
+                            border: "1px solid rgba(255,255,255,0.08)",
+                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.4)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
+                            backgroundRepeat: "no-repeat",
+                            backgroundPosition: "right 10px center",
+                            paddingRight: "28px",
+                          }}
+                        >
+                          {availableLanes.map((lane) => (
+                            <option key={lane.id} value={lane.id}>
+                              {lane.name}
+                            </option>
+                          ))}
+                        </select>
+                      </motion.div>
+                    ) : laneDisplayLabel ? (
+                      <motion.div
+                        className="mb-4 flex items-center gap-2 rounded-full px-4 py-1.5"
+                        style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+                        exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                      >
+                        <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: draftAccent }} />
+                        <span className="text-[11px] font-medium text-fg/60">{laneDisplayLabel}</span>
+                      </motion.div>
+                    ) : null}
+
+                    {/* Inline composer for empty state */}
+                    <div className="w-full max-w-[640px]">
+                      {composerElement}
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           )}
         </div>
       </ChatSurfaceShell>
-      {pendingInput && selectedSessionId && (pendingInput.request.kind === "question" || pendingInput.request.kind === "structured_question") ? (
-        <AgentQuestionModal
-          request={pendingInput.request}
-          onClose={() => {
-            void approve("cancel");
-          }}
-          onSubmit={({ answers, responseText }) => {
-            void approve("accept", responseText, answers);
-          }}
-          onDecline={() => {
-            void approve("decline");
-          }}
-        />
-      ) : null}
     </>
   );
 }

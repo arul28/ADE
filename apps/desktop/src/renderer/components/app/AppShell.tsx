@@ -148,12 +148,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
   const [aiMockProvider, setAiMockProvider] = useState<{ createdAt: string } | null>(null);
   const [aiStatus, setAiStatus] = useState<AiSettingsStatus | null>(null);
+  const [aiStatusLoaded, setAiStatusLoaded] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus | null>(null);
   const [onboardingStatusLoading, setOnboardingStatusLoading] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
   const [dismissedContextBannerRoots, setDismissedContextBannerRoots] = useState<Record<string, true>>({});
   const [projectMissing, setProjectMissing] = useState(false);
+  const previousProjectRootRef = useRef<string | null | undefined>(undefined);
   const isOnboardingRoute = location.pathname === "/onboarding";
   const shouldTrackTerminalAttention =
     Boolean(project?.rootPath)
@@ -349,13 +351,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [project?.rootPath]);
 
   useEffect(() => {
+    const previousProjectRoot = previousProjectRootRef.current;
+    const nextProjectRoot = project?.rootPath ?? null;
+    previousProjectRootRef.current = nextProjectRoot;
+
+    if (previousProjectRoot === undefined) return;
+    if (!nextProjectRoot || showWelcome) return;
+    if (location.pathname !== "/project") return;
+    if (previousProjectRoot === nextProjectRoot) return;
+    navigate("/work", { replace: true });
+  }, [location.pathname, navigate, project?.rootPath, showWelcome]);
+
+  useEffect(() => {
     let cancelled = false;
     if (!project?.rootPath) {
       setContextStatus(null);
       setAiStatus(null);
+      setAiStatusLoaded(false);
       setGithubStatus(null);
       return;
     }
+    setAiStatusLoaded(false);
     const timer = window.setTimeout(() => {
       void Promise.allSettled([
         window.ade.context.getStatus(),
@@ -366,6 +382,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         const [contextResult, aiResult, githubResult] = results;
         setContextStatus(contextResult.status === "fulfilled" ? contextResult.value : null);
         setAiStatus(aiResult.status === "fulfilled" ? aiResult.value : null);
+        setAiStatusLoaded(true);
         setGithubStatus(githubResult.status === "fulfilled" ? githubResult.value : null);
       });
     }, 1_000);
@@ -603,7 +620,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar && project?.rootPath && !showWelcome && !hasAnyAiProvider ? (
+      {!hideSidebar && project?.rootPath && !showWelcome && aiStatusLoaded && aiStatus !== null && !hasAnyAiProvider ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           No AI provider is configured yet. <Link to="/settings?tab=ai" className="underline">Set up AI</Link>
         </div>

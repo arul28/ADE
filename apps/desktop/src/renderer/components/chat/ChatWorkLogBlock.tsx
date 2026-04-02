@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   CaretDown,
   CaretRight,
@@ -14,15 +14,16 @@ import {
   readRecord,
   summarizeDiffStats,
   summarizeInlineText,
+  type ChatWorkLogGroupEvent,
   type ChatWorkLogEntry,
   type ChatWorkLogFileChange,
 } from "./chatTranscriptRows";
 import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
-import { ChatStatusGlyph, chatStatusTextClass } from "./chatStatusVisuals";
-import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
+import { ChatStatusGlyph, chatStatusTextClass, type ChatStatusVisualState } from "./chatStatusVisuals";
+import { replaceInternalToolNames } from "./toolPresentation";
 
-const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
+const MAX_VISIBLE_WORK_LOG_ENTRIES = 4;
 const RECESSED_BLOCK_CLASS =
   "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09090b] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
 
@@ -126,35 +127,62 @@ function workToneIcon(entry: ChatWorkLogEntry): { icon: Icon; className: string 
   return { icon: Warning, className: "text-fg/34" };
 }
 
-function workStatusState(status: ChatWorkLogEntry["status"]): "working" | "completed" | "failed" {
+function workStatusState(status: ChatWorkLogEntry["status"]): ChatStatusVisualState {
   if (status === "completed" || status === "failed") return status;
+  if (status === "interrupted") return "waiting";
   return "working";
 }
 
 function workStatusLabel(status: ChatWorkLogEntry["status"]): string {
-  switch (status) {
-    case "completed":
-      return "completed";
-    case "failed":
-      return "failed";
-    default:
-      return "running";
-  }
+  if (status === "completed" || status === "failed" || status === "interrupted") return status;
+  return "running";
 }
 
 function workEntryHeading(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "tool" && entry.toolName) {
     const meta = getToolMeta(entry.toolName);
-    const toolDisplay = describeToolIdentifier(entry.toolName);
     const args = readRecord(entry.args) ?? {};
     const targetLine = meta.getTarget ? meta.getTarget(args) : null;
-    if (targetLine) return `${meta.label} ${targetLine}`.trim();
-    if (toolDisplay.secondaryLabel) return `${meta.label} ${toolDisplay.secondaryLabel}`.trim();
-    return meta.label;
+
+    if (meta.label === "Shell") {
+      return targetLine ? `Run ${summarizeInlineText(targetLine, 72)}` : "Run shell";
+    }
+    if (meta.label === "Read") {
+      return targetLine ? `Read ${basenamePathLabel(targetLine)}` : "Read files";
+    }
+    if (meta.label === "Search") {
+      return meta.category === "web"
+        ? "Search web"
+        : targetLine ? `Search ${summarizeInlineText(targetLine, 72)}` : "Search";
+    }
+    if (meta.label === "Find Files") {
+      return targetLine ? `Find ${summarizeInlineText(targetLine, 72)}` : "Find files";
+    }
+    if (meta.label === "List Files" || meta.label === "List") {
+      return targetLine ? `List ${summarizeInlineText(targetLine, 72)}` : "List files";
+    }
+    if (meta.label === "Write") {
+      return targetLine ? `Write ${basenamePathLabel(targetLine)}` : "Write file";
+    }
+    if (meta.label === "Edit" || meta.label === "Multi Edit" || meta.label === "Patch") {
+      return targetLine ? `Edit ${basenamePathLabel(targetLine)}` : "Edit files";
+    }
+    if (meta.label === "Plan") {
+      return "Update plan";
+    }
+    if (meta.label === "Plan Approval") {
+      return "Review plan";
+    }
+    if (meta.label === "Memory" || meta.label === "Core Memory" || meta.label === "Memory Add" || meta.label === "Memory Pin") {
+      return "Update memory";
+    }
+
+    return targetLine ? `${meta.label} ${summarizeInlineText(targetLine, 72)}`.trim() : meta.label;
   }
 
   if (entry.entryKind === "command") {
-    return "Shell";
+    const cmdText = summarizeInlineText(entry.command ?? "", 72);
+    return cmdText.length > 0 ? `Run ${cmdText}` : "Run shell";
   }
 
   if (entry.entryKind === "file_change") {
@@ -166,7 +194,7 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
   }
 
   if (entry.entryKind === "web_search") {
-    return "Web search";
+    return "Search web";
   }
 
   return entry.label;
@@ -174,7 +202,8 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
 
 function workEntryPreview(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "command") {
-    return summarizeInlineText(entry.command ?? "", 110);
+    const cmdText = summarizeInlineText(entry.command ?? "", 110);
+    return cmdText.length > 0 ? cmdText : "Run shell";
   }
 
   if (entry.entryKind === "file_change") {
@@ -192,10 +221,25 @@ function workEntryPreview(entry: ChatWorkLogEntry): string {
   }
 
   if (entry.entryKind === "web_search") {
-    return summarizeInlineText(entry.query ?? "", 110);
+    const queryText = summarizeInlineText(entry.query ?? "", 110);
+    return queryText.length > 0 ? queryText : "Search web";
   }
 
   if (entry.entryKind === "tool") {
+    if (entry.toolName) {
+      const meta = getToolMeta(entry.toolName);
+      if (meta.label === "Shell") {
+        const args = readRecord(entry.args);
+        const shellCmd = summarizeInlineText(typeof args?.command === "string" ? args.command : "", 110);
+        return shellCmd.length > 0 ? shellCmd : "Run shell";
+      }
+      if (meta.label === "Search" && meta.category === "web") return "Search web";
+    }
+    const resultRecord = readRecord(entry.result);
+    const resultSummary = typeof resultRecord?.summary === "string" ? resultRecord.summary.trim() : "";
+    if (resultSummary.length > 0) {
+      return summarizeInlineText(resultSummary, 110);
+    }
     if (typeof entry.result === "string" && entry.result.trim().length > 0) {
       return summarizeInlineText(entry.result, 110);
     }
@@ -209,6 +253,53 @@ function workEntryPreview(entry: ChatWorkLogEntry): string {
   }
 
   return summarizeInlineText(entry.detail ?? "", 110);
+}
+
+function workGroupSummaryLabel(entry: ChatWorkLogEntry): string {
+  if (entry.entryKind === "command") return "ran shell";
+  if (entry.entryKind === "file_change") {
+    const firstFile = entry.changedFiles?.[0];
+    if (firstFile?.kind === "create") return "created files";
+    if (firstFile?.kind === "delete") return "deleted files";
+    return "edited files";
+  }
+  if (entry.entryKind === "web_search") return "searched web";
+  if (entry.entryKind === "tool" && entry.toolName) {
+    const meta = getToolMeta(entry.toolName);
+    if (meta.label === "Shell") return "ran shell";
+    if (meta.label === "Read" || meta.label === "List Files" || meta.label === "List" || meta.label === "Find Files") return "read files";
+    if (meta.label === "Search") return "searched";
+    if (meta.label === "Write" || meta.label === "Edit" || meta.label === "Multi Edit" || meta.label === "Patch") return "edited files";
+    if (meta.label === "Plan") return "updated plan";
+    if (meta.label === "Plan Approval") return "reviewed plan";
+    if (meta.label === "Memory" || meta.label === "Core Memory" || meta.label === "Memory Add" || meta.label === "Memory Pin") return "updated memory";
+    return summarizeInlineText(replaceInternalToolNames(meta.label).toLowerCase(), 32);
+  }
+  return summarizeInlineText(replaceInternalToolNames(entry.label).toLowerCase(), 32);
+}
+
+function buildWorkGroupSummary({
+  summary,
+  entries,
+}: {
+  summary?: string;
+  entries: ChatWorkLogEntry[];
+}): string {
+  const cleanedSummary = replaceInternalToolNames(summary?.trim() ?? "");
+  if (cleanedSummary.length > 0) return cleanedSummary;
+
+  const latestEntries = entries.slice(Math.max(0, entries.length - MAX_VISIBLE_WORK_LOG_ENTRIES));
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of latestEntries) {
+    const label = workGroupSummaryLabel(entry);
+    if (!label.length || seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+  }
+  if (labels.length === 0) return "Recent agent activity";
+  const summaryText = labels.slice(0, 3).join(", ");
+  return `${summaryText.charAt(0).toUpperCase()}${summaryText.slice(1)}`;
 }
 
 function WorkLogEntryDetail({
@@ -351,23 +442,23 @@ function WorkLogEntryDetail({
 
 export function ChatWorkLogBlock({
   entries,
+  summary,
   className,
   onNavigateSuggestion,
 }: {
   entries: ChatWorkLogEntry[];
+  summary?: ChatWorkLogGroupEvent["summary"];
   className?: string;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
 }) {
   const [expandedGroup, setExpandedGroup] = useState(false);
   const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({});
-  const reversedEntries = [...entries].reverse();
   const hasOverflow = entries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
   const visibleEntries = hasOverflow && !expandedGroup
-    ? reversedEntries.slice(0, MAX_VISIBLE_WORK_LOG_ENTRIES)
-    : reversedEntries;
+    ? entries.slice(Math.max(0, entries.length - MAX_VISIBLE_WORK_LOG_ENTRIES))
+    : entries;
   const hiddenCount = entries.length - visibleEntries.length;
-  const onlyToolEntries = entries.every((entry) => entry.entryKind === "tool");
-  const groupLabel = onlyToolEntries ? "Tool calls" : "Work log";
+  const groupSummary = useMemo(() => buildWorkGroupSummary({ summary, entries }), [entries, summary]);
 
   const toggleEntry = (entryId: string) => {
     setExpandedEntries((current) => ({
@@ -377,54 +468,67 @@ export function ChatWorkLogBlock({
   };
 
   return (
-    <div className={cn("rounded-xl border border-white/[0.06] bg-[#111317]/70 px-2 py-1.5", className)}>
-      <div className="mb-1.5 flex items-center justify-between gap-2 px-0.5">
-        <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/55">
-          {groupLabel} ({entries.length})
-        </p>
-        {hasOverflow ? (
-          <button
-            type="button"
-            className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/55 transition-colors duration-150 hover:text-fg/75"
-            onClick={() => setExpandedGroup((current) => !current)}
-          >
-            {expandedGroup ? "Show less" : `Show ${hiddenCount} more`}
-          </button>
-        ) : null}
+    <div className={cn("rounded-2xl border border-white/[0.06] bg-[#111317]/78 px-3 py-3", className)}>
+      <div className="mb-2.5 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/50">
+            Activity
+          </p>
+          <p className="mt-1 text-[13px] leading-5 text-fg/82">
+            {groupSummary}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg/46">
+            {entries.length} step{entries.length === 1 ? "" : "s"}
+          </span>
+          {hasOverflow ? (
+            <button
+              type="button"
+              className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/55 transition-colors duration-150 hover:text-fg/75"
+              onClick={() => setExpandedGroup((current) => !current)}
+            >
+              {expandedGroup ? "Show fewer" : `Show ${hiddenCount} earlier`}
+            </button>
+          ) : null}
+        </div>
       </div>
 
-      <div className="space-y-1">
+      <div className="space-y-1.5">
         {visibleEntries.map((entry) => {
           const { icon: EntryIcon, className: iconClassName } = workToneIcon(entry);
           const hasSuggestions = readNavigationSuggestions(entry.result).length > 0;
           const isExpanded = (expandedEntries[entry.id] ?? hasSuggestions) || entry.status === "failed";
-          const heading = workEntryHeading(entry);
+          const heading = replaceInternalToolNames(workEntryHeading(entry));
           const preview = workEntryPreview(entry);
           const statusLabel = workStatusLabel(entry.status);
 
           return (
-            <div key={entry.id} className="rounded-lg border border-white/[0.04] bg-black/15">
+            <div key={entry.id} className="rounded-xl border border-white/[0.05] bg-black/15">
               <button
                 type="button"
-                className="flex w-full items-center gap-2 px-2.5 py-2 text-left"
+                className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left"
                 onClick={() => toggleEntry(entry.id)}
               >
                 {isExpanded ? (
-                  <CaretDown size={10} weight="bold" className="text-fg/30" />
+                  <CaretDown size={10} weight="bold" className="mt-1 text-fg/30" />
                 ) : (
-                  <CaretRight size={10} weight="bold" className="text-fg/30" />
+                  <CaretRight size={10} weight="bold" className="mt-1 text-fg/30" />
                 )}
-                <span className="inline-flex h-3 w-3 items-center justify-center">
+                <span className="mt-0.5 inline-flex h-3 w-3 items-center justify-center">
                   <ChatStatusGlyph status={workStatusState(entry.status)} size={11} />
                 </span>
-                <EntryIcon size={12} weight="regular" className={iconClassName} />
+                <EntryIcon size={12} weight="regular" className={cn("mt-0.5", iconClassName)} />
                 <div className="min-w-0 flex-1 overflow-hidden">
-                  <p className="truncate font-mono text-[11px] leading-5 text-fg/78">
-                    {preview.length ? `${heading} - ${preview}` : heading}
-                  </p>
+                  <p className="truncate text-[12px] leading-5 text-fg/80">{heading}</p>
+                  {preview.length > 0 && preview !== heading ? (
+                    <p className="truncate font-mono text-[10px] leading-4 text-fg/42">
+                      {replaceInternalToolNames(preview)}
+                    </p>
+                  ) : null}
                 </div>
                 <span className={cn(
-                  "shrink-0 font-mono text-[9px] uppercase tracking-[0.12em]",
+                  "mt-0.5 shrink-0 font-mono text-[9px] uppercase tracking-[0.12em]",
                   chatStatusTextClass(workStatusState(entry.status)),
                 )}>
                   {statusLabel}

@@ -7302,10 +7302,19 @@ export function createOrchestratorService({
           if (sessionId && managedLaunch && agentChatService) {
             void (async () => {
               try {
+                const rawTimeoutMs = step.metadata?.timeoutMs;
+                const parsedTimeoutMs = Number(rawTimeoutMs);
+                const managedTurnTimeoutMs =
+                  rawTimeoutMs === null || parsedTimeoutMs === 0
+                    ? null
+                    : Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0
+                      ? Math.max(1_000, Math.floor(parsedTimeoutMs))
+                      : runtimeConfig.stepTimeoutDefaultMs;
                 await agentChatService.runSessionTurn({
                   sessionId,
                   text: managedLaunch.prompt,
                   displayText: managedLaunch.displayText,
+                  timeoutMs: managedTurnTimeoutMs,
                   ...(managedLaunch.reasoningEffort ? { reasoningEffort: managedLaunch.reasoningEffort } : {}),
                   ...(managedLaunch.executionMode ? { executionMode: managedLaunch.executionMode } : {}),
                 });

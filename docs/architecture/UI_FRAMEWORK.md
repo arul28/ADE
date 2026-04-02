@@ -2,8 +2,6 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-31
-
 This document describes the renderer architecture in `apps/desktop/src/renderer`, including routing, theme system, state model, layout patterns, and IPC integration constraints.
 
 ---
@@ -161,7 +159,7 @@ ADE uses multiple layout systems depending on surface complexity:
 - `PaneTilingLayout`: recursive pane trees for high-density workspaces
 - `SplitPane` / resizable panels: 2-pane and 3-pane structured views
 - Floating pane primitives for modular lane/conflict/terminal sub-surfaces
-- **Work view session grid** (`WorkViewArea`): CSS Grid with `auto-fill` and `minmax` for fluid responsive session card layout that adapts to viewport width without fixed breakpoints. The session list sidebar supports two organization modes: flat status-grouped ("all-lanes-by-status") and lane-folder-grouped ("by-lane") with collapsible lane sections and a `LaneCombobox` for lane filtering
+- **Work view session grid**: `WorkViewArea` uses `PackedSessionGrid` for all multi-session views — resizable tiles with per-session column/row spans and a bin-packing algorithm (`packedSessionGridMath.ts`) for compact layout. Each tile receives `layoutVariant` and `terminalVisible` props so terminals in background tiles skip unnecessary fit operations. The session list sidebar supports two organization modes: flat status-grouped ("all-lanes-by-status") and lane-folder-grouped ("by-lane") with collapsible lane sections and a `LaneCombobox` for lane filtering
 
 Layout state persistence is backed by IPC calls into local SQLite (`layout`, `tilingTree`, `graphState` domains).
 
@@ -177,7 +175,7 @@ Renderer components are feature-grouped under `apps/desktop/src/renderer/compone
 - `project/`: Play tab and run/test/process controls
 - `lanes/`: lane list/detail/inspector, stack workflows, design tokens (`laneDesignTokens.ts`)
 - `files/`: workspace browser/editor
-- `terminals/`: global terminal/session surfaces
+- `terminals/`: global terminal/session surfaces (`TerminalView`, `PackedSessionGrid`, `WorkViewArea`, `WorkStartSurface`, `packedSessionGridMath.ts`)
 - `conflicts/`: risk, merge simulation, resolution workflows
 - `context/`: shared context helpers used by Settings context/docs surfaces (`contextShared.ts`)
 - `packs/`: pack visualization
@@ -346,6 +344,8 @@ Renderer architecture is fully operational for the current desktop scope:
 - Mission chat is split by channel purpose: Global is the high-signal summary/broadcast view, while orchestrator and worker threads reuse the shared agent chat message renderer for detailed structured event/tool/thinking display.
 - Context doc banner is dismissible per project per session.
 - Work tab session sidebar supports two organization modes (flat status-grouped and lane-folder-grouped) with collapsible lane sections and sidebar-toggle focus mode.
+- Work view uses packed session grid as the default multi-session layout, with bin-packing placement, per-session span persistence, and visibility-aware terminal fit management.
+- `UnifiedModelSelector` supports `catalogMode` (`"all"` | `"available-only"`) to filter the model registry to only models available via configured providers.
 - Commit timeline scrolls to the bottom (newest commits) on initial load.
 - PR convergence panel with issue inventory, round-based convergence progress, embedded agent chat, and pipeline settings.
 

@@ -4,7 +4,6 @@ local.secret.yaml
 ade.db
 ade.db-*
 ade.db-wal
-*.bak
 embeddings.db
 mcp.sock
 artifacts/

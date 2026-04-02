@@ -1,14 +1,12 @@
 import {
   ArrowUpRight,
   BookOpen,
-  Bot,
   Download,
   Github,
   GitMerge,
   Layers,
   MonitorCheck,
   Package,
-  Play,
   Workflow,
   Zap,
 } from "lucide-react";
@@ -21,8 +19,9 @@ import { Page } from "../../components/Page";
 import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
-import { HeroVisual } from "../../components/ui/HeroVisual";
+import { ImageAutoSlider } from "../../components/ui/ImageAutoSlider";
 import { ProductShowcase } from "../../components/ProductShowcase";
+import { ProviderOrbit } from "../../components/ProviderOrbit";
 
 /* ──────────────────────────────────────────────
    Competitor apps that ADE replaces
@@ -45,44 +44,40 @@ const COMPETITORS = [
 
 const ALSO_BUILT_IN = [
   {
-    icon: Bot,
-    label: "CTO agent",
-    detail: "A long-lived lead for architecture and decisions, with memory and team workflows.",
-  },
-  {
     icon: Workflow,
     label: "Missions",
     detail: "Coordinated multi-step runs with visibility across phases — planning, testing, and PRs.",
+    docsPath: "/missions/overview",
   },
   {
     icon: Package,
     label: "Unified memory",
     detail: "Vector-indexed memory across projects and agents so work compounds instead of resetting.",
+    docsPath: "/cto/memory",
   },
   {
     icon: Zap,
     label: "Automations",
     detail: "Event-driven agents on git events, PR activity, or schedules — with guardrails while you are away.",
+    docsPath: "/automations/overview",
   },
   {
     icon: GitMerge,
     label: "Merge conflicts",
     detail: "Resolve conflicts with side-by-side diffs and a focused flow so you can land merges in one place.",
+    docsPath: "/tools/conflicts",
   },
   {
     icon: MonitorCheck,
     label: "Computer use",
     detail: "Screenshot-based verification of agent output when you need proof, not just prose.",
+    docsPath: "/computer-use/overview",
   },
   {
     icon: Layers,
     label: "35+ MCP tools",
     detail: "Built-in server for file ops, git, search, and more — desktop and headless paths.",
-  },
-  {
-    icon: Play,
-    label: "Process monitor",
-    detail: "Track every terminal command agents spawn and inspect output in one timeline.",
+    docsPath: "/configuration/mcp-servers",
   },
 ] as const;
 
@@ -210,7 +205,7 @@ export function HomePage() {
 
           {/* Headline */}
           <Reveal delay={0.14}>
-            <h1 className="mt-4 mx-auto max-w-4xl text-3xl font-bold tracking-tight text-fg sm:text-4xl lg:text-5xl leading-[1.15]">
+            <h1 className="mt-4 mx-auto max-w-4xl text-4xl font-bold tracking-tight text-fg sm:text-5xl lg:text-6xl leading-[1.15]">
               Every AI coding tool.{" "}
               <span className="bg-gradient-to-r from-violet-400 via-accent to-indigo-400 bg-clip-text text-transparent animate-gradient-text">
                 One app.
@@ -220,10 +215,9 @@ export function HomePage() {
 
           {/* Subtitle */}
           <Reveal delay={0.18}>
-            <p className="mx-auto mt-2.5 max-w-2xl text-sm leading-relaxed text-muted-fg sm:text-base">
-              ADE replaces your scattered AI coding tools with a single local-first desktop app.
-              Agent chat, parallel missions, git isolation, memory, automations — everything on
-              your machine.
+            <p className="mx-auto mt-3 max-w-2xl text-base leading-relaxed text-muted-fg sm:text-lg">
+              ADE replaces all your AI tools with a single Agentic Development Environment.
+              Use your existing subscriptions, API keys, or even local models. Fully Open Source!
             </p>
           </Reveal>
 
@@ -249,7 +243,7 @@ export function HomePage() {
           {/* Hero app visual */}
           <Reveal delay={0.26} className="overflow-visible">
             <div className="relative left-1/2 mt-5 w-screen max-w-[100vw] -translate-x-1/2 sm:mt-6 lg:mt-7">
-              <HeroVisual />
+              <ImageAutoSlider />
             </div>
           </Reveal>
         </Container>
@@ -257,25 +251,38 @@ export function HomePage() {
 
       <ProductShowcase />
 
+      <ProviderOrbit />
+
       {/* ── MORE CAPABILITIES ─────────────────── */}
       <section className="border-y border-border/70 bg-card/20 py-16 sm:py-20">
         <Container>
           <Reveal>
             <h2 className="text-2xl font-bold tracking-tight text-fg sm:text-3xl">Also built in</h2>
             <p className="mt-2 max-w-2xl text-sm text-muted-fg sm:text-base">
-              Everything below ships in the same app; the gallery above highlights the visuals we are showcasing on
-              the site right now.
+              More capabilities that ship in the same app — no plugins or extensions required.
             </p>
           </Reveal>
 
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {ALSO_BUILT_IN.map((cap, idx) => (
               <Reveal key={cap.label} delay={idx * 0.03}>
-                <div className="rounded-xl border border-border/70 bg-card/40 p-5 transition-colors hover:bg-card/60">
-                  <cap.icon className="h-5 w-5 text-accent" />
-                  <div className="mt-3 text-sm font-semibold text-fg">{cap.label}</div>
-                  <div className="mt-1 text-sm text-muted-fg">{cap.detail}</div>
-                </div>
+                <a
+                  href={`https://www.ade-app.dev/docs${cap.docsPath}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="group flex flex-col rounded-xl border border-border/70 bg-card/40 p-5 transition-all duration-200 hover:bg-card/60 hover:border-accent/30 hover:shadow-[0_0_30px_rgba(124,58,237,0.08)]"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
+                      <cap.icon className="h-4.5 w-4.5" />
+                    </div>
+                    <div className="text-sm font-semibold text-fg">{cap.label}</div>
+                  </div>
+                  <div className="mt-3 flex-1 text-sm leading-relaxed text-muted-fg">{cap.detail}</div>
+                  <div className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent/70 transition-colors group-hover:text-accent">
+                    Read docs <ArrowUpRight className="h-3 w-3" />
+                  </div>
+                </a>
               </Reveal>
             ))}
           </div>

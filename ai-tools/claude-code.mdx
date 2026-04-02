@@ -1,6 +1,6 @@
 ---
 title: "Claude Code"
-description: "Use Claude Code as a CLI coding agent inside ADE lanes."
+description: "Use Claude Code as a CLI coding agent inside ADE lanes — launch sessions, connect MCP tools, configure permissions, and track work across agent chat, missions, and CTO delegations."
 icon: "terminal"
 ---
 
@@ -8,45 +8,105 @@ icon: "terminal"
 
 ADE integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Anthropic's CLI agent for coding tasks. When Claude Code is installed on your machine, ADE can launch it as a managed session inside any lane.
 
+Claude Code is one of ADE's deepest integrations — it serves as both a chat provider (for Agent Chat) and an execution backend (for missions, CTO workers, and automations). ADE manages the Claude Code process lifecycle, injects MCP tools, forwards environment variables, and tracks every session in the History view.
+
+---
+
 ## Requirements
 
-- Claude Code installed (`npm install -g @anthropic-ai/claude-code`)
-- An active Anthropic API key or Claude subscription
+| Requirement | Details |
+|------------|---------|
+| **Claude Code installed** | `npm install -g @anthropic-ai/claude-code` |
+| **Authentication** | An active Anthropic API key or Claude subscription. ADE probes the Claude Code runtime at startup to verify authentication. If auth fails, the AI settings indicator shows amber with instructions. |
 
-## How ADE uses Claude Code
+ADE auto-detects the Claude Code executable from standard paths and PATH. If detection fails, check **Settings > AI Providers** for the status and diagnostic message.
 
-ADE launches Claude Code as a subprocess inside a lane's worktree. The session inherits the lane's environment variables, working directory, and port assignments.
+---
+
+## How ADE Uses Claude Code
+
+ADE launches Claude Code as a subprocess inside a lane's worktree. The session inherits the lane's environment variables, working directory, port assignments, and MCP tool configuration.
 
 Claude Code sessions are used in several places:
 
-- **Agent Chat** -- when you select Claude Code as the executor in a lane chat session
-- **Missions** -- as a worker executor (`claude_cli`) during mission execution phases
-- **CTO workers** -- when the CTO delegates a task to an employee agent using Claude Code
-- **Automations** -- as the execution backend for automation rules
+| Surface | How Claude Code is used |
+|---------|------------------------|
+| **Agent Chat** | Select Claude as the provider in the model selector. ADE starts a Claude Code session with MCP tools bridged in. |
+| **Missions** | Used as a worker executor (`claude_cli`) during mission execution phases. Each worker gets its own Claude Code process. |
+| **CTO Workers** | When the CTO delegates a task to an employee agent, it can use Claude Code as the execution backend. |
+| **Automations** | Automation rules with `agent-session` execution kind can use Claude Code as the underlying agent. |
+
+---
 
 ## Launching Claude Code from ADE
 
 <Steps>
   <Step title="Open a lane">
-    Navigate to the lane where you want to run Claude Code.
+    Navigate to the lane where you want to run Claude Code. The agent will work in this lane's worktree.
   </Step>
   <Step title="Open the Run tab">
     Click the **Run** tab or use the AI tool launcher in Project Home.
   </Step>
   <Step title="Launch Claude Code">
-    Click the **Claude Code** launcher. ADE starts a managed session with the lane's context pack injected as initial context.
+    Click the **Claude Code** launcher. ADE starts a managed session with:
+    - The lane's context pack injected as initial context
+    - MCP tools from ADE's server available to the agent
+    - Environment variables from the lane's overlay applied
+    - The working directory set to the lane's worktree path
   </Step>
 </Steps>
 
-## Permission modes
+---
+
+## MCP Tool Bridging
+
+When ADE launches Claude Code, it bridges ADE's MCP tools into the Claude Code session. This means the Claude Code agent can use ADE-specific tools (file operations, git operations, PR management, lane management) alongside its built-in capabilities.
+
+ADE runs a pre-session **MCP initialize probe** to verify that the MCP server is reachable before starting the Claude Code session. If the probe fails, ADE reports the error in the chat UI instead of starting a broken session.
+
+---
+
+## Permission Modes
 
 ADE supports several permission modes for Claude Code sessions:
 
 | Mode | Behavior |
 |------|----------|
-| `default` | Standard Claude Code permissions |
-| `plan` | Planning only, no file writes |
-| `acceptEdits` | Auto-accept file edits |
-| `bypassPermissions` | Skip all permission prompts |
+| `default` | Standard Claude Code permissions — the agent asks before making changes |
+| `plan` | Planning only — the agent can read files and reason but cannot write or execute |
+| `acceptEdits` | Auto-accept file edits — the agent can write files without asking, but still asks for terminal commands |
+| `bypassPermissions` | Skip all permission prompts — full autonomy. Use with caution. |
 
-Configure the default permission mode in **Settings > AI Providers** or per-mission in the mission creation dialog.
+Configure the default permission mode in **Settings > AI Providers** or per-mission in the mission creation dialog. For CTO-delegated workers, the CTO sets the permission mode based on the task's risk level.
+
+---
+
+## Connection Status
+
+ADE shows Claude Code's connection status in **Settings > AI Providers**:
+
+| Status | Meaning |
+|--------|---------|
+| **Ready** (green) | Claude Code executable found, authenticated, and runtime probe passed |
+| **Auth failed** (amber) | Claude Code is installed but not authenticated. Run `claude auth login` in a terminal or use `/login` in chat. |
+| **Not found** (gray) | Claude Code CLI not detected. Install it with `npm install -g @anthropic-ai/claude-code`. |
+| **Runtime failed** (red) | Claude Code is installed but the runtime probe failed. Check ADE's developer logs for details. |
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Claude Code not detected" icon="circle-question">
+    ADE checks standard installation paths and PATH for the Claude Code executable. If installed in a non-standard location, ensure `claude` is available in your PATH. Verify with `which claude` in a terminal.
+  </Accordion>
+  <Accordion title="Authentication errors in chat" icon="lock">
+    Run `claude auth login` in a terminal outside ADE, then restart ADE or click **Refresh** in Settings > AI Providers. ADE caches the runtime probe result for 30 seconds, so the status updates shortly after re-authentication.
+  </Accordion>
+  <Accordion title="MCP tools not available to the agent" icon="plug">
+    Check that the MCP initialize probe passed (visible in the chat session's startup messages). If the probe failed, verify that ADE's MCP server is running — check **Settings > MCP** for server status.
+  </Accordion>
+  <Accordion title="Session hangs or times out" icon="clock">
+    The runtime probe has a 20-second timeout. If your network is slow or the Anthropic API is under load, the probe may fail. Check your internet connection and try again. If sessions consistently hang, check the developer logs for detailed error information.
+  </Accordion>
+</AccordionGroup>

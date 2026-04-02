@@ -371,6 +371,52 @@ describe("chatTranscriptRows", () => {
     expect(grouped[0]!.event.entries[0]!.status).toBe("failed");
     expect(grouped[0]!.event.entries[0]!.result).toEqual({ error: "permission denied" });
   });
+
+  it("absorbs tool_use_summary into the preceding work log group", () => {
+    const grouped = groupEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "tool_call",
+          tool: "functions.exec_command",
+          args: { cmd: "pwd" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "tool_result",
+          tool: "functions.exec_command",
+          result: { stdout: "/tmp/project" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "tool_use_summary",
+          summary: "Checked the current working directory",
+          toolUseIds: ["tool-1"],
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]!.event.type).toBe("work_log_group");
+    if (grouped[0]!.event.type !== "work_log_group") {
+      throw new Error("Expected a work log group");
+    }
+    expect(grouped[0]!.event.summary).toBe("Checked the current working directory");
+    expect(grouped[0]!.event.toolUseIds).toEqual(["tool-1"]);
+  });
 });
 
 describe("summarizeInlineText", () => {

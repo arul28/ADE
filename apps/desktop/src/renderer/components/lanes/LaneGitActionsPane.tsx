@@ -1917,6 +1917,7 @@ export function LaneGitActionsPane({
                           });
                           if (confirmation == null) throw new Error("__ade_cancelled__");
                           await window.ade.git.stashClear({ laneId });
+                          await refreshGitMeta(laneId);
                         });
                       }}
                     >
@@ -1982,6 +1983,7 @@ export function LaneGitActionsPane({
                             if (!laneId) return;
                             void runAction("stash pop", async () => {
                               await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
+                              await refreshGitMeta(laneId);
                             });
                           }}
                         >
@@ -2010,6 +2012,7 @@ export function LaneGitActionsPane({
                             if (!laneId) return;
                             void runAction("stash drop", async () => {
                               await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
+                              await refreshGitMeta(laneId);
                             });
                           }}
                         >

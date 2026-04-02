@@ -96,15 +96,65 @@ const CTO_MEMORY_OPERATING_MODEL = [
   "- Distill important session context before compaction removes detail, but persist only durable insights.",
 ].join("\n");
 
+const CTO_ENVIRONMENT_KNOWLEDGE = [
+  "ADE environment glossary:",
+  "- Lane: a git worktree with its own branch, directory, processes, and chat sessions. Lanes isolate parallel work streams. Tools: listLanes, inspectLane, createLane, deleteLane.",
+  "- Native ADE chat: a persistent chat session in the ADE UI with streaming, tool approval, and full service integration. Created with spawnChat. NOT a terminal.",
+  "- PTY terminal: a shell terminal session (may run any CLI command). Created with createTerminal. Indirect tool access, no ADE service integration.",
+  "- Mission: a structured task unit with runs, steps, and workers. Can be launched, steered, paused, and observed. Tools: startMission, launchMissionRun, steerMission, getMissionStatus.",
+  "- Worker: a named agent instance (engineer, QA, researcher) that runs in a lane executing missions or tasks. Tools: listWorkers, createWorker, wakeWorker, getWorkerStatus.",
+  "- Convergence: ADE's PR merge pipeline with automated validation, issue detection, and iterative resolution rounds. Tools: getPullRequestConvergence, startPullRequestConvergenceRound.",
+  "- Conflict resolution: ADE can predict, simulate, propose, and apply merge conflict resolutions. Tools: getConflictStatus, simulateMerge, requestConflictProposal, applyConflictProposal.",
+  "",
+  "Critical distinction — chats vs terminals:",
+  "- To launch a native ADE chat session: call spawnChat({ laneId?, title?, initialPrompt? }) directly. Do NOT use ToolSearch to find it — just call it. This creates a full ADE work chat with UI, streaming, tool approval, and supervision.",
+  "- To open a terminal: call createTerminal({ laneId, title?, startupCommand? }) directly.",
+  "- spawn_agent is an MCP tool for Claude CLI subprocesses in tracked terminals. It is NOT the same as spawnChat. Never use spawn_agent when the user asks for 'a chat' or 'a new session'.",
+  "",
+  "Tool calling convention:",
+  "- ADE tools are available as MCP tools. When you see them in your tool list, they may be prefixed (e.g., mcp__ade__spawnChat). Call them directly by name — do not search for them with ToolSearch.",
+  "- If a tool from the manifest below is not in your immediate tool list, it may still be available. Try calling it directly before concluding it does not exist.",
+  "",
+  "Task routing:",
+  "- 'Start a chat' or 'launch an agent' → spawnChat with an initialPrompt describing the task.",
+  "- 'Check PR status' → getPullRequestStatus or getPullRequestConvergence.",
+  "- 'Start work on [feature]' → create/find a lane, then spawnChat or startMission.",
+  "- 'Open a terminal' → createTerminal.",
+  "- 'Commit and push' → gitCommit then gitPush.",
+  "- 'Check for conflicts' → getConflictStatus or getConflictRiskMatrix.",
+  "- 'Resolve merge conflicts' → getConflictStatus, requestConflictProposal, applyConflictProposal.",
+  "- 'Steer an active agent' → steerChat({ sessionId, instruction }).",
+  "- 'How is the project doing?' → getProjectHealthSummary.",
+  "- 'What happened recently?' → getRecentEvents.",
+  "- 'Review browser screenshots' → listComputerUseArtifacts, getArtifactPreview, reviewArtifact.",
+  "- 'How much are we spending?' → getProjectBudgetStatus or getWorkerCostBreakdown.",
+  "- 'Review this PR's code' → getPullRequestDiff, then approvePullRequest or requestPrChanges.",
+].join("\n");
+
+// Keep in sync with ctoOperatorTools.ts tool registrations
 const CTO_CAPABILITY_MANIFEST = [
-  "ADE operator capability manifest:",
-  "- Work chats: create, list, inspect, read transcripts, send follow-ups, interrupt, and end supervised sessions through ADE services.",
-  "- Lanes: list, inspect, create, and archive lanes, then hand back explicit navigation suggestions for opening them in ADE.",
-  "- Missions: create, inspect, launch, steer, read logs, export context, and route work into mission execution without exposing raw coordinator internals.",
-  "- Run / processes: inspect managed lane processes, start them, stop them, and read bounded log tails through ADE's process service.",
-  "- Pull requests and GitHub: inspect PR state, create PRs from lanes, update PR metadata, and post review-facing comments through stable PR services.",
-  "- Files and context: enumerate workspaces, read files, search text, and export bounded ADE context packs for project, lane, mission, conflict, plan, and feature scopes.",
-  "- Workers and Linear: supervise worker agents, trigger wakeups, inspect workflow runs, and route Linear issues into CTO, mission, or worker paths.",
+  "ADE operator tools (complete list):",
+  "- Lanes: listLanes, inspectLane, createLane, deleteLane",
+  "- Chats: listChats, spawnChat, sendChatMessage, interruptChat, resumeChat, endChat, getChatStatus, getChatTranscript",
+  "- Chat steering: steerChat, cancelSteer, handoffChat, listSubagents, approveToolUse",
+  "- Missions: listMissions, startMission, getMissionStatus, updateMission, launchMissionRun, resolveMissionIntervention, getMissionRunView, getMissionLogs, listMissionWorkerDigests, steerMission",
+  "- Workers: listWorkers, createWorker, updateWorker, removeWorker, updateWorkerStatus, wakeWorker, getWorkerStatus",
+  "- Git: gitStatus, gitCommit, gitPush, gitPull, gitFetch, gitListRecentCommits, gitListBranches, gitCheckoutBranch, gitStashPush, gitStashPop, gitStashList, gitGetConflictState, gitRebaseContinue, gitRebaseAbort, gitMergeAbort",
+  "- PRs: listPullRequests, getPullRequestStatus, commentOnPullRequest, updatePullRequestTitle, updatePullRequestBody, createPrFromLane, landPullRequest, closePullRequest, requestPrReviewers, getPullRequestDiff, approvePullRequest, requestPrChanges",
+  "- Convergence: getPullRequestConvergence, updatePullRequestConvergencePipeline, updatePullRequestConvergenceRuntime, startPullRequestConvergenceRound, stopPullRequestConvergence",
+  "- Conflicts: getConflictStatus, getConflictRiskMatrix, simulateMerge, runConflictPrediction, listConflictProposals, requestConflictProposal, applyConflictProposal, undoConflictProposal",
+  "- Files: listFileWorkspaces, readWorkspaceFile, searchWorkspaceText",
+  "- Context: getContextStatus, generateContextDocs",
+  "- Processes: listManagedProcesses, startManagedProcess, stopManagedProcess, getManagedProcessLog",
+  "- Tests: listTestSuites, runTests, stopTestRun, listTestRuns, getTestLog",
+  "- Terminals: createTerminal",
+  "- Linear: listLinearWorkflows, getLinearRunStatus, resolveLinearRunAction, cancelLinearRun, commentOnLinearIssue, updateLinearIssueState, routeLinearIssueToCto, routeLinearIssueToMission, routeLinearIssueToWorker, rerouteLinearRun, listLinearIssues, getLinearIssue, updateLinearIssueAssignee, addLinearIssueLabel",
+  "- Automations: listAutomations, triggerAutomation, listAutomationRuns",
+  "- Events: getRecentEvents",
+  "- Project health: getProjectHealthSummary",
+  "- Computer use: listComputerUseArtifacts, getArtifactPreview, reviewArtifact",
+  "- Budget: getProjectBudgetStatus, getWorkerCostBreakdown",
+  "- Memory: memorySearch, memoryAdd, memoryUpdateCore, memoryPin, memoryDelete",
   "",
   "Operating rules:",
   "- Internal ADE actions run through service-backed tools even when no renderer click occurs.",
@@ -978,6 +1028,9 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     sections.push("- Layer 4 — searchable durable project memory. Use memorySearch before non-trivial work and memoryAdd for reusable decisions, conventions, patterns, gotchas, and stable preferences.");
     sections.push("- Memory write policy: use memoryUpdateCore for standing brief changes, use memoryAdd for durable reusable lessons, and skip ephemeral status notes.");
     sections.push("");
+    sections.push("ADE Operational Knowledge");
+    sections.push(CTO_ENVIRONMENT_KNOWLEDGE);
+    sections.push("");
     sections.push("CTO Identity");
     sections.push(`- Name: ${snapshot.identity.name}`);
     sections.push(`- Persona: ${snapshot.identity.persona}`);
@@ -1088,8 +1141,13 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         content: CTO_MEMORY_OPERATING_MODEL,
       },
       {
+        id: "knowledge",
+        title: "ADE environment knowledge",
+        content: CTO_ENVIRONMENT_KNOWLEDGE,
+      },
+      {
         id: "capabilities",
-        title: "ADE operator capability manifest",
+        title: "ADE operator tools",
         content: CTO_CAPABILITY_MANIFEST,
       },
     ];

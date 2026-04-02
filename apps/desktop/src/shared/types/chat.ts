@@ -155,7 +155,7 @@ export type AgentChatEvent =
       logicalItemId?: string;
       parentItemId?: string;
       turnId?: string;
-      status?: "running" | "completed" | "failed";
+      status?: "running" | "completed" | "failed" | "interrupted";
     }
   | {
       type: "file_change";
@@ -200,6 +200,12 @@ export type AgentChatEvent =
       description: string;
       turnId?: string;
       detail?: unknown;
+    }
+  | {
+      type: "pending_input_resolved";
+      itemId: string;
+      resolution: "accepted" | "declined" | "cancelled";
+      turnId?: string;
     }
   | {
       type: "status";
@@ -408,6 +414,8 @@ export type PendingInputOption = {
   value: string;
   description?: string;
   recommended?: boolean;
+  preview?: string;
+  previewFormat?: "markdown" | "html";
 };
 
 export type PendingInputQuestion = {
@@ -415,6 +423,7 @@ export type PendingInputQuestion = {
   header?: string;
   question: string;
   options?: PendingInputOption[] | null;
+  multiSelect?: boolean;
   allowsFreeform?: boolean;
   isSecret?: boolean;
   defaultAssumption?: string | null;

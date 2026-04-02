@@ -260,38 +260,54 @@ describe("authDetector", () => {
   it("finds codex through an npm-global prefix when PATH lookup fails", async () => {
     tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-auth-detector-"));
     const prefixDir = path.join(tempHomeDir, ".npm-global");
+    const preferredCodexPath = path.join(prefixDir, "bin", "codex");
     fs.mkdirSync(path.join(prefixDir, "bin"), { recursive: true });
     fs.writeFileSync(path.join(tempHomeDir, ".npmrc"), "prefix=~/.npm-global\n", "utf8");
-    fs.writeFileSync(path.join(prefixDir, "bin", "codex"), "#!/bin/sh\nexit 0\n", "utf8");
-    fs.chmodSync(path.join(prefixDir, "bin", "codex"), 0o755);
+    fs.writeFileSync(preferredCodexPath, "#!/bin/sh\nexit 0\n", "utf8");
+    fs.chmodSync(preferredCodexPath, 0o755);
     process.env.HOME = tempHomeDir;
     process.env.PATH = "/usr/bin:/bin";
 
-    spawnMock.mockImplementation((command: string, args: string[] = []) => {
-      if (args[0] === "--version") {
-        if (command === "codex") return fakeError();
-        if (command === path.join(prefixDir, "bin", "codex")) return fakeChild({ status: 0, stdout: "0.105.0\n" });
-        return fakeError();
+    const realStatSync = fs.statSync.bind(fs);
+    const statSpy = vi.spyOn(fs, "statSync").mockImplementation(((candidatePath: fs.PathLike, options?: fs.StatOptions) => {
+      const resolved = String(candidatePath);
+      if (resolved.endsWith("/codex") && resolved !== preferredCodexPath) {
+        const error = new Error(`ENOENT: no such file or directory, stat '${resolved}'`) as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
       }
-      if (command === "which") {
+      return realStatSync(candidatePath, options as fs.StatOptions | undefined);
+    }) as typeof fs.statSync);
+
+    try {
+      spawnMock.mockImplementation((command: string, args: string[] = []) => {
+        if (args[0] === "--version") {
+          if (command === "codex") return fakeError();
+          if (command === preferredCodexPath) return fakeChild({ status: 0, stdout: "0.105.0\n" });
+          return fakeError();
+        }
+        if (command === "which") {
+          return fakeChild({ status: 1 });
+        }
+        if ((command === "codex" || command.endsWith("/codex")) && args[0] === "login" && args[1] === "status") {
+          return fakeChild({ status: 0, stdout: "Authenticated as test-user\n" });
+        }
         return fakeChild({ status: 1 });
-      }
-      if ((command === "codex" || command.endsWith("/codex")) && args[0] === "login" && args[1] === "status") {
-        return fakeChild({ status: 0, stdout: "Authenticated as test-user\n" });
-      }
-      return fakeChild({ status: 1 });
-    });
+      });
 
-    const statuses = await detectCliAuthStatuses();
-    const codex = statuses.find((entry) => entry.cli === "codex");
+      const statuses = await detectCliAuthStatuses();
+      const codex = statuses.find((entry) => entry.cli === "codex");
 
-    expect(codex).toEqual({
-      cli: "codex",
-      installed: true,
-      path: path.join(prefixDir, "bin", "codex"),
-      authenticated: true,
-      verified: true,
-    });
+      expect(codex).toEqual({
+        cli: "codex",
+        installed: true,
+        path: preferredCodexPath,
+        authenticated: true,
+        verified: true,
+      });
+    } finally {
+      statSpy.mockRestore();
+    }
   });
 
   it("repairs PATH from the interactive shell during a forced refresh", async () => {

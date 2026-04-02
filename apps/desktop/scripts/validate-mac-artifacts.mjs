@@ -226,6 +226,23 @@ async function validatePackagedRuntime(appPath, description) {
   if (!payload?.proxyProbe?.ok) {
     throw new Error("[release:mac] Packaged smoke failed to launch the bundled ADE MCP proxy in probe mode");
   }
+  // Do not rely on probe mode alone here. The regression we fixed still let
+  // the packaged proxy start, but chat MCP failed once Claude/Codex attempted
+  // the first initialize handshake through that launch path.
+  if (!payload?.proxyInitialize?.ok) {
+    throw new Error(
+      `[release:mac] Packaged smoke failed to complete MCP initialize through the bundled ADE proxy: ${
+        String(payload?.proxyInitialize?.error || payload?.proxyInitialize?.stderr || "unknown error")
+      }`
+    );
+  }
+  if (payload?.proxyInitialize?.response?.result?.serverInfo?.name !== "ade-mcp-server") {
+    throw new Error(
+      `[release:mac] Packaged smoke expected ADE MCP initialize to report ade-mcp-server, got ${
+        JSON.stringify(payload?.proxyInitialize?.response ?? null)
+      }`
+    );
+  }
 
   console.log(`[release:mac] Packaged runtime smoke passed for ${description}: ${path.relative(appPath, nodePtyAddon)}`);
 }

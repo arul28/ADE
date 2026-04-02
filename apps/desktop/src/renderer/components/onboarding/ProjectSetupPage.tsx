@@ -208,7 +208,7 @@ export function ProjectSetupPage() {
         const next = await window.ade.onboarding.complete();
         setStatus(next);
         publishOnboardingStatusUpdated(next);
-        navigate("/project", { replace: true });
+        navigate("/work", { replace: true });
       } finally {
         setBusy(false);
       }
@@ -228,7 +228,7 @@ export function ProjectSetupPage() {
       const next = await window.ade.onboarding.setDismissed(true);
       setStatus(next);
       publishOnboardingStatusUpdated(next);
-      navigate("/project", { replace: true });
+      navigate("/work", { replace: true });
     } finally {
       setBusy(false);
     }

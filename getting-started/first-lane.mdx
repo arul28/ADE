@@ -1,34 +1,119 @@
 ---
 title: "Create your first lane"
-description: "Start your first isolated worktree so AI tasks do not run in the primary checkout."
+description: "Start your first isolated worktree so AI tasks do not run in the primary checkout — step-by-step walkthrough with naming tips, environment setup, and verification."
 icon: "code-branch"
 ---
 
 ## Why lanes matter
 
-A lane is ADE's unit of parallel work. Each lane maps to its own Git worktree and branch state, so separate tasks do not collide immediately.
+A lane is ADE's unit of parallel work. Each lane maps to its own Git worktree and branch state, so separate tasks never collide. When you create a lane, ADE:
+
+- Runs `git worktree add` to create a physically separate copy of your repo
+- Allocates a unique port so dev servers in different lanes do not conflict
+- Generates an initial Lane Pack — the context bundle every agent in this lane will receive
+- Registers the lane in ADE's tracking system for conflict detection, status monitoring, and PR linking
+
+Without lanes, every agent would write to the same working directory simultaneously. Lanes make parallel development safe by default.
+
+<Note>
+The **Primary Lane** is your main repository checkout. It always exists and cannot be deleted. For agent-driven work, create a Worktree Lane — this keeps the primary checkout clean and lets you work manually without interference.
+</Note>
+
+---
 
 ## Create a lane
 
 <Steps>
   <Step title="Open the Lanes view">
-    Use the **Lanes** view from the sidebar.
+    Click the **Lanes** icon (branch icon) in the left sidebar, or press `Cmd+Shift+L` to jump directly to the new lane dialog.
   </Step>
-  <Step title="Create a new lane">
-    Click **New Lane** and choose a name plus a base branch.
+  <Step title="Click New Lane">
+    Click the **+ New Lane** button at the top of the lane list. The creation dialog opens.
   </Step>
-  <Step title="Wait for the worktree">
-    ADE creates the worktree, registers it, and marks it ready once the checkout is usable.
+  <Step title="Choose a name">
+    Enter a short, task-oriented name. ADE uses this as both the lane identifier and the worktree directory name.
+
+    Good names describe the work:
+    - `add-health-endpoint`
+    - `fix-auth-redirect`
+    - `refactor-payment-api`
+
+    Avoid generic names like `test` or `feature-1` — they become confusing when you have several lanes open at once.
+  </Step>
+  <Step title="Select a base branch">
+    Choose which branch this lane branches from. For your first lane, select your project's default branch (usually `main` or `develop`).
+
+    For stacked work, you would select another lane's branch as the base. See [Stacked Lanes](/lanes/stacks) for details.
+  </Step>
+  <Step title="Configure the environment (optional)">
+    Expand the **Advanced** section to set:
+    - **Environment variable overlays** — key-value pairs applied only in this lane (e.g., `DATABASE_URL` pointing to a test database)
+    - **Startup command** — a command ADE runs when the lane initializes (e.g., `npm run dev`)
+    - **Port offset** — override the auto-assigned port if needed
+
+    For your first lane, the defaults are fine. You can change these later in the lane's environment settings.
+  </Step>
+  <Step title="Create the lane">
+    Click **Create Lane**. ADE will:
+    1. Run `git worktree add` to create the isolated directory under `.ade/worktrees/<lane-name>/`
+    2. Initialize the lane environment (port lease, env overlay)
+    3. Generate an initial Lane Pack from the branch state
+    4. Add the lane to the list with `idle` status
+
+    This takes 2-5 seconds for most repositories.
   </Step>
 </Steps>
 
+---
+
+## Verify the lane is ready
+
+Once created, your new lane appears in the lane list with a grey dot (`idle` status). Confirm:
+
+- The lane name and branch are correct in the list
+- Click the lane to select it — the center pane shows the lane detail with a clean diff (no changes yet)
+- The right inspector's **Packs** sub-tab shows a freshly generated Lane Pack
+
+You are now ready to [run your first agent](/getting-started/first-agent) in this lane.
+
+---
+
 ## Naming guidance
 
-- Use a short task-oriented name
-- Match your Git branch conventions when they matter
-- Prefer one lane per feature, fix, or experiment
+| Convention | Example | When to use |
+|-----------|---------|-------------|
+| Feature prefix | `feature/user-preferences` | Following git-flow or similar branch conventions |
+| Task-oriented | `add-health-endpoint` | Quick, descriptive — works well for most tasks |
+| Issue-linked | `linear/ENG-142` | When the CTO creates lanes from Linear issues |
+| Hotfix | `hotfix/auth-redirect` | Urgent fixes that need fast-tracked review |
 
 <Tip>
-If you are unsure, start from your project's default branch and let ADE create a fresh feature lane from there.
+Prefer one lane per feature, fix, or experiment. If a task grows beyond what you expected, split it into stacked lanes rather than making one lane do too much. Narrow lanes have fewer conflicts and are easier to review.
 </Tip>
 
+---
+
+## What happens under the hood
+
+When you create a lane, ADE executes these steps in sequence:
+
+1. **`git worktree add .ade/worktrees/<name> -b <branch> <base>`** — creates the worktree
+2. **Port lease** — reserves a unique port from the configured range (default: 3001-3099)
+3. **Environment overlay** — merges your project `.env` with any lane-specific overrides
+4. **Lane Pack generation** — an AI-synthesized context bundle capturing the lane's intent, touched files, and diff summary
+5. **Registry update** — the lane is added to ADE's local database with full metadata
+
+The worktree directory is fully self-contained. An agent working in this lane sees exactly the files on its branch, with no interleaving from other branches.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Run your first agent" icon="robot" href="/getting-started/first-agent">
+    Use Agent Chat for a quick task or launch a Mission for structured execution.
+  </Card>
+  <Card title="Lanes deep dive" icon="code-branch" href="/lanes/overview">
+    Learn about lane types, status indicators, the 3-pane layout, and health monitoring.
+  </Card>
+</CardGroup>

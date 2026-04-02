@@ -30,6 +30,28 @@ vi.mock("../../lib/terminalAttention", () => ({
 }));
 
 vi.mock("../../lib/sessions", () => ({
+  buildOptimisticChatSessionSummary: vi.fn((args: { session: { id: string; laneId: string }; laneName?: string | null }) => ({
+    id: args.session.id,
+    laneId: args.session.laneId,
+    laneName: args.laneName ?? args.session.laneId,
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    goal: null,
+    toolType: "claude-chat",
+    title: "Claude chat",
+    status: "running",
+    startedAt: "2026-04-01T12:00:00.000Z",
+    endedAt: null,
+    exitCode: null,
+    transcriptPath: "",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: null,
+    summary: null,
+    runtimeState: "idle",
+    resumeCommand: null,
+  })),
   isRunOwnedSession: vi.fn(() => false),
   isChatToolType: vi.fn(() => false),
 }));
@@ -164,5 +186,42 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(openTabIdx).toBeGreaterThanOrEqual(0);
     expect(refreshDoneIdx).toBeLessThan(focusIdx);
     expect(refreshDoneIdx).toBeLessThan(openTabIdx);
+  });
+
+  it("showDraftKind: clears the active session and re-enters chat draft mode without closing tabs", () => {
+    const previousState = {
+      openItemIds: ["session-1", "session-2"],
+      activeItemId: "session-2",
+      selectedItemId: "session-2",
+      viewMode: "grid",
+      draftKind: "shell",
+      laneFilter: "lane-1",
+      statusFilter: "running",
+      search: "alpha",
+      sessionListOrganization: "by-time",
+      workCollapsedLaneIds: ["lane-1"],
+      workFocusSessionsHidden: true,
+    };
+    let nextState: typeof previousState | null = null;
+
+    setWorkViewStateSpy.mockImplementation(
+      (_projectRoot: string, next: ((prev: typeof previousState) => typeof previousState) | Partial<typeof previousState>) => {
+        nextState = typeof next === "function" ? next(previousState) : { ...previousState, ...next };
+      },
+    );
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    act(() => {
+      result.current.showDraftKind("chat");
+    });
+
+    expect(nextState).toEqual({
+      ...previousState,
+      activeItemId: null,
+      selectedItemId: null,
+      viewMode: "tabs",
+      draftKind: "chat",
+    });
   });
 });

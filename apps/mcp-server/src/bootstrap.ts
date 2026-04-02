@@ -208,7 +208,10 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
   await laneService.ensurePrimaryLane();
 
   const sessionService = createSessionService({ db });
-  sessionService.reconcileStaleRunningSessions({ status: "disposed" });
+  sessionService.reconcileStaleRunningSessions({
+    status: "disposed",
+    excludeToolTypes: ["claude-chat", "codex-chat", "ai-chat", "cursor"],
+  });
 
   const projectConfigService = createProjectConfigService({
     projectRoot,

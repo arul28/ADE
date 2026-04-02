@@ -50,7 +50,7 @@ export const SessionCard = React.memo(function SessionCard({
   const dot = sessionStatusDot(session);
   const canResume = session.status !== "running" && Boolean(session.resumeCommand);
   const isEnded = session.status !== "running";
-  const delta = useSessionDelta(session.id, isEnded);
+  const delta = useSessionDelta(session.id, true);
   const primaryText = primarySessionLabel(session);
   const secondaryText = truncateSummary(secondarySessionLabel(session), 20);
 

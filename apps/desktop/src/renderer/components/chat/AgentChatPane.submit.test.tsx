@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import {
   createDefaultComputerUsePolicy,
   type AgentChatEventEnvelope,
+  type AgentChatSession,
   type AgentChatSessionSummary,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -37,6 +38,24 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     computerUse: createDefaultComputerUsePolicy(),
     executionMode: "focused",
     interactionMode: null,
+    ...overrides,
+  };
+}
+
+function buildCreatedSession(sessionId: string, overrides: Partial<AgentChatSession> = {}): AgentChatSession {
+  return {
+    id: sessionId,
+    laneId: "lane-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    modelId: "openai/gpt-5.4-codex",
+    status: "idle",
+    sessionProfile: "workflow",
+    reasoningEffort: "xhigh",
+    executionMode: "focused",
+    computerUse: createDefaultComputerUsePolicy(),
+    createdAt: "2026-03-24T05:57:45.700Z",
+    lastActivityAt: "2026-03-24T05:57:45.700Z",
     ...overrides,
   };
 }
@@ -76,7 +95,7 @@ function installAdeMocks(options?: {
   sendError?: Error;
   steerError?: Error;
   listError?: Error;
-  handoffResult?: { session: { id: string }; usedFallbackSummary: boolean };
+  handoffResult?: { session: AgentChatSession; usedFallbackSummary: boolean };
   sessions?: AgentChatSessionSummary[];
   includeClaudeModel?: boolean;
 }) {
@@ -90,9 +109,10 @@ function installAdeMocks(options?: {
     ? vi.fn().mockRejectedValue(options.listError)
     : vi.fn().mockResolvedValue(options?.sessions ?? [buildSession("session-1")]);
   const handoff = vi.fn().mockResolvedValue(options?.handoffResult ?? {
-    session: { id: "handoff-session-1" },
+    session: buildCreatedSession("handoff-session-1"),
     usedFallbackSummary: false,
   });
+  const create = vi.fn().mockResolvedValue(buildCreatedSession("created-session"));
   const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
 
   globalThis.window.ade = {
@@ -134,7 +154,7 @@ function installAdeMocks(options?: {
       respondToInput: vi.fn().mockResolvedValue(undefined),
       warmupModel: vi.fn().mockResolvedValue(undefined),
       fileSearch: vi.fn().mockResolvedValue([]),
-      create: vi.fn().mockResolvedValue({ id: "created-session" }),
+      create,
       dispose: vi.fn().mockResolvedValue(undefined),
     },
     sessions: {
@@ -158,6 +178,7 @@ function installAdeMocks(options?: {
     send,
     steer,
     list,
+    create,
     handoff,
     emitChatEvent: (event: AgentChatEventEnvelope) => {
       for (const listener of chatEventListeners) {
@@ -255,6 +276,38 @@ describe("AgentChatPane submit recovery", () => {
     renderTabbedPane(session);
 
     expect(await screen.findByLabelText("Waiting for your input")).toBeTruthy();
+  });
+
+  it("falls back to the session summary when a chat is awaiting input", async () => {
+    const session = buildSession("session-1", {
+      status: "active",
+      awaitingInput: true,
+    });
+    installAdeMocks({
+      sessions: [session],
+    });
+
+    renderTabbedPane(session);
+
+    expect(await screen.findByLabelText("Waiting for your input")).toBeTruthy();
+    expect(screen.queryByLabelText("Agent working")).toBeNull();
+  });
+
+  it("does not keep showing a working indicator when the session summary is idle", async () => {
+    const session = buildSession("session-1", {
+      status: "idle",
+    });
+    installAdeMocks({
+      sessions: [session],
+      transcript: buildStatusStartedTranscript(session.sessionId),
+    });
+
+    renderTabbedPane(session);
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Agent working")).toBeNull();
+    });
+    expect(screen.getByLabelText("Ready for next prompt")).toBeTruthy();
   });
 
   it("keeps the draft cleared after send succeeds even if session refresh fails", async () => {
@@ -600,7 +653,7 @@ describe("AgentChatPane submit recovery", () => {
     const onSessionCreated = vi.fn().mockResolvedValue(undefined);
     const { handoff } = installAdeMocks({
       handoffResult: {
-        session: { id: "session-2" },
+        session: buildCreatedSession("session-2"),
         usedFallbackSummary: false,
       },
     });
@@ -625,7 +678,43 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         targetModelId: "openai/gpt-5.4-mini",
       });
-      expect(onSessionCreated).toHaveBeenCalledWith("session-2");
+      expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }));
+    });
+  });
+
+  it("does not wait for onSessionCreated before sending the first message in a new chat", async () => {
+    const onSessionCreated = vi.fn().mockImplementation(() => new Promise<void>(() => {}));
+    const { send, create } = installAdeMocks({ sessions: [] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceNewSession
+          onSessionCreated={onSessionCreated}
+        />
+      </MemoryRouter>,
+    );
+
+    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
+
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("button", { name: /OpenAI/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Ship the instant route fix." } });
+    fireEvent.click(screen.getByTitle("Send"));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalled();
+      expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "created-session" }));
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        text: "Ship the instant route fix.",
+        displayText: "Ship the instant route fix.",
+      }));
     });
   });
 

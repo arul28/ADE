@@ -11,7 +11,7 @@ import {
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { sanitizeTerminalInlineText } from "../../lib/terminalAttention";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
-import { getTerminalRuntimeHealth } from "./TerminalView";
+import { getTerminalRuntimeSnapshot } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
 
@@ -69,7 +69,8 @@ export function SessionInfoPopover({
 
   const { session, x, y } = popover;
   const isChat = isChatToolType(session.toolType);
-  const health = getTerminalRuntimeHealth(session.id);
+  const runtime = getTerminalRuntimeSnapshot(session.id);
+  const health = runtime?.health ?? null;
 
   // Position: try to place to the right, but clamp to viewport
   const left = Math.min(x + 8, window.innerWidth - 420);
@@ -191,10 +192,12 @@ export function SessionInfoPopover({
               Terminal health
             </div>
             <div className="grid grid-cols-2 gap-1 text-[11px] font-mono text-muted-fg/70">
+              <span>renderer_mode: {runtime?.renderer ?? "dom"}</span>
               <span>fit_failures: {health.fitFailures}</span>
               <span>zero_dim: {health.zeroDimFits}</span>
-              <span>renderer: {health.rendererFallbacks}</span>
+              <span>renderer_fallbacks: {health.rendererFallbacks}</span>
               <span>dropped: {health.droppedChunks}</span>
+              <span>fit_recoveries: {health.fitRecoveries}</span>
             </div>
           </div>
         ) : null}
