@@ -41,7 +41,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.17.1",
     "@ai-sdk/openai-compatible": "^2.0.33",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.49",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.90",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
     "@huggingface/transformers": "^3.8.1",
