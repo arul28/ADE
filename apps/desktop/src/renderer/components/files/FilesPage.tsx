@@ -364,6 +364,7 @@ export function FilesPage() {
   });
   const watcherRefreshTimerRef = useRef<number | null>(null);
   const refreshTreeRef = useRef<((parentPath?: string) => Promise<void>) | null>(null);
+  const refreshTreeNowRef = useRef<((parentPath?: string) => Promise<void>) | null>(null);
   const scheduleTreeRefreshRef = useRef<((parentPath?: string, delayMs?: number) => void) | null>(null);
 
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => initialSession?.openTabs.map((tab) => ({ ...tab })) ?? []);
@@ -620,6 +621,8 @@ export function FilesPage() {
     }
   }, [workspaceId, showHidden]);
 
+  refreshTreeNowRef.current = refreshTreeNow;
+
   const refreshTree = useCallback(async (parentPath?: string) => {
     if (!workspaceId) return;
     const normalizedParent = parentPath?.trim() ? parentPath : undefined;
@@ -637,7 +640,9 @@ export function FilesPage() {
     try {
       let nextParent: string | undefined = normalizedParent;
       while (true) {
-        await refreshTreeNow(nextParent);
+        // Use the ref so queued refreshes always pick up the latest
+        // showHidden / workspaceId values instead of a stale closure.
+        await refreshTreeNowRef.current!(nextParent);
         if (state.queuedFull) {
           state.queuedFull = false;
           state.queuedParents.clear();
@@ -1096,7 +1101,10 @@ export function FilesPage() {
       modelKeyRef.current = null;
       editorRef.current = null;
     };
-  }, [mode, editorHostEl, canEdit, editorTheme]);
+  // canEdit intentionally excluded — the updateOptions effect below handles
+  // readOnly toggling without destroying and recreating the entire editor.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, editorHostEl, editorTheme]);
 
   useEffect(() => {
     const monaco = monacoRef.current;
