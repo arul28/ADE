@@ -325,6 +325,8 @@ type ClaudeRuntime = {
   approvalOverrides: Set<string>;
   /** Pending MCP elicitation resolvers keyed by elicitation_id. */
   pendingElicitations: Map<string, () => void>;
+  /** SDK tool_use IDs resolved by canUseTool (e.g. answered AskUserQuestion). */
+  resolvedToolUseIds: Set<string>;
 };
 
 type PendingUnifiedApproval = {
@@ -2504,7 +2506,7 @@ export function createAgentChatService(args: {
       }
       return value != null && value !== false;
     };
-    return Object.values(answers).some((value) => hasAnswerValue(value));
+    return Object.values(answers).every((value) => hasAnswerValue(value));
   };
 
   const buildClaudeAskUserPendingRequest = (
@@ -2611,9 +2613,10 @@ export function createAgentChatService(args: {
         .filter(([, answer]) => answer.length > 0),
     );
 
+    const existingAnswers = asRecord(input.answers) ?? {};
     return {
       ...input,
-      ...(Object.keys(mappedAnswers).length > 0 ? { answers: mappedAnswers } : {}),
+      answers: { ...existingAnswers, ...mappedAnswers },
     };
   };
 
@@ -2691,7 +2694,20 @@ export function createAgentChatService(args: {
         runtime.approvals.delete(approvalItemId);
       }
 
+      // Emit tool_result so derivePendingInputRequests clears this entry.
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
+      emitChatEvent(managed, {
+        type: "tool_result",
+        tool: "ExitPlanMode",
+        result: { approved },
+        itemId: approvalItemId,
+        turnId: runtime.activeTurnId ?? undefined,
+        status: approved ? "completed" : "failed",
+      });
+      if (sdkOptions?.toolUseID) {
+        runtime.resolvedToolUseIds.add(String(sdkOptions.toolUseID));
+      }
+
       if (approved) {
         // Switch session out of plan mode so the UI reflects the transition.
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
@@ -2742,6 +2758,24 @@ export function createAgentChatService(args: {
         });
       } finally {
         runtime.approvals.delete(approvalItemId);
+      }
+
+      // Emit a tool_result so derivePendingInputRequests clears this entry
+      // and the question UI doesn't reappear on the next event flush.
+      const answered = response.decision !== "cancel" && response.decision !== "decline";
+      emitChatEvent(managed, {
+        type: "tool_result",
+        tool: "AskUserQuestion",
+        result: { answered, decision: response.decision ?? "none" },
+        itemId: approvalItemId,
+        turnId: runtime.activeTurnId ?? undefined,
+        status: answered ? "completed" : "failed",
+      });
+
+      // Track the SDK tool_use ID so flushOpenClaudeToolUses skips it
+      // (prevents the synthetic "Completed AskUserQuestion when turn ended" noise).
+      if (sdkOptions?.toolUseID) {
+        runtime.resolvedToolUseIds.add(String(sdkOptions.toolUseID));
       }
 
       if (response.decision === "cancel" || response.decision === "decline") {
@@ -5719,6 +5753,12 @@ export function createAgentChatService(args: {
     ): void => {
       const remainingToolUses = [...openClaudeToolUses.entries()];
       for (const [itemId, toolMeta] of remainingToolUses) {
+        // Skip tools already resolved by canUseTool (e.g. answered AskUserQuestion)
+        // — their tool_result was emitted inline; don't double-emit a synthetic one.
+        if (runtime.resolvedToolUseIds.has(itemId)) {
+          openClaudeToolUses.delete(itemId);
+          continue;
+        }
         emitClaudeToolCompletion(itemId, {
           synthetic: true,
           source: "claude_turn_finalization",
@@ -6406,6 +6446,15 @@ export function createAgentChatService(args: {
               message: `${denials.length} tool call${denials.length === 1 ? " was" : "s were"} denied this turn: ${denialSummary}`,
               turnId,
             });
+            for (const denial of denials) {
+              if (denial.tool_use_id && openClaudeToolUses.has(denial.tool_use_id)) {
+                emitClaudeToolCompletion(denial.tool_use_id, {
+                  synthetic: true,
+                  source: "permission_denied",
+                  tool: denial.tool_name,
+                }, "failed");
+              }
+            }
           }
           continue;
         }
@@ -6597,7 +6646,11 @@ export function createAgentChatService(args: {
         });
 
         // If resume failed, clear sessionId and the caller can retry fresh
-        if (runtime.sdkSessionId && String(effectiveError).includes("session")) {
+        const isStaleSessionError = (err: unknown): boolean => {
+          const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+          return msg.includes("session not found") || msg.includes("invalid session") || msg.includes("stale session");
+        };
+        if (runtime.sdkSessionId && isStaleSessionError(effectiveError)) {
           logger.warn("agent_chat.claude_sdk_session_error", {
             sessionId: managed.session.id,
             sdkSessionId: runtime.sdkSessionId,
@@ -7572,6 +7625,47 @@ export function createAgentChatService(args: {
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: request.description ?? "Codex requested input",
+      });
+      return;
+    }
+
+    // ── MCP Elicitation (used by mcp__ade__ask_user for standalone chat) ──
+    if (method === "mcpServer/elicitation/request") {
+      const params = (payload.params as {
+        serverName?: string;
+        message?: string;
+        turnId?: string;
+        requestedSchema?: Record<string, unknown>;
+      } | null) ?? {};
+      const serverName = typeof params.serverName === "string" ? params.serverName.trim() : "MCP";
+      const message = typeof params.message === "string" ? params.message.trim() : "The agent needs input.";
+      const itemId = randomUUID();
+
+      // Parse structured questions from the message (lines separated by ?)
+      const questions: PendingInputQuestion[] = [{
+        id: "elicitation_answer",
+        header: "Question",
+        question: message,
+        allowsFreeform: true,
+      }];
+
+      const request: PendingInputRequest = {
+        requestId: String(id),
+        itemId,
+        source: "codex",
+        kind: "structured_question",
+        title: `Question from ${serverName}`,
+        description: message,
+        questions,
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null,
+      };
+      runtime.approvals.set(itemId, { requestId: id, kind: "structured_question", request });
+      emitPendingInputRequest(managed, request, {
+        kind: "tool_call",
+        description: message,
       });
       return;
     }
@@ -9342,6 +9436,7 @@ export function createAgentChatService(args: {
       turnMemoryPolicyState: null,
       approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
       pendingElicitations: new Map<string, () => void>(),
+      resolvedToolUseIds: new Set<string>(),
     };
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
@@ -12562,6 +12657,73 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Create a blocking pending-input request for a chat session (used by MCP ask_user
+   * when no missionId is available).  Returns the user's answer.
+   */
+  const requestChatInput = async (args: {
+    chatSessionId: string;
+    title: string;
+    body: string;
+    questions?: Array<{ id?: string; question: string; options?: Array<{ label: string; value?: string }> }>;
+  }): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null }> => {
+    const managed = ensureManagedSession(args.chatSessionId);
+    const itemId = randomUUID();
+    const questions: PendingInputQuestion[] = (args.questions ?? [{ id: "answer", question: args.body }]).map(
+      (q, i) => ({
+        id: q.id ?? `q_${i + 1}`,
+        header: `Question ${i + 1}`,
+        question: q.question,
+        allowsFreeform: true,
+        ...(q.options?.length ? {
+          options: q.options.map((o) => ({ label: o.label, value: o.value ?? o.label })),
+        } : {}),
+      }),
+    );
+    const request: PendingInputRequest = {
+      requestId: itemId,
+      itemId,
+      source: "ade",
+      kind: questions.some((q) => q.options?.length) ? "structured_question" : "question",
+      title: args.title,
+      description: questions[0]?.question ?? args.body,
+      questions,
+      allowsFreeform: true,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      turnId: managed.runtime?.activeTurnId ?? null,
+    };
+
+    const response = await new Promise<{
+      decision?: AgentChatApprovalDecision;
+      answers?: Record<string, string | string[]>;
+      responseText?: string | null;
+    }>((resolve) => {
+      managed.localPendingInputs.set(itemId, { request, resolve });
+      emitPendingInputRequest(managed, request, {
+        kind: "tool_call",
+        description: request.description ?? args.body,
+      });
+    });
+
+    // Emit tool_result so the pending input is cleared from derivePendingInputRequests.
+    emitChatEvent(managed, {
+      type: "tool_result",
+      tool: "ask_user",
+      result: { answered: response.decision !== "decline" && response.decision !== "cancel" },
+      itemId,
+      turnId: managed.runtime?.activeTurnId ?? undefined,
+      status: response.decision === "decline" || response.decision === "cancel" ? "failed" : "completed",
+    });
+
+    const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
+    return {
+      decision: response.decision ?? "none",
+      answers: normalizedAnswers,
+      responseText: typeof response.responseText === "string" ? response.responseText : null,
+    };
+  };
+
   return {
     createSession,
     handoffSession,
@@ -12578,6 +12740,7 @@ export function createAgentChatService(args: {
     ensureIdentitySession,
     approveToolUse,
     respondToInput,
+    requestChatInput,
     getAvailableModels,
     getSlashCommands,
     codexFuzzyFileSearch,

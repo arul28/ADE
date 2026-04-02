@@ -365,7 +365,7 @@ export function AgentChatComposer({
   onClearDraft?: () => void;
   onSubmit: () => void;
   onInterrupt: () => void;
-  onApproval: (decision: AgentChatApprovalDecision) => void;
+  onApproval: (decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   onRemoveAttachment: (path: string) => void;
   onSearchAttachments: (query: string) => Promise<AgentChatFileRef[]>;
@@ -903,6 +903,15 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
+    // When a question is pending, submit the draft as the answer.
+    const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
+    if (isQuestionPending) {
+      const answer = draft.trim();
+      if (!answer.length && !pendingInput.canProceedWithoutAnswer) return;
+      onApproval("accept", answer || null);
+      onDraftChange("");
+      return;
+    }
     if (busy || !modelId || !draft.trim().length) return;
     onSubmit();
   };
@@ -983,8 +992,11 @@ export function AgentChatComposer({
                 <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
               </div>
             ) : (
-              <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
-                Open the question modal to answer and continue.
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
+                  Type your answer below or pick an option above.
+                </span>
+                <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
               </div>
             )}
           </div>
@@ -1113,9 +1125,9 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="flex items-center gap-2 px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-2 px-3 py-1.5">
           {/* Left: permission + model controls */}
-          <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             {nativeControlPanel}
             <UnifiedModelSelector
               value={modelId}

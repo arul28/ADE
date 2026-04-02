@@ -173,10 +173,10 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "ask_user",
-    description: "Create a mission intervention and optionally wait for user resolution.",
+    description: "Ask the user a question and wait for their answer. Works in both mission contexts (with missionId) and standalone chat sessions (without missionId).",
     inputSchema: {
       type: "object",
-      required: ["missionId", "title", "body"],
+      required: ["title", "body"],
       additionalProperties: false,
       properties: {
         missionId: { type: "string", minLength: 1 },
@@ -3540,7 +3540,7 @@ async function runTool(args: {
   if (name === "ask_user") {
     ensureAskUserAllowed(session);
 
-    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
+    const missionId = asOptionalTrimmedString(toolArgs.missionId);
     const title = assertNonEmptyString(toolArgs.title, "title");
     const body = assertNonEmptyString(toolArgs.body, "body");
     const requestedAction = asOptionalTrimmedString(toolArgs.requestedAction);
@@ -3549,6 +3549,30 @@ async function runTool(args: {
     const waitForResolutionMs = Math.max(0, Math.floor(asNumber(toolArgs.waitForResolutionMs, 0)));
     const pollIntervalMs = Math.max(100, Math.floor(asNumber(toolArgs.pollIntervalMs, 1000)));
     const askUserPolicy = getAgentAskUserPolicy({ runtime, callerCtx });
+
+    // ── Standalone chat session path (no missionId) ──
+    // Route through agentChatService.requestChatInput which creates an inline
+    // pending-input in the chat UI and blocks until the user answers.
+    if (!missionId) {
+      const chatSessionId = session.identity.chatSessionId ?? callerCtx.chatSessionId;
+      if (!chatSessionId || !runtime.agentChatService) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "ask_user requires either a missionId or an active chat session (chatSessionId).",
+        );
+      }
+      const result = await runtime.agentChatService.requestChatInput({
+        chatSessionId,
+        title,
+        body,
+      });
+      return {
+        answered: result.decision !== "decline" && result.decision !== "cancel",
+        decision: result.decision,
+        answers: result.answers,
+        responseText: result.responseText,
+      };
+    }
 
     if (askUserPolicy && !askUserPolicy.enabled) {
       throw new JsonRpcError(

@@ -24,6 +24,7 @@ import {
   Globe,
   ShieldCheck,
   CopySimple,
+  Brain,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -643,7 +644,8 @@ function CollapsibleCard({
   defaultOpen = false,
   forceOpen,
   summary,
-  className
+  className,
+  style: styleProp,
 }: {
   children: React.ReactNode;
   defaultOpen?: boolean;
@@ -651,6 +653,7 @@ function CollapsibleCard({
   forceOpen?: boolean;
   summary: React.ReactNode;
   className?: string;
+  style?: React.CSSProperties;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   // Track whether the user explicitly collapsed while forceOpen is active
@@ -674,12 +677,12 @@ function CollapsibleCard({
   const isOpen = forceOpen === true ? !userCollapsed : open;
 
   return (
-    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={SURFACE_INLINE_CARD_STYLE}>
+    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={styleProp ?? SURFACE_INLINE_CARD_STYLE}>
       <button
         type="button"
         aria-expanded={isOpen}
         aria-controls={panelId}
-        className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-mono text-[11px]"
+        className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-sans text-[11px]"
         onClick={() => {
           if (forceOpen === true) {
             setUserCollapsed((v) => !v);
@@ -756,7 +759,7 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
 
   return (
-    <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
+    <div className="flex items-center gap-2 py-1 font-sans text-[12px] text-emerald-200/75">
       <ThinkingDots toneClass="bg-emerald-300/75" />
       <span className="truncate">{displayText}</span>
     </div>
@@ -1174,7 +1177,7 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "group w-full max-w-[78ch] px-5 py-4",
+            "group max-w-[78ch] px-5 py-4",
             options?.turnActive && "min-h-[5.5rem]",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
@@ -1604,7 +1607,7 @@ function renderEvent(
         <CollapsibleCard
           defaultOpen={false}
           summary={
-            <div className="flex items-center gap-2 font-mono text-[11px]">
+            <div className="flex items-center gap-2 font-sans text-[11px]">
               <NoticeIcon size={12} weight="bold" className={style.text} />
               <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
                 {event.noticeKind.replace("_", " ")}
@@ -1621,12 +1624,12 @@ function renderEvent(
 
     return (
       <div className={cn(
-        "inline-flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
-        style.border, style.bg, style.text,
+        "inline-flex items-center gap-2 px-1 py-1 font-sans text-[10px]",
+        style.text,
       )}>
         <NoticeIcon size={11} weight="bold" />
-        <span className="text-[9px] font-bold">{event.noticeKind.replace("_", " ")}</span>
-        <span className="normal-case tracking-normal text-fg/55">{event.message}</span>
+        <span className="text-[9px] font-bold uppercase tracking-[0.16em]">{event.noticeKind.replace("_", " ")}</span>
+        <span className="normal-case tracking-normal text-fg/45">{event.message}</span>
       </div>
     );
   }
@@ -1648,7 +1651,8 @@ function renderEvent(
         defaultOpen={false}
         forceOpen={isLive ? true : undefined}
         summary={
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-[11px] text-fg/52">
+            <Brain size={13} weight="duotone" className="text-fg/40" />
             {isLive ? (
               <span className="flex items-center gap-2">
                 <ThinkingDots toneClass="bg-fg/40" />
@@ -1671,7 +1675,8 @@ function renderEvent(
             )}
           </span>
         }
-        className={WORK_LOG_CARD_CLASS}
+        className="border-0 bg-transparent rounded-none"
+        style={{ background: "transparent", border: "none" }}
       >
         <div className="text-fg/55 text-[12px] leading-relaxed">
           <MarkdownBlock markdown={reasoningText.length ? event.text : "Thinking..."} />
@@ -1911,9 +1916,16 @@ function renderEvent(
             </CollapsibleCard>
           </div>
         ) : null}
-        {isAskUser ? (
-          <div className="mt-3 border border-accent/15 bg-accent/[0.05] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-accent/65">
-            Answer this from the question modal to keep the agent moving.
+        {handleApproval && isAskUser && !isResolved ? (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              disabled={isResponding}
+              className="border border-red-400/30 bg-red-500/10 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-red-200/80 transition-colors hover:bg-red-500/20 disabled:opacity-40 disabled:pointer-events-none"
+              onClick={() => handleApproval("decline")}
+            >
+              Decline
+            </button>
           </div>
         ) : null}
         {handleApproval && !isAskUser ? (
@@ -2107,13 +2119,13 @@ function renderEvent(
         : "border-amber-500/15 bg-amber-500/[0.05] text-amber-300";
 
     return (
-      <div className={cn("flex items-start justify-between gap-3 rounded-lg border px-3 py-1.5 font-sans text-[10px]", statusTone)}>
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+      <div className={cn("flex items-center justify-center gap-3 rounded-lg border px-3 py-1.5 font-sans text-[10px]", statusTone)}>
+        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
           <span className="font-medium text-fg/40">Usage</span>
           {modelLabel ? (
-            <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-fg/35">
+            <span className="inline-flex items-center gap-1.5 text-fg/35">
               <ModelGlyph modelId={event.modelId} model={event.model} size={10} className="shrink-0 text-fg/40" />
-              <span className="min-w-0 break-words">{modelLabel}</span>
+              <span>{modelLabel}</span>
             </span>
           ) : null}
           {inputTokens ? <span className="text-fg/30">In {inputTokens}</span> : null}
@@ -2121,10 +2133,10 @@ function renderEvent(
           {cacheRead ? <span className="text-emerald-400/35">Cache {cacheRead}</span> : null}
           {cacheCreation ? <span className="text-violet-400/35">New cache {cacheCreation}</span> : null}
           {costLabel ? <span className="text-fg/30">{costLabel}</span> : null}
+          {event.status !== "completed" ? (
+            <span className="text-[9px] font-medium uppercase tracking-wide text-current">{event.status}</span>
+          ) : null}
         </div>
-        {event.status !== "completed" ? (
-          <span className="shrink-0 self-center text-[9px] font-medium uppercase tracking-wide text-current">{event.status}</span>
-        ) : null}
       </div>
     );
   }
@@ -3023,7 +3035,7 @@ export function AgentChatMessageList({
       {latestActivity ? (
         <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
       ) : (
-        <div className="flex items-center gap-2 py-1 font-mono text-[12px] text-emerald-200/75">
+        <div className="flex items-center gap-2 py-1 font-sans text-[12px] text-emerald-200/75">
           <ThinkingDots toneClass="bg-emerald-300/75" />
           <span>Working...</span>
         </div>

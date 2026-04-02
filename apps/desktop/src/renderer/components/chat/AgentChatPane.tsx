@@ -38,7 +38,7 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
-import { AgentQuestionModal } from "./AgentQuestionModal";
+// AgentQuestionModal removed — question UI is now inline in message list + composer.
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -2372,8 +2372,8 @@ export function AgentChatPane({
             onInterrupt={() => {
               void interrupt();
             }}
-            onApproval={(decision) => {
-              void approve(decision);
+            onApproval={(decision, responseText) => {
+              void approve(decision, responseText);
             }}
             onAddAttachment={addAttachment}
             onRemoveAttachment={removeAttachment}
@@ -2574,20 +2574,7 @@ export function AgentChatPane({
           )}
         </div>
       </ChatSurfaceShell>
-      {pendingInput && selectedSessionId && (pendingInput.request.kind === "question" || pendingInput.request.kind === "structured_question") ? (
-        <AgentQuestionModal
-          request={pendingInput.request}
-          onClose={() => {
-            void approve("cancel");
-          }}
-          onSubmit={({ answers, responseText }) => {
-            void approve("accept", responseText, answers);
-          }}
-          onDecline={() => {
-            void approve("decline");
-          }}
-        />
-      ) : null}
+      {/* Question UI is now inline in the message list + composer — no modal. */}
     </>
   );
 }
