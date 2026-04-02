@@ -2274,7 +2274,7 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
     identityRole === "cto" || identityRole === "orchestrator" || identityRole === "agent" || identityRole === "external" || identityRole === "evaluator"
       ? identityRole
       : null;
-  const validRole: SessionIdentity["role"] = envContext.role ?? parsedIdentityRole ?? "external";
+  const validRole: SessionIdentity["role"] = envContext.role ?? "external";
   const requestedComputerUsePolicy = normalizeComputerUsePolicy(
     identity.computerUsePolicy ?? envContext.computerUsePolicy,
     createDefaultComputerUsePolicy(),

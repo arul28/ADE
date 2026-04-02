@@ -326,6 +326,10 @@ describe("TerminalView", () => {
 
     render(<TerminalView ptyId="pty-dom" sessionId="session-dom" isActive />);
     await flushAllTimers();
+    // Extra flush: initRendererChain is fire-and-forget and its dynamic import
+    // may not settle within a single timer flush cycle in CI environments.
+    await act(async () => {});
+    await flushAllTimers();
 
     const runtime = getTerminalRuntimeSnapshot("session-dom");
     expect(runtime?.renderer).toBe("dom");
