@@ -4813,8 +4813,8 @@ describe("createAgentChatService", () => {
       itemId: approvalEvent.event.itemId,
       decision: "accept",
       answers: {
-        "What should we do about the two task list views?": "Keep both, improve summary",
-        "Should the inline task list pin while tasks are active?": "Yes, pin while active",
+        question_1: "Keep both, improve summary",
+        question_2: "Yes, pin while active",
       },
     });
 

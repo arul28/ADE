@@ -1116,7 +1116,7 @@ export function AgentChatComposer({
         <div className="flex items-center gap-2 px-3 py-1.5">
           {/* Left: permission + model controls */}
           <div className="flex min-w-0 items-center gap-1.5">
-            {(chatHasMessages || turnActive) ? nativeControlPanel : null}
+            {nativeControlPanel}
             <UnifiedModelSelector
               value={modelId}
               onChange={onModelChange}

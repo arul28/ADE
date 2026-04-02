@@ -2515,7 +2515,7 @@ export function createAgentChatService(args: {
     const rawQuestions = Array.isArray(input.questions) ? input.questions : [];
     const questions: PendingInputQuestion[] = [];
 
-    for (const rawQuestion of rawQuestions) {
+    for (const [index, rawQuestion] of rawQuestions.entries()) {
       const questionRecord = asRecord(rawQuestion);
       if (!questionRecord) continue;
 
@@ -2523,7 +2523,7 @@ export function createAgentChatService(args: {
       if (!question.length) continue;
       const questionId = typeof questionRecord.id === "string" && questionRecord.id.trim().length > 0
         ? questionRecord.id.trim()
-        : question;
+        : `question_${index + 1}`;
 
       const header = typeof questionRecord.header === "string" ? questionRecord.header.trim() : "";
       const isMultiSelect = questionRecord.multiSelect === true;
@@ -2602,7 +2602,12 @@ export function createAgentChatService(args: {
     const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
     const mappedAnswers = Object.fromEntries(
       Object.entries(normalizedAnswers)
-        .map(([questionId, values]) => [questionId, values.join(", ").trim()] as const)
+        .map(([questionId, values]) => {
+          // Map internal question ID back to the original question text
+          // so Claude's SDK receives answers keyed the way it expects.
+          const originalKey = request.questions.find((q) => q.id === questionId)?.question ?? questionId;
+          return [originalKey, values.join(", ").trim()] as const;
+        })
         .filter(([, answer]) => answer.length > 0),
     );
 
@@ -9013,7 +9018,6 @@ export function createAgentChatService(args: {
         try { runtime.v2Session?.close(); } catch { /* ignore */ }
         runtime.v2Session = null;
         runtime.v2WarmupDone = null;
-        runtime.sdkSessionId = null;
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",

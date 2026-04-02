@@ -58,6 +58,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const hasActiveSessionsRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
+  const hasFetchedOnceRef = useRef(false);
 
   const currentLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -115,6 +116,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         );
         setSessions(rows.filter((session) => !isRunOwnedSession(session)));
         hasLoadedOnceRef.current = true;
+        hasFetchedOnceRef.current = true;
       } catch (err) {
         console.warn("[useLaneWorkSessions] Failed to refresh sessions:", err);
       } finally {
@@ -164,6 +166,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   useEffect(() => {
     setSessions([]);
     hasLoadedOnceRef.current = false;
+    hasFetchedOnceRef.current = false;
     if (!laneId) return;
     void refresh({ showLoading: true, force: true });
   }, [laneId, refresh]);
@@ -250,8 +253,10 @@ export function useLaneWorkSessions(laneId: string | null) {
 
   // Validate lane-local activeItemId/selectedItemId against the derived open items.
   // openItemIds are managed at the project level, so we only fix up lane-local pointers here.
+  // Use hasFetchedOnceRef (not hasLoadedOnceRef) so that optimistic inserts don't
+  // trigger pruning before the first real fetch has established an authoritative list.
   useEffect(() => {
-    if (!hasLoadedOnceRef.current) return;
+    if (!hasFetchedOnceRef.current) return;
     setViewState((prev) => {
       const userIsViewingDraft = prev.activeItemId == null && prev.selectedItemId == null;
       if (userIsViewingDraft) return prev;

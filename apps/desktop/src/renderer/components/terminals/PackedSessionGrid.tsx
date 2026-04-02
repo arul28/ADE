@@ -389,7 +389,7 @@ export function PackedSessionGrid({
                 <div
                   key={handle.direction}
                   data-grid-resize-handle={handle.direction}
-                  className="absolute z-20 rounded-md"
+                  className="pointer-events-none absolute z-10 rounded-md group-hover:pointer-events-auto"
                   style={{ ...handle.style, touchAction: "none" }}
                   onPointerDown={(event) => beginResize(tile.id, handle.direction, event)}
                 />

@@ -563,16 +563,16 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
               <table className="min-w-full border-separate border-spacing-0 text-[12px]">{children}</table>
             </div>
           ),
-          thead: ({ children }) => <thead className="bg-white/[0.04]">{children}</thead>,
-          tbody: ({ children }) => <tbody>{children}</tbody>,
-          tr: ({ children }) => <tr className="align-top">{children}</tr>,
-          th: ({ children }) => (
-            <th className="border-b border-white/[0.08] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl">
+          thead: ({ children, ...props }) => <thead className="bg-white/[0.04]" {...props}>{children}</thead>,
+          tbody: ({ children, ...props }) => <tbody {...props}>{children}</tbody>,
+          tr: ({ children, ...props }) => <tr className="align-top" {...props}>{children}</tr>,
+          th: ({ children, ...props }) => (
+            <th className="border-b border-white/[0.08] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl" {...props}>
               {children}
             </th>
           ),
-          td: ({ children }) => (
-            <td className="border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0">
+          td: ({ children, ...props }) => (
+            <td className="border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0" {...props}>
               {children}
             </td>
           ),
@@ -2416,10 +2416,10 @@ function TurnSummaryCard({
             <Robot size={12} weight="regular" className="text-fg/38" />
             <span>
               {summary.activeBackgroundAgentCount === summary.backgroundAgentCount
-                ? `${summary.backgroundAgentCount} ${summary.backgroundAgentCount === 1 ? "agent is" : "agents are"} running in the background`
+                ? `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"} running`
                 : summary.activeBackgroundAgentCount > 0
-                  ? `${summary.backgroundAgentCount} ${summary.backgroundAgentCount === 1 ? "agent ran" : "agents ran"} in the background, ${summary.activeBackgroundAgentCount} currently running`
-                  : `${summary.backgroundAgentCount} ${summary.backgroundAgentCount === 1 ? "agent ran" : "agents ran"} in the background`}
+                  ? `${summary.activeBackgroundAgentCount} of ${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"} still running`
+                  : `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"} completed`}
             </span>
           </div>
         </div>

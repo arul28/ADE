@@ -161,7 +161,7 @@ ADE uses multiple layout systems depending on surface complexity:
 - `PaneTilingLayout`: recursive pane trees for high-density workspaces
 - `SplitPane` / resizable panels: 2-pane and 3-pane structured views
 - Floating pane primitives for modular lane/conflict/terminal sub-surfaces
-- **Work view session grid** (`WorkViewArea`): CSS Grid with `auto-fill` and `minmax` for fluid responsive session card layout that adapts to viewport width without fixed breakpoints. The session list sidebar supports two organization modes: flat status-grouped ("all-lanes-by-status") and lane-folder-grouped ("by-lane") with collapsible lane sections and a `LaneCombobox` for lane filtering
+- **Work view session grid**: Two modes — `WorkViewArea` uses CSS Grid with `auto-fill` and `minmax` for fluid responsive session card layout, while `PackedSessionGrid` provides resizable tiles with per-session column/row spans and a bin-packing algorithm for compact layout. The session list sidebar supports two organization modes: flat status-grouped ("all-lanes-by-status") and lane-folder-grouped ("by-lane") with collapsible lane sections and a `LaneCombobox` for lane filtering
 
 Layout state persistence is backed by IPC calls into local SQLite (`layout`, `tilingTree`, `graphState` domains).
 
@@ -346,6 +346,8 @@ Renderer architecture is fully operational for the current desktop scope:
 - Mission chat is split by channel purpose: Global is the high-signal summary/broadcast view, while orchestrator and worker threads reuse the shared agent chat message renderer for detailed structured event/tool/thinking display.
 - Context doc banner is dismissible per project per session.
 - Work tab session sidebar supports two organization modes (flat status-grouped and lane-folder-grouped) with collapsible lane sections and sidebar-toggle focus mode.
+- Work view supports packed session grid mode with resizable tiles, bin-packing layout, and per-session span persistence.
+- `UnifiedModelSelector` supports `catalogMode` (`"all"` | `"available-only"`) to filter the model registry to only models available via configured providers.
 - Commit timeline scrolls to the bottom (newest commits) on initial load.
 - PR convergence panel with issue inventory, round-based convergence progress, embedded agent chat, and pipeline settings.
 

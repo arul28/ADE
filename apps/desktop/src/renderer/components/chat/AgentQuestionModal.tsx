@@ -127,14 +127,15 @@ export function AgentQuestionModal({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        event.preventDefault();
         event.stopPropagation();
-        if (passiveDismissAllowed) onClose();
+        event.preventDefault();
+        if (!passiveDismissAllowed) return;
+        onClose();
         return;
       }
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
         event.stopPropagation();
+        event.preventDefault();
         if (!canSubmit) return;
         handleSubmit();
       }
@@ -464,9 +465,11 @@ export function AgentQuestionModal({
               : "Send a concrete answer so the agent can continue with the right context. Press Cmd/Ctrl+Enter to submit."}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              {request.canProceedWithoutAnswer ? "Close" : "Cancel"}
-            </Button>
+            {request.canProceedWithoutAnswer && (
+              <Button variant="ghost" size="sm" onClick={onClose}>
+                Close
+              </Button>
+            )}
             {onDecline ? (
               <Button variant="danger" size="sm" onClick={onDecline}>
                 <HandPalm size={12} />

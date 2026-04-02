@@ -117,7 +117,7 @@ describe("AgentQuestionModal", () => {
 
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("Close question modal")).toBeNull();
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
   });
 
   it("lets freeform text override a single selected option", () => {

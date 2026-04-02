@@ -697,9 +697,13 @@ export function groupConsecutiveWorkLogRows(
 
   while (index < rows.length) {
     const row = rows[index]!;
-    if (row.event.type === "tool_use_summary" && absorbToolSummary(row.event)) {
-      index += 1;
-      continue;
+    if (row.event.type === "tool_use_summary") {
+      const prevRow = index > 0 ? rows[index - 1] : null;
+      const prevIsWorkLog = prevRow?.event.type === "work_log_entry";
+      if (prevIsWorkLog && absorbToolSummary(row.event)) {
+        index += 1;
+        continue;
+      }
     }
 
     if (row.event.type === "work_log_entry") {

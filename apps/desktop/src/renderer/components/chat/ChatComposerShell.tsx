@@ -23,14 +23,12 @@ export function ChatComposerShell({
     <div
       className={cn(
         "relative overflow-hidden rounded-[var(--chat-radius-shell)] transition-colors",
+        "bg-[rgba(30,30,40,0.7)] border border-[rgba(255,255,255,0.08)] shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)]",
         className,
       )}
       style={{
         backdropFilter: "blur(20px)",
         WebkitBackdropFilter: "blur(20px)",
-        background: "rgba(30, 30, 40, 0.7)",
-        border: "1px solid rgba(255, 255, 255, 0.08)",
-        boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
       }}
       data-chat-composer-mode={mode}
     >

@@ -153,7 +153,7 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
     const targetLine = meta.getTarget ? meta.getTarget(args) : null;
 
     if (meta.label === "Shell") {
-      return "Run shell";
+      return targetLine ? `Run ${summarizeInlineText(targetLine, 72)}` : "Run shell";
     }
     if (meta.label === "Read") {
       return targetLine ? `Read ${basenamePathLabel(targetLine)}` : "Read files";
@@ -189,7 +189,8 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
   }
 
   if (entry.entryKind === "command") {
-    return "Run shell";
+    const cmdText = summarizeInlineText(entry.command ?? "", 72);
+    return cmdText.length > 0 ? `Run ${cmdText}` : "Run shell";
   }
 
   if (entry.entryKind === "file_change") {
@@ -209,7 +210,8 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
 
 function workEntryPreview(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "command") {
-    return "Run shell";
+    const cmdText = summarizeInlineText(entry.command ?? "", 110);
+    return cmdText.length > 0 ? cmdText : "Run shell";
   }
 
   if (entry.entryKind === "file_change") {
@@ -227,13 +229,18 @@ function workEntryPreview(entry: ChatWorkLogEntry): string {
   }
 
   if (entry.entryKind === "web_search") {
-    return "Search web";
+    const queryText = summarizeInlineText(entry.query ?? "", 110);
+    return queryText.length > 0 ? queryText : "Search web";
   }
 
   if (entry.entryKind === "tool") {
     if (entry.toolName) {
       const meta = getToolMeta(entry.toolName);
-      if (meta.label === "Shell") return "Run shell";
+      if (meta.label === "Shell") {
+        const args = readRecord(entry.args);
+        const shellCmd = summarizeInlineText(typeof args?.command === "string" ? args.command : "", 110);
+        return shellCmd.length > 0 ? shellCmd : "Run shell";
+      }
       if (meta.label === "Search" && meta.category === "web") return "Search web";
     }
     const resultRecord = readRecord(entry.result);

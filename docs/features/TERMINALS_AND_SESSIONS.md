@@ -28,9 +28,12 @@ Tracked sessions still feed history, lane refresh, conflict follow-up, and missi
 
 ### Work view session grid
 
-The Work tab renders active sessions in a responsive card grid (`WorkViewArea`). The grid uses CSS `auto-fill` with `minmax(min(100%, 360px), 1fr)` columns and `minmax(240px, 33vh)` row heights, so card count per row adjusts fluidly to the viewport width without fixed breakpoints. Each card wraps a `SessionSurface` (live terminal via xterm.js or agent chat pane) and supports right-click context menus for session-level actions.
+The Work tab supports two grid modes, toggled via a view mode selector in the Work tab header:
 
-The grid view and a single-session focused view are toggled via a view mode selector in the Work tab header.
+- **Standard grid** (`WorkViewArea`): CSS Grid with `auto-fill` and `minmax(min(100%, 360px), 1fr)` columns and `minmax(240px, 33vh)` row heights. Cards adjust fluidly to the viewport width without fixed breakpoints. Each card wraps a `SessionSurface` (live terminal via xterm.js or agent chat pane) and supports right-click context menus.
+- **Packed grid** (`PackedSessionGrid`): A resizable tile layout where each tile has an independent column/row span. Tiles can be resized via drag handles on all edges and corners. The grid uses a bin-packing algorithm (`packGridItems` in `packedSessionGridMath.ts`) to arrange tiles compactly, minimizing wasted space. Layout spans are persisted per session via `readPackedGridSpan` / `reconcilePackedGridLayout` and survive session switches. Minimum tile dimensions (`MIN_VALID_COLS`, `MIN_VALID_ROWS`) are enforced to prevent degenerate sizes.
+
+Both modes also support a single-session focused view.
 
 ### Shared session-list cache
 
@@ -155,6 +158,12 @@ The current terminals and sessions feature follows these rules:
 That preserves ADE's session-awareness while making the session system a lighter dependency for the rest of the UI.
 
 ---
+
+## Terminal renderer and fit recovery
+
+`TerminalView` initializes xterm.js with a **WebGL-first renderer** and falls back to the DOM renderer if WebGL initialization fails (e.g. GPU driver issues, WebGL context loss). The previous three-tier strategy (WebGL -> canvas -> DOM) was simplified to two tiers since the canvas renderer offered no meaningful advantage over the DOM fallback.
+
+When a terminal is resized or re-parented (e.g. moved between grid tiles), the fit addon computes new column/row dimensions from the host container. If the computed dimensions are invalid (below `MIN_VALID_COLS` / `MIN_VALID_ROWS`, or the host is too small), the fit is retried after a short delay (`INVALID_FIT_RETRY_MS = 90ms`). Successful retries after an initial invalid fit are counted as `fitRecoveries` in the `TerminalHealthCounters`. The `measureHost` helper uses the maximum of `getBoundingClientRect`, `clientWidth`/`clientHeight`, and `offsetWidth`/`offsetHeight` to handle edge cases where one measurement API returns zero during layout transitions. A `fitWarningLogged` flag prevents log spam when a host remains too small across multiple retry cycles.
 
 ## Terminal status indicators
 

@@ -75,14 +75,23 @@ function readGitLaneCount(projectRoot: string): number | undefined {
     const gitStat = fs.existsSync(gitPath) ? fs.statSync(gitPath) : null;
     if (!gitStat) return undefined;
 
+    let actualGitDir = gitPath;
+    if (gitStat.isFile()) {
+      // .git file in a worktree checkout — read the gitdir pointer
+      const content = fs.readFileSync(gitPath, "utf-8").trim();
+      const match = content.match(/^gitdir:\s*(.+)$/);
+      if (!match) return 1;
+      actualGitDir = path.resolve(projectRoot, match[1]);
+    } else if (!gitStat.isDirectory()) {
+      return 1;
+    }
+
     let laneCount = 1;
-    if (gitStat.isDirectory()) {
-      const worktreesPath = path.join(gitPath, "worktrees");
-      if (fs.existsSync(worktreesPath)) {
-        laneCount += fs.readdirSync(worktreesPath, { withFileTypes: true })
-          .filter((dirent) => dirent.isDirectory())
-          .length;
-      }
+    const worktreesPath = path.join(actualGitDir, "worktrees");
+    if (fs.existsSync(worktreesPath)) {
+      laneCount += fs.readdirSync(worktreesPath, { withFileTypes: true })
+        .filter((dirent) => dirent.isDirectory())
+        .length;
     }
     return laneCount;
   } catch {

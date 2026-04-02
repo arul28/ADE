@@ -264,7 +264,7 @@ When an agent needs human input -- either permission to proceed or answers to qu
 
 The renderer derives pending inputs from the event stream via `derivePendingInputRequests()` (in `pendingInput.ts`), which replaces the previous `PendingApproval` model. The derivation function processes `approval_request` events (including embedded `PendingInputRequest` payloads in the detail field and legacy `askUser` tool calls) and `structured_question` events. A `done` event clears all pending inputs for that session. Tool results, command completions, and file changes auto-resolve their corresponding pending items.
 
-The `AgentQuestionModal` renders the first pending input with Accept / Accept for Session / Decline / Cancel buttons and optional freeform text. User responses are sent back via the `respondToInput` IPC channel (which accepts `AgentChatRespondToInputArgs` with structured `answers` and optional `decision`), or the legacy `approve` channel for backward compatibility.
+The `AgentQuestionModal` renders the first pending input with Accept / Accept for Session / Decline / Cancel buttons and optional freeform text. Questions with predefined options support **multi-select**: users can toggle multiple values for a single question, and a preview pane renders the selected option's description as sanitized HTML/Markdown (via `ReactMarkdown` with `rehype-raw`, `rehype-sanitize`, and `remark-gfm`). The per-question draft state (`QuestionDraft`) tracks `text`, `selectedValues`, and `activePreviewValue` independently. User responses are sent back via the `respondToInput` IPC channel (which accepts `AgentChatRespondToInputArgs` with structured `answers` and optional `decision`), or the legacy `approve` channel for backward compatibility.
 
 Plan approval requests carry the actual plan description text (extracted from the `ExitPlanMode` tool input) as the event description, so the UI can display meaningful content rather than a generic label. The message list renders plan approval cards in a scrollable container (max 288px) with pre-wrapped text to handle long multi-step plans.
 
@@ -284,12 +284,35 @@ Each work log entry carries a `collapseKey` derived from the turn, logical item 
 
 Adjacent assistant text events are merged using `shouldMergeTextRows()`, which compares `messageId`, `turnId`, and `itemId` fields to decide whether two text fragments belong to the same logical message. Events with matching `messageId` values always merge; events without `messageId` fall back to turn/item identity. This prevents duplicate text rows when the streaming backend emits fragmented text events.
 
+### Turn Recap
+
+When a turn completes, `chatTranscriptRows` emits a `turn_recap` row that summarizes the turn's tool activity. The recap aggregates completed, failed, and interrupted tool invocations into a single summary line with task-progress counts. This provides a concise at-a-glance view of what the agent accomplished during each turn without requiring the user to expand every work log group.
+
 The `ChatWorkLogBlock` component renders grouped entries with:
 
 - Collapsible header showing entry count and a summary of operations
-- Per-entry rows with tool/command icons, labels, status indicators, and expandable detail sections
+- Per-entry rows with human-readable headings (e.g. "Read utils.ts", "Run shell", "Write index.ts") derived from tool metadata and arguments
+- Status indicators including an `interrupted` state mapped to the "waiting" visual style
+- Up to 4 entries visible by default before the expand toggle
 - File change summaries with addition/deletion counts
 - Operator navigation suggestions extracted from tool results (linking to Work, Missions, Lanes, or CTO surfaces)
+
+## Claude Tool-Use Tracking
+
+The Claude V2 runtime tracks the lifecycle of individual tool invocations
+via tool-use IDs. When the SDK emits a tool call with a `toolUseID`, the
+service records it as an in-progress tool invocation and emits a
+`tool_use_start` event. When the SDK returns a `tool_use_summary`
+message with `preceding_tool_use_ids`, the service matches each ID back
+to its pending invocation, marks it complete, and emits a
+`tool_use_complete` event with the summary text. This allows the
+renderer to show per-tool status indicators (spinner while running,
+checkmark on completion, warning on failure) inside work log entries.
+
+The `AskUserQuestion` tool is handled specially: when the SDK invokes it,
+the service builds a `PendingInputRequest` from the tool input and
+attaches the `toolUseID` so the response can be routed back to the
+correct tool invocation.
 
 ## Model Handoff
 

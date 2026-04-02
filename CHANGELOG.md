@@ -5,6 +5,25 @@ All notable changes to ADE will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Packed session grid** — resizable tile layout for the Work view with per-session column/row spans, drag-handle resizing on all edges and corners, and a bin-packing algorithm for compact arrangement (`PackedSessionGrid`, `packedSessionGridMath`)
+- **Multi-select agent questions** — `AgentQuestionModal` now supports toggling multiple predefined options per question, with a Markdown/HTML preview pane for selected option descriptions (via `ReactMarkdown` + `rehype-sanitize`)
+- **New Chat quick-create** — faster optimistic session opening from the Work view with immediate tab activation before the backend session is ready
+- **Turn recap** — `chatTranscriptRows` emits a `turn_recap` summary row at the end of each turn, aggregating tool invocation counts and status
+- **Claude tool-use tracking** — per-invocation lifecycle tracking via `toolUseID`; `tool_use_start` and `tool_use_complete` events enable per-tool status indicators in the work log
+- **MCP initialize probe** — Claude runtime pre-checks MCP server availability before starting a session
+
+### Changed
+
+- **Terminal renderer fallback** — simplified from three tiers (WebGL/canvas/DOM) to two (WebGL-first with DOM fallback); added fit recovery with retry on invalid dimensions and `fitRecoveries` health counter
+- **Work log headings** — human-readable labels (e.g. "Read utils.ts", "Run shell", "Write index.ts") replace generic tool identifiers; default visible entries increased from 1 to 4
+- **Model catalog filtering** — `UnifiedModelSelector` accepts `catalogMode: "available-only"` to restrict the picker to models available via configured providers
+- **Git stash actions** — stash pop, drop, and clear now refresh workspace metadata after completion
+- **Composer sizing** — new compact and grid-tile sizing modes in `ChatComposerShell`
+
 ## [1.0.2] - 2026-03-15
 
 ### Added
