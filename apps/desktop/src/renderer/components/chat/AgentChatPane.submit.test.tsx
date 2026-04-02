@@ -307,6 +307,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.queryByLabelText("Agent working")).toBeNull();
     });
+    expect(screen.getByLabelText("Ready for next prompt")).toBeTruthy();
   });
 
   it("keeps the draft cleared after send succeeds even if session refresh fails", async () => {

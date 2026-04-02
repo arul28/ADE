@@ -322,12 +322,13 @@ describe("TerminalView", () => {
 
   it("falls back to the DOM renderer when webgl initialization fails", async () => {
     mockState.shouldThrowWebglAddon = true;
+    const previousFallbacks = getTerminalRuntimeSnapshot("session-dom")?.health.rendererFallbacks ?? 0;
 
     render(<TerminalView ptyId="pty-dom" sessionId="session-dom" isActive />);
     await flushAllTimers();
 
     const runtime = getTerminalRuntimeSnapshot("session-dom");
     expect(runtime?.renderer).toBe("dom");
-    expect(runtime?.health.rendererFallbacks).toBeGreaterThanOrEqual(0);
+    expect(runtime?.health.rendererFallbacks).toBeGreaterThan(previousFallbacks);
   });
 });

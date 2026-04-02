@@ -1,6 +1,6 @@
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 
-export type ChatWorkLogStatus = "running" | "completed" | "failed";
+export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search";
 export type ChatWorkLogEntryTone = "tool" | "info" | "error";
 
@@ -658,44 +658,41 @@ export function groupConsecutiveWorkLogRows(
   ): boolean => {
     const summary = toolSummary.summary.trim();
     const toolUseIds = toolSummary.toolUseIds.filter((id) => id.trim().length > 0);
-    for (let groupedIndex = grouped.length - 1; groupedIndex >= 0; groupedIndex -= 1) {
-      const candidate = grouped[groupedIndex];
-      if (!candidate) continue;
-      const candidateEvent = candidate.event;
-      if (candidateEvent.type !== "work_log_group") continue;
-      const candidateTurnId = candidateEvent.turnId ?? candidateEvent.entries[0]?.turnId ?? null;
-      if (toolSummary.turnId && candidateTurnId && candidateTurnId !== toolSummary.turnId) continue;
+    const candidate = grouped[grouped.length - 1];
+    if (!candidate || candidate.event.type !== "work_log_group") return false;
 
-      if (toolUseIds.length > 0) {
-        const candidateToolIds = new Set(
-          candidateEvent.entries
-            .filter((entry) => entry.entryKind === "tool" && typeof entry.itemId === "string" && entry.itemId.trim().length > 0)
-            .map((entry) => entry.itemId!.trim()),
-        );
-        const hasMatch = toolUseIds.some((toolUseId) => candidateToolIds.has(toolUseId));
-        if (!hasMatch) continue;
-      }
+    const candidateEvent = candidate.event;
+    const candidateTurnId = candidateEvent.turnId ?? candidateEvent.entries[0]?.turnId ?? null;
+    if (toolSummary.turnId && candidateTurnId && candidateTurnId !== toolSummary.turnId) return false;
 
-      grouped[groupedIndex] = {
-        ...candidate,
-        timestamp: candidate.timestamp,
-        event: {
-          ...candidateEvent,
-          ...(summary.length > 0 ? { summary } : {}),
-          ...(toolUseIds.length > 0
-            ? {
-                toolUseIds: [
-                  ...(candidateEvent.toolUseIds ?? []),
-                  ...toolUseIds.filter((toolUseId) => !(candidateEvent.toolUseIds ?? []).includes(toolUseId)),
-                ],
-              }
-            : {}),
-          turnId: candidateTurnId ?? toolSummary.turnId ?? null,
-        },
-      };
-      return true;
+    if (toolUseIds.length > 0) {
+      const candidateToolIds = new Set(
+        candidateEvent.entries
+          .filter((entry) => entry.entryKind === "tool" && typeof entry.itemId === "string" && entry.itemId.trim().length > 0)
+          .map((entry) => entry.itemId!.trim()),
+      );
+      const hasMatch = toolUseIds.some((toolUseId) => candidateToolIds.has(toolUseId));
+      if (!hasMatch) return false;
     }
-    return false;
+
+    grouped[grouped.length - 1] = {
+      ...candidate,
+      timestamp: candidate.timestamp,
+      event: {
+        ...candidateEvent,
+        ...(summary.length > 0 ? { summary } : {}),
+        ...(toolUseIds.length > 0
+          ? {
+              toolUseIds: [
+                ...(candidateEvent.toolUseIds ?? []),
+                ...toolUseIds.filter((toolUseId) => !(candidateEvent.toolUseIds ?? []).includes(toolUseId)),
+              ],
+            }
+          : {}),
+        turnId: candidateTurnId ?? toolSummary.turnId ?? null,
+      },
+    };
+    return true;
   };
 
   while (index < rows.length) {

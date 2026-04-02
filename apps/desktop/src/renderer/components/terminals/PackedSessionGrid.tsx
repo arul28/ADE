@@ -4,8 +4,10 @@ import { cn } from "../ui/cn";
 import {
   GRID_GAP_PX,
   GRID_MAX_ROW_SPAN,
+  GRID_COLUMN_SUBDIVISIONS,
   clampPackedGridSpan,
   computeDefaultRowSpan,
+  computeMinimumColSpan,
   computeGridColumnCount,
   computeMinimumRowSpan,
   computePackedGridRowHeight,
@@ -36,17 +38,20 @@ type ResizeState = {
   startX: number;
   startY: number;
   startSpan: PackedGridSpan;
+  currentSpan: PackedGridSpan;
+  pointerId: number;
+  pointerTarget: HTMLElement | null;
 };
 
 const RESIZE_HANDLES: Array<{ direction: ResizeDirection; style: CSSProperties }> = [
-  { direction: "n", style: { top: -4, left: 10, right: 10, height: 8, cursor: "n-resize" } },
-  { direction: "s", style: { bottom: -4, left: 10, right: 10, height: 8, cursor: "s-resize" } },
-  { direction: "e", style: { right: -4, top: 10, bottom: 10, width: 8, cursor: "e-resize" } },
-  { direction: "w", style: { left: -4, top: 10, bottom: 10, width: 8, cursor: "w-resize" } },
-  { direction: "ne", style: { right: -5, top: -5, width: 12, height: 12, cursor: "ne-resize" } },
-  { direction: "nw", style: { left: -5, top: -5, width: 12, height: 12, cursor: "nw-resize" } },
-  { direction: "se", style: { right: -5, bottom: -5, width: 12, height: 12, cursor: "se-resize" } },
-  { direction: "sw", style: { left: -5, bottom: -5, width: 12, height: 12, cursor: "sw-resize" } },
+  { direction: "n", style: { top: -6, left: 4, right: 4, height: 16, cursor: "n-resize" } },
+  { direction: "s", style: { bottom: -6, left: 4, right: 4, height: 16, cursor: "s-resize" } },
+  { direction: "e", style: { right: -6, top: 4, bottom: 4, width: 16, cursor: "e-resize" } },
+  { direction: "w", style: { left: -6, top: 4, bottom: 4, width: 16, cursor: "w-resize" } },
+  { direction: "ne", style: { right: -8, top: -8, width: 20, height: 20, cursor: "ne-resize" } },
+  { direction: "nw", style: { left: -8, top: -8, width: 20, height: 20, cursor: "nw-resize" } },
+  { direction: "se", style: { right: -8, bottom: -8, width: 20, height: 20, cursor: "se-resize" } },
+  { direction: "sw", style: { left: -8, bottom: -8, width: 20, height: 20, cursor: "sw-resize" } },
 ];
 
 function hasHorizontalResize(direction: ResizeDirection): boolean {
@@ -71,6 +76,7 @@ export function PackedSessionGrid({
   const resizeStateRef = useRef<ResizeState | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [resizingTileId, setResizingTileId] = useState<string | null>(null);
+  const [draftSpansById, setDraftSpansById] = useState<Record<string, PackedGridSpan>>({});
 
   useEffect(() => {
     const node = viewportRef.current;
@@ -104,7 +110,7 @@ export function PackedSessionGrid({
     const next: Record<string, PackedGridSpan> = {};
     for (const tile of tiles) {
       next[tile.id] = {
-        colSpan: 1,
+        colSpan: GRID_COLUMN_SUBDIVISIONS,
         rowSpan: Math.max(minRowSpans[tile.id] ?? 1, defaultRowSpan),
       };
     }
@@ -129,35 +135,69 @@ export function PackedSessionGrid({
     const minTileWidth = tiles.reduce((largest, tile) => Math.max(largest, tile.minWidth), 0);
     return computeGridColumnCount({
       containerWidth: viewportSize.width,
+      containerHeight: viewportSize.height,
       tileCount: tiles.length,
       minTileWidth,
+      defaultRowSpan,
     });
-  }, [tiles, viewportSize.width]);
+  }, [defaultRowSpan, tiles, viewportSize.height, viewportSize.width]);
+
+  const trackCount = useMemo(
+    () => Math.max(GRID_COLUMN_SUBDIVISIONS, columnCount * GRID_COLUMN_SUBDIVISIONS),
+    [columnCount],
+  );
+
+  const trackWidth = useMemo(() => {
+    if (trackCount <= 0 || viewportSize.width <= 0) return 0;
+    const availableWidth = viewportSize.width - GRID_GAP_PX * Math.max(0, trackCount - 1);
+    return Math.max(0, availableWidth / trackCount);
+  }, [trackCount, viewportSize.width]);
+
+  const minColSpans = useMemo(() => {
+    const next: Record<string, number> = {};
+    for (const tile of tiles) {
+      next[tile.id] = computeMinimumColSpan({
+        minWidthPx: tile.minWidth,
+        trackWidthPx: trackWidth,
+      });
+    }
+    return next;
+  }, [tiles, trackWidth]);
 
   const spansById = useMemo(() => {
     const next: Record<string, PackedGridSpan> = {};
     for (const tile of tiles) {
       next[tile.id] = clampPackedGridSpan({
         span: readPackedGridSpan(layout, tile.id, defaultSpansById[tile.id] ?? { colSpan: 1, rowSpan: 1 }),
-        columnCount,
+        columnCount: trackCount,
+        minColSpan: minColSpans[tile.id] ?? 1,
         minRowSpan: minRowSpans[tile.id] ?? 1,
         maxRowSpan: GRID_MAX_ROW_SPAN,
       });
     }
     return next;
-  }, [columnCount, defaultSpansById, layout, minRowSpans, tiles]);
+  }, [defaultSpansById, layout, minColSpans, minRowSpans, tiles, trackCount]);
+
+  const effectiveSpansById = useMemo(() => {
+    if (!Object.keys(draftSpansById).length) return spansById;
+    const next = { ...spansById };
+    for (const [tileId, span] of Object.entries(draftSpansById)) {
+      next[tileId] = span;
+    }
+    return next;
+  }, [draftSpansById, spansById]);
 
   const packedItems = useMemo(() => {
     return tiles.map((tile) => ({
       id: tile.id,
       minRowSpan: minRowSpans[tile.id] ?? 1,
-      span: spansById[tile.id] ?? defaultSpansById[tile.id] ?? { colSpan: 1, rowSpan: 1 },
+      span: effectiveSpansById[tile.id] ?? defaultSpansById[tile.id] ?? { colSpan: 1, rowSpan: 1 },
     }));
-  }, [defaultSpansById, minRowSpans, spansById, tiles]);
+  }, [defaultSpansById, effectiveSpansById, minRowSpans, tiles]);
 
   const packed = useMemo(
-    () => packGridItems(packedItems, columnCount),
-    [columnCount, packedItems],
+    () => packGridItems(packedItems, trackCount),
+    [packedItems, trackCount],
   );
 
   const rowHeight = useMemo(
@@ -168,12 +208,6 @@ export function PackedSessionGrid({
       }),
     [packed.totalRows, viewportSize.height],
   );
-
-  const columnWidth = useMemo(() => {
-    if (columnCount <= 0 || viewportSize.width <= 0) return 0;
-    const availableWidth = viewportSize.width - GRID_GAP_PX * Math.max(0, columnCount - 1);
-    return Math.max(0, availableWidth / columnCount);
-  }, [columnCount, viewportSize.width]);
 
   const placementById = useMemo(() => {
     const next = new Map<string, PackedGridPlacement>();
@@ -188,17 +222,31 @@ export function PackedSessionGrid({
     [packed.totalRows, rowHeight],
   );
 
-  const stopResize = useCallback(() => {
+  const stopResize = useCallback((clearDraft = true) => {
+    const state = resizeStateRef.current;
+    if (state?.pointerTarget && state.pointerTarget.hasPointerCapture?.(state.pointerId)) {
+      state.pointerTarget.releasePointerCapture(state.pointerId);
+    }
     resizeStateRef.current = null;
     setResizingTileId(null);
+    if (clearDraft) {
+      setDraftSpansById({});
+    }
     document.body.style.userSelect = "";
+    document.body.style.cursor = "";
   }, []);
+
+  useEffect(() => {
+    return () => {
+      stopResize();
+    };
+  }, [stopResize]);
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
       const state = resizeStateRef.current;
-      if (!state || columnWidth <= 0 || rowHeight <= 0) return;
-      const colUnit = columnWidth + GRID_GAP_PX;
+      if (!state || trackWidth <= 0 || rowHeight <= 0) return;
+      const colUnit = trackWidth + GRID_GAP_PX;
       const rowUnit = rowHeight + GRID_GAP_PX;
 
       let nextColSpan = state.startSpan.colSpan;
@@ -218,22 +266,46 @@ export function PackedSessionGrid({
 
       const clamped = clampPackedGridSpan({
         span: { colSpan: nextColSpan, rowSpan: nextRowSpan },
-        columnCount,
+        columnCount: trackCount,
+        minColSpan: minColSpans[state.tileId] ?? 1,
         minRowSpan: minRowSpans[state.tileId] ?? 1,
         maxRowSpan: GRID_MAX_ROW_SPAN,
       });
+      if (
+        clamped.colSpan === state.currentSpan.colSpan
+        && clamped.rowSpan === state.currentSpan.rowSpan
+      ) {
+        return;
+      }
 
-      saveLayout((prev) => {
-        const next = {
+      resizeStateRef.current = {
+        ...state,
+        currentSpan: clamped,
+      };
+      setDraftSpansById((prev) => {
+        const current = prev[state.tileId];
+        if (current?.colSpan === clamped.colSpan && current?.rowSpan === clamped.rowSpan) {
+          return prev;
+        }
+        return {
           ...prev,
-          [`${state.tileId}:col`]: clamped.colSpan,
-          [`${state.tileId}:row`]: clamped.rowSpan,
+          [state.tileId]: clamped,
         };
-        return next;
       });
     };
 
     const handlePointerUp = () => {
+      const state = resizeStateRef.current;
+      if (state && (
+        state.currentSpan.colSpan !== state.startSpan.colSpan
+        || state.currentSpan.rowSpan !== state.startSpan.rowSpan
+      )) {
+        saveLayout((prev) => ({
+          ...prev,
+          [`${state.tileId}:col`]: state.currentSpan.colSpan,
+          [`${state.tileId}:row`]: state.currentSpan.rowSpan,
+        }));
+      }
       stopResize();
     };
 
@@ -243,17 +315,22 @@ export function PackedSessionGrid({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [columnCount, columnWidth, minRowSpans, rowHeight, saveLayout, stopResize]);
+  }, [minColSpans, minRowSpans, rowHeight, saveLayout, stopResize, trackCount, trackWidth]);
 
-  const beginResize = useCallback((tileId: string, direction: ResizeDirection, event: ReactPointerEvent) => {
+  const beginResize = useCallback((tileId: string, direction: ResizeDirection, event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    document.body.style.cursor = `${direction}-resize`;
     resizeStateRef.current = {
       tileId,
       direction,
       startX: event.clientX,
       startY: event.clientY,
       startSpan: spansById[tileId] ?? { colSpan: 1, rowSpan: 1 },
+      currentSpan: spansById[tileId] ?? { colSpan: 1, rowSpan: 1 },
+      pointerId: event.pointerId,
+      pointerTarget: event.currentTarget,
     };
     setResizingTileId(tileId);
     document.body.style.userSelect = "none";
@@ -269,22 +346,23 @@ export function PackedSessionGrid({
           const placement = placementById.get(tile.id);
           if (!placement) return null;
 
-          const left = (placement.column - 1) * (columnWidth + GRID_GAP_PX);
+          const left = (placement.column - 1) * (trackWidth + GRID_GAP_PX);
           const top = (placement.row - 1) * (rowHeight + GRID_GAP_PX);
-          const width = computePackedSpanPixels(placement.colSpan, columnWidth);
+          const width = computePackedSpanPixels(placement.colSpan, trackWidth);
           const height = computePackedSpanPixels(placement.rowSpan, rowHeight);
+          const slotStart = Math.ceil(placement.column / GRID_COLUMN_SUBDIVISIONS);
 
           return (
             <section
               key={tile.id}
               data-grid-tile-id={tile.id}
+              data-grid-slot-start={slotStart}
               data-grid-col-start={placement.column}
               data-grid-col-span={placement.colSpan}
               data-grid-row-start={placement.row}
               data-grid-row-span={placement.rowSpan}
               className={cn(
-                "group absolute flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md",
-                tile.className,
+                "group absolute min-h-0 min-w-0",
               )}
               style={{
                 left,
@@ -294,17 +372,25 @@ export function PackedSessionGrid({
               }}
               onMouseDown={() => tile.onSelect?.()}
             >
-              {tile.header}
-              <div className="min-h-0 flex-1 overflow-hidden">{tile.children}</div>
+              <div className={cn(
+                "flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-md",
+                tile.className,
+              )}>
+                {tile.header}
+                <div className="min-h-0 flex-1 overflow-hidden">{tile.children}</div>
+              </div>
+              <div
+                className={cn(
+                  "pointer-events-none absolute inset-0 rounded-md border border-white/[0.04] transition-opacity",
+                  tile.selected || resizingTileId === tile.id ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                )}
+              />
               {RESIZE_HANDLES.map((handle) => (
                 <div
                   key={handle.direction}
                   data-grid-resize-handle={handle.direction}
-                  className={cn(
-                    "absolute z-10 opacity-0 transition-opacity group-hover:opacity-100",
-                    resizingTileId === tile.id ? "opacity-100" : "",
-                  )}
-                  style={handle.style}
+                  className="absolute z-20 rounded-md"
+                  style={{ ...handle.style, touchAction: "none" }}
                   onPointerDown={(event) => beginResize(tile.id, handle.direction, event)}
                 />
               ))}

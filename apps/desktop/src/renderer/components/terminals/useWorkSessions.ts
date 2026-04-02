@@ -55,6 +55,16 @@ function mapUrlStatusFilter(statusParamRaw: string): WorkStatusFilter | null {
   return null;
 }
 
+type QueuedRefresh = {
+  showLoading: boolean;
+  force: boolean;
+  deferred: {
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (reason: unknown) => void;
+  };
+};
+
 export function useWorkSessions() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -71,7 +81,7 @@ export function useWorkSessions() {
   const [closingChatSessionId, setClosingChatSessionId] = useState<string | null>(null);
   const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
   const refreshInFlightRef = useRef(false);
-  const refreshQueuedRef = useRef<{ showLoading: boolean; force: boolean } | null>(null);
+  const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
@@ -262,11 +272,23 @@ export function useWorkSessions() {
   const refresh = useCallback(async (options: { showLoading?: boolean; force?: boolean } = {}) => {
     const showLoading = options.showLoading ?? true;
     if (refreshInFlightRef.current) {
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current.showLoading = refreshQueuedRef.current.showLoading || showLoading;
+        refreshQueuedRef.current.force = refreshQueuedRef.current.force || Boolean(options.force);
+        return refreshQueuedRef.current.deferred.promise;
+      }
+      let resolve!: () => void;
+      let reject!: (reason: unknown) => void;
+      const promise = new Promise<void>((nextResolve, nextReject) => {
+        resolve = nextResolve;
+        reject = nextReject;
+      });
       refreshQueuedRef.current = {
-        showLoading: (refreshQueuedRef.current?.showLoading ?? false) || showLoading,
-        force: (refreshQueuedRef.current?.force ?? false) || Boolean(options.force),
+        showLoading,
+        force: Boolean(options.force),
+        deferred: { promise, resolve, reject },
       };
-      return;
+      return promise;
     }
     refreshInFlightRef.current = true;
     if (showLoading) setLoading(true);
@@ -285,7 +307,8 @@ export function useWorkSessions() {
       const queued = refreshQueuedRef.current;
       refreshQueuedRef.current = null;
       if (queued) {
-        void refresh(queued);
+        void refresh({ showLoading: queued.showLoading, force: queued.force })
+          .then(queued.deferred.resolve, queued.deferred.reject);
       }
     }
   }, []);
@@ -296,7 +319,6 @@ export function useWorkSessions() {
       session,
       laneName,
     });
-    hasLoadedOnceRef.current = true;
     setSessions((prev) => {
       const next = [optimistic, ...prev.filter((entry) => entry.id !== session.id)];
       next.sort((left, right) => (
@@ -463,6 +485,7 @@ export function useWorkSessions() {
             status: session.status,
             lastOutputPreview: session.lastOutputPreview,
             runtimeState: session.runtimeState,
+            toolType: session.toolType,
           }) === "running",
       ),
     [filtered],
@@ -476,6 +499,7 @@ export function useWorkSessions() {
             status: session.status,
             lastOutputPreview: session.lastOutputPreview,
             runtimeState: session.runtimeState,
+            toolType: session.toolType,
           }) === "awaiting-input",
       ),
     [filtered],
@@ -489,6 +513,7 @@ export function useWorkSessions() {
             status: session.status,
             lastOutputPreview: session.lastOutputPreview,
             runtimeState: session.runtimeState,
+            toolType: session.toolType,
           }) === "ended",
       ),
     [filtered],
@@ -523,7 +548,7 @@ export function useWorkSessions() {
   }, [openItemIds, sessionsById]);
 
   const gridLayoutId = useMemo(
-    () => `work:grid:v1:${projectRoot ?? "global"}`,
+    () => `work:grid:v2:${projectRoot ?? "global"}`,
     [projectRoot],
   );
 

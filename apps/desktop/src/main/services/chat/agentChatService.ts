@@ -2496,7 +2496,15 @@ export function createAgentChatService(args: {
   const hasClaudeAskUserAnswers = (input: Record<string, unknown>): boolean => {
     const answers = asRecord(input.answers);
     if (!answers) return false;
-    return Object.values(answers).some((value) => typeof value === "string" && value.trim().length > 0);
+    const hasAnswerValue = (value: unknown): boolean => {
+      if (typeof value === "string") return value.trim().length > 0;
+      if (Array.isArray(value)) return value.some((item) => hasAnswerValue(item));
+      if (value && typeof value === "object") {
+        return Object.values(value as Record<string, unknown>).some((item) => hasAnswerValue(item));
+      }
+      return value != null && value !== false;
+    };
+    return Object.values(answers).some((value) => hasAnswerValue(value));
   };
 
   const buildClaudeAskUserPendingRequest = (
@@ -2513,6 +2521,9 @@ export function createAgentChatService(args: {
 
       const question = typeof questionRecord.question === "string" ? questionRecord.question.trim() : "";
       if (!question.length) continue;
+      const questionId = typeof questionRecord.id === "string" && questionRecord.id.trim().length > 0
+        ? questionRecord.id.trim()
+        : question;
 
       const header = typeof questionRecord.header === "string" ? questionRecord.header.trim() : "";
       const isMultiSelect = questionRecord.multiSelect === true;
@@ -2525,19 +2536,23 @@ export function createAgentChatService(args: {
             if (!label.length) return null;
             const description = typeof optionRecord.description === "string" ? optionRecord.description.trim() : "";
             const preview = typeof optionRecord.preview === "string" ? optionRecord.preview : "";
+            const previewFormat: "markdown" | "html" =
+              optionRecord.previewFormat === "html" || optionRecord.previewFormat === "markdown"
+                ? optionRecord.previewFormat
+                : "markdown";
             return {
               label,
               value: label,
               ...(description.length ? { description } : {}),
               ...(label.endsWith("(Recommended)") ? { recommended: true } : {}),
-              ...(preview.trim().length ? { preview, previewFormat: "html" as const } : {}),
+              ...(preview.trim().length ? { preview, previewFormat } : {}),
             };
           })
           .filter((option): option is NonNullable<typeof option> => option != null)
         : [];
 
       questions.push({
-        id: question,
+        id: questionId,
         question,
         ...(header.length ? { header } : {}),
         ...(options.length ? { options } : {}),
@@ -2997,9 +3012,8 @@ export function createAgentChatService(args: {
     chatSessionId?: string | null,
     computerUsePolicy?: ComputerUsePolicy | null,
   ): Record<string, Record<string, unknown>> => {
-    // CLI providers (claude/codex) spawn the MCP server as a plain Node child
-    // process via stdio.  Skip the Electron bundled-proxy so the command
-    // resolves to `node dist/index.cjs` which the CLI can manage as stdio.
+    // Chat surfaces should use ADE's standard MCP launch resolution so both
+    // packaged and dev builds can route through the proxy when needed.
     const launch = resolveAdeMcpServerLaunch({
       projectRoot,
       workspaceRoot,
@@ -3008,7 +3022,6 @@ export function createAgentChatService(args: {
       ownerId: ownerId ?? undefined,
       chatSessionId: chatSessionId ?? undefined,
       computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
-      preferBundledProxy: false,
     });
     return providerResolver.normalizeCliMcpServers(provider, {
       ade: {
@@ -3141,7 +3154,6 @@ export function createAgentChatService(args: {
       ownerId: ownerId ?? undefined,
       chatSessionId: chatSessionId ?? undefined,
       computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
-      preferBundledProxy: false,
     });
 
     const mergedEnv: Record<string, string> = {};
@@ -5668,6 +5680,7 @@ export function createAgentChatService(args: {
     const emitClaudeToolCompletion = (
       itemId: string,
       result: Record<string, unknown>,
+      status: "completed" | "failed" | "interrupted",
     ): void => {
       const toolMeta = openClaudeToolUses.get(itemId);
       if (!toolMeta) return;
@@ -5678,7 +5691,7 @@ export function createAgentChatService(args: {
         result,
         itemId,
         turnId,
-        status: "completed",
+        status,
       });
     };
     const completeClaudeToolUsesFromSummary = (
@@ -5693,7 +5706,7 @@ export function createAgentChatService(args: {
           synthetic: true,
           source: "claude_tool_use_summary",
           summary: cleanedSummary || `Completed ${openClaudeToolUses.get(normalizedToolUseId)?.toolName ?? "tool"}.`,
-        });
+        }, "completed");
       }
     };
     const flushOpenClaudeToolUses = (
@@ -5706,7 +5719,7 @@ export function createAgentChatService(args: {
           source: "claude_turn_finalization",
           finalTurnStatus,
           summary: `Completed ${toolMeta.toolName} when the Claude turn ended.`,
-        });
+        }, finalTurnStatus);
       }
     };
     const maybeEmitTodoUpdate = (toolName: string, input: unknown, itemId: string): void => {
@@ -8689,7 +8702,7 @@ export function createAgentChatService(args: {
     if (!lightweight) {
       opts.toolConfig = {
         askUserQuestion: {
-          previewFormat: "html",
+          previewFormat: "markdown",
         },
       };
       opts.systemPrompt = {

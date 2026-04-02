@@ -14,6 +14,32 @@ describe("packedSessionGridMath", () => {
         containerWidth: 1500,
         tileCount: 3,
         minTileWidth: 440,
+        containerHeight: 1200,
+        defaultRowSpan: 3,
+      }),
+    ).toBe(3);
+  });
+
+  it("prefers a balanced 3x2 layout over a sparse 4x2 layout for six wide chat tiles", () => {
+    expect(
+      computeGridColumnCount({
+        containerWidth: 2200,
+        containerHeight: 1200,
+        tileCount: 6,
+        minTileWidth: 440,
+        defaultRowSpan: 3,
+      }),
+    ).toBe(3);
+  });
+
+  it("uses three columns for five wide chat tiles when that minimizes rows and empty space", () => {
+    expect(
+      computeGridColumnCount({
+        containerWidth: 2200,
+        containerHeight: 1200,
+        tileCount: 5,
+        minTileWidth: 440,
+        defaultRowSpan: 3,
       }),
     ).toBe(3);
   });

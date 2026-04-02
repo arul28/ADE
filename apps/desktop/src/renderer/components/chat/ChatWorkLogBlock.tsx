@@ -20,7 +20,7 @@ import {
 } from "./chatTranscriptRows";
 import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
-import { ChatStatusGlyph, chatStatusTextClass } from "./chatStatusVisuals";
+import { ChatStatusGlyph, chatStatusTextClass, type ChatStatusVisualState } from "./chatStatusVisuals";
 import { replaceInternalToolNames } from "./toolPresentation";
 
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 4;
@@ -127,8 +127,9 @@ function workToneIcon(entry: ChatWorkLogEntry): { icon: Icon; className: string 
   return { icon: Warning, className: "text-fg/34" };
 }
 
-function workStatusState(status: ChatWorkLogEntry["status"]): "working" | "completed" | "failed" {
+function workStatusState(status: ChatWorkLogEntry["status"]): ChatStatusVisualState {
   if (status === "completed" || status === "failed") return status;
+  if (status === "interrupted") return "waiting";
   return "working";
 }
 
@@ -138,6 +139,8 @@ function workStatusLabel(status: ChatWorkLogEntry["status"]): string {
       return "completed";
     case "failed":
       return "failed";
+    case "interrupted":
+      return "interrupted";
     default:
       return "running";
   }
@@ -150,13 +153,15 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
     const targetLine = meta.getTarget ? meta.getTarget(args) : null;
 
     if (meta.label === "Shell") {
-      return targetLine ? `Run ${summarizeInlineText(targetLine, 72)}` : "Run shell";
+      return "Run shell";
     }
     if (meta.label === "Read") {
       return targetLine ? `Read ${basenamePathLabel(targetLine)}` : "Read files";
     }
     if (meta.label === "Search") {
-      return targetLine ? `Search ${summarizeInlineText(targetLine, 72)}` : "Search";
+      return meta.category === "web"
+        ? "Search web"
+        : targetLine ? `Search ${summarizeInlineText(targetLine, 72)}` : "Search";
     }
     if (meta.label === "Find Files") {
       return targetLine ? `Find ${summarizeInlineText(targetLine, 72)}` : "Find files";
@@ -184,7 +189,7 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
   }
 
   if (entry.entryKind === "command") {
-    return entry.command?.trim().length ? `Run ${summarizeInlineText(entry.command, 72)}` : "Run shell";
+    return "Run shell";
   }
 
   if (entry.entryKind === "file_change") {
@@ -196,7 +201,7 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
   }
 
   if (entry.entryKind === "web_search") {
-    return entry.query?.trim().length ? `Search ${summarizeInlineText(entry.query, 72)}` : "Search web";
+    return "Search web";
   }
 
   return entry.label;
@@ -204,7 +209,7 @@ function workEntryHeading(entry: ChatWorkLogEntry): string {
 
 function workEntryPreview(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "command") {
-    return summarizeInlineText(entry.command ?? "", 110);
+    return "Run shell";
   }
 
   if (entry.entryKind === "file_change") {
@@ -222,10 +227,15 @@ function workEntryPreview(entry: ChatWorkLogEntry): string {
   }
 
   if (entry.entryKind === "web_search") {
-    return summarizeInlineText(entry.query ?? "", 110);
+    return "Search web";
   }
 
   if (entry.entryKind === "tool") {
+    if (entry.toolName) {
+      const meta = getToolMeta(entry.toolName);
+      if (meta.label === "Shell") return "Run shell";
+      if (meta.label === "Search" && meta.category === "web") return "Search web";
+    }
     const resultRecord = readRecord(entry.result);
     const resultSummary = typeof resultRecord?.summary === "string" ? resultRecord.summary.trim() : "";
     if (resultSummary.length > 0) {

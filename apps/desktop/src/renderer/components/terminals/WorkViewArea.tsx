@@ -390,7 +390,7 @@ export function WorkViewArea({
         </div>
       </div>
 
-      <div className="relative min-h-0 flex-1" style={{ background: "var(--color-card)" }}>
+      <div className="relative min-h-0 flex-1" style={{ background: "var(--color-bg)" }}>
         {activeRunningTerminalSession ? (
           <TerminalView
             key={activeRunningTerminalSession.id}

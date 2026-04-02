@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { CaretDown, CaretRight, Terminal, MagnifyingGlass, Funnel, Plus } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
@@ -16,6 +17,7 @@ function bucketSessions(sessions: TerminalSessionSummary[]) {
       status: s.status,
       lastOutputPreview: s.lastOutputPreview,
       runtimeState: s.runtimeState,
+      toolType: s.toolType,
     });
     if (b === "running") running.push(s);
     else if (b === "awaiting-input") awaiting.push(s);
@@ -120,6 +122,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   toggleWorkLaneCollapsed: (laneId: string) => void;
   sessionsGroupedByLane: Map<string, TerminalSessionSummary[]> | null;
 }) {
+  const navigate = useNavigate();
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
 
   const hasAnySessions =
@@ -357,6 +360,24 @@ export const SessionListPane = React.memo(function SessionListPane({
         ) : (
           groupedByStatusList
         )}
+      </div>
+
+      {/* Add Lane button */}
+      <div className="shrink-0 px-2 pb-2 pt-1" style={{ borderTop: "1px solid var(--work-pane-border)" }}>
+        <button
+          type="button"
+          className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition-colors hover:bg-white/[0.06]"
+          style={{
+            color: "var(--color-muted-fg)",
+            border: "1px solid rgba(255,255,255,0.06)",
+            background: "rgba(255,255,255,0.02)",
+            cursor: "pointer",
+          }}
+          onClick={() => navigate("/lanes?action=create")}
+        >
+          <Plus size={11} weight="bold" />
+          Add Lane
+        </button>
       </div>
     </div>
   );

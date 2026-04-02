@@ -155,7 +155,7 @@ export type AgentChatEvent =
       logicalItemId?: string;
       parentItemId?: string;
       turnId?: string;
-      status?: "running" | "completed" | "failed";
+      status?: "running" | "completed" | "failed" | "interrupted";
     }
   | {
       type: "file_change";

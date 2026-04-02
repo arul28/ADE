@@ -34,6 +34,7 @@ function isActiveSession(session: TerminalSessionSummary): boolean {
     status: session.status,
     lastOutputPreview: session.lastOutputPreview,
     runtimeState: session.runtimeState,
+    toolType: session.toolType,
   }) !== "ended";
 }
 
@@ -144,6 +145,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [refresh]);
 
   const upsertOptimisticChatSession = useCallback((session: AgentChatSession) => {
+    if (!laneId || session.laneId !== laneId) return;
     const laneName = currentLane?.name ?? lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId;
     const optimistic = buildOptimisticChatSessionSummary({
       session,
@@ -157,7 +159,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       ));
       return next;
     });
-  }, [currentLane?.name, lanes]);
+  }, [currentLane?.name, laneId, lanes]);
 
   useEffect(() => {
     setSessions([]);
@@ -242,7 +244,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [laneOpenItemIds, sessionsById]);
 
   const gridLayoutId = useMemo(
-    () => `work:grid:v1:${projectRoot ?? "global"}::${laneId ?? "none"}`,
+    () => `work:grid:v2:${projectRoot ?? "global"}::${laneId ?? "none"}`,
     [laneId, projectRoot],
   );
 
@@ -452,11 +454,15 @@ export function useLaneWorkSessions(laneId: string | null) {
 
   const handleOpenChatSession = useCallback((session: AgentChatSession) => {
     selectLane(session.laneId);
+    if (!laneId || session.laneId !== laneId) {
+      focusSession(session.id);
+      return;
+    }
     upsertOptimisticChatSession(session);
     focusSession(session.id);
     openSessionTab(session.id);
     void refresh({ showLoading: false, force: true });
-  }, [focusSession, openSessionTab, refresh, selectLane, upsertOptimisticChatSession]);
+  }, [focusSession, laneId, openSessionTab, refresh, selectLane, upsertOptimisticChatSession]);
 
   const closePtySession = useCallback(async (ptyId: string) => {
     setClosingPtyIds((prev) => {

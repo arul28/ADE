@@ -113,7 +113,7 @@ describe("AgentQuestionModal", () => {
     const { onClose } = renderModal(request);
 
     fireEvent.keyDown(window, { key: "Escape" });
-    fireEvent.click(screen.getByText("Blocking clarification").closest(".fixed") as HTMLElement);
+    fireEvent.click(screen.getByTestId("agent-question-modal-overlay"));
 
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("Close question modal")).toBeNull();
@@ -186,13 +186,20 @@ describe("AgentQuestionModal", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Reply" }), {
       target: { value: "Use the shared modal everywhere chat questions appear." },
     });
-    fireEvent.keyDown(window, { key: "Enter", metaKey: true });
 
-    expect(onSubmit).toHaveBeenCalledWith({
+    const expectedPayload = {
       answers: {
         reply: "Use the shared modal everywhere chat questions appear.",
       },
       responseText: "Use the shared modal everywhere chat questions appear.",
-    });
+    };
+
+    fireEvent.keyDown(window, { key: "Enter", metaKey: true });
+    expect(onSubmit).toHaveBeenCalledWith(expectedPayload);
+
+    onSubmit.mockClear();
+
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
+    expect(onSubmit).toHaveBeenCalledWith(expectedPayload);
   });
 });

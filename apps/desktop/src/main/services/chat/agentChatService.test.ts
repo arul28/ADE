@@ -584,6 +584,18 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
   throw new Error("Timed out waiting for agent chat event.");
 }
 
+function expectResolvedMcpLaunchesToUseStandardProxyFlow(): void {
+  const calls = vi.mocked(resolveAdeMcpServerLaunch).mock.calls;
+  expect(calls.length).toBeGreaterThan(0);
+  for (const [args] of calls) {
+    // Regression guard: packaged chat surfaces must not force the direct
+    // headless MCP path. A previous refactor set preferBundledProxy=false,
+    // which bypassed the working ADE proxy path and broke Claude/Codex chat
+    // MCP initialization before the first turn could start.
+    expect((args as { preferBundledProxy?: boolean }).preferBundledProxy).toBeUndefined();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -806,6 +818,7 @@ describe("createAgentChatService", () => {
 
     it("pre-approves ADE MCP tools for Claude SDK sessions", async () => {
       vi.mocked(providerResolver.normalizeCliMcpServers).mockImplementation((_provider, servers) => servers ?? {});
+      vi.mocked(resolveAdeMcpServerLaunch).mockClear();
       vi.mocked(unstable_v2_createSession).mockReturnValue({
         send: vi.fn(),
         stream: vi.fn(async function* () {
@@ -832,9 +845,12 @@ describe("createAgentChatService", () => {
       } | undefined;
       expect(opts?.mcpServers).toHaveProperty("ade");
       expect(opts?.allowedTools).toContain("mcp__ade__*");
+      // This explicitly protects the Claude chat surface, which shares the
+      // same MCP launch helper as the other chat providers.
+      expectResolvedMcpLaunchesToUseStandardProxyFlow();
     });
 
-    it("requests HTML previews for Claude AskUserQuestion", async () => {
+    it("requests markdown previews for Claude AskUserQuestion by default", async () => {
       vi.mocked(unstable_v2_createSession).mockReturnValue({
         send: vi.fn(),
         stream: vi.fn(async function* () {
@@ -858,7 +874,7 @@ describe("createAgentChatService", () => {
       const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
         toolConfig?: { askUserQuestion?: { previewFormat?: string } };
       } | undefined;
-      expect(opts?.toolConfig?.askUserQuestion?.previewFormat).toBe("html");
+      expect(opts?.toolConfig?.askUserQuestion?.previewFormat).toBe("markdown");
     });
 
     it("attaches ADE MCP servers through the Claude V2 query controls", async () => {
@@ -1418,6 +1434,10 @@ describe("createAgentChatService", () => {
         expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
       });
 
+      // Codex app-server was the first place this surfaced in production, so
+      // keep a dedicated assertion on the actual Codex chat path too.
+      expectResolvedMcpLaunchesToUseStandardProxyFlow();
+
       const workspaceRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
         .map(([args]) => (args as { workspaceRoot?: string }).workspaceRoot)
         .filter((value): value is string => typeof value === "string");
@@ -1449,6 +1469,7 @@ describe("createAgentChatService", () => {
       vi.mocked(createUniversalToolSet).mockClear();
       vi.mocked(createWorkflowTools).mockClear();
       vi.mocked(buildCodingAgentSystemPrompt).mockClear();
+      vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
       const selectedLaneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(selectedLaneRootPath, { recursive: true });
@@ -1474,6 +1495,12 @@ describe("createAgentChatService", () => {
       expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
         expect.objectContaining({ cwd: selectedLaneRoot }),
       );
+      await vi.waitFor(() => {
+        expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
+      });
+      // Unified/API-backed chats also inject ADE MCP through the same launch
+      // resolver, so guard them here as well.
+      expectResolvedMcpLaunchesToUseStandardProxyFlow();
 
       const firstMessages = Array.isArray(streamCalls[0]?.messages)
         ? (streamCalls[0]!.messages as Array<{ role: string; content: unknown }>)
@@ -4778,7 +4805,7 @@ describe("createAgentChatService", () => {
     ]);
     expect(request.questions[0]?.options?.[0]).toMatchObject({
       preview: "<div><strong>Inline only</strong><p>Compact stream, no bottom summary card.</p></div>",
-      previewFormat: "html",
+      previewFormat: "markdown",
     });
 
     await service.respondToInput({
@@ -4806,6 +4833,7 @@ describe("createAgentChatService", () => {
 
   it("initializes the Cursor runtime before validating the first turn", async () => {
     const events: AgentChatEventEnvelope[] = [];
+    vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
     const { service } = createService({
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -4834,6 +4862,13 @@ describe("createAgentChatService", () => {
     expect(vi.mocked(acquireCursorAcpConnection)).toHaveBeenCalledTimes(1);
     expect(mockState.cursorNewSessionCalls).toHaveLength(1);
     expect(mockState.cursorPromptCalls).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
+    });
+    // Cursor chat used the same shared MCP launch path, so we keep a separate
+    // assertion to ensure future chat refactors do not regress just one
+    // surface while leaving the others green.
+    expectResolvedMcpLaunchesToUseStandardProxyFlow();
     expect(
       events.some((event) => event.event.type === "error" && event.event.message.includes("No runtime initialized")),
     ).toBe(false);

@@ -54,7 +54,13 @@ export function TerminalsPage() {
       work.upsertOptimisticChatSession(session);
       work.focusSession(session.id);
       work.openSessionTab(session.id);
-      void work.refresh({ showLoading: false, force: true }).catch(() => {});
+      void work.refresh({ showLoading: false, force: true }).catch((err: unknown) => {
+        console.error("[TerminalsPage] refresh after opening chat session failed", {
+          sessionId: session.id,
+          laneId: session.laneId,
+          err,
+        });
+      });
     },
     [work],
   );

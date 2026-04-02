@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   CaretDown,
@@ -345,7 +346,8 @@ function MessageCopyButton({
 
 /* ── Status indicators ── */
 
-function StatusIcon({ status }: { status: "running" | "completed" | "failed" }) {
+function StatusIcon({ status }: { status: "running" | "completed" | "failed" | "interrupted" }) {
+  if (status === "interrupted") return <ChatStatusGlyph status="waiting" size={13} />;
   if (status === "completed" || status === "failed") return <ChatStatusGlyph status={status} size={13} />;
   return <ChatStatusGlyph status="working" size={13} />;
 }
@@ -372,6 +374,8 @@ function statusColorClass(status: string | undefined): string {
   switch (status) {
     case "failed":
       return "text-red-400/70";
+    case "interrupted":
+      return "text-amber-400/70";
     case "running":
       return "text-amber-400/70";
     default:
@@ -1130,7 +1134,17 @@ function renderEvent(
       );
     }
     return (
-      <div className="flex justify-end">
+      <motion.div
+        className="flex justify-end"
+        initial={{ opacity: 0.7, y: 20, scale: 1.02 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{
+          type: "spring",
+          stiffness: 300,
+          damping: 24,
+          mass: 0.8,
+        }}
+      >
         <div className={cn(GLASS_CARD_CLASS, "group relative max-w-[82%] px-4 py-2.5")} style={MESSAGE_CARD_STYLE}>
           {deliveryChip ? (
             <span className={cn("mb-1 inline-flex items-center border px-1.5 py-0.5 font-sans text-[9px] font-medium", deliveryChip.className)}>
@@ -1145,7 +1159,7 @@ function renderEvent(
             <ChatAttachmentTray attachments={event.attachments} mode={options?.surfaceMode ?? "standard"} className="mt-1 px-0 py-0" />
           ) : null}
         </div>
-      </div>
+      </motion.div>
     );
   }
 
@@ -2401,8 +2415,11 @@ function TurnSummaryCard({
           <div className="flex flex-wrap items-center gap-2 text-[12px] text-fg/72">
             <Robot size={12} weight="regular" className="text-fg/38" />
             <span>
-              {summary.backgroundAgentCount} running in the background
-              {summary.activeBackgroundAgentCount > 0 ? `, ${summary.activeBackgroundAgentCount} currently active` : ""}
+              {summary.activeBackgroundAgentCount === summary.backgroundAgentCount
+                ? `${summary.backgroundAgentCount} ${summary.backgroundAgentCount === 1 ? "agent is" : "agents are"} running in the background`
+                : summary.activeBackgroundAgentCount > 0
+                  ? `${summary.backgroundAgentCount} ${summary.backgroundAgentCount === 1 ? "agent ran" : "agents ran"} in the background, ${summary.activeBackgroundAgentCount} currently running`
+                  : `${summary.backgroundAgentCount} ${summary.backgroundAgentCount === 1 ? "agent ran" : "agents ran"} in the background`}
             </span>
           </div>
         </div>

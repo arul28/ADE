@@ -141,6 +141,8 @@ export function WorkStartSurface({
             forceDraftMode
             embeddedWorkLayout
             onSessionCreated={onOpenChatSession}
+            availableLanes={lanes}
+            onLaneChange={setLaneAndSync}
           />
         </div>
       </div>
@@ -151,11 +153,31 @@ export function WorkStartSurface({
   if (draftKind === "cli") {
     return (
       <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
+        {/* ADE logo with subtle glow */}
+        <div className="relative mb-6">
+          <div
+            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[400px] w-[400px] rounded-full pointer-events-none"
+            style={{
+              background: "var(--color-accent)",
+              opacity: 0.08,
+              filter: "blur(100px)",
+            }}
+          />
+          <img
+            src="./logo.png"
+            alt="ADE"
+            className="relative z-10 w-64 h-64 object-contain"
+            style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
+          />
+        </div>
         <div
           className="flex w-full max-w-sm flex-col gap-4 rounded-lg p-5"
           style={{
-            background: "var(--color-surface)",
-            border: "1px solid var(--work-pane-border)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+            background: "rgba(30, 30, 40, 0.7)",
+            border: "1px solid rgba(255, 255, 255, 0.08)",
+            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
           }}
         >
           {/* Lane */}
@@ -237,11 +259,31 @@ export function WorkStartSurface({
   /* ---- Shell draft ---- */
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
+      {/* ADE logo with subtle glow */}
+      <div className="relative mb-6">
+        <div
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[200px] w-[200px] rounded-full pointer-events-none"
+          style={{
+            background: "var(--color-accent)",
+            opacity: 0.08,
+            filter: "blur(80px)",
+          }}
+        />
+        <img
+          src="./logo.png"
+          alt="ADE"
+          className="relative z-10 h-[140px] w-[140px] object-contain"
+          style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
+        />
+      </div>
       <div
         className="flex w-full max-w-sm flex-col gap-4 rounded-lg p-5"
         style={{
-          background: "var(--color-surface)",
-          border: "1px solid var(--work-pane-border)",
+          backdropFilter: "blur(20px)",
+          WebkitBackdropFilter: "blur(20px)",
+          background: "rgba(30, 30, 40, 0.7)",
+          border: "1px solid rgba(255, 255, 255, 0.08)",
+          boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
         }}
       >
         {/* Lane */}

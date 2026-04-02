@@ -1116,7 +1116,7 @@ export function AgentChatComposer({
         <div className="flex items-center gap-2 px-3 py-1.5">
           {/* Left: permission + model controls */}
           <div className="flex min-w-0 items-center gap-1.5">
-            {nativeControlPanel}
+            {(chatHasMessages || turnActive) ? nativeControlPanel : null}
             <UnifiedModelSelector
               value={modelId}
               onChange={onModelChange}
@@ -1324,7 +1324,7 @@ export function AgentChatComposer({
               ? { maxHeight: `${composerMaxHeightPx}px` }
               : undefined}
             data-chat-layout-variant={layoutVariant}
-            placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Message the assistant..."))}
+            placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode..."))}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
           />

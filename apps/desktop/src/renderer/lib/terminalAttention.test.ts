@@ -22,6 +22,17 @@ describe("terminalAttention", () => {
     ).toBe("running-needs-attention");
   });
 
+  it("treats idle chat sessions as a static ready state", () => {
+    expect(
+      sessionIndicatorState({
+        status: "running",
+        lastOutputPreview: "Completed response",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+      }),
+    ).toBe("running-needs-attention");
+  });
+
   describe("sessionStatusDot", () => {
     it("returns a spinning emerald dot for a running active session", () => {
       const dot = sessionStatusDot({
@@ -41,6 +52,18 @@ describe("terminalAttention", () => {
       expect(dot.spinning).toBe(false);
       expect(dot.cls).toContain("amber");
       expect(dot.label).toBe("Awaiting input");
+    });
+
+    it("returns a solid amber dot for an idle chat session", () => {
+      const dot = sessionStatusDot({
+        status: "running",
+        lastOutputPreview: "Completed response",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+      });
+      expect(dot.spinning).toBe(false);
+      expect(dot.cls).toContain("amber");
+      expect(dot.label).toBe("Ready");
     });
 
     it("returns a solid red dot for an ended session", () => {

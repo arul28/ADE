@@ -1092,11 +1092,13 @@ export function TerminalView({
     const raf = requestAnimationFrame(() => {
       clearTextureAtlas(runtime);
       doFit(runtime, true);
-      try {
-        runtime.term.focus();
-        runtime.term.scrollToBottom();
-      } catch {
-        // ignore
+      if (isVisible) {
+        try {
+          runtime.term.focus();
+          runtime.term.scrollToBottom();
+        } catch {
+          // ignore
+        }
       }
     });
 
@@ -1105,10 +1107,12 @@ export function TerminalView({
       if (runtime.disposed) return;
       clearTextureAtlas(runtime);
       doFit(runtime, true);
-      try {
-        runtime.term.focus();
-      } catch {
-        // ignore
+      if (isVisible) {
+        try {
+          runtime.term.focus();
+        } catch {
+          // ignore
+        }
       }
     }, 100);
 
@@ -1116,7 +1120,7 @@ export function TerminalView({
       cancelAnimationFrame(raf);
       clearTimeout(timer);
     };
-  }, [isActive, sessionId]);
+  }, [isActive, isVisible, sessionId]);
 
   return (
     <div

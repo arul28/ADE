@@ -3,7 +3,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { useAppStore } from "../../state/appStore";
 
@@ -56,6 +56,11 @@ vi.mock("../../lib/zoom", () => ({
   getStoredZoomLevel: () => 100,
   displayZoomToLevel: () => 0,
 }));
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location-probe">{location.pathname}</div>;
+}
 
 function resetStore() {
   useAppStore.setState({
@@ -193,5 +198,68 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByTitle("Dismiss for this session"));
 
     expect(screen.queryByText(/ADE context docs need regeneration/i)).toBeNull();
+  });
+
+  it("moves project selection flows from run to work", async () => {
+    useAppStore.setState({
+      project: null,
+      showWelcome: true,
+    } as any);
+    globalThis.window.ade.app.getProject = vi.fn(async () => null);
+
+    render(
+      <MemoryRouter initialEntries={["/project"]}>
+        <AppShell>
+          <LocationProbe />
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("location-probe").textContent).toBe("/project");
+
+    await act(async () => {
+      useAppStore.getState().setProject({ rootPath: "/Users/arul/ADE-next", name: "ADE next" } as any);
+      useAppStore.getState().setShowWelcome(false);
+    });
+
+    expect(await screen.findByText("/work")).toBeTruthy();
+  });
+
+  it("waits for AI status before showing the missing provider banner", async () => {
+    vi.useFakeTimers();
+    try {
+      globalThis.window.ade.ai.getStatus = vi.fn(async () => ({
+        detectedAuth: [],
+        providerConnections: {
+          claude: { authAvailable: false },
+          codex: { authAvailable: false },
+          cursor: { authAvailable: false },
+        },
+        availableProviders: {
+          claude: false,
+          codex: false,
+          cursor: false,
+        },
+      })) as any;
+
+      render(
+        <MemoryRouter initialEntries={["/work"]}>
+          <AppShell>
+            <div>child</div>
+          </AppShell>
+        </MemoryRouter>,
+      );
+
+      expect(screen.queryByText(/No AI provider is configured yet/i)).toBeNull();
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+        await Promise.resolve();
+      });
+
+      expect(screen.getByText(/No AI provider is configured yet/i)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { ChatCircleText, HandPalm, PaperPlaneTilt, X } from "@phosphor-icons/react";
 import type { PendingInputRequest } from "../../../shared/types";
@@ -18,6 +18,29 @@ type QuestionDraft = {
   text: string;
   selectedValues: string[];
   activePreviewValue: string | null;
+};
+
+const SAFE_PREVIEW_SCHEMA = {
+  ...defaultSchema,
+  tagNames: [
+    "p",
+    "ul",
+    "ol",
+    "li",
+    "strong",
+    "em",
+    "code",
+    "pre",
+    "blockquote",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+    "br",
+    "hr",
+  ],
 };
 
 function createEmptyDraft(): QuestionDraft {
@@ -104,13 +127,15 @@ export function AgentQuestionModal({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (!passiveDismissAllowed) return;
+        event.preventDefault();
         event.stopPropagation();
-        onClose();
+        if (passiveDismissAllowed) onClose();
         return;
       }
-      if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canSubmit) {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
+        event.stopPropagation();
+        if (!canSubmit) return;
         handleSubmit();
       }
     };
@@ -120,6 +145,7 @@ export function AgentQuestionModal({
 
   return (
     <div
+      data-testid="agent-question-modal-overlay"
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(78,154,241,0.12),rgba(8,7,12,0.84))] px-4 backdrop-blur-md"
       onClick={(event) => {
         if (passiveDismissAllowed && event.target === event.currentTarget) onClose();
@@ -324,7 +350,7 @@ export function AgentQuestionModal({
                           <div className="max-h-[320px] overflow-auto px-3 py-3 text-[12px] leading-6 text-fg/86">
                             <ReactMarkdown
                               remarkPlugins={[remarkGfm]}
-                              rehypePlugins={[rehypeRaw, rehypeSanitize]}
+                              rehypePlugins={[rehypeRaw, [rehypeSanitize, SAFE_PREVIEW_SCHEMA]]}
                               components={{
                                 p: ({ children }) => <p className="mb-3 whitespace-pre-wrap">{children}</p>,
                                 ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5">{children}</ul>,
