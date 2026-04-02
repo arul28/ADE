@@ -6648,7 +6648,7 @@ export function createAgentChatService(args: {
         // If resume failed, clear sessionId and the caller can retry fresh
         const isStaleSessionError = (err: unknown): boolean => {
           const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-          return msg.includes("session not found") || msg.includes("invalid session") || msg.includes("stale session");
+          return msg.includes("session not found") || msg.includes("invalid session") || msg.includes("stale session") || msg.includes("session expired");
         };
         if (runtime.sdkSessionId && isStaleSessionError(effectiveError)) {
           logger.warn("agent_chat.claude_sdk_session_error", {
