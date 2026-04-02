@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
 import path from "node:path";
-import { execFile, spawnSync } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
 import { resolveDesktopAdeMcpLaunch } from "./services/runtime/adeMcpLaunch";
@@ -101,61 +103,110 @@ async function probeClaudeStartup(
   }
 }
 
-function probeMcpInitialize(args: {
+async function probeMcpInitialize(args: {
   command: string;
   cmdArgs: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
-}): {
+}): Promise<{
   ok: boolean;
   response: unknown | null;
   stderr: string | null;
   error: string | null;
-} {
+}> {
   // Keep this as a real MCP initialize round-trip instead of another cheap
   // "--probe" check. We regressed packaged chats by launching the proxy
   // successfully but routing chat MCP through the wrong path, which only
   // showed up once the client attempted the first initialize handshake.
-  const payload = JSON.stringify({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: {
-      protocolVersion: "2025-06-18",
-      clientInfo: {
-        name: "packaged-runtime-smoke",
-        version: "1.0.0",
-      },
-      capabilities: {},
-    },
+  //
+  // The proxy is a relay that connects to a Unix socket served by the ADE
+  // desktop backend. In CI there is no backend, so we stand up a lightweight
+  // mock MCP server on a short-path temp socket (macOS limits Unix socket
+  // paths to 104 chars which packaged-app temp dirs typically exceed).
+  // We must use async spawn (not spawnSync) so the event loop stays free
+  // for the mock server to handle the proxy's connection.
+  const sockPath = path.join(os.tmpdir(), `ade-smoke-${process.pid}.sock`);
+  try { fs.unlinkSync(sockPath); } catch { /* ignore */ }
+
+  const server = net.createServer((conn) => {
+    let buf = "";
+    conn.on("data", (chunk: Buffer) => {
+      buf += chunk.toString();
+      const idx = buf.indexOf("\n");
+      if (idx === -1) return;
+      const line = buf.slice(0, idx);
+      try {
+        const msg = JSON.parse(line);
+        if (msg.method === "initialize") {
+          conn.write(JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              serverInfo: { name: "ade-mcp-server", version: "smoke-test" },
+            },
+          }) + "\n");
+        }
+      } catch { /* ignore malformed input */ }
+      conn.end();
+    });
   });
 
-  const result = spawnSync(args.command, args.cmdArgs, {
-    cwd: args.cwd,
-    env: args.env,
-    input: `${payload}\n`,
-    encoding: "utf8",
-    timeout: 5_000,
-  });
-
-  const stdout = (result.stdout ?? "").trim();
-  const stderr = (result.stderr ?? "").trim();
-  const error = result.error ? String(result.error.message ?? result.error) : null;
+  await new Promise<void>((resolve) => server.listen(sockPath, resolve));
 
   try {
-    return {
-      ok: result.status === 0,
-      response: stdout ? JSON.parse(stdout) : null,
-      stderr: stderr || null,
-      error,
-    };
-  } catch (parseError) {
-    return {
-      ok: false,
-      response: stdout || null,
-      stderr: stderr || null,
-      error: parseError instanceof Error ? parseError.message : String(parseError),
-    };
+    const payload = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        clientInfo: { name: "packaged-runtime-smoke", version: "1.0.0" },
+        capabilities: {},
+      },
+    });
+
+    const child = spawn(args.command, args.cmdArgs, {
+      cwd: args.cwd,
+      env: { ...args.env, ADE_MCP_SOCKET_PATH: sockPath },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    child.stdin!.write(`${payload}\n`);
+    child.stdin!.end();
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    const killTimer = setTimeout(() => { child.kill(); }, 5_000);
+    const exitCode = await new Promise<number>((resolve) => {
+      child.on("close", (code) => { clearTimeout(killTimer); resolve(code ?? 1); });
+    });
+
+    stdout = stdout.trim();
+    stderr = stderr.trim();
+
+    try {
+      return {
+        ok: exitCode === 0,
+        response: stdout ? JSON.parse(stdout) : null,
+        stderr: stderr || null,
+        error: null,
+      };
+    } catch (parseError) {
+      return {
+        ok: false,
+        response: stdout || null,
+        stderr: stderr || null,
+        error: parseError instanceof Error ? parseError.message : String(parseError),
+      };
+    }
+  } finally {
+    server.close();
+    try { fs.unlinkSync(sockPath); } catch { /* ignore */ }
   }
 }
 
@@ -193,7 +244,7 @@ async function main(): Promise<void> {
     proxyProbeResult = proxyProbeStdout;
   }
 
-  const proxyInitialize = probeMcpInitialize({
+  const proxyInitialize = await probeMcpInitialize({
     command: launch.command,
     cmdArgs: launch.cmdArgs,
     cwd,
