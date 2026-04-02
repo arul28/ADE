@@ -889,6 +889,7 @@ function getUnavailableAiStatus(): AiSettingsStatus {
       dailyUsage: 0,
       dailyLimit: null,
     })),
+    runtimeConnections: {},
     availableModelIds: [],
   };
 }
@@ -2105,6 +2106,7 @@ export function registerIpc({
         models: status.models,
         detectedAuth: status.detectedAuth,
         providerConnections: status.providerConnections,
+        runtimeConnections: status.runtimeConnections,
         availableModelIds: status.availableModelIds,
         apiKeyStore: status.apiKeyStore,
         features: AI_USAGE_FEATURE_KEYS.map((feature) => ({

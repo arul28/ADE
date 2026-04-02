@@ -16,6 +16,7 @@ import {
   createModelOrderMap,
   matchesQuery,
   PROVIDER_BADGE_COLORS,
+  providerLabel,
   subsectionKeyForModel,
   sourceSectionLabel,
   type ModelProviderBlock,
@@ -42,6 +43,11 @@ type UnifiedModelSelectorProps = {
 };
 
 const SOURCE_KEYS: SourceSectionKey[] = ["subscription", "api", "local"];
+const LOCAL_PROVIDER_LABELS: Record<string, string> = {
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+  vllm: "vLLM",
+};
 
 const selectCls = cn(
   "h-8 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 font-sans text-[11px] text-fg/70",
@@ -61,6 +67,21 @@ function providerAccent(family: string, fallback?: string): string {
   return PROVIDER_BADGE_COLORS[family] ?? fallback ?? "#A78BFA";
 }
 
+function getLocalProviderFromModelId(modelId: string): "ollama" | "lmstudio" | "vllm" | null {
+  const provider = String(modelId ?? "").trim().split("/", 1)[0]?.toLowerCase();
+  if (provider === "ollama" || provider === "lmstudio" || provider === "vllm") {
+    return provider;
+  }
+  return null;
+}
+
+function getLocalModelShortLabel(modelId: string): string {
+  const provider = getLocalProviderFromModelId(modelId);
+  if (!provider) return modelId;
+  const tail = String(modelId ?? "").trim().slice(provider.length + 1).trim();
+  return tail.length ? tail : modelId;
+}
+
 function subsectionTabTitle(sub: ModelSubsection): string {
   return sub.label.trim() || "Models";
 }
@@ -69,7 +90,7 @@ function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): s
   if (isAvailable) {
     if (model.family === "cursor" && model.isCliWrapped) return "Cursor CLI ready";
     if (model.isCliWrapped) return "Subscription ready";
-    if (model.authTypes.includes("local")) return "Local ready";
+    if (model.authTypes.includes("local")) return `${providerLabel(model.family)} ready`;
     if (model.authTypes.includes("api-key")) return "API ready";
     if (model.authTypes.includes("oauth")) return "OAuth ready";
     if (model.authTypes.includes("openrouter")) return "OpenRouter ready";
@@ -79,7 +100,7 @@ function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): s
     return "Cursor CLI · run `agent login` or set CURSOR_API_KEY / CURSOR_AUTH_TOKEN";
   }
   if (model.isCliWrapped) return "Subscription · not configured";
-  if (model.authTypes.includes("local")) return "Local · not configured";
+  if (model.authTypes.includes("local")) return `${providerLabel(model.family)} · not configured`;
   if (model.authTypes.includes("api-key")) return "API · not configured";
   if (model.authTypes.includes("oauth")) return "OAuth · not configured";
   if (model.authTypes.includes("openrouter")) return "OpenRouter · not configured";
@@ -110,6 +131,28 @@ function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
       sdkModelId: tail || modelId,
       cliCommand: "cursor",
       isCliWrapped: true,
+    };
+  }
+  const localProvider = getLocalProviderFromModelId(modelId);
+  if (localProvider) {
+    const providerLabel = LOCAL_PROVIDER_LABELS[localProvider];
+    const shortId = getLocalModelShortLabel(modelId);
+    return {
+      id: modelId,
+      shortId,
+      displayName: shortId,
+      family: localProvider,
+      authTypes: ["local"],
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { tools: false, vision: false, reasoning: false, streaming: true },
+      color: PROVIDER_BADGE_COLORS[localProvider] ?? "#64748B",
+      sdkProvider: "@ai-sdk/openai-compatible",
+      sdkModelId: modelId,
+      isCliWrapped: false,
+      discoverySource: localProvider === "lmstudio" ? "lmstudio-openai" : localProvider,
+      harnessProfile: "guarded",
+      aliases: [providerLabel],
     };
   }
   return {

@@ -4,6 +4,7 @@
 
 import type { LanguageModel } from "ai";
 import {
+  getLocalProviderDefaultEndpoint,
   getModelById,
   resolveModelAlias,
   type ModelDescriptor,
@@ -101,9 +102,12 @@ function findOpenRouterKey(auth: DetectedAuth[]): string | undefined {
   return undefined;
 }
 
-function findLocalEndpoint(auth: DetectedAuth[], provider: string): string | undefined {
+function findLocalProviderAuth(
+  auth: DetectedAuth[],
+  provider: string,
+): Extract<DetectedAuth, { type: "local" }> | undefined {
   for (const a of auth) {
-    if (a.type === "local" && a.provider === provider) return a.endpoint;
+    if (a.type === "local" && a.provider === provider) return a;
   }
   return undefined;
 }
@@ -122,20 +126,32 @@ const COMPATIBLE_BASE_URLS: Record<string, string> = {
   together: "https://api.together.xyz/v1",
 };
 
-const DEFAULT_LOCAL_ENDPOINTS: Record<"ollama" | "lmstudio" | "vllm", string> = {
-  ollama: "http://localhost:11434",
-  lmstudio: "http://localhost:1234",
-  vllm: "http://localhost:8000",
-};
-
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-async function resolveAutoModelIdFromOpenAiCompatibleEndpoint(
+function normalizePreferredLocalModelId(
+  preferredModelId: string | null | undefined,
+  providerName: string,
+): string | undefined {
+  const normalized = preferredModelId?.trim();
+  if (!normalized) return undefined;
+  const prefix = `${providerName}/`;
+  if (normalized.toLowerCase().startsWith(prefix)) {
+    const trimmed = normalized.slice(prefix.length).trim();
+    return trimmed || undefined;
+  }
+  return normalized;
+}
+
+export async function resolveAutoModelIdFromOpenAiCompatibleEndpoint(
   endpoint: string,
   providerName: string,
+  preferredModelId?: string,
 ): Promise<string> {
+  const preferred = normalizePreferredLocalModelId(preferredModelId ?? null, providerName);
+  if (preferred) return preferred;
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5_000);
   try {
@@ -147,11 +163,18 @@ async function resolveAutoModelIdFromOpenAiCompatibleEndpoint(
       throw new Error(`Failed to list models from ${providerName} (${response.status}).`);
     }
     const payload = await response.json() as { data?: Array<{ id?: unknown }> };
-    const firstModelId = payload.data?.find((entry) => typeof entry?.id === "string" && entry.id.trim().length)?.id;
-    if (!firstModelId || typeof firstModelId !== "string") {
+    const modelIds = (payload.data ?? [])
+      .map((entry) => (typeof entry?.id === "string" ? entry.id.trim() : ""))
+      .filter(Boolean);
+    if (modelIds.length === 0) {
       throw new Error(`${providerName} did not return any usable model IDs.`);
     }
-    return firstModelId.trim();
+    if (modelIds.length > 1) {
+      throw new Error(
+        `${providerName} has multiple loaded models (${modelIds.join(", ")}). Choose a specific model or save a preferred local model.`,
+      );
+    }
+    return modelIds[0]!;
   } finally {
     clearTimeout(timeout);
   }
@@ -161,9 +184,10 @@ async function resolveOpenAiCompatibleModelId(
   sdkModelId: string,
   endpoint: string,
   providerName: string,
+  preferredModelId?: string | null,
 ): Promise<string> {
   if (sdkModelId !== "auto") return sdkModelId;
-  return resolveAutoModelIdFromOpenAiCompatibleEndpoint(endpoint, providerName);
+  return resolveAutoModelIdFromOpenAiCompatibleEndpoint(endpoint, providerName, preferredModelId ?? undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -376,8 +400,14 @@ async function resolveDirectProvider(
       // Local providers (ollama, lmstudio, vllm)
       if (family === "ollama" || family === "lmstudio" || family === "vllm") {
         const localProvider = family;
-        const endpoint = findLocalEndpoint(auth, localProvider) ?? DEFAULT_LOCAL_ENDPOINTS[localProvider];
-        const resolvedModelId = await resolveOpenAiCompatibleModelId(sdkModelId, endpoint, localProvider);
+        const localAuth = findLocalProviderAuth(auth, localProvider);
+        const endpoint = localAuth?.endpoint ?? getLocalProviderDefaultEndpoint(localProvider);
+        const resolvedModelId = await resolveOpenAiCompatibleModelId(
+          sdkModelId,
+          endpoint,
+          localProvider,
+          localAuth?.preferredModelId,
+        );
         const createCompatible = await loadOpenAICompatibleProvider();
         const provider = createCompatible({
           name: localProvider,

@@ -9,6 +9,7 @@ import type { MissionExecutionPolicy, MissionPermissionConfig, MissionProviderPe
 import type { ExternalMcpMissionSelection } from "./externalMcp";
 import type { MissionModelConfig, ModelConfig } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
+import type { LocalProviderFamily } from "../modelRegistry";
 
 // Backward compatible with earlier configs that used `on_crash`.
 export type ProcessRestartPolicy = "never" | "on-failure" | "always" | "on_crash";
@@ -827,8 +828,10 @@ export type AiDetectedAuth = {
   cli?: "claude" | "codex" | "cursor";
   provider?: string;
   source?: "config" | "env" | "store";
+  endpointSource?: "auto" | "config";
   path?: string;
   endpoint?: string;
+  preferredModelId?: ModelId | null;
   authenticated?: boolean;
   verified?: boolean;
 };
@@ -873,6 +876,43 @@ export type AiApiKeyVerificationResult = {
   verifiedAt: string;
 };
 
+export type AiLocalProviderConfig = {
+  enabled?: boolean;
+  endpoint?: string;
+  autoDetect?: boolean;
+  preferredModelId?: ModelId | null;
+};
+
+export type AiLocalProviderConfigs = Partial<Record<LocalProviderFamily, AiLocalProviderConfig>>;
+
+export type AiRuntimeConnectionHealth =
+  | "ready"
+  | "reachable"
+  | "reachable_no_models"
+  | "not_configured"
+  | "unreachable";
+
+export type AiRuntimeConnectionKind = "cli" | "api-key" | "openrouter" | "local";
+
+export type AiRuntimeConnectionStatus = {
+  provider: string;
+  label: string;
+  kind: AiRuntimeConnectionKind;
+  configured: boolean;
+  authAvailable: boolean;
+  runtimeDetected: boolean;
+  runtimeAvailable: boolean;
+  health: AiRuntimeConnectionHealth;
+  source?: "config" | "env" | "store" | "auto";
+  path?: string | null;
+  endpoint?: string | null;
+  blocker: string | null;
+  loadedModelIds?: ModelId[];
+  lastCheckedAt: string;
+};
+
+export type AiRuntimeConnections = Record<string, AiRuntimeConnectionStatus>;
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -888,6 +928,7 @@ export type AiSettingsStatus = {
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
   providerConnections?: AiProviderConnections;
+  runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: ModelId[];
   apiKeyStore?: {
     secureStorageAvailable: boolean;
@@ -1034,6 +1075,7 @@ export type AiConfig = {
   // New unified fields
   defaultModel?: ModelId;
   apiKeys?: Record<string, string>;
+  localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
   mcpServers?: Record<string, unknown>;
   /** Per-feature model overrides, e.g. { mission_planning: "claude-sonnet-4-6" } */
@@ -1059,6 +1101,7 @@ export type AiIntegrationStatus = {
   // New unified fields
   detectedAuth?: AiDetectedAuth[];
   providerConnections?: AiProviderConnections;
+  runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: ModelId[];
 };
 

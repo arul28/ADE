@@ -264,6 +264,125 @@ describe("createUnifiedOrchestratorAdapter", () => {
     });
   });
 
+  it("routes local unified models through the managed chat path instead of the shell fallback", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-unified-local-managed-"));
+    const createSession = vi.fn(async () => ({ id: "session-managed-local-1" }));
+    const adapter = createUnifiedOrchestratorAdapter({
+      workspaceRoot,
+      runtimeRoot: path.join(workspaceRoot, "runtime"),
+      agentChatService: {
+        createSession,
+      } as any,
+    });
+
+    const result = await adapter.start({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {
+          missionGoal: "Implement the worker step",
+        },
+      } as any,
+      step: {
+        id: "step-1",
+        title: "Local implementation worker",
+        stepKey: "local-implementation-worker",
+        laneId: "lane-1",
+        metadata: {
+          modelId: "lmstudio/meta-llama-3.1-70b-instruct",
+          stepType: "implementation",
+        },
+        dependencyStepIds: [],
+        joinPolicy: "all_success",
+      } as any,
+      attempt: { id: "attempt-1" } as any,
+      allSteps: [],
+      contextProfile: {} as any,
+      laneExport: null,
+      projectExport: { content: "" } as any,
+      docsRefs: [],
+      fullDocs: [],
+      permissionConfig: {
+        _providers: {
+          unified: "full-auto",
+        },
+      } as any,
+      createTrackedSession: vi.fn(),
+    } as any);
+
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      provider: "unified",
+      model: "lmstudio/meta-llama-3.1-70b-instruct",
+      modelId: "lmstudio/meta-llama-3.1-70b-instruct",
+    }));
+    expect(result).toMatchObject({
+      status: "accepted",
+      sessionId: "session-managed-local-1",
+      metadata: expect.objectContaining({
+        workerSessionKind: "managed_chat",
+        workerStreamSource: "agent_chat",
+        startupCommandPreview: "[managed chat session]",
+      }),
+    });
+  });
+
+  it("starts guarded local worker sessions in plan mode by default", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-unified-local-guarded-"));
+    const createSession = vi.fn(async () => ({ id: "session-managed-local-plan" }));
+    const adapter = createUnifiedOrchestratorAdapter({
+      workspaceRoot,
+      runtimeRoot: path.join(workspaceRoot, "runtime"),
+      agentChatService: {
+        createSession,
+      } as any,
+    });
+
+    const result = await adapter.start({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: { missionGoal: "Investigate the local worker path" },
+      } as any,
+      step: {
+        id: "step-1",
+        title: "Guarded local worker",
+        stepKey: "guarded-local-worker",
+        laneId: "lane-1",
+        metadata: {
+          modelId: "lmstudio/auto",
+          stepType: "implementation",
+        },
+        dependencyStepIds: [],
+        joinPolicy: "all_success",
+      } as any,
+      attempt: { id: "attempt-1" } as any,
+      allSteps: [],
+      contextProfile: {} as any,
+      laneExport: null,
+      projectExport: { content: "" } as any,
+      docsRefs: [],
+      fullDocs: [],
+      permissionConfig: {} as any,
+      createTrackedSession: vi.fn(),
+    } as any);
+
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "unified",
+      modelId: "lmstudio/auto",
+      unifiedPermissionMode: "plan",
+    }));
+    expect(result).toMatchObject({
+      status: "accepted",
+      launch: expect.objectContaining({
+        permissionMode: "plan",
+      }),
+      metadata: expect.objectContaining({
+        permissionMode: "plan",
+      }),
+    });
+  });
+
   it("forces Codex planning steps into a read-only sandbox", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-unified-codex-"));
     const adapter = createUnifiedOrchestratorAdapter({
@@ -526,6 +645,13 @@ describe("createUnifiedOrchestratorAdapter", () => {
 describe("getUnifiedUnsupportedModelReason", () => {
   it("returns null for supported CLI-wrapped models", () => {
     expect(getUnifiedUnsupportedModelReason("anthropic/claude-sonnet-4-6")).toBeNull();
+  });
+
+  it("describes the shell fallback for API/local models instead of rejecting them globally", () => {
+    const reason = getUnifiedUnsupportedModelReason("lmstudio/meta-llama-3.1-70b-instruct");
+    expect(reason).toContain("shell-startup fallback");
+    expect(reason).toContain("in-process unified execution");
+    expect(reason).toContain("managed unified chat path");
   });
 
   it("returns a not-registered message for unknown model refs", () => {

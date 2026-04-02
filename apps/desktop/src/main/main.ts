@@ -122,6 +122,7 @@ import { createExternalConnectionAuthService } from "./services/externalMcp/exte
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createSyncService } from "./services/sync/syncService";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
 
 /**
@@ -1721,6 +1722,7 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    agentChatService.cleanupStaleAttachments();
 
     // Wire agentChatService into prService for integration resolution
     prService.setAgentChatService(agentChatService);
@@ -3161,6 +3163,10 @@ app.whenReady().then(async () => {
   const updateLogger = createFileLogger(
     path.join(app.getPath("userData"), "ade-update.jsonl"),
   );
+  cleanupStaleTempArtifacts({
+    tempRoot: app.getPath("temp"),
+    logger: updateLogger,
+  });
   const autoUpdateService = createAutoUpdateService({
     logger: updateLogger,
     currentVersion: app.getVersion(),

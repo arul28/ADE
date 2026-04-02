@@ -116,15 +116,18 @@ import type {
   CtoCapabilityMode,
 } from "../../../shared/types";
 import {
+  createDynamicLocalModelDescriptor,
   getDefaultModelDescriptor,
   getModelById,
   getAvailableModels as getRegistryModels,
   listModelDescriptorsForProvider,
   MODEL_REGISTRY,
   pickDefaultCursorDescriptorFromCliList,
+  replaceDynamicLocalModelDescriptors,
   resolveModelAlias,
   resolveModelDescriptorForProvider,
   resolveProviderGroupForModel,
+  type LocalProviderFamily,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
@@ -173,6 +176,7 @@ import {
   type CursorAcpPooled,
 } from "./cursorAcpPool";
 import { discoverCursorCliModelDescriptors } from "./cursorModelsDiscovery";
+import { discoverLocalModels, type DiscoveredLocalModel } from "../ai/localModelDiscovery";
 import {
   mapAcpSessionNotificationToChatEvents,
   mapStopReasonToTerminalEvents,
@@ -2005,6 +2009,45 @@ function resolveSessionUnifiedPermissionMode(
     ?? fallback;
 }
 
+function applyLocalHarnessPermissionMode(args: {
+  descriptor?: ModelDescriptor;
+  requestedPermissionMode?: AgentChatSession["permissionMode"];
+  requestedUnifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+}): {
+  requestedPermissionMode?: AgentChatSession["permissionMode"];
+  requestedUnifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+} {
+  if (!args.descriptor?.authTypes.includes("local")) {
+    return {
+      requestedPermissionMode: args.requestedPermissionMode,
+      requestedUnifiedPermissionMode: args.requestedUnifiedPermissionMode,
+    };
+  }
+
+  if (args.descriptor.harnessProfile === "read_only") {
+    return {
+      requestedPermissionMode: "plan",
+      requestedUnifiedPermissionMode: "plan",
+    };
+  }
+
+  if (
+    args.descriptor.harnessProfile === "guarded"
+    && args.requestedPermissionMode == null
+    && args.requestedUnifiedPermissionMode == null
+  ) {
+    return {
+      requestedPermissionMode: "plan",
+      requestedUnifiedPermissionMode: "plan",
+    };
+  }
+
+  return {
+    requestedPermissionMode: args.requestedPermissionMode,
+    requestedUnifiedPermissionMode: args.requestedUnifiedPermissionMode,
+  };
+}
+
 function resolveCursorSessionModeId(
   session: Pick<AgentChatSession, "cursorModeId" | "unifiedPermissionMode" | "permissionMode">,
 ): string | null {
@@ -3805,7 +3848,7 @@ export function createAgentChatService(args: {
     persistChatState(managed);
 
     const auth = await detectAuth().catch(() => []);
-    const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+    const availableModels = await getAvailableRegistryModels(auth);
     if (!availableModels.length) return;
 
     const preferredModelId =
@@ -3948,7 +3991,10 @@ export function createAgentChatService(args: {
         configApiKeys[String(provider).trim().toLowerCase()] = key;
       }
     }
-    return detectAllAuth(configApiKeys);
+    const localProviders = snapshot.effective.ai?.localProviders;
+    return detectAllAuth(configApiKeys, {
+      localProviders,
+    });
   };
 
   const resolveHandoffBlockedReason = (managed: ManagedChatSession): string | null => {
@@ -4071,7 +4117,7 @@ export function createAgentChatService(args: {
   }): Promise<{ brief: string; usedFallbackSummary: boolean }> => {
     const deterministicBrief = buildDeterministicHandoffBrief(args);
     const auth = await detectAuth();
-    const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+    const availableModels = await getAvailableRegistryModels(auth);
     const preferredModelId = [
       resolveChatConfig().summaryModelId,
       "openai/gpt-5.4-mini",
@@ -4195,7 +4241,7 @@ export function createAgentChatService(args: {
     if (!seed) return;
 
     const auth = await detectAuth();
-    const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+    const availableModels = await getAvailableRegistryModels(auth);
     if (!availableModels.length) return;
 
     const preferredModelId =
@@ -4268,11 +4314,81 @@ export function createAgentChatService(args: {
 
   // Unified session support — for API-key / local models using streamText + universal tools.
   // CLI-wrapped models fall through to the existing Claude/Codex runtimes.
+  const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
+    ollama: "Ollama",
+    lmstudio: "LM Studio",
+    vllm: "vLLM",
+  };
+
+  const discoveredLocalModelToDescriptor = (model: DiscoveredLocalModel): ModelDescriptor =>
+    createDynamicLocalModelDescriptor(model.provider, model.modelId, {
+      ...(model.displayName ? { displayName: model.displayName } : {}),
+      ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+      ...(model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {}),
+      ...(model.capabilities ? { capabilities: model.capabilities } : {}),
+      ...(model.reasoningTiers?.length ? { reasoningTiers: model.reasoningTiers } : {}),
+      ...(model.harnessProfile ? { harnessProfile: model.harnessProfile } : {}),
+      ...(model.discoverySource ? { discoverySource: model.discoverySource } : {}),
+    });
+
+  const getAvailableRegistryModels = async (
+    auth: Awaited<ReturnType<typeof detectAuth>>,
+  ): Promise<ModelDescriptor[]> => {
+    if (auth.some((entry) => entry.type === "local")) {
+      const discovered = await discoverLocalModels(auth);
+      replaceDynamicLocalModelDescriptors(discovered.map(discoveredLocalModelToDescriptor));
+    }
+    return getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+  };
+
+  const resolveUnifiedLocalDescriptor = async (
+    managed: ManagedChatSession,
+    descriptor: ModelDescriptor,
+    auth: Awaited<ReturnType<typeof detectAuth>>,
+  ): Promise<ModelDescriptor> => {
+    if (!(descriptor.family === "ollama" || descriptor.family === "lmstudio" || descriptor.family === "vllm")) {
+      return descriptor;
+    }
+    if (descriptor.sdkModelId !== "auto") {
+      return descriptor;
+    }
+
+    const localProvider = descriptor.family as LocalProviderFamily;
+    const discovered = (await discoverLocalModels(auth)).filter((model) => model.provider === localProvider);
+    replaceDynamicLocalModelDescriptors(discovered.map(discoveredLocalModelToDescriptor));
+
+    const preferred = auth.find(
+      (entry): entry is Extract<Awaited<ReturnType<typeof detectAuth>>[number], { type: "local" }> =>
+        entry.type === "local" && entry.provider === localProvider,
+    )?.preferredModelId;
+    const preferredDescriptor = preferred ? getModelById(preferred) : undefined;
+    if (preferredDescriptor && preferredDescriptor.family === localProvider) {
+      managed.session.modelId = preferredDescriptor.id;
+      managed.session.model = preferredDescriptor.id;
+      return preferredDescriptor;
+    }
+
+    if (discovered.length === 1) {
+      const onlyDescriptor = getModelById(`${localProvider}/${discovered[0]!.modelId}`) ?? discoveredLocalModelToDescriptor(discovered[0]!);
+      managed.session.modelId = onlyDescriptor.id;
+      managed.session.model = onlyDescriptor.id;
+      return onlyDescriptor;
+    }
+
+    if (discovered.length > 1) {
+      throw new Error(
+        `${descriptor.displayName} has multiple loaded models. Choose a specific ${LOCAL_PROVIDER_LABELS[localProvider]} model or save a preferred local model first.`,
+      );
+    }
+
+    throw new Error(`${descriptor.displayName} is reachable, but no models are currently loaded.`);
+  };
+
   const startUnifiedSession = async (managed: ManagedChatSession): Promise<"handled" | "fallthrough"> => {
     const modelId = managed.session.modelId;
     if (!modelId) return "fallthrough";
 
-    const descriptor = getModelById(modelId);
+    let descriptor = getModelById(modelId);
     if (!descriptor) return "fallthrough";
 
     // CLI-wrapped models -> defer to CLI session runtimes.
@@ -4285,7 +4401,15 @@ export function createAgentChatService(args: {
     });
 
     const auth = await detectAuth();
-    const resolvedModel = await providerResolver.resolveModel(modelId, auth, {
+    descriptor = await resolveUnifiedLocalDescriptor(managed, descriptor, auth);
+    const harnessPermissions = applyLocalHarnessPermissionMode({
+      descriptor,
+      requestedPermissionMode: managed.session.permissionMode,
+      requestedUnifiedPermissionMode: managed.session.unifiedPermissionMode,
+    });
+    managed.session.permissionMode = harnessPermissions.requestedPermissionMode ?? managed.session.permissionMode;
+    managed.session.unifiedPermissionMode = harnessPermissions.requestedUnifiedPermissionMode ?? managed.session.unifiedPermissionMode;
+    const resolvedModel = await providerResolver.resolveModel(descriptor.id, auth, {
       cwd: managed.laneWorktreePath,
     });
 
@@ -5429,7 +5553,7 @@ export function createAgentChatService(args: {
 
     // Fire-and-forget AI summary enhancement
     const auth = await detectAuth();
-    const availableModels = getRegistryModels(auth).filter((d) => !d.deprecated);
+    const availableModels = await getAvailableRegistryModels(auth);
     if (!availableModels.length) return;
 
     const preferredModelId =
@@ -10181,7 +10305,7 @@ export function createAgentChatService(args: {
     codexApprovalPolicy: requestedCodexApprovalPolicy,
     codexSandbox: requestedCodexSandbox,
     codexConfigSource: requestedCodexConfigSource,
-    unifiedPermissionMode: requestedUnifiedPermissionMode,
+    unifiedPermissionMode: requestedUnifiedPermissionModeArg,
     cursorModeId: requestedCursorModeId,
     cursorConfigValues: requestedCursorConfigValues,
     permissionMode: requestedPermMode,
@@ -10261,10 +10385,18 @@ export function createAgentChatService(args: {
     const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
     const computerUsePolicy = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
-    const effectivePermissionMode = identityKey
+    let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(requestedPermMode, effectiveProvider)
       : requestedPermMode;
     const chatConfig = resolveChatConfig();
+    let requestedUnifiedPermissionMode = requestedUnifiedPermissionModeArg;
+    const localHarnessPermissions = applyLocalHarnessPermissionMode({
+      descriptor: resolvedDescriptor,
+      requestedPermissionMode: effectivePermissionMode,
+      requestedUnifiedPermissionMode,
+    });
+    effectivePermissionMode = localHarnessPermissions.requestedPermissionMode;
+    requestedUnifiedPermissionMode = localHarnessPermissions.requestedUnifiedPermissionMode;
 
     const nativePermissionFields = (() => {
       if (effectiveProvider === "claude") {
@@ -12728,7 +12860,7 @@ export function createAgentChatService(args: {
     // For unified/non-CLI providers: return all models with valid auth.
     try {
       const auth = await detectAuth();
-      const available = getRegistryModels(auth);
+      const available = await getAvailableRegistryModels(auth);
       const targetModels = provider === "unified"
         ? available
         : available.filter(m => m.family === provider);
@@ -13577,18 +13709,24 @@ export function createAgentChatService(args: {
       try {
         const projectRoot = args.projectRoot;
         if (!projectRoot) return;
-        const attachDir = path.join(projectRoot, ".ade", "attachments");
-        if (!fs.existsSync(attachDir)) return;
-        const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 days
-        for (const entry of fs.readdirSync(attachDir)) {
-          try {
-            const filePath = path.join(attachDir, entry);
-            const stat = fs.statSync(filePath);
-            if (stat.isFile() && stat.mtimeMs < cutoff) {
-              fs.unlinkSync(filePath);
+        const cleanupDir = (dirPath: string) => {
+          if (!fs.existsSync(dirPath)) return;
+          const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+          for (const entry of fs.readdirSync(dirPath)) {
+            try {
+              const filePath = path.join(dirPath, entry);
+              const stat = fs.statSync(filePath);
+              if (stat.mtimeMs < cutoff) {
+                fs.rmSync(filePath, { recursive: true, force: true });
+              }
+            } catch {
+              // Best-effort cleanup only.
             }
-          } catch { /* skip */ }
-        }
+          }
+        };
+
+        cleanupDir(path.join(projectRoot, ".ade", "attachments"));
+        cleanupDir(path.join(resolveAdeLayout(projectRoot).tmpDir, "agent-chat-attachments"));
       } catch { /* ignore */ }
     },
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {

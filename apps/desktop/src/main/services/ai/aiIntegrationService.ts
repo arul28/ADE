@@ -3,18 +3,33 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentExecutor";
-import type { AiApiKeyVerificationResult, AiProviderConnections } from "../../../shared/types";
+import type {
+  AiApiKeyVerificationResult,
+  AiLocalProviderConfigs,
+  AiProviderConnections,
+  AiRuntimeConnections,
+  AiRuntimeConnectionStatus,
+} from "../../../shared/types";
 import {
   createDynamicLocalModelDescriptor,
   getDefaultModelDescriptor,
   getModelById,
   getAvailableModels,
+  getLocalProviderDefaultEndpoint,
   listModelDescriptorsForProvider,
-  MODEL_REGISTRY,
+  replaceDynamicLocalModelDescriptors,
   resolveModelAlias,
   enrichModelRegistry,
+  type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
-import { detectAllAuth, getCachedCliAuthStatuses, verifyProviderApiKey, type DetectedAuth, type CliAuthStatus } from "./authDetector";
+import {
+  detectAllAuth,
+  getCachedCliAuthStatuses,
+  resetLocalProviderDetectionCache,
+  verifyProviderApiKey,
+  type DetectedAuth,
+  type CliAuthStatus,
+} from "./authDetector";
 import { executeUnified, resumeUnified } from "./unifiedExecutor";
 import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
@@ -22,7 +37,7 @@ import { isRecord } from "../shared/utils";
 import { getApiKeyStoreStatus } from "./apiKeyStore";
 import type { createMemoryService } from "../memory/memoryService";
 import type { CompactionFlushService } from "../memory/compactionFlushService";
-import { discoverLocalModels } from "./localModelDiscovery";
+import { discoverLocalModels, inspectLocalProvider } from "./localModelDiscovery";
 import { discoverCursorCliModelDescriptors, clearCursorCliModelsCache } from "../chat/cursorModelsDiscovery";
 import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
@@ -72,12 +87,15 @@ export type AiIntegrationStatus = {
     cli?: "claude" | "codex" | "cursor";
     provider?: string;
     source?: "config" | "env" | "store";
+    endpointSource?: "auto" | "config";
     path?: string;
     endpoint?: string;
+    preferredModelId?: string | null;
     authenticated?: boolean;
     verified?: boolean;
   }>;
   providerConnections?: AiProviderConnections;
+  runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: string[];
   apiKeyStore?: {
     secureStorageAvailable: boolean;
@@ -259,6 +277,33 @@ function extractConfiguredApiKeys(snapshot: ReturnType<ReturnType<typeof createP
   return out;
 }
 
+function extractConfiguredLocalProviders(
+  snapshot: ReturnType<ReturnType<typeof createProjectConfigService>["get"]>,
+): AiLocalProviderConfigs {
+  const aiConfig = extractAiConfig(snapshot);
+  const localProvidersRaw = isRecord(aiConfig.localProviders) ? aiConfig.localProviders : {};
+  const out: AiLocalProviderConfigs = {};
+
+  for (const provider of ["ollama", "lmstudio", "vllm"] as const) {
+    const raw = isRecord(localProvidersRaw[provider]) ? localProvidersRaw[provider] : null;
+    if (!raw) continue;
+    const entry: NonNullable<AiLocalProviderConfigs[typeof provider]> = {};
+    if (typeof raw.enabled === "boolean") entry.enabled = raw.enabled;
+    if (typeof raw.autoDetect === "boolean") entry.autoDetect = raw.autoDetect;
+    if (typeof raw.endpoint === "string" && raw.endpoint.trim().length > 0) {
+      entry.endpoint = raw.endpoint.trim();
+    }
+    if (raw.preferredModelId === null) {
+      entry.preferredModelId = null;
+    } else if (typeof raw.preferredModelId === "string" && raw.preferredModelId.trim().length > 0) {
+      entry.preferredModelId = raw.preferredModelId.trim();
+    }
+    if (Object.keys(entry).length) out[provider] = entry;
+  }
+
+  return out;
+}
+
 function toCliAvailability(auth: DetectedAuth[]): { claude: boolean; codex: boolean; cursor: boolean } {
   return {
     claude: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "claude"),
@@ -308,6 +353,8 @@ function redactDetectedAuth(
       type: entry.type,
       provider: entry.provider,
       endpoint: entry.endpoint,
+      endpointSource: entry.endpointSource,
+      preferredModelId: entry.preferredModelId ?? null,
     };
   });
 
@@ -331,6 +378,244 @@ function redactDetectedAuth(
   }
 
   return redacted;
+}
+
+const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+  vllm: "vLLM",
+};
+
+function apiProviderLabel(provider: string): string {
+  const labels: Record<string, string> = {
+    anthropic: "Anthropic",
+    openai: "OpenAI",
+    google: "Google AI",
+    mistral: "Mistral",
+    deepseek: "DeepSeek",
+    xai: "xAI",
+    groq: "Groq",
+    together: "Together AI",
+    openrouter: "OpenRouter",
+    ollama: "Ollama",
+    lmstudio: "LM Studio",
+    vllm: "vLLM",
+  };
+  return labels[provider] ?? provider;
+}
+
+function toCliRuntimeConnection(status: NonNullable<AiProviderConnections>[keyof AiProviderConnections]): AiRuntimeConnectionStatus {
+  const source = status.sources.find((entry) => entry.detected && entry.kind === "local-credentials")?.source;
+  return {
+    provider: status.provider,
+    label: apiProviderLabel(status.provider),
+    kind: "cli",
+    configured: status.authAvailable || status.runtimeDetected,
+    authAvailable: status.authAvailable,
+    runtimeDetected: status.runtimeDetected,
+    runtimeAvailable: status.runtimeAvailable,
+    health: status.runtimeAvailable ? "ready" : status.runtimeDetected ? "reachable" : "not_configured",
+    ...(source ? { source: source === "cursor-env" ? "env" : "store" as const } : {}),
+    path: status.path,
+    blocker: status.blocker,
+    lastCheckedAt: status.lastCheckedAt,
+  };
+}
+
+function normalizeConfiguredLocalProvider(
+  configs: AiLocalProviderConfigs,
+  provider: LocalProviderFamily,
+): {
+  enabled: boolean;
+  endpoint?: string;
+  autoDetect: boolean;
+  preferredModelId?: string | null;
+} {
+  const entry = configs[provider];
+  return {
+    enabled: entry?.enabled ?? true,
+    ...(typeof entry?.endpoint === "string" && entry.endpoint.trim().length
+      ? { endpoint: entry.endpoint.trim() }
+      : {}),
+    autoDetect: entry?.autoDetect ?? true,
+    preferredModelId: entry?.preferredModelId ?? null,
+  };
+}
+
+function createLocalRuntimeConnectionFromInspection(args: {
+  provider: LocalProviderFamily;
+  endpoint: string;
+  source: "config" | "auto";
+  inspection: Awaited<ReturnType<typeof inspectLocalProvider>>;
+  checkedAt: string;
+}): AiRuntimeConnectionStatus {
+  const label = LOCAL_PROVIDER_LABELS[args.provider];
+  const loadedModelIds = args.inspection.loadedModels.map((model) => `${args.provider}/${model.modelId}`);
+  let blocker: string | null = null;
+  if (args.inspection.health === "reachable_no_models") {
+    blocker = `${label} is reachable, but no models are currently loaded.`;
+  } else if (args.inspection.health === "unreachable") {
+    blocker = `${label} did not respond at ${args.endpoint}.`;
+  }
+  return {
+    provider: args.provider,
+    label,
+    kind: "local",
+    configured: true,
+    authAvailable: args.inspection.health === "ready",
+    runtimeDetected: args.inspection.reachable,
+    runtimeAvailable: args.inspection.health === "ready",
+    health: args.inspection.health,
+    source: args.source,
+    endpoint: args.endpoint,
+    blocker,
+    ...(loadedModelIds.length ? { loadedModelIds } : {}),
+    lastCheckedAt: args.checkedAt,
+  };
+}
+
+async function buildLocalRuntimeConnection(args: {
+  provider: LocalProviderFamily;
+  configuredLocalProviders: AiLocalProviderConfigs;
+  auth: DetectedAuth[];
+  checkedAt: string;
+}): Promise<AiRuntimeConnectionStatus> {
+  const providerConfig = normalizeConfiguredLocalProvider(args.configuredLocalProviders, args.provider);
+  const label = LOCAL_PROVIDER_LABELS[args.provider];
+  if (!providerConfig.enabled) {
+    return {
+      provider: args.provider,
+      label,
+      kind: "local",
+      configured: false,
+      authAvailable: false,
+      runtimeDetected: false,
+      runtimeAvailable: false,
+      health: "not_configured",
+      blocker: `${label} is disabled in project AI settings.`,
+      lastCheckedAt: args.checkedAt,
+    };
+  }
+
+  const detected = args.auth.find(
+    (entry): entry is Extract<DetectedAuth, { type: "local" }> =>
+      entry.type === "local" && entry.provider === args.provider,
+  );
+  if (detected) {
+    const inspection = await inspectLocalProvider(args.provider, detected.endpoint);
+    return createLocalRuntimeConnectionFromInspection({
+      provider: args.provider,
+      endpoint: detected.endpoint,
+      source: detected.endpointSource === "config" ? "config" : "auto",
+      inspection,
+      checkedAt: args.checkedAt,
+    });
+  }
+
+  const configuredEndpoint = providerConfig.endpoint;
+  if (configuredEndpoint) {
+    const manualInspection = await inspectLocalProvider(args.provider, configuredEndpoint);
+    if (manualInspection.reachable || !providerConfig.autoDetect) {
+      const status = createLocalRuntimeConnectionFromInspection({
+        provider: args.provider,
+        endpoint: configuredEndpoint,
+        source: "config",
+        inspection: manualInspection,
+        checkedAt: args.checkedAt,
+      });
+      if (!manualInspection.reachable && !providerConfig.autoDetect) {
+        status.health = "unreachable";
+      }
+      return status;
+    }
+  }
+
+  if (providerConfig.autoDetect) {
+    const autoEndpoint = getLocalProviderDefaultEndpoint(args.provider);
+    if (!configuredEndpoint || autoEndpoint.replace(/\/+$/, "") !== configuredEndpoint.replace(/\/+$/, "")) {
+      const autoInspection = await inspectLocalProvider(args.provider, autoEndpoint);
+      if (autoInspection.reachable) {
+        return createLocalRuntimeConnectionFromInspection({
+          provider: args.provider,
+          endpoint: autoEndpoint,
+          source: "auto",
+          inspection: autoInspection,
+          checkedAt: args.checkedAt,
+        });
+      }
+    }
+  }
+
+  return {
+    provider: args.provider,
+    label,
+    kind: "local",
+    configured: false,
+    authAvailable: false,
+    runtimeDetected: false,
+    runtimeAvailable: false,
+    health: "not_configured",
+    blocker: `No ${label} runtime with loaded models was detected.`,
+    lastCheckedAt: args.checkedAt,
+  };
+}
+
+async function buildRuntimeConnections(args: {
+  configuredLocalProviders: AiLocalProviderConfigs;
+  auth: DetectedAuth[];
+  providerConnections: AiProviderConnections;
+}): Promise<AiRuntimeConnections> {
+  const checkedAt = new Date().toISOString();
+  const runtimeConnections: AiRuntimeConnections = {
+    claude: toCliRuntimeConnection(args.providerConnections.claude),
+    codex: toCliRuntimeConnection(args.providerConnections.codex),
+    cursor: toCliRuntimeConnection(args.providerConnections.cursor),
+  };
+
+  for (const authEntry of args.auth) {
+    if (authEntry.type === "api-key") {
+      runtimeConnections[authEntry.provider] = {
+        provider: authEntry.provider,
+        label: apiProviderLabel(authEntry.provider),
+        kind: "api-key",
+        configured: true,
+        authAvailable: true,
+        runtimeDetected: true,
+        runtimeAvailable: true,
+        health: "ready",
+        source: authEntry.source,
+        blocker: null,
+        lastCheckedAt: checkedAt,
+      };
+      continue;
+    }
+    if (authEntry.type === "openrouter") {
+      runtimeConnections.openrouter = {
+        provider: "openrouter",
+        label: "OpenRouter",
+        kind: "openrouter",
+        configured: true,
+        authAvailable: true,
+        runtimeDetected: true,
+        runtimeAvailable: true,
+        health: "ready",
+        source: authEntry.source,
+        blocker: null,
+        lastCheckedAt: checkedAt,
+      };
+    }
+  }
+
+  for (const provider of ["ollama", "lmstudio", "vllm"] as const) {
+    runtimeConnections[provider] = await buildLocalRuntimeConnection({
+      provider,
+      configuredLocalProviders: args.configuredLocalProviders,
+      auth: args.auth,
+      checkedAt,
+    });
+  }
+
+  return runtimeConnections;
 }
 
 export function createAiIntegrationService(args: {
@@ -371,7 +656,10 @@ export function createAiIntegrationService(args: {
 
   const detectAuth = async (options?: { force?: boolean }): Promise<DetectedAuth[]> => {
     const snapshot = projectConfigService.get();
-    return await detectAllAuth(extractConfiguredApiKeys(snapshot), options);
+    return await detectAllAuth(extractConfiguredApiKeys(snapshot), {
+      ...options,
+      localProviders: extractConfiguredLocalProviders(snapshot),
+    });
   };
 
   const deriveMode = (args: {
@@ -426,6 +714,21 @@ export function createAiIntegrationService(args: {
   };
 
   const getResolvedAvailableModels = async (auth: DetectedAuth[]) => {
+    const discoveredLocalModels = await discoverLocalModels(auth);
+    replaceDynamicLocalModelDescriptors(
+      discoveredLocalModels.map((model) =>
+        createDynamicLocalModelDescriptor(model.provider, model.modelId, {
+          ...(model.displayName ? { displayName: model.displayName } : {}),
+          ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+          ...(model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {}),
+          ...(model.capabilities ? { capabilities: model.capabilities } : {}),
+          ...(model.reasoningTiers?.length ? { reasoningTiers: model.reasoningTiers } : {}),
+          ...(model.harnessProfile ? { harnessProfile: model.harnessProfile } : {}),
+          ...(model.discoverySource ? { discoverySource: model.discoverySource } : {}),
+        }),
+      ),
+    );
+
     let available = getAvailableModels(auth);
 
     const hasCursorCliAuth = auth.some(
@@ -447,23 +750,7 @@ export function createAiIntegrationService(args: {
       }
     }
 
-    const discoveredLocalModels = await discoverLocalModels(auth);
-    if (discoveredLocalModels.length === 0) {
-      return available;
-    }
-
-    const providersWithDynamicModels = new Set(
-      discoveredLocalModels.map((model) => model.provider),
-    );
-    const filteredStatic = available.filter((descriptor) => !(
-      descriptor.authTypes.includes("local")
-      && providersWithDynamicModels.has(descriptor.family as "ollama" | "lmstudio" | "vllm")
-    ));
-
-    return [
-      ...filteredStatic,
-      ...discoveredLocalModels.map((model) => createDynamicLocalModelDescriptor(model.provider, model.modelId)),
-    ];
+    return available;
   };
 
   const verifyApiKeyConnection = async (provider: string): Promise<AiApiKeyVerificationResult> => {
@@ -902,6 +1189,7 @@ export function createAiIntegrationService(args: {
       if (options?.force) {
         resetProviderRuntimeHealth();
         resetClaudeRuntimeProbeCache();
+        resetLocalProviderDetectionCache();
         clearCursorCliModelsCache();
         modelListCache.clear();
         runtimeHealthVersion = getProviderRuntimeHealthVersion();
@@ -921,6 +1209,12 @@ export function createAiIntegrationService(args: {
         runtimeHealthVersion = getProviderRuntimeHealthVersion();
       }
       const providerConnections = await buildProviderConnections(cliStatuses);
+      const configuredLocalProviders = extractConfiguredLocalProviders(projectConfigService.get());
+      const runtimeConnections = await buildRuntimeConnections({
+        configuredLocalProviders,
+        auth,
+        providerConnections,
+      });
       const availability = {
         claude: providerConnections.claude.runtimeAvailable,
         codex: providerConnections.codex.runtimeAvailable,
@@ -943,6 +1237,7 @@ export function createAiIntegrationService(args: {
         },
         detectedAuth: redactDetectedAuth(auth, cliStatuses),
         providerConnections,
+        runtimeConnections,
         availableModelIds: runtimeFilteredAvailable.map((descriptor) => descriptor.id),
         apiKeyStore: getApiKeyStoreStatus(),
       };

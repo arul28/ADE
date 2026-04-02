@@ -7,6 +7,9 @@ import {
   augmentProcessPathWithShellAndKnownCliDirs,
   resolveExecutableFromKnownLocations,
 } from "./cliExecutableResolver";
+import { getLocalProviderDefaultEndpoint, type LocalProviderFamily } from "../../../shared/modelRegistry";
+import type { AiLocalProviderConfigs } from "../../../shared/types";
+import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 
 type CliName = "claude" | "codex" | "cursor";
 
@@ -43,7 +46,13 @@ export type DetectedAuth =
     }
   | { type: "api-key"; provider: string; key: string; source: ApiKeySource }
   | { type: "openrouter"; key: string; source: ApiKeySource }
-  | { type: "local"; provider: "ollama" | "lmstudio" | "vllm"; endpoint: string };
+  | {
+      type: "local";
+      provider: "ollama" | "lmstudio" | "vllm";
+      endpoint: string;
+      endpointSource?: "auto" | "config";
+      preferredModelId?: string | null;
+    };
 
 // ---------------------------------------------------------------------------
 // Internals
@@ -97,8 +106,6 @@ const STRONG_UNAUTH_INDICATORS = [
 const WEAK_UNAUTH_INDICATORS = [
   /run .*login/i,
 ];
-
-const UNAUTH_INDICATORS = [...STRONG_UNAUTH_INDICATORS, ...WEAK_UNAUTH_INDICATORS];
 
 const UNSUPPORTED_INDICATORS = [
   /unknown command/i,
@@ -373,8 +380,14 @@ const API_KEY_VERIFY_TIMEOUT_MS = 8_000;
 
 let cachedLocalProviders:
   | {
+      key: string;
       checkedAtMs: number;
-      entries: Array<{ provider: "ollama" | "lmstudio" | "vllm"; endpoint: string }>;
+      entries: Array<{
+        provider: LocalProviderFamily;
+        endpoint: string;
+        endpointSource: "auto" | "config";
+        preferredModelId?: string | null;
+      }>;
     }
   | null = null;
 
@@ -412,67 +425,124 @@ async function readStoredApiKeys(): Promise<Record<string, string>> {
   }
 }
 
-async function checkLocalEndpointHasModels(
-  provider: "ollama" | "lmstudio" | "vllm",
-  url: string,
-  timeoutMs = 2_000,
-): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const res = await fetch(url, { method: "GET", signal: controller.signal });
-    clearTimeout(timer);
-    if (!res.ok) return false;
+type NormalizedLocalProviderConfig = {
+  enabled: boolean;
+  endpoint?: string;
+  autoDetect: boolean;
+  preferredModelId?: string | null;
+};
 
-    const payload = await res.json() as unknown;
-    if (provider === "ollama") {
-      const models: Array<{ name?: unknown }> = Array.isArray((payload as { models?: unknown[] })?.models)
-        ? ((payload as { models?: Array<{ name?: unknown }> }).models ?? [])
-        : [];
-      return models.some((entry) => typeof entry?.name === "string" && entry.name.trim().length > 0);
-    }
-
-    const models: Array<{ id?: unknown }> = Array.isArray((payload as { data?: unknown[] })?.data)
-      ? ((payload as { data?: Array<{ id?: unknown }> }).data ?? [])
-      : [];
-    return models.some((entry) => typeof entry?.id === "string" && entry.id.trim().length > 0);
-  } catch {
-    return false;
-  }
+function normalizeLocalProviderConfig(
+  config?: AiLocalProviderConfigs,
+): Record<LocalProviderFamily, NormalizedLocalProviderConfig> {
+  return {
+    ollama: {
+      enabled: config?.ollama?.enabled ?? true,
+      ...(typeof config?.ollama?.endpoint === "string" && config.ollama.endpoint.trim().length
+        ? { endpoint: config.ollama.endpoint.trim() }
+        : {}),
+      autoDetect: config?.ollama?.autoDetect ?? true,
+      preferredModelId: config?.ollama?.preferredModelId ?? null,
+    },
+    lmstudio: {
+      enabled: config?.lmstudio?.enabled ?? true,
+      ...(typeof config?.lmstudio?.endpoint === "string" && config.lmstudio.endpoint.trim().length
+        ? { endpoint: config.lmstudio.endpoint.trim() }
+        : {}),
+      autoDetect: config?.lmstudio?.autoDetect ?? true,
+      preferredModelId: config?.lmstudio?.preferredModelId ?? null,
+    },
+    vllm: {
+      enabled: config?.vllm?.enabled ?? true,
+      ...(typeof config?.vllm?.endpoint === "string" && config.vllm.endpoint.trim().length
+        ? { endpoint: config.vllm.endpoint.trim() }
+        : {}),
+      autoDetect: config?.vllm?.autoDetect ?? true,
+      preferredModelId: config?.vllm?.preferredModelId ?? null,
+    },
+  };
 }
 
-async function detectLocalProviders(): Promise<Array<{ provider: "ollama" | "lmstudio" | "vllm"; endpoint: string }>> {
+function localProvidersCacheKey(config?: AiLocalProviderConfigs): string {
+  const normalized = normalizeLocalProviderConfig(config);
+  return (["ollama", "lmstudio", "vllm"] as const)
+    .map((provider) => {
+      const entry = normalized[provider];
+      return [
+        provider,
+        entry.enabled ? "1" : "0",
+        entry.autoDetect ? "1" : "0",
+        entry.endpoint ?? "",
+        entry.preferredModelId ?? "",
+      ].join(":");
+    })
+    .join("|");
+}
+
+async function detectLocalProviders(
+  config?: AiLocalProviderConfigs,
+): Promise<Array<{
+  provider: LocalProviderFamily;
+  endpoint: string;
+  endpointSource: "auto" | "config";
+  preferredModelId?: string | null;
+}>> {
   const now = Date.now();
-  if (cachedLocalProviders && now - cachedLocalProviders.checkedAtMs < LOCAL_ENDPOINT_CACHE_TTL_MS) {
+  const cacheKey = localProvidersCacheKey(config);
+  if (
+    cachedLocalProviders
+    && cachedLocalProviders.key === cacheKey
+    && now - cachedLocalProviders.checkedAtMs < LOCAL_ENDPOINT_CACHE_TTL_MS
+  ) {
     return cachedLocalProviders.entries;
   }
 
-  const localEndpoints: Array<{
-    provider: "ollama" | "lmstudio" | "vllm";
-    url: string;
-  }> = [
-    { provider: "ollama", url: "http://localhost:11434/api/tags" },
-    { provider: "lmstudio", url: "http://localhost:1234/v1/models" },
-    { provider: "vllm", url: "http://localhost:8000/v1/models" },
-  ];
+  const normalized = normalizeLocalProviderConfig(config);
+  const entries: Array<{
+    provider: LocalProviderFamily;
+    endpoint: string;
+    endpointSource: "auto" | "config";
+    preferredModelId?: string | null;
+  }> = [];
 
-  const localChecks = await Promise.allSettled(
-    localEndpoints.map(async ({ provider, url }) => {
-      const alive = await checkLocalEndpointHasModels(provider, url, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
-      if (!alive) return null;
-      const endpoint = url.replace(/\/api\/tags$|\/v1\/models$/, "");
-      return { provider, endpoint } as const;
-    }),
-  );
+  for (const provider of ["ollama", "lmstudio", "vllm"] as const) {
+    const providerConfig = normalized[provider];
+    if (!providerConfig.enabled) continue;
 
-  const entries: Array<{ provider: "ollama" | "lmstudio" | "vllm"; endpoint: string }> = [];
-  for (const check of localChecks) {
-    if (check.status === "fulfilled" && check.value) {
-      entries.push(check.value);
+    const configuredEndpoint = providerConfig.endpoint;
+    if (configuredEndpoint) {
+      const inspection = await inspectLocalProvider(provider, configuredEndpoint, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
+      if (inspection.health === "ready") {
+        entries.push({
+          provider,
+          endpoint: configuredEndpoint,
+          endpointSource: "config",
+          preferredModelId: providerConfig.preferredModelId ?? null,
+        });
+        continue;
+      }
+      if (!providerConfig.autoDetect) {
+        continue;
+      }
+    }
+
+    if (!providerConfig.autoDetect) continue;
+    const autoEndpoint = getLocalProviderDefaultEndpoint(provider);
+    if (configuredEndpoint && autoEndpoint.replace(/\/+$/, "") === configuredEndpoint.replace(/\/+$/, "")) {
+      continue;
+    }
+    const autoInspection = await inspectLocalProvider(provider, autoEndpoint, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
+    if (autoInspection.health === "ready") {
+      entries.push({
+        provider,
+        endpoint: autoEndpoint,
+        endpointSource: "auto",
+        preferredModelId: providerConfig.preferredModelId ?? null,
+      });
     }
   }
 
-  cachedLocalProviders = { checkedAtMs: now, entries };
+  cachedLocalProviders = { key: cacheKey, checkedAtMs: now, entries };
   return entries;
 }
 
@@ -747,7 +817,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
 
 export async function detectAllAuth(
   configApiKeys?: Record<string, string>,
-  options?: { force?: boolean },
+  options?: { force?: boolean; localProviders?: AiLocalProviderConfigs },
 ): Promise<DetectedAuth[]> {
   const results: DetectedAuth[] = [];
 
@@ -823,10 +893,15 @@ export async function detectAllAuth(
   }
 
   // 4. Local providers
-  const localProviders = await detectLocalProviders();
+  const localProviders = await detectLocalProviders(options?.localProviders);
   for (const localProvider of localProviders) {
     results.push({ type: "local", ...localProvider });
   }
 
   return results;
+}
+
+export function resetLocalProviderDetectionCache(): void {
+  cachedLocalProviders = null;
+  clearLocalProviderInspectionCache();
 }
