@@ -202,6 +202,12 @@ export type AgentChatEvent =
       detail?: unknown;
     }
   | {
+      type: "pending_input_resolved";
+      itemId: string;
+      resolution: "accepted" | "declined" | "cancelled";
+      turnId?: string;
+    }
+  | {
       type: "status";
       turnStatus: "started" | "completed" | "interrupted" | "failed";
       turnId?: string;

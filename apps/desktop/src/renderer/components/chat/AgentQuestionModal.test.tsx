@@ -202,4 +202,35 @@ describe("AgentQuestionModal", () => {
     fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
     expect(onSubmit).toHaveBeenCalledWith(expectedPayload);
   });
+
+  it("keeps Codex structured questions on a normal decline path", () => {
+    const request: PendingInputRequest = {
+      requestId: "req-codex",
+      itemId: "item-codex",
+      source: "codex",
+      kind: "structured_question",
+      title: "Planning question",
+      description: "Which planning path should we take?",
+      questions: [
+        {
+          id: "plan",
+          header: "Plan",
+          question: "Which planning path should we take?",
+          allowsFreeform: true,
+        },
+      ],
+      allowsFreeform: true,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+    };
+
+    const { onDecline } = renderModal(request);
+
+    expect(screen.getByText(/Send a concrete answer so the agent can continue/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+
+    expect(onDecline).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Cancel turn" })).toBeNull();
+  });
 });

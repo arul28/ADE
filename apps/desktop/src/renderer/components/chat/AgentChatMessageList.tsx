@@ -60,6 +60,7 @@ import {
 } from "./chatTranscriptRows";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
+type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
 
 function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSuggestion | null {
   const record = readRecord(value);
@@ -376,7 +377,6 @@ function statusColorClass(status: string | undefined): string {
     case "failed":
       return "text-red-400/70";
     case "interrupted":
-      return "text-amber-400/70";
     case "running":
       return "text-amber-400/70";
     default:
@@ -564,15 +564,15 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
               <table className="min-w-full border-separate border-spacing-0 text-[12px]">{children}</table>
             </div>
           ),
-          thead: ({ children, ...props }) => <thead className="bg-white/[0.04]" {...props}>{children}</thead>,
-          tbody: ({ children, ...props }) => <tbody {...props}>{children}</tbody>,
-          tr: ({ children, ...props }) => <tr className="align-top" {...props}>{children}</tr>,
-          th: ({ children, ...props }) => (
+          thead: ({ children, node: _, ...props }) => <thead className="bg-white/[0.04]" {...props}>{children}</thead>,
+          tbody: ({ children, node: _, ...props }) => <tbody {...props}>{children}</tbody>,
+          tr: ({ children, node: _, ...props }) => <tr className="align-top" {...props}>{children}</tr>,
+          th: ({ children, node: _, ...props }) => (
             <th className="border-b border-white/[0.08] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl" {...props}>
               {children}
             </th>
           ),
-          td: ({ children, ...props }) => (
+          td: ({ children, node: _, ...props }) => (
             <td className="border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0" {...props}>
               {children}
             </td>
@@ -1095,7 +1095,7 @@ function FileChangeEventCard({
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
-    onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+    onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
     surfaceProfile?: ChatSurfaceProfile;
@@ -1104,6 +1104,7 @@ function renderEvent(
     onOpenWorkspacePath?: (path: string) => void;
     respondingApprovalIds?: Set<string>;
     pendingApprovalIds?: Set<string>;
+    resolvedInputStates?: Map<string, PendingInputResolution>;
   }
 ) {
   const event = envelope.event;
@@ -1818,7 +1819,8 @@ function renderEvent(
     const handleApproval = options?.onApproval ? (d: AgentChatApprovalDecision) => options.onApproval?.(event.itemId, d) : undefined;
     const isResponding = options?.respondingApprovalIds?.has(event.itemId) ?? false;
     const isPending = options?.pendingApprovalIds?.has(event.itemId) ?? true;
-    const isResolved = !isPending && !isResponding;
+    const resolvedState = options?.resolvedInputStates?.get(event.itemId) ?? null;
+    const isResolved = resolvedState != null || (!isPending && !isResponding);
     const detail = readRecord(event.detail);
     const request = readRecord(detail?.request);
     const requestKind = typeof request?.kind === "string" ? request.kind.trim() : "";
@@ -1827,20 +1829,45 @@ function renderEvent(
     const requestQuestions = Array.isArray(request?.questions)
       ? request.questions.map((question) => readRecord(question)).filter((question): question is Record<string, unknown> => question != null)
       : [];
-    const primaryQuestion = requestQuestions[0] ?? null;
-    const primaryQuestionText = typeof primaryQuestion?.question === "string" ? primaryQuestion.question.trim() : "";
-    const quickOptions = Array.isArray(primaryQuestion?.options)
-      ? primaryQuestion.options
-          .map((option) => readRecord(option))
-          .filter((option): option is Record<string, unknown> => option != null)
-          .map((option) => {
-            const label = typeof option.label === "string" ? option.label.trim() : "";
-            const value = typeof option.value === "string" ? option.value.trim() : label;
-            if (!label.length || !value.length) return null;
-            return { label, value };
-          })
-          .filter((option): option is { label: string; value: string } => option != null)
-      : [];
+    const questionCards = requestQuestions.map((question, index) => {
+      const header = typeof question.header === "string" && question.header.trim().length
+        ? question.header.trim()
+        : `Question ${index + 1}`;
+      const questionText = typeof question.question === "string" ? question.question.trim() : "";
+      const options = Array.isArray(question.options)
+        ? question.options
+            .map((option) => readRecord(option))
+            .filter((option): option is Record<string, unknown> => option != null)
+            .map((option) => {
+              const label = typeof option.label === "string" ? option.label.trim() : "";
+              const value = typeof option.value === "string" ? option.value.trim() : label;
+              if (!label.length || !value.length) return null;
+              return {
+                label,
+                value,
+                ...(typeof option.description === "string" && option.description.trim().length ? { description: option.description.trim() } : {}),
+                ...(option.recommended === true ? { recommended: true } : {}),
+              };
+            })
+            .filter((option): option is { label: string; value: string; description?: string; recommended?: boolean } => option != null)
+        : [];
+      return {
+        id: typeof question.id === "string" && question.id.trim().length ? question.id.trim() : `question_${index + 1}`,
+        header,
+        questionText,
+        options,
+        allowsFreeform: question.allowsFreeform !== false,
+        isSecret: question.isSecret === true,
+        defaultAssumption: typeof question.defaultAssumption === "string" && question.defaultAssumption.trim().length
+          ? question.defaultAssumption.trim()
+          : "",
+        impact: typeof question.impact === "string" && question.impact.trim().length
+          ? question.impact.trim()
+          : "",
+      };
+    });
+    const primaryQuestion = questionCards[0] ?? null;
+    const primaryQuestionText = primaryQuestion?.questionText ?? "";
     const detailTool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
     const question = typeof detail?.question === "string" ? detail.question.trim() : "";
     const normalizedTool = detailTool.toLowerCase();
@@ -1889,17 +1916,50 @@ function renderEvent(
         ) : (
           <div className="text-[12px] leading-relaxed text-fg/75">{bodyText}</div>
         )}
-        {isQuestionRequest && quickOptions.length > 0 && options?.onApproval ? (
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            {quickOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className="rounded-[var(--chat-radius-pill)] border border-accent/25 bg-accent/[0.08] px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/[0.16]"
-                onClick={() => options.onApproval?.(event.itemId, "accept", option.value)}
-              >
-                {option.label}
-              </button>
+        {isQuestionRequest && questionCards.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {questionCards.map((card) => (
+              <div key={card.id} className="rounded-[calc(var(--chat-radius-card)-6px)] border border-white/[0.06] bg-black/15 px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-amber-300/75">
+                    {card.header}
+                  </span>
+                  {card.allowsFreeform ? (
+                    <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg/30">
+                      Freeform allowed
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-1.5 text-[12px] leading-relaxed text-fg/78 whitespace-pre-wrap">
+                  {card.questionText}
+                </div>
+                {card.defaultAssumption.length || card.impact.length || card.isSecret ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-fg/32">
+                    {card.isSecret ? <span>Secret answer</span> : null}
+                    {card.defaultAssumption.length ? <span>Assumption: {card.defaultAssumption}</span> : null}
+                    {card.impact.length ? <span>Impact: {card.impact}</span> : null}
+                  </div>
+                ) : null}
+                {card.options.length > 0 && options?.onApproval && !isResolved ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {card.options.map((option) => (
+                      <button
+                        key={`${card.id}:${option.value}`}
+                        type="button"
+                        className={cn(
+                          "rounded-[var(--chat-radius-pill)] border px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                          option.recommended
+                            ? "border-emerald-400/30 bg-emerald-500/[0.10] text-emerald-100/85 hover:bg-emerald-500/[0.18]"
+                            : "border-accent/25 bg-accent/[0.08] text-fg/80 hover:bg-accent/[0.16]",
+                        )}
+                        onClick={() => options.onApproval?.(event.itemId, "accept", null, { [card.id]: [option.value] })}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             ))}
           </div>
         ) : null}
@@ -1926,6 +1986,33 @@ function renderEvent(
             >
               Decline
             </button>
+          </div>
+        ) : null}
+        {isAskUser && isResolved ? (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider",
+                resolvedState === "accepted"
+                  ? "border border-emerald-500/20 bg-emerald-500/8 text-emerald-300/70"
+                  : resolvedState === "declined"
+                    ? "border border-red-500/20 bg-red-500/8 text-red-300/75"
+                    : "border border-border/25 bg-transparent text-fg/45",
+              )}
+            >
+              {resolvedState === "accepted" ? (
+                <Check size={12} weight="bold" />
+              ) : resolvedState === "declined" ? (
+                <XCircle size={12} weight="bold" />
+              ) : (
+                <Circle size={12} weight="bold" />
+              )}
+              {resolvedState === "accepted"
+                ? "Answered"
+                : resolvedState === "declined"
+                  ? "Declined"
+                  : "Closed"}
+            </span>
           </div>
         ) : null}
         {handleApproval && !isAskUser ? (
@@ -2501,7 +2588,7 @@ type EventRowProps = {
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
   turnModel: { label: string; modelId?: string; model?: string } | null;
-  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -2510,6 +2597,7 @@ type EventRowProps = {
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
+  resolvedInputStates?: Map<string, PendingInputResolution>;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -2526,6 +2614,7 @@ const EventRow = React.memo(function EventRow({
   onNavigateSuggestion,
   respondingApprovalIds,
   pendingApprovalIds,
+  resolvedInputStates,
 }: EventRowProps) {
   return (
     <div className="space-y-3">
@@ -2553,7 +2642,18 @@ const EventRow = React.memo(function EventRow({
             onNavigateSuggestion={onNavigateSuggestion}
           />
         )
-        : renderEvent(envelope as RenderEnvelope, { onApproval, turnModel, surfaceMode, surfaceProfile, assistantLabel, turnActive, onOpenWorkspacePath, respondingApprovalIds, pendingApprovalIds })}
+        : renderEvent(envelope as RenderEnvelope, {
+            onApproval,
+            turnModel,
+            surfaceMode,
+            surfaceProfile,
+            assistantLabel,
+            turnActive,
+            onOpenWorkspacePath,
+            respondingApprovalIds,
+            pendingApprovalIds,
+            resolvedInputStates,
+          })}
     </div>
   );
 });
@@ -2696,19 +2796,19 @@ export function reconcileMeasuredScrollTop({
 export function AgentChatMessageList({
   events,
   showStreamingIndicator = false,
-  className,
-  onApproval,
-  surfaceMode = "standard",
+    className,
+    onApproval,
+    surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
   onOpenWorkspacePath,
   respondingApprovalIds,
   pendingApprovalIds,
-}: {
+  }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   className?: string;
-  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -2727,6 +2827,16 @@ export function AgentChatMessageList({
   const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
   const stickToBottomRef = useRef(true);
   const onApprovalRef = useRef(onApproval);
+  const resolvedInputStates = useMemo(() => {
+    const resolved = new Map<string, PendingInputResolution>();
+    for (const envelope of events) {
+      if (envelope.event.type !== "pending_input_resolved") continue;
+      if (!resolved.has(envelope.event.itemId)) {
+        resolved.set(envelope.event.itemId, envelope.event.resolution);
+      }
+    }
+    return resolved;
+  }, [events]);
 
   // Virtualization scroll tracking
   const [scrollTop, setScrollTop] = useState(0);
@@ -2745,8 +2855,8 @@ export function AgentChatMessageList({
     onApprovalRef.current = onApproval;
   }, [onApproval]);
 
-  const handleApproval = useCallback((itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null) => {
-    onApprovalRef.current?.(itemId, decision, responseText);
+  const handleApproval = useCallback((itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => {
+    onApprovalRef.current?.(itemId, decision, responseText, answers);
   }, []);
 
   const rows = useMemo(() => {
@@ -2992,6 +3102,7 @@ export function AgentChatMessageList({
           onNavigateSuggestion={handleNavigateSuggestion}
           respondingApprovalIds={respondingApprovalIds}
           pendingApprovalIds={pendingApprovalIds}
+          resolvedInputStates={resolvedInputStates}
         />
       );
     }
@@ -3012,9 +3123,10 @@ export function AgentChatMessageList({
         onNavigateSuggestion={handleNavigateSuggestion}
         respondingApprovalIds={respondingApprovalIds}
         pendingApprovalIds={pendingApprovalIds}
+        resolvedInputStates={resolvedInputStates}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds, resolvedInputStates]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -3054,18 +3166,7 @@ export function AgentChatMessageList({
       onScroll={handleScroll}
     >
       {rows.length === 0 && !streamingIndicator ? (
-        <div className="flex h-full flex-col items-center justify-center gap-5">
-          <div className="relative flex h-20 w-20 items-center justify-center rounded-full border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)]">
-            <Robot size={34} weight="thin" className="text-[var(--chat-accent)]" />
-            <div className="absolute inset-0 animate-pulse rounded-full bg-[var(--chat-accent-glow)] blur-2xl" />
-          </div>
-          <div className="space-y-1 text-center">
-            <div className="font-sans text-[18px] font-semibold tracking-tight text-fg/78">Start a chat session</div>
-            <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/28">
-              {surfaceMode === "resolver" ? "Launch the resolver to start the transcript" : "Start a conversation"}
-            </span>
-          </div>
-        </div>
+        null
       ) : shouldVirtualize ? (
         /* ── Virtualized path: only render rows in / near the viewport ── */
         <div className="space-y-3">

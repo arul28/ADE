@@ -1127,6 +1127,9 @@ export function LanesPage() {
     setCreateOpen(true);
   }, [lanes]);
 
+  // Intentionally ignore prepareCreateDialog churn so an open ?action=create URL
+  // doesn't reopen and reset the dialog when lanes refresh.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const laneId = params.get("laneId");
     const sessionId = params.get("sessionId");
@@ -1144,7 +1147,7 @@ export function LanesPage() {
       }
     }
     if (sessionId) focusSession(sessionId);
-  }, [params, selectLane, focusSession, setLaneInspectorTab, prepareCreateDialog]);
+  }, [params, selectLane, focusSession, setLaneInspectorTab]);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     if (!open && createBusy) return;

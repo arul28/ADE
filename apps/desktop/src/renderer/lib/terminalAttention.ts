@@ -1,4 +1,5 @@
 import type { TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
+import { isChatToolType } from "./sessions";
 
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
 export type SessionStatusFilter = "all" | "running" | "awaiting-input" | "ended";
@@ -19,10 +20,6 @@ export type TerminalAttentionSummary = {
   indicator: TerminalRunIndicatorState;
   byLaneId: Record<string, LaneTerminalAttentionSummary>;
 };
-
-function isChatToolType(toolType: TerminalToolType | null | undefined): boolean {
-  return toolType === "claude-chat" || toolType === "codex-chat" || toolType === "ai-chat" || toolType === "cursor";
-}
 
 const OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
 const CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g;

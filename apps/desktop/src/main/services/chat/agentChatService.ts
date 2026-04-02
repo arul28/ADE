@@ -134,7 +134,7 @@ import { buildCodexAppServerMcpConfigOverrides } from "../ai/codexAppServerConfi
 import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
-import { createCtoOperatorTools } from "../ai/tools/ctoOperatorTools";
+import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
@@ -262,6 +262,7 @@ type PendingCodexApproval = {
   kind: "command" | "file_change" | "permissions" | "structured_question" | "plan_approval";
   request?: PendingInputRequest;
   permissions?: Record<string, unknown> | null;
+  questionResponseKind?: "native_request_user_input" | "mcp_elicitation";
 };
 
 type PendingClaudeApproval = {
@@ -296,6 +297,9 @@ type CodexRuntime = {
   sendError: (id: string | number, message: string) => void;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   rateLimits: { remaining: number | null; limit: number | null; resetAt: string | null } | null;
+  collaborationModes: Set<string> | null;
+  collaborationModesReady: Promise<void> | null;
+  planModeFallbackNotified: boolean;
 };
 
 type ClaudeRuntime = {
@@ -327,6 +331,10 @@ type ClaudeRuntime = {
   pendingElicitations: Map<string, () => void>;
   /** SDK tool_use IDs resolved by canUseTool (e.g. answered AskUserQuestion). */
   resolvedToolUseIds: Set<string>;
+  /** Suspend the active-turn idle watchdog while ADE is waiting on human input. */
+  pauseIdleWatchdog?: (() => void) | null;
+  /** Resume the active-turn idle watchdog after the blocking wait finishes. */
+  resumeIdleWatchdog?: (() => void) | null;
 };
 
 type PendingUnifiedApproval = {
@@ -759,7 +767,7 @@ type SessionTurnCollector = {
     cacheCreationTokens?: number | null;
   };
   lastError: string | null;
-  timeout: NodeJS.Timeout;
+  timeout: NodeJS.Timeout | null;
 };
 
 type PreparedSendMessage = {
@@ -818,7 +826,8 @@ const MAX_TRANSCRIPT_READ_CHARS = 40_000;
 const AUTO_TITLE_MAX_CHARS = 48;
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
-const RUN_SESSION_TURN_WAIT_TIMEOUT_MS = 300_000; // default wait for programmatic runSessionTurn callers
+const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
+const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 const CLAUDE_STREAM_IDLE_TIMEOUT_MS = 75_000;
 const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
 Return only the title text.
@@ -1826,6 +1835,147 @@ function resolveSessionCodexConfigSource(
     ?? "flags";
 }
 
+type CodexCollaborationModePayload = {
+  mode: "default" | "plan";
+  settings: {
+    model: string;
+    reasoning_effort: string | null;
+    developer_instructions: null;
+  };
+};
+
+function buildCodexCollaborationMode(
+  session: Pick<
+    AgentChatSession,
+    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource"
+  >,
+  supportedModes: Set<string> | null,
+): CodexCollaborationModePayload | null {
+  if (session.provider !== "codex") return null;
+  if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
+  const requestedMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+    ? "plan"
+    : "default";
+  const mode = (() => {
+    if (!supportedModes || supportedModes.size === 0) return requestedMode;
+    if (supportedModes.has(requestedMode)) return requestedMode;
+    if (requestedMode === "plan" && supportedModes.has("default")) return "default";
+    return null;
+  })();
+  if (!mode) return null;
+  return {
+    mode,
+    settings: {
+      model: session.model,
+      reasoning_effort: session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+      developer_instructions: null,
+    },
+  };
+}
+
+function resolveRequestedCodexCollaborationMode(
+  session: Pick<
+    AgentChatSession,
+    "provider" | "permissionMode" | "interactionMode" | "codexConfigSource"
+  >,
+): "default" | "plan" | null {
+  if (session.provider !== "codex") return null;
+  if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
+  return session.interactionMode === "plan" || session.permissionMode === "plan"
+    ? "plan"
+    : "default";
+}
+
+function coerceCodexMcpElicitationContent(
+  request: PendingInputRequest | undefined,
+  normalizedAnswers: Record<string, string[]>,
+): Record<string, string | number | boolean | string[]> {
+  const content: Record<string, string | number | boolean | string[]> = {};
+  const providerMetadata = request?.providerMetadata && typeof request.providerMetadata === "object"
+    ? request.providerMetadata as Record<string, unknown>
+    : null;
+  const requestedSchema = providerMetadata?.requestedSchema && typeof providerMetadata.requestedSchema === "object"
+    ? providerMetadata.requestedSchema as Record<string, unknown>
+    : null;
+  const schemaProperties = requestedSchema?.properties && typeof requestedSchema.properties === "object"
+    ? requestedSchema.properties as Record<string, unknown>
+    : null;
+
+  for (const [questionId, values] of Object.entries(normalizedAnswers)) {
+    if (!values.length) continue;
+    const property = schemaProperties?.[questionId] && typeof schemaProperties[questionId] === "object"
+      ? schemaProperties[questionId] as Record<string, unknown>
+      : null;
+    const propertyType = typeof property?.type === "string" ? property.type : null;
+
+    if (propertyType === "array") {
+      content[questionId] = values;
+      continue;
+    }
+
+    const [firstValue] = values;
+    if (!firstValue) continue;
+
+    if (propertyType === "boolean") {
+      const normalized = firstValue.trim().toLowerCase();
+      content[questionId] = normalized === "true" || normalized === "yes";
+      continue;
+    }
+
+    if (propertyType === "number" || propertyType === "integer") {
+      const parsed = Number(firstValue);
+      if (Number.isFinite(parsed)) {
+        content[questionId] = propertyType === "integer" ? Math.trunc(parsed) : parsed;
+        continue;
+      }
+    }
+
+    content[questionId] = firstValue;
+  }
+
+  return content;
+}
+
+function parseCodexCollaborationModes(value: unknown): Set<string> | null {
+  const normalized = new Set<string>();
+  const pushMode = (candidate: unknown): void => {
+    if (typeof candidate === "string") {
+      const trimmed = candidate.trim().toLowerCase();
+      if (trimmed.length) normalized.add(trimmed);
+      return;
+    }
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return;
+    const record = candidate as Record<string, unknown>;
+    const nested = [record.mode, record.name, record.kind];
+    for (const entry of nested) {
+      if (typeof entry === "string" && entry.trim().length) {
+        normalized.add(entry.trim().toLowerCase());
+        return;
+      }
+    }
+  };
+
+  if (Array.isArray(value)) {
+    value.forEach(pushMode);
+  } else if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const candidates = [
+      record.collaborationModes,
+      record.collaboration_modes,
+      record.modes,
+      record.presets,
+      record.items,
+    ];
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) {
+        candidate.forEach(pushMode);
+      }
+    }
+  }
+
+  return normalized.size > 0 ? normalized : null;
+}
+
 function resolveSessionUnifiedPermissionMode(
   session: Pick<AgentChatSession, "unifiedPermissionMode" | "permissionMode">,
   fallback: AgentChatUnifiedPermissionMode,
@@ -2122,6 +2272,11 @@ export function createAgentChatService(args: {
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
   getAutomationService?: () => { list: () => any[]; triggerManually: (args: any) => Promise<any>; listRuns: (args?: any) => any[] } | null;
+  getGitService?: () => CtoOperatorToolDeps["gitService"];
+  conflictService?: CtoOperatorToolDeps["conflictService"];
+  contextDocService?: CtoOperatorToolDeps["contextDocService"];
+  getWorkerBudgetService?: () => CtoOperatorToolDeps["workerBudgetService"];
+  getMissionBudgetService?: () => CtoOperatorToolDeps["missionBudgetService"];
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -2156,6 +2311,11 @@ export function createAgentChatService(args: {
     getTestService,
     ptyService,
     getAutomationService,
+    getGitService,
+    conflictService,
+    contextDocService,
+    getWorkerBudgetService,
+    getMissionBudgetService,
     computerUseArtifactBrokerService,
     laneService,
     sessionService,
@@ -2496,8 +2656,9 @@ export function createAgentChatService(args: {
   };
 
   const hasClaudeAskUserAnswers = (input: Record<string, unknown>): boolean => {
+    const questions = Array.isArray(input.questions) ? input.questions : [];
     const answers = asRecord(input.answers);
-    if (!answers) return false;
+    if (!answers || questions.length === 0) return false;
     const hasAnswerValue = (value: unknown): boolean => {
       if (typeof value === "string") return value.trim().length > 0;
       if (Array.isArray(value)) return value.some((item) => hasAnswerValue(item));
@@ -2506,7 +2667,17 @@ export function createAgentChatService(args: {
       }
       return value != null && value !== false;
     };
-    return Object.values(answers).every((value) => hasAnswerValue(value));
+    return questions.every((q) => {
+      const key = typeof q === "object" && q !== null && typeof (q as Record<string, unknown>).id === "string"
+        ? (q as Record<string, unknown>).id as string
+        : typeof q === "object" && q !== null && typeof (q as Record<string, unknown>).question === "string"
+          ? (q as Record<string, unknown>).question as string
+          : null;
+      if (!key) return false;
+      // Check both the question id and the question text as answer keys
+      return hasAnswerValue(answers[key])
+        || (typeof (q as Record<string, unknown>).question === "string" && hasAnswerValue(answers[(q as Record<string, unknown>).question as string]));
+    });
   };
 
   const buildClaudeAskUserPendingRequest = (
@@ -2607,10 +2778,13 @@ export function createAgentChatService(args: {
         .map(([questionId, values]) => {
           // Map internal question ID back to the original question text
           // so Claude's SDK receives answers keyed the way it expects.
-          const originalKey = request.questions.find((q) => q.id === questionId)?.question ?? questionId;
-          return [originalKey, values.join(", ").trim()] as const;
+          const question = request.questions.find((q) => q.id === questionId);
+          const originalKey = question?.question ?? questionId;
+          // Preserve array structure for multi-select questions
+          const answer: string | string[] = question?.multiSelect ? values : values.join(", ").trim();
+          return [originalKey, answer] as const;
         })
-        .filter(([, answer]) => answer.length > 0),
+        .filter(([, answer]) => (typeof answer === "string" ? answer.length > 0 : answer.length > 0)),
     );
 
     const existingAnswers = asRecord(input.answers) ?? {};
@@ -2687,11 +2861,13 @@ export function createAgentChatService(args: {
       // Block until the user responds via the approval UI.
       let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
       try {
+        runtime.pauseIdleWatchdog?.();
         response = await new Promise<typeof response>((resolve) => {
           runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
         });
       } finally {
         runtime.approvals.delete(approvalItemId);
+        runtime.resumeIdleWatchdog?.();
       }
 
       // Emit tool_result so derivePendingInputRequests clears this entry.
@@ -2753,11 +2929,13 @@ export function createAgentChatService(args: {
 
       let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
       try {
+        runtime.pauseIdleWatchdog?.();
         response = await new Promise<typeof response>((resolve) => {
           runtime.approvals.set(approvalItemId, { kind: "question", resolve, request });
         });
       } finally {
         runtime.approvals.delete(approvalItemId);
+        runtime.resumeIdleWatchdog?.();
       }
 
       // Emit a tool_result so derivePendingInputRequests clears this entry
@@ -2865,11 +3043,13 @@ export function createAgentChatService(args: {
 
       let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
       try {
+        runtime.pauseIdleWatchdog?.();
         response = await new Promise<typeof response>((resolve) => {
           runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
         });
       } finally {
         runtime.approvals.delete(approvalItemId);
+        runtime.resumeIdleWatchdog?.();
       }
 
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
@@ -3005,7 +3185,19 @@ export function createAgentChatService(args: {
         testService: getTestService?.() ?? null,
         ptyService: ptyService ?? null,
         automationService: getAutomationService?.() ?? null,
+        gitService: getGitService?.() ?? null,
+        conflictService: conflictService ?? null,
+        contextDocService: contextDocService ?? null,
+        computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
+        workerBudgetService: getWorkerBudgetService?.() ?? null,
+        missionBudgetService: getMissionBudgetService?.() ?? null,
+        steerChat: undefined,
+        cancelSteer: undefined,
+        handoffChat: undefined,
+        listSubagents: undefined,
+        approveToolUse: undefined,
         issueTracker: linearIssueTracker ?? null,
+        ctoStateService: ctoStateService ?? null,
         listChats: listSessions,
         getChatStatus: getSessionSummary,
         getChatTranscript,
@@ -4717,7 +4909,9 @@ export function createAgentChatService(args: {
     if (event.type !== "done") return;
 
     collector.usage = event.usage;
-    clearTimeout(collector.timeout);
+    if (collector.timeout) {
+      clearTimeout(collector.timeout);
+    }
     sessionTurnCollectors.delete(managed.session.id);
     collector.resolve({
       sessionId: managed.session.id,
@@ -4892,6 +5086,27 @@ export function createAgentChatService(args: {
     });
   };
 
+  const emitPendingInputResolved = (
+    managed: ManagedChatSession,
+    args: {
+      itemId: string;
+      decision: AgentChatApprovalDecision;
+      turnId?: string | null;
+    },
+  ): void => {
+    emitChatEvent(managed, {
+      type: "pending_input_resolved",
+      itemId: args.itemId,
+      resolution:
+        args.decision === "cancel"
+          ? "cancelled"
+          : args.decision === "decline"
+            ? "declined"
+            : "accepted",
+      ...(typeof args.turnId === "string" && args.turnId.trim().length ? { turnId: args.turnId.trim() } : {}),
+    });
+  };
+
   const normalizePendingInputAnswers = (
     request: PendingInputRequest | undefined,
     answers: Record<string, string | string[]> | undefined,
@@ -4919,8 +5134,14 @@ export function createAgentChatService(args: {
 
     const trimmedResponse = typeof responseText === "string" ? responseText.trim() : "";
     if (trimmedResponse.length > 0) {
-      const fallbackQuestionId = request?.questions[0]?.id ?? "response";
-      normalized[fallbackQuestionId] = [trimmedResponse];
+      if (request?.questions.length === 1) {
+        const [question] = request.questions;
+        if (question && !normalized[question.id]?.length) {
+          normalized[question.id] = [trimmedResponse];
+        }
+      } else {
+        normalized["response"] = [trimmedResponse];
+      }
     }
 
     return normalized;
@@ -5112,6 +5333,54 @@ export function createAgentChatService(args: {
     }
     managed.runtimeInvalidated = true;
     clearLaneDirectiveKey(managed);
+  };
+
+  const keepChatSessionOpen = (
+    managed: ManagedChatSession,
+    args: {
+      message: string;
+      turnId?: string | null;
+      turnStatus?: "failed" | "interrupted";
+    },
+  ): void => {
+    if (managed.closed) return;
+
+    const resolvedTurnId = typeof args.turnId === "string" && args.turnId.trim().length
+      ? args.turnId.trim()
+      : null;
+
+    for (const pending of managed.localPendingInputs.values()) {
+      pending.resolve({ decision: "cancel" });
+    }
+    managed.localPendingInputs.clear();
+
+    emitChatEvent(managed, {
+      type: "error",
+      message: args.message,
+      ...(resolvedTurnId ? { turnId: resolvedTurnId } : {}),
+    });
+
+    if (resolvedTurnId && args.turnStatus) {
+      emitChatEvent(managed, {
+        type: "status",
+        turnStatus: args.turnStatus,
+        turnId: resolvedTurnId,
+      });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId: resolvedTurnId,
+        status: args.turnStatus,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
+    }
+
+    managed.session.status = "idle";
+    teardownRuntime(managed);
+    managed.closed = false;
+    managed.endedNotified = false;
+    sessionService.reopen(managed.session.id);
+    persistChatState(managed);
   };
 
   const maybeGenerateSessionSummary = async (
@@ -5543,10 +5812,28 @@ export function createAgentChatService(args: {
       });
     }
 
+    await runtime.collaborationModesReady?.catch(() => {});
+    const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
+    const collaborationMode = buildCodexCollaborationMode(managed.session, runtime.collaborationModes);
+    if (
+      requestedCollaborationMode === "plan"
+      && collaborationMode?.mode !== "plan"
+      && !runtime.planModeFallbackNotified
+    ) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "Native Codex plan mode is unavailable for this session, so ADE is continuing in default collaboration mode.",
+      });
+      runtime.planModeFallbackNotified = true;
+    } else if (collaborationMode?.mode === "plan") {
+      runtime.planModeFallbackNotified = false;
+    }
     const result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
       threadId: managed.session.threadId,
       input,
-      ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {})
+      ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+      ...(collaborationMode ? { collaborationMode } : {}),
     });
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
@@ -5679,6 +5966,7 @@ export function createAgentChatService(args: {
     runtime.busy = true;
     runtime.activeTurnId = turnId;
     runtime.interrupted = false;
+    runtime.resolvedToolUseIds.clear();
     managed.session.status = "active";
 
     const attachments = args.attachments ?? [];
@@ -5777,6 +6065,7 @@ export function createAgentChatService(args: {
     };
     let idleTimeout: ReturnType<typeof setTimeout> | undefined;
     let timeoutError: Error | null = null;
+    let idleWatchdogPauseCount = 0;
     const buildDoneModelPayload = (): { model: string; modelId?: string } =>
       resolveClaudeTurnModelPayload(managed.session, [
         reportedAssistantModel,
@@ -5810,6 +6099,16 @@ export function createAgentChatService(args: {
         idleTimeout = undefined;
       }
     };
+    const pauseClaudeIdleWatchdog = (): void => {
+      idleWatchdogPauseCount += 1;
+      clearClaudeTurnTimers();
+    };
+    const resumeClaudeIdleWatchdog = (): void => {
+      idleWatchdogPauseCount = Math.max(0, idleWatchdogPauseCount - 1);
+      if (idleWatchdogPauseCount === 0 && !timeoutError && !runtime.interrupted && runtime.busy) {
+        bumpClaudeIdleDeadline();
+      }
+    };
     const failClaudeTurn = (message: string, reason: "timeout" | "idle"): void => {
       if (timeoutError || runtime.interrupted) return;
       timeoutError = new Error(message);
@@ -5824,16 +6123,22 @@ export function createAgentChatService(args: {
       // the same conversation after this local process is torn down.
     };
     const bumpClaudeIdleDeadline = (): void => {
+      if (idleWatchdogPauseCount > 0) {
+        clearClaudeTurnTimers();
+        return;
+      }
       if (idleTimeout) {
         clearTimeout(idleTimeout);
       }
       idleTimeout = setTimeout(() => {
         failClaudeTurn(
-          `Claude stopped streaming for ${Math.round(CLAUDE_STREAM_IDLE_TIMEOUT_MS / 1000)}s. The turn was reset so you can retry.`,
+          `Claude stopped streaming for ${Math.round(CLAUDE_STREAM_IDLE_TIMEOUT_MS / 1000)}s. This turn was interrupted, but the chat stayed open so you can retry.`,
           "idle",
         );
       }, CLAUDE_STREAM_IDLE_TIMEOUT_MS);
     };
+    runtime.pauseIdleWatchdog = pauseClaudeIdleWatchdog;
+    runtime.resumeIdleWatchdog = resumeClaudeIdleWatchdog;
 
     try {
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
@@ -6507,6 +6812,8 @@ export function createAgentChatService(args: {
 
       // ── Turn completion ──
       clearClaudeTurnTimers();
+      runtime.pauseIdleWatchdog = null;
+      runtime.resumeIdleWatchdog = null;
       flushOpenClaudeToolUses(runtime.interrupted ? "interrupted" : "completed");
       // Note: v2Session is NOT closed here — it stays alive for the next turn
       runtime.activeQuery = null;
@@ -6557,6 +6864,8 @@ export function createAgentChatService(args: {
       }
     } catch (error) {
       clearClaudeTurnTimers();
+      runtime.pauseIdleWatchdog = null;
+      runtime.resumeIdleWatchdog = null;
       runtime.activeQuery = null;
       runtime.busy = false;
       runtime.activeTurnId = null;
@@ -7012,7 +7321,24 @@ export function createAgentChatService(args: {
             testService: getTestService?.() ?? null,
             ptyService: ptyService ?? null,
             automationService: getAutomationService?.() ?? null,
+            gitService: getGitService?.() ?? null,
+            conflictService: conflictService ?? null,
+            contextDocService: contextDocService ?? null,
+            computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
+            workerBudgetService: getWorkerBudgetService?.() ?? null,
+            missionBudgetService: getMissionBudgetService?.() ?? null,
+            steerChat: (steerArgs: { sessionId: string; instruction: string }) =>
+              steer({ sessionId: steerArgs.sessionId, text: steerArgs.instruction }),
+            cancelSteer: (cancelArgs: { sessionId: string }) =>
+              cancelSteer({ sessionId: cancelArgs.sessionId, steerId: "" }),
+            handoffChat: (handoffArgs: { sessionId: string; targetIdentityKey?: string; reason?: string }) =>
+              handoffSession(handoffArgs as any),
+            listSubagents: (subArgs: { sessionId: string }) =>
+              Promise.resolve(listSubagents(subArgs as any)),
+            approveToolUse: (approveArgs: { sessionId: string; toolUseId: string; decision: "accept" | "accept_for_session" | "decline" | "cancel" }) =>
+              approveToolUse({ sessionId: approveArgs.sessionId, itemId: approveArgs.toolUseId, decision: approveArgs.decision }),
             issueTracker: linearIssueTracker ?? null,
+            ctoStateService: ctoStateService ?? null,
             listChats: listSessions,
             getChatStatus: getSessionSummary,
             getChatTranscript,
@@ -7621,7 +7947,12 @@ export function createAgentChatService(args: {
           threadId: params.threadId ?? null,
         },
       };
-      runtime.approvals.set(itemId, { requestId: id, kind: "structured_question", request });
+      runtime.approvals.set(itemId, {
+        requestId: id,
+        kind: "structured_question",
+        request,
+        questionResponseKind: "native_request_user_input",
+      });
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: request.description ?? "Codex requested input",
@@ -7640,14 +7971,98 @@ export function createAgentChatService(args: {
       const serverName = typeof params.serverName === "string" ? params.serverName.trim() : "MCP";
       const message = typeof params.message === "string" ? params.message.trim() : "The agent needs input.";
       const itemId = randomUUID();
+      const requestedSchema = params.requestedSchema && typeof params.requestedSchema === "object"
+        ? params.requestedSchema
+        : null;
 
-      // Parse structured questions from the message (lines separated by ?)
-      const questions: PendingInputQuestion[] = [{
-        id: "elicitation_answer",
-        header: "Question",
-        question: message,
-        allowsFreeform: true,
-      }];
+      const inferQuestionsFromSchema = (): PendingInputQuestion[] => {
+        const properties = requestedSchema && typeof requestedSchema.properties === "object" && requestedSchema.properties
+          ? requestedSchema.properties as Record<string, unknown>
+          : null;
+        if (!properties) {
+          return [{
+            id: "elicitation_answer",
+            header: "Question",
+            question: message,
+            allowsFreeform: true,
+          }];
+        }
+
+        const entries = Object.entries(properties).flatMap(([propertyKey, rawProperty], index) => {
+          if (!rawProperty || typeof rawProperty !== "object") return [];
+          const property = rawProperty as Record<string, unknown>;
+          const header = typeof property.title === "string" && property.title.trim().length
+            ? property.title.trim()
+            : `Question ${index + 1}`;
+          const enumOptions = Array.isArray(property.enum)
+            ? property.enum.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+            : [];
+          const itemEnumOptions = property.type === "array"
+            && property.items
+            && typeof property.items === "object"
+            && Array.isArray((property.items as Record<string, unknown>).enum)
+              ? ((property.items as Record<string, unknown>).enum as unknown[])
+                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+              : [];
+          const questionText = typeof property.description === "string" && property.description.trim().length
+            ? property.description.trim()
+            : Object.keys(properties).length === 1
+              ? message
+              : `${message} (${header})`;
+
+          if (enumOptions.length > 0) {
+            return [{
+              id: propertyKey,
+              header,
+              question: questionText,
+              options: enumOptions.map((value) => ({ label: value, value })),
+              allowsFreeform: false,
+            }];
+          }
+
+          if (itemEnumOptions.length > 0) {
+            return [{
+              id: propertyKey,
+              header,
+              question: questionText,
+              multiSelect: true,
+              options: itemEnumOptions.map((value) => ({ label: value, value })),
+              allowsFreeform: false,
+            }];
+          }
+
+          if (property.type === "boolean") {
+            return [{
+              id: propertyKey,
+              header,
+              question: questionText,
+              options: [
+                { label: "Yes", value: "true" },
+                { label: "No", value: "false" },
+              ],
+              allowsFreeform: false,
+            }];
+          }
+
+          return [{
+            id: propertyKey,
+            header,
+            question: questionText,
+            allowsFreeform: true,
+          }];
+        });
+
+        return entries.length > 0
+          ? entries
+          : [{
+              id: "elicitation_answer",
+              header: "Question",
+              question: message,
+              allowsFreeform: true,
+            }];
+      };
+
+      const questions = inferQuestionsFromSchema();
 
       const request: PendingInputRequest = {
         requestId: String(id),
@@ -7655,14 +8070,20 @@ export function createAgentChatService(args: {
         source: "codex",
         kind: "structured_question",
         title: `Question from ${serverName}`,
-        description: message,
+        description: questions[0]?.question ?? message,
         questions,
         allowsFreeform: true,
         blocking: true,
         canProceedWithoutAnswer: false,
+        providerMetadata: requestedSchema ? { serverName, requestedSchema } : { serverName },
         turnId: typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null,
       };
-      runtime.approvals.set(itemId, { requestId: id, kind: "structured_question", request });
+      runtime.approvals.set(itemId, {
+        requestId: id,
+        kind: "structured_question",
+        request,
+        questionResponseKind: "mcp_elicitation",
+      });
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: message,
@@ -7671,6 +8092,131 @@ export function createAgentChatService(args: {
     }
 
     runtime.sendError(id, `Unsupported server request: ${method || "unknown"}`);
+  };
+
+  const parseCodexPlanPayload = (
+    value: unknown,
+  ): { steps: Array<{ text: string; status: "pending" | "in_progress" | "completed" | "failed" }>; explanation: string | null } | null => {
+    const record = (() => {
+      if (typeof value !== "string") return asRecord(value);
+      try {
+        return asRecord(JSON.parse(value));
+      } catch {
+        return null;
+      }
+    })();
+    if (!record) return null;
+
+    const rawPlan = Array.isArray(record.plan)
+      ? record.plan
+      : Array.isArray(record.steps)
+        ? record.steps
+        : null;
+    if (!rawPlan) return null;
+
+    const steps = rawPlan
+      .map((step) => {
+        const entry = asRecord(step);
+        if (!entry) return null;
+        const text = typeof entry.step === "string"
+          ? entry.step
+          : typeof entry.text === "string"
+            ? entry.text
+            : typeof entry.description === "string"
+              ? entry.description
+              : "";
+        const normalizedText = text.trim();
+        if (!normalizedText.length) return null;
+        const rawStatus = typeof entry.status === "string" ? entry.status : "pending";
+        return {
+          text: normalizedText,
+          status: PLAN_STEP_STATUS_MAP[rawStatus] ?? "pending",
+        };
+      })
+      .filter((entry): entry is { text: string; status: "pending" | "in_progress" | "completed" | "failed" } => entry != null);
+
+    if (!steps.length) return null;
+
+    return {
+      steps,
+      explanation: typeof record.explanation === "string" && record.explanation.trim().length
+        ? record.explanation
+        : null,
+    };
+  };
+
+  const emitCodexPlanUpdate = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    payload: unknown,
+    turnId: string | undefined,
+  ): boolean => {
+    const normalized = parseCodexPlanPayload(payload);
+    if (!normalized) return false;
+
+    emitChatEvent(managed, {
+      type: "plan",
+      steps: normalized.steps,
+      ...(turnId ? { turnId } : {}),
+      explanation: normalized.explanation,
+    });
+
+    if (managed.session.permissionMode !== "plan") {
+      return true;
+    }
+
+    const allPending = normalized.steps.every((step) => step.status === "pending");
+    if (!allPending) {
+      return true;
+    }
+
+    const planSummary = normalized.steps.map((step, index) => `${index + 1}. ${step.text}`).join("\n");
+    const hasExistingApproval = [...runtime.approvals.values()].some((pending) =>
+      pending.kind === "plan_approval"
+      && (
+        (turnId && (pending.request?.turnId ?? null) === turnId)
+        || pending.request?.description === planSummary
+      ),
+    );
+    if (hasExistingApproval) {
+      return true;
+    }
+
+    const planApprovalItemId = randomUUID();
+    const request: PendingInputRequest = {
+      requestId: planApprovalItemId,
+      itemId: planApprovalItemId,
+      source: "codex",
+      kind: "plan_approval",
+      title: "Plan Ready for Review",
+      description: planSummary,
+      questions: [{
+        id: "plan_decision",
+        header: "Implementation Plan",
+        question: planSummary,
+        options: [
+          { label: "Approve & Implement", value: "approve", recommended: true },
+          { label: "Reject & Revise", value: "reject" },
+        ],
+        allowsFreeform: true,
+      }],
+      allowsFreeform: true,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: { tool: "codexPlanApproval" },
+      turnId: turnId ?? runtime.activeTurnId ?? null,
+    };
+    runtime.approvals.set(planApprovalItemId, {
+      requestId: planApprovalItemId,
+      kind: "plan_approval",
+      request,
+    });
+    emitPendingInputRequest(managed, request, {
+      kind: "tool_call",
+      description: "Plan ready for approval",
+      detail: { planContent: planSummary },
+    });
+    return true;
   };
 
   const handleCodexItemEvent = (
@@ -7893,6 +8439,9 @@ export function createAgentChatService(args: {
     // dynamicToolCall items → tool_call/tool_result events
     if (itemType === "dynamicToolCall") {
       const toolName = String(item.tool ?? "dynamic_tool");
+      if (toolName === "update_plan" && eventKind === "started") {
+        emitCodexPlanUpdate(managed, runtime, item.arguments, turnId);
+      }
       if (eventKind === "started") {
         emitChatEvent(managed, {
           type: "activity",
@@ -8037,6 +8586,7 @@ export function createAgentChatService(args: {
       const status = mapCodexTurnStatus(turn?.status);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       managed.session.status = "idle";
+      runtime.approvals.clear();
 
       if (status === "failed" && turn?.error?.message) {
         emitChatEvent(managed, {
@@ -8199,73 +8749,15 @@ export function createAgentChatService(args: {
     }
 
     if (method === "turn/plan/updated") {
-      const plan = Array.isArray(params.plan) ? params.plan : [];
-      const steps = plan
-        .map((step) => {
-          if (!step || typeof step !== "object") return null;
-          const record = step as { step?: unknown; status?: unknown };
-          const text = typeof record.step === "string" ? record.step : "";
-          if (!text) return null;
-          const rawStatus = typeof record.status === "string" ? record.status : "pending";
-          const mappedStatus = PLAN_STEP_STATUS_MAP[rawStatus] ?? "pending";
-          return {
-            text,
-            status: mappedStatus
-          };
-        })
-        .filter((entry): entry is { text: string; status: "pending" | "in_progress" | "completed" | "failed" } => entry != null);
-
-      emitChatEvent(managed, {
-        type: "plan",
-        steps,
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
-        explanation: typeof params.explanation === "string" ? params.explanation : null
-      });
-
-      // Emit plan approval request when the session is in plan mode and a
-      // complete plan has been proposed (all steps still pending = freshly created).
-      if (managed.session.permissionMode === "plan" && steps.length > 0) {
-        const allPending = steps.every((s) => s.status === "pending");
-        if (allPending) {
-          const planSummary = steps.map((s, i) => `${i + 1}. ${s.text}`).join("\n");
-          const planApprovalItemId = randomUUID();
-          const planTurnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? undefined;
-          const request: PendingInputRequest = {
-            requestId: planApprovalItemId,
-            itemId: planApprovalItemId,
-            source: "codex",
-            kind: "plan_approval",
-            title: "Plan Ready for Review",
-            description: planSummary,
-            questions: [{
-              id: "plan_decision",
-              header: "Implementation Plan",
-              question: planSummary,
-              options: [
-                { label: "Approve & Implement", value: "approve", recommended: true },
-                { label: "Reject & Revise", value: "reject" },
-              ],
-              allowsFreeform: true,
-            }],
-            allowsFreeform: true,
-            blocking: true,
-            canProceedWithoutAnswer: false,
-            providerMetadata: { tool: "codexPlanApproval" },
-            turnId: planTurnId ?? null,
-          };
-          runtime.approvals.set(planApprovalItemId, {
-            requestId: planApprovalItemId,
-            kind: "plan_approval",
-            request,
-          });
-          emitPendingInputRequest(managed, request, {
-            kind: "tool_call",
-            description: "Plan ready for approval",
-            detail: { planContent: planSummary },
-          });
-        }
-      }
-
+      emitCodexPlanUpdate(
+        managed,
+        runtime,
+        {
+          plan: Array.isArray(params.plan) ? params.plan : [],
+          explanation: typeof params.explanation === "string" ? params.explanation : null,
+        },
+        typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? undefined,
+      );
       return;
     }
 
@@ -8310,6 +8802,7 @@ export function createAgentChatService(args: {
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
+      runtime.approvals.clear();
       managed.session.status = "idle";
       emitChatEvent(managed, {
         type: "status",
@@ -8511,12 +9004,15 @@ export function createAgentChatService(args: {
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
-      recentNotificationKeys: new Set<string>(),
-      slashCommands: [],
-      rateLimits: null,
-      request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
-        const id = runtime.nextRequestId;
-        runtime.nextRequestId += 1;
+    recentNotificationKeys: new Set<string>(),
+    slashCommands: [],
+    rateLimits: null,
+    collaborationModes: null,
+    collaborationModesReady: null,
+    planModeFallbackNotified: false,
+    request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
+      const id = runtime.nextRequestId;
+      runtime.nextRequestId += 1;
 
         const payload: JsonRpcEnvelope = {
           jsonrpc: "2.0",
@@ -8618,16 +9114,11 @@ export function createAgentChatService(args: {
       runtime.suppressExitError = true;
 
       if (managed.closed || managed.session.status === "ended") return;
-
-      emitChatEvent(managed, {
-        type: "error",
+      keepChatSessionOpen(managed, {
         message,
+        turnId: runtime.activeTurnId,
+        ...(runtime.activeTurnId ? { turnStatus: "failed" as const } : {}),
       });
-
-      void finishSession(managed, "failed", {
-        exitCode: null,
-        summary: message,
-      }).catch(() => {});
     });
 
     proc.on("exit", (code, signal) => {
@@ -8646,16 +9137,11 @@ export function createAgentChatService(args: {
 
       if (runtime.suppressExitError) return;
       if (managed.closed || managed.session.status === "ended") return;
-
-      emitChatEvent(managed, {
-        type: "error",
-        message
+      keepChatSessionOpen(managed, {
+        message,
+        turnId: runtime.activeTurnId,
+        ...(runtime.activeTurnId ? { turnStatus: "failed" as const } : {}),
       });
-
-      void finishSession(managed, "failed", {
-        summary: message,
-        exitCode: code ?? null
-      }).catch(() => {});
     });
 
     await runtime.request("initialize", {
@@ -8668,6 +9154,23 @@ export function createAgentChatService(args: {
         experimentalApi: true
       }
     });
+
+    const collaborationModesRequest = runtime.request<unknown>("collaborationMode/list", {})
+      .then((res) => {
+        const modes = parseCodexCollaborationModes(res);
+        if (modes) {
+          runtime.collaborationModes = modes;
+        }
+      })
+      .catch(() => { /* collaborationMode/list not supported — ignore */ });
+    runtime.collaborationModesReady = Promise.race([
+      collaborationModesRequest,
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS);
+        timer.unref?.();
+        collaborationModesRequest.finally(() => clearTimeout(timer)).catch(() => {});
+      }),
+    ]).then(() => undefined);
 
     runtime.notify("initialized");
     return runtime;
@@ -8897,6 +9400,7 @@ export function createAgentChatService(args: {
             // Race: user clicks "Done" OR elicitation_complete arrives
             let userResponse: { decision?: AgentChatApprovalDecision };
             try {
+              runtime.pauseIdleWatchdog?.();
               userResponse = await Promise.race([
                 new Promise<{ decision?: AgentChatApprovalDecision }>((resolve) => {
                   runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
@@ -8906,6 +9410,7 @@ export function createAgentChatService(args: {
             } finally {
               runtime.approvals.delete(approvalItemId);
               runtime.pendingElicitations.delete(elicitReq.elicitationId);
+              runtime.resumeIdleWatchdog?.();
             }
             if (userResponse.decision === "cancel" || userResponse.decision === "decline") {
               return { action: "cancel" };
@@ -8916,11 +9421,13 @@ export function createAgentChatService(args: {
           // No elicitationId — just wait for user click
           let elicitResponse: { decision?: AgentChatApprovalDecision };
           try {
+            runtime.pauseIdleWatchdog?.();
             elicitResponse = await new Promise<typeof elicitResponse>((resolve) => {
               runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
             });
           } finally {
             runtime.approvals.delete(approvalItemId);
+            runtime.resumeIdleWatchdog?.();
           }
           return elicitResponse.decision === "cancel" || elicitResponse.decision === "decline"
             ? { action: "cancel" }
@@ -8975,11 +9482,13 @@ export function createAgentChatService(args: {
 
         let formResponse: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
         try {
+          runtime.pauseIdleWatchdog?.();
           formResponse = await new Promise<typeof formResponse>((resolve) => {
             runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
           });
         } finally {
           runtime.approvals.delete(approvalItemId);
+          runtime.resumeIdleWatchdog?.();
         }
 
         if (formResponse.decision === "cancel" || formResponse.decision === "decline") {
@@ -8996,13 +9505,15 @@ export function createAgentChatService(args: {
         return { action: "accept", content };
       };
 
-      // Enable MCP tool search for sessions with many MCP tools.
+      // Enable MCP tool search for non-CTO sessions with many MCP tools.
       // When enabled, the SDK defers tool definitions and loads them on-demand
       // via the ToolSearch tool, keeping the context window lean.
+      // CTO sessions disable deferral so operator tools (spawnChat, gitCommit, etc.)
+      // are always visible without needing ToolSearch.
       opts.env = {
         ...process.env as Record<string, string>,
         ...opts.env as Record<string, string> | undefined,
-        ENABLE_TOOL_SEARCH: "auto",
+        ENABLE_TOOL_SEARCH: managed.session.identityKey === "cto" ? "0" : "auto",
       };
     }
     const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
@@ -11326,6 +11837,7 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
+      await runtime.collaborationModesReady?.catch(() => {});
       if (!managed.session.threadId || !runtime.activeTurnId) {
         throw new Error("No active turn to steer.");
       }
@@ -11456,6 +11968,7 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
+      await runtime.collaborationModesReady?.catch(() => {});
       if (!managed.session.threadId || !runtime.activeTurnId) return;
       await runtime.request("turn/interrupt", {
         threadId: managed.session.threadId,
@@ -11776,16 +12289,6 @@ export function createAgentChatService(args: {
     const canonicalExisting = args.reuseExisting === false
       ? null
       : identitySessions.find((entry) => entry.laneId === canonicalLaneId) ?? null;
-    const legacySessions = identitySessions.filter((entry) => entry.laneId !== canonicalLaneId && entry.status !== "ended");
-
-    const retireLegacySessions = async (): Promise<void> => {
-      for (const legacy of legacySessions) {
-        const legacyManaged = ensureManagedSession(legacy.sessionId);
-        await finishSession(legacyManaged, "disposed", {
-          summary: "Superseded by the canonical primary-hosted identity session.",
-        });
-      }
-    };
 
     const preferred = canonicalExisting;
     if (preferred) {
@@ -11805,7 +12308,6 @@ export function createAgentChatService(args: {
       refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
       await refreshHeadShaStartForManagedExecutionLane(managed);
       persistChatState(managed);
-      await retireLegacySessions();
 
       if (managed.session.status === "ended") {
         await resumeSession({ sessionId: managed.session.id });
@@ -11872,7 +12374,6 @@ export function createAgentChatService(args: {
     refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
     await refreshHeadShaStartForManagedExecutionLane(managed);
     persistChatState(managed);
-    await retireLegacySessions();
     return managed.session;
   };
 
@@ -11884,25 +12385,52 @@ export function createAgentChatService(args: {
     responseText,
   }: AgentChatRespondToInputArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
+    const resolvedDecision: AgentChatApprovalDecision = decision ?? "decline";
     const localPending = managed.localPendingInputs.get(itemId);
     if (localPending) {
       managed.localPendingInputs.delete(itemId);
-      localPending.resolve({ decision, answers, responseText });
+      localPending.resolve({ decision: resolvedDecision, answers, responseText });
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: resolvedDecision,
+        turnId: localPending.request.turnId ?? null,
+      });
       return;
     }
 
     if (managed.runtime?.kind === "codex") {
-      const pending = managed.runtime.approvals.get(itemId);
+      const runtime = managed.runtime;
+      const pending = runtime.approvals.get(itemId);
       if (!pending) {
-        throw new Error(`No pending approval found for item '${itemId}'.`);
+        logger.warn("agent_chat.codex_approval_not_found", {
+          sessionId,
+          itemId,
+          decision: resolvedDecision,
+        });
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: resolvedDecision === "accept" || resolvedDecision === "accept_for_session" ? "cancel" : resolvedDecision,
+          turnId: null,
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "That request is no longer active.",
+        });
+        persistChatState(managed);
+        return;
       }
-      managed.runtime.approvals.delete(itemId);
+      const ensureWritable = (): void => {
+        if (!runtime.process.stdin.writable) {
+          throw new Error("Codex app-server connection is unavailable. Retry after the session reconnects.");
+        }
+      };
 
       // Plan approval is created locally (not a JSON-RPC server request).
       // On approve, send a follow-up turn telling Codex to implement.
       // On reject, send feedback for revision.
       if (pending.kind === "plan_approval") {
-        const approved = decision === "accept" || decision === "accept_for_session";
+        const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
         const feedback = typeof responseText === "string" ? responseText.trim() : "";
         if (approved) {
           // Switch out of plan mode and send implementation steer
@@ -11920,29 +12448,85 @@ export function createAgentChatService(args: {
               : "The user rejected the plan. Please revise your approach.",
           });
         }
+        runtime.approvals.delete(itemId);
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: resolvedDecision,
+          turnId: pending.request?.turnId ?? null,
+        });
         return;
       }
 
       if (pending.kind === "permissions") {
-        const approved = decision === "accept" || decision === "accept_for_session";
-        managed.runtime.sendResponse(pending.requestId, {
+        const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
+        ensureWritable();
+        runtime.sendResponse(pending.requestId, {
           permissions: approved ? (pending.permissions ?? {}) : {},
-          scope: decision === "accept_for_session" ? "session" : "turn",
+          scope: resolvedDecision === "accept_for_session" ? "session" : "turn",
+        });
+        runtime.approvals.delete(itemId);
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: resolvedDecision,
+          turnId: pending.request?.turnId ?? null,
         });
         return;
       }
       if (pending.kind === "structured_question") {
+        if (resolvedDecision === "decline" || resolvedDecision === "cancel") {
+          if (pending.questionResponseKind === "mcp_elicitation") {
+            ensureWritable();
+            runtime.sendResponse(pending.requestId, {
+              action: resolvedDecision === "cancel" ? "cancel" : "decline",
+              content: null,
+            });
+          } else {
+            // Native Codex request_user_input only accepts an answers map.
+            // Empty answers represent a declined/cancelled prompt without
+            // interrupting the surrounding turn.
+            ensureWritable();
+            runtime.sendResponse(pending.requestId, { answers: {} });
+          }
+          runtime.approvals.delete(itemId);
+          emitPendingInputResolved(managed, {
+            itemId,
+            decision: resolvedDecision,
+            turnId: pending.request?.turnId ?? null,
+          });
+          return;
+        }
         const normalizedAnswers = normalizePendingInputAnswers(pending.request, answers, responseText);
-        managed.runtime.sendResponse(pending.requestId, {
-          answers: Object.fromEntries(
-            Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
-          ),
+        ensureWritable();
+        if (pending.questionResponseKind === "mcp_elicitation") {
+          runtime.sendResponse(pending.requestId, {
+            action: "accept",
+            content: coerceCodexMcpElicitationContent(pending.request, normalizedAnswers),
+          });
+        } else {
+          runtime.sendResponse(pending.requestId, {
+            answers: Object.fromEntries(
+              Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
+            ),
+          });
+        }
+        runtime.approvals.delete(itemId);
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: resolvedDecision,
+          turnId: pending.request?.turnId ?? null,
         });
         return;
       }
 
-      const mapped = mapApprovalDecisionForCodex(decision ?? "decline");
-      managed.runtime.sendResponse(pending.requestId, { decision: mapped });
+      const mapped = mapApprovalDecisionForCodex(resolvedDecision);
+      ensureWritable();
+      runtime.sendResponse(pending.requestId, { decision: mapped });
+      runtime.approvals.delete(itemId);
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: resolvedDecision,
+        turnId: pending.request?.turnId ?? null,
+      });
       return;
     }
 
@@ -11960,7 +12544,12 @@ export function createAgentChatService(args: {
         return;
       }
       managed.runtime.approvals.delete(itemId);
-      pending.resolve({ decision, answers, responseText });
+      pending.resolve({ decision: resolvedDecision, answers, responseText });
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: resolvedDecision,
+        turnId: pending.request?.turnId ?? null,
+      });
       return;
     }
 
@@ -11969,8 +12558,8 @@ export function createAgentChatService(args: {
       if (!pending) {
         throw new Error(`No pending approval found for item '${itemId}'.`);
       }
-      const approved = decision === "accept" || decision === "accept_for_session";
-      if (decision === "accept_for_session" && pending.category !== "askUser") {
+      const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
+      if (resolvedDecision === "accept_for_session" && pending.category !== "askUser") {
         managed.runtime.approvalOverrides.add(pending.category);
         if (pending.category === "bash") {
           managed.runtime.permissionMode = "full-auto";
@@ -11986,7 +12575,12 @@ export function createAgentChatService(args: {
       }
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       managed.runtime.pendingApprovals.delete(itemId);
-      pending.resolve({ decision, answers, responseText });
+      pending.resolve({ decision: resolvedDecision, answers, responseText });
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: resolvedDecision,
+        turnId: pending.request?.turnId ?? null,
+      });
       return;
     }
 
@@ -12001,11 +12595,32 @@ export function createAgentChatService(args: {
         });
         return;
       }
-      pending.resolve(mapChatDecisionToCursorPermission(decision, pending.options, answers));
+      managed.runtime.permissionWaiters.delete(itemId);
+      pending.resolve(mapChatDecisionToCursorPermission(resolvedDecision, pending.options, answers));
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: resolvedDecision,
+        turnId: managed.runtime.activeTurnId ?? null,
+      });
       return;
     }
 
-    throw new Error(`Session '${sessionId}' does not have a live runtime for approvals.`);
+    logger.warn("agent_chat.approval_without_live_runtime", {
+      sessionId,
+      itemId,
+      decision: resolvedDecision,
+    });
+    emitPendingInputResolved(managed, {
+      itemId,
+      decision: resolvedDecision === "accept" || resolvedDecision === "accept_for_session" ? "cancel" : resolvedDecision,
+      turnId: null,
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: "That request is no longer active.",
+    });
+    persistChatState(managed);
   };
 
   const approveToolUse = async ({
@@ -12581,8 +13196,8 @@ export function createAgentChatService(args: {
     attachments = [],
     reasoningEffort,
     executionMode,
-    timeoutMs = RUN_SESSION_TURN_WAIT_TIMEOUT_MS,
-  }: AgentChatSendArgs & { timeoutMs?: number }): Promise<{
+    timeoutMs,
+  }: AgentChatSendArgs & { timeoutMs?: number | null }): Promise<{
     sessionId: string;
     provider: AgentChatProvider;
     model: string;
@@ -12634,24 +13249,47 @@ export function createAgentChatService(args: {
       };
     }
 
-    const safeTimeoutMs = Math.max(15_000, Math.floor(timeoutMs));
+    const normalizedTimeoutMs = timeoutMs === undefined
+      ? DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS
+      : timeoutMs == null || Number(timeoutMs) === 0
+        ? null
+        : Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+          ? Math.max(15_000, Math.floor(Number(timeoutMs)))
+          : DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS;
     return await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        sessionTurnCollectors.delete(sessionId);
-        reject(new Error(`Timed out waiting for session '${sessionId}' to finish the current turn.`));
-      }, safeTimeoutMs);
-
-      sessionTurnCollectors.set(sessionId, {
+      const collector: SessionTurnCollector = {
         resolve,
         reject,
         outputText: "",
         lastError: null,
-        timeout,
-      });
+        timeout: null,
+      };
+
+      if (normalizedTimeoutMs != null) {
+        collector.timeout = setTimeout(() => {
+          if (sessionTurnCollectors.get(sessionId) !== collector) return;
+          sessionTurnCollectors.delete(sessionId);
+          void interrupt({ sessionId }).catch((interruptError) => {
+            logger.warn("agent_chat.run_session_turn_timeout_interrupt_failed", {
+              sessionId,
+              error: interruptError instanceof Error ? interruptError.message : String(interruptError),
+            });
+          });
+          reject(new Error(
+            `Timed out waiting for session '${sessionId}' to finish the current turn. The turn was interrupted, but the chat stayed open.`,
+          ));
+        }, normalizedTimeoutMs);
+      }
+
+      sessionTurnCollectors.set(sessionId, collector);
 
       void executePreparedSendMessage(prepared).catch((error) => {
-        clearTimeout(timeout);
-        sessionTurnCollectors.delete(sessionId);
+        if (collector.timeout) {
+          clearTimeout(collector.timeout);
+        }
+        if (sessionTurnCollectors.get(sessionId) === collector) {
+          sessionTurnCollectors.delete(sessionId);
+        }
         reject(error instanceof Error ? error : new Error(String(error)));
       });
     });
@@ -12665,18 +13303,122 @@ export function createAgentChatService(args: {
     chatSessionId: string;
     title: string;
     body: string;
-    questions?: Array<{ id?: string; question: string; options?: Array<{ label: string; value?: string }> }>;
+    questions?: Array<{
+      id?: string;
+      header?: string;
+      question: string;
+      options?: Array<{
+        label: string;
+        value?: string;
+        description?: string;
+        recommended?: boolean;
+        preview?: string;
+        previewFormat?: string;
+      }>;
+      multiSelect?: boolean;
+      allowsFreeform?: boolean;
+      isSecret?: boolean;
+      defaultAssumption?: string | null;
+      impact?: string | null;
+    }>;
   }): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null }> => {
+    const inferQuestionsFromBody = (bodyText: string): PendingInputQuestion[] | null => {
+      const normalizedBody = bodyText.replace(/\r/g, "").trim();
+      if (!normalizedBody.length) return null;
+
+      const buildStructuredQuestion = (
+        prompt: string,
+        options: Array<{ label: string; value: string }>,
+      ): PendingInputQuestion[] | null => {
+        const question = prompt.trim().replace(/\s+/g, " ");
+        const normalizedOptions = options
+          .map((option) => ({
+            label: option.label.trim(),
+            value: option.value.trim(),
+          }))
+          .filter((option) => option.label.length > 0 && option.value.length > 0);
+        if (!question.length || normalizedOptions.length < 2) return null;
+        return [{
+          id: "answer",
+          header: "Question 1",
+          question,
+          options: normalizedOptions,
+          allowsFreeform: true,
+        }];
+      };
+
+      const optionLinePattern = /^(?:[-*]\s*)?([0-9A-Za-z]+)[.)]\s+(.+)$/;
+      const nonEmptyLines = normalizedBody
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      const firstOptionLineIndex = nonEmptyLines.findIndex((line) => optionLinePattern.test(line));
+      if (firstOptionLineIndex >= 1) {
+        const prompt = nonEmptyLines.slice(0, firstOptionLineIndex).join(" ");
+        const options = nonEmptyLines.slice(firstOptionLineIndex).flatMap((line) => {
+          const match = line.match(optionLinePattern);
+          if (!match) return [];
+          return [{
+            value: match[1]!.trim(),
+            label: match[2]!.trim(),
+          }];
+        });
+        const inferred = buildStructuredQuestion(prompt, options);
+        if (inferred) return inferred;
+      }
+
+      const optionMarkerPattern = /([0-9A-Za-z]+)[.)]\s+/g;
+      const markers = Array.from(normalizedBody.matchAll(optionMarkerPattern));
+      if (markers.length < 2) return null;
+      const firstMarker = markers[0];
+      if (!firstMarker || firstMarker.index == null || firstMarker.index <= 0) return null;
+
+      const prompt = normalizedBody.slice(0, firstMarker.index).trim();
+      const options = markers.flatMap((match, index) => {
+        const start = (match.index ?? 0) + match[0].length;
+        const end = index + 1 < markers.length
+          ? (markers[index + 1]?.index ?? normalizedBody.length)
+          : normalizedBody.length;
+        const rawLabel = normalizedBody
+          .slice(start, end)
+          .replace(/\s+(?:Reply|Respond|Choose|Select|Pick|Answer)\b[\s\S]*$/i, "")
+          .trim();
+        if (!rawLabel.length) return [];
+        return [{
+          value: match[1]!.trim(),
+          label: rawLabel,
+        }];
+      });
+      return buildStructuredQuestion(prompt, options);
+    };
+
     const managed = ensureManagedSession(args.chatSessionId);
     const itemId = randomUUID();
-    const questions: PendingInputQuestion[] = (args.questions ?? [{ id: "answer", question: args.body }]).map(
+    const fallbackQuestions = inferQuestionsFromBody(args.body) ?? [{ id: "answer", header: "Question 1", question: args.body, allowsFreeform: true }];
+    const requestedQuestions = args.questions?.length ? args.questions : fallbackQuestions;
+    const questions: PendingInputQuestion[] = requestedQuestions.map(
       (q, i) => ({
         id: q.id ?? `q_${i + 1}`,
-        header: `Question ${i + 1}`,
-        question: q.question,
-        allowsFreeform: true,
+        header: q.header?.trim().length ? q.header.trim() : `Question ${i + 1}`,
+        question: q.question.trim(),
+        ...(q.multiSelect === true ? { multiSelect: true } : {}),
+        ...(q.allowsFreeform !== undefined ? { allowsFreeform: q.allowsFreeform } : { allowsFreeform: true }),
+        ...(q.isSecret === true ? { isSecret: true } : {}),
+        ...(typeof q.defaultAssumption === "string" && q.defaultAssumption.trim().length
+          ? { defaultAssumption: q.defaultAssumption.trim() }
+          : {}),
+        ...(typeof q.impact === "string" && q.impact.trim().length
+          ? { impact: q.impact.trim() }
+          : {}),
         ...(q.options?.length ? {
-          options: q.options.map((o) => ({ label: o.label, value: o.value ?? o.label })),
+          options: q.options.map((o) => ({
+            label: o.label,
+            value: o.value ?? o.label,
+            ...(typeof o.description === "string" && o.description.trim().length ? { description: o.description.trim() } : {}),
+            ...(o.recommended === true ? { recommended: true } : {}),
+            ...(typeof o.preview === "string" && o.preview.trim().length ? { preview: o.preview } : {}),
+            ...(o.previewFormat === "markdown" || o.previewFormat === "html" ? { previewFormat: o.previewFormat } : {}),
+          })),
         } : {}),
       }),
     );
@@ -12704,16 +13446,6 @@ export function createAgentChatService(args: {
         kind: "tool_call",
         description: request.description ?? args.body,
       });
-    });
-
-    // Emit tool_result so the pending input is cleared from derivePendingInputRequests.
-    emitChatEvent(managed, {
-      type: "tool_result",
-      tool: "ask_user",
-      result: { answered: response.decision !== "decline" && response.decision !== "cancel" },
-      itemId,
-      turnId: managed.runtime?.activeTurnId ?? undefined,
-      status: response.decision === "decline" || response.decision === "cancel" ? "failed" : "completed",
     });
 
     const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);

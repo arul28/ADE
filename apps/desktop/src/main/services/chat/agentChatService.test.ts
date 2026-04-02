@@ -15,6 +15,7 @@ const mockState = vi.hoisted(() => ({
   codexTurnCounter: 0,
   cursorSessionCounter: 0,
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
+  codexCollaborationModes: [{ mode: "default" }, { mode: "plan" }] as Array<Record<string, unknown> | string>,
   codexLineHandler: null as ((line: string) => void) | null,
   cursorAcquireCalls: [] as Array<Record<string, unknown>>,
   cursorNewSessionCalls: [] as Array<Record<string, unknown>>,
@@ -57,6 +58,10 @@ vi.mock("node:child_process", () => ({
           } else if (payload.method === "turn/start" || payload.method === "review/start") {
             mockState.codexTurnCounter += 1;
             result = { turn: { id: `turn-${mockState.codexTurnCounter}` } };
+          } else if (payload.method === "collaborationMode/list") {
+            result = {
+              collaborationModes: mockState.codexCollaborationModes,
+            };
           } else if (payload.method === "skills/list") {
             result = { skills: [] };
           } else if (payload.method === "account/rateLimits/read") {
@@ -611,6 +616,7 @@ beforeEach(() => {
   mockState.codexTurnCounter = 0;
   mockState.cursorSessionCounter = 0;
   mockState.codexRequestPayloads = [];
+  mockState.codexCollaborationModes = [{ mode: "default" }, { mode: "plan" }];
   mockState.codexLineHandler = null;
   mockState.cursorAcquireCalls = [];
   mockState.cursorNewSessionCalls = [];
@@ -1717,7 +1723,7 @@ describe("createAgentChatService", () => {
       expect(session.permissionMode).toBe("plan");
     });
 
-    it("does not reuse a foreign-lane identity session and retires it during migration", async () => {
+    it("does not reuse a foreign-lane identity session or auto-close it during migration", async () => {
       const { service, sessionService } = createService();
 
       const legacy = await service.createSession({
@@ -1735,7 +1741,7 @@ describe("createAgentChatService", () => {
 
       expect(canonical.id).not.toBe(legacy.id);
       expect(canonical.laneId).toBe("lane-1");
-      expect(sessionService.get(legacy.id)?.status).toBe("ended");
+      expect(sessionService.get(legacy.id)?.status).not.toBe("ended");
 
       const reused = await service.ensureIdentitySession({
         identityKey: "cto",
@@ -3399,6 +3405,114 @@ describe("createAgentChatService", () => {
       expect(session.interactionMode).toBe("plan");
       expect(session.claudePermissionMode).toBe("default");
     });
+
+    it("sends Codex plan collaboration mode on turn start for plan sessions", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+      expect(session.permissionMode).toBe("plan");
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Ask one planning question before coding.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "collaborationMode/list")).toBe(true);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as { collaborationMode?: Record<string, unknown> } | undefined;
+      const collaborationMode = params?.collaborationMode as
+        | { mode?: unknown; settings?: { model?: unknown; reasoning_effort?: unknown; developer_instructions?: unknown } }
+        | undefined;
+
+      expect(collaborationMode?.mode).toBe("plan");
+      expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
+      expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
+      expect(collaborationMode?.settings?.developer_instructions).toBeNull();
+    });
+
+    it("sends Codex default collaboration mode on turn start outside plan mode", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Inspect the repo.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as { collaborationMode?: Record<string, unknown> } | undefined;
+      const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
+
+      expect(collaborationMode?.mode).toBe("default");
+    });
+
+    it("does not auto-upgrade default Codex chats into plan mode", async () => {
+      mockState.codexCollaborationModes = [{ mode: "plan" }];
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Inspect the repo.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as { collaborationMode?: Record<string, unknown> } | undefined;
+      expect(params?.collaborationMode).toBeUndefined();
+    });
+
+    it("falls back to default collaboration mode when plan is not advertised", async () => {
+      mockState.codexCollaborationModes = [{ mode: "default" }];
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Ask one planning question before coding.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "collaborationMode/list")).toBe(true);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as { collaborationMode?: Record<string, unknown> } | undefined;
+      const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
+
+      expect(collaborationMode?.mode).toBe("default");
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -3534,7 +3648,7 @@ describe("createAgentChatService", () => {
             expect.objectContaining({
               event: expect.objectContaining({
                 type: "error",
-                message: expect.stringContaining("turn was reset so you can retry"),
+                message: expect.stringContaining("chat stayed open so you can retry"),
               }),
             }),
             expect.objectContaining({
@@ -4827,6 +4941,303 @@ describe("createAgentChatService", () => {
           "What should we do about the two task list views?": "Keep both, improve summary",
           "Should the inline task list pin while tasks are active?": "Yes, pin while active",
         },
+      },
+    });
+  });
+
+  it("keeps standalone ask_user declines explicit without emitting a fake cleanup tool_result", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Planning question",
+      body: "Which part of the planning UI should we test first?",
+      questions: [{
+        id: "answer",
+        header: "Question 1",
+        question: "Which part of the planning UI should we test first?",
+        options: [
+          { label: "Question flow", value: "question_flow" },
+          { label: "Plan updates", value: "plan_updates" },
+        ],
+        allowsFreeform: true,
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Planning question";
+      },
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "decline",
+    });
+
+    const result = await requestPromise;
+    expect(result.decision).toBe("decline");
+    expect(events.filter((event) => event.event.type === "tool_result")).toHaveLength(0);
+  });
+
+  it("maps freeform replies to the single pending question when only one answer is needed", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Single question",
+      body: "Which area should we test first?",
+      questions: [{
+        id: "answer",
+        header: "Question 1",
+        question: "Which area should we test first?",
+        allowsFreeform: true,
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Single question";
+      },
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      responseText: "Question flow",
+    });
+
+    await expect(requestPromise).resolves.toMatchObject({
+      decision: "accept",
+      answers: { answer: ["Question flow"] },
+      responseText: "Question flow",
+    });
+  });
+
+  it("does not fan a single freeform reply out across multiple structured questions", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Multiple questions",
+      body: "Tell me which plan we should use and whether to pin tasks.",
+      questions: [
+        {
+          id: "plan_focus",
+          header: "Plan focus",
+          question: "What kind of planning scenario should I use?",
+          allowsFreeform: true,
+        },
+        {
+          id: "task_pinning",
+          header: "Task pinning",
+          question: "Should the inline task list stay pinned?",
+          allowsFreeform: true,
+        },
+      ],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Multiple questions";
+      },
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      responseText: "Start with the UI planning case.",
+    });
+
+    await expect(requestPromise).resolves.toMatchObject({
+      decision: "accept",
+      answers: { response: ["Start with the UI planning case."] },
+      responseText: "Start with the UI planning case.",
+    });
+  });
+
+  it("responds to native Codex requestUserInput declines with empty answers instead of interrupting the turn", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      codexApprovalPolicy: "untrusted",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Ask one planning question before coding.",
+    }, { awaitDispatch: true });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "native-request-1",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "codex-question-1",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        questions: [
+          {
+            id: "plan_focus",
+            header: "Plan focus",
+            question: "What kind of planning scenario should I use?",
+            isOther: true,
+            options: [
+              { label: "UI planning" },
+              { label: "Bug fix planning" },
+            ],
+          },
+        ],
+      },
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "codex-question-1",
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "cancel",
+    });
+
+    expect(
+      mockState.codexRequestPayloads.some((payload) => payload.method === "turn/interrupt"),
+    ).toBe(false);
+    expect(
+      mockState.codexRequestPayloads.find((payload) => payload.id === "native-request-1"),
+    ).toMatchObject({
+      jsonrpc: "2.0",
+      id: "native-request-1",
+      result: {
+        answers: {},
+      },
+    });
+  });
+
+  it("responds to Codex MCP elicitations with action/content payloads", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Wait for a structured MCP question.",
+    }, { awaitDispatch: true });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "elicitation-1",
+      method: "mcpServer/elicitation/request",
+      params: {
+        serverName: "ade",
+        message: "Confirm whether we should continue.",
+        turnId: "turn-1",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            confirmed: {
+              type: "boolean",
+              description: "Should ADE continue?",
+            },
+          },
+        },
+      },
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && (
+          (event.event.detail as { request?: { title?: string } } | undefined)?.request?.title === "Question from ade"
+        ),
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      answers: {
+        confirmed: "true",
+      },
+    });
+
+    const elicitationResponse = mockState.codexRequestPayloads.find((payload) => payload.id === "elicitation-1");
+    expect(elicitationResponse?.result).toEqual({
+      action: "accept",
+      content: {
+        confirmed: true,
       },
     });
   });

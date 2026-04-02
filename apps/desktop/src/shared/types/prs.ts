@@ -127,6 +127,9 @@ export type GitHubPrListItem = {
   adeKind: "single" | "queue" | "integration" | null;
   workflowDisplayState: IntegrationWorkflowDisplayState | null;
   cleanupState: IntegrationCleanupState | null;
+  labels: PrLabel[];
+  isBot: boolean;
+  commentCount: number;
 };
 
 export type GitHubPrSnapshot = {

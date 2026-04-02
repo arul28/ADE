@@ -51,7 +51,7 @@ export function ChatSurfaceShell({
         {children}
       </div>
       {footer ? (
-        <div className={cn("relative px-3 pb-3 pt-2", footerClassName)}>
+        <div className={cn("relative px-3 pb-3 pt-2", footerClassName)} style={{ background: "var(--color-bg)" }}>
           {footer}
         </div>
       ) : null}

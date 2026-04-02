@@ -259,30 +259,38 @@ When an agent needs human input -- either permission to proceed or answers to qu
 - `requestId` -- unique identifier for the request.
 - `source` -- `"claude" | "codex" | "unified" | "mission" | "ade"`.
 - `kind` -- `"approval" | "question" | "structured_question" | "permissions" | "plan_approval"`.
-- `questions` -- array of `PendingInputQuestion` with optional predefined options, freeform input, and impact descriptions.
+- `questions` -- array of `PendingInputQuestion` with optional predefined options, freeform input, multi-select support, and impact descriptions.
 - `blocking` / `canProceedWithoutAnswer` -- whether the agent is blocked or can continue with a default assumption.
 
-The renderer derives pending inputs from the event stream via `derivePendingInputRequests()` (in `pendingInput.ts`), which replaces the previous `PendingApproval` model. The derivation function processes `approval_request` events (including embedded `PendingInputRequest` payloads in the detail field and legacy `askUser` tool calls) and `structured_question` events. A `done` event clears all pending inputs for that session. Tool results, command completions, and file changes auto-resolve their corresponding pending items.
+The renderer derives pending inputs from the event stream via `derivePendingInputRequests()` (in `pendingInput.ts`), which replaces the previous `PendingApproval` model. The derivation function processes `approval_request` events (including embedded `PendingInputRequest` payloads in the detail field and legacy `askUser` tool calls), `structured_question` events, and `pending_input_resolved` events (which explicitly clear a resolved pending input by `itemId`). A `done` event with a non-`completed` status clears all pending inputs; a `done` event with `status: "completed"` only clears approval-type inputs for that turn, preserving question and plan-approval inputs that may still need a response.
 
-The `AgentQuestionModal` renders the first pending input with Accept / Accept for Session / Decline / Cancel buttons and optional freeform text. Questions with predefined options support **multi-select**: users can toggle multiple values for a single question, and a preview pane renders the selected option's description as sanitized HTML/Markdown (via `ReactMarkdown` with `rehype-raw`, `rehype-sanitize`, and `remark-gfm`). The per-question draft state (`QuestionDraft`) tracks `text`, `selectedValues`, and `activePreviewValue` independently. User responses are sent back via the `respondToInput` IPC channel (which accepts `AgentChatRespondToInputArgs` with structured `answers` and optional `decision`), or the legacy `approve` channel for backward compatibility.
+Tool results, command completions, and file changes auto-resolve their corresponding pending items. Helper functions `getPendingInputQuestionCount()` and `hasPendingInputOptions()` provide quick introspection into request structure.
+
+The `AgentQuestionModal` renders the first pending input inline in the chat transcript with Accept / Accept for Session / Decline / Cancel buttons and optional freeform text. Questions with predefined options support **multi-select**: users can toggle multiple values for a single question, and a preview pane renders the selected option's description as sanitized HTML/Markdown (via `ReactMarkdown` with `rehype-raw`, `rehype-sanitize`, and `remark-gfm`). The per-question draft state (`QuestionDraft`) tracks `text`, `selectedValues`, and `activePreviewValue` independently. Options can carry `preview` content and a `previewFormat` (`"markdown"` or `"html"`) for rich inline previews. User responses are sent back via the `respondToInput` IPC channel (which accepts `AgentChatRespondToInputArgs` with structured `answers` — values may be `string` or `string[]` for multi-select — and optional `decision`), or the legacy `approve` channel for backward compatibility.
+
+### AskUserQuestion Tool (Claude V2)
+
+The `AskUserQuestion` tool is handled specially in the Claude V2 runtime. When the SDK invokes `AskUserQuestion`, the service builds a `PendingInputRequest` from the tool input, attaches the `toolUseID`, and emits it as an inline pending input in the chat transcript. The idle watchdog is paused while the service waits for the user's response, preventing the turn from timing out during human deliberation. Once the user responds (accept, decline, or cancel), the watchdog resumes, and a `tool_result` is emitted back to the SDK with the answer text. The `toolUseID` is tracked in a `resolvedToolUseIds` set on the Claude runtime to prevent duplicate resolution. A `pending_input_resolved` event is emitted to explicitly clear the UI state.
 
 Plan approval requests carry the actual plan description text (extracted from the `ExitPlanMode` tool input) as the event description, so the UI can display meaningful content rather than a generic label. The message list renders plan approval cards in a scrollable container (max 288px) with pre-wrapped text to handle long multi-step plans.
 
 If a Claude approval is resolved more than once (e.g., due to a UI double-click, an interrupted turn, or stale state), the service logs a warning and returns silently instead of throwing. This prevents spurious errors from surfacing to the user when approvals have already been consumed.
 
-Codex `permissions` requests and Claude `structured_question` events both flow through the same pending input abstraction.
+Codex `permissions` requests, Codex MCP elicitation requests, and Claude `structured_question` events all flow through the same pending input abstraction. Codex MCP elicitation responses coerce answer values to match the requested JSON schema property types (string, number, integer, boolean, array) via `coerceCodexMcpElicitationContent()`.
 
 ## Chat Transcript and Work Log
 
 The chat message list renders events through a two-layer pipeline defined in `chatTranscriptRows.ts`:
 
-1. **Render events** -- Raw `AgentChatEventEnvelope` events are mapped to `ChatTranscriptRenderEvent` values. Tool calls, commands, file changes, and web searches are collapsed into `ChatWorkLogEntry` objects (with status, label, diff stats, and output). Text, reasoning, plans, user messages, status updates, and other visible events pass through directly.
+1. **Render events** -- Raw `AgentChatEventEnvelope` events are mapped to `ChatTranscriptRenderEvent` values. Tool calls, commands, file changes, and web searches are collapsed into `ChatWorkLogEntry` objects (with status, label, diff stats, and output). Text, reasoning, plans, user messages, status updates, and other visible events pass through directly. The `pending_input_resolved` event type is treated as hidden (not rendered as a transcript row) since it is consumed by the pending input derivation logic.
 
-2. **Grouped envelopes** -- Adjacent work log entries in the same turn are grouped into `work_log_group` blocks so the message list can render them as a single collapsible card (`ChatWorkLogBlock`) rather than individual rows. This keeps the transcript compact when the agent performs many tool operations in a single turn.
+2. **Grouped envelopes** -- Adjacent work log entries in the same turn are grouped into `work_log_group` blocks so the message list can render them as a single collapsible card (`ChatWorkLogBlock`) rather than individual rows. Work log groups carry optional `summary`, `toolUseIds`, and `turnId` fields. When a `tool_use_summary` event immediately follows a work log group from the same turn, it is absorbed into the group, attaching its summary text and matching tool-use IDs to the group rather than rendering as a separate row. This keeps the transcript compact when the agent performs many tool operations in a single turn.
 
-Each work log entry carries a `collapseKey` derived from the turn, logical item identity (`logicalItemId` when present, otherwise `itemId`), and tool/command identity. Streaming updates for the same tool call or command merge into the existing entry rather than appending new rows.
+Each work log entry carries a `collapseKey` derived from the turn, logical item identity (`logicalItemId` when present, otherwise `itemId`), and tool/command identity. Streaming updates for the same tool call or command merge into the existing entry rather than appending new rows. Work log entry status now includes an `"interrupted"` state (in addition to `"running"`, `"completed"`, `"failed"`), which maps to the "waiting" visual style in the UI.
 
 Adjacent assistant text events are merged using `shouldMergeTextRows()`, which compares `messageId`, `turnId`, and `itemId` fields to decide whether two text fragments belong to the same logical message. Events with matching `messageId` values always merge; events without `messageId` fall back to turn/item identity. This prevents duplicate text rows when the streaming backend emits fragmented text events.
+
+Adjacent `plan_text` events are also merged using `shouldMergePlanTextRows()` with the same turn/item matching logic. When a final `plan` event arrives for a turn, any preceding `plan_text` rows for that turn are removed and replaced by the single `plan` event, preventing duplicate plan content.
 
 ### Turn Recap
 
@@ -310,9 +318,13 @@ renderer to show per-tool status indicators (spinner while running,
 checkmark on completion, warning on failure) inside work log entries.
 
 The `AskUserQuestion` tool is handled specially: when the SDK invokes it,
-the service builds a `PendingInputRequest` from the tool input and
-attaches the `toolUseID` so the response can be routed back to the
-correct tool invocation.
+the service builds a `PendingInputRequest` from the tool input, attaches
+the `toolUseID`, pauses the idle watchdog (to prevent turn timeout while
+waiting for human input), and emits the request inline in the chat
+transcript. When the user responds, the watchdog resumes, a
+`tool_result` is emitted back to the SDK, and a `pending_input_resolved`
+event clears the UI. The `toolUseID` is recorded in `resolvedToolUseIds`
+to prevent duplicate resolution.
 
 ## Model Handoff
 
@@ -362,6 +374,19 @@ merged into the picker. When steers are queued during an active turn,
 the composer shows a pending steers section above the input area with
 per-message edit and cancel controls (see [Steering and Steer Queue](#steering-and-steer-queue)).
 
+When a question-type pending input is active, pressing Enter in the
+composer submits the draft text as the answer (via `onApproval("accept", answer)`)
+rather than sending a new message. This allows users to answer agent
+questions directly from the composer without navigating to a separate
+modal. The composer accepts a `layoutVariant` prop (`"standard"` or
+`"grid-tile"`) and an optional `composerMaxHeightPx` for constrained
+layouts like packed grid tiles.
+
+The `ChatSurfaceShell` uses a floating header with backdrop blur and
+subtle glass-morphism styling. The body and footer regions use the
+theme's `--color-bg` as background for visual consistency with the
+surrounding layout.
+
 ## Image Attachments
 
 Image attachments are supported across all providers, with
@@ -409,7 +434,12 @@ for virtualized rendering of long transcripts. This keeps render cost
 proportional to the visible viewport rather than the total message count.
 Turn dividers (`ChatTurnDivider`) separate consecutive turns with
 contextual labels. Code blocks in assistant messages use a dedicated
-`HighlightedCode` component.
+`HighlightedCode` component. User messages animate in with a spring
+transition (via `motion/react`). Assistant message cards use a
+constrained `max-w-[78ch]` width for improved readability. Tables
+render with rounded borders, separated spacing, and a subtle inset
+shadow treatment. System notices use compact inline styling rather than
+pill-shaped badges.
 
 ## Diagnostic Logging
 

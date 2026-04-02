@@ -12,11 +12,14 @@ import {
 } from "./adeMcpProxyUtils";
 
 const NULL_IDENTITY: ProxyIdentity = {
+  chatSessionId: null,
   missionId: null,
   runId: null,
   stepId: null,
   attemptId: null,
+  ownerId: null,
   role: null,
+  computerUsePolicy: null,
 };
 
 describe("asTrimmed", () => {
@@ -85,6 +88,10 @@ describe("hasProxyIdentity", () => {
     expect(hasProxyIdentity({ ...NULL_IDENTITY, missionId: "m-1" })).toBe(true);
   });
 
+  it("returns true when chatSessionId is set", () => {
+    expect(hasProxyIdentity({ ...NULL_IDENTITY, chatSessionId: "chat-1" })).toBe(true);
+  });
+
   it("returns true when runId is set", () => {
     expect(hasProxyIdentity({ ...NULL_IDENTITY, runId: "r-1" })).toBe(true);
   });
@@ -99,6 +106,22 @@ describe("hasProxyIdentity", () => {
 
   it("returns true when role is set", () => {
     expect(hasProxyIdentity({ ...NULL_IDENTITY, role: "coder" })).toBe(true);
+  });
+
+  it("returns true when ownerId is set", () => {
+    expect(hasProxyIdentity({ ...NULL_IDENTITY, ownerId: "agent-1" })).toBe(true);
+  });
+
+  it("returns true when computerUsePolicy is set", () => {
+    expect(hasProxyIdentity({
+      ...NULL_IDENTITY,
+      computerUsePolicy: {
+        mode: "enabled",
+        allowLocalFallback: null,
+        retainArtifacts: null,
+        preferredBackend: null,
+      },
+    })).toBe(true);
   });
 
   it("returns true when multiple fields are set", () => {
@@ -261,11 +284,19 @@ describe("takeNextInboundMessage", () => {
 
 describe("injectIdentityIntoInitializePayload", () => {
   const identity: ProxyIdentity = {
+    chatSessionId: "chat-1",
     missionId: "m-1",
     runId: "r-1",
     stepId: "s-1",
     attemptId: "a-1",
+    ownerId: "agent-1",
     role: "coder",
+    computerUsePolicy: {
+      mode: "enabled",
+      allowLocalFallback: true,
+      retainArtifacts: false,
+      preferredBackend: "vnc",
+    },
   };
 
   it("injects identity into initialize method", () => {
@@ -277,11 +308,19 @@ describe("injectIdentityIntoInitializePayload", () => {
     });
     const result = JSON.parse(injectIdentityIntoInitializePayload(payload, identity));
     expect(result.params.identity).toEqual({
+      chatSessionId: "chat-1",
       missionId: "m-1",
       runId: "r-1",
       stepId: "s-1",
       attemptId: "a-1",
+      ownerId: "agent-1",
       role: "coder",
+      computerUsePolicy: {
+        mode: "enabled",
+        allowLocalFallback: true,
+        retainArtifacts: false,
+        preferredBackend: "vnc",
+      },
     });
   });
 
@@ -303,17 +342,30 @@ describe("injectIdentityIntoInitializePayload", () => {
       id: 1,
       params: {
         identity: {
+          chatSessionId: "existing-chat",
           missionId: "existing-mission",
+          ownerId: "existing-owner",
           role: "existing-role",
+          computerUsePolicy: {
+            mode: "off",
+          },
         },
       },
     });
     const result = JSON.parse(injectIdentityIntoInitializePayload(payload, identity));
+    expect(result.params.identity.chatSessionId).toBe("existing-chat");
     expect(result.params.identity.missionId).toBe("existing-mission");
+    expect(result.params.identity.ownerId).toBe("existing-owner");
     expect(result.params.identity.role).toBe("existing-role");
     expect(result.params.identity.runId).toBe("r-1");
     expect(result.params.identity.stepId).toBe("s-1");
     expect(result.params.identity.attemptId).toBe("a-1");
+    expect(result.params.identity.computerUsePolicy).toEqual({
+      mode: "off",
+      allowLocalFallback: true,
+      retainArtifacts: false,
+      preferredBackend: "vnc",
+    });
   });
 
   it("overwrites existing identity fields that are empty strings", () => {
@@ -323,13 +375,17 @@ describe("injectIdentityIntoInitializePayload", () => {
       id: 1,
       params: {
         identity: {
+          chatSessionId: "   ",
           missionId: "   ",
+          ownerId: "",
           role: "",
         },
       },
     });
     const result = JSON.parse(injectIdentityIntoInitializePayload(payload, identity));
+    expect(result.params.identity.chatSessionId).toBe("chat-1");
     expect(result.params.identity.missionId).toBe("m-1");
+    expect(result.params.identity.ownerId).toBe("agent-1");
     expect(result.params.identity.role).toBe("coder");
   });
 
@@ -360,11 +416,19 @@ describe("injectIdentityIntoInitializePayload", () => {
     });
     const result = JSON.parse(injectIdentityIntoInitializePayload(payload, identity));
     expect(result.params.identity).toEqual({
+      chatSessionId: "chat-1",
       missionId: "m-1",
       runId: "r-1",
       stepId: "s-1",
       attemptId: "a-1",
+      ownerId: "agent-1",
       role: "coder",
+      computerUsePolicy: {
+        mode: "enabled",
+        allowLocalFallback: true,
+        retainArtifacts: false,
+        preferredBackend: "vnc",
+      },
     });
   });
 
@@ -379,6 +443,7 @@ describe("injectIdentityIntoInitializePayload", () => {
     });
     const result = JSON.parse(injectIdentityIntoInitializePayload(payload, identity));
     expect(result.params.capabilities).toEqual({ tools: true });
+    expect(result.params.identity.chatSessionId).toBe("chat-1");
     expect(result.params.identity.missionId).toBe("m-1");
   });
 });

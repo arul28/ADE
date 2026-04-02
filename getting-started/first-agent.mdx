@@ -1,49 +1,174 @@
 ---
 title: "Run your first agent"
-description: "Choose between a direct chat and a structured mission for your first ADE task."
+description: "Choose between a direct chat and a structured mission for your first ADE task — with step-by-step instructions for each approach and guidance on what to try first."
 icon: "robot"
+---
+
+You have a lane ready. Now it is time to run an agent in it. ADE offers two paths depending on the scope of the task.
+
 ---
 
 ## Two good first paths
 
 <Tabs>
-  <Tab title="Agent chat">
-    Use this when the task is small and you want the fastest iteration loop.
+  <Tab title="Agent Chat (recommended for first run)">
+    Use Agent Chat when the task is small and you want the fastest iteration loop. Chat is conversational — you describe what you want, the agent makes changes, you review and iterate.
 
     <Steps>
       <Step title="Open the lane chat">
-        Select your lane and open its chat surface.
+        Select your lane in the Lanes panel. Click the **Chat** button in the lane toolbar, or press `Cmd+K`. A new chat session opens with automatic context injection from the lane's pack.
+      </Step>
+      <Step title="Choose a model (optional)">
+        The model selector in the chat header defaults to your configured preferred model. Click it to switch models for this session. If you set up Anthropic, Claude Sonnet is a good default for a first task.
       </Step>
       <Step title="Send one narrow task">
-        Start with something easy to review, like a small endpoint, a copy update, or a focused refactor.
+        Start with something small and easy to review. Type your task description and press Enter. The agent receives your message along with the injected context and begins working immediately.
+
+        See [suggested first prompt](#first-prompt-to-try) below.
+      </Step>
+      <Step title="Watch the agent work">
+        As the agent processes your request, you will see:
+        - **Text responses** explaining what it plans to do
+        - **Tool call blocks** showing file reads, writes, and terminal commands in expandable cards
+        - **A progress indicator** in the chat header showing token usage
+
+        Tool calls that take more than a few seconds show a spinner with elapsed time. Click to expand and see partial output as it streams.
       </Step>
       <Step title="Review the diff">
-        Check the file changes before you commit or continue.
+        After the agent finishes, switch to the **Files** view (or stay in the lane's center pane) to inspect what changed. ADE shows a side-by-side diff of every modified file.
+
+        If the changes look good, you can commit directly from the Files view or ask the agent to commit for you.
       </Step>
     </Steps>
+
+    <Tip>
+    If the agent asks a question, a question modal appears in the chat. Read the options, select your answer, and the agent continues. This is ADE's **AskUserQuestion** flow — the agent pauses cleanly instead of guessing when it needs your input.
+    </Tip>
   </Tab>
-  <Tab title="Mission">
-    Use this when the task needs a plan, validation, or a stronger audit trail.
+  <Tab title="Mission (for structured work)">
+    Use a Mission when the task needs a formal plan, parallel workers, validation, or a stronger audit trail. Missions are overkill for a first test — but if you want to see ADE's full orchestration, here is how.
 
     <Steps>
       <Step title="Open Missions">
-        Create a mission and target the lane you just created.
+        Click **Missions** in the left sidebar. Click **+ New Mission**.
       </Step>
-      <Step title="Review preflight">
-        Confirm the provider, permissions, and lane state are ready.
+      <Step title="Set a goal">
+        Write a clear, specific goal. The planner agent uses this to generate a structured execution plan.
+
+        Example: *"Add a REST endpoint `GET /api/health` that returns `{ status: 'ok' }` with a corresponding test."*
       </Step>
-      <Step title="Launch and monitor">
-        Follow the plan, execution, and validation phases from one place.
+      <Step title="Choose launch mode">
+        Select **Supervised** for your first mission. This pauses for your approval before the agent starts executing — so you can review the plan before any code is written.
+      </Step>
+      <Step title="Review the plan">
+        The planner generates a step-by-step execution plan. Review the steps, lane assignments, and estimated cost. Click **Approve** to proceed or **Edit** to adjust.
+      </Step>
+      <Step title="Monitor execution">
+        Workers execute the plan. The Mission Run panel shows:
+        - Live status of each step (queued, running, completed, failed)
+        - Terminal output from each worker
+        - File changes and tool call logs
+
+        When all steps complete, the mission enters validation.
+      </Step>
+      <Step title="Review results">
+        Check the Artifacts tab for test reports, code changes, and summaries. Create a PR from the mission's result lane if the work looks good.
       </Step>
     </Steps>
   </Tab>
 </Tabs>
 
+---
+
 ## First prompt to try
+
+For your first agent task, use something narrow enough to verify the full loop but broad enough to exercise the core workflow:
 
 ```text
 Add a GET /health endpoint that returns { "status": "ok" } and add one test for it.
 ```
 
-That prompt is small enough to inspect quickly and broad enough to exercise the ADE workflow end to end.
+This prompt is effective because it:
+- Creates a small, reviewable change (one route handler + one test)
+- Exercises file creation, code writing, and test generation
+- Gives you a clear way to verify the result (`curl localhost:PORT/health`)
+- Completes in under a minute with most models
 
+Other good first prompts:
+- `"Add a TypeScript type for UserPreferences with name (string), theme (light | dark), and notifications (boolean)."`
+- `"Write a utility function that validates email addresses and add 3 unit tests for it."`
+- `"Update the README with a Getting Started section that explains how to install dependencies and run the dev server."`
+
+---
+
+## What to expect during your first session
+
+**Context injection**: Before the agent sees your message, ADE prepends the Lane Pack — a structured context block with your project's architecture, the lane's intent, and recent file state. This means the agent already knows what project it is in and what branch it is working on.
+
+**Tool calls**: The agent reads files, writes code, and runs commands using ADE's MCP tools. Each tool call appears as an expandable block in the chat. You do not need to grant per-call permissions in the default configuration.
+
+**Session recording**: Every message, tool call, and response is captured in the session transcript. You can review it later in the History tab.
+
+**Interrupting**: Press **Escape** or click the **Stop** button to interrupt a running agent at any time. The agent reports partial results and you can continue the conversation or start a new session.
+
+---
+
+## After your first task
+
+Once you have verified the result:
+
+<Steps>
+  <Step title="Review the diff">
+    Open the Files view scoped to your lane. Check every changed file. The side-by-side diff makes it easy to spot issues.
+  </Step>
+  <Step title="Commit the changes">
+    If the changes look correct, commit them. You can:
+    - Ask the agent: *"Commit these changes with a descriptive message"*
+    - Use the git operations bar at the bottom of the Files view
+    - Use the terminal in the lane to run `git commit` manually
+  </Step>
+  <Step title="Create a PR (optional)">
+    Ask the agent: *"Create a PR for this work"* — or use the lane's PR action in the right inspector. ADE pre-fills the PR title and description from the Lane Pack.
+  </Step>
+</Steps>
+
+---
+
+## Troubleshooting your first run
+
+<AccordionGroup>
+  <Accordion title="The agent is not responding" icon="circle-question">
+    Check that at least one AI provider is configured and verified in **Settings > AI Providers**. A green indicator means the provider is ready. If the provider shows a red indicator, verify your API key.
+  </Accordion>
+  <Accordion title="The agent made changes to the wrong files" icon="file-circle-exclamation">
+    Verify you are in the correct lane — check the lane selector in the chat header. If the agent is in the Primary Lane, it writes to your main working directory. Create a Worktree Lane for agent-driven tasks.
+  </Accordion>
+  <Accordion title="The agent's changes do not compile or tests fail" icon="circle-xmark">
+    This is normal for a first run, especially on complex codebases. The Lane Pack may not have captured all relevant context. Try:
+    1. Tell the agent what failed: *"The tests are failing with this error: [paste error]"*
+    2. The agent will read the error and attempt a fix
+    3. If it still fails, provide more context about your project's testing setup
+  </Accordion>
+  <Accordion title="The session is taking very long" icon="clock">
+    Check the token usage indicator in the chat header. If the agent is consuming tokens but not producing visible output, it may be reading large files. Press **Escape** to interrupt, then try a more focused prompt.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Key Concepts" icon="book" href="/key-concepts">
+    Understand every core concept in ADE: Lanes, Packs, Missions, the CTO, Automations, and more.
+  </Card>
+  <Card title="Chat Capabilities" icon="toolbox" href="/chat/capabilities">
+    See the full list of what the chat agent can do — file operations, git, PRs, missions, and more.
+  </Card>
+  <Card title="Missions" icon="bullseye" href="/missions/overview">
+    Learn how to configure multi-step missions with planning, validation, and cost tracking.
+  </Card>
+  <Card title="Multi-Agent Setup" icon="users" href="/guides/multi-agent-setup">
+    Run parallel agents across multiple lanes and monitor them from the Workspace Graph.
+  </Card>
+</CardGroup>

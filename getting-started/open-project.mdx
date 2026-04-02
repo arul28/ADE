@@ -1,54 +1,123 @@
 ---
 title: "Open your first project"
-description: "Connect ADE to a Git repository and complete the first-run onboarding flow."
+description: "Connect ADE to a Git repository, understand what the .ade directory contains, and complete the first-run onboarding flow."
 icon: "folder-open"
 ---
 
-## Open a repository
+## Open a Repository
 
-Use **Open Repository** on the welcome screen or press `Cmd+O`.
+Launch ADE and use **Open Repository** on the welcome screen, or press `Cmd+O` at any time.
 
-ADE expects the root of a Git repository. If you do not have one ready, create a new directory and run:
+ADE expects the root of a Git repository — the directory containing the `.git` folder. If you point ADE at a subdirectory, it walks up to find the repository root automatically.
+
+If you do not have a repository ready, create one:
 
 ```bash
+mkdir my-project && cd my-project
 git init
 ```
 
-## What ADE creates
+<Note>
+ADE supports any Git repository — new or existing, small or large, monorepo or single-package. The onboarding wizard adapts its suggestions based on what it finds in the repo.
+</Note>
 
-When ADE opens a repository for the first time, it creates a local `.ade/` directory for worktrees, metadata, packs, and artifacts.
+---
 
-## First-run onboarding
+## What ADE Creates
 
-When ADE opens a new repository, it launches the **project setup wizard** — a 7-step flow that configures your development tools, AI providers, GitHub, Linear, and context docs.
+When ADE opens a repository for the first time, it creates a `.ade/` directory at the repository root. This directory is ADE's local workspace — it stores everything ADE needs without modifying your source code.
+
+```
+.ade/
+  artifacts/           ← packs, proofs, and mission outputs
+    packs/
+      project/         ← project-wide context pack
+      lanes/           ← per-lane context packs
+      features/        ← per-feature context packs (Linear-linked)
+      conflicts/       ← conflict resolution context
+      missions/        ← mission plans and phase snapshots
+  context/             ← generated PRD and architecture docs
+  cto/                 ← CTO identity, memory, and configuration
+  worktrees/           ← git worktrees for lanes (one per lane)
+  db/                  ← SQLite database for lanes, sessions, history
+```
+
+<Warning>
+Add `.ade/` to your `.gitignore` if it is not already there. The `.ade/` directory contains machine-local state (worktree paths, database files, API tokens) that should not be committed to version control.
+</Warning>
+
+---
+
+## First-Run Onboarding
+
+When ADE opens a new repository, it launches the **project setup wizard** — a 7-step flow that configures your development tools, AI providers, GitHub integration, and context documents.
 
 <Steps>
   <Step title="Dev tools check">
-    ADE checks for Git, GitHub CLI, and Node.js.
+    ADE checks for Git, GitHub CLI (`gh`), and Node.js. Missing tools are flagged with install instructions. Git is required; the others are optional but recommended.
   </Step>
   <Step title="AI connections">
-    Connect API key providers (Anthropic, OpenAI) or CLI-based providers (Claude Code, Codex, Cursor).
+    Connect your AI providers. ADE supports two categories:
+    - **API key providers** — Anthropic (Claude), OpenAI (GPT, Codex). Paste your API key and ADE verifies it immediately.
+    - **CLI-based providers** — Claude Code, Codex CLI, Cursor (ACP). ADE detects these from your PATH and checks authentication status.
+
+    You need at least one provider to use agent features. You can add more later in Settings.
   </Step>
   <Step title="Background helpers">
-    Enable auto-titling, context doc generation, and auto-refresh.
+    Enable optional background services:
+    - **Auto-titling** — generates descriptive names for lanes and sessions based on their content
+    - **Context doc generation** — creates baseline PRD and architecture docs from your codebase (see step 7)
+    - **Auto-refresh** — keeps lane packs and context docs up to date automatically after commits
   </Step>
   <Step title="GitHub">
-    Authenticate for PR management, CI sync, and stacked PR workflows.
+    Authenticate with GitHub for PR management, CI sync, and stacked PR workflows. ADE uses the GitHub CLI (`gh`) for authentication — if you are already logged in via `gh auth login`, ADE detects this automatically.
   </Step>
   <Step title="Semantic search">
-    Build a local embedding index for faster context retrieval.
+    Build a local embedding index for faster context retrieval. This indexes your codebase so agents can find relevant code without scanning every file. The initial build takes 30 seconds to a few minutes depending on repo size.
   </Step>
   <Step title="Linear">
-    Connect for bidirectional issue tracking with the CTO agent.
+    Connect Linear for bidirectional issue tracking with the CTO agent. This step is optional — skip it if you do not use Linear. See [Linear Integration](/cto/linear) for details.
   </Step>
   <Step title="Context docs">
-    Generate baseline PRD and architecture docs from your codebase.
+    Generate baseline PRD and architecture documents from your codebase. ADE scans your repository's documentation files (README, docs/, etc.), code structure, and dependency graph to produce two structured documents:
+    - **PRD.ade.md** — what the project is, who it is for, and its feature areas
+    - **ARCHITECTURE.ade.md** — system shape, core services, data model, and key patterns
+
+    These documents become part of the Project Pack and are injected into every agent session as foundational context.
   </Step>
 </Steps>
 
-You can skip any step and configure it later in Settings. For a detailed walkthrough of each step, see [Project Setup & Onboarding](/getting-started/project-setup).
+You can skip any step and configure it later in **Settings**. For a detailed walkthrough of each step with screenshots and troubleshooting, see [Project Setup & Onboarding](/getting-started/project-setup).
 
-<Tip>
-If `.ade/` is not already ignored, add it to `.gitignore`.
-</Tip>
+---
 
+## After Opening
+
+Once the wizard completes, ADE loads the project and you land on the **Lanes** view. You will see:
+
+- **Primary Lane** — your main repository checkout, always present and read-only by default
+- **Left sidebar** — navigation to Lanes, CTO, Missions, Automations, History, and Settings
+- **Right inspector** — context-sensitive detail panel showing lane info, packs, and environment
+
+From here, [create your first lane](/getting-started/first-lane) and [run your first agent](/getting-started/first-agent).
+
+---
+
+## Re-Opening a Project
+
+When you re-open a project that was previously configured, ADE loads the existing `.ade/` directory and restores your lanes, sessions, and settings. No onboarding wizard runs on subsequent opens.
+
+If you want to re-run onboarding (e.g., to reconfigure providers or rebuild the embedding index), open **Settings > Project** and click **Re-run Setup Wizard**.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Project Setup Details" icon="gear" href="/getting-started/project-setup">
+    Detailed walkthrough of each onboarding step with troubleshooting for common issues.
+  </Card>
+  <Card title="Create Your First Lane" icon="code-branch" href="/getting-started/first-lane">
+    Set up an isolated worktree so AI tasks do not run in the primary checkout.
+  </Card>
+</CardGroup>

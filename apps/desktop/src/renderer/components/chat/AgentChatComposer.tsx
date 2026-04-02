@@ -25,6 +25,7 @@ import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
+import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingInput";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatSubagentStrip } from "./ChatSubagentStrip";
@@ -903,17 +904,7 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
-    // When a question is pending, submit the draft as the answer.
-    const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
-    if (isQuestionPending) {
-      const answer = draft.trim();
-      if (!answer.length && !pendingInput.canProceedWithoutAnswer) return;
-      onApproval("accept", answer || null);
-      onDraftChange("");
-      return;
-    }
-    if (busy || !modelId || !draft.trim().length) return;
-    onSubmit();
+    submitComposerDraft();
   };
 
   const openUploadPicker = () => {
@@ -944,6 +935,22 @@ export function AgentChatComposer({
     setDragActive(false);
     void addFileAttachments(event.dataTransfer.files);
   };
+
+  const submitComposerDraft = useCallback(() => {
+    const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
+    if (isQuestionPending) {
+      const answer = draft.trim();
+      if (!answer.length && !pendingInput.canProceedWithoutAnswer) return;
+      onApproval("accept", answer || null);
+      onDraftChange("");
+      return;
+    }
+    if (busy || !modelId || !draft.trim().length) return;
+    onSubmit();
+  }, [busy, draft, modelId, onApproval, onDraftChange, onSubmit, pendingInput]);
+
+  const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
+  const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
 
   return (
     <>
@@ -979,7 +986,11 @@ export function AgentChatComposer({
                 <ChatStatusGlyph status="waiting" size={11} />
               </span>
               <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200">
-                {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? "Approval" : "Input needed"} · {pendingInput.source}
+                {pendingInput.kind === "approval" || pendingInput.kind === "permissions"
+                  ? "Approval"
+                  : pendingQuestionCount > 1
+                    ? `${pendingQuestionCount} Questions`
+                    : "Input needed"} · {pendingInput.source}
               </span>
             </div>
             <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/68">
@@ -994,9 +1005,16 @@ export function AgentChatComposer({
             ) : (
               <div className="flex items-center gap-1.5">
                 <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
-                  Type your answer below or pick an option above.
+                  {showPendingInputOptionsHint ? "Type your answer below or pick an option above." : "Type your answer below."}
                 </span>
-                <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
+                <button
+                  type="button"
+                  disabled={approvalResponding}
+                  className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
+                  onClick={() => onApproval("decline")}
+                >
+                  Decline
+                </button>
               </div>
             )}
           </div>
@@ -1233,7 +1251,7 @@ export function AgentChatComposer({
                   <button
                     type="button"
                     className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-                    onClick={onSubmit}
+                    onClick={submitComposerDraft}
                     title="Send steer message"
                     aria-label="Send steer message"
                   >
@@ -1260,7 +1278,7 @@ export function AgentChatComposer({
                     : "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]",
                 )}
                 disabled={busy || !draft.trim().length || !modelId}
-                onClick={onSubmit}
+                onClick={submitComposerDraft}
                 title={!modelId ? "Select a model first" : "Send"}
               >
                 <PaperPlaneTilt size={10} weight="fill" />

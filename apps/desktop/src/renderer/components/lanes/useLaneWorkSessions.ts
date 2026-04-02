@@ -153,6 +153,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       session,
       laneName,
     });
+    optimistic.startedAt = new Date().toISOString();
     hasLoadedOnceRef.current = true;
     setSessions((prev) => {
       const next = [optimistic, ...prev.filter((entry) => entry.id !== session.id)];

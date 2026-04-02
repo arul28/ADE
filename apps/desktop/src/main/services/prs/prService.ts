@@ -3532,6 +3532,13 @@ export function createPrService({
         adeKind: deriveAdeKind(workflowRow, groupRow, linkedPrRow),
         workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
         cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
+        labels: Array.isArray(rawPr?.labels)
+          ? rawPr.labels
+              .filter((l: any) => l?.name)
+              .map((l: any) => ({ name: String(l.name), color: String(l.color || "cccccc"), description: l.description != null ? String(l.description) : null }))
+          : [],
+        isBot: asString(rawPr?.user?.type).toLowerCase() === "bot",
+        commentCount: Number(rawPr?.comments) || 0,
       };
     };
 

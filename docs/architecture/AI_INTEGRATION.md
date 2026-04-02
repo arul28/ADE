@@ -382,7 +382,7 @@ The MCP server is a standalone package (`apps/mcp-server`) that exposes ADE's in
 - **Lifecycle**: Headless mode runs standalone with its own AI backend; embedded mode shares the desktop app's service instances
 - **Smart entry point**: Auto-detects `.ade/mcp.sock` to choose proxy (embedded) vs headless mode
 - **Session identity**: The MCP server propagates a `chatSessionId` field through `SessionIdentity`, resolved from the `ADE_CHAT_SESSION_ID` environment variable or the `initialize` handshake params. This links MCP tool calls back to their originating chat session for artifact ownership, computer use proof association, and audit logging. For standalone chat sessions (no mission/run/step context), the server infers the chat session from the caller ID when not explicitly provided.
-- **Role resolution**: Session roles are determined by environment context first. When the environment does not specify a role, the session defaults to `external`. The `external` role receives the base tool set plus any external MCP tool specs; internal roles (`agent`, `cto`, `orchestrator`, `evaluator`) are assigned only through trusted environment variables set by ADE's own worker spawning infrastructure. External sessions also receive a restrictive default computer use policy (`allowLocalFallback: false`).
+- **Role resolution**: Session roles are resolved through a cascade: environment variable (`ADE_DEFAULT_ROLE`), then `identity.role` from the `initialize` handshake params, then `external` as the default. The `identity.role` field is validated against the known role set (`cto`, `orchestrator`, `agent`, `external`, `evaluator`) — invalid values are ignored. The `external` role receives the base tool set plus any external MCP tool specs; internal roles (`agent`, `cto`, `orchestrator`, `evaluator`) are assigned through trusted environment variables set by ADE's own worker spawning infrastructure or through the initialize handshake identity. External sessions also receive a restrictive default computer use policy (`allowLocalFallback: false`).
 
 #### MCP Launch Resolution
 
@@ -390,7 +390,7 @@ Worker and chat processes connect to ADE's MCP server through one of three launc
 
 | Mode | Binary | When used |
 |------|--------|-----------|
-| `bundled_proxy` | `adeMcpProxy.cjs` run via Electron's Node | Packaged desktop builds where the proxy binary exists alongside the app bundle. The proxy connects to the desktop's `.ade/mcp.sock` Unix socket and relays stdio, injecting worker identity (mission/run/step/attempt) into the MCP `initialize` handshake. |
+| `bundled_proxy` | `adeMcpProxy.cjs` run via Electron's Node | Packaged desktop builds where the proxy binary exists alongside the app bundle. The proxy connects to the desktop's `.ade/mcp.sock` Unix socket and relays stdio, injecting worker identity (`chatSessionId`, `missionId`, `runId`, `stepId`, `attemptId`, `ownerId`, `role`, and `computerUsePolicy`) into the MCP `initialize` handshake. The proxy identity is resolved from environment variables (`ADE_CHAT_SESSION_ID`, `ADE_MISSION_ID`, `ADE_RUN_ID`, `ADE_STEP_ID`, `ADE_ATTEMPT_ID`, `ADE_OWNER_ID`, `ADE_DEFAULT_ROLE`, `ADE_COMPUTER_USE_*`). |
 | `headless_built` | `apps/mcp-server/dist/index.cjs` via `node` | Development or CI environments where the MCP server has been pre-built but no bundled proxy is available. |
 | `headless_source` | `apps/mcp-server/src/index.ts` via `npx tsx` | Development environments where only TypeScript source is available. |
 
@@ -405,7 +405,7 @@ The launch resolver checks candidates in order: bundled proxy path (from `proces
 | `create_lane` | Create a new lane with a worktree for agent work | Yes |
 | `check_conflicts` | Run conflict prediction against other active lanes | No |
 | `merge_lane` | Merge a lane back to its parent | Yes |
-| `ask_user` | Route an intervention to the ADE UI for human input | No |
+| `ask_user` | Ask the user a question and wait for their answer. Works in both mission contexts (with missionId) and standalone chat sessions. Supports structured questions with options, multi-select, freeform input, and rich option previews. Returns explicit outcome fields (`outcome`, `resolved`, `answered`, `declined`, `cancelled`, `timedOut`, `awaitingUserResponse`). | No |
 | `run_tests` | Execute test suites in a lane's worktree | No (reads only) |
 | `get_lane_status` | Get current status of a specific lane | No |
 | `list_lanes` | List all active lanes with summary status | No |
@@ -1525,8 +1525,12 @@ type ChatEvent =
   | { type: "plan"; steps: Array<{ text: string; status: "pending" | "in_progress" | "completed" | "failed" }> }
   | { type: "reasoning"; summary: string; isCollapsed: boolean }
   | { type: "approval_request"; itemId: string; kind: "command" | "file_change"; description: string; detail: unknown }
+  | { type: "pending_input_resolved"; itemId: string; resolution: "accepted" | "declined" | "cancelled"; turnId?: string }
   | { type: "system_notice"; noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error"; message: string; detail?: string | AgentChatNoticeDetail; steerId?: string }
   | { type: "status"; turnStatus: "started" | "completed" | "interrupted" | "failed"; error?: string }
+  | { type: "tool_use_start"; toolUseId: string; toolName: string; turnId?: string }
+  | { type: "tool_use_complete"; toolUseId: string; summary: string; turnId?: string }
+  | { type: "tool_use_summary"; summary: string; toolUseIds: string[]; turnId?: string }
   | { type: "subagent_started"; taskId: string; description: string; turnId?: string }
   | { type: "subagent_result"; taskId: string; status: "completed" | "stopped" | "failed"; summary: string; turnId?: string }
   | { type: "error"; message: string; errorInfo?: string }
@@ -1618,6 +1622,10 @@ send({ method: "initialized", params: {} });
 | Read-only | `{ type: "readOnly" }` | Agent can read but not modify files |
 | Workspace write | `{ type: "workspaceWrite", writableRoots: [cwd] }` | Agent can write within lane worktree |
 | Full access | `{ type: "externalSandbox" }` | No restrictions |
+
+**Collaboration modes**: Codex sessions support collaboration modes (`default`, `plan`) via the `thread/setCollaborationMode` JSON-RPC method. The chat service fetches supported modes via `thread/getCollaborationModes` (with a 1.5-second timeout) and persists them in the `CodexRuntime`. When `interactionMode` or `permissionMode` is `plan`, the service sends a collaboration mode change. If the requested mode is not supported, it falls back to `default` and notifies the user once via a system notice. The `buildCodexCollaborationMode()` helper constructs the mode payload including model and reasoning effort settings.
+
+**MCP elicitation**: Codex MCP elicitation requests (`item/mcpApproval`) flow through the same pending input abstraction as other approval types. The `questionResponseKind` field on `PendingCodexApproval` distinguishes native request-user-input from MCP elicitation, and the response path coerces answer values to the expected JSON schema types via `coerceCodexMcpElicitationContent()`.
 
 **Error handling**: Codex errors include `codexErrorInfo` values (`ContextWindowExceeded`, `UsageLimitExceeded`, `HttpConnectionFailed`, etc.) which are mapped to user-facing messages in the chat UI.
 

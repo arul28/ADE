@@ -43,7 +43,9 @@ The snapshot still includes:
 - external pull requests involving the current user
 - lane linkage and ADE workflow metadata
 
-The GitHub tab remains the read-only inspection and import/linking surface for remote PRs.
+Each PR in the snapshot now includes `labels` (name, color, description), `isBot` (whether the author is a bot account), and `commentCount` fields, enabling richer filtering and display in the GitHub tab.
+
+The GitHub tab is the read-only inspection, filtering, and import/linking surface for remote PRs. The tab now merges repo and external PRs into a single unified list sorted by creation date, with a scope filter (`all` / `ade` / `external`) replacing the previous separate external PR toggle. Filter tab counts respect the active scope. PR labels render inline with luminance-aware text colors. Review status indicators use more descriptive labels (e.g., "Review required" instead of "Review"). Check status shows pass/fail icons per PR row.
 
 ---
 

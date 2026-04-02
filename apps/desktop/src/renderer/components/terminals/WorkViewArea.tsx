@@ -119,7 +119,6 @@ export function WorkViewArea({
   activeItemId,
   viewMode,
   draftKind,
-  showingDraft: _showingDraft,
   setViewMode,
   onSelectItem,
   onCloseItem,
@@ -136,7 +135,6 @@ export function WorkViewArea({
   activeItemId: string | null;
   viewMode: WorkViewMode;
   draftKind: WorkDraftKind;
-  showingDraft: boolean;
   setViewMode: (mode: WorkViewMode) => void;
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
@@ -158,9 +156,8 @@ export function WorkViewArea({
     return map;
   }, [sessions]);
 
-  const displaySessions = visibleSessions;
   const activeSession = activeItemId
-    ? sessionsById.get(activeItemId) ?? displaySessions[0] ?? null
+    ? sessionsById.get(activeItemId) ?? visibleSessions[0] ?? null
     : null;
   const activeRunningTerminalSession = isRunningPtySession(activeSession) ? activeSession : null;
 
@@ -181,11 +178,11 @@ export function WorkViewArea({
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           <span className="text-[11px] font-medium text-muted-fg">Grid</span>
           <span className="inline-flex items-center px-1.5 text-[10px] text-muted-fg/60 rounded" style={{ background: "rgba(255,255,255,0.04)" }}>
-            {displaySessions.length}
+            {visibleSessions.length}
           </span>
         </div>
 
-        {displaySessions.length === 0 ? (
+        {visibleSessions.length === 0 ? (
           <div className="flex h-full flex-col">
             <div className="flex shrink-0 items-center justify-center py-2">
               <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
@@ -202,7 +199,7 @@ export function WorkViewArea({
         ) : (
           <PackedSessionGrid
             layoutId={gridLayoutId}
-            tiles={displaySessions.map((session) => {
+            tiles={visibleSessions.map((session) => {
               const isActive = activeSession?.id === session.id;
               const dot = sessionStatusDot(session);
               const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
@@ -305,7 +302,7 @@ export function WorkViewArea({
         <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
         <div className="mx-1" style={{ width: 1, height: 14, background: "var(--work-pane-border)" }} />
         <div className="flex-1 flex items-center gap-0 overflow-x-auto scrollbar-none min-w-0">
-          {displaySessions.map((session) => {
+          {visibleSessions.map((session) => {
             const isActive = activeSession?.id === session.id;
             const dot = sessionStatusDot(session);
             const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;

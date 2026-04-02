@@ -172,6 +172,163 @@ describe("AgentChatComposer", () => {
     });
   });
 
+  it("avoids promising option chips when a pending question is freeform only", () => {
+    renderComposer({
+      pendingInput: {
+        requestId: "req-1",
+        itemId: "item-1",
+        source: "ade",
+        kind: "question",
+        title: "Input needed",
+        description: "What should we test first?",
+        questions: [{
+          id: "answer",
+          header: "Question 1",
+          question: "What should we test first?",
+          allowsFreeform: true,
+        }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: null,
+      },
+    });
+
+    expect(screen.getByText("Type your answer below.")).toBeTruthy();
+    expect(screen.queryByText("Type your answer below or pick an option above.")).toBeNull();
+  });
+
+  it("keeps the option hint when a pending question includes selectable options", () => {
+    renderComposer({
+      pendingInput: {
+        requestId: "req-2",
+        itemId: "item-2",
+        source: "ade",
+        kind: "structured_question",
+        title: "Input needed",
+        description: "Which flow should we test first?",
+        questions: [{
+          id: "answer",
+          header: "Question 1",
+          question: "Which flow should we test first?",
+          allowsFreeform: true,
+          options: [
+            { label: "Question flow", value: "question_flow" },
+            { label: "Plan updates", value: "plan_updates" },
+          ],
+        }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: null,
+      },
+    });
+
+    expect(screen.getByText("Type your answer below or pick an option above.")).toBeTruthy();
+  });
+
+  it("keeps the option hint when any pending question includes selectable options", () => {
+    renderComposer({
+      pendingInput: {
+        requestId: "req-2b",
+        itemId: "item-2b",
+        source: "codex",
+        kind: "structured_question",
+        title: "Input needed",
+        description: "Two questions are pending",
+        questions: [
+          {
+            id: "first",
+            header: "Question 1",
+            question: "What should we inspect first?",
+            allowsFreeform: true,
+          },
+          {
+            id: "second",
+            header: "Question 2",
+            question: "Which flow should we use?",
+            allowsFreeform: true,
+            options: [
+              { label: "Question flow", value: "question_flow" },
+              { label: "Plan updates", value: "plan_updates" },
+            ],
+          },
+        ],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: null,
+      },
+    });
+
+    expect(screen.getByText("Type your answer below or pick an option above.")).toBeTruthy();
+  });
+
+  it("uses decline wording for native Codex structured questions", () => {
+    const props = renderComposer({
+      pendingInput: {
+        requestId: "req-2c",
+        itemId: "item-2c",
+        source: "codex",
+        kind: "structured_question",
+        title: "Input needed",
+        description: "Which flow should we test first?",
+        questions: [{
+          id: "answer",
+          header: "Question 1",
+          question: "Which flow should we test first?",
+          allowsFreeform: true,
+          options: [
+            { label: "Question flow", value: "question_flow" },
+            { label: "Plan updates", value: "plan_updates" },
+          ],
+        }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: null,
+      },
+    });
+
+    const decline = screen.getByRole("button", { name: "Decline" });
+    fireEvent.click(decline);
+
+    expect(props.onApproval).toHaveBeenCalledWith("decline");
+  });
+
+  it("labels multi-question prompts explicitly in the pending banner", () => {
+    renderComposer({
+      pendingInput: {
+        requestId: "req-3",
+        itemId: "item-3",
+        source: "codex",
+        kind: "structured_question",
+        title: "Input needed",
+        description: "Multiple decisions are needed",
+        questions: [
+          {
+            id: "q1",
+            header: "Question 1",
+            question: "What should we test first?",
+            allowsFreeform: true,
+          },
+          {
+            id: "q2",
+            header: "Question 2",
+            question: "Which validation strategy should we use?",
+            allowsFreeform: true,
+          },
+        ],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: null,
+      },
+    });
+
+    expect(screen.getByText("2 Questions · codex")).toBeTruthy();
+  });
+
   it("disables attachments while steering an active turn", () => {
     renderComposer({ turnActive: true });
 

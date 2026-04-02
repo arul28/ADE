@@ -47,8 +47,6 @@ export function SiteHeader() {
 
   const items = useMemo<NavItem[]>(
     () => [
-      { label: "Features", to: "/#features", kind: "internal" },
-      { label: "Get Started", to: "/#quickstart", kind: "internal" },
       { label: "Docs", to: LINKS.docs, kind: "external" },
     ],
     []
@@ -68,7 +66,7 @@ export function SiteHeader() {
               <img
                 src="/images/ade-wordmark.png"
                 alt=""
-                className="h-8 w-auto object-contain object-left sm:h-9"
+                className="h-9 w-auto object-contain object-left sm:h-10"
                 width={180}
                 height={36}
                 decoding="async"
@@ -102,13 +100,13 @@ export function SiteHeader() {
             )}
 
             <a
-              className="focus-ring ml-1 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border/70 bg-card/60 text-muted-fg transition-colors hover:text-fg hover:bg-card"
+              className="focus-ring ml-1 inline-flex h-9 items-center gap-2 rounded-lg border border-border/70 bg-card/60 px-3 text-sm font-medium text-muted-fg transition-colors hover:text-fg hover:bg-card"
               href={LINKS.github}
               target="_blank"
               rel="noreferrer"
-              aria-label="GitHub"
             >
               <Github className="h-4 w-4" />
+              GitHub
             </a>
 
             <LinkButton to={LINKS.releases} variant="primary" size="sm" target="_blank" rel="noreferrer" className="ml-2">

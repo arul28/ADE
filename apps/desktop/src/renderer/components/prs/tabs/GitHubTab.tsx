@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowsClockwise, ArrowSquareOut, CaretDown, CaretRight, CircleNotch, GitMerge, GithubLogo, Link, MagnifyingGlass, Warning } from "@phosphor-icons/react";
+import { ArrowsClockwise, ArrowSquareOut, ChatText, CheckCircle, CircleNotch, GitMerge, GithubLogo, Link, MagnifyingGlass, Warning, XCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { GitHubPrListItem, GitHubPrSnapshot, LaneSummary, MergeMethod, PrSummary } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
@@ -21,6 +21,7 @@ type GitHubTabProps = {
 };
 
 type GitHubFilter = "open" | "closed" | "merged" | "all";
+type ScopeFilter = "all" | "ade" | "external";
 
 function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
   if (filter === "all") return true;
@@ -83,7 +84,7 @@ function reviewIndicator(linkedPr: PrSummary | null): { color: string; label: st
     case "changes_requested":
       return { color: COLORS.danger, label: "Changes" };
     case "requested":
-      return { color: COLORS.warning, label: "Review" };
+      return { color: COLORS.warning, label: "Review required" };
     default:
       return null;
   }
@@ -123,6 +124,23 @@ function adeKindBadge(kind: GitHubPrListItem["adeKind"]): React.CSSProperties | 
     border: style.border,
     borderRadius: 5,
   };
+}
+
+/* -- Label text color from hex background (luminance-aware) -- */
+function labelTextColor(hexColor: string): string {
+  const hex = hexColor.replace("#", "");
+  const r = parseInt(hex.substring(0, 2), 16) || 0;
+  const g = parseInt(hex.substring(2, 4), 16) || 0;
+  const b = parseInt(hex.substring(4, 6), 16) || 0;
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.5 ? "#1a1a2e" : "#f0f0f0";
+}
+
+/* -- Scope filter match -- */
+function matchesScope(item: GitHubPrListItem, scope: ScopeFilter): boolean {
+  if (scope === "all") return true;
+  if (scope === "ade") return item.adeKind !== null;
+  return item.adeKind === null;
 }
 
 /* -- Filter button styles -- */
@@ -327,7 +345,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
   const [error, setError] = React.useState<string | null>(null);
   const [filter, setFilter] = React.useState<GitHubFilter>("open");
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
-  const [showExternal, setShowExternal] = React.useState(false);
+  const [scopeFilter, setScopeFilter] = React.useState<ScopeFilter>("all");
   const [linkLaneId, setLinkLaneId] = React.useState("");
   const [linkingItemId, setLinkingItemId] = React.useState<string | null>(null);
   const [syncing, setSyncing] = React.useState(false);
@@ -446,25 +464,38 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
     );
   }, [searchQuery]);
 
-  const repoItems = React.useMemo(
-    () => (snapshot?.repoPullRequests ?? []).filter((item) => matchesFilter(item, filter) && matchesSearch(item)),
-    [snapshot, filter, matchesSearch],
-  );
-  const externalItems = React.useMemo(
-    () => (snapshot?.externalPullRequests ?? []).filter((item) => matchesFilter(item, filter) && matchesSearch(item)),
-    [snapshot, filter, matchesSearch],
+  const allItems = React.useMemo(
+    () => [...(snapshot?.repoPullRequests ?? []), ...(snapshot?.externalPullRequests ?? [])],
+    [snapshot],
   );
 
-  // Counts for filter tabs (unfiltered by search to show totals)
+  const filteredItems = React.useMemo(
+    () => allItems
+      .filter((item) => matchesFilter(item, filter) && matchesScope(item, scopeFilter) && matchesSearch(item))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [allItems, filter, scopeFilter, matchesSearch],
+  );
+
+  // Counts for filter tabs (scoped but not search-filtered)
   const filterCounts = React.useMemo(() => {
-    const all = snapshot?.repoPullRequests ?? [];
+    const scoped = allItems.filter((item) => matchesScope(item, scopeFilter));
     return {
-      open: all.filter((item) => item.state === "open" || item.state === "draft").length,
-      closed: all.filter((item) => item.state === "closed").length,
-      merged: all.filter((item) => item.state === "merged").length,
-      all: all.length,
+      open: scoped.filter((item) => item.state === "open" || item.state === "draft").length,
+      closed: scoped.filter((item) => item.state === "closed").length,
+      merged: scoped.filter((item) => item.state === "merged").length,
+      all: scoped.length,
     };
-  }, [snapshot]);
+  }, [allItems, scopeFilter]);
+
+  // Counts for scope sub-tabs (status-filtered but not search-filtered)
+  const scopeCounts = React.useMemo(() => {
+    const statusFiltered = allItems.filter((item) => matchesFilter(item, filter));
+    return {
+      all: statusFiltered.length,
+      ade: statusFiltered.filter((item) => item.adeKind !== null).length,
+      external: statusFiltered.filter((item) => item.adeKind === null).length,
+    };
+  }, [allItems, filter]);
 
   React.useEffect(() => {
     if (!snapshot) return;
@@ -476,7 +507,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
       return;
     }
 
-    const linkedItem = snapshot.repoPullRequests.find((item) => item.linkedPrId === selectedPrId);
+    const linkedItem = allItems.find((item) => item.linkedPrId === selectedPrId);
     if (!linkedItem) {
       pendingSelectedItemIdRef.current = null;
       return;
@@ -500,22 +531,21 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
       }
     }
 
-    const visibleItems = [...repoItems, ...externalItems];
-    if (selectedItemId && visibleItems.some((item) => item.id === selectedItemId)) return;
+    if (selectedItemId && filteredItems.some((item) => item.id === selectedItemId)) return;
     if (!hasInitializedSelectionRef.current) {
-      const next = visibleItems[0] ?? null;
+      const next = filteredItems[0] ?? null;
       if (next) {
         hasInitializedSelectionRef.current = true;
         setSelectedItemId(next.id);
         onSelectPr(next.linkedPrId ?? null);
       }
     }
-  }, [snapshot, repoItems, externalItems, selectedItemId, onSelectPr]);
+  }, [snapshot, filteredItems, selectedItemId, onSelectPr]);
 
-  const selectedItem = React.useMemo(() => {
-    const allItems = [...(snapshot?.repoPullRequests ?? []), ...(snapshot?.externalPullRequests ?? [])];
-    return allItems.find((item) => item.id === selectedItemId) ?? null;
-  }, [snapshot, selectedItemId]);
+  const selectedItem = React.useMemo(
+    () => allItems.find((item) => item.id === selectedItemId) ?? null,
+    [allItems, selectedItemId],
+  );
 
   const selectedLinkedPr = React.useMemo(
     () => (selectedItem?.linkedPrId ? prs.find((pr) => pr.id === selectedItem.linkedPrId) ?? null : null),
@@ -712,6 +742,44 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
             );
           })}
         </div>
+        {/* Scope sub-tabs: All / ADE / External */}
+        <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "4px 16px 6px", borderTop: "1px solid rgba(255,255,255,0.03)" }}>
+          {(["all", "ade", "external"] as ScopeFilter[]).map((scope) => {
+            const active = scopeFilter === scope;
+            const count = scopeCounts[scope];
+            const label = scope === "ade" ? "ADE" : scope === "external" ? "External" : "All";
+            return (
+              <button
+                key={scope}
+                type="button"
+                onClick={() => {
+                  setScopeFilter(scope);
+                  setSelectedItemId(null);
+                  onSelectPr(null);
+                }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  height: 24,
+                  padding: "0 10px",
+                  fontSize: 11,
+                  fontWeight: active ? 600 : 400,
+                  fontFamily: SANS_FONT,
+                  color: active ? "#C4B5FD" : COLORS.textMuted,
+                  background: active ? "rgba(167,139,250,0.10)" : "transparent",
+                  border: active ? "1px solid rgba(167,139,250,0.15)" : "1px solid transparent",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  transition: "all 150ms ease",
+                }}
+              >
+                {label}
+                <span style={{ fontSize: 10, fontFamily: MONO_FONT, opacity: 0.7 }}>{count}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {error ? (
@@ -731,7 +799,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
       <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
         {/* PR list sidebar */}
         <div style={{ width: 380, borderRight: "1px solid rgba(255,255,255,0.06)", overflow: "auto", flexShrink: 0 }}>
-          {/* Section header: Repo PRs */}
+          {/* Section header */}
           <div style={{
             padding: "10px 14px",
             borderBottom: "1px solid rgba(255,255,255,0.06)",
@@ -740,7 +808,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
             justifyContent: "space-between",
           }}>
             <div style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textMuted, letterSpacing: "0.3px" }}>
-              Repo Pull Requests
+              Pull Requests
             </div>
             <span style={{
               fontFamily: MONO_FONT,
@@ -751,23 +819,25 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
               padding: "2px 7px",
               borderRadius: 4,
             }}>
-              {repoItems.length}
+              {filteredItems.length}
             </span>
           </div>
 
-          {repoItems.length === 0 ? (
+          {filteredItems.length === 0 ? (
             <div style={{ padding: 20 }}>
-              <EmptyState title="No pull requests" description="No pull requests match the current GitHub filter." />
+              <EmptyState title="No pull requests" description="No pull requests match the current filters." />
             </div>
           ) : (
-            repoItems.map((item) => {
+            filteredItems.map((item) => {
               const selected = item.id === selectedItemId;
               const sc = stateColor(item.state);
               const linkedPr = item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null;
               const ci = ciDotColor(linkedPr);
               const ciRunning = linkedPr?.checksStatus === "pending";
               const review = reviewIndicator(linkedPr);
-              const ago = formatTimeAgoCompact(item.updatedAt);
+              const ago = formatTimeAgoCompact(item.createdAt);
+              const visibleLabels = item.labels.slice(0, 4);
+              const overflowCount = item.labels.length - 4;
               return (
                 <button
                   key={item.id}
@@ -777,7 +847,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                     display: "flex",
                     width: "100%",
                     flexDirection: "column",
-                    gap: 8,
+                    gap: 6,
                     padding: "11px 14px",
                     textAlign: "left",
                     border: "none",
@@ -792,8 +862,8 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                   onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.025)"; }}
                   onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
                 >
-                  {/* Row 1: avatar, PR number, title, time ago */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  {/* Row 1: avatar, bot badge, PR number, title, CI icon, time, comments */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                     {item.author ? (
                       <img
                         src={`https://avatars.githubusercontent.com/${item.author}?size=32`}
@@ -817,6 +887,22 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                         border: "1px solid rgba(255,255,255,0.08)",
                       }} />
                     )}
+                    {item.isBot ? (
+                      <span style={{
+                        fontSize: 9,
+                        fontWeight: 700,
+                        fontFamily: SANS_FONT,
+                        textTransform: "uppercase",
+                        padding: "1px 5px",
+                        borderRadius: 3,
+                        background: "rgba(255,255,255,0.06)",
+                        color: COLORS.textDim,
+                        flexShrink: 0,
+                        letterSpacing: "0.3px",
+                      }}>
+                        bot
+                      </span>
+                    ) : null}
                     <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: sc.text, flexShrink: 0 }}>
                       #{item.githubPrNumber}
                     </span>
@@ -833,13 +919,63 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                     }}>
                       {item.title}
                     </span>
+                    {ci ? (
+                      <span title={ci.title} style={{ display: "inline-flex", flexShrink: 0 }}>
+                        {linkedPr?.checksStatus === "passing" ? (
+                          <CheckCircle size={14} weight="fill" style={{ color: "#4ADE80" }} />
+                        ) : linkedPr?.checksStatus === "failing" ? (
+                          <XCircle size={14} weight="fill" style={{ color: "#EF4444" }} />
+                        ) : ciRunning ? (
+                          <PrCiRunningIndicator color="#FBBF24" size={14} />
+                        ) : null}
+                      </span>
+                    ) : null}
                     {ago ? (
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0, marginLeft: "auto" }}>
+                      <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
                         {ago}
                       </span>
                     ) : null}
+                    {item.commentCount > 0 ? (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0, color: COLORS.textDim }}>
+                        <ChatText size={12} />
+                        <span style={{ fontFamily: MONO_FONT, fontSize: 10 }}>{item.commentCount}</span>
+                      </span>
+                    ) : null}
                   </div>
-                  {/* Row 2: branch info (Better-Hub style: base ← head) */}
+                  {/* Row 1.5: labels */}
+                  {visibleLabels.length > 0 ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, flexWrap: "wrap" }}>
+                      {visibleLabels.map((label) => {
+                        const bg = `#${label.color}`;
+                        const textColor = labelTextColor(label.color);
+                        return (
+                          <span
+                            key={label.name}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              padding: "1px 8px",
+                              fontSize: 10,
+                              fontWeight: 600,
+                              fontFamily: SANS_FONT,
+                              color: textColor,
+                              background: bg,
+                              borderRadius: 10,
+                              lineHeight: "16px",
+                            }}
+                          >
+                            {label.name}
+                          </span>
+                        );
+                      })}
+                      {overflowCount > 0 ? (
+                        <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
+                          +{overflowCount}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {/* Row 2: branch info */}
                   {item.baseBranch && item.headBranch ? (
                     <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
                       <span>{item.baseBranch}</span>
@@ -847,10 +983,15 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                       <span style={{ color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.headBranch}</span>
                     </div>
                   ) : null}
-                  {/* Row 3: inline stats (Better-Hub style) */}
+                  {/* Row 3: inline stats */}
                   <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, paddingLeft: 30 }}>
                     <span style={stateBadgeStyle(item)}>{item.state}</span>
                     {adeKindBadge(item.adeKind) ? <span style={adeKindBadge(item.adeKind)!}>{item.adeKind}</span> : null}
+                    {item.scope === "external" ? (
+                      <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+                        {item.repoOwner}/{item.repoName}
+                      </span>
+                    ) : null}
                     {item.linkedLaneName ? (
                       <span style={{ ...inlineBadge(COLORS.textSecondary), fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>
                         {item.linkedLaneName}
@@ -860,19 +1001,11 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
                         unmapped
                       </span>
                     )}
-                    {ci ? (
-                      <span title={ci.title} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: SANS_FONT, color: ci.color }}>
-                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: ci.color, display: "inline-block", boxShadow: `0 0 4px ${ci.color}44` }} />
-                        CI
-                        {ciRunning ? <PrCiRunningIndicator color={ci.color} /> : null}
-                      </span>
-                    ) : null}
                     {review ? (
                       <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 6px", fontSize: 10, fontWeight: 500, fontFamily: SANS_FONT, color: review.color, background: `${review.color}10`, borderRadius: 4 }}>
                         {review.label}
                       </span>
                     ) : null}
-                    {/* +/- stats from linked PR (Better-Hub style) */}
                     {linkedPr ? (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT }}>
                         <span style={{ color: COLORS.success }}>+{linkedPr.additions}</span>
@@ -932,162 +1065,6 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
               );
             })
           )}
-
-          {/* External / Unmapped section */}
-          <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-            <button
-              type="button"
-              onClick={() => setShowExternal((value) => !value)}
-              style={{
-                display: "flex",
-                width: "100%",
-                alignItems: "center",
-                gap: 8,
-                padding: "11px 14px",
-                border: "none",
-                borderBottom: "1px solid rgba(255,255,255,0.04)",
-                background: showExternal ? "rgba(245,158,11,0.03)" : "transparent",
-                cursor: "pointer",
-                transition: "background 150ms ease",
-              }}
-            >
-              <span style={{ color: COLORS.warning, display: "flex" }}>
-                {showExternal ? <CaretDown size={13} weight="bold" /> : <CaretRight size={13} weight="bold" />}
-              </span>
-              <span style={{
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.3px",
-                color: COLORS.textMuted,
-              }}>
-                External / Unmapped
-              </span>
-              <span style={{
-                marginLeft: "auto",
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                fontWeight: 600,
-                color: "#FBBF24",
-                background: "rgba(245,158,11,0.10)",
-                padding: "2px 7px",
-                borderRadius: 4,
-              }}>
-                {externalItems.length}
-              </span>
-            </button>
-            {showExternal ? (
-              externalItems.length === 0 ? (
-                <div style={{ padding: "12px 14px", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-                  No external pull requests match this filter.
-                </div>
-              ) : (
-                externalItems.map((item) => {
-                  const selected = item.id === selectedItemId;
-                  const sc = stateColor(item.state);
-                  const ago = formatTimeAgoCompact(item.updatedAt);
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => handleSelectItem(item)}
-                      style={{
-                        display: "flex",
-                        width: "100%",
-                        flexDirection: "column",
-                        gap: 6,
-                        padding: "11px 14px",
-                        textAlign: "left",
-                        border: "none",
-                        borderLeft: selected ? `3px solid ${sc.text}` : "3px solid transparent",
-                        borderBottom: "1px solid rgba(255,255,255,0.04)",
-                        background: selected
-                          ? `linear-gradient(90deg, ${sc.bg} 0%, rgba(255,255,255,0.02) 100%)`
-                          : "transparent",
-                        cursor: "pointer",
-                        transition: "background 150ms ease",
-                      }}
-                      onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.025)"; }}
-                      onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                        {item.author ? (
-                          <img
-                            src={`https://avatars.githubusercontent.com/${item.author}?size=32`}
-                            alt=""
-                            style={{
-                              width: 22,
-                              height: 22,
-                              borderRadius: "50%",
-                              flexShrink: 0,
-                              border: `1.5px solid ${sc.bg}`,
-                            }}
-                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                          />
-                        ) : (
-                          <div style={{
-                            width: 22,
-                            height: 22,
-                            borderRadius: "50%",
-                            flexShrink: 0,
-                            background: "rgba(255,255,255,0.05)",
-                            border: "1px solid rgba(255,255,255,0.08)",
-                          }} />
-                        )}
-                        <span style={{
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: COLORS.textPrimary,
-                          fontFamily: SANS_FONT,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          flex: 1,
-                          minWidth: 0,
-                        }}>
-                          {item.title}
-                        </span>
-                        {ago ? (
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
-                            {ago}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 30 }}>
-                        <span style={stateBadgeStyle(item)}>{item.state}</span>
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
-                          {item.repoOwner}/{item.repoName} #{item.githubPrNumber}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void window.ade.app.openExternal(item.githubUrl);
-                          }}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            marginLeft: "auto",
-                            padding: 0,
-                            background: "transparent",
-                            border: "none",
-                            cursor: "pointer",
-                            color: COLORS.textDim,
-                            transition: "color 100ms ease",
-                          }}
-                          title="Open on GitHub"
-                          onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textSecondary; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
-                        >
-                          <ArrowSquareOut size={13} />
-                        </button>
-                      </div>
-                    </button>
-                  );
-                })
-              )
-            ) : null}
-          </div>
         </div>
 
         {/* Detail pane */}

@@ -438,6 +438,11 @@ function createRuntime() {
         createdAt: "2026-03-17T19:10:00.000Z",
         lastActivityAt: "2026-03-17T19:10:00.000Z",
       })),
+      requestChatInput: vi.fn(async () => ({
+        decision: "accept",
+        answers: { answer: ["yes"] },
+        responseText: "yes",
+      })),
       sendMessage: vi.fn(async () => {}),
       interrupt: vi.fn(async () => {}),
       resumeSession: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
@@ -2613,6 +2618,86 @@ describe("mcpServer", () => {
     }));
     expect(response.structuredContent.awaitingUserResponse).toBe(true);
     expect(response.structuredContent.blocking).toBe(true);
+  });
+
+  it("returns explicit declined semantics for standalone ask_user with structured questions", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.agentChatService.requestChatInput = vi.fn(async () => ({
+      decision: "decline",
+      answers: {},
+      responseText: null,
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+      chatSessionId: "chat-session-1",
+    });
+    const response = await callTool(handler, "ask_user", {
+      title: "Pick a flow",
+      body: "Which part should we test first? 1. Question flow 2. Plan updates",
+      questions: [
+        {
+          id: "flow",
+          header: "Choose one",
+          question: "Which part should we test first?",
+          options: [
+            { label: "Question flow", value: "question_flow" },
+            { label: "Plan updates", value: "plan_updates" },
+          ],
+        },
+      ],
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.requestChatInput).toHaveBeenCalledWith(expect.objectContaining({
+      chatSessionId: "chat-session-1",
+      questions: [
+        expect.objectContaining({
+          id: "flow",
+          question: "Which part should we test first?",
+          options: [
+            expect.objectContaining({ label: "Question flow", value: "question_flow" }),
+            expect.objectContaining({ label: "Plan updates", value: "plan_updates" }),
+          ],
+        }),
+      ],
+    }));
+    expect(response.structuredContent.outcome).toBe("declined");
+    expect(response.structuredContent.answered).toBe(false);
+    expect(response.structuredContent.declined).toBe(true);
+    expect(response.structuredContent.cancelled).toBe(false);
+    expect(response.structuredContent.timedOut).toBe(false);
+    expect(response.structuredContent.awaitingUserResponse).toBe(false);
+    expect(response.structuredContent.blocking).toBe(false);
+    expect(response.structuredContent.responseText).toContain("declined");
+  });
+
+  it("returns explicit timed_out semantics for standalone ask_user when the user does not answer in time", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.agentChatService.requestChatInput = vi.fn(() => new Promise(() => {}));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "chat-session-2",
+      role: "agent",
+      chatSessionId: "chat-session-2",
+    });
+    const response = await callTool(handler, "ask_user", {
+      title: "Pick a flow",
+      body: "Which part should we test first? 1. Question flow 2. Plan updates",
+      waitForResolutionMs: 10,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.outcome).toBe("timed_out");
+    expect(response.structuredContent.decision).toBe("timeout");
+    expect(response.structuredContent.answered).toBe(false);
+    expect(response.structuredContent.timedOut).toBe(true);
+    expect(response.structuredContent.awaitingUserResponse).toBe(true);
+    expect(response.structuredContent.blocking).toBe(true);
+    expect(response.structuredContent.responseText).toContain("timed out");
   });
 
   it("stamps worker-owned ask_user provenance and enforces per-step phase policy", async () => {

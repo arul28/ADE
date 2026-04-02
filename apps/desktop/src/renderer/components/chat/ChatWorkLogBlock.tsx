@@ -134,16 +134,8 @@ function workStatusState(status: ChatWorkLogEntry["status"]): ChatStatusVisualSt
 }
 
 function workStatusLabel(status: ChatWorkLogEntry["status"]): string {
-  switch (status) {
-    case "completed":
-      return "completed";
-    case "failed":
-      return "failed";
-    case "interrupted":
-      return "interrupted";
-    default:
-      return "running";
-  }
+  if (status === "completed" || status === "failed" || status === "interrupted") return status;
+  return "running";
 }
 
 function workEntryHeading(entry: ChatWorkLogEntry): string {

@@ -252,6 +252,17 @@ export function AgentQuestionModal({
                           const isSelected = question.multiSelect
                             ? selectedValues.includes(option.value)
                             : selectedValue === option.value;
+                          const activatePreview = option.preview?.trim()
+                            ? () => {
+                                setDrafts((current) => ({
+                                  ...current,
+                                  [question.id]: {
+                                    ...(current[question.id] ?? createEmptyDraft()),
+                                    activePreviewValue: option.value,
+                                  },
+                                }));
+                              }
+                            : undefined;
                           return (
                             <button
                               key={`${question.id}:${option.value}`}
@@ -263,26 +274,8 @@ export function AgentQuestionModal({
                                   : "border-white/[0.08] bg-white/[0.02] text-fg/72 hover:border-sky-300/30 hover:bg-sky-400/[0.06]",
                               ].join(" ")}
                               aria-pressed={isSelected}
-                              onMouseEnter={() => {
-                                if (!option.preview?.trim()) return;
-                                setDrafts((current) => ({
-                                  ...current,
-                                  [question.id]: {
-                                    ...(current[question.id] ?? createEmptyDraft()),
-                                    activePreviewValue: option.value,
-                                  },
-                                }));
-                              }}
-                              onFocus={() => {
-                                if (!option.preview?.trim()) return;
-                                setDrafts((current) => ({
-                                  ...current,
-                                  [question.id]: {
-                                    ...(current[question.id] ?? createEmptyDraft()),
-                                    activePreviewValue: option.value,
-                                  },
-                                }));
-                              }}
+                              onMouseEnter={activatePreview}
+                              onFocus={activatePreview}
                               onClick={() => {
                                 setDrafts((current) => {
                                   const existing = current[question.id] ?? createEmptyDraft();
@@ -391,67 +384,51 @@ export function AgentQuestionModal({
                         : "Leave the text box empty to send the selected option as-is. Typing a custom answer overrides the selection."}
                     </div>
                   ) : null}
-                  {question.allowsFreeform !== false ? (
-                    question.isSecret ? (
+                  {(() => {
+                    if (question.allowsFreeform === false) return null;
+                    const handleTextChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+                      const nextText = event.target.value;
+                      setDrafts((current) => {
+                        const existing = current[question.id] ?? createEmptyDraft();
+                        return {
+                          ...current,
+                          [question.id]: {
+                            ...existing,
+                            text: nextText,
+                            selectedValues:
+                              !question.multiSelect
+                                && nextText.trim().length > 0
+                                && existing.selectedValues.length > 0
+                                && nextText.trim() !== existing.selectedValues[0]
+                                ? []
+                                : existing.selectedValues,
+                          },
+                        };
+                      });
+                    };
+                    const ariaLabel = question.header?.trim() || question.question;
+                    return question.isSecret ? (
                       <input
                         type="password"
                         value={draft.text}
-                        onChange={(event) => {
-                          const nextText = event.target.value;
-                          setDrafts((current) => {
-                            const existing = current[question.id] ?? createEmptyDraft();
-                            return {
-                              ...current,
-                              [question.id]: {
-                                ...existing,
-                                text: nextText,
-                                selectedValues:
-                                  !question.multiSelect
-                                    && nextText.trim().length > 0
-                                    && existing.selectedValues.length > 0
-                                    && nextText.trim() !== existing.selectedValues[0]
-                                    ? []
-                                    : existing.selectedValues,
-                              },
-                            };
-                          });
-                        }}
+                        onChange={handleTextChange}
                         placeholder={placeholder}
                         className="h-10 w-full border border-border/20 bg-[linear-gradient(180deg,rgba(17,15,26,0.94),rgba(13,11,19,0.9))] px-3 font-mono text-[12px] text-fg outline-none transition-colors placeholder:text-muted-fg/30 focus:border-sky-300/35"
-                        aria-label={question.header?.trim() || question.question}
+                        aria-label={ariaLabel}
                       />
                     ) : (
                       <textarea
                         value={draft.text}
-                        onChange={(event) => {
-                          const nextText = event.target.value;
-                          setDrafts((current) => {
-                            const existing = current[question.id] ?? createEmptyDraft();
-                            return {
-                              ...current,
-                              [question.id]: {
-                                ...existing,
-                                text: nextText,
-                                selectedValues:
-                                  !question.multiSelect
-                                    && nextText.trim().length > 0
-                                    && existing.selectedValues.length > 0
-                                    && nextText.trim() !== existing.selectedValues[0]
-                                    ? []
-                                    : existing.selectedValues,
-                              },
-                            };
-                          });
-                        }}
+                        onChange={handleTextChange}
                         placeholder={placeholder}
                         className={[
                           "w-full resize-y border border-border/20 bg-[linear-gradient(180deg,rgba(17,15,26,0.94),rgba(13,11,19,0.9))] px-4 py-3 font-mono text-[12px] leading-6 text-fg outline-none transition-colors placeholder:text-muted-fg/30 focus:border-sky-300/35",
                           question.options?.length ? "min-h-[88px]" : "min-h-[110px]",
                         ].join(" ")}
-                        aria-label={question.header?.trim() || question.question}
+                        aria-label={ariaLabel}
                       />
-                    )
-                  ) : null}
+                    );
+                  })()}
                 </div>
               );
             })}

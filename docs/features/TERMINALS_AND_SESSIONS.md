@@ -28,12 +28,20 @@ Tracked sessions still feed history, lane refresh, conflict follow-up, and missi
 
 ### Work view session grid
 
-The Work tab supports two grid modes, toggled via a view mode selector in the Work tab header:
+The Work tab's multi-session grid mode uses `PackedSessionGrid` — a resizable tile layout where each tile has an independent column/row span. The grid uses a bin-packing algorithm (`packGridItems` in `packedSessionGridMath.ts`) to arrange tiles compactly, minimizing wasted space. Layout spans are persisted per session via `readPackedGridSpan` / `reconcilePackedGridLayout` and survive session switches.
 
-- **Standard grid** (`WorkViewArea`): CSS Grid with `auto-fill` and `minmax(min(100%, 360px), 1fr)` columns and `minmax(240px, 33vh)` row heights. Cards adjust fluidly to the viewport width without fixed breakpoints. Each card wraps a `SessionSurface` (live terminal via xterm.js or agent chat pane) and supports right-click context menus.
-- **Packed grid** (`PackedSessionGrid`): A resizable tile layout where each tile has an independent column/row span. Tiles can be resized via drag handles on all edges and corners. The grid uses a bin-packing algorithm (`packGridItems` in `packedSessionGridMath.ts`) to arrange tiles compactly, minimizing wasted space. Layout spans are persisted per session via `readPackedGridSpan` / `reconcilePackedGridLayout` and survive session switches. Minimum tile dimensions (`MIN_VALID_COLS`, `MIN_VALID_ROWS`) are enforced to prevent degenerate sizes.
+The grid math module (`packedSessionGridMath.ts`) provides:
 
-Both modes also support a single-session focused view.
+- `computeGridColumnCount()` -- determines optimal column count from container width, tile count, and minimum tile width
+- `computeMinimumRowSpan()` / `computeMinimumColSpan()` -- convert pixel minimums to grid span units
+- `clampPackedGridSpan()` -- enforces minimum/maximum span constraints per tile
+- `packGridItems()` -- bin-packing placement algorithm that iterates rows/columns to find the first available slot for each tile
+- `computePackedGridRowHeight()` -- distributes container height evenly across rows, respecting a minimum base row height (`GRID_BASE_ROW_PX = 120`)
+- `reconcilePackedGridLayout()` -- reconciles persisted layout spans with active tile IDs, preserving spans for inactive tiles
+
+Each `SessionSurface` receives a `layoutVariant` prop (`"standard"` or `"grid-tile"`) and a `terminalVisible` flag so that terminals in non-visible tiles can skip fit operations. Chat tiles use minimum dimensions of 440x340px; terminal tiles use 320x220px.
+
+The Work tab also supports a single-session focused view and a tab-bar mode with a "New Chat" button in the tab strip for quick session creation.
 
 ### Shared session-list cache
 
@@ -117,6 +125,10 @@ The lifecycle model remains the same:
 
 UI observers subscribe selectively and reuse cached list results where possible.
 
+### Stale session reconciliation
+
+On startup, the session service reconciles stale running sessions via `reconcileStaleRunningSessions()`. This marks orphaned sessions (those still in `running` status from a previous app lifecycle) as `disposed`. The method now accepts an `excludeToolTypes` parameter to skip specific tool types during reconciliation — for example, chat sessions may be excluded so they can be resumed rather than force-closed. The exclusion uses normalized tool types and generates a dynamic SQL `NOT IN` clause.
+
 ### Refresh-before-activate ordering
 
 When a new session is created or an existing session is opened, the renderer refreshes the session list *before* activating the session tab. This ensures the new session exists in `sessionsById` when the UI resolves `activeSession` for the tab. Without this ordering, the active item ID would point to an unknown session and the view would fall back to the most recent session or display a blank pane until the next refresh cycle.
@@ -161,9 +173,11 @@ That preserves ADE's session-awareness while making the session system a lighter
 
 ## Terminal renderer and fit recovery
 
-`TerminalView` initializes xterm.js with a **WebGL-first renderer** and falls back to the DOM renderer if WebGL initialization fails (e.g. GPU driver issues, WebGL context loss). The previous three-tier strategy (WebGL -> canvas -> DOM) was simplified to two tiers since the canvas renderer offered no meaningful advantage over the DOM fallback.
+`TerminalView` initializes xterm.js with a **WebGL-first renderer** and falls back to the DOM renderer if WebGL initialization fails (e.g. GPU driver issues, WebGL context loss). The previous three-tier strategy (WebGL -> canvas -> DOM) was simplified to two tiers since the canvas renderer offered no meaningful advantage over the DOM fallback. On WebGL context loss, the runtime clears the texture atlas, increments the `rendererFallbacks` health counter, falls back to the DOM renderer, and re-triggers a fit cycle.
 
-When a terminal is resized or re-parented (e.g. moved between grid tiles), the fit addon computes new column/row dimensions from the host container. If the computed dimensions are invalid (below `MIN_VALID_COLS` / `MIN_VALID_ROWS`, or the host is too small), the fit is retried after a short delay (`INVALID_FIT_RETRY_MS = 90ms`). Successful retries after an initial invalid fit are counted as `fitRecoveries` in the `TerminalHealthCounters`. The `measureHost` helper uses the maximum of `getBoundingClientRect`, `clientWidth`/`clientHeight`, and `offsetWidth`/`offsetHeight` to handle edge cases where one measurement API returns zero during layout transitions. A `fitWarningLogged` flag prevents log spam when a host remains too small across multiple retry cycles.
+The `TerminalView` component accepts `isActive` and `isVisible` props that control runtime interaction and visibility state. The runtime tracks these via `active` and `visible` fields on the cached runtime. When a terminal is not visible, fit operations are skipped (unless it has never been fitted), and forced PTY resize requests are suppressed. This prevents unnecessary layout work for terminals in background tiles. The `documentOverride` option is set to `document` at creation time to support proper rendering when terminals are mounted in packed grid tiles.
+
+When a terminal is resized or re-parented (e.g. moved between grid tiles), the fit addon computes new column/row dimensions from the host container. If the computed dimensions are invalid (below `MIN_VALID_COLS = 20` / `MIN_VALID_ROWS = 6`, or the host is smaller than `MIN_HOST_WIDTH_PX = 120` / `MIN_HOST_HEIGHT_PX = 48`), the previous valid dimensions are restored, the fit is retried after a short delay (`INVALID_FIT_RETRY_MS = 90ms`), and the terminal content is refreshed to prevent visual artifacts. Successful retries after an initial invalid fit are counted as `fitRecoveries` in the `TerminalHealthCounters`. The `measureHost` helper uses the maximum of `getBoundingClientRect`, `clientWidth`/`clientHeight`, and `offsetWidth`/`offsetHeight` to handle edge cases where one measurement API returns zero during layout transitions. A `fitWarningLogged` flag prevents log spam when a host remains too small across multiple retry cycles.
 
 ## Terminal status indicators
 

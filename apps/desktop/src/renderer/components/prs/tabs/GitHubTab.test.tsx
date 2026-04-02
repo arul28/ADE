@@ -53,6 +53,9 @@ function makeGitHubPr(overrides: Partial<GitHubPrSnapshot["repoPullRequests"][nu
     adeKind: "single",
     workflowDisplayState: null,
     cleanupState: null,
+    labels: [],
+    isBot: false,
+    commentCount: 0,
     ...overrides,
   };
 }
@@ -188,6 +191,161 @@ describe("GitHubTab", () => {
 
     await waitFor(() => {
       expect(screen.getAllByLabelText("CI running").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("filters by ADE scope showing only linked PRs", async () => {
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        ...snapshot.repoPullRequests,
+        makeGitHubPr({
+          id: "repo-unlinked",
+          githubPrNumber: 200,
+          title: "Unlinked PR",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    const user = userEvent.setup();
+    renderTab();
+
+    await waitFor(() => {
+      expect(screen.getByText("Unlinked PR")).not.toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /^ADE/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Unlinked PR")).toBeNull();
+      expect(screen.getByText("Open PR")).not.toBeNull();
+    });
+  });
+
+  it("filters by External scope showing only unlinked PRs", async () => {
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        ...snapshot.repoPullRequests,
+        makeGitHubPr({
+          id: "repo-unlinked",
+          githubPrNumber: 200,
+          title: "Unlinked PR",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    const user = userEvent.setup();
+    renderTab();
+
+    await waitFor(() => {
+      expect(screen.getByText("Open PR")).not.toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /^External/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Open PR")).toBeNull();
+      expect(screen.getByText("Unlinked PR")).not.toBeNull();
+    });
+  });
+
+  it("renders bot badge when isBot is true", async () => {
+    const snapshotWithBot: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "bot-pr",
+          githubPrNumber: 300,
+          title: "Bot PR",
+          author: "dependabot[bot]",
+          isBot: true,
+          createdAt: "2026-03-13T12:00:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithBot);
+    renderTab();
+
+    await waitFor(() => {
+      expect(screen.getByText("bot")).not.toBeNull();
+    });
+  });
+
+  it("renders labels when present", async () => {
+    const snapshotWithLabels: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "labeled-pr",
+          githubPrNumber: 400,
+          title: "Labeled PR",
+          labels: [
+            { name: "bug", color: "d73a4a", description: null },
+            { name: "enhancement", color: "a2eeef", description: null },
+          ],
+          createdAt: "2026-03-13T12:00:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithLabels);
+    renderTab();
+
+    await waitFor(() => {
+      expect(screen.getByText("bug")).not.toBeNull();
+      expect(screen.getByText("enhancement")).not.toBeNull();
+    });
+  });
+
+  it("renders comment count when greater than zero", async () => {
+    const snapshotWithComments: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "commented-pr",
+          githubPrNumber: 500,
+          title: "Commented PR",
+          commentCount: 42,
+          createdAt: "2026-03-13T12:00:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithComments);
+    renderTab();
+
+    await waitFor(() => {
+      expect(screen.getByText("42")).not.toBeNull();
+    });
+  });
+
+  it("sorts PRs by createdAt descending", async () => {
+    const snapshotOrdered: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({ id: "pr-old", githubPrNumber: 50, title: "Old PR", createdAt: "2026-03-13T08:00:00.000Z" }),
+        makeGitHubPr({ id: "pr-new", githubPrNumber: 150, title: "New PR", createdAt: "2026-03-13T12:00:00.000Z" }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotOrdered);
+    renderTab();
+
+    await waitFor(() => {
+      const buttons = screen.getAllByRole("button").filter((btn) =>
+        btn.textContent?.includes("PR") && (btn.textContent?.includes("Old") || btn.textContent?.includes("New")),
+      );
+      expect(buttons.length).toBe(2);
+      expect(buttons[0]!.textContent).toContain("New PR");
+      expect(buttons[1]!.textContent).toContain("Old PR");
     });
   });
 });

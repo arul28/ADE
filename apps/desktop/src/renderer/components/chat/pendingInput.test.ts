@@ -1,9 +1,12 @@
 /* @vitest-environment jsdom */
 
 import { describe, expect, it } from "vitest";
-import type { AgentChatEventEnvelope } from "../../../shared/types";
-import { derivePendingInputRequests } from "./pendingInput";
-import type { DerivedPendingInput } from "./pendingInput";
+import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../shared/types";
+import {
+  derivePendingInputRequests,
+  getPendingInputQuestionCount,
+  hasPendingInputOptions,
+} from "./pendingInput";
 
 // ---------------------------------------------------------------------------
 // Helpers for building test envelopes
@@ -114,6 +117,35 @@ describe("derivePendingInputRequests", () => {
     expect(result[0]!.request.title).toBe("Approve deploy");
     expect(result[0]!.request.questions).toHaveLength(1);
     expect(result[0]!.request.questions[0]!.id).toBe("q1");
+  });
+
+  it("recognizes options anywhere in a pending request", () => {
+    const request = {
+      requestId: "req-options",
+      source: "codex",
+      kind: "structured_question",
+      questions: [
+        {
+          id: "q1",
+          question: "What should we inspect first?",
+          allowsFreeform: true,
+        },
+        {
+          id: "q2",
+          question: "Which option should we use?",
+          allowsFreeform: true,
+          options: [
+            { label: "Question flow", value: "question_flow" },
+          ],
+        },
+      ],
+      allowsFreeform: true,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+    } satisfies PendingInputRequest;
+
+    expect(getPendingInputQuestionCount(request)).toBe(2);
+    expect(hasPendingInputOptions(request)).toBe(true);
   });
 
   it("preserves Cursor structured permission requests", () => {

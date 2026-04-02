@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import type { AgentChatEventEnvelope } from "../../../shared/types";
+import type { AgentChatApprovalDecision, AgentChatEventEnvelope } from "../../../shared/types";
 import * as modelRegistry from "../../../shared/modelRegistry";
 import {
   AgentChatMessageList,
@@ -37,6 +37,7 @@ function renderMessageList(
     assistantLabel?: string;
     initialState?: Record<string, unknown>;
     showStreamingIndicator?: boolean;
+    onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   },
 ) {
   return render(
@@ -45,6 +46,7 @@ function renderMessageList(
         events={events}
         assistantLabel={options?.assistantLabel}
         showStreamingIndicator={options?.showStreamingIndicator}
+        onApproval={options?.onApproval as any}
       />
       <LocationProbe />
     </MemoryRouter>,
@@ -736,6 +738,131 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("Needs Input")).toBeTruthy();
     expect(view.container.querySelector("svg.text-amber-400")).toBeTruthy();
     expect(view.container.querySelector(".animate-spin.text-amber-400")).toBeFalsy();
+  });
+
+  it("renders structured question blocks and forwards structured answers from option chips", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "approval_request",
+          itemId: "approval-structured",
+          kind: "tool_call",
+          description: "Choose how to proceed",
+          turnId: "turn-1",
+          detail: {
+            request: {
+              requestId: "request-structured",
+              itemId: "approval-structured",
+              source: "codex",
+              kind: "structured_question",
+              title: "Input needed",
+              description: "Choose how to proceed",
+              questions: [
+                {
+                  id: "question_1",
+                  header: "Question 1",
+                  question: "Which area should we test first?",
+                  options: [
+                    { label: "Question flow", value: "question_flow" },
+                    { label: "Plan updates", value: "plan_updates" },
+                  ],
+                  allowsFreeform: true,
+                },
+                {
+                  id: "question_2",
+                  header: "Question 2",
+                  question: "What validation strategy should we use?",
+                  allowsFreeform: true,
+                },
+              ],
+              allowsFreeform: true,
+              blocking: true,
+              canProceedWithoutAnswer: false,
+            },
+          },
+        },
+      },
+    ], { onApproval });
+
+    expect(screen.getByText("Question 1")).toBeTruthy();
+    expect(screen.getByText("Question 2")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Question flow" }));
+
+    expect(onApproval).toHaveBeenCalledWith(
+      "approval-structured",
+      "accept",
+      null,
+      { question_1: ["question_flow"] },
+    );
+  });
+
+  it("shows structured questions as declined once the first resolution arrives and disables stale option chips", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "approval_request",
+          itemId: "approval-structured",
+          kind: "tool_call",
+          description: "Choose how to proceed",
+          turnId: "turn-1",
+          detail: {
+            request: {
+              requestId: "request-structured",
+              itemId: "approval-structured",
+              source: "codex",
+              kind: "structured_question",
+              title: "Input needed",
+              description: "Choose how to proceed",
+              questions: [
+                {
+                  id: "question_1",
+                  header: "Question 1",
+                  question: "Which area should we test first?",
+                  options: [
+                    { label: "Question flow", value: "question_flow" },
+                    { label: "Plan updates", value: "plan_updates" },
+                  ],
+                  allowsFreeform: true,
+                },
+              ],
+              allowsFreeform: true,
+              blocking: true,
+              canProceedWithoutAnswer: false,
+            },
+          },
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "pending_input_resolved",
+          itemId: "approval-structured",
+          resolution: "declined",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "pending_input_resolved",
+          itemId: "approval-structured",
+          resolution: "cancelled",
+        },
+      },
+    ], { onApproval });
+
+    expect(screen.getByText("Declined")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Question flow" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Plan updates" })).toBeNull();
+    expect(onApproval).not.toHaveBeenCalled();
   });
 
   it("labels provider chats as Codex and preserves explicit assistant labels", () => {

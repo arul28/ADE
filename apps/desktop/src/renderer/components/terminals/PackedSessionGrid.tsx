@@ -135,12 +135,10 @@ export function PackedSessionGrid({
     const minTileWidth = tiles.reduce((largest, tile) => Math.max(largest, tile.minWidth), 0);
     return computeGridColumnCount({
       containerWidth: viewportSize.width,
-      containerHeight: viewportSize.height,
       tileCount: tiles.length,
       minTileWidth,
-      defaultRowSpan,
     });
-  }, [defaultRowSpan, tiles, viewportSize.height, viewportSize.width]);
+  }, [tiles, viewportSize.width]);
 
   const trackCount = useMemo(
     () => Math.max(GRID_COLUMN_SUBDIVISIONS, columnCount * GRID_COLUMN_SUBDIVISIONS),

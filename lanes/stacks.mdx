@@ -1,36 +1,185 @@
 ---
 title: "Stacked Lanes"
-description: "Arrange lanes into stacks — layered branch chains for stacked PR workflows with automatic rebase propagation and drag-to-reparent."
+description: "Arrange lanes into stacks — layered branch chains for stacked PR workflows with automatic rebase propagation, drag-to-reparent, and conflict-aware stack management."
 icon: "layer-group"
 ---
 
-## Stacks
+## What is a Stack?
 
-Lanes can be arranged into **stacks** — a layered chain where each lane's branch is based on another lane's branch, rather than directly on `main`. This enables stacked PR workflows where changes are reviewed incrementally.
+A stack is a chain of lanes where each lane's branch is based on another lane's branch instead of directly on `main`. This mirrors the stacked PR workflow used in many engineering teams — break a large feature into small, reviewable chunks that build on each other.
 
 ```
 main
-└── lane/auth-refactor        (base: main)
-    └── lane/auth-tests       (base: lane/auth-refactor)
-        └── lane/auth-docs    (base: lane/auth-tests)
+└── lane/auth-models        (base: main)
+    └── lane/auth-ui        (base: lane/auth-models)
+        └── lane/auth-tests (base: lane/auth-ui)
 ```
 
----
-
-### Creating a Stack
-
-When creating a new lane, set its **base branch** to the branch of an existing lane (rather than `main`). ADE recognizes this as a stack relationship and visualizes it in the Stack Graph view in the left pane.
+Each lane in the stack maps to one pull request. Reviewers see small, focused diffs. The stack topology is tracked automatically — ADE knows which lanes depend on which, and uses this knowledge for rebase propagation, conflict detection, and PR targeting.
 
 ---
 
-### Rebasing a Stack
+## Creating a Stack
 
-When the root lane's branch receives new commits (from a merge or rebase against `main`), ADE detects that child lanes are now stale and offers a **Rebase Stack** action. This propagates the parent's changes through each child in dependency order, handling the full rebase chain automatically.
+There are two ways to add a lane to a stack.
 
-<Note>ADE uses `git rebase --onto` internally to rebase each child onto the updated parent. If conflicts are detected during this process, the affected lane enters `conflict` status and the rebase pauses for human resolution before continuing down the chain.</Note>
+<Tabs>
+  <Tab title="New Child Lane (recommended)">
+    <Steps>
+      <Step title="Select the parent lane">
+        In the Lanes panel, click the lane you want to build on top of.
+      </Step>
+      <Step title="Create a child lane">
+        Click **New Child Lane** from the lane's context menu or toolbar. ADE pre-fills the base branch to the parent lane's branch and sets the parent-child relationship in the stack topology.
+      </Step>
+      <Step title="Name the child">
+        Use a descriptive name that reflects the work this slice handles (e.g., `auth-ui` if the parent is `auth-models`). ADE uses this as both the lane identifier and the branch name.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Set base branch manually">
+    When creating any new lane, expand the base branch selector and choose another lane's branch instead of `main`. ADE detects the parent-child relationship automatically and adds the lane to the stack.
+  </Tab>
+</Tabs>
+
+You can nest lanes as deep as needed — each child targets the lane directly above it. However, stacks deeper than 3-4 levels become harder to manage and review. If a stack is growing deep, consider whether some layers can be merged or parallelized.
 
 ---
 
-### Drag-to-Reparent
+## Viewing the Stack
 
-In the **Workspace Graph** view, you can drag a lane node onto another lane to change its base branch. ADE will preview the reparenting operation and ask for confirmation before executing the rebase chain.
+ADE surfaces stack relationships in multiple places:
+
+| Location | What you see |
+|----------|-------------|
+| **Lanes panel** | Indented tree showing parent-child relationships with depth indicators |
+| **Workspace Graph** | Connected chain of nodes with edges showing base-branch dependencies |
+| **PR panel** | Stack context in PR descriptions — which PR this builds on, full chain visualization |
+| **Lane detail** | Parent lane reference and stack depth in the lane header |
+
+The Workspace Graph is the most powerful view for stacks. Each lane appears as a node, and you can see status badges (uncommitted changes, open PRs, active agents, conflicts) at a glance across the entire chain.
+
+---
+
+## Stack Chain Resolution
+
+ADE resolves the full stack chain using a recursive query that walks parent-child relationships from any lane in the stack. The chain includes every lane from the root (the lane based on `main`) down to the deepest leaf.
+
+Each item in the chain tracks:
+- **Lane identity** — name, branch, and worktree path
+- **Depth** — how many levels from the root
+- **Status** — dirty state, ahead/behind counts relative to the parent, rebase state
+- **Parent reference** — which lane this one depends on
+
+This chain is used for rebase propagation, conflict simulation, and PR auto-targeting.
+
+---
+
+## Rebasing a Stack
+
+When a parent lane receives new commits, its children are now out of date. ADE handles this through **rebase suggestions** and **rebase runs**.
+
+### Rebase Suggestions
+
+ADE monitors the relationship between each lane and its parent. When the parent's HEAD moves ahead, ADE surfaces a rebase suggestion on each affected child with:
+- The number of commits the child is behind
+- A preview of what the rebase will touch
+- Whether the rebase is likely to conflict (based on merge simulation)
+
+You can **Accept** to rebase immediately, **Defer** to handle it later, or **Dismiss** if the suggestion is not relevant.
+
+### Rebase Scope
+
+When you start a rebase, ADE offers two scopes:
+
+| Scope | Behavior |
+|-------|----------|
+| **Lane only** (`lane_only`) | Rebases just the selected lane onto its updated parent. Child lanes below it are not touched. |
+| **Lane and descendants** (`lane_and_descendants`) | Rebases the selected lane, then propagates through every descendant in dependency order. This is the "rebase the whole stack" action. |
+
+### How Stack Rebase Works
+
+For a `lane_and_descendants` rebase, ADE creates a **Rebase Run** — a tracked operation that processes each lane in the chain sequentially:
+
+<Steps>
+  <Step title="Start from the target lane">
+    ADE rebases the selected lane onto its parent's current HEAD using `git rebase`.
+  </Step>
+  <Step title="Walk the descendants">
+    For each child lane in dependency order, ADE rebases it onto its parent's updated HEAD. The order is deterministic — children are processed in creation order within each level.
+  </Step>
+  <Step title="Handle conflicts">
+    If a conflict is detected during any lane's rebase, that lane enters `conflict` status and the run pauses. You resolve the conflict in that lane's worktree, then resume. Lanes below the conflicting lane are marked `blocked` until the conflict is resolved.
+  </Step>
+  <Step title="Optional push">
+    After a successful rebase, ADE can force-push each rebased lane's branch to its remote. You choose the push mode (`none` or `review_then_push`) when starting the rebase.
+  </Step>
+</Steps>
+
+Each Rebase Run tracks per-lane status (`pending`, `running`, `succeeded`, `conflict`, `blocked`, `skipped`), pre/post HEAD SHAs, and any errors. You can inspect the run in the Rebase tab or the History view.
+
+<Note>
+ADE uses `git rebase` (not `git rebase --onto`) for standard stack rebases. If conflicts occur, ADE aborts the rebase on that lane and enters conflict status rather than leaving the worktree in a partially-rebased state. The previous state is always recoverable.
+</Note>
+
+### Rollback
+
+If a rebase run produces unexpected results, you can roll it back. ADE records the pre-rebase HEAD SHA for each lane in the run, so rollback restores each lane to its exact state before the rebase started.
+
+---
+
+## Drag-to-Reparent
+
+In the **Workspace Graph**, you can restructure a stack by dragging a lane node onto a different parent.
+
+<Steps>
+  <Step title="Open the Workspace Graph">
+    Navigate to the Workspace Graph view from the sidebar.
+  </Step>
+  <Step title="Drag a lane node">
+    Click and drag a lane node onto the lane you want as its new parent.
+  </Step>
+  <Step title="Confirm the reparent">
+    ADE previews the operation and asks for confirmation. The preview shows:
+    - The old parent and new parent
+    - Whether a rebase is needed (it usually is)
+    - Any potential conflicts detected by merge simulation
+  </Step>
+  <Step title="ADE executes the reparent">
+    ADE updates the lane's base branch reference, then rebases the lane onto the new parent's HEAD. If the rebase fails due to conflicts, ADE aborts and reverts the base branch reference — the lane stays with its original parent.
+  </Step>
+</Steps>
+
+<Warning>
+You cannot reparent the primary lane, reparent a lane to itself, or create a circular dependency (e.g., making a parent lane a child of one of its descendants). ADE validates all of these cases before executing the reparent.
+</Warning>
+
+---
+
+## Stacked PRs
+
+Stacks and stacked PRs are closely related. When you open a PR from a lane in a stack, ADE automatically targets the parent lane's branch (not `main`). When the base PR merges into `main`, ADE suggests retargeting the next child PR to `main` and rebasing.
+
+See the [Stacked PR Workflows guide](/guides/stacked-prs) for the full end-to-end workflow including landing strategies.
+
+---
+
+## Tips
+
+- **Keep stacks shallow.** 2-3 levels is the sweet spot. Beyond 4 levels, rebase chains become slow and conflicts multiply.
+- **Rebase frequently.** Accept rebase suggestions promptly — the longer you wait, the more likely conflicts become.
+- **Use the Graph.** The Workspace Graph gives the best overview of stack health. Status badges tell you at a glance which lanes need attention.
+- **Land from the bottom.** Always merge the base PR first, then retarget and merge upward. Landing out of order creates unnecessary conflicts.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Stacked PR Workflows" icon="layer-group" href="/guides/stacked-prs">
+    Full guide for creating, reviewing, and landing stacked PRs using ADE lanes.
+  </Card>
+  <Card title="Workspace Graph" icon="diagram-project" href="/tools/workspace-graph">
+    Visualize stacks, run merge simulations, and drag-reparent lanes in the interactive graph.
+  </Card>
+</CardGroup>

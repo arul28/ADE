@@ -477,47 +477,23 @@ export function useWorkSessions() {
     });
   }, [sessions, filterLaneId, q]);
 
-  const runningFiltered = useMemo(
-    () =>
-      filtered.filter(
-        (session) =>
-          sessionStatusBucket({
-            status: session.status,
-            lastOutputPreview: session.lastOutputPreview,
-            runtimeState: session.runtimeState,
-            toolType: session.toolType,
-          }) === "running",
-      ),
-    [filtered],
-  );
-
-  const awaitingInputFiltered = useMemo(
-    () =>
-      filtered.filter(
-        (session) =>
-          sessionStatusBucket({
-            status: session.status,
-            lastOutputPreview: session.lastOutputPreview,
-            runtimeState: session.runtimeState,
-            toolType: session.toolType,
-          }) === "awaiting-input",
-      ),
-    [filtered],
-  );
-
-  const endedFiltered = useMemo(
-    () =>
-      filtered.filter(
-        (session) =>
-          sessionStatusBucket({
-            status: session.status,
-            lastOutputPreview: session.lastOutputPreview,
-            runtimeState: session.runtimeState,
-            toolType: session.toolType,
-          }) === "ended",
-      ),
-    [filtered],
-  );
+  const { runningFiltered, awaitingInputFiltered, endedFiltered } = useMemo(() => {
+    const running: TerminalSessionSummary[] = [];
+    const awaiting: TerminalSessionSummary[] = [];
+    const ended: TerminalSessionSummary[] = [];
+    for (const session of filtered) {
+      const bucket = sessionStatusBucket({
+        status: session.status,
+        lastOutputPreview: session.lastOutputPreview,
+        runtimeState: session.runtimeState,
+        toolType: session.toolType,
+      });
+      if (bucket === "running") running.push(session);
+      else if (bucket === "awaiting-input") awaiting.push(session);
+      else ended.push(session);
+    }
+    return { runningFiltered: running, awaitingInputFiltered: awaiting, endedFiltered: ended };
+  }, [filtered]);
 
   const sessionsGroupedByLane = useMemo(() => {
     if (sessionListOrganization !== "by-lane") return null;

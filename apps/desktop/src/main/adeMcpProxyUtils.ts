@@ -1,11 +1,19 @@
 import type { Buffer } from "node:buffer";
 
 export type ProxyIdentity = {
+  chatSessionId: string | null;
   missionId: string | null;
   runId: string | null;
   stepId: string | null;
   attemptId: string | null;
+  ownerId: string | null;
   role: string | null;
+  computerUsePolicy: {
+    mode: string | null;
+    allowLocalFallback: boolean | null;
+    retainArtifacts: boolean | null;
+    preferredBackend: string | null;
+  } | null;
 };
 
 export type ParsedInboundMessage = {
@@ -25,7 +33,25 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function hasProxyIdentity(identity: ProxyIdentity): boolean {
-  return Boolean(identity.missionId || identity.runId || identity.stepId || identity.attemptId || identity.role);
+  const hasComputerUsePolicy = Boolean(
+    identity.computerUsePolicy
+    && (
+      identity.computerUsePolicy.mode
+      || typeof identity.computerUsePolicy.allowLocalFallback === "boolean"
+      || typeof identity.computerUsePolicy.retainArtifacts === "boolean"
+      || identity.computerUsePolicy.preferredBackend
+    ),
+  );
+  return Boolean(
+    identity.chatSessionId
+    || identity.missionId
+    || identity.runId
+    || identity.stepId
+    || identity.attemptId
+    || identity.ownerId
+    || identity.role
+    || hasComputerUsePolicy,
+  );
 }
 
 export function findHeaderBoundary(buffer: Buffer): { index: number; delimiterLength: number } | null {
@@ -97,12 +123,43 @@ export function injectIdentityIntoInitializePayload(payloadText: string, identit
   const existingIdentity = isRecord(params.identity) ? { ...params.identity } : {};
   const mergedIdentity: Record<string, unknown> = { ...existingIdentity };
 
-  const identityKeys = ["missionId", "runId", "stepId", "attemptId", "role"] as const;
+  const identityKeys = ["chatSessionId", "missionId", "runId", "stepId", "attemptId", "ownerId", "role"] as const;
   for (const key of identityKeys) {
     if (!identity[key]) continue;
     const existing = existingIdentity[key];
     if (typeof existing === "string" && existing.trim()) continue;
     mergedIdentity[key] = identity[key];
+  }
+
+  const proxyComputerUsePolicy = identity.computerUsePolicy;
+  if (proxyComputerUsePolicy) {
+    const existingComputerUsePolicy = isRecord(existingIdentity.computerUsePolicy)
+      ? { ...existingIdentity.computerUsePolicy }
+      : {};
+    let shouldWriteComputerUsePolicy = false;
+
+    const hasExistingString = (key: string): boolean =>
+      typeof existingComputerUsePolicy[key] === "string" && (existingComputerUsePolicy[key] as string).trim().length > 0;
+    const mergeString = (key: "mode" | "preferredBackend"): void => {
+      if (proxyComputerUsePolicy[key] && !hasExistingString(key)) {
+        existingComputerUsePolicy[key] = proxyComputerUsePolicy[key];
+        shouldWriteComputerUsePolicy = true;
+      }
+    };
+    const mergeBool = (key: "allowLocalFallback" | "retainArtifacts"): void => {
+      if (typeof proxyComputerUsePolicy[key] === "boolean" && typeof existingComputerUsePolicy[key] !== "boolean") {
+        existingComputerUsePolicy[key] = proxyComputerUsePolicy[key];
+        shouldWriteComputerUsePolicy = true;
+      }
+    };
+    mergeString("mode");
+    mergeBool("allowLocalFallback");
+    mergeBool("retainArtifacts");
+    mergeString("preferredBackend");
+
+    if (shouldWriteComputerUsePolicy) {
+      mergedIdentity.computerUsePolicy = existingComputerUsePolicy;
+    }
   }
 
   return JSON.stringify({

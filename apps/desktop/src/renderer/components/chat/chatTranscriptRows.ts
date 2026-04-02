@@ -42,7 +42,8 @@ type HiddenTranscriptEvent =
   | Extract<AgentChatEvent, { type: "command" }>
   | Extract<AgentChatEvent, { type: "file_change" }>
   | Extract<AgentChatEvent, { type: "web_search" }>
-  | Extract<AgentChatEvent, { type: "reasoning" }>;
+  | Extract<AgentChatEvent, { type: "reasoning" }>
+  | Extract<AgentChatEvent, { type: "pending_input_resolved" }>;
 
 type ChatTranscriptVisibleEvent = Exclude<AgentChatEvent, HiddenTranscriptEvent>;
 
@@ -188,6 +189,14 @@ function shouldMergeTextRows(
   if (turnAndItemMatch(previous, next)) return true;
 
   return !previous.turnId && !next.turnId && !previous.itemId && !next.itemId;
+}
+
+function shouldMergePlanTextRows(
+  previous: Extract<AgentChatEvent, { type: "plan_text" }>,
+  next: Extract<AgentChatEvent, { type: "plan_text" }>,
+): boolean {
+  return turnAndItemMatch(previous, next)
+    || (!previous.turnId && !next.turnId && !previous.itemId && !next.itemId);
 }
 
 function buildCollapseKey(
@@ -435,7 +444,7 @@ export function appendCollapsedChatTranscriptEvent(
 ): void {
   const { event } = envelope;
 
-  if (event.type === "step_boundary" || event.type === "activity") {
+  if (event.type === "step_boundary" || event.type === "activity" || event.type === "pending_input_resolved") {
     return;
   }
 
@@ -533,6 +542,24 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
+  if (event.type === "plan_text") {
+    if (!event.text.trim().length) return;
+    const previous = rows[rows.length - 1];
+    if (previous?.event.type === "plan_text" && shouldMergePlanTextRows(previous.event, event)) {
+      rows[rows.length - 1] = {
+        ...previous,
+        timestamp: envelope.timestamp,
+        event: {
+          ...previous.event,
+          text: mergeStreamingText(previous.event.text, event.text),
+          ...(event.turnId && !previous.event.turnId ? { turnId: event.turnId } : {}),
+          ...(event.itemId && !previous.event.itemId ? { itemId: event.itemId } : {}),
+        },
+      };
+      return;
+    }
+  }
+
   if (event.type === "system_notice") {
     const previous = rows[rows.length - 1];
     if (
@@ -571,6 +598,37 @@ export function appendCollapsedChatTranscriptEvent(
       event,
     });
     return;
+  }
+
+  if (event.type === "plan") {
+    const nextTurn = event.turnId ?? null;
+    if (nextTurn !== null) {
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const candidate = rows[index];
+        if (
+          candidate?.event.type === "plan_text"
+          && (candidate.event.turnId ?? null) === nextTurn
+        ) {
+          rows.splice(index, 1);
+        }
+      }
+
+      const matchIndex = [...rows]
+        .reverse()
+        .findIndex((candidate) =>
+          candidate.event.type === "plan"
+          && (candidate.event.turnId ?? null) === nextTurn,
+        );
+      if (matchIndex >= 0) {
+        const actualIndex = rows.length - 1 - matchIndex;
+        rows[actualIndex] = {
+          ...rows[actualIndex]!,
+          timestamp: envelope.timestamp,
+          event,
+        };
+        return;
+      }
+    }
   }
 
   if (event.type === "subagent_progress") {
@@ -677,7 +735,6 @@ export function groupConsecutiveWorkLogRows(
 
     grouped[grouped.length - 1] = {
       ...candidate,
-      timestamp: candidate.timestamp,
       event: {
         ...candidateEvent,
         ...(summary.length > 0 ? { summary } : {}),

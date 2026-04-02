@@ -173,7 +173,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "ask_user",
-    description: "Ask the user a question and wait for their answer. Works in both mission contexts (with missionId) and standalone chat sessions (without missionId).",
+    description: "Ask the user a question and wait for their answer. Works in both mission contexts (with missionId) and standalone chat sessions (without missionId). Returns explicit outcome fields (`outcome`, `resolved`, `answered`, `declined`, `cancelled`, `timedOut`, `awaitingUserResponse`) so declines/cancels/timeouts cannot be mistaken for a still-pending question.",
     inputSchema: {
       type: "object",
       required: ["title", "body"],
@@ -182,6 +182,42 @@ const TOOL_SPECS: ToolSpec[] = [
         missionId: { type: "string", minLength: 1 },
         title: { type: "string", minLength: 1 },
         body: { type: "string", minLength: 1 },
+        questions: {
+          type: "array",
+          minItems: 1,
+          maxItems: 3,
+          items: {
+            type: "object",
+            required: ["question"],
+            additionalProperties: false,
+            properties: {
+              id: { type: "string", minLength: 1 },
+              header: { type: "string", minLength: 1 },
+              question: { type: "string", minLength: 1 },
+              multiSelect: { type: "boolean" },
+              allowsFreeform: { type: "boolean" },
+              isSecret: { type: "boolean" },
+              defaultAssumption: { type: "string" },
+              impact: { type: "string" },
+              options: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["label"],
+                  additionalProperties: false,
+                  properties: {
+                    label: { type: "string", minLength: 1 },
+                    value: { type: "string", minLength: 1 },
+                    description: { type: "string" },
+                    recommended: { type: "boolean" },
+                    preview: { type: "string" },
+                    previewFormat: { type: "string", enum: ["markdown", "html"] }
+                  }
+                }
+              }
+            }
+          }
+        },
         requestedAction: { type: "string" },
         laneId: { type: "string" },
         phase: { type: "string" },
@@ -2233,7 +2269,12 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
-  const validRole: SessionIdentity["role"] = envContext.role ?? "external";
+  const identityRole = asOptionalTrimmedString(identity.role);
+  const parsedIdentityRole: SessionIdentity["role"] | null =
+    identityRole === "cto" || identityRole === "orchestrator" || identityRole === "agent" || identityRole === "external" || identityRole === "evaluator"
+      ? identityRole
+      : null;
+  const validRole: SessionIdentity["role"] = envContext.role ?? parsedIdentityRole ?? "external";
   const requestedComputerUsePolicy = normalizeComputerUsePolicy(
     identity.computerUsePolicy ?? envContext.computerUsePolicy,
     createDefaultComputerUsePolicy(),
@@ -3540,7 +3581,7 @@ async function runTool(args: {
   if (name === "ask_user") {
     ensureAskUserAllowed(session);
 
-    const missionId = asOptionalTrimmedString(toolArgs.missionId);
+    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId ?? undefined;
     const title = assertNonEmptyString(toolArgs.title, "title");
     const body = assertNonEmptyString(toolArgs.body, "body");
     const requestedAction = asOptionalTrimmedString(toolArgs.requestedAction);
@@ -3548,30 +3589,139 @@ async function runTool(args: {
     const phase = asOptionalTrimmedString(toolArgs.phase);
     const waitForResolutionMs = Math.max(0, Math.floor(asNumber(toolArgs.waitForResolutionMs, 0)));
     const pollIntervalMs = Math.max(100, Math.floor(asNumber(toolArgs.pollIntervalMs, 1000)));
+    const structuredQuestions = Array.isArray(toolArgs.questions)
+      ? toolArgs.questions.flatMap((rawQuestion, index) => {
+          if (!rawQuestion || typeof rawQuestion !== "object") return [];
+          const q = rawQuestion as Record<string, unknown>;
+          const question = asOptionalTrimmedString(q.question);
+          if (!question) return [];
+          const options = Array.isArray(q.options)
+            ? q.options.flatMap((rawOption) => {
+                if (!rawOption || typeof rawOption !== "object") return [];
+                const o = rawOption as Record<string, unknown>;
+                const label = asOptionalTrimmedString(o.label);
+                if (!label) return [];
+                const value = asOptionalTrimmedString(o.value);
+                const description = asOptionalTrimmedString(o.description);
+                const preview = asOptionalTrimmedString(o.preview);
+                const previewFormat = o.previewFormat === "markdown" || o.previewFormat === "html" ? o.previewFormat : undefined;
+                return [{
+                  label,
+                  ...(value ? { value } : {}),
+                  ...(description ? { description } : {}),
+                  ...(o.recommended === true ? { recommended: true } : {}),
+                  ...(preview ? { preview } : {}),
+                  ...(previewFormat ? { previewFormat } : {}),
+                }];
+              })
+            : undefined;
+          const header = asOptionalTrimmedString(q.header);
+          const defaultAssumption = asOptionalTrimmedString(q.defaultAssumption);
+          const impact = asOptionalTrimmedString(q.impact);
+          return [{
+            id: asOptionalTrimmedString(q.id) ?? `question_${index + 1}`,
+            ...(header ? { header } : {}),
+            question,
+            ...(options?.length ? { options } : {}),
+            ...(q.multiSelect === true ? { multiSelect: true } : {}),
+            ...(typeof q.allowsFreeform === "boolean" ? { allowsFreeform: q.allowsFreeform } : {}),
+            ...(q.isSecret === true ? { isSecret: true } : {}),
+            ...(defaultAssumption ? { defaultAssumption } : {}),
+            ...(impact ? { impact } : {}),
+          }];
+        })
+      : undefined;
     const askUserPolicy = getAgentAskUserPolicy({ runtime, callerCtx });
+    const summarizeAskUserDecision = (decision: string, responseText: string | null, answered: boolean): string | null => {
+      const trimmed = typeof responseText === "string" ? responseText.trim() : "";
+      if (trimmed.length) return trimmed;
+      if (answered) return null;
+      if (decision === "cancel") return "The user cancelled the question.";
+      if (decision === "decline") return "The user declined to answer the question.";
+      if (decision === "timeout") return "The question timed out before the user answered.";
+      return "The user did not answer the question.";
+    };
+    const buildAskUserResult = (args: {
+      intervention?: unknown;
+      awaitingUserResponse: boolean;
+      blocking: boolean;
+      outcome: "pending" | "answered" | "declined" | "cancelled" | "timed_out";
+      decision?: string;
+      responseText?: string | null;
+      answers?: Record<string, string[]>;
+    }): Record<string, unknown> => ({
+      decision: args.decision ?? (args.outcome === "answered" ? "accept" : args.outcome),
+      outcome: args.outcome,
+      resolved: args.outcome !== "pending" && !args.awaitingUserResponse,
+      answered: args.outcome === "answered",
+      declined: args.outcome === "declined",
+      cancelled: args.outcome === "cancelled",
+      timedOut: args.outcome === "timed_out",
+      awaitingUserResponse: args.awaitingUserResponse,
+      blocking: args.blocking,
+      ...(args.intervention ? { intervention: args.intervention } : {}),
+      answers: args.answers ?? {},
+      responseText: args.responseText ?? null,
+    });
 
     // ── Standalone chat session path (no missionId) ──
     // Route through agentChatService.requestChatInput which creates an inline
     // pending-input in the chat UI and blocks until the user answers.
     if (!missionId) {
-      const chatSessionId = session.identity.chatSessionId ?? callerCtx.chatSessionId;
+      // Use server-authorized chatSessionId; reject unverified client-supplied ids.
+      const serverChatSessionId = callerCtx.chatSessionId;
+      const clientChatSessionId = session.identity.chatSessionId;
+      if (clientChatSessionId && serverChatSessionId && clientChatSessionId !== serverChatSessionId) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "ask_user: client-supplied chatSessionId does not match server-authorized session.",
+        );
+      }
+      const chatSessionId = serverChatSessionId ?? clientChatSessionId;
       if (!chatSessionId || !runtime.agentChatService) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
           "ask_user requires either a missionId or an active chat session (chatSessionId).",
         );
       }
-      const result = await runtime.agentChatService.requestChatInput({
+
+      // Race the chat input against an optional timeout.
+      const inputPromise = runtime.agentChatService.requestChatInput({
         chatSessionId,
         title,
         body,
+        ...(structuredQuestions?.length ? { questions: structuredQuestions } : {}),
       });
-      return {
-        answered: result.decision !== "decline" && result.decision !== "cancel",
+      const result = waitForResolutionMs > 0
+        ? await Promise.race([
+            inputPromise,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), waitForResolutionMs)),
+          ])
+        : await inputPromise;
+
+      if (!result) {
+        return buildAskUserResult({
+          awaitingUserResponse: true,
+          blocking: true,
+          outcome: "timed_out",
+          decision: "timeout",
+          responseText: summarizeAskUserDecision("timeout", null, false),
+        });
+      }
+      const answered = result.decision !== "decline" && result.decision !== "cancel";
+      const outcome = result.decision === "decline"
+        ? "declined"
+        : result.decision === "cancel"
+          ? "cancelled"
+          : "answered";
+      return buildAskUserResult({
+        awaitingUserResponse: false,
+        blocking: false,
+        outcome,
         decision: result.decision,
         answers: result.answers,
-        responseText: result.responseText,
-      };
+        responseText: summarizeAskUserDecision(result.decision, result.responseText, answered),
+      });
     }
 
     if (askUserPolicy && !askUserPolicy.enabled) {
@@ -3637,19 +3787,13 @@ async function runTool(args: {
       }
     }
 
-    if (session.identity.role === "orchestrator" || callerCtx.runId) {
-      return {
+    if (session.identity.role === "orchestrator" || callerCtx.runId || waitForResolutionMs <= 0) {
+      return buildAskUserResult({
         intervention,
         awaitingUserResponse: true,
-        blocking: true
-      };
-    }
-
-    if (waitForResolutionMs <= 0) {
-      return {
-        intervention,
-        awaitingUserResponse: true
-      };
+        blocking: true,
+        outcome: "pending",
+      });
     }
 
     const deadline = Date.now() + waitForResolutionMs;
@@ -3657,21 +3801,24 @@ async function runTool(args: {
       const mission = runtime.missionService.get(missionId);
       const latest = mission?.interventions.find((entry) => entry.id === intervention.id) ?? null;
       if (latest && latest.status !== "open") {
-        return {
+        return buildAskUserResult({
           intervention: latest,
-          awaitingUserResponse: false
-        };
+          awaitingUserResponse: false,
+          blocking: false,
+          outcome: latest.status === "dismissed" ? "declined" : "answered",
+        });
       }
       await sleep(pollIntervalMs);
     }
 
     const mission = runtime.missionService.get(missionId);
     const latest = mission?.interventions.find((entry) => entry.id === intervention.id) ?? intervention;
-    return {
+    return buildAskUserResult({
       intervention: latest,
       awaitingUserResponse: true,
-      timedOut: true
-    };
+      blocking: true,
+      outcome: "timed_out",
+    });
   }
 
   if (name === "get_environment_info") {

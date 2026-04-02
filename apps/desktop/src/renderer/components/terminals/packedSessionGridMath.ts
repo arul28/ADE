@@ -58,12 +58,9 @@ export function computeMinimumColSpan(args: {
 
 export function computeGridColumnCount(args: {
   containerWidth: number;
-  containerHeight?: number;
   tileCount: number;
   minTileWidth: number;
-  defaultRowSpan?: number;
   gapPx?: number;
-  baseRowPx?: number;
 }): number {
   const {
     containerWidth,
@@ -125,7 +122,18 @@ export function reconcilePackedGridLayout(args: {
   defaultSpansById: Record<string, PackedGridSpan>;
 }): DockLayout {
   const { layout, tileIds, defaultSpansById } = args;
+  const activeTileIds = new Set(tileIds);
   const next: DockLayout = {};
+
+  // Preserve persisted spans for tiles not currently active
+  for (const [key, value] of Object.entries(layout)) {
+    const match = key.match(/^(.+):(col|row)$/);
+    if (match && !activeTileIds.has(match[1])) {
+      next[key] = value;
+    }
+  }
+
+  // Reconcile active tiles with defaults
   for (const tileId of tileIds) {
     const defaults = defaultSpansById[tileId] ?? { colSpan: 1, rowSpan: 1 };
     const persistedColSpan = Number(layout[spanKey(tileId, "col")]);

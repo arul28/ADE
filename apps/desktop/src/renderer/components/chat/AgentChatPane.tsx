@@ -38,7 +38,6 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
-// AgentQuestionModal removed — question UI is now inline in message list + composer.
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -1619,7 +1618,7 @@ export function AgentChatPane({
   }, []);
   const notifySessionCreated = useCallback((session: AgentChatSession) => {
     if (!onSessionCreated) return;
-    void Promise.resolve(onSessionCreated(session)).catch(() => {});
+    void Promise.resolve(onSessionCreated(session)).catch((err) => { console.error("notifySessionCreated failed:", err); });
   }, [onSessionCreated]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
@@ -2472,8 +2471,8 @@ export function AgentChatPane({
                       assistantLabel={assistantLabel}
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
-                      onApproval={(itemId, decision, responseText) => {
-                        void handleApproval(itemId, decision, responseText);
+                      onApproval={(itemId, decision, responseText, answers) => {
+                        void handleApproval(itemId, decision, responseText, answers);
                       }}
                     />
                     {sessionDelta ? (
@@ -2533,6 +2532,7 @@ export function AgentChatPane({
                         exit={{ opacity: 0, transition: { duration: 0.15 } }}
                       >
                         <select
+                          aria-label="Select lane"
                           value={laneId ?? ""}
                           onChange={(e) => onLaneChange(e.target.value)}
                           className="appearance-none rounded-full px-4 py-1.5 text-[11px] font-medium text-fg/70 outline-none transition-colors cursor-pointer"
@@ -2574,7 +2574,6 @@ export function AgentChatPane({
           )}
         </div>
       </ChatSurfaceShell>
-      {/* Question UI is now inline in the message list + composer — no modal. */}
     </>
   );
 }

@@ -679,6 +679,8 @@ app.whenReady().then(async () => {
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
     let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null = null;
     let testServiceRef: ReturnType<typeof createTestService> | null = null;
+    let gitServiceRef: ReturnType<typeof createGitOperationsService> | null = null;
+    let missionBudgetServiceRef: ReturnType<typeof createMissionBudgetService> | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
 
@@ -759,7 +761,10 @@ app.whenReady().then(async () => {
     });
 
     const sessionService = createSessionService({ db });
-    const reconciledSessions = sessionService.reconcileStaleRunningSessions({ status: "disposed" });
+    const reconciledSessions = sessionService.reconcileStaleRunningSessions({
+      status: "disposed",
+      excludeToolTypes: ["claude-chat", "codex-chat", "ai-chat", "cursor"],
+    });
     if (reconciledSessions > 0) {
       logger.warn("sessions.reconciled_stale_running", { count: reconciledSessions });
     }
@@ -1380,6 +1385,11 @@ app.whenReady().then(async () => {
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
+      getGitService: () => gitServiceRef,
+      conflictService,
+      contextDocService,
+      getWorkerBudgetService: () => workerBudgetService,
+      getMissionBudgetService: () => missionBudgetServiceRef,
       episodicSummaryService,
       laneService,
       sessionService,
@@ -1473,6 +1483,7 @@ app.whenReady().then(async () => {
       }
     });
     testServiceRef = testService;
+    gitServiceRef = gitService;
 
     automationService = createAutomationService({
       db,
@@ -1559,6 +1570,7 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       projectConfigService,
     });
+    missionBudgetServiceRef = missionBudgetService;
     let missionPreflightService: ReturnType<typeof createMissionPreflightService>;
     const deferredProjectStartCancels = new Set<() => void>();
     const scheduleDeferredProjectStart = (

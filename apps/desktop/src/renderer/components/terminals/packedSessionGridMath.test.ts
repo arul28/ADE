@@ -14,8 +14,6 @@ describe("packedSessionGridMath", () => {
         containerWidth: 1500,
         tileCount: 3,
         minTileWidth: 440,
-        containerHeight: 1200,
-        defaultRowSpan: 3,
       }),
     ).toBe(3);
   });
@@ -24,10 +22,8 @@ describe("packedSessionGridMath", () => {
     expect(
       computeGridColumnCount({
         containerWidth: 2200,
-        containerHeight: 1200,
         tileCount: 6,
         minTileWidth: 440,
-        defaultRowSpan: 3,
       }),
     ).toBe(3);
   });
@@ -36,10 +32,8 @@ describe("packedSessionGridMath", () => {
     expect(
       computeGridColumnCount({
         containerWidth: 2200,
-        containerHeight: 1200,
         tileCount: 5,
         minTileWidth: 440,
-        defaultRowSpan: 3,
       }),
     ).toBe(3);
   });
@@ -65,13 +59,13 @@ describe("packedSessionGridMath", () => {
     expect(packed.totalRows).toBe(2);
   });
 
-  it("drops stale layout entries and seeds missing tiles with defaults", () => {
+  it("preserves absent-tile layout entries and seeds missing tiles with defaults", () => {
     const reconciled = reconcilePackedGridLayout({
       layout: {
         "keep:col": 2,
         "keep:row": 3,
-        "stale:col": 4,
-        "stale:row": 4,
+        "absent:col": 4,
+        "absent:row": 4,
       },
       tileIds: ["keep", "new"],
       defaultSpansById: {
@@ -81,6 +75,8 @@ describe("packedSessionGridMath", () => {
     });
 
     expect(reconciled).toEqual({
+      "absent:col": 4,
+      "absent:row": 4,
       "keep:col": 2,
       "keep:row": 3,
       "new:col": 1,

@@ -135,22 +135,40 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     reconcileStaleRunningSessions({
       endedAt,
-      status
+      status,
+      excludeToolTypes,
     }: {
       endedAt?: string;
       status?: TerminalSessionStatus;
+      excludeToolTypes?: string[];
     } = {}): number {
-      const row = db.get<{ count: number }>("select count(1) as count from terminal_sessions where status = 'running'");
+      const normalizedExcludedToolTypes = Array.isArray(excludeToolTypes)
+        ? excludeToolTypes
+            .map((toolType) => normalizeToolType(toolType))
+            .filter((toolType): toolType is TerminalToolType => toolType != null)
+        : [];
+      const exclusionSql = normalizedExcludedToolTypes.length
+        ? ` and (tool_type is null or tool_type not in (${normalizedExcludedToolTypes.map(() => "?").join(", ")}))`
+        : "";
+      const whereSql = `status = 'running'${exclusionSql}`;
+      const row = db.get<{ count: number }>(
+        `select count(1) as count from terminal_sessions where ${whereSql}`,
+        normalizedExcludedToolTypes,
+      );
       const count = Number(row?.count ?? 0);
       if (!Number.isFinite(count) || count <= 0) return 0;
 
       const finalEndedAt = endedAt ?? new Date().toISOString();
       const finalStatus = status ?? "disposed";
-      db.run("update terminal_sessions set ended_at = ?, exit_code = ?, status = ?, pty_id = null where status = 'running'", [
-        finalEndedAt,
-        null,
-        finalStatus
-      ]);
+      db.run(
+        `update terminal_sessions set ended_at = ?, exit_code = ?, status = ?, pty_id = null where ${whereSql}`,
+        [
+          finalEndedAt,
+          null,
+          finalStatus,
+          ...normalizedExcludedToolTypes,
+        ],
+      );
       return count;
     },
 

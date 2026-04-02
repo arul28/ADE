@@ -84,7 +84,6 @@ export function TerminalsPage() {
         activeItemId={work.activeItemId}
         viewMode={work.viewMode}
         draftKind={work.draftKind}
-        showingDraft={work.activeItemId == null}
         setViewMode={work.setViewMode}
         onSelectItem={work.setActiveItemId}
         onCloseItem={work.closeTab}
