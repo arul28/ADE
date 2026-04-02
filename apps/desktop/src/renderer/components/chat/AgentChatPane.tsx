@@ -2346,7 +2346,7 @@ export function AgentChatPane({
           ) : selectedSessionId ? (
             <div className="flex h-full min-h-0 overflow-hidden">
               {/* Chat column */}
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <div className="flex min-h-0 min-w-[280px] flex-1 flex-col overflow-hidden">
                 <AgentChatMessageList
                   key={selectedSessionId ?? "chat-draft"}
                   events={selectedEventsForDisplay}

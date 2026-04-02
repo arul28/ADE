@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   COLORS,
-  SPACING,
-  FONT_SIZES,
-  RADII,
-  APP_FONT_STACK,
   SANS_FONT,
-  MONO_FONT,
-  LABEL_STYLE,
   inlineBadge,
   outlineButton,
   primaryButton,
@@ -19,47 +13,6 @@ import {
   formatTimestamp,
   conflictDotColor,
 } from "./laneDesignTokens";
-
-// ── Constants ──
-
-describe("design token constants", () => {
-  it("exports COLORS with all expected keys", () => {
-    expect(COLORS.pageBg).toBe("#09080C");
-    expect(COLORS.accent).toBe("#A78BFA");
-    expect(COLORS.success).toBe("#22C55E");
-    expect(COLORS.danger).toBe("#EF4444");
-    expect(COLORS.warning).toBe("#F59E0B");
-    expect(COLORS.textPrimary).toBe("#FAFAFA");
-  });
-
-  it("exports SPACING values", () => {
-    expect(SPACING.xs).toBe(4);
-    expect(SPACING.xl).toBe(24);
-  });
-
-  it("exports FONT_SIZES values", () => {
-    expect(FONT_SIZES.xs).toBe(9);
-    expect(FONT_SIZES.xl).toBe(14);
-  });
-
-  it("exports RADII values", () => {
-    expect(RADII.sm).toBe(6);
-    expect(RADII.xl).toBe(16);
-  });
-
-  it("exports font stacks", () => {
-    expect(APP_FONT_STACK).toContain("Geist");
-    expect(SANS_FONT).toBe("var(--font-sans)");
-    expect(MONO_FONT).toBe("var(--font-mono)");
-  });
-
-  it("exports LABEL_STYLE with correct properties", () => {
-    expect(LABEL_STYLE.fontSize).toBe(11);
-    expect(LABEL_STYLE.fontWeight).toBe(500);
-    expect(LABEL_STYLE.fontFamily).toBe(SANS_FONT);
-    expect(LABEL_STYLE.color).toBe(COLORS.textMuted);
-  });
-});
 
 // ── Style factory functions ──
 

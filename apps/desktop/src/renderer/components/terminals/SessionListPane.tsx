@@ -325,7 +325,7 @@ export const SessionListPane = React.memo(function SessionListPane({
 
       {/* Session list */}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-1">
-        {!hasAnySessions && !isByLane && !isByTime ? (
+        {!hasAnySessions ? (
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/15 mb-2" />
             <div className="text-[11px] font-medium text-fg/70">No sessions</div>

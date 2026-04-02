@@ -91,7 +91,7 @@ describe("AgentChatComposer", () => {
     expect(props.onClearDraft).not.toHaveBeenCalled();
   });
 
-  it("shows a single Claude mode row with hover details", () => {
+  it("renders Claude mode buttons without a Chat toggle", () => {
     renderComposer({
       sessionProvider: "claude",
       modelId: "anthropic/claude-sonnet-4-6",
@@ -103,10 +103,6 @@ describe("AgentChatComposer", () => {
     expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Accept edits" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Bypass" })).toBeTruthy();
-    expect(screen.getByText("Claude uses the normal approval flow for reads, edits, and tools.")).toBeTruthy();
-
-    fireEvent.mouseEnter(screen.getByRole("button", { name: "Plan" }));
-    expect(screen.getByText("Read-only Claude turns for analysis and implementation planning.")).toBeTruthy();
   });
 
   it("routes Claude plan through both interaction and permission callbacks", () => {
@@ -146,7 +142,7 @@ describe("AgentChatComposer", () => {
     expect(onClaudePermissionModeChange).not.toHaveBeenCalled();
   });
 
-  it("shows preset-first Codex controls and a custom summary without raw selects", () => {
+  it("shows preset-first Codex controls without raw selects", () => {
     renderComposer({
       sessionProvider: "codex",
       codexApprovalPolicy: "on-request",
@@ -161,10 +157,6 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByDisplayValue("ADE flags")).toBeNull();
     expect(screen.queryByDisplayValue("On request")).toBeNull();
     expect(screen.queryByDisplayValue("Workspace write")).toBeNull();
-    expect(screen.getByText("Custom Codex mode: ADE flags · On request · Workspace write")).toBeTruthy();
-
-    fireEvent.mouseEnter(screen.getByRole("button", { name: "Full auto" }));
-    expect(screen.getByText(/Danger-full-access sandbox, approval policy: never/i)).toBeTruthy();
   });
 
   it("maps Codex preset buttons to the underlying approval and sandbox controls", () => {

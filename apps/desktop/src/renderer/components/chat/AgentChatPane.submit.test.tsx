@@ -570,14 +570,14 @@ describe("AgentChatPane submit recovery", () => {
     installAdeMocks();
     renderPane(session);
 
-    expect(await screen.findByRole("button", { name: "Chat handoff" })).not.toBeNull();
+    expect(await screen.findByRole("button", { name: "Handoff" })).not.toBeNull();
 
     cleanup();
     installAdeMocks();
     renderResolverPane(session);
 
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Chat handoff" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Handoff" })).toBeNull();
     });
   });
 
@@ -589,7 +589,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const button = await screen.findByRole("button", { name: "Chat handoff" });
+    const button = await screen.findByRole("button", { name: "Handoff" });
     await waitFor(() => {
       expect((button as HTMLButtonElement).disabled).toBe(true);
     });
@@ -617,7 +617,7 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Chat handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
 
     await waitFor(() => {

@@ -94,24 +94,28 @@ export const SessionCard = React.memo(function SessionCard({
             {/* Meta row */}
             <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
               <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: laneColor(session.laneId) }} />
-              <span className="shrink-0 text-[10px] text-muted-fg/60">
+              <span className="min-w-0 flex-1 truncate text-[10px] text-muted-fg/60">
                 {session.laneName}
               </span>
 
-              {delta && (delta.insertions > 0 || delta.deletions > 0) ? (
+              {delta ? (
                 <>
-                  <span
-                    className="border border-emerald-500/30 bg-emerald-500/15 px-1 py-0.5 text-emerald-300 leading-none shrink-0"
-                    style={DELTA_CHIP_STYLE}
-                  >
-                    +{delta.insertions}
-                  </span>
-                  <span
-                    className="border border-red-500/30 bg-red-500/15 px-1 py-0.5 text-red-300 leading-none shrink-0"
-                    style={DELTA_CHIP_STYLE}
-                  >
-                    -{delta.deletions}
-                  </span>
+                  {delta.insertions > 0 ? (
+                    <span
+                      className="border border-emerald-500/30 bg-emerald-500/15 px-1 py-0.5 text-emerald-300 leading-none shrink-0"
+                      style={DELTA_CHIP_STYLE}
+                    >
+                      +{delta.insertions}
+                    </span>
+                  ) : null}
+                  {delta.deletions > 0 ? (
+                    <span
+                      className="border border-red-500/30 bg-red-500/15 px-1 py-0.5 text-red-300 leading-none shrink-0"
+                      style={DELTA_CHIP_STYLE}
+                    >
+                      -{delta.deletions}
+                    </span>
+                  ) : null}
                 </>
               ) : null}
 

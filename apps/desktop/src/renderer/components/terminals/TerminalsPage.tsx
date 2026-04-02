@@ -97,6 +97,7 @@ export function TerminalsPage() {
       work.activeItemId,
       work.viewMode,
       work.draftKind,
+      work.showDraftKind,
       work.setViewMode,
       work.setActiveItemId,
       work.closeTab,

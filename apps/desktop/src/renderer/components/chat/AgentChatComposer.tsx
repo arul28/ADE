@@ -1128,6 +1128,7 @@ export function AgentChatComposer({
               disabled={!canAttach}
               onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
               title="Attach files or images (@)"
+              aria-label="Open attachment picker"
             >
               @
             </button>
@@ -1137,6 +1138,7 @@ export function AgentChatComposer({
               disabled={!canAttach}
               onClick={openUploadPicker}
               title="Upload file from disk"
+              aria-label="Upload file from disk"
             >
               <Paperclip size={11} />
             </button>
@@ -1145,6 +1147,7 @@ export function AgentChatComposer({
               className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/30 transition-colors hover:bg-white/5 hover:text-muted-fg/60"
               onClick={() => { const d = textareaRef.current?.value ?? ""; if (!d.length) { onDraftChange("/"); } setSlashPickerOpen(true); setSlashQuery(d.startsWith("/") ? d.slice(1) : ""); setSlashCursor(0); textareaRef.current?.focus(); }}
               title="Commands (/)"
+              aria-label="Open command picker"
             >
               /
             </button>
@@ -1161,6 +1164,7 @@ export function AgentChatComposer({
                 )}
                 onClick={onToggleProof}
                 title={proofOpen ? "Close proof drawer" : "Open proof drawer"}
+                aria-label={proofOpen ? "Close proof drawer" : "Open proof drawer"}
                 aria-pressed={proofOpen}
               >
                 <Cube size={11} weight={proofOpen ? "fill" : "regular"} />
@@ -1209,6 +1213,7 @@ export function AgentChatComposer({
                     className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
                     onClick={onSubmit}
                     title="Send steer message"
+                    aria-label="Send steer message"
                   >
                     <PaperPlaneTilt size={10} weight="fill" />
                   </button>
@@ -1217,6 +1222,7 @@ export function AgentChatComposer({
                   type="button"
                   className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-red-500/20 bg-red-500/[0.06] text-red-400/70 transition-all hover:border-red-500/35 hover:bg-red-500/12 hover:text-red-400"
                   title="Stop the active turn only (Cmd+.)"
+                  aria-label="Stop active turn"
                   onClick={onInterrupt}
                 >
                   <Square size={9} weight="fill" />
@@ -1279,7 +1285,7 @@ export function AgentChatComposer({
           {/* Ghost suggestion overlay */}
           {promptSuggestion && !draft.length && !turnActive ? (
             <div
-              className="pointer-events-none absolute inset-0 flex items-start px-4 py-3"
+              className="pointer-events-none absolute inset-0 flex items-start px-4 py-2.5"
               aria-hidden="true"
             >
               <span className="text-[13px] leading-[1.6] text-fg/18 italic">
