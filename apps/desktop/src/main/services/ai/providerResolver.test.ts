@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DetectedAuth } from "./authDetector";
-import { normalizeCliMcpServers, resolveModel } from "./providerResolver";
+import { normalizeCliMcpServers, resolveAutoModelIdFromOpenAiCompatibleEndpoint, resolveModel } from "./providerResolver";
 
 const { createCodexCliMock } = vi.hoisted(() => ({
   createCodexCliMock: vi.fn(),
@@ -36,6 +36,7 @@ describe("providerResolver codex CLI", () => {
   beforeEach(() => {
     createCodexCliMock.mockReset();
     createClaudeCodeMock.mockReset();
+    vi.unstubAllGlobals();
   });
 
   it("resolves Codex CLI models through the community provider with MCP settings", async () => {
@@ -203,5 +204,34 @@ describe("providerResolver codex CLI", () => {
         env: { ADE_RUN_ID: "run-1" },
       },
     });
+  });
+
+  it("uses the saved preferred local model without probing /v1/models", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const resolved = await resolveAutoModelIdFromOpenAiCompatibleEndpoint(
+      "http://localhost:1234",
+      "lmstudio",
+      "lmstudio/qwen2.5-coder:32b",
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(resolved).toBe("qwen2.5-coder:32b");
+  });
+
+  it("requires explicit selection when a local runtime reports multiple loaded models", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({
+        data: [
+          { id: "meta-llama-3.1-70b-instruct" },
+          { id: "qwen2.5-coder:32b" },
+        ],
+      }), { status: 200 }),
+    ));
+
+    await expect(
+      resolveAutoModelIdFromOpenAiCompatibleEndpoint("http://localhost:1234", "lmstudio"),
+    ).rejects.toThrow("Choose a specific model or save a preferred local model");
   });
 });

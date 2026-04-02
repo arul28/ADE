@@ -12,7 +12,7 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeStatus(overrides: Partial<AiSettingsStatus> = {}): AiSettingsStatus {
+function makeStatus(overrides: Partial<AiSettingsStatus> & Record<string, unknown> = {}): AiSettingsStatus {
   return {
     mode: "guest",
     availableProviders: { claude: false, codex: false, cursor: false },
@@ -206,13 +206,48 @@ describe("deriveConfiguredModelIds", () => {
 
   it("includes local models for local auth", () => {
     const status = makeStatus({
-      detectedAuth: [{ type: "local", provider: "ollama" }],
+      detectedAuth: [{ type: "local", provider: "lmstudio" }],
+      availableModelIds: ["lmstudio/meta-llama-3.1-70b-instruct", "lmstudio/qwen2.5-coder:32b", "ollama/llama3.2"],
     });
     const ids = deriveConfiguredModelIds(status);
-    const ollamaModels = MODEL_REGISTRY.filter(
-      (m) => m.family === "ollama" && !m.deprecated && !m.isCliWrapped,
-    );
-    expect(ids.length).toBe(ollamaModels.length);
+    expect(ids).toContain("lmstudio/meta-llama-3.1-70b-instruct");
+    expect(ids).toContain("lmstudio/qwen2.5-coder:32b");
+    expect(ids).not.toContain("ollama/llama3.2");
+  });
+
+  it("includes local models from runtimeConnections when availableModelIds is empty", () => {
+    const status = makeStatus({
+      runtimeConnections: {
+        lmstudio: {
+          provider: "lmstudio",
+          label: "LM Studio",
+          kind: "local",
+          configured: true,
+          authAvailable: true,
+          runtimeDetected: true,
+          runtimeAvailable: true,
+          health: "ready",
+          endpoint: "http://localhost:1234",
+          blocker: null,
+          loadedModelIds: ["lmstudio/meta-llama-3.1-70b-instruct"],
+          lastCheckedAt: "2026-03-17T19:00:00.000Z",
+        },
+      },
+    });
+    const ids = deriveConfiguredModelIds(status);
+    expect(ids).toContain("lmstudio/meta-llama-3.1-70b-instruct");
+  });
+
+  it("prefers discovered local model ids over static local placeholders", () => {
+    const status = makeStatus({
+      detectedAuth: [{ type: "local", provider: "lmstudio" }],
+      availableModelIds: ["lmstudio/meta-llama-3.1-70b-instruct"],
+    });
+
+    const ids = deriveConfiguredModelIds(status);
+
+    expect(ids).toContain("lmstudio/meta-llama-3.1-70b-instruct");
+    expect(ids).not.toContain("lmstudio/auto");
   });
 
   it("merges models from multiple auth sources without duplicates", () => {
@@ -334,6 +369,18 @@ describe("deriveConfiguredModelOptions", () => {
     const sonnet = options.find((o) => o.id === "anthropic/claude-sonnet-4-6");
     expect(sonnet).toBeTruthy();
     expect(sonnet!.label).toBe("Claude Sonnet 4.6");
+  });
+
+  it("preserves dynamic local model ids as options", () => {
+    const status = makeStatus({
+      detectedAuth: [{ type: "local", provider: "lmstudio" }],
+      availableModelIds: ["lmstudio/local-test-model-123"],
+    });
+    const options = deriveConfiguredModelOptions(status);
+    const local = options.find((o) => o.id === "lmstudio/local-test-model-123");
+    expect(local).toBeTruthy();
+    expect(local!.label).toBe("local-test-model-123 (LM Studio)");
+    expect(local!.description).toBe("lmstudio (local)");
   });
 });
 

@@ -235,6 +235,47 @@ describe("authDetector", () => {
     expect(auth.some((entry) => entry.type === "local" && entry.provider === "lmstudio")).toBe(false);
   });
 
+  it("falls back from an empty configured LM Studio endpoint to the auto-detected endpoint and preserves the preferred model", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "http://lmstudio.example:1234/api/v1/models") {
+          return new Response("{}", { status: 404 });
+        }
+        if (url === "http://lmstudio.example:1234/v1/models") {
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        }
+        if (url === "http://localhost:1234/api/v1/models") {
+          return new Response("{}", { status: 404 });
+        }
+        if (url === "http://localhost:1234/v1/models") {
+          return new Response(JSON.stringify({
+            data: [{ id: "gemma-4" }],
+          }), { status: 200 });
+        }
+        return new Response("{}", { status: 503 });
+      }),
+    );
+
+    const auth = await detectAllAuth({}, {
+      localProviders: {
+        lmstudio: {
+          endpoint: "http://lmstudio.example:1234",
+          autoDetect: true,
+          preferredModelId: "lmstudio/gemma-4",
+        },
+      },
+    });
+
+    expect(auth).toContainEqual(expect.objectContaining({
+      type: "local",
+      provider: "lmstudio",
+      endpoint: "http://localhost:1234",
+      endpointSource: "auto",
+      preferredModelId: "lmstudio/gemma-4",
+    }));
+  });
+
   it("marks unsupported CLI auth checks as unverified", async () => {
     spawnMock.mockImplementation((command: string, args: string[] = []) => {
       if (args[0] === "--version") {
