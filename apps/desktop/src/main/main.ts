@@ -650,9 +650,10 @@ app.whenReady().then(async () => {
     recordRecent?: boolean;
     userSelectedProject?: boolean;
   }): Promise<AppContext> => {
-    // Any pre-existing .ade directory, whether from the tracked shared scaffold or
-    // a prior local open, means this repo should not feel like a brand-new ADE bootstrap.
-    const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade"));
+    // The .ade directory may exist from git (shared scaffold files like ade.yaml),
+    // but the db is gitignored and machine-local. A missing db means this machine
+    // has never completed setup, so onboarding should run.
+    const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot);
