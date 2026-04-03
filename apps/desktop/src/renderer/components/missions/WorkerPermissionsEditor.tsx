@@ -19,7 +19,7 @@ import {
 } from "../shared/permissionOptions";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 
-export type PermFamilyKey = "claude" | "codex" | "unified" | "cursor";
+export type PermFamilyKey = "claude" | "codex" | "unified" | "cursor" | "droid";
 
 /** Derive unique model families in use from orchestrator + phase card models */
 export function deriveActivePermFamilies(
@@ -38,7 +38,7 @@ export function deriveActivePermFamilies(
       seen.add(familyToPermissionKey(desc.family, desc.isCliWrapped));
     }
   }
-  const order: PermFamilyKey[] = ["claude", "codex", "cursor", "unified"];
+  const order: PermFamilyKey[] = ["claude", "codex", "cursor", "droid", "unified"];
   return order.filter((k) => seen.has(k));
 }
 
@@ -115,8 +115,14 @@ export function WorkerPermissionsEditor({
   const familyOptions = useMemo(() => {
     const map = new Map<PermFamilyKey, PermissionOption[]>();
     for (const fam of families) {
-      const modelFamily = fam === "claude" ? "anthropic" : fam === "codex" ? "openai" : "unified";
-      const isCliWrapped = fam === "claude" || fam === "codex";
+      const modelFamily = fam === "claude"
+        ? "anthropic"
+        : fam === "codex"
+          ? "openai"
+          : fam === "droid"
+            ? "factory"
+            : "unified";
+      const isCliWrapped = fam === "claude" || fam === "codex" || fam === "droid";
       map.set(fam, getPermissionOptions({ family: modelFamily, isCliWrapped }));
     }
     return map;

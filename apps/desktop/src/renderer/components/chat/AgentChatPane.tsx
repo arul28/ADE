@@ -184,23 +184,26 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
   };
 }
 
-type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "unified";
+type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "droid" | "unified";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
   if (!desc?.isCliWrapped) return "unified";
   if (desc.family === "openai") return "codex";
   if (desc.family === "cursor") return "cursor";
+  if (desc.family === "factory") return "droid";
   return "claude";
 }
 
 function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registryModelId: string): string {
   if (!desc?.isCliWrapped) return registryModelId;
-  if (desc.family === "cursor" || desc.family === "openai") return desc.sdkModelId || registryModelId;
+  if (desc.family === "cursor" || desc.family === "openai" || desc.family === "factory") {
+    return desc.sdkModelId || registryModelId;
+  }
   return desc.shortId ?? registryModelId;
 }
 
 function summarizeNativeControls(
-  provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "unified" | "cursor",
+  provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "unified" | "cursor" | "droid",
   controls: NativeControlState,
 ): Pick<
   AgentChatSessionSummary,
@@ -349,11 +352,13 @@ function resolveAssistantLabel(
   sessionProvider: string | null | undefined,
 ): string {
   if (model?.family === "cursor" || model?.cliCommand === "cursor") return "Cursor";
+  if (model?.family === "factory" || model?.cliCommand === "droid") return "Droid";
   if (model?.family === "anthropic" || model?.cliCommand === "claude") return "Claude";
   if (model?.family === "openai" || model?.cliCommand === "codex") return "Codex";
   if (sessionProvider === "claude") return "Claude";
   if (sessionProvider === "codex") return "Codex";
   if (sessionProvider === "cursor") return "Cursor";
+  if (sessionProvider === "droid") return "Droid";
   return "Assistant";
 }
 
@@ -419,13 +424,22 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
-function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor", value: string | null | undefined): string | null {
+function resolveCliRegistryModelId(
+  provider: "codex" | "claude" | "cursor" | "droid",
+  value: string | null | undefined,
+): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
   if (provider === "cursor") {
     const fullId = normalized.startsWith("cursor/") ? normalized : `cursor/${normalized}`;
     const dynamic = getModelById(fullId) ?? resolveModelDescriptorForProvider(normalized.replace(/^cursor\//, ""), "cursor");
     if (dynamic && dynamic.family === "cursor" && dynamic.isCliWrapped) return dynamic.id;
+    return null;
+  }
+  if (provider === "droid") {
+    const fullId = normalized.startsWith("droid/") ? normalized : `droid/${normalized}`;
+    const dynamic = getModelById(fullId) ?? resolveModelDescriptorForProvider(normalized.replace(/^droid\//, ""), "droid");
+    if (dynamic && dynamic.family === "factory" && dynamic.isCliWrapped) return dynamic.id;
     return null;
   }
   const family = provider === "codex" ? "openai" : "anthropic";
@@ -447,6 +461,7 @@ function chatToolTypeForProvider(provider: string | null | undefined): TerminalT
     case "codex": return "codex-chat";
     case "claude": return "claude-chat";
     case "cursor": return "cursor";
+    case "droid": return "droid-chat";
     default: return "ai-chat";
   }
 }
@@ -597,6 +612,7 @@ export function AgentChatPane({
     claude: AiProviderConnectionStatus | null;
     codex: AiProviderConnectionStatus | null;
     cursor: AiProviderConnectionStatus | null;
+    droid: AiProviderConnectionStatus | null;
   } | null>(null);
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [includeProjectDocs, setIncludeProjectDocs] = useState(false);
@@ -674,7 +690,9 @@ export function AgentChatPane({
       ? (providerConnections?.codex ?? null)
       : selectedSession?.provider === "cursor"
         ? (providerConnections?.cursor ?? null)
-        : null;
+        : selectedSession?.provider === "droid"
+          ? (providerConnections?.droid ?? null)
+          : null;
   const pendingApprovalIds = useMemo(() => {
     const ids = new Set<string>();
     for (const entry of pendingInputsBySession[selectedSessionId ?? ""] ?? []) {
@@ -812,7 +830,7 @@ export function AgentChatPane({
   const refreshAvailableModels = useCallback(async () => {
     try {
       const status = await window.ade.ai.getStatus();
-      const available = deriveConfiguredModelIds(status, { includeCursor: true });
+      const available = deriveConfiguredModelIds(status, { includeCursor: true, includeDroid: true });
       setAvailableModelIds(available);
       return available;
     } catch {
@@ -820,10 +838,11 @@ export function AgentChatPane({
     }
 
     try {
-      const [codexModels, claudeModels, cursorModels, unifiedModels] = await Promise.all([
+      const [codexModels, claudeModels, cursorModels, droidModels, unifiedModels] = await Promise.all([
         window.ade.agentChat.models({ provider: "codex" }).catch(() => []),
         window.ade.agentChat.models({ provider: "claude" }).catch(() => []),
         window.ade.agentChat.models({ provider: "cursor" }).catch(() => []),
+        window.ade.agentChat.models({ provider: "droid" }).catch(() => []),
         window.ade.agentChat.models({ provider: "unified" }).catch(() => []),
       ]);
       const available = new Set<string>();
@@ -838,6 +857,10 @@ export function AgentChatPane({
       }
       for (const model of cursorModels) {
         const resolved = resolveCliRegistryModelId("cursor", model.id);
+        if (resolved) available.add(resolved);
+      }
+      for (const model of droidModels) {
+        const resolved = resolveCliRegistryModelId("droid", model.id);
         if (resolved) available.add(resolved);
       }
       for (const model of unifiedModels) {
@@ -870,6 +893,7 @@ export function AgentChatPane({
         claude: status.providerConnections?.claude ?? null,
         codex: status.providerConnections?.codex ?? null,
         cursor: status.providerConnections?.cursor ?? null,
+        droid: status.providerConnections?.droid ?? null,
       });
     } catch {
       setProviderConnections(null);
@@ -2419,17 +2443,22 @@ export function AgentChatPane({
             {error}
           </div>
         ) : null}
-        {selectedSessionId && !activeProviderConnection?.runtimeAvailable && (activeProviderConnection?.blocker || activeProviderConnection?.provider === "cursor") ? (
+        {selectedSessionId && !activeProviderConnection?.runtimeAvailable && (activeProviderConnection?.blocker || activeProviderConnection?.provider === "cursor" || activeProviderConnection?.provider === "droid") ? (
           <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
               {activeProviderConnection.provider === "claude"
                 ? "Claude runtime"
                 : activeProviderConnection.provider === "cursor"
                   ? "Cursor runtime"
-                  : "Codex runtime"}
+                  : activeProviderConnection.provider === "droid"
+                    ? "Droid runtime"
+                    : "Codex runtime"}
             </div>
             <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-              {activeProviderConnection.blocker || "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."}
+              {activeProviderConnection.blocker
+                ?? (activeProviderConnection.provider === "droid"
+                  ? "Droid is not available. Install the Factory CLI, ensure `droid` is on PATH, and set FACTORY_API_KEY or complete Factory authentication."
+                  : "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled.")}
             </div>
           </div>
         ) : null}

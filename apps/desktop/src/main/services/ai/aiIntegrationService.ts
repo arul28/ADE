@@ -24,7 +24,9 @@ import type { createMemoryService } from "../memory/memoryService";
 import type { CompactionFlushService } from "../memory/compactionFlushService";
 import { discoverLocalModels } from "./localModelDiscovery";
 import { discoverCursorCliModelDescriptors, clearCursorCliModelsCache } from "../chat/cursorModelsDiscovery";
+import { discoverDroidCliModelDescriptors, clearDroidCliModelsCache } from "../chat/droidModelsDiscovery";
 import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
+import { resolveDroidExecutable } from "./droidExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { probeClaudeRuntimeHealth, resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
@@ -61,15 +63,17 @@ export type AiIntegrationStatus = {
     claude: boolean;
     codex: boolean;
     cursor: boolean;
+    droid: boolean;
   };
   models: {
     claude: AgentModelDescriptor[];
     codex: AgentModelDescriptor[];
     cursor: AgentModelDescriptor[];
+    droid: AgentModelDescriptor[];
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "openrouter" | "local";
-    cli?: "claude" | "codex" | "cursor";
+    cli?: "claude" | "codex" | "cursor" | "droid";
     provider?: string;
     source?: "config" | "env" | "store";
     path?: string;
@@ -259,11 +263,17 @@ function extractConfiguredApiKeys(snapshot: ReturnType<ReturnType<typeof createP
   return out;
 }
 
-function toCliAvailability(auth: DetectedAuth[]): { claude: boolean; codex: boolean; cursor: boolean } {
+function toCliAvailability(auth: DetectedAuth[]): {
+  claude: boolean;
+  codex: boolean;
+  cursor: boolean;
+  droid: boolean;
+} {
   return {
     claude: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "claude"),
     codex: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "codex"),
     cursor: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "cursor"),
+    droid: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "droid"),
   };
 }
 
@@ -386,7 +396,8 @@ export function createAiIntegrationService(args: {
       args.providerConnections
       && (args.providerConnections.claude.authAvailable
         || args.providerConnections.codex.authAvailable
-        || args.providerConnections.cursor.authAvailable)
+        || args.providerConnections.cursor.authAvailable
+        || args.providerConnections.droid.authAvailable)
     ) {
       return "subscription";
     }
@@ -408,10 +419,16 @@ export function createAiIntegrationService(args: {
     const claude = statuses.find((entry) => entry.cli === "claude");
     const codex = statuses.find((entry) => entry.cli === "codex");
     const cursor = statuses.find((entry) => entry.cli === "cursor");
+    const droid = statuses.find((entry) => entry.cli === "droid");
+    const factoryKey = Boolean(process.env.FACTORY_API_KEY?.trim());
     return {
       claude: Boolean(claude?.installed && (claude.authenticated || !claude.verified)),
       codex: Boolean(codex?.installed && (codex.authenticated || !codex.verified)),
       cursor: Boolean(cursor?.installed && (cursor.authenticated || !cursor.verified)),
+      droid: Boolean(
+        factoryKey
+        || (droid?.installed && (droid.authenticated || !droid.verified)),
+      ),
     };
   };
 
@@ -444,6 +461,25 @@ export function createAiIntegrationService(args: {
         ];
       } catch {
         // Cursor CLI missing or `agent models` failed — omit dynamic Cursor list
+      }
+    }
+
+    const hasDroidCliAuth = auth.some(
+      (entry) =>
+        entry.type === "cli-subscription"
+        && entry.cli === "droid"
+        && entry.authenticated !== false,
+    );
+    if (hasDroidCliAuth) {
+      try {
+        const { path: droidPath } = resolveDroidExecutable({ auth });
+        const droidModels = await discoverDroidCliModelDescriptors(droidPath);
+        available = [
+          ...available.filter((descriptor) => !(descriptor.family === "factory" && descriptor.isCliWrapped)),
+          ...droidModels,
+        ];
+      } catch {
+        // Droid CLI missing or model discovery failed — omit dynamic Droid list
       }
     }
 
@@ -834,6 +870,8 @@ export function createAiIntegrationService(args: {
       family = "openai";
     } else if (provider === "cursor") {
       family = "cursor";
+    } else if (provider === "droid") {
+      family = "factory";
     } else {
       family = "anthropic";
     }
@@ -903,6 +941,7 @@ export function createAiIntegrationService(args: {
         resetProviderRuntimeHealth();
         resetClaudeRuntimeProbeCache();
         clearCursorCliModelsCache();
+        clearDroidCliModelsCache();
         modelListCache.clear();
         runtimeHealthVersion = getProviderRuntimeHealthVersion();
       }
@@ -925,12 +964,14 @@ export function createAiIntegrationService(args: {
         claude: providerConnections.claude.runtimeAvailable,
         codex: providerConnections.codex.runtimeAvailable,
         cursor: providerConnections.cursor.runtimeAvailable,
+        droid: providerConnections.droid.runtimeAvailable,
       };
       const runtimeFilteredAvailable = available.filter((descriptor) => {
         if (!descriptor.isCliWrapped) return true;
         if (descriptor.family === "anthropic") return providerConnections.claude.runtimeAvailable;
         if (descriptor.family === "openai") return providerConnections.codex.runtimeAvailable;
         if (descriptor.family === "cursor") return providerConnections.cursor.runtimeAvailable;
+        if (descriptor.family === "factory") return providerConnections.droid.runtimeAvailable;
         return true;
       });
       const result: AiIntegrationStatus = {
@@ -940,6 +981,7 @@ export function createAiIntegrationService(args: {
           claude: availability.claude ? await listModels("claude") : [],
           codex: availability.codex ? await listModels("codex") : [],
           cursor: availability.cursor ? await listModels("cursor") : [],
+          droid: availability.droid ? await listModels("droid") : [],
         },
         detectedAuth: redactDetectedAuth(auth, cliStatuses),
         providerConnections,

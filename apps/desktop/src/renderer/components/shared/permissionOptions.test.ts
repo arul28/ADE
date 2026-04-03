@@ -155,6 +155,11 @@ describe("familyToPermissionKey", () => {
     expect(familyToPermissionKey("openai", true)).toBe("codex");
   });
 
+  it("maps CLI-wrapped cursor and factory families", () => {
+    expect(familyToPermissionKey("cursor", true)).toBe("cursor");
+    expect(familyToPermissionKey("factory", true)).toBe("droid");
+  });
+
   it("maps everything else to 'unified'", () => {
     expect(familyToPermissionKey("anthropic", false)).toBe("unified");
     expect(familyToPermissionKey("openai", false)).toBe("unified");
@@ -167,6 +172,8 @@ describe("permissionFamilyLabel", () => {
   it("returns human-readable labels for all keys", () => {
     expect(permissionFamilyLabel("claude")).toBe("Claude Code workers");
     expect(permissionFamilyLabel("codex")).toBe("Codex workers");
+    expect(permissionFamilyLabel("cursor")).toBe("Cursor workers");
+    expect(permissionFamilyLabel("droid")).toBe("Droid workers");
     expect(permissionFamilyLabel("unified")).toBe("API / Local model workers");
   });
 });

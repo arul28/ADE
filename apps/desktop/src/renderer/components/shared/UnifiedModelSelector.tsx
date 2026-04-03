@@ -68,6 +68,7 @@ function subsectionTabTitle(sub: ModelSubsection): string {
 function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): string {
   if (isAvailable) {
     if (model.family === "cursor" && model.isCliWrapped) return "Cursor CLI ready";
+    if (model.family === "factory" && model.isCliWrapped) return "Droid CLI ready";
     if (model.isCliWrapped) return "Subscription ready";
     if (model.authTypes.includes("local")) return "Local ready";
     if (model.authTypes.includes("api-key")) return "API ready";
@@ -77,6 +78,9 @@ function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): s
   }
   if (model.family === "cursor" && model.isCliWrapped) {
     return "Cursor CLI · run `agent login` or set CURSOR_API_KEY / CURSOR_AUTH_TOKEN";
+  }
+  if (model.family === "factory" && model.isCliWrapped) {
+    return "Droid CLI · install Factory CLI, add `droid` to PATH, set FACTORY_API_KEY";
   }
   if (model.isCliWrapped) return "Subscription · not configured";
   if (model.authTypes.includes("local")) return "Local · not configured";
@@ -109,6 +113,25 @@ function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
       sdkProvider: "@agentclientprotocol/sdk",
       sdkModelId: tail || modelId,
       cliCommand: "cursor",
+      isCliWrapped: true,
+    };
+  }
+  const droidCli = modelId.startsWith("droid/");
+  if (droidCli) {
+    const tail = modelId.slice("droid/".length);
+    return {
+      id: modelId,
+      shortId: tail || modelId,
+      displayName: tail || modelId,
+      family: "factory",
+      authTypes: ["cli-subscription"],
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+      color: "#6366F1",
+      sdkProvider: "@agentclientprotocol/sdk",
+      sdkModelId: tail || modelId,
+      cliCommand: "droid",
       isCliWrapped: true,
     };
   }

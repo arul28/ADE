@@ -8,7 +8,7 @@ import {
   resolveExecutableFromKnownLocations,
 } from "./cliExecutableResolver";
 
-type CliName = "claude" | "codex" | "cursor";
+type CliName = "claude" | "codex" | "cursor" | "droid";
 
 type ApiKeySource = "config" | "env" | "store";
 
@@ -34,7 +34,7 @@ export type CliAuthStatus = {
 export type DetectedAuth =
   | {
       type: "cli-subscription";
-      cli: CliName;
+      cli: "claude" | "codex" | "cursor" | "droid";
       path: string;
       authenticated: boolean;
       verified: boolean;
@@ -62,10 +62,16 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
     ["status", "--json"],
     ["status"],
   ],
+  droid: [
+    ["--version"],
+    ["-V"],
+    ["version"],
+  ],
 };
 
 function cliSpawnCommand(cli: CliName): string {
-  return cli === "cursor" ? "agent" : cli;
+  if (cli === "cursor") return "agent";
+  return cli;
 }
 
 const AUTH_INDICATORS = [
@@ -354,6 +360,28 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
   }
 
   return { authenticated: false, verified: false, paidPlan: false };
+}
+
+async function inspectDroidCliPresence(command: string): Promise<{
+  authenticated: boolean;
+  verified: boolean;
+}> {
+  const probes = CLI_AUTH_PROBES.droid ?? [];
+  for (const args of probes) {
+    try {
+      const result = await spawnAsync(command, args, { timeout: 8_000 });
+      const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+      if (result.status === 0 && combined.length > 0) {
+        return { authenticated: true, verified: true };
+      }
+      if (result.status === 0) {
+        return { authenticated: true, verified: false };
+      }
+    } catch {
+      // try next probe
+    }
+  }
+  return { authenticated: false, verified: false };
 }
 
 const ENV_KEY_MAP: Record<string, string> = {
@@ -701,7 +729,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
     await refreshProcessPathFromShell();
   }
 
-  const cliChecks: CliName[] = ["claude", "codex", "cursor"];
+  const cliChecks: CliName[] = ["claude", "codex", "cursor", "droid"];
 
   // Probe all CLIs in parallel
   const statuses = await Promise.all(
@@ -730,6 +758,16 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
           paidPlan: auth.paidPlan,
         };
       }
+      if (cli === "droid") {
+        const auth = await inspectDroidCliPresence(cmd);
+        return {
+          cli,
+          installed,
+          path,
+          authenticated: auth.authenticated,
+          verified: auth.verified,
+        };
+      }
       const auth = await inspectCliAuthentication(cli, cmd);
       return {
         cli,
@@ -754,7 +792,7 @@ export async function detectAllAuth(
   // 1. CLI subscriptions (connected and authenticated)
   const cliStatuses = await detectCliAuthStatuses(options);
   for (const cli of cliStatuses) {
-    if (cli.cli !== "claude" && cli.cli !== "codex" && cli.cli !== "cursor") continue;
+    if (cli.cli !== "claude" && cli.cli !== "codex" && cli.cli !== "cursor" && cli.cli !== "droid") continue;
     if (!cli.installed) continue;
     if (!cli.authenticated && cli.verified) continue;
     results.push({
@@ -779,6 +817,21 @@ export async function detectAllAuth(
         authenticated: true,
         verified: true,
         paidPlan: true,
+      });
+    }
+  }
+
+  const factoryKey = process.env.FACTORY_API_KEY?.trim();
+  if (factoryKey) {
+    const hasDroidCli = results.some((r) => r.type === "cli-subscription" && r.cli === "droid");
+    if (!hasDroidCli) {
+      const resolved = resolveExecutableFromKnownLocations("droid");
+      results.push({
+        type: "cli-subscription",
+        cli: "droid",
+        path: resolved?.path ?? "droid",
+        authenticated: true,
+        verified: true,
       });
     }
   }
