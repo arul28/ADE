@@ -188,6 +188,7 @@ import type {
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSubagentSnapshot,
@@ -4269,6 +4270,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const ctx = getCtx();
     return await ctx.agentChatService.createSession(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: AgentChatSuggestLaneNameArgs): Promise<string> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.suggestLaneNameFromPrompt(arg);
   });
 
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {

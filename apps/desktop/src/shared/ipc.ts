@@ -127,6 +127,7 @@ export const IPC = {
   agentChatList: "ade.agentChat.list",
   agentChatGetSummary: "ade.agentChat.getSummary",
   agentChatCreate: "ade.agentChat.create",
+  agentChatSuggestLaneName: "ade.agentChat.suggestLaneName",
   agentChatHandoff: "ade.agentChat.handoff",
   agentChatSend: "ade.agentChat.send",
   agentChatSteer: "ade.agentChat.steer",

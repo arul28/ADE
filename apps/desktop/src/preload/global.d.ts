@@ -67,6 +67,7 @@ import type {
   AgentChatApproveArgs,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
@@ -1104,6 +1105,7 @@ declare global {
           args: AgentChatGetSummaryArgs,
         ) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
+        suggestLaneName: (args: AgentChatSuggestLaneNameArgs) => Promise<string>;
         handoff: (
           args: AgentChatHandoffArgs,
         ) => Promise<AgentChatHandoffResult>;

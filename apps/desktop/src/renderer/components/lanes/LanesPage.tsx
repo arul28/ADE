@@ -32,6 +32,7 @@ import {
   laneMatchesFilter,
   chipLabel,
   LANES_TILING_TREE,
+  LANES_TILING_WORK_FOCUS_TREE,
   LANES_TILING_LAYOUT_VERSION,
   GIT_ACTIONS_FULLSCREEN_TREE,
   RESIZE_TARGET_MINIMUM_SIZE,
@@ -403,6 +404,19 @@ export function LanesPage() {
       void syncApi.setActiveLanePresence({ laneIds: [] }).catch(() => {});
     };
   }, []);
+
+  const workFocusTiling = useMemo(() => {
+    if (params.get("workFocus") !== "1") return false;
+    const laneIdsParam = params.get("laneIds");
+    if (!laneIdsParam) return false;
+    const ids = laneIdsParam.split(",").map((s) => s.trim()).filter(Boolean);
+    if (ids.length < 2) return false;
+    const visibleSet = new Set(visibleLaneIds);
+    return ids.every((id) => visibleSet.has(id));
+  }, [params, visibleLaneIds]);
+
+  const laneTilingTree = workFocusTiling ? LANES_TILING_WORK_FOCUS_TREE : LANES_TILING_TREE;
+  const laneTilingLayoutSuffix = workFocusTiling ? ":wf" : "";
 
   const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
   const managedLanes = useMemo(
@@ -1265,13 +1279,25 @@ export function LanesPage() {
   // doesn't reopen and reset the dialog when lanes refresh.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
+    const laneIdsRaw = params.get("laneIds");
     const laneId = params.get("laneId");
     const sessionId = params.get("sessionId");
     const inspectorTabParam = params.get("inspectorTab");
     if (params.get("action") === "create") {
       prepareCreateDialog();
     }
-    if (laneId) {
+    if (laneIdsRaw) {
+      const parsed = laneIdsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      const valid = parsed.filter((id) => lanesById.has(id));
+      if (valid.length) {
+        selectLane(valid[0]!);
+        setActiveLaneIds(valid);
+        setPinnedLaneIds(new Set());
+        if (inspectorTabParam && valid[0]) {
+          setLaneInspectorTab(valid[0], inspectorTabParam as LaneInspectorTab);
+        }
+      }
+    } else if (laneId) {
       selectLane(laneId);
       if (params.get("focus") === "single") {
         setActiveLaneIds([laneId]);
@@ -1281,7 +1307,7 @@ export function LanesPage() {
       }
     }
     if (sessionId) focusSession(sessionId);
-  }, [params, selectLane, focusSession, setLaneInspectorTab]);
+  }, [params, selectLane, focusSession, setLaneInspectorTab, lanesById]);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     if (!open && createBusy) return;
@@ -2188,8 +2214,8 @@ export function LanesPage() {
       ) : visibleLaneIds.length === 1 ? (
         <PaneTilingLayout
           key={`lanes:single:${gridResetKey}`}
-          layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${visibleLaneIds[0]}`}
-          tree={LANES_TILING_TREE}
+          layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${visibleLaneIds[0]}`}
+          tree={laneTilingTree}
           panes={getPaneConfigs(visibleLaneIds[0] ?? null)}
           className="flex-1 min-h-0"
         />
@@ -2228,8 +2254,8 @@ export function LanesPage() {
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--lane-accent)", opacity: 0.85 }}>{laneName}</span>
                     </div>
                     <PaneTilingLayout
-                      layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`}
-                      tree={LANES_TILING_TREE}
+                      layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${laneId}`}
+                      tree={laneTilingTree}
                       panes={getPaneConfigs(laneId)}
                       className="flex-1 min-h-0"
                     />
@@ -2268,8 +2294,8 @@ export function LanesPage() {
             </button>
           </div>
           <PaneTilingLayout
-            layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${expandedLaneId}`}
-            tree={LANES_TILING_TREE}
+            layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${expandedLaneId}`}
+            tree={laneTilingTree}
             panes={getPaneConfigs(expandedLaneId)}
             className="flex-1 min-h-0"
           />

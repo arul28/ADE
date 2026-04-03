@@ -100,6 +100,7 @@ import type {
   AgentChatSteerArgs,
   AgentChatSteerResult,
   AgentChatSendArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
@@ -915,6 +916,13 @@ Return only the title text.
 - No quotes.
 - No emoji.
 - No trailing punctuation.`;
+
+const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `You name git worktree lanes for a software project.
+Return only the base name text (no model suffixes).
+- Use 2 to 5 words, lowercase except proper nouns if needed.
+- Slug-friendly: letters, numbers, spaces, and hyphens only (no slashes).
+- Describe the task or feature from the user's message.
+- No quotes, no emoji, no trailing punctuation.`;
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "low", description: "Fastest turn-around with shallow reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
@@ -4680,6 +4688,79 @@ export function createAgentChatService(args: {
       summaryEnabled,
       summaryModelId,
     };
+  };
+
+  const suggestLaneNameFromPrompt = async (args: AgentChatSuggestLaneNameArgs): Promise<string> => {
+    const prompt = String(args.prompt ?? "").trim();
+    const requestedModelId = String(args.modelId ?? "").trim();
+    const sourceLaneId = String(args.laneId ?? "").trim();
+    const fallback = (): string => {
+      const collapsed = prompt.replace(/\s+/g, " ").trim();
+      if (!collapsed.length) return "parallel-task";
+      const words = collapsed.split(/\s+/).filter(Boolean).slice(0, 4);
+      const slug = words.join("-").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+      return slug.length ? slug.slice(0, 48) : "parallel-task";
+    };
+
+    if (!prompt.length || !requestedModelId.length || !sourceLaneId.length) {
+      return fallback();
+    }
+
+    let cwd = projectRoot;
+    try {
+      ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
+        laneService,
+        laneId: sourceLaneId,
+        purpose: "name a lane from prompt",
+      }));
+    } catch {
+      cwd = projectRoot;
+    }
+
+    try {
+      const auth = await detectAuth();
+      const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+      if (!availableModels.length) return fallback();
+
+      const config = resolveChatConfig();
+      const preferredModelId =
+        [
+          requestedModelId,
+          config.autoTitleModelId,
+          DEFAULT_AUTO_TITLE_MODEL_ID,
+          "anthropic/claude-haiku-4-5",
+          "openai/gpt-5.4-mini",
+          "openai/gpt-5.2",
+          "openai/gpt-5.4",
+          availableModels[0]?.id,
+        ].find((candidate) => {
+          const modelId = typeof candidate === "string" ? candidate.trim() : "";
+          return modelId.length > 0 && availableModels.some((descriptor) => descriptor.id === modelId);
+        }) ?? null;
+
+      if (!preferredModelId) return fallback();
+
+      const descriptor = getModelById(preferredModelId);
+      if (!descriptor) return fallback();
+
+      const result = await runOpenCodeTextPrompt({
+        directory: cwd,
+        title: "ADE lane name from prompt",
+        modelDescriptor: descriptor,
+        system: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
+        prompt: `User message to parallelize across models:\n${prompt.slice(0, 2000)}`,
+        projectConfig: projectConfigService.get().effective,
+      });
+      const sanitized = sanitizeAutoTitle(result.text.trim(), 56);
+      if (!sanitized) return fallback();
+      return sanitized;
+    } catch (error) {
+      logger.warn("agent_chat.suggest_lane_name_failed", {
+        modelId: requestedModelId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return fallback();
+    }
   };
 
   const computeHeadShaBestEffort = async (laneId: string): Promise<string | null> => {
@@ -14066,6 +14147,7 @@ export function createAgentChatService(args: {
 
   return {
     createSession,
+    suggestLaneNameFromPrompt,
     handoffSession,
     sendMessage,
     runSessionTurn,

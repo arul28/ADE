@@ -242,6 +242,7 @@ import type {
   AgentChatApproveArgs,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
@@ -1557,6 +1558,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatGetSummary, args),
     create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
       ipcRenderer.invoke(IPC.agentChatCreate, args),
+    suggestLaneName: async (args: AgentChatSuggestLaneNameArgs): Promise<string> =>
+      ipcRenderer.invoke(IPC.agentChatSuggestLaneName, args),
     handoff: async (
       args: AgentChatHandoffArgs,
     ): Promise<AgentChatHandoffResult> =>
