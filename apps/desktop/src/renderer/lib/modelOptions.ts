@@ -44,6 +44,8 @@ function addKnownModelIds(ids: Set<ModelId>, family: string, includeCliWrapped: 
 export interface DeriveModelOptions {
   /** Include cursor/* models in the result. Defaults to `false`. */
   includeCursor?: boolean;
+  /** Include droid/* (Factory CLI) models in the result. Defaults to `false`. */
+  includeDroid?: boolean;
 }
 
 export function deriveConfiguredModelIds(
@@ -52,7 +54,7 @@ export function deriveConfiguredModelIds(
 ): ModelId[] {
   if (!status) return [];
 
-  const { includeCursor = false } = options ?? {};
+  const { includeCursor = false, includeDroid = false } = options ?? {};
 
   // Derive available models from detectedAuth. For Cursor CLI, merge in
   // `status.availableModelIds` entries under `cursor/*` (main lists them after
@@ -61,7 +63,7 @@ export function deriveConfiguredModelIds(
 
   for (const auth of status.detectedAuth ?? []) {
     if (auth.type === "cli-subscription") {
-      if (!auth.authenticated || auth.cli === "cursor") continue;
+      if (!auth.authenticated || auth.cli === "cursor" || auth.cli === "droid") continue;
       const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
       const family = auth.cli ? familyMap[auth.cli] : undefined;
       if (family) addKnownModelIds(ids, family, true);
@@ -93,6 +95,18 @@ export function deriveConfiguredModelIds(
       for (const raw of status.availableModelIds) {
         const id = String(raw ?? "").trim();
         if (id.startsWith("cursor/")) ids.add(id as ModelId);
+      }
+    }
+  }
+
+  if (includeDroid) {
+    const droidCliAuthed = status.detectedAuth?.some(
+      (a) => a.type === "cli-subscription" && a.cli === "droid" && a.authenticated !== false,
+    );
+    if (droidCliAuthed && status.availableModelIds?.length) {
+      for (const raw of status.availableModelIds) {
+        const id = String(raw ?? "").trim();
+        if (id.startsWith("droid/")) ids.add(id as ModelId);
       }
     }
   }

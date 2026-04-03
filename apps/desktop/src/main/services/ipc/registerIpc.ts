@@ -714,11 +714,13 @@ function getUnavailableAiStatus(): AiSettingsStatus {
       claude: false,
       codex: false,
       cursor: false,
+      droid: false,
     },
     models: {
       claude: [],
       codex: [],
       cursor: [],
+      droid: [],
     },
     detectedAuth: [],
     providerConnections: {
@@ -746,6 +748,17 @@ function getUnavailableAiStatus(): AiSettingsStatus {
       },
       cursor: {
         provider: "cursor",
+        authAvailable: false,
+        runtimeDetected: false,
+        runtimeAvailable: false,
+        usageAvailable: false,
+        path: null,
+        blocker: "AI integration service unavailable.",
+        lastCheckedAt: new Date(0).toISOString(),
+        sources: [],
+      },
+      droid: {
+        provider: "droid",
         authAvailable: false,
         runtimeDetected: false,
         runtimeAvailable: false,
@@ -1203,7 +1216,11 @@ function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial
 
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat" || toolType === "cursor";
+  return toolType === "codex-chat"
+    || toolType === "claude-chat"
+    || toolType === "ai-chat"
+    || toolType === "cursor"
+    || toolType === "droid-chat";
 }
 
 function inferPrAiProvider(modelId: string): "codex" | "claude" {

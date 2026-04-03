@@ -1,9 +1,13 @@
 import {
   CURSOR_CLI_LINE_ORDER,
+  DROID_CLI_LINE_ORDER,
   MODEL_REGISTRY,
   cursorCliLineGroupFromSdkId,
   cursorCliLineGroupLabel,
+  droidCliLineGroupFromModelId,
+  droidCliLineGroupLabel,
   type CursorCliLineGroup,
+  type DroidCliLineGroup,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 
@@ -33,6 +37,7 @@ export type ModelSourceBlock = {
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
+  factory: "Factory Droid",
   cursor: "Cursor",
   google: "Google",
   deepseek: "DeepSeek",
@@ -51,6 +56,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 export const PROVIDER_BADGE_COLORS: Record<string, string> = {
   anthropic: "#D97706",
   openai: "#10A37F",
+  factory: "#6366F1",
   cursor: "#A78BFA",
   google: "#F59E0B",
   deepseek: "#3B82F6",
@@ -68,6 +74,7 @@ export const PROVIDER_BADGE_COLORS: Record<string, string> = {
 export const PROVIDER_ORDER: string[] = [
   "anthropic",
   "openai",
+  "factory",
   "cursor",
   "google",
   "deepseek",
@@ -86,6 +93,7 @@ const SOURCE_SECTION_ORDER: Record<SourceSectionKey, number> = {
 };
 
 const CURSOR_SECTION_PREFIX = "__cursor_line__:";
+const DROID_SECTION_PREFIX = "__droid_line__:";
 
 export function providerLabel(family: string): string {
   return PROVIDER_LABELS[family] ?? family;
@@ -117,6 +125,9 @@ export function subsectionKeyForModel(model: ModelDescriptor, source: SourceSect
   if (model.family === "cursor" && source === "subscription") {
     return `${CURSOR_SECTION_PREFIX}${cursorCliLineGroupFromSdkId(model.sdkModelId)}`;
   }
+  if (model.family === "factory" && source === "subscription") {
+    return `${DROID_SECTION_PREFIX}${droidCliLineGroupFromModelId(model.sdkModelId)}`;
+  }
   return "__default__";
 }
 
@@ -126,6 +137,10 @@ export function subsectionLabel(family: string, key: string): string {
     const group = key.slice(CURSOR_SECTION_PREFIX.length) as CursorCliLineGroup;
     return cursorCliLineGroupLabel(group);
   }
+  if (family === "factory" && key.startsWith(DROID_SECTION_PREFIX)) {
+    const group = key.slice(DROID_SECTION_PREFIX.length) as DroidCliLineGroup;
+    return droidCliLineGroupLabel(group);
+  }
   return "";
 }
 
@@ -134,6 +149,11 @@ export function subsectionSortOrder(family: string, key: string): number {
     const group = key.slice(CURSOR_SECTION_PREFIX.length) as CursorCliLineGroup;
     const index = CURSOR_CLI_LINE_ORDER.indexOf(group);
     return index === -1 ? CURSOR_CLI_LINE_ORDER.length + 50 : index;
+  }
+  if (family === "factory" && key.startsWith(DROID_SECTION_PREFIX)) {
+    const group = key.slice(DROID_SECTION_PREFIX.length) as DroidCliLineGroup;
+    const index = DROID_CLI_LINE_ORDER.indexOf(group);
+    return index === -1 ? DROID_CLI_LINE_ORDER.length + 50 : index;
   }
   return 0;
 }

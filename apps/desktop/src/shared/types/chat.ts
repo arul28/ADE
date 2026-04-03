@@ -406,7 +406,7 @@ export type AgentChatCursorModeSnapshot = {
   availableModelIds?: string[];
   configOptions?: AgentChatCursorConfigOption[];
 };
-export type PendingInputSource = "claude" | "codex" | "cursor" | "unified" | "mission" | "ade";
+export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "unified" | "mission" | "ade";
 export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval";
 
 export type PendingInputOption = {
