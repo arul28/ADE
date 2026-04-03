@@ -246,6 +246,12 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     if (cachedToken !== undefined) return cachedToken;
     importLegacyTokenIfNeeded();
     cachedToken = readEncryptedToken();
+    if (!cachedToken) {
+      const envToken = (process.env.LINEAR_API_KEY ?? process.env.ADE_LINEAR_TOKEN ?? "").trim();
+      if (envToken.length > 0) {
+        cachedToken = { token: envToken, authMode: "manual" };
+      }
+    }
     return cachedToken;
   };
 
