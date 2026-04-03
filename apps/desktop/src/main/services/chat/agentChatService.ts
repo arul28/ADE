@@ -121,6 +121,7 @@ import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   pickDefaultCursorDescriptorFromCliList,
+  pickDefaultDroidDescriptorFromCliList,
   resolveModelAlias,
   resolveModelDescriptorForProvider,
   resolveProviderGroupForModel,
@@ -176,6 +177,7 @@ import { resolveAdeMcpServerLaunch, resolveOpenCodeRuntimeRoot } from "../orches
 import type { McpServer, PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import type { ExternalMcpServerConfig } from "../../../shared/types/externalMcp";
 import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
+import { resolveDroidExecutable } from "../ai/droidExecutable";
 import { externalMcpConfigsToAcpStdio } from "./cursorAcpMcp";
 import {
   acquireCursorAcpConnection,
@@ -183,7 +185,14 @@ import {
   type CursorAcpLaunchSettings,
   type CursorAcpPooled,
 } from "./cursorAcpPool";
+import {
+  acquireDroidAcpConnection,
+  releaseDroidAcpConnection,
+  type DroidAcpLaunchSettings,
+  type DroidAcpPooled,
+} from "./droidAcpPool";
 import { discoverCursorCliModelDescriptors } from "./cursorModelsDiscovery";
+import { discoverDroidCliModelDescriptors } from "./droidModelsDiscovery";
 import {
   mapAcpSessionNotificationToChatEvents,
   mapStopReasonToTerminalEvents,
@@ -400,7 +409,20 @@ type CursorRuntime = {
   configOptions: AgentChatCursorConfigOption[];
 };
 
-type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime;
+type DroidRuntime = {
+  kind: "droid";
+  poolKey: string;
+  pooled: DroidAcpPooled | null;
+  acpSessionId: string | null;
+  activeTurnId: string | null;
+  busy: boolean;
+  interrupted: boolean;
+  modelId: string;
+  pendingSteers: Array<{ steerId: string; text: string }>;
+  permissionWaiters: Map<string, CursorPermissionWaiter>;
+};
+
+type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -567,11 +589,11 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   if (managed.closed) return { ready: false, reason: "Session is disposed" };
   if (!managed.runtime) return { ready: false, reason: "No runtime initialized" };
   const rt = managed.runtime;
-  if ((rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor") && rt.busy) {
+  if ((rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor" || rt.kind === "droid") && rt.busy) {
     return { ready: false, reason: "Turn already active" };
   }
   if (rt.kind === "opencode" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
-  if (rt.kind === "cursor" && rt.permissionWaiters.size > 0) {
+  if ((rt.kind === "cursor" || rt.kind === "droid") && rt.permissionWaiters.size > 0) {
     return { ready: false, reason: "Pending permissions not resolved" };
   }
   return { ready: true };
@@ -585,7 +607,7 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   if (runtime.kind === "codex") return runtime.approvals.size > 0;
   if (runtime.kind === "claude") return runtime.approvals.size > 0;
   if (runtime.kind === "opencode") return runtime.pendingApprovals.size > 0;
-  if (runtime.kind === "cursor") return runtime.permissionWaiters.size > 0;
+  if (runtime.kind === "cursor" || runtime.kind === "droid") return runtime.permissionWaiters.size > 0;
   return false;
 }
 
@@ -829,6 +851,7 @@ type PreparedSendMessage = {
   onDispatched?: () => void;
   turnId?: string;
   optimisticCursorTurnStart?: boolean;
+  optimisticAcpTurnStart?: boolean;
 };
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
@@ -856,10 +879,12 @@ const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
 const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
 const DEFAULT_OPENCODE_DESCRIPTOR = getDefaultModelDescriptor("opencode");
 const DEFAULT_CURSOR_DESCRIPTOR = getDefaultModelDescriptor("cursor");
+const DEFAULT_DROID_DESCRIPTOR = getDefaultModelDescriptor("droid");
 const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-5.4";
 const DEFAULT_CLAUDE_MODEL = DEFAULT_CLAUDE_DESCRIPTOR?.providerModelId ?? DEFAULT_CLAUDE_DESCRIPTOR?.shortId ?? "sonnet";
 const DEFAULT_OPENCODE_MODEL_ID = DEFAULT_OPENCODE_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-4-6";
 const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto";
+const DEFAULT_DROID_MODEL = DEFAULT_DROID_DESCRIPTOR?.providerModelId ?? "claude-sonnet-4-5-20250929";
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5";
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
@@ -988,6 +1013,21 @@ function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescript
     return null;
   }
 
+  if (session.provider === "droid") {
+    if (session.modelId) {
+      const byStoredId = getModelById(session.modelId) ?? resolveModelAlias(session.modelId);
+      if (byStoredId) return byStoredId;
+    }
+    if (session.model) {
+      return (
+        getModelById(`droid/${session.model}`)
+        ?? resolveModelDescriptorForProvider(session.model, "droid")
+        ?? null
+      );
+    }
+    return null;
+  }
+
   return getModelById(session.model) ?? resolveModelAlias(session.model) ?? null;
 }
 
@@ -1075,12 +1115,13 @@ function describeCodexModel(value: string): string | null {
 
 function isChatToolType(
   toolType: TerminalToolType | null | undefined,
-): toolType is "codex-chat" | "claude-chat" | "opencode-chat" | "cursor" {
+): toolType is "codex-chat" | "claude-chat" | "opencode-chat" | "cursor" | "droid-chat" {
   return (
     toolType === "codex-chat"
     || toolType === "claude-chat"
     || toolType === "opencode-chat"
     || toolType === "cursor"
+    || toolType === "droid-chat"
   );
 }
 
@@ -1088,6 +1129,7 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
   if (toolType === "opencode-chat") return "opencode";
   if (toolType === "claude-chat") return "claude";
   if (toolType === "cursor") return "cursor";
+  if (toolType === "droid-chat") return "droid";
   return "codex";
 }
 
@@ -1095,6 +1137,7 @@ function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
   if (provider === "opencode") return "opencode-chat";
   if (provider === "claude") return "claude-chat";
   if (provider === "cursor") return "cursor";
+  if (provider === "droid") return "droid-chat";
   return "codex-chat";
 }
 
@@ -1206,10 +1249,11 @@ function defaultChatSessionTitle(provider: AgentChatProvider): string {
   if (provider === "codex") return "Codex Chat";
   if (provider === "claude") return "Claude Chat";
   if (provider === "cursor") return "Cursor Chat";
+  if (provider === "droid") return "Droid Chat";
   return "AI Chat";
 }
 
-const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat"]);
+const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat", "Droid Chat"]);
 
 function hasCustomChatSessionTitle(title: string | null | undefined, provider: AgentChatProvider): boolean {
   const normalized = String(title ?? "").trim();
@@ -1220,6 +1264,7 @@ function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string
   if (provider === "codex") return "chat:codex";
   if (provider === "opencode") return `chat:opencode:${sessionId}`;
   if (provider === "cursor") return `chat:cursor:${sessionId}`;
+  if (provider === "droid") return `chat:droid:${sessionId}`;
   return `chat:claude:${sessionId}`;
 }
 
@@ -1280,6 +1325,7 @@ function resolveModelIdFromStoredValue(
     if (providerHint === "claude" && !(aliasMatch.family === "anthropic" && aliasMatch.isCliWrapped)) return undefined;
     if (providerHint === "opencode" && aliasMatch.isCliWrapped) return undefined;
     if (providerHint === "cursor" && aliasMatch.family !== "cursor") return undefined;
+    if (providerHint === "droid" && aliasMatch.family !== "factory") return undefined;
     return aliasMatch.id;
   }
 
@@ -1300,6 +1346,8 @@ function resolveModelIdFromStoredValue(
     preferred = matches.find((entry) => !entry.isCliWrapped);
   } else if (providerHint === "cursor") {
     preferred = matches.find((entry) => entry.isCliWrapped && entry.family === "cursor");
+  } else if (providerHint === "droid") {
+    preferred = matches.find((entry) => entry.isCliWrapped && entry.family === "factory");
   }
 
   return preferred?.id ?? matches[0]?.id;
@@ -1351,6 +1399,7 @@ function fallbackModelForProvider(provider: AgentChatProvider): string {
   if (provider === "codex") return DEFAULT_CODEX_MODEL;
   if (provider === "claude") return DEFAULT_CLAUDE_MODEL;
   if (provider === "cursor") return DEFAULT_CURSOR_MODEL;
+  if (provider === "droid") return DEFAULT_DROID_MODEL;
   return DEFAULT_OPENCODE_MODEL_ID;
 }
 
@@ -2282,6 +2331,38 @@ function resolveCursorRuntimeModelSdkId(
   return DEFAULT_CURSOR_MODEL;
 }
 
+function resolveDroidRuntimeModelId(
+  session: Pick<AgentChatSession, "model" | "modelId">,
+): string {
+  const byModelId = session.modelId ? getModelById(session.modelId) ?? resolveModelAlias(session.modelId) : null;
+  if (byModelId?.family === "factory") {
+    return byModelId.providerModelId;
+  }
+
+  const rawModel = String(session.model ?? "").trim();
+  if (rawModel.length) {
+    const resolved = getModelById(`droid/${rawModel}`) ?? resolveModelDescriptorForProvider(rawModel, "droid");
+    if (resolved?.family === "factory") {
+      return resolved.providerModelId;
+    }
+  }
+
+  return DEFAULT_DROID_MODEL;
+}
+
+function resolveDroidAcpLaunchSettings(
+  session: Pick<AgentChatSession, "opencodePermissionMode" | "permissionMode">,
+): DroidAcpLaunchSettings {
+  const mode = resolveSessionOpenCodePermissionMode(session, "edit");
+  if (mode === "plan") {
+    return { autonomy: "none" };
+  }
+  if (mode === "full-auto") {
+    return { autonomy: "high" };
+  }
+  return { autonomy: "low" };
+}
+
 function normalizeCursorReportedModelId(
   modelId: string | null | undefined,
   availableModelIds: readonly string[] = [],
@@ -2413,7 +2494,13 @@ function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefin
 }
 
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
-  return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "opencode" ? "full_mcp" : "fallback";
+  return provider === "codex"
+    || provider === "claude"
+    || provider === "cursor"
+    || provider === "droid"
+    || provider === "opencode"
+    ? "full_mcp"
+    : "fallback";
 }
 
 function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
@@ -2554,8 +2641,8 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
-  const cursorAcpSessionOwners = new Map<string, ManagedChatSession>();
-  const cursorAcpBridgeWired = new WeakSet<CursorAcpPooled>();
+  const acpHostSessionOwners = new Map<string, ManagedChatSession>();
+  const acpHostBridgeWired = new WeakSet<CursorAcpPooled | DroidAcpPooled>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
   const AUTO_MEMORY_CATEGORY_ALLOWLIST = new Set([
@@ -4785,7 +4872,8 @@ export function createAgentChatService(args: {
       && (managed.runtime?.kind === "claude"
         || managed.runtime?.kind === "codex"
         || managed.runtime?.kind === "opencode"
-        || managed.runtime?.kind === "cursor")
+        || managed.runtime?.kind === "cursor"
+        || managed.runtime?.kind === "droid")
     ) {
       teardownRuntime(managed, "project_close");
       refreshReconstructionContext(managed);
@@ -4843,7 +4931,7 @@ export function createAgentChatService(args: {
       ...(managed.session.computerUse ? { computerUse: managed.session.computerUse } : {}),
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
-      ...(managed.runtime?.kind === "cursor" && managed.runtime.acpSessionId
+      ...((managed.runtime?.kind === "cursor" || managed.runtime?.kind === "droid") && managed.runtime.acpSessionId
         ? { acpSessionId: managed.runtime.acpSessionId }
         : {}),
       ...(managed.runtime?.kind === "claude"
@@ -5657,7 +5745,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "cursor") {
       const rt = managed.runtime;
       if (rt.acpSessionId) {
-        cursorAcpSessionOwners.delete(rt.acpSessionId);
+        acpHostSessionOwners.delete(rt.acpSessionId);
         void rt.pooled?.connection.unstable_closeSession?.({ sessionId: rt.acpSessionId }).catch(() => {});
       }
       for (const [, w] of rt.permissionWaiters) {
@@ -5665,6 +5753,19 @@ export function createAgentChatService(args: {
       }
       rt.permissionWaiters.clear();
       if (rt.pooled) releaseCursorAcpConnection(rt.poolKey);
+      managed.runtime = null;
+    }
+    if (managed.runtime?.kind === "droid") {
+      const rt = managed.runtime;
+      if (rt.acpSessionId) {
+        acpHostSessionOwners.delete(rt.acpSessionId);
+        void rt.pooled?.connection.unstable_closeSession?.({ sessionId: rt.acpSessionId }).catch(() => {});
+      }
+      for (const [, w] of rt.permissionWaiters) {
+        w.resolve({ outcome: { outcome: "cancelled" } });
+      }
+      rt.permissionWaiters.clear();
+      if (rt.pooled) releaseDroidAcpConnection(rt.poolKey);
       managed.runtime = null;
     }
     managed.runtimeInvalidated = true;
@@ -5928,6 +6029,8 @@ export function createAgentChatService(args: {
         ? DEFAULT_OPENCODE_MODEL_ID
         : provider === "cursor"
           ? DEFAULT_CURSOR_DESCRIPTOR?.id
+          : provider === "droid"
+            ? DEFAULT_DROID_DESCRIPTOR?.id
           : undefined);
     const model = provider === "opencode" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     const lane = laneService.getLaneBaseAndBranch(row.laneId);
@@ -9742,7 +9845,7 @@ export function createAgentChatService(args: {
 
   const cancelQueuedSteers = (
     managed: ManagedChatSession,
-    runtime: Pick<ClaudeRuntime | OpenCodeRuntime, "pendingSteers" | "activeTurnId">,
+    runtime: Pick<ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime, "pendingSteers" | "activeTurnId">,
     reason: "interrupted" | "failed" | "disposed",
   ): void => {
     const cancelled = runtime.pendingSteers.splice(0);
@@ -9845,7 +9948,7 @@ export function createAgentChatService(args: {
 
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
-    runtime: ClaudeRuntime | OpenCodeRuntime | CursorRuntime,
+    runtime: ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime,
   ): Promise<boolean> => {
     if (managed.closed) return false;
 
@@ -9900,6 +10003,14 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments: nextSteer.attachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
+        laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
+      });
+    } else if (runtime.kind === "droid") {
+      await runDroidTurn(managed, {
+        promptText,
+        displayText: trimmed,
+        attachments: [],
+        resolvedAttachments: [],
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else {
@@ -10364,6 +10475,8 @@ export function createAgentChatService(args: {
           ? DEFAULT_CLAUDE_MODEL
           : provider === "cursor"
             ? DEFAULT_CURSOR_MODEL
+            : provider === "droid"
+              ? DEFAULT_DROID_MODEL
             : "");
     // Resolve modelId from registry if provided
     const resolvedModelId = modelId && getModelById(modelId)
@@ -10376,6 +10489,9 @@ export function createAgentChatService(args: {
 
     if (provider === "cursor" && !resolvedModelId) {
       throw new Error("Cursor chat requires a known model. Pick a Cursor model from the model list.");
+    }
+    if (provider === "droid" && !resolvedModelId) {
+      throw new Error("Droid chat requires a known model. Pick a Droid model from the model list.");
     }
 
     const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
@@ -10402,7 +10518,7 @@ export function createAgentChatService(args: {
       : normalizeReasoningEffort(reasoningEffort);
     const normalizedReasoningEffort = effectiveProvider === "opencode"
       ? rawEffort
-      : effectiveProvider === "cursor"
+      : effectiveProvider === "cursor" || effectiveProvider === "droid"
         ? null
         : validateReasoningEffort(effectiveProvider === "claude" ? "claude" : "codex", rawEffort);
     const normalizedCursorModeId = typeof requestedCursorModeId === "string"
@@ -10752,7 +10868,10 @@ export function createAgentChatService(args: {
       refreshReconstructionContext(managed);
     }
 
-    if (managed.session.provider === "cursor" && managed.session.status === "active") {
+    if (
+      (managed.session.provider === "cursor" || managed.session.provider === "droid")
+      && managed.session.status === "active"
+    ) {
       throw new Error("Turn is already active.");
     }
 
@@ -10842,6 +10961,10 @@ export function createAgentChatService(args: {
       managed.runtime.busy = false;
       managed.runtime.activeTurnId = null;
     }
+    if (managed.runtime?.kind === "droid" && !isBusyError) {
+      managed.runtime.busy = false;
+      managed.runtime.activeTurnId = null;
+    }
 
     emitChatEvent(managed, {
       type: "error",
@@ -10925,17 +11048,19 @@ export function createAgentChatService(args: {
     }
   };
 
-  const buildCursorPendingInputRequest = (
+  const buildAcpHostPendingInputRequest = (
     itemId: string,
     req: RequestPermissionRequest,
+    source: "cursor" | "droid",
     turnId?: string | null,
   ): PendingInputRequest => ({
     requestId: itemId,
     itemId,
-    source: "cursor",
+    source,
     kind: "permissions",
-    title: req.toolCall.title ?? "Cursor permission required",
-    description: req.toolCall.title ?? "Cursor needs approval before continuing.",
+    title: req.toolCall.title ?? (source === "droid" ? "Droid permission required" : "Cursor permission required"),
+    description: req.toolCall.title
+      ?? (source === "droid" ? "Droid needs approval before continuing." : "Cursor needs approval before continuing."),
     questions: [],
     allowsFreeform: false,
     blocking: true,
@@ -10973,6 +11098,27 @@ export function createAgentChatService(args: {
     }
   };
 
+  const syncDroidSessionDescriptor = (
+    managed: ManagedChatSession,
+    providerModelId: string,
+  ): void => {
+    const trimmed = providerModelId.trim();
+    if (!trimmed.length) return;
+    managed.session.model = trimmed;
+    const descriptor = getModelById(`droid/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "droid");
+    if (descriptor) {
+      managed.session.modelId = descriptor.id;
+      if (managed.runtime?.kind === "droid") {
+        managed.runtime.modelId = descriptor.providerModelId;
+      }
+      return;
+    }
+    delete managed.session.modelId;
+    if (managed.runtime?.kind === "droid") {
+      managed.runtime.modelId = trimmed;
+    }
+  };
+
   const applyCursorConfigSnapshot = (
     managed: ManagedChatSession,
     runtime: CursorRuntime,
@@ -10998,6 +11144,13 @@ export function createAgentChatService(args: {
       syncCursorSessionDescriptor(managed, currentModelId);
     }
     syncCursorModeSnapshot(managed, runtime);
+  };
+
+  const ensureDroidSessionState = async (
+    _managed: ManagedChatSession,
+    _runtime: DroidRuntime,
+  ): Promise<void> => {
+    // Factory Droid over ACP does not mirror Cursor's mode/model config RPCs today.
   };
 
   const ensureCursorSessionState = async (
@@ -11250,13 +11403,13 @@ export function createAgentChatService(args: {
     return blocks;
   };
 
-  const emitCursorTerminalCommandIfBound = (
-    pooled: CursorAcpPooled,
+  const emitAcpHostTerminalCommandIfBound = (
+    pooled: CursorAcpPooled | DroidAcpPooled,
     acpSessionId: string,
     terminalId: string,
   ): void => {
-    const owner = cursorAcpSessionOwners.get(acpSessionId);
-    if (!owner?.runtime || owner.runtime.kind !== "cursor") return;
+    const owner = acpHostSessionOwners.get(acpSessionId);
+    if (!owner?.runtime || (owner.runtime.kind !== "cursor" && owner.runtime.kind !== "droid")) return;
     const binding = pooled.terminalWorkLogBindings.get(terminalId);
     if (!binding) return;
     const t = pooled.terminals.get(terminalId);
@@ -11275,8 +11428,8 @@ export function createAgentChatService(args: {
     });
   };
 
-  const scheduleCursorTerminalEmit = (
-    pooled: CursorAcpPooled,
+  const scheduleAcpHostTerminalEmit = (
+    pooled: CursorAcpPooled | DroidAcpPooled,
     terminalId: string,
     acpSessionId: string,
   ): void => {
@@ -11287,38 +11440,41 @@ export function createAgentChatService(args: {
       terminalId,
       setTimeout(() => {
         pooled.terminalOutputTimers.delete(terminalId);
-        emitCursorTerminalCommandIfBound(pooled, acpSessionId, terminalId);
+        emitAcpHostTerminalCommandIfBound(pooled, acpSessionId, terminalId);
       }, DEBOUNCE_MS),
     );
   };
 
-  const wireCursorAcpBridgeHandlers = (pooled: CursorAcpPooled): void => {
-    if (cursorAcpBridgeWired.has(pooled)) return;
-    cursorAcpBridgeWired.add(pooled);
+  const wireAcpHostBridgeHandlers = (pooled: CursorAcpPooled | DroidAcpPooled): void => {
+    if (acpHostBridgeWired.has(pooled)) return;
+    acpHostBridgeWired.add(pooled);
     pooled.bridge.onSessionUpdate = (note) => {
-      const owner = cursorAcpSessionOwners.get(note.sessionId);
-      if (!owner?.runtime || owner.runtime.kind !== "cursor") return;
-      const previousModeId = owner.runtime.currentModeId;
-      if (note.update.sessionUpdate === "current_mode_update") {
-        owner.runtime.currentModeId = note.update.currentModeId;
-        if (note.update.currentModeId !== "plan") {
-          owner.runtime.defaultModeId = note.update.currentModeId;
+      const owner = acpHostSessionOwners.get(note.sessionId);
+      if (!owner?.runtime) return;
+      const rt = owner.runtime;
+      if (rt.kind !== "cursor" && rt.kind !== "droid") return;
+      let previousModeId: string | null = null;
+      if (rt.kind === "cursor") {
+        previousModeId = rt.currentModeId;
+        if (note.update.sessionUpdate === "current_mode_update") {
+          rt.currentModeId = note.update.currentModeId;
+          if (note.update.currentModeId !== "plan") {
+            rt.defaultModeId = note.update.currentModeId;
+          }
+          owner.session.cursorModeId = note.update.currentModeId;
+          if (note.update.currentModeId === "plan") {
+            owner.session.opencodePermissionMode = "plan";
+          } else if (!owner.session.opencodePermissionMode || owner.session.opencodePermissionMode === "plan") {
+            owner.session.opencodePermissionMode = "edit";
+          }
+          syncCursorModeSnapshot(owner, rt);
+          persistChatState(owner);
+        } else if (note.update.sessionUpdate === "config_option_update") {
+          applyCursorConfigSnapshot(owner, rt, readCursorAcpConfigSnapshot(note.update.configOptions));
+          persistChatState(owner);
         }
-        // Sync session-level mode fields so ensureCursorSessionState won't
-        // revert Cursor back to the old mode on the next turn.
-        owner.session.cursorModeId = note.update.currentModeId;
-        if (note.update.currentModeId === "plan") {
-          owner.session.opencodePermissionMode = "plan";
-        } else if (!owner.session.opencodePermissionMode || owner.session.opencodePermissionMode === "plan") {
-          owner.session.opencodePermissionMode = "edit";
-        }
-        syncCursorModeSnapshot(owner, owner.runtime);
-        persistChatState(owner);
-      } else if (note.update.sessionUpdate === "config_option_update") {
-        applyCursorConfigSnapshot(owner, owner.runtime, readCursorAcpConfigSnapshot(note.update.configOptions));
-        persistChatState(owner);
       }
-      const turnId = owner.runtime.activeTurnId ?? "";
+      const turnId = rt.activeTurnId ?? "";
       const resolveTerminal = (tid: string) => {
         const t = pooled.terminals.get(tid);
         if (!t) return null;
@@ -11348,7 +11504,7 @@ export function createAgentChatService(args: {
       }
     };
     pooled.bridge.onTerminalOutputDelta = (terminalId, acpSessionId) => {
-      scheduleCursorTerminalEmit(pooled, terminalId, acpSessionId);
+      scheduleAcpHostTerminalEmit(pooled, terminalId, acpSessionId);
     };
     pooled.bridge.flushTerminalOutput = (terminalId, acpSessionId) => {
       const pending = pooled.terminalOutputTimers.get(terminalId);
@@ -11356,7 +11512,7 @@ export function createAgentChatService(args: {
         clearTimeout(pending);
         pooled.terminalOutputTimers.delete(terminalId);
       }
-      emitCursorTerminalCommandIfBound(pooled, acpSessionId, terminalId);
+      emitAcpHostTerminalCommandIfBound(pooled, acpSessionId, terminalId);
     };
     pooled.bridge.onTerminalDisposed = (terminalId) => {
       const pending = pooled.terminalOutputTimers.get(terminalId);
@@ -11367,27 +11523,32 @@ export function createAgentChatService(args: {
       pooled.terminalWorkLogBindings.delete(terminalId);
     };
     pooled.bridge.onPermission = async (req) => {
-      const owner = cursorAcpSessionOwners.get(req.sessionId);
-      if (!owner || owner.runtime?.kind !== "cursor") {
+      const owner = acpHostSessionOwners.get(req.sessionId);
+      if (!owner || (owner.runtime?.kind !== "cursor" && owner.runtime?.kind !== "droid")) {
         return { outcome: { outcome: "cancelled" } };
       }
-      const cursorRt = owner.runtime;
+      const acpRt = owner.runtime;
       const itemId = randomUUID();
       return new Promise<RequestPermissionResponse>((outerResolve) => {
-        cursorRt.permissionWaiters.set(itemId, {
+        acpRt.permissionWaiters.set(itemId, {
           options: req.options,
           resolve: (resp: RequestPermissionResponse) => {
-            cursorRt.permissionWaiters.delete(itemId);
+            acpRt.permissionWaiters.delete(itemId);
             outerResolve(resp);
           },
         });
-        const request = buildCursorPendingInputRequest(itemId, req, cursorRt.activeTurnId ?? null);
+        const request = buildAcpHostPendingInputRequest(
+          itemId,
+          req,
+          acpRt.kind === "droid" ? "droid" : "cursor",
+          acpRt.activeTurnId ?? null,
+        );
         emitChatEvent(owner, {
           type: "approval_request",
           itemId,
           kind: "tool_call",
           description: req.toolCall.title ?? "Permission required",
-          turnId: cursorRt.activeTurnId ?? undefined,
+          turnId: acpRt.activeTurnId ?? undefined,
           detail: { cursorAcp: true, request, toolCall: req.toolCall, options: req.options },
         });
       });
@@ -11406,7 +11567,7 @@ export function createAgentChatService(args: {
       const existing = managed.runtime;
       if (existing.poolKey !== poolKey) {
         if (existing.acpSessionId) {
-          cursorAcpSessionOwners.delete(existing.acpSessionId);
+          acpHostSessionOwners.delete(existing.acpSessionId);
           try {
             await existing.pooled?.connection.unstable_closeSession?.({ sessionId: existing.acpSessionId });
           } catch {
@@ -11421,7 +11582,7 @@ export function createAgentChatService(args: {
         managed.runtime = null;
       } else {
         if (!existing.pooled) throw new Error("Cursor ACP connection not available");
-        wireCursorAcpBridgeHandlers(existing.pooled);
+        wireAcpHostBridgeHandlers(existing.pooled);
         existing.pooled.bridge.getRootPath = () => managed.laneWorktreePath;
         existing.pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
         return existing;
@@ -11445,7 +11606,7 @@ export function createAgentChatService(args: {
       launchSettings: resolveCursorAcpLaunchSettings(managed.session),
       appVersion,
     });
-    wireCursorAcpBridgeHandlers(pooled);
+    wireAcpHostBridgeHandlers(pooled);
     pooled.bridge.getRootPath = () => managed.laneWorktreePath;
     pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
 
@@ -11497,7 +11658,104 @@ export function createAgentChatService(args: {
           syncCursorSessionDescriptor(managed, rt.currentModelId);
         }
         syncCursorModeSnapshot(managed, rt);
-        cursorAcpSessionOwners.set(persistedAcp, managed);
+        acpHostSessionOwners.set(persistedAcp, managed);
+      } catch {
+        // stale session id — create a new ACP session on first prompt
+      }
+    }
+
+    return rt;
+  };
+
+  const droidPoolKeyFor = (managed: ManagedChatSession): string => {
+    const launch = resolveDroidAcpLaunchSettings(managed.session);
+    return [
+      managed.session.laneId,
+      managed.laneWorktreePath,
+      managed.session.model,
+      launch.autonomy,
+    ].join(":");
+  };
+
+  const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
+    const poolKey = droidPoolKeyFor(managed);
+    const launchModelId = resolveDroidRuntimeModelId(managed.session);
+    const shouldSyncSessionModel = managed.session.model !== launchModelId || !managed.session.modelId;
+    if (shouldSyncSessionModel) {
+      syncDroidSessionDescriptor(managed, launchModelId);
+      persistChatState(managed);
+    }
+    if (managed.runtime?.kind === "droid") {
+      const existing = managed.runtime;
+      if (existing.poolKey !== poolKey) {
+        if (existing.acpSessionId) {
+          acpHostSessionOwners.delete(existing.acpSessionId);
+          try {
+            await existing.pooled?.connection.unstable_closeSession?.({ sessionId: existing.acpSessionId });
+          } catch {
+            // ignore
+          }
+        }
+        for (const [, w] of existing.permissionWaiters) {
+          w.resolve({ outcome: { outcome: "cancelled" } });
+        }
+        existing.permissionWaiters.clear();
+        if (existing.pooled) releaseDroidAcpConnection(existing.poolKey);
+        managed.runtime = null;
+      } else {
+        if (!existing.pooled) throw new Error("Droid ACP connection not available");
+        wireAcpHostBridgeHandlers(existing.pooled);
+        existing.pooled.bridge.getRootPath = () => managed.laneWorktreePath;
+        existing.pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
+        return existing;
+      }
+    } else if (managed.runtime) {
+      teardownRuntime(managed, "handle_close");
+    }
+
+    {
+      let activeCount = 0;
+      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
+      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
+    }
+
+    const auth = await detectAuth();
+    const pooled = await acquireDroidAcpConnection({
+      poolKey,
+      droidPath: resolveDroidExecutable({ auth }).path,
+      workspacePath: managed.laneWorktreePath,
+      modelId: launchModelId,
+      launchSettings: resolveDroidAcpLaunchSettings(managed.session),
+      appVersion,
+    });
+    wireAcpHostBridgeHandlers(pooled);
+    pooled.bridge.getRootPath = () => managed.laneWorktreePath;
+    pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
+
+    const rt: DroidRuntime = {
+      kind: "droid",
+      poolKey,
+      pooled,
+      acpSessionId: null,
+      activeTurnId: null,
+      busy: false,
+      interrupted: false,
+      modelId: launchModelId,
+      pendingSteers: [],
+      permissionWaiters: new Map(),
+    };
+    managed.runtime = rt;
+
+    const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
+    if (persistedAcp && typeof pooled.connection.unstable_resumeSession === "function") {
+      try {
+        await pooled.connection.unstable_resumeSession({
+          sessionId: persistedAcp,
+          cwd: managed.laneWorktreePath,
+          mcpServers: buildCursorAcpMcpServers(managed),
+        });
+        rt.acpSessionId = persistedAcp;
+        acpHostSessionOwners.set(persistedAcp, managed);
       } catch {
         // stale session id — create a new ACP session on first prompt
       }
@@ -11606,7 +11864,7 @@ export function createAgentChatService(args: {
           syncCursorSessionDescriptor(managed, runtime.currentModelId);
         }
         syncCursorModeSnapshot(managed, runtime);
-        cursorAcpSessionOwners.set(sid, managed);
+        acpHostSessionOwners.set(sid, managed);
         persistChatState(managed);
       }
 
@@ -11745,6 +12003,222 @@ export function createAgentChatService(args: {
     }
   };
 
+  const runDroidTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      displayText: string;
+      attachments: AgentChatFileRef[];
+      resolvedAttachments: ResolvedAgentChatFileRef[];
+      laneDirectiveKey?: string | null;
+      turnId?: string;
+      optimisticDroidTurnStart?: boolean;
+      onDispatched?: () => void;
+    },
+  ): Promise<void> => {
+    const runtime = await ensureDroidRuntime(managed);
+    const validation = validateSessionReadyForTurn(managed);
+    if (!validation.ready) {
+      throw new Error(validation.reason);
+    }
+
+    const turnId = args.turnId ?? randomUUID();
+    runtime.interrupted = false;
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    setSessionActive(managed);
+
+    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    if (!args.optimisticDroidTurnStart) {
+      emitPreparedUserMessage(managed, {
+        text: displayText,
+        attachments: args.attachments,
+        turnId,
+        laneDirectiveKey: args.laneDirectiveKey,
+        onDispatched: args.onDispatched,
+      });
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(managed);
+    }
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+      turnId,
+    });
+
+    const turnStartedAt = Date.now();
+    let shouldDeliverQueuedSteer = false;
+    try {
+      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, args.attachments);
+      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+      if (autoMemoryNotice) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "memory",
+          message: autoMemoryNotice.message,
+          detail: autoMemoryNotice.detail,
+          turnId,
+        });
+      }
+
+      let composed = args.promptText;
+      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
+      if (reconstructionContext.length) {
+        composed = [
+          "System context (CTO reconstruction, do not echo verbatim):",
+          reconstructionContext,
+          "",
+          composed,
+        ].join("\n");
+        managed.pendingReconstructionContext = null;
+      }
+      if (autoMemoryPlan.contextText.length) {
+        composed = `${autoMemoryPlan.contextText}\n\n${composed}`;
+      }
+
+      const promptBlocks = buildCursorAcpPromptBlocks(composed, args.resolvedAttachments);
+
+      if (!runtime.acpSessionId) {
+        if (!runtime.pooled) throw new Error("Droid ACP connection not available");
+        const created = await runtime.pooled.connection.newSession({
+          cwd: managed.laneWorktreePath,
+          mcpServers: buildCursorAcpMcpServers(managed),
+        });
+        const sid = created.sessionId;
+        runtime.acpSessionId = sid;
+        acpHostSessionOwners.set(sid, managed);
+        persistChatState(managed);
+      }
+
+      await ensureDroidSessionState(managed, runtime);
+      persistChatState(managed);
+
+      logger.info("agent_chat.droid_prompt_start", {
+        sessionId: managed.session.id,
+        turnId,
+        model: managed.session.model,
+        durationMs: Date.now() - turnStartedAt,
+      });
+
+      if (!runtime.pooled) throw new Error("Droid ACP connection not available");
+
+      if (args.onDispatched) {
+        args.onDispatched();
+        args.onDispatched = undefined;
+      }
+
+      const promptRes = await runtime.pooled.connection.prompt({
+        sessionId: runtime.acpSessionId!,
+        prompt: promptBlocks,
+      });
+
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+
+      const descriptor = resolveSessionModelDescriptor(managed.session);
+      const usage = promptRes.usage
+        ? {
+            inputTokens: promptRes.usage.inputTokens,
+            outputTokens: promptRes.usage.outputTokens,
+            cacheReadTokens: promptRes.usage.cachedReadTokens ?? null,
+            cacheCreationTokens: promptRes.usage.cachedWriteTokens ?? null,
+          }
+        : undefined;
+
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
+      if (runtime.interrupted || promptRes.stopReason === "cancelled") {
+        markSessionIdleWithFreshCache(managed);
+        cancelQueuedSteers(managed, runtime, "interrupted");
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        for (const ev of mapStopReasonToTerminalEvents({
+          stopReason: "cancelled",
+          turnId,
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          usage,
+        })) {
+          emitChatEvent(managed, ev);
+        }
+      } else {
+        markSessionIdleWithFreshCache(managed);
+        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+        for (const ev of mapStopReasonToTerminalEvents({
+          stopReason: promptRes.stopReason,
+          turnId,
+          model: managed.session.model,
+          ...(managed.session.modelId
+            ? { modelId: managed.session.modelId }
+            : descriptor
+              ? { modelId: descriptor.id }
+              : {}),
+          usage,
+        })) {
+          emitChatEvent(managed, ev);
+        }
+        shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
+      }
+
+      appendWorkerActivityToCto(managed, {
+        activityType: "chat_turn",
+        summary: "Droid agent turn completed.",
+      });
+      persistChatState(managed);
+    } catch (error) {
+      markSessionIdleWithFreshCache(managed);
+      const msg = error instanceof Error ? error.message : String(error);
+
+      for (const [, w] of runtime.permissionWaiters) {
+        w.resolve({ outcome: { outcome: "cancelled" } });
+      }
+      runtime.permissionWaiters.clear();
+
+      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
+
+      if (runtime.interrupted) {
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        for (const ev of mapStopReasonToTerminalEvents({
+          stopReason: "cancelled",
+          turnId,
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        })) {
+          emitChatEvent(managed, ev);
+        }
+      } else {
+        emitChatEvent(managed, { type: "error", message: msg, turnId });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "failed",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
+        appendWorkerActivityToCto(managed, {
+          activityType: "chat_turn",
+          summary: `Turn failed: ${msg}`,
+        });
+      }
+      persistChatState(managed);
+    } finally {
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      if (managed.session.status === "active") {
+        setSessionIdle(managed);
+      }
+    }
+    if (!managed.closed && shouldDeliverQueuedSteer) {
+      try {
+        await deliverNextQueuedSteer(managed, runtime);
+      } catch (error) {
+        logger.warn("agent_chat.droid_deliver_queued_steer_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
+
   const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => {
     const {
       sessionId,
@@ -11758,6 +12232,7 @@ export function createAgentChatService(args: {
       onDispatched,
       turnId,
       optimisticCursorTurnStart,
+      optimisticAcpTurnStart,
     } = prepared;
 
     // OpenCode runtime dispatch
@@ -11809,6 +12284,26 @@ export function createAgentChatService(args: {
         laneDirectiveKey,
         turnId,
         optimisticCursorTurnStart,
+        onDispatched,
+      });
+      return;
+    }
+
+    if (managed.session.provider === "droid") {
+      const chatConfig = resolveChatConfig();
+      managed.session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(
+        managed.session,
+        chatConfig.opencodePermissionMode,
+      );
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      await runDroidTurn(managed, {
+        promptText,
+        displayText: visibleText,
+        attachments,
+        resolvedAttachments,
+        laneDirectiveKey,
+        turnId,
+        optimisticDroidTurnStart: optimisticAcpTurnStart,
         onDispatched,
       });
       return;
@@ -11948,10 +12443,14 @@ export function createAgentChatService(args: {
         })
       : null;
 
-    if (prepared.managed.session.provider === "cursor") {
+    if (prepared.managed.session.provider === "cursor" || prepared.managed.session.provider === "droid") {
       const turnId = randomUUID();
       prepared.turnId = turnId;
-      prepared.optimisticCursorTurnStart = true;
+      if (prepared.managed.session.provider === "cursor") {
+        prepared.optimisticCursorTurnStart = true;
+      } else {
+        prepared.optimisticAcpTurnStart = true;
+      }
       emitChatEvent(prepared.managed, {
         type: "user_message",
         text: prepared.visibleText,
@@ -12036,6 +12535,50 @@ export function createAgentChatService(args: {
           return { steerId, queued: false };
         }
         rt.pendingSteers.push({ steerId, text: trimmed, attachments: [], resolvedAttachments: [] });
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: trimmed,
+          steerId,
+          turnId: rt.activeTurnId ?? undefined,
+          deliveryState: "queued",
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          steerId,
+          message: "Message queued — will be sent when the current turn completes.",
+          turnId: rt.activeTurnId ?? undefined,
+        });
+        persistChatState(managed);
+        return { steerId, queued: true };
+      }
+      const preparedSteer = prepareSendMessage({
+        sessionId,
+        text: trimmed,
+        displayText: trimmed,
+        attachments: [],
+      });
+      if (!preparedSteer) {
+        return { steerId, queued: false };
+      }
+      await executePreparedSendMessage(preparedSteer);
+      return { steerId, queued: false };
+    }
+
+    if (managed.session.provider === "droid") {
+      if (managed.runtime?.kind === "droid" && managed.runtime.busy) {
+        const rt = managed.runtime;
+        if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
+          logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
+            turnId: rt.activeTurnId ?? undefined,
+          });
+          return { steerId, queued: false };
+        }
+        rt.pendingSteers.push({ steerId, text: trimmed });
         emitChatEvent(managed, {
           type: "user_message",
           text: trimmed,
@@ -12242,6 +12785,24 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (managed.runtime?.kind === "droid") {
+      const rt = managed.runtime;
+      rt.interrupted = true;
+      if (rt.acpSessionId) {
+        try {
+          await rt.pooled?.connection.cancel({ sessionId: rt.acpSessionId });
+        } catch {
+          // ignore
+        }
+      }
+      for (const [, w] of rt.permissionWaiters) {
+        w.resolve({ outcome: { outcome: "cancelled" } });
+      }
+      rt.permissionWaiters.clear();
+      cancelQueuedSteers(managed, rt, "interrupted");
+      return;
+    }
+
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
@@ -12385,6 +12946,12 @@ export function createAgentChatService(args: {
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       enforceManagedLocalHarnessPermissionMode(managed);
       sessionService.setResumeCommand(sessionId, `chat:cursor:${sessionId}`);
+    } else if (managed.session.provider === "droid") {
+      await ensureDroidRuntime(managed);
+      managed.session.opencodePermissionMode = persisted?.opencodePermissionMode ?? managed.session.opencodePermissionMode;
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      enforceManagedLocalHarnessPermissionMode(managed);
+      sessionService.setResumeCommand(sessionId, `chat:droid:${sessionId}`);
     } else if (managed.session.provider === "opencode" || (managed.session.modelId && !isCliWrappedModelId(managed.session.modelId))) {
       const result = await startOpenCodeSessionRuntime(managed);
       if (result === "handled" && managed.runtime?.kind === "opencode") {
@@ -12465,6 +13032,8 @@ export function createAgentChatService(args: {
         ? DEFAULT_OPENCODE_MODEL_ID
         : provider === "cursor"
           ? DEFAULT_CURSOR_DESCRIPTOR?.id
+          : provider === "droid"
+            ? DEFAULT_DROID_DESCRIPTOR?.id
           : undefined);
     const model = provider === "opencode" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     return {
@@ -12617,6 +13186,8 @@ export function createAgentChatService(args: {
       if (workerIdentity?.adapterType === "openclaw-webhook" || workerIdentity?.adapterType === "process") return "opencode";
       if (preferredProviderRaw.includes("codex") || preferredProviderRaw.includes("openai")) return "codex";
       if (preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")) return "claude";
+      if (preferredProviderRaw.includes("droid") || preferredProviderRaw.includes("factory")) return "droid";
+      if (preferredProviderRaw.includes("cursor")) return "cursor";
       return "opencode";
     })();
 
@@ -12636,6 +13207,8 @@ export function createAgentChatService(args: {
       if (!resolvedDescriptor.isCliWrapped) return "opencode";
       if (resolvedDescriptor.family === "openai") return "codex";
       if (resolvedDescriptor.family === "anthropic") return "claude";
+      if (resolvedDescriptor.family === "cursor") return "cursor";
+      if (resolvedDescriptor.family === "factory") return "droid";
       return providerFromPreference;
     })();
 
@@ -12869,7 +13442,7 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (managed.runtime?.kind === "cursor") {
+    if (managed.runtime?.kind === "cursor" || managed.runtime?.kind === "droid") {
       const pending = managed.runtime.permissionWaiters.get(itemId);
       if (!pending) {
         // Treat missing waiter as a benign race (e.g. the Cursor turn already
@@ -12946,6 +13519,27 @@ export function createAgentChatService(args: {
           id: d.id,
           displayName: d.displayName,
           description: `${d.displayName} (Cursor CLI)`,
+          isDefault: preferred ? d.id === preferred.id : false,
+          reasoningEfforts: d.reasoningTiers?.map((tier) => ({
+            effort: tier,
+            description: `${tier} reasoning`,
+          })) ?? [],
+        }));
+      } catch {
+        return [];
+      }
+    }
+
+    if (provider === "droid") {
+      try {
+        const auth = await detectAuth();
+        const droidPath = resolveDroidExecutable({ auth }).path;
+        const ordered = await discoverDroidCliModelDescriptors(droidPath);
+        const preferred = pickDefaultDroidDescriptorFromCliList(ordered);
+        return ordered.map((d) => ({
+          id: d.id,
+          displayName: d.displayName,
+          description: `${d.displayName} (Factory Droid CLI)`,
           isDefault: preferred ? d.id === preferred.id : false,
           reasoningEfforts: d.reasoningTiers?.map((tier) => ({
             effort: tier,
@@ -13080,6 +13674,18 @@ export function createAgentChatService(args: {
     }
 
     if (managed.runtime?.kind === "cursor") {
+      managed.runtime.interrupted = true;
+      cancelQueuedSteers(managed, managed.runtime, "disposed");
+      if (managed.runtime.acpSessionId) {
+        try {
+          await managed.runtime.pooled?.connection.cancel({ sessionId: managed.runtime.acpSessionId });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (managed.runtime?.kind === "droid") {
       managed.runtime.interrupted = true;
       cancelQueuedSteers(managed, managed.runtime, "disposed");
       if (managed.runtime.acpSessionId) {
@@ -13397,6 +14003,9 @@ export function createAgentChatService(args: {
       if (managed.runtime?.kind === "cursor" && !managed.runtime.busy) {
         await ensureCursorSessionState(managed, managed.runtime);
       }
+      if (managed.runtime?.kind === "droid" && !managed.runtime.busy) {
+        await ensureDroidSessionState(managed, managed.runtime);
+      }
     }
 
     if (computerUse !== undefined) {
@@ -13464,8 +14073,9 @@ export function createAgentChatService(args: {
     if (!descriptor) return;
 
     const isCursorCli = descriptor.family === "cursor" && descriptor.isCliWrapped;
+    const isDroidCli = descriptor.family === "factory" && descriptor.isCliWrapped;
     const isAnthropicCli = descriptor.family === "anthropic" && descriptor.isCliWrapped;
-    if (!isAnthropicCli && !isCursorCli) return;
+    if (!isAnthropicCli && !isCursorCli && !isDroidCli) return;
 
     if (isCursorCli) {
       if (managed.session.provider !== "cursor") return;
@@ -13500,9 +14110,32 @@ export function createAgentChatService(args: {
           syncCursorSessionDescriptor(managed, runtime.currentModelId);
         }
         syncCursorModeSnapshot(managed, runtime);
-        cursorAcpSessionOwners.set(sid, managed);
+        acpHostSessionOwners.set(sid, managed);
       }
       await ensureCursorSessionState(managed, runtime);
+      persistChatState(managed);
+      return;
+    }
+
+    if (isDroidCli) {
+      if (managed.session.provider !== "droid") return;
+      if (managed.session.modelId !== descriptor.id) return;
+      if (managed.session.status === "active") return;
+      if (managed.runtime && managed.runtime.kind !== "droid") return;
+      if (managed.runtime?.kind === "droid" && managed.runtime.busy) return;
+
+      const runtime = await ensureDroidRuntime(managed);
+      if (!runtime.pooled) return;
+      if (!runtime.acpSessionId) {
+        const created = await runtime.pooled.connection.newSession({
+          cwd: managed.laneWorktreePath,
+          mcpServers: buildCursorAcpMcpServers(managed),
+        });
+        const sid = created.sessionId;
+        runtime.acpSessionId = sid;
+        acpHostSessionOwners.set(sid, managed);
+      }
+      await ensureDroidSessionState(managed, runtime);
       persistChatState(managed);
       return;
     }

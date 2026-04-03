@@ -814,7 +814,7 @@ export function AgentChatComposer({
       );
     }
 
-    const runtimeLabel = sessionProvider === "cursor" ? "Cursor" : "ADE";
+    const runtimeLabel = sessionProvider === "cursor" ? "Cursor" : sessionProvider === "droid" ? "Droid" : "ADE";
     return (
       <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
         <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>

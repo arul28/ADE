@@ -114,6 +114,8 @@ export function ProviderLogo({
       return <OpenAI size={size} className={c} />;
     case "cursor":
       return <Cursor.Avatar size={size} className={c} />;
+    case "factory":
+      return <FallbackInitialLogo family="droid" size={size} className={className} />;
     case "opencode":
       return <OpenCode.Avatar size={size} className={c} />;
     case "xai":

@@ -37,7 +37,7 @@ import {
 } from "../lanes/laneDesignTokens";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 
-type CliName = "claude" | "codex" | "cursor";
+type CliName = "claude" | "codex" | "cursor" | "droid";
 type ApiKeySource = "config" | "env" | "store";
 
 const CLI_TOOLS: Array<{
@@ -67,6 +67,13 @@ const CLI_TOOLS: Array<{
     description: "Cursor CLI (agent), ACP work chat",
     loginCmd: "agent login",
     installHint: "Install Cursor and enable the cursor CLI from Cursor Settings > General",
+  },
+  {
+    cli: "droid",
+    label: "Factory Droid",
+    description: "Factory Droid CLI, ACP work chat",
+    loginCmd: "See Factory CLI docs — auth via FACTORY_API_KEY or Factory login",
+    installHint: "Install from https://docs.factory.ai/cli/getting-started/quickstart — ensure `droid` is on PATH",
   },
 ];
 
@@ -120,6 +127,7 @@ const sectionLabelStyle: React.CSSProperties = {
 function CliLogo({ cli }: { cli: CliName }) {
   if (cli === "claude") return <ClaudeLogo size={24} />;
   if (cli === "cursor") return <CursorAgentLogo size={24} />;
+  if (cli === "droid") return <Cpu size={24} className="text-zinc-100" />;
   return <CodexLogo size={24} className="text-zinc-100" />;
 }
 
@@ -165,6 +173,7 @@ function describeCredentialSource(connection: AiProviderConnectionStatus | null 
   if (localSource.source === "claude-credentials-file") return "Local credentials found in ~/.claude/.credentials.json.";
   if (localSource.source === "codex-auth-file") return "Local credentials found in ~/.codex/auth.json.";
   if (localSource.source === "cursor-env") return "Detected via CURSOR_API_KEY environment variable.";
+  if (localSource.source === "factory-env") return "Detected via FACTORY_API_KEY environment variable.";
   return null;
 }
 

@@ -861,7 +861,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "openrouter" | "local";
-  cli?: "claude" | "codex" | "cursor";
+  cli?: "claude" | "codex" | "cursor" | "droid";
   provider?: string;
   source?: "config" | "env" | "store";
   endpointSource?: "auto" | "config";
@@ -872,7 +872,12 @@ export type AiDetectedAuth = {
   verified?: boolean;
 };
 
-export type AiProviderCredentialSource = "macos-keychain" | "claude-credentials-file" | "codex-auth-file" | "cursor-env";
+export type AiProviderCredentialSource =
+  | "macos-keychain"
+  | "claude-credentials-file"
+  | "codex-auth-file"
+  | "cursor-env"
+  | "factory-env";
 
 export type AiProviderConnectionSource = {
   kind: "cli" | "local-credentials";
@@ -885,7 +890,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex" | "cursor";
+  provider: "claude" | "codex" | "cursor" | "droid";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -900,6 +905,7 @@ export type AiProviderConnections = {
   claude: AiProviderConnectionStatus;
   codex: AiProviderConnectionStatus;
   cursor: AiProviderConnectionStatus;
+  droid: AiProviderConnectionStatus;
 };
 
 export type AiApiKeyVerificationResult = {
@@ -955,11 +961,13 @@ export type AiSettingsStatus = {
     claude: boolean;
     codex: boolean;
     cursor: boolean;
+    droid: boolean;
   };
   models: {
     claude: AiModelDescriptor[];
     codex: AiModelDescriptor[];
     cursor: AiModelDescriptor[];
+    droid: AiModelDescriptor[];
   };
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
@@ -1132,11 +1140,13 @@ export type AiIntegrationStatus = {
     claude: boolean;
     codex: boolean;
     cursor: boolean;
+    droid: boolean;
   };
   models: {
     claude: AgentChatModelInfo[];
     codex: AgentChatModelInfo[];
     cursor: AgentChatModelInfo[];
+    droid: AgentChatModelInfo[];
   };
   // OpenCode/runtime-backed fields
   detectedAuth?: AiDetectedAuth[];

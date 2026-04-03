@@ -306,7 +306,7 @@ function cleanupStaleMcpConfigFiles(projectRoot: string): void {
 const VALID_PERMISSION_MODES = new Set<string>(["default", "plan", "edit", "full-auto", "config-toml"]);
 
 function resolveManagedPermissionMode(args: {
-  provider: "claude" | "codex" | "opencode" | "cursor";
+  provider: "claude" | "codex" | "opencode" | "cursor" | "droid";
   descriptor?: ModelDescriptor;
   permissionConfig: LegacyPermissionConfig | undefined;
   readOnlyExecution: boolean;
@@ -314,8 +314,12 @@ function resolveManagedPermissionMode(args: {
   if (args.readOnlyExecution) return "plan";
   const providers = args.permissionConfig?._providers;
   const candidate =
-    args.provider === "cursor"
-      ? ((providers?.cursor ?? providers?.opencode) as string | undefined)
+    args.provider === "cursor" || args.provider === "droid"
+      ? ((
+          args.provider === "droid"
+            ? (providers?.droid ?? providers?.cursor ?? providers?.opencode)
+            : (providers?.cursor ?? providers?.opencode)
+        ) as string | undefined)
       : (providers?.[args.provider] as string | undefined);
   const normalizedCandidate = typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
     ? candidate as AgentChatPermissionMode
@@ -328,7 +332,7 @@ function resolveManagedPermissionMode(args: {
 }
 
 function mapPermissionModeToNativeFields(
-  provider: "claude" | "codex" | "opencode" | "cursor",
+  provider: "claude" | "codex" | "opencode" | "cursor" | "droid",
   mode: AgentChatPermissionMode | undefined,
 ): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode">> {
   if (!mode) return {};
@@ -360,10 +364,10 @@ function mapPermissionModeToNativeFields(
 }
 
 function resolveManagedExecutionMode(args: {
-  provider: "claude" | "codex" | "opencode" | "cursor";
+  provider: "claude" | "codex" | "opencode" | "cursor" | "droid";
   teamRuntime?: TeamRuntimeConfig;
 }): AgentChatExecutionMode {
-  if (args.provider === "cursor") {
+  if (args.provider === "cursor" || args.provider === "droid") {
     return "focused";
   }
   if (args.provider === "claude") {

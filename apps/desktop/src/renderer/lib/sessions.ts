@@ -9,6 +9,7 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
     || toolType === "claude-chat"
     || toolType === "opencode-chat"
     || toolType === "cursor"
+    || toolType === "droid-chat"
   );
 }
 
@@ -17,6 +18,7 @@ export function chatToolTypeForProvider(provider: AgentChatProvider | string | n
     case "claude": return "claude-chat";
     case "codex": return "codex-chat";
     case "cursor": return "cursor";
+    case "droid": return "droid-chat";
     default: return "opencode-chat";
   }
 }
@@ -39,6 +41,7 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "opencode-chat") return "OpenCode chat";
   if (toolType === "cursor") return "Cursor chat";
+  if (toolType === "droid-chat") return "Droid chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   return "Session";
@@ -116,6 +119,7 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "opencode-chat") return "OpenCode chat";
   if (toolType === "cursor") return "Cursor chat";
+  if (toolType === "droid-chat") return "Droid chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   if (toolType === "run-shell") return "Run inspector";

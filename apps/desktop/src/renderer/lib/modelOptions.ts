@@ -109,8 +109,8 @@ function hasDynamicLocalModelIdsForProvider(
 }
 
 export interface DeriveModelOptions {
-  // All configured models are now included unconditionally.
-  // This interface is kept for backward-compatible call-sites.
+  includeCursor?: boolean;
+  includeDroid?: boolean;
 }
 
 export function deriveConfiguredModelIds(
@@ -119,6 +119,7 @@ export function deriveConfiguredModelIds(
 ): ModelId[] {
   if (!status) return [];
 
+  const { includeCursor = true, includeDroid = false } = options ?? {};
   const runtimeConnections = (status as { runtimeConnections?: Record<string, AiRuntimeConnectionStatus> } | null | undefined)?.runtimeConnections;
 
   // Derive available models from detectedAuth. For Cursor CLI, merge in
@@ -187,7 +188,7 @@ export function deriveConfiguredModelIds(
     addAvailableModelIdsByPrefix(ids, status.availableModelIds, `${normalizedProvider}/`);
   }
 
-  {
+  if (includeCursor) {
     const cursorCliAuthed = status.detectedAuth?.some(
       (a) => a.type === "cli-subscription" && a.cli === "cursor" && a.authenticated !== false,
     );
@@ -195,6 +196,18 @@ export function deriveConfiguredModelIds(
       for (const raw of status.availableModelIds) {
         const id = String(raw ?? "").trim();
         if (id.startsWith("cursor/")) ids.add(id as ModelId);
+      }
+    }
+  }
+
+  if (includeDroid) {
+    const droidCliAuthed = status.detectedAuth?.some(
+      (a) => a.type === "cli-subscription" && a.cli === "droid" && a.authenticated !== false,
+    );
+    if (droidCliAuthed && status.availableModelIds?.length) {
+      for (const raw of status.availableModelIds) {
+        const id = String(raw ?? "").trim();
+        if (id.startsWith("droid/")) ids.add(id as ModelId);
       }
     }
   }
