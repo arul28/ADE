@@ -36,7 +36,7 @@ import {
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
-import { AgentChatComposer } from "./AgentChatComposer";
+import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
@@ -159,6 +159,12 @@ type NativeControlState = {
   cursorConfigValues: Record<string, string | boolean>;
 };
 
+type ParallelModelRowState = NativeControlState & {
+  modelId: string;
+  reasoningEffort: string | null;
+  executionMode: AgentChatExecutionMode;
+};
+
 function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
   if (profile === "persistent_identity") {
     return {
@@ -197,6 +203,40 @@ function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registry
   if (!desc?.isCliWrapped) return registryModelId;
   if (desc.family === "cursor" || desc.family === "openai") return desc.sdkModelId || registryModelId;
   return desc.shortId ?? registryModelId;
+}
+
+function nativeControlSliceFromParallelSlot(slot: ParallelModelRowState): NativeControlState {
+  return {
+    interactionMode: slot.interactionMode,
+    claudePermissionMode: slot.claudePermissionMode,
+    codexApprovalPolicy: slot.codexApprovalPolicy,
+    codexSandbox: slot.codexSandbox,
+    codexConfigSource: slot.codexConfigSource,
+    unifiedPermissionMode: slot.unifiedPermissionMode,
+    cursorModeId: slot.cursorModeId,
+    cursorConfigValues: slot.cursorConfigValues,
+  };
+}
+
+function cloneParallelSlotFromComposer(args: {
+  native: NativeControlState;
+  modelId: string;
+  reasoningEffort: string | null;
+  executionMode: AgentChatExecutionMode;
+}): ParallelModelRowState {
+  return {
+    interactionMode: args.native.interactionMode,
+    claudePermissionMode: args.native.claudePermissionMode,
+    codexApprovalPolicy: args.native.codexApprovalPolicy,
+    codexSandbox: args.native.codexSandbox,
+    codexConfigSource: args.native.codexConfigSource,
+    unifiedPermissionMode: args.native.unifiedPermissionMode,
+    cursorModeId: args.native.cursorModeId,
+    cursorConfigValues: { ...args.native.cursorConfigValues },
+    modelId: args.modelId,
+    reasoningEffort: args.reasoningEffort,
+    executionMode: args.executionMode,
+  };
 }
 
 function summarizeNativeControls(
@@ -496,6 +536,16 @@ function preferredChatLabel(raw: string | null | undefined): string | null {
   return stripOutcomePrefix(normalized);
 }
 
+function parallelLaneModelSuffix(descriptor: ModelDescriptor | null | undefined): string {
+  if (!descriptor) return "model";
+  if (descriptor.family === "openai" || descriptor.cliCommand === "codex") return "codex";
+  if (descriptor.family === "anthropic" || descriptor.cliCommand === "claude") return "claude";
+  if (descriptor.family === "cursor") return "cursor";
+  const raw = (descriptor.displayName ?? descriptor.shortId ?? descriptor.id).trim();
+  const slug = raw.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9-]+/g, "").replace(/-+/g, "-");
+  return slug.slice(0, 28) || "model";
+}
+
 function chatSessionTitle(session: AgentChatSessionSummary): string {
   const explicitTitle = preferredChatLabel(session.title);
   if (explicitTitle) return explicitTitle;
@@ -566,6 +616,10 @@ export function AgentChatPane({
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
   const selectLane = useAppStore((s) => s.selectLane);
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
+  const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
+  const refreshLanesStore = useAppStore((s) => s.refreshLanes);
   const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs && initialSessionSummary);
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
@@ -620,6 +674,11 @@ export function AgentChatPane({
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
+  const [parallelChatMode, setParallelChatMode] = useState(false);
+  const [parallelModelSlots, setParallelModelSlots] = useState<ParallelModelRowState[]>([]);
+  const [parallelConfiguringIndex, setParallelConfiguringIndex] = useState<number | null>(null);
+  const [parallelLaunchBusy, setParallelLaunchBusy] = useState(false);
+  const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const [composerMaxHeightPx, setComposerMaxHeightPx] = useState<number | null>(null);
   const composerMaxHeightPxRef = useRef<number | null>(null);
@@ -719,6 +778,76 @@ export function AgentChatPane({
       }),
     };
   }, [cursorConfigValues, cursorModeId, selectedSession?.cursorModeSnapshot, sessionProvider]);
+
+  const patchParallelSlot = useCallback((index: number, patch: Partial<ParallelModelRowState>) => {
+    setParallelModelSlots((prev) => {
+      if (index < 0 || index >= prev.length) return prev;
+      const next = [...prev];
+      next[index] = { ...next[index]!, ...patch };
+      return next;
+    });
+  }, []);
+
+  const parallelSlotCursorSnapshot = useMemo(() => {
+    if (parallelConfiguringIndex == null) return null;
+    const row = parallelModelSlots[parallelConfiguringIndex];
+    if (!row) return null;
+    if (resolveChatRuntimeProvider(getModelById(row.modelId)) !== "cursor") return null;
+    const base = buildFallbackCursorModeSnapshot(row.cursorModeId);
+    return {
+      ...base,
+      currentModeId: row.cursorModeId ?? base.currentModeId,
+      configOptions: base.configOptions?.map((option) => {
+        if (option.id === base.modeConfigId) {
+          return { ...option, currentValue: row.cursorModeId ?? option.currentValue };
+        }
+        if (Object.prototype.hasOwnProperty.call(row.cursorConfigValues, option.id)) {
+          return { ...option, currentValue: row.cursorConfigValues[option.id] ?? option.currentValue };
+        }
+        return option;
+      }),
+    };
+  }, [parallelConfiguringIndex, parallelModelSlots]);
+
+  const parallelComposerControlSlot = useMemo((): ParallelComposerControlSlot | null => {
+    if (parallelConfiguringIndex == null) return null;
+    const row = parallelModelSlots[parallelConfiguringIndex];
+    if (!row) return null;
+    const idx = parallelConfiguringIndex;
+    const prov = resolveChatRuntimeProvider(getModelById(row.modelId));
+    return {
+      sessionProvider: prov,
+      interactionMode: row.interactionMode,
+      claudePermissionMode: row.claudePermissionMode,
+      codexApprovalPolicy: row.codexApprovalPolicy,
+      codexSandbox: row.codexSandbox,
+      codexConfigSource: row.codexConfigSource,
+      unifiedPermissionMode: row.unifiedPermissionMode,
+      cursorModeSnapshot: parallelSlotCursorSnapshot,
+      onInteractionModeChange: (mode) => patchParallelSlot(idx, { interactionMode: mode }),
+      onClaudeModeChange: (mode) => patchParallelSlot(idx, { claudePermissionMode: mode }),
+      onClaudePermissionModeChange: (mode) => patchParallelSlot(idx, { claudePermissionMode: mode }),
+      onCodexPresetChange: (next) => patchParallelSlot(idx, {
+        codexApprovalPolicy: next.codexApprovalPolicy,
+        codexSandbox: next.codexSandbox,
+        codexConfigSource: next.codexConfigSource,
+      }),
+      onCodexApprovalPolicyChange: (policy) => patchParallelSlot(idx, { codexApprovalPolicy: policy }),
+      onCodexSandboxChange: (sandbox) => patchParallelSlot(idx, { codexSandbox: sandbox }),
+      onCodexConfigSourceChange: (source) => patchParallelSlot(idx, { codexConfigSource: source }),
+      onUnifiedPermissionModeChange: (mode) => patchParallelSlot(idx, { unifiedPermissionMode: mode }),
+      onCursorModeChange: (modeId) => patchParallelSlot(idx, { cursorModeId: modeId }),
+      onCursorConfigChange: (configId, value) => patchParallelSlot(idx, {
+        cursorConfigValues: { ...row.cursorConfigValues, [configId]: value },
+      }),
+    };
+  }, [parallelConfiguringIndex, parallelModelSlots, parallelSlotCursorSnapshot, patchParallelSlot]);
+
+  const parallelConfiguringRow = parallelConfiguringIndex != null ? parallelModelSlots[parallelConfiguringIndex] ?? null : null;
+  const parallelSlotExecutionModeOptions = useMemo(
+    () => getExecutionModeOptions(parallelConfiguringRow ? getModelById(parallelConfiguringRow.modelId) : null),
+    [parallelConfiguringRow],
+  );
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
@@ -1588,12 +1717,39 @@ export function AgentChatPane({
     nativeControlsRef.current = currentNativeControls;
   }, [currentNativeControls]);
 
+  useEffect(() => {
+    if (!parallelChatMode) return;
+    if (parallelModelSlots.length >= 2) return;
+    setParallelModelSlots([
+      cloneParallelSlotFromComposer({
+        native: currentNativeControls,
+        modelId,
+        reasoningEffort,
+        executionMode,
+      }),
+      cloneParallelSlotFromComposer({
+        native: currentNativeControls,
+        modelId,
+        reasoningEffort,
+        executionMode,
+      }),
+    ]);
+  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, reasoningEffort, executionMode]);
+
   const buildNativeControlPayload = useCallback((provider: ChatRuntimeProviderKey) => {
     return {
       ...summarizeNativeControls(provider, currentNativeControls),
       ...(provider === "cursor" ? { cursorConfigValues: currentNativeControls.cursorConfigValues } : {}),
     };
   }, [currentNativeControls]);
+
+  const buildNativeControlPayloadForSlot = useCallback((slot: ParallelModelRowState, provider: ChatRuntimeProviderKey) => {
+    const native = nativeControlSliceFromParallelSlot(slot);
+    return {
+      ...summarizeNativeControls(provider, native),
+      ...(provider === "cursor" ? { cursorConfigValues: slot.cursorConfigValues } : {}),
+    };
+  }, []);
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
     const nextDesc = getModelById(nextModelId);
     const nextProvider = resolveChatRuntimeProvider(nextDesc);
@@ -1703,7 +1859,149 @@ export function AgentChatPane({
   }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
 
   const submit = useCallback(async () => {
-    if (submitInFlightRef.current || busy) return;
+    if (submitInFlightRef.current || busy || parallelLaunchBusy) return;
+
+    const isParallelLaunch =
+      !lockSessionId
+      && !initialSessionId
+      && forceDraft
+      && embeddedWorkLayout
+      && parallelChatMode
+      && selectedSessionId == null;
+
+    if (isParallelLaunch) {
+      const text = draft.trim();
+      if (!text.length || !laneId || !projectRoot) return;
+      if (parallelModelSlots.length < 2) {
+        setError("Add at least two models for a parallel launch.");
+        return;
+      }
+      const modelKeys = parallelModelSlots.map((s) => s.modelId);
+      if (new Set(modelKeys).size !== modelKeys.length) {
+        setError("Each parallel lane needs a different model.");
+        return;
+      }
+
+      const draftSnapshot = draft;
+      const includeDocsSnapshot = includeProjectDocs;
+      submitInFlightRef.current = true;
+      setParallelLaunchBusy(true);
+      setParallelLaunchStatus("Naming lanes…");
+      setError(null);
+      try {
+        const baseName = await window.ade.agentChat.suggestLaneName({
+          laneId,
+          prompt: text,
+          modelId: parallelModelSlots[0]!.modelId,
+        });
+        setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
+        const createdLaneIds: string[] = [];
+        const sessionByLane = new Map<string, string>();
+
+        for (const slot of parallelModelSlots) {
+          const desc = getModelById(slot.modelId);
+          const suffix = parallelLaneModelSuffix(desc);
+          const laneName = `${baseName}-${suffix}`;
+          const childLane = await window.ade.lanes.createChild({ parentLaneId: laneId, name: laneName });
+          createdLaneIds.push(childLane.id);
+          const provider = resolveChatRuntimeProvider(desc);
+          const model = provider === "unified" ? slot.modelId : runtimeFacingModelId(desc, slot.modelId);
+          const created = await window.ade.agentChat.create({
+            laneId: childLane.id,
+            provider,
+            model,
+            modelId: slot.modelId,
+            sessionProfile: resolveChatSessionProfile(computerUsePolicy),
+            reasoningEffort: slot.reasoningEffort,
+            ...buildNativeControlPayloadForSlot(slot, provider),
+            computerUse: computerUsePolicy,
+          });
+          sessionByLane.set(childLane.id, created.id);
+        }
+
+        await refreshLanesStore();
+
+        let finalText = text;
+        if (!text.startsWith("/") && includeDocsSnapshot) {
+          const docPaths = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"];
+          const docNote = [
+            "[Project Context — generated from main branch, may not reflect in-progress lane work]",
+            "The following project-level docs are available for reference. Read them with read_file if you need project context:",
+            ...docPaths.map((p) => `- ${p}`),
+          ].join("\n");
+          finalText = `${docNote}\n\n---\n\n${finalText}`;
+        }
+
+        setParallelLaunchStatus("Sending prompt to each lane…");
+        for (let idx = 0; idx < parallelModelSlots.length; idx += 1) {
+          const slot = parallelModelSlots[idx]!;
+          const childLaneId = createdLaneIds[idx];
+          const sessionId = childLaneId ? sessionByLane.get(childLaneId) : undefined;
+          if (!sessionId) continue;
+          const desc = getModelById(slot.modelId);
+          const provider = resolveChatRuntimeProvider(desc);
+          try {
+            await window.ade.agentChat.send({
+              sessionId,
+              text: finalText,
+              displayText: text,
+              attachments: [],
+              reasoningEffort: slot.reasoningEffort,
+              executionMode: slot.executionMode,
+              interactionMode: provider === "claude" ? slot.interactionMode : null,
+            });
+          } catch (sendError) {
+            const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
+            const isBusyErr = /turn is already active|already active/i.test(sendMsg);
+            if (isBusyErr) {
+              await window.ade.agentChat.steer({ sessionId, text: finalText });
+            } else {
+              throw sendError;
+            }
+          }
+          if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
+            window.ade.agentChat.warmupModel({ sessionId, modelId: slot.modelId }).catch(() => {});
+          }
+        }
+
+        setWorkViewState(projectRoot, (prev) => {
+          let nextOpen = [...prev.openItemIds];
+          for (const sid of sessionByLane.values()) {
+            if (!nextOpen.includes(sid)) nextOpen.push(sid);
+          }
+          return { ...prev, openItemIds: nextOpen };
+        });
+        for (const [childLaneId, sid] of sessionByLane) {
+          setLaneWorkViewState(projectRoot, childLaneId, {
+            activeItemId: sid,
+            selectedItemId: sid,
+            draftKind: "chat",
+            viewMode: "tabs",
+          });
+        }
+
+        setDraft("");
+        setParallelChatMode(false);
+        setParallelModelSlots([]);
+        setParallelConfiguringIndex(null);
+        if (includeDocsSnapshot) setIncludeProjectDocs(false);
+
+        const q = new URLSearchParams();
+        q.set("laneIds", createdLaneIds.join(","));
+        q.set("workFocus", "1");
+        navigate(`/lanes?${q.toString()}`);
+      } catch (submitError) {
+        const message = submitError instanceof Error ? submitError.message : String(submitError);
+        setDraft((current) => (current.trim().length ? current : draftSnapshot));
+        setError(message);
+      } finally {
+        submitInFlightRef.current = false;
+        setParallelLaunchBusy(false);
+        setParallelLaunchStatus(null);
+      }
+      return;
+    }
+
     if (!modelId) return;
     const text = draft.trim();
     if (!text.length || !laneId) return;
@@ -1854,7 +2152,22 @@ export function AgentChatPane({
     sessionProvider,
     touchSession,
     turnActive,
-    turnActiveBySession
+    turnActiveBySession,
+    parallelLaunchBusy,
+    parallelChatMode,
+    parallelModelSlots,
+    lockSessionId,
+    initialSessionId,
+    forceDraft,
+    embeddedWorkLayout,
+    projectRoot,
+    navigate,
+    buildNativeControlPayloadForSlot,
+    computerUsePolicy,
+    refreshLanesStore,
+    setWorkViewState,
+    setLaneWorkViewState,
+    includeProjectDocs,
   ]);
 
   const interrupt = useCallback(async () => {
@@ -2398,6 +2711,66 @@ export function AgentChatPane({
               if (selectedSessionId) {
                 void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text });
               }
+            }}
+            showParallelChatToggle={Boolean(
+              embeddedWorkLayout && forceDraft && !lockSessionId && !initialSessionId && selectedSessionId == null,
+            )}
+            parallelChatMode={parallelChatMode}
+            onParallelChatModeChange={(enabled) => {
+              setParallelChatMode(enabled);
+              if (!enabled) {
+                setParallelModelSlots([]);
+                setParallelConfiguringIndex(null);
+              }
+            }}
+            parallelModelSlots={parallelModelSlots}
+            parallelConfiguringIndex={parallelConfiguringIndex}
+            onParallelConfiguringIndexChange={setParallelConfiguringIndex}
+            onParallelAddModel={() => {
+              setParallelModelSlots((prev) => [
+                ...prev,
+                cloneParallelSlotFromComposer({
+                  native: nativeControlsRef.current,
+                  modelId,
+                  reasoningEffort,
+                  executionMode,
+                }),
+              ]);
+            }}
+            onParallelRemoveModel={(index) => {
+              setParallelModelSlots((prev) => prev.filter((_, i) => i !== index));
+              setParallelConfiguringIndex((cur) => {
+                if (cur == null) return cur;
+                if (cur === index) return null;
+                if (cur > index) return cur - 1;
+                return cur;
+              });
+            }}
+            onParallelSlotModelChange={(index, nextModelId) => {
+              const desc = getModelById(nextModelId);
+              const tiers = desc?.reasoningTiers ?? [];
+              const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
+              const nextEffort = selectReasoningEffort({ tiers, preferred });
+              const nextExecOpts = getExecutionModeOptions(desc);
+              patchParallelSlot(index, {
+                modelId: nextModelId,
+                reasoningEffort: nextEffort,
+                executionMode: nextExecOpts.some((o) => o.value === parallelModelSlots[index]?.executionMode)
+                  ? parallelModelSlots[index]!.executionMode
+                  : (nextExecOpts[0]?.value ?? "focused"),
+              });
+            }}
+            onParallelSlotReasoningChange={(index, effort) => {
+              patchParallelSlot(index, { reasoningEffort: effort });
+            }}
+            parallelLaunchBusy={parallelLaunchBusy}
+            parallelLaunchStatus={parallelLaunchStatus}
+            parallelControlSlot={parallelComposerControlSlot}
+            parallelSlotExecutionModeOptions={parallelSlotExecutionModeOptions}
+            parallelSlotExecutionMode={parallelConfiguringRow?.executionMode ?? null}
+            onParallelSlotExecutionModeChange={(mode) => {
+              if (parallelConfiguringIndex == null) return;
+              patchParallelSlot(parallelConfiguringIndex, { executionMode: mode });
             }}
           />
   );

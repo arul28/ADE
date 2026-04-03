@@ -3,6 +3,7 @@ import type { LaneSummary } from "../../../shared/types";
 import {
   LANES_TILING_LAYOUT_VERSION,
   LANES_TILING_TREE,
+  LANES_TILING_WORK_FOCUS_TREE,
   isMissionLaneHiddenByDefault,
   laneMatchesFilter,
 } from "./laneUtils";
@@ -47,7 +48,14 @@ describe("laneUtils tiling defaults", () => {
   });
 
   it("bumps the persisted tiling layout version", () => {
-    expect(LANES_TILING_LAYOUT_VERSION).toBe("v5");
+    expect(LANES_TILING_LAYOUT_VERSION).toBe("v6");
+  });
+
+  it("work-focus layout emphasizes the work pane", () => {
+    expect(LANES_TILING_WORK_FOCUS_TREE.children[1]?.defaultSize).toBeGreaterThan(40);
+    expect(LANES_TILING_WORK_FOCUS_TREE.children[2]?.defaultSize).toBeLessThan(
+      (LANES_TILING_TREE.children[2]?.defaultSize ?? 0),
+    );
   });
 
   it("hides non-result mission lanes by default but reveals them with mission filters", () => {

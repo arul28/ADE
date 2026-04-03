@@ -61,6 +61,7 @@ import type {
   AgentTool,
   AgentChatApproveArgs,
   AgentChatCreateArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
@@ -831,6 +832,7 @@ declare global {
         list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;
         getSummary: (args: AgentChatGetSummaryArgs) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
+        suggestLaneName: (args: AgentChatSuggestLaneNameArgs) => Promise<string>;
         handoff: (args: AgentChatHandoffArgs) => Promise<AgentChatHandoffResult>;
         send: (args: AgentChatSendArgs) => Promise<void>;
         steer: (args: AgentChatSteerArgs) => Promise<void>;

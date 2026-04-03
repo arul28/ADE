@@ -609,6 +609,15 @@ export type AgentChatListArgs = {
   includeAutomation?: boolean;
 };
 
+export type AgentChatSuggestLaneNameArgs = {
+  /** Lane the user is launching from (worktree path for the naming model call). */
+  laneId: string;
+  /** User prompt for the parallel chat launch (used to derive a short lane name prefix). */
+  prompt: string;
+  /** Registry model ID used to run the naming call (e.g. first selected model). */
+  modelId: string;
+};
+
 export type AgentChatGetSummaryArgs = {
   sessionId: string;
 };
