@@ -48,7 +48,7 @@
     "@lobehub/fluent-emoji": "^4.1.0",
     "@lobehub/icons": "^5.2.0",
     "@lobehub/icons-static-svg": "^1.84.0",
-    "@lobehub/ui": "^5.6.3",
+    "@lobehub/ui": "^5.6.4",
     "@modelcontextprotocol/sdk": "1.27.1",
     "@phosphor-icons/react": "^2.1.10",
     "@radix-ui/react-dialog": "^1.1.15",
