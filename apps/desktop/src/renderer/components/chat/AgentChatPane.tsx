@@ -30,9 +30,12 @@ import {
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
+  LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
+  getLocalModelIdTail,
   getLocalProviderDefaultEndpoint,
   getModelById,
+  parseLocalProviderFromModelId,
   resolveModelDescriptorForProvider,
   type LocalProviderFamily,
   type ModelDescriptor,
@@ -67,30 +70,17 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
-const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
-  ollama: "Ollama",
-  lmstudio: "LM Studio",
-  vllm: "vLLM",
-};
 
 type AiStatusSnapshot = AiSettingsStatus & {
   runtimeConnections?: Record<string, AiRuntimeConnectionStatus>;
 };
 
-function getLocalProviderFromModelId(modelId: string): LocalProviderFamily | null {
-  const provider = String(modelId ?? "").trim().split("/", 1)[0]?.toLowerCase();
-  if (provider === "ollama" || provider === "lmstudio" || provider === "vllm") {
-    return provider;
-  }
-  return null;
-}
-
 function formatLocalModelLabel(modelId: string): string {
-  const provider = getLocalProviderFromModelId(modelId);
+  const provider = parseLocalProviderFromModelId(modelId);
   if (!provider) {
     return getModelById(modelId)?.displayName ?? modelId;
   }
-  const tail = String(modelId ?? "").trim().slice(provider.length + 1).trim();
+  const tail = getLocalModelIdTail(modelId, provider);
   return tail.length ? tail : modelId;
 }
 
@@ -101,6 +91,60 @@ function recommendedUnifiedPermissionModeForModel(
   return descriptor.harnessProfile === "guarded" || descriptor.harnessProfile === "read_only"
     ? "plan"
     : null;
+}
+
+function shouldResetUnifiedPermissionForModelSwitch(
+  previous: ModelDescriptor | null | undefined,
+  next: ModelDescriptor | null | undefined,
+): boolean {
+  const prevRec = recommendedUnifiedPermissionModeForModel(previous);
+  const nextRec = recommendedUnifiedPermissionModeForModel(next);
+  if (prevRec == null && nextRec == null) return false;
+  return prevRec !== nextRec;
+}
+
+type LocalRuntimeNoticeShape = {
+  tone: "success" | "warning";
+  title: string;
+  message: string;
+};
+
+function LocalRuntimeNoticeBlock(props: {
+  notice: LocalRuntimeNoticeShape;
+  endpoint?: string | null;
+  /** `inline` = text only (inside a parent runtime card). */
+  variant?: "card" | "inline";
+}) {
+  const { notice, endpoint, variant = "card" } = props;
+  const isCard = variant === "card";
+  return (
+    <div
+      className={cn(
+        isCard && "border-b px-4 py-2.5",
+        isCard && (notice.tone === "success"
+          ? "border-emerald-500/10 bg-emerald-500/[0.04]"
+          : "border-amber-500/10 bg-amber-500/[0.04]"),
+      )}
+    >
+      <div className={cn(
+        "font-mono text-[10px] uppercase tracking-[0.16em]",
+        notice.tone === "success" ? "text-emerald-200/70" : "text-amber-200/70",
+      )}>
+        {notice.title}
+      </div>
+      <div className={cn(
+        "mt-1 text-[12px] leading-5",
+        notice.tone === "success" ? "text-emerald-100/80" : "text-amber-100/80",
+      )}>
+        {notice.message}
+      </div>
+      {endpoint ? (
+        <code className="mt-2 block rounded-md border border-white/[0.06] bg-black/10 px-2 py-1 font-mono text-[10px] text-fg/60">
+          {endpoint}
+        </code>
+      ) : null}
+    </div>
+  );
 }
 
 export function resolveChatSessionProfile(_computerUsePolicy: ComputerUsePolicy): AgentChatSessionProfile {
@@ -629,6 +673,7 @@ export function AgentChatPane({
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
   const [codexConfigSource, setCodexConfigSource] = useState<AgentChatCodexConfigSource>(initialNativeControls.codexConfigSource);
   const [unifiedPermissionMode, setUnifiedPermissionMode] = useState<AgentChatUnifiedPermissionMode>(initialNativeControls.unifiedPermissionMode);
+  const prevModelDescRef = useRef<ModelDescriptor | null | undefined>(undefined);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, string | boolean>>(initialNativeControls.cursorConfigValues);
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
@@ -728,7 +773,7 @@ export function AgentChatPane({
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
-      : getLocalProviderFromModelId(modelId);
+      : parseLocalProviderFromModelId(modelId);
     if (!provider) return null;
     const runtimeConnection = aiStatus?.runtimeConnections?.[provider] ?? null;
     const detectedEntry = aiStatus?.detectedAuth?.find(
@@ -790,9 +835,61 @@ export function AgentChatPane({
     return {
       tone: "success" as const,
       title: `${localRuntimeState.label} runtime`,
-      message: `${localRuntimeState.label} is connected at ${localRuntimeState.endpoint} with ${localRuntimeState.modelIds.length} loaded model${localRuntimeState.modelIds.length === 1 ? "" : "s"}${localRuntimeState.health ? ` (${localRuntimeState.health})` : ""}.`,
+      message: `${localRuntimeState.label} is connected with ${localRuntimeState.modelIds.length} loaded model${localRuntimeState.modelIds.length === 1 ? "" : "s"}${localRuntimeState.health ? ` (${localRuntimeState.health})` : ""}.`,
     };
   }, [localRuntimeState, modelId, selectedModelDesc?.displayName]);
+
+  const cliRuntimeBlocked = Boolean(
+    selectedSessionId
+    && activeProviderConnection
+    && !activeProviderConnection.runtimeAvailable
+    && (activeProviderConnection.blocker || activeProviderConnection.provider === "cursor"),
+  );
+  const cliRuntimeTitle = activeProviderConnection?.provider === "claude"
+    ? "Claude runtime"
+    : activeProviderConnection?.provider === "cursor"
+      ? "Cursor runtime"
+      : "Codex runtime";
+  const cliRuntimeBody = activeProviderConnection?.blocker
+    ?? (activeProviderConnection?.provider === "cursor"
+      ? "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."
+      : null);
+
+  const mergedRuntimeBanner = useMemo(() => {
+    if (!cliRuntimeBlocked && !localRuntimeNotice) return null;
+    if (cliRuntimeBlocked && localRuntimeNotice) {
+      return {
+        kind: "merged" as const,
+        cliTitle: cliRuntimeTitle,
+        cliBody: cliRuntimeBody ?? "",
+        localNotice: localRuntimeNotice,
+        localEndpoint: localRuntimeState?.endpoint,
+      };
+    }
+    if (cliRuntimeBlocked) {
+      return {
+        kind: "cli-only" as const,
+        cliTitle: cliRuntimeTitle,
+        cliBody: cliRuntimeBody ?? "",
+      };
+    }
+    return {
+      kind: "local-only" as const,
+      localNotice: localRuntimeNotice!,
+      localEndpoint: localRuntimeState?.endpoint,
+    };
+  }, [
+    cliRuntimeBlocked,
+    cliRuntimeBody,
+    cliRuntimeTitle,
+    localRuntimeNotice,
+    localRuntimeState?.endpoint,
+  ]);
+
+  useEffect(() => {
+    prevModelDescRef.current = getModelById(modelId);
+  }, [modelId]);
+
   const surfaceMode = presentation?.mode ?? "standard";
   const identitySessionSettingsBusy = isPersistentIdentitySurface && sessionMutationKind !== null;
 
@@ -1698,32 +1795,39 @@ export function AgentChatPane({
     };
   }, [currentNativeControls]);
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
+    const previousDesc = prevModelDescRef.current;
     const nextDesc = getModelById(nextModelId);
     const nextProvider = resolveChatRuntimeProvider(nextDesc);
     const nextModel = nextProvider === "unified" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
     const tiers = nextDesc?.reasoningTiers ?? [];
     const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
     const nextReasoningEffort = selectReasoningEffort({ tiers, preferred });
+    const nextRec = recommendedUnifiedPermissionModeForModel(nextDesc);
     return {
       nextDesc,
       nextModelId,
       nextModel,
       nextProvider,
       nextReasoningEffort,
-      nextUnifiedPermissionMode: recommendedUnifiedPermissionModeForModel(nextDesc),
+      nextUnifiedPermissionMode: nextRec,
+      resetUnifiedPermissionToDefault: shouldResetUnifiedPermissionForModelSwitch(previousDesc, nextDesc),
     };
   }, [laneId]);
   const applyModelSelectionSnapshot = useCallback((snapshot: {
     nextModelId: string;
     nextReasoningEffort: string | null;
     nextUnifiedPermissionMode?: AgentChatUnifiedPermissionMode | null;
+    resetUnifiedPermissionToDefault?: boolean;
   }) => {
     setModelId(snapshot.nextModelId);
     setReasoningEffort(snapshot.nextReasoningEffort);
+    if (snapshot.resetUnifiedPermissionToDefault) {
+      setUnifiedPermissionMode(initialNativeControls.unifiedPermissionMode);
+    }
     if (snapshot.nextUnifiedPermissionMode) {
       setUnifiedPermissionMode(snapshot.nextUnifiedPermissionMode);
     }
-  }, []);
+  }, [initialNativeControls.unifiedPermissionMode]);
   const notifySessionCreated = useCallback((session: AgentChatSession) => {
     if (!onSessionCreated) return;
     void Promise.resolve(onSessionCreated(session)).catch((err) => { console.error("notifySessionCreated failed:", err); });
@@ -2433,15 +2537,15 @@ export function AgentChatPane({
               }
 
               setSessionMutationKind("model");
-              const nextNativeControlPayload = snapshot.nextUnifiedPermissionMode
+              const nextUnifiedForPayload = snapshot.resetUnifiedPermissionToDefault
+                ? (snapshot.nextUnifiedPermissionMode ?? initialNativeControls.unifiedPermissionMode)
+                : snapshot.nextUnifiedPermissionMode;
+              const nextNativeControlPayload = snapshot.nextProvider === "unified" && nextUnifiedForPayload != null
                 ? {
-                    ...summarizeNativeControls(snapshot.nextProvider, {
+                    ...summarizeNativeControls("unified", {
                       ...currentNativeControls,
-                      unifiedPermissionMode: snapshot.nextUnifiedPermissionMode,
+                      unifiedPermissionMode: nextUnifiedForPayload,
                     }),
-                    ...(snapshot.nextProvider === "cursor"
-                      ? { cursorConfigValues: currentNativeControls.cursorConfigValues }
-                      : {}),
                   }
                 : buildNativeControlPayload(snapshot.nextProvider);
               void window.ade.agentChat.updateSession({
@@ -2550,47 +2654,44 @@ export function AgentChatPane({
             {error}
           </div>
         ) : null}
-        {selectedSessionId && !activeProviderConnection?.runtimeAvailable && (activeProviderConnection?.blocker || activeProviderConnection?.provider === "cursor") ? (
+        {mergedRuntimeBanner?.kind === "cli-only" ? (
           <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-              {activeProviderConnection.provider === "claude"
-                ? "Claude runtime"
-                : activeProviderConnection.provider === "cursor"
-                  ? "Cursor runtime"
-                  : "Codex runtime"}
+              {mergedRuntimeBanner.cliTitle}
             </div>
             <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-              {activeProviderConnection.blocker || "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."}
+              {mergedRuntimeBanner.cliBody}
             </div>
           </div>
         ) : null}
-
-        {localRuntimeNotice ? (
-          <div
-            className={cn(
-              "border-b px-4 py-2.5",
-              localRuntimeNotice.tone === "success"
-                ? "border-emerald-500/10 bg-emerald-500/[0.04]"
-                : "border-amber-500/10 bg-amber-500/[0.04]",
-            )}
-          >
-            <div className={cn(
-              "font-mono text-[10px] uppercase tracking-[0.16em]",
-              localRuntimeNotice.tone === "success" ? "text-emerald-200/70" : "text-amber-200/70",
-            )}>
-              {localRuntimeNotice.title}
+        {mergedRuntimeBanner?.kind === "local-only" ? (
+          <LocalRuntimeNoticeBlock
+            notice={mergedRuntimeBanner.localNotice}
+            endpoint={mergedRuntimeBanner.localEndpoint}
+          />
+        ) : null}
+        {mergedRuntimeBanner?.kind === "merged" ? (
+          <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
+            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
+              Runtime status
             </div>
-            <div className={cn(
-              "mt-1 text-[12px] leading-5",
-              localRuntimeNotice.tone === "success" ? "text-emerald-100/80" : "text-amber-100/80",
-            )}>
-              {localRuntimeNotice.message}
+            <div className="mt-3 space-y-3">
+              <div>
+                <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-amber-200/55">
+                  {mergedRuntimeBanner.cliTitle}
+                </div>
+                <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
+                  {mergedRuntimeBanner.cliBody}
+                </div>
+              </div>
+              <div className="border-t border-white/[0.06] pt-3">
+                <LocalRuntimeNoticeBlock
+                  variant="inline"
+                  notice={mergedRuntimeBanner.localNotice}
+                  endpoint={mergedRuntimeBanner.localEndpoint}
+                />
+              </div>
             </div>
-            {localRuntimeState ? (
-              <code className="mt-2 block rounded-md border border-white/[0.06] bg-black/10 px-2 py-1 font-mono text-[10px] text-fg/60">
-                {localRuntimeState.endpoint}
-              </code>
-            ) : null}
           </div>
         ) : null}
 

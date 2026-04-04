@@ -82,7 +82,8 @@ export function isModelProviderGroup(value: string | null | undefined): value is
 const ALL_CAPS: ModelCapabilities = { tools: true, vision: true, reasoning: true, streaming: true };
 const NO_REASONING: ModelCapabilities = { tools: true, vision: true, reasoning: false, streaming: true };
 const BASIC_CAPS: ModelCapabilities = { tools: true, vision: false, reasoning: false, streaming: true };
-const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
+/** Human-readable names for Ollama / LM Studio / vLLM (shared across main, renderer, and MCP). */
+export const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
   ollama: "Ollama",
   lmstudio: "LM Studio",
   vllm: "vLLM",
@@ -753,8 +754,19 @@ export function validateModelRegistry(models: ModelDescriptor[] = MODEL_REGISTRY
 validateModelRegistry();
 rebuildIndexes();
 
-function isLocalProviderFamily(value: string): value is LocalProviderFamily {
+export function isLocalProviderFamily(value: string): value is LocalProviderFamily {
   return value === "ollama" || value === "lmstudio" || value === "vllm";
+}
+
+/** First path segment of `provider/modelId` when it is a known local provider. */
+export function parseLocalProviderFromModelId(modelId: string): LocalProviderFamily | null {
+  const provider = String(modelId ?? "").trim().split("/", 1)[0]?.toLowerCase() ?? "";
+  return isLocalProviderFamily(provider) ? provider : null;
+}
+
+/** Model name segment after `provider/` for local refs; empty string if missing. */
+export function getLocalModelIdTail(modelId: string, provider: LocalProviderFamily): string {
+  return String(modelId ?? "").trim().slice(provider.length + 1).trim();
 }
 
 function parseDynamicLocalModelRef(modelRef: string): { provider: LocalProviderFamily; modelId: string } | null {

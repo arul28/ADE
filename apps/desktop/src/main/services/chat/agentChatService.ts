@@ -121,6 +121,7 @@ import {
   getModelById,
   getAvailableModels as getRegistryModels,
   listModelDescriptorsForProvider,
+  LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   pickDefaultCursorDescriptorFromCliList,
   replaceDynamicLocalModelDescriptors,
@@ -4294,12 +4295,6 @@ export function createAgentChatService(args: {
 
   // Unified session support — for API-key / local models using streamText + universal tools.
   // CLI-wrapped models fall through to the existing Claude/Codex runtimes.
-  const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
-    ollama: "Ollama",
-    lmstudio: "LM Studio",
-    vllm: "vLLM",
-  };
-
   const discoveredLocalModelToDescriptor = (model: DiscoveredLocalModel): ModelDescriptor =>
     createDynamicLocalModelDescriptor(model.provider, model.modelId, {
       ...(model.displayName ? { displayName: model.displayName } : {}),
