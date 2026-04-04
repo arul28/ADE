@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "ai": "^6.0.94",
+    "ai": "^6.0.146",
     "ai-sdk-provider-claude-code": "^3.4.2",
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
