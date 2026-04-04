@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Plus } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
+  PARALLEL_CHAT_MAX_IMAGES,
   type AgentChatApprovalDecision,
   type AgentChatClaudePermissionMode,
   type AgentChatCodexApprovalPolicy,
@@ -2448,7 +2449,7 @@ export function AgentChatPane({
 
     if (isParallelLaunch) {
       const text = draft.trim();
-      if (!text.length || !laneId || !projectRoot) return;
+      if ((!text.length && !attachments.some((a) => a.type === "image")) || !laneId || !projectRoot) return;
       if (parallelModelSlots.length < 2) {
         setError("Add at least two models for a parallel launch.");
         return;
@@ -2458,17 +2459,29 @@ export function AgentChatPane({
         setError("Each parallel lane needs a different model.");
         return;
       }
+      const nonImage = attachments.filter((a) => a.type !== "image");
+      if (nonImage.length) {
+        setError("Parallel launch supports images only. Remove non-image attachments or switch to single-model chat.");
+        return;
+      }
 
       const draftSnapshot = draft;
+      const attachmentsSnapshot = attachments.filter((a) => a.type === "image");
       const includeDocsSnapshot = includeProjectDocs;
       submitInFlightRef.current = true;
       setParallelLaunchBusy(true);
       setParallelLaunchStatus("Naming lanes…");
       setError(null);
       try {
+        const namingSeed =
+          text.trim().length > 0
+            ? text
+            : attachmentsSnapshot.length
+              ? `Parallel image task (${attachmentsSnapshot.length} image${attachmentsSnapshot.length === 1 ? "" : "s"})`
+              : text;
         const baseName = await window.ade.agentChat.suggestLaneName({
           laneId,
-          prompt: text,
+          prompt: namingSeed,
           modelId: parallelModelSlots[0]!.modelId,
         });
         setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
@@ -2508,6 +2521,13 @@ export function AgentChatPane({
           ].join("\n");
           finalText = `${docNote}\n\n---\n\n${finalText}`;
         }
+        const sendText =
+          finalText.trim().length > 0
+            ? finalText
+            : attachmentsSnapshot.length
+              ? "Please review the attached images."
+              : finalText;
+        const displayForSend = text.trim().length > 0 ? text : sendText;
 
         setParallelLaunchStatus("Sending prompt to each lane…");
         for (let idx = 0; idx < parallelModelSlots.length; idx += 1) {
@@ -2517,12 +2537,15 @@ export function AgentChatPane({
           if (!sessionId) continue;
           const desc = getModelById(slot.modelId);
           const provider = resolveChatRuntimeProvider(desc);
+          const steerText = attachmentsSnapshot.length
+            ? `${sendText}\n\nAttached context:\n${attachmentsSnapshot.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
+            : sendText;
           try {
             await window.ade.agentChat.send({
               sessionId,
-              text: finalText,
-              displayText: text,
-              attachments: [],
+              text: sendText,
+              displayText: displayForSend,
+              attachments: attachmentsSnapshot,
               reasoningEffort: slot.reasoningEffort,
               executionMode: slot.executionMode,
               interactionMode: provider === "claude" ? slot.interactionMode : null,
@@ -2531,7 +2554,7 @@ export function AgentChatPane({
             const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
             const isBusyErr = /turn is already active|already active/i.test(sendMsg);
             if (isBusyErr) {
-              await window.ade.agentChat.steer({ sessionId, text: finalText });
+              await window.ade.agentChat.steer({ sessionId, text: steerText });
             } else {
               throw sendError;
             }
@@ -2558,6 +2581,7 @@ export function AgentChatPane({
         }
 
         setDraft("");
+        setAttachments([]);
         setParallelChatMode(false);
         setParallelModelSlots([]);
         setParallelConfiguringIndex(null);
@@ -2570,6 +2594,7 @@ export function AgentChatPane({
       } catch (submitError) {
         const message = submitError instanceof Error ? submitError.message : String(submitError);
         setDraft((current) => (current.trim().length ? current : draftSnapshot));
+        setAttachments((current) => (current.length ? current : attachmentsSnapshot));
         setError(message);
       } finally {
         submitInFlightRef.current = false;
@@ -2762,7 +2787,6 @@ export function AgentChatPane({
     projectRoot,
     navigate,
     buildNativeControlPayloadForSlot,
-    computerUsePolicy,
     refreshLanesStore,
     setWorkViewState,
     setLaneWorkViewState,
@@ -3344,7 +3368,9 @@ export function AgentChatPane({
             parallelChatMode={parallelChatMode}
             onParallelChatModeChange={(enabled) => {
               setParallelChatMode(enabled);
-              if (!enabled) {
+              if (enabled) {
+                setAttachments((prev) => prev.filter((a) => a.type === "image").slice(0, PARALLEL_CHAT_MAX_IMAGES));
+              } else {
                 setParallelModelSlots([]);
                 setParallelConfiguringIndex(null);
               }

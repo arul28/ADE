@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen } from "@phosphor-icons/react";
+import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen, SquareSplitHorizontal, Plus, Trash } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
+  PARALLEL_CHAT_MAX_IMAGES,
   type AgentChatApprovalDecision,
   type AgentChatClaudePermissionMode,
   type AgentChatCursorConfigOption,
@@ -534,7 +535,14 @@ export function AgentChatComposer({
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileAddInProgressRef = useRef(false);
-  const canAttach = (!turnActive || sessionProvider === "claude" || sessionProvider === "codex") && !parallelChatMode;
+  const parallelImageCount = useMemo(
+    () => attachments.filter((a) => a.type === "image").length,
+    [attachments],
+  );
+  const canAttach = (!turnActive || sessionProvider === "claude" || sessionProvider === "codex") && (!parallelChatMode || parallelImageCount < PARALLEL_CHAT_MAX_IMAGES);
+  const attachBlockedReason = parallelChatMode && parallelImageCount >= PARALLEL_CHAT_MAX_IMAGES
+    ? `Maximum ${PARALLEL_CHAT_MAX_IMAGES} images for parallel launch`
+    : null;
 
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current;
@@ -573,6 +581,11 @@ export function AgentChatComposer({
     );
   }, [slashQuery, effectiveSlashCommands]);
 
+  const attachmentResultsForPicker = useMemo(() => {
+    if (!parallelChatMode) return attachmentResults;
+    return attachmentResults.filter((r) => r.type === "image");
+  }, [parallelChatMode, attachmentResults]);
+
   /* ── Attachment picker effects ── */
   useEffect(() => {
     if (!attachmentPickerOpen) {
@@ -585,6 +598,10 @@ export function AgentChatComposer({
     const timeout = window.setTimeout(() => attachmentInputRef.current?.focus(), 0);
     return () => window.clearTimeout(timeout);
   }, [attachmentPickerOpen]);
+
+  useEffect(() => {
+    setAttachmentCursor((c) => Math.min(c, Math.max(attachmentResultsForPicker.length - 1, 0)));
+  }, [attachmentResultsForPicker.length]);
 
   useEffect(() => {
     if (!attachmentPickerOpen) return;
@@ -612,23 +629,47 @@ export function AgentChatComposer({
 
   const selectAttachment = (attachment: AgentChatFileRef) => {
     setAttachError(null);
+    if (parallelChatMode) {
+      if (attachment.type !== "image") {
+        setAttachError("Parallel launch supports images only. Remove non-image attachments or turn off parallel mode.");
+        return;
+      }
+      if (parallelImageCount >= PARALLEL_CHAT_MAX_IMAGES) {
+        setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_IMAGES} images for parallel launch.`);
+        return;
+      }
+    }
     onAddAttachment(attachment);
     setAttachmentPickerOpen(false);
   };
 
   const addFileAttachments = async (files: FileList | null | undefined) => {
-    if (!canAttach || !files?.length) return;
+    if (!files?.length) return;
+    if (turnActive) return;
+    if (parallelChatMode && parallelImageCount >= PARALLEL_CHAT_MAX_IMAGES) return;
+    if (!parallelChatMode && !canAttach) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     try {
+      let imageCount = parallelImageCount;
       for (const file of Array.from(files)) {
+        if (parallelChatMode && imageCount >= PARALLEL_CHAT_MAX_IMAGES) {
+          setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_IMAGES} images for parallel launch.`);
+          break;
+        }
         const fileWithPath = file as File & { path?: string };
         const hasRealPath = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length > 0;
 
         if (hasRealPath) {
           const filePath = fileWithPath.path!;
-          onAddAttachment({ path: filePath, type: inferAttachmentType(filePath, file.type) });
+          const t = inferAttachmentType(filePath, file.type);
+          if (parallelChatMode && t !== "image") {
+            setAttachError("Parallel launch supports images only.");
+            continue;
+          }
+          onAddAttachment({ path: filePath, type: t });
+          if (parallelChatMode && t === "image") imageCount += 1;
           continue;
         }
 
@@ -649,7 +690,13 @@ export function AgentChatComposer({
             data: base64,
             filename: file.name || "clipboard.png",
           });
-          onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
+          const t = inferAttachmentType(tempPath, file.type);
+          if (parallelChatMode && t !== "image") {
+            setAttachError("Parallel launch supports images only.");
+            continue;
+          }
+          onAddAttachment({ path: tempPath, type: t });
+          if (parallelChatMode) imageCount += 1;
         } catch {
           setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
         }
@@ -1349,14 +1396,17 @@ export function AgentChatComposer({
       return;
     }
     if (parallelChatMode) {
-      if (busy || parallelLaunchBusy || !draft.trim().length) return;
+      if (busy || parallelLaunchBusy) return;
       if (parallelModelSlots.length < 2) return;
+      const hasPrompt = draft.trim().length > 0;
+      const hasImages = attachments.some((a) => a.type === "image");
+      if (!hasPrompt && !hasImages) return;
       onSubmit();
       return;
     }
     if (busy || !modelId || !draft.trim().length) return;
     onSubmit();
-  }, [busy, draft, modelId, onApproval, onDraftChange, onSubmit, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [attachments, busy, draft, modelId, onApproval, onDraftChange, onSubmit, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
@@ -1473,6 +1523,7 @@ export function AgentChatComposer({
             ref={uploadInputRef}
             type="file"
             multiple
+            accept={parallelChatMode ? "image/*" : undefined}
             className="hidden"
             onChange={(event) => {
               void addFileAttachments(event.target.files);
@@ -1520,10 +1571,14 @@ export function AgentChatComposer({
                   className="h-5 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
                   onKeyDown={(event) => {
                     if (event.key === "Escape") { event.preventDefault(); setAttachmentPickerOpen(false); return; }
-                    if (event.key === "ArrowDown") { event.preventDefault(); setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0))); return; }
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResultsForPicker.length - 1, 0)));
+                      return;
+                    }
                     if (event.key === "ArrowUp") { event.preventDefault(); setAttachmentCursor((v) => Math.max(v - 1, 0)); return; }
                     if (event.key === "Enter") {
-                      const candidate = attachmentResults[attachmentCursor];
+                      const candidate = attachmentResultsForPicker[attachmentCursor];
                       if (candidate) { event.preventDefault(); selectAttachment(candidate); }
                     }
                   }}
@@ -1534,8 +1589,8 @@ export function AgentChatComposer({
                   <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Type to search files...</div>
                 ) : attachmentBusy ? (
                   <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Searching...</div>
-                ) : attachmentResults.length ? (
-                  attachmentResults.map((result, index) => (
+                ) : attachmentResultsForPicker.length ? (
+                  attachmentResultsForPicker.map((result, index) => (
                     <button
                       key={result.path}
                       type="button"
@@ -1552,7 +1607,11 @@ export function AgentChatComposer({
                     </button>
                   ))
                 ) : (
-                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">No matching files.</div>
+                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">
+                    {parallelChatMode && attachmentQuery.trim().length
+                      ? "No matching images in the repo search."
+                      : "No matching files."}
+                  </div>
                 )}
               </div>
             </div>
@@ -1562,33 +1621,49 @@ export function AgentChatComposer({
       footer={
         <div className="flex flex-col gap-2 px-3 py-1.5">
           {showParallelChatToggle && !parallelChatMode ? (
-            <label className="flex cursor-pointer items-center gap-2 font-sans text-[11px] text-fg/70">
-              <input
-                type="checkbox"
-                className="rounded border-white/20"
-                checked={false}
-                onChange={() => onParallelChatModeChange?.(true)}
-              />
-              <span>Use multiple models (one child lane per model)</span>
-            </label>
+            <button
+              type="button"
+              disabled={turnActive || busy}
+              onClick={() => onParallelChatModeChange?.(true)}
+              className={cn(
+                "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
+                "border-white/[0.08] bg-white/[0.02] hover:border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)]",
+                turnActive || busy ? "cursor-not-allowed opacity-40" : "",
+              )}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-[var(--chat-accent)]">
+                <SquareSplitHorizontal size={18} weight="regular" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-sans text-[12px] font-medium text-fg/85">Parallel models</span>
+                <span className="mt-0.5 block font-sans text-[11px] leading-snug text-muted-fg/55">
+                  Same prompt (and images) in one child lane per model
+                </span>
+              </span>
+            </button>
           ) : null}
           {parallelChatMode ? (
-            <div className="flex flex-col gap-2 border-b border-white/[0.06] pb-2">
-              <label className="flex cursor-pointer items-center gap-2 font-sans text-[11px] text-fg/70">
-                <input
-                  type="checkbox"
-                  className="rounded border-white/20"
-                  checked
+            <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-sans text-[12px] font-semibold text-fg/88">Parallel launch</div>
+                  <p className="mt-1 font-sans text-[11px] leading-relaxed text-muted-fg/55">
+                    Configure each model, then send once. Images attach to every lane (max {PARALLEL_CHAT_MAX_IMAGES}).
+                  </p>
+                </div>
+                <button
+                  type="button"
                   disabled={parallelLaunchBusy}
-                  onChange={() => {
-                    if (parallelLaunchBusy) return;
+                  className="shrink-0 rounded-lg border border-white/[0.1] px-2 py-1 font-sans text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
+                  onClick={() => {
                     onParallelChatModeChange?.(false);
                     onParallelConfiguringIndexChange?.(null);
                   }}
-                />
-                <span>Parallel models (one child lane per model)</span>
-              </label>
-              <div className="flex flex-col gap-1.5">
+                >
+                  Single model
+                </button>
+              </div>
+              <div className="mt-3 flex flex-col gap-2">
                 {parallelModelSlots.map((slotRow, idx) => {
                   const desc = getModelById(slotRow.modelId);
                   const configuring = parallelConfiguringIndex === idx;
@@ -1596,31 +1671,40 @@ export function AgentChatComposer({
                     <div
                       key={`parallel-slot-${idx}`}
                       className={cn(
-                        "flex flex-wrap items-center gap-2 rounded-lg border px-2 py-1.5",
-                        configuring ? "border-accent/30 bg-accent/[0.06]" : "border-white/[0.06] bg-white/[0.02]",
+                        "flex flex-wrap items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors",
+                        configuring
+                          ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_12%,transparent)]"
+                          : "border-white/[0.07] bg-white/[0.02]",
                       )}
                     >
-                      <span className="font-mono text-[9px] uppercase tracking-wider text-muted-fg/50">
-                        Model {idx + 1}
+                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-white/[0.06] font-mono text-[10px] font-bold text-muted-fg/50">
+                        {idx + 1}
                       </span>
-                      <span className="max-w-[140px] truncate font-sans text-[11px] text-fg/75">
-                        {(desc?.displayName ?? slotRow.modelId) || "Select model"}
+                      <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[12px] font-medium text-fg/82">
+                        {(desc?.displayName ?? slotRow.modelId) || "Pick a model"}
                       </span>
                       <button
                         type="button"
-                        className="rounded-md border border-white/[0.08] px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-fg/60 hover:bg-white/[0.04]"
+                        className={cn(
+                          "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
+                          configuring
+                            ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
+                            : "text-muted-fg/55 hover:bg-white/[0.06] hover:text-fg/75",
+                        )}
                         disabled={parallelLaunchBusy}
                         onClick={() => onParallelConfiguringIndexChange?.(configuring ? null : idx)}
                       >
-                        {configuring ? "Done" : "Configure"}
+                        {configuring ? "Editing" : "Configure"}
                       </button>
                       {parallelModelSlots.length > 2 ? (
                         <button
                           type="button"
-                          className="ml-auto rounded-md px-2 py-0.5 font-mono text-[9px] text-red-400/70 hover:bg-red-500/10"
+                          className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 font-sans text-[10px] text-red-400/75 transition-colors hover:bg-red-500/10"
                           disabled={parallelLaunchBusy}
                           onClick={() => onParallelRemoveModel?.(idx)}
+                          title="Remove this model from the parallel set"
                         >
+                          <Trash size={12} />
                           Remove
                         </button>
                       ) : null}
@@ -1630,14 +1714,18 @@ export function AgentChatComposer({
               </div>
               <button
                 type="button"
-                className="self-start rounded-md border border-white/[0.08] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-fg/55 hover:bg-white/[0.04] disabled:opacity-40"
+                className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.12] px-2.5 py-1.5 font-sans text-[11px] font-medium text-muted-fg/65 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04] hover:text-fg/75 disabled:opacity-40"
                 disabled={parallelLaunchBusy}
                 onClick={() => onParallelAddModel?.()}
               >
+                <Plus size={14} weight="bold" />
                 Add model
               </button>
               {parallelLaunchBusy && parallelLaunchStatus ? (
-                <div className="font-mono text-[10px] text-accent/80">{parallelLaunchStatus}</div>
+                <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                  <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--chat-accent)]" />
+                  <span className="font-sans text-[11px] text-fg/70">{parallelLaunchStatus}</span>
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -1706,7 +1794,11 @@ export function AgentChatComposer({
               className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               disabled={!canAttach}
               onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-              title="Attach files or images (@)"
+              title={
+                parallelChatMode
+                  ? attachBlockedReason ?? "Search repo for images (@)"
+                  : "Attach files or images (@)"
+              }
               aria-label="Open attachment picker"
             >
               @
@@ -1716,7 +1808,7 @@ export function AgentChatComposer({
               className="rounded-md px-1 py-1 text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               disabled={!canAttach}
               onClick={openUploadPicker}
-              title="Upload file from disk"
+              title={parallelChatMode ? (attachBlockedReason ?? "Upload images") : "Upload file from disk"}
               aria-label="Upload file from disk"
             >
               <Paperclip size={11} />
@@ -1811,22 +1903,33 @@ export function AgentChatComposer({
                 type="button"
                 className={cn(
                   "inline-flex h-8 items-center justify-center rounded-lg border px-4 transition-all",
-                  busy || !draft.trim().length || !modelId
-                    ? "border-white/[0.04] bg-white/[0.02] text-muted-fg/15"
-                    : "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]",
+                  (() => {
+                    const parallelReady =
+                      parallelChatMode
+                      && parallelModelSlots.length >= 2
+                      && (draft.trim().length > 0 || attachments.some((a) => a.type === "image"));
+                    const singleReady = !parallelChatMode && Boolean(modelId) && draft.trim().length > 0;
+                    const enabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
+                    return enabled
+                      ? "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]"
+                      : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15";
+                  })(),
                 )}
                 disabled={
                   busy
                   || parallelLaunchBusy
-                  || !draft.trim().length
-                  || (parallelChatMode ? parallelModelSlots.length < 2 : !modelId)
+                  || (parallelChatMode
+                    ? parallelModelSlots.length < 2 || (draft.trim().length === 0 && !attachments.some((a) => a.type === "image"))
+                    : !modelId || !draft.trim().length)
                 }
                 onClick={submitComposerDraft}
                 title={
                   parallelChatMode
                     ? parallelModelSlots.length < 2
                       ? "Add at least two models"
-                      : "Send to all lanes"
+                      : draft.trim().length === 0 && !attachments.some((a) => a.type === "image")
+                        ? "Add a message or at least one image"
+                        : "Send to all lanes"
                     : !modelId
                       ? "Select a model first"
                       : "Send"
@@ -1869,8 +1972,14 @@ export function AgentChatComposer({
         {dragActive ? (
           <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,rgba(5,5,8,0.58))] backdrop-blur-sm">
             <div className="rounded-[var(--chat-radius-card)] border border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)] bg-card/92 px-5 py-4 text-center shadow-[var(--chat-composer-shadow)]">
-              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Drop files to attach</div>
-              <div className="mt-1 text-[12px] text-fg/74">Images and files will be added to this turn.</div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">
+                {parallelChatMode ? "Drop images to attach" : "Drop files to attach"}
+              </div>
+              <div className="mt-1 text-[12px] text-fg/74">
+                {parallelChatMode
+                  ? `Up to ${PARALLEL_CHAT_MAX_IMAGES} images, sent to every parallel lane.`
+                  : "Images and files will be added to this turn."}
+              </div>
             </div>
           </div>
         ) : null}
