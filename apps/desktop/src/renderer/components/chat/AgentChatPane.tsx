@@ -5,7 +5,7 @@ import { GitBranch, Plus } from "@phosphor-icons/react";
 import {
   createDefaultComputerUsePolicy,
   inferAttachmentType,
-  PARALLEL_CHAT_MAX_IMAGES,
+  PARALLEL_CHAT_MAX_ATTACHMENTS,
   type AgentChatApprovalDecision,
   type AgentChatClaudePermissionMode,
   type AgentChatCodexApprovalPolicy,
@@ -1872,7 +1872,7 @@ export function AgentChatPane({
 
     if (isParallelLaunch) {
       const text = draft.trim();
-      if ((!text.length && !attachments.some((a) => a.type === "image")) || !laneId || !projectRoot) return;
+      if ((!text.length && attachments.length === 0) || !laneId || !projectRoot) return;
       if (parallelModelSlots.length < 2) {
         setError("Add at least two models for a parallel launch.");
         return;
@@ -1882,25 +1882,30 @@ export function AgentChatPane({
         setError("Each parallel lane needs a different model.");
         return;
       }
-      const nonImage = attachments.filter((a) => a.type !== "image");
-      if (nonImage.length) {
-        setError("Parallel launch supports images only. Remove non-image attachments or switch to single-model chat.");
+      if (attachments.length > PARALLEL_CHAT_MAX_ATTACHMENTS) {
+        setError(`Parallel launch allows at most ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments. Remove some files or send in batches.`);
         return;
       }
 
       const draftSnapshot = draft;
-      const attachmentsSnapshot = attachments.filter((a) => a.type === "image");
+      const attachmentsSnapshot = [...attachments];
       const includeDocsSnapshot = includeProjectDocs;
       submitInFlightRef.current = true;
       setParallelLaunchBusy(true);
       setParallelLaunchStatus("Naming lanes…");
       setError(null);
       try {
+        const imageCount = attachmentsSnapshot.filter((a) => a.type === "image").length;
+        const fileCount = attachmentsSnapshot.filter((a) => a.type === "file").length;
         const namingSeed =
           text.trim().length > 0
             ? text
             : attachmentsSnapshot.length
-              ? `Parallel image task (${attachmentsSnapshot.length} image${attachmentsSnapshot.length === 1 ? "" : "s"})`
+              ? [
+                  "Parallel attachment task",
+                  imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : null,
+                  fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
+                ].filter(Boolean).join(" · ")
               : text;
         const baseName = await window.ade.agentChat.suggestLaneName({
           laneId,
@@ -1948,7 +1953,7 @@ export function AgentChatPane({
           finalText.trim().length > 0
             ? finalText
             : attachmentsSnapshot.length
-              ? "Please review the attached images."
+              ? "Please review the attached files."
               : finalText;
         const displayForSend = text.trim().length > 0 ? text : sendText;
 
@@ -2743,7 +2748,7 @@ export function AgentChatPane({
             onParallelChatModeChange={(enabled) => {
               setParallelChatMode(enabled);
               if (enabled) {
-                setAttachments((prev) => prev.filter((a) => a.type === "image").slice(0, PARALLEL_CHAT_MAX_IMAGES));
+                setAttachments((prev) => prev.slice(0, PARALLEL_CHAT_MAX_ATTACHMENTS));
               } else {
                 setParallelModelSlots([]);
                 setParallelConfiguringIndex(null);
