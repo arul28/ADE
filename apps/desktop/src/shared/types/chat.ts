@@ -77,8 +77,8 @@ export type AgentChatFileRef = {
   type: "file" | "image";
 };
 
-/** Max images attached to one parallel multi-lane launch (same files sent to each child session). */
-export const PARALLEL_CHAT_MAX_IMAGES = 8;
+/** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
+export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
 
 /** Infer whether a file path points to an image or a generic file. */
 export function inferAttachmentType(
