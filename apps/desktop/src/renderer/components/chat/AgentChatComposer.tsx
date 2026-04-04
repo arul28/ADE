@@ -4,7 +4,7 @@ import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperP
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
-  PARALLEL_CHAT_MAX_IMAGES,
+  PARALLEL_CHAT_MAX_ATTACHMENTS,
   type AgentChatApprovalDecision,
   type AgentChatClaudePermissionMode,
   type AgentChatCursorConfigOption,
@@ -535,13 +535,9 @@ export function AgentChatComposer({
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileAddInProgressRef = useRef(false);
-  const parallelImageCount = useMemo(
-    () => attachments.filter((a) => a.type === "image").length,
-    [attachments],
-  );
-  const canAttach = (!turnActive || sessionProvider === "claude" || sessionProvider === "codex") && (!parallelChatMode || parallelImageCount < PARALLEL_CHAT_MAX_IMAGES);
-  const attachBlockedReason = parallelChatMode && parallelImageCount >= PARALLEL_CHAT_MAX_IMAGES
-    ? `Maximum ${PARALLEL_CHAT_MAX_IMAGES} images for parallel launch`
+  const canAttach = (!turnActive || sessionProvider === "claude" || sessionProvider === "codex") && (!parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS);
+  const attachBlockedReason = parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
+    ? `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`
     : null;
 
   const resizeTextarea = useCallback(() => {
@@ -581,11 +577,6 @@ export function AgentChatComposer({
     );
   }, [slashQuery, effectiveSlashCommands]);
 
-  const attachmentResultsForPicker = useMemo(() => {
-    if (!parallelChatMode) return attachmentResults;
-    return attachmentResults.filter((r) => r.type === "image");
-  }, [parallelChatMode, attachmentResults]);
-
   /* ── Attachment picker effects ── */
   useEffect(() => {
     if (!attachmentPickerOpen) {
@@ -600,8 +591,8 @@ export function AgentChatComposer({
   }, [attachmentPickerOpen]);
 
   useEffect(() => {
-    setAttachmentCursor((c) => Math.min(c, Math.max(attachmentResultsForPicker.length - 1, 0)));
-  }, [attachmentResultsForPicker.length]);
+    setAttachmentCursor((c) => Math.min(c, Math.max(attachmentResults.length - 1, 0)));
+  }, [attachmentResults.length]);
 
   useEffect(() => {
     if (!attachmentPickerOpen) return;
@@ -629,15 +620,9 @@ export function AgentChatComposer({
 
   const selectAttachment = (attachment: AgentChatFileRef) => {
     setAttachError(null);
-    if (parallelChatMode) {
-      if (attachment.type !== "image") {
-        setAttachError("Parallel launch supports images only. Remove non-image attachments or turn off parallel mode.");
-        return;
-      }
-      if (parallelImageCount >= PARALLEL_CHAT_MAX_IMAGES) {
-        setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_IMAGES} images for parallel launch.`);
-        return;
-      }
+    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+      setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
+      return;
     }
     onAddAttachment(attachment);
     setAttachmentPickerOpen(false);
@@ -646,16 +631,16 @@ export function AgentChatComposer({
   const addFileAttachments = async (files: FileList | null | undefined) => {
     if (!files?.length) return;
     if (turnActive) return;
-    if (parallelChatMode && parallelImageCount >= PARALLEL_CHAT_MAX_IMAGES) return;
+    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (!parallelChatMode && !canAttach) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     try {
-      let imageCount = parallelImageCount;
+      let addedInBatch = 0;
       for (const file of Array.from(files)) {
-        if (parallelChatMode && imageCount >= PARALLEL_CHAT_MAX_IMAGES) {
-          setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_IMAGES} images for parallel launch.`);
+        if (parallelChatMode && attachments.length + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+          setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
           break;
         }
         const fileWithPath = file as File & { path?: string };
@@ -664,12 +649,8 @@ export function AgentChatComposer({
         if (hasRealPath) {
           const filePath = fileWithPath.path!;
           const t = inferAttachmentType(filePath, file.type);
-          if (parallelChatMode && t !== "image") {
-            setAttachError("Parallel launch supports images only.");
-            continue;
-          }
           onAddAttachment({ path: filePath, type: t });
-          if (parallelChatMode && t === "image") imageCount += 1;
+          addedInBatch += 1;
           continue;
         }
 
@@ -691,12 +672,8 @@ export function AgentChatComposer({
             filename: file.name || "clipboard.png",
           });
           const t = inferAttachmentType(tempPath, file.type);
-          if (parallelChatMode && t !== "image") {
-            setAttachError("Parallel launch supports images only.");
-            continue;
-          }
           onAddAttachment({ path: tempPath, type: t });
-          if (parallelChatMode) imageCount += 1;
+          addedInBatch += 1;
         } catch {
           setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
         }
@@ -1399,8 +1376,8 @@ export function AgentChatComposer({
       if (busy || parallelLaunchBusy) return;
       if (parallelModelSlots.length < 2) return;
       const hasPrompt = draft.trim().length > 0;
-      const hasImages = attachments.some((a) => a.type === "image");
-      if (!hasPrompt && !hasImages) return;
+      const hasAttachments = attachments.length > 0;
+      if (!hasPrompt && !hasAttachments) return;
       onSubmit();
       return;
     }
@@ -1523,7 +1500,6 @@ export function AgentChatComposer({
             ref={uploadInputRef}
             type="file"
             multiple
-            accept={parallelChatMode ? "image/*" : undefined}
             className="hidden"
             onChange={(event) => {
               void addFileAttachments(event.target.files);
@@ -1573,12 +1549,12 @@ export function AgentChatComposer({
                     if (event.key === "Escape") { event.preventDefault(); setAttachmentPickerOpen(false); return; }
                     if (event.key === "ArrowDown") {
                       event.preventDefault();
-                      setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResultsForPicker.length - 1, 0)));
+                      setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0)));
                       return;
                     }
                     if (event.key === "ArrowUp") { event.preventDefault(); setAttachmentCursor((v) => Math.max(v - 1, 0)); return; }
                     if (event.key === "Enter") {
-                      const candidate = attachmentResultsForPicker[attachmentCursor];
+                      const candidate = attachmentResults[attachmentCursor];
                       if (candidate) { event.preventDefault(); selectAttachment(candidate); }
                     }
                   }}
@@ -1589,8 +1565,8 @@ export function AgentChatComposer({
                   <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Type to search files...</div>
                 ) : attachmentBusy ? (
                   <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Searching...</div>
-                ) : attachmentResultsForPicker.length ? (
-                  attachmentResultsForPicker.map((result, index) => (
+                ) : attachmentResults.length ? (
+                  attachmentResults.map((result, index) => (
                     <button
                       key={result.path}
                       type="button"
@@ -1607,11 +1583,7 @@ export function AgentChatComposer({
                     </button>
                   ))
                 ) : (
-                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">
-                    {parallelChatMode && attachmentQuery.trim().length
-                      ? "No matching images in the repo search."
-                      : "No matching files."}
-                  </div>
+                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">No matching files.</div>
                 )}
               </div>
             </div>
@@ -1637,7 +1609,7 @@ export function AgentChatComposer({
               <span className="min-w-0 flex-1">
                 <span className="block font-sans text-[12px] font-medium text-fg/85">Parallel models</span>
                 <span className="mt-0.5 block font-sans text-[11px] leading-snug text-muted-fg/55">
-                  Same prompt (and images) in one child lane per model
+                  Same prompt and attachments in one child lane per model
                 </span>
               </span>
             </button>
@@ -1648,7 +1620,7 @@ export function AgentChatComposer({
                 <div className="min-w-0">
                   <div className="font-sans text-[12px] font-semibold text-fg/88">Parallel launch</div>
                   <p className="mt-1 font-sans text-[11px] leading-relaxed text-muted-fg/55">
-                    Configure each model, then send once. Images attach to every lane (max {PARALLEL_CHAT_MAX_IMAGES}).
+                    Configure each model, then send once. Attachments go to every lane (max {PARALLEL_CHAT_MAX_ATTACHMENTS}).
                   </p>
                 </div>
                 <button
@@ -1796,7 +1768,7 @@ export function AgentChatComposer({
               onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
               title={
                 parallelChatMode
-                  ? attachBlockedReason ?? "Search repo for images (@)"
+                  ? attachBlockedReason ?? "Search repo for files (@)"
                   : "Attach files or images (@)"
               }
               aria-label="Open attachment picker"
@@ -1808,7 +1780,7 @@ export function AgentChatComposer({
               className="rounded-md px-1 py-1 text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               disabled={!canAttach}
               onClick={openUploadPicker}
-              title={parallelChatMode ? (attachBlockedReason ?? "Upload images") : "Upload file from disk"}
+              title={parallelChatMode ? (attachBlockedReason ?? "Upload files") : "Upload file from disk"}
               aria-label="Upload file from disk"
             >
               <Paperclip size={11} />
@@ -1907,7 +1879,7 @@ export function AgentChatComposer({
                     const parallelReady =
                       parallelChatMode
                       && parallelModelSlots.length >= 2
-                      && (draft.trim().length > 0 || attachments.some((a) => a.type === "image"));
+                      && (draft.trim().length > 0 || attachments.length > 0);
                     const singleReady = !parallelChatMode && Boolean(modelId) && draft.trim().length > 0;
                     const enabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
                     return enabled
@@ -1919,7 +1891,7 @@ export function AgentChatComposer({
                   busy
                   || parallelLaunchBusy
                   || (parallelChatMode
-                    ? parallelModelSlots.length < 2 || (draft.trim().length === 0 && !attachments.some((a) => a.type === "image"))
+                    ? parallelModelSlots.length < 2 || (draft.trim().length === 0 && attachments.length === 0)
                     : !modelId || !draft.trim().length)
                 }
                 onClick={submitComposerDraft}
@@ -1927,8 +1899,8 @@ export function AgentChatComposer({
                   parallelChatMode
                     ? parallelModelSlots.length < 2
                       ? "Add at least two models"
-                      : draft.trim().length === 0 && !attachments.some((a) => a.type === "image")
-                        ? "Add a message or at least one image"
+                      : draft.trim().length === 0 && attachments.length === 0
+                        ? "Add a message or at least one attachment"
                         : "Send to all lanes"
                     : !modelId
                       ? "Select a model first"
@@ -1973,11 +1945,11 @@ export function AgentChatComposer({
           <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,rgba(5,5,8,0.58))] backdrop-blur-sm">
             <div className="rounded-[var(--chat-radius-card)] border border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)] bg-card/92 px-5 py-4 text-center shadow-[var(--chat-composer-shadow)]">
               <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">
-                {parallelChatMode ? "Drop images to attach" : "Drop files to attach"}
+                Drop files to attach
               </div>
               <div className="mt-1 text-[12px] text-fg/74">
                 {parallelChatMode
-                  ? `Up to ${PARALLEL_CHAT_MAX_IMAGES} images, sent to every parallel lane.`
+                  ? `Up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files, sent to every parallel lane.`
                   : "Images and files will be added to this turn."}
               </div>
             </div>
