@@ -861,6 +861,17 @@ app.whenReady().then(async () => {
       projectConfigService
     });
 
+    if (!hadAdeDir) {
+      const hasEnvCredentials =
+        Boolean((process.env.GITHUB_TOKEN ?? process.env.ADE_GITHUB_TOKEN ?? "").trim()) ||
+        Boolean((process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY ?? "").trim()) ||
+        Boolean((process.env.LINEAR_API_KEY ?? process.env.ADE_LINEAR_TOKEN ?? "").trim());
+      if (hasEnvCredentials) {
+        onboardingService.complete();
+        logger.info("onboarding.auto_completed", { reason: "env_credentials_detected" });
+      }
+    }
+
     rebaseSuggestionService = createRebaseSuggestionService({
       db,
       logger,
