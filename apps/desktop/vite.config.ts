@@ -10,6 +10,9 @@ export default defineConfig({
   base: "./",
   plugins: [react()],
   server: {
+    // Bind on all interfaces so IPv4 tools (curl 127.0.0.1, headless Chrome) can reach
+    // the dev server; default Node/Vite behavior can be IPv6-only (::1) on some Linux VMs.
+    host: true,
     port: 5173,
     strictPort: true,
     fs: {

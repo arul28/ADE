@@ -46,6 +46,15 @@ async function choosePort(start = 5173, attempts = 32) {
   throw new Error(`No free dev port found in range ${start}-${start + attempts - 1}`);
 }
 
+async function chooseRemoteDebugPort(start = 9222, attempts = 64) {
+  for (let offset = 0; offset < attempts; offset += 1) {
+    const port = start + offset;
+    // eslint-disable-next-line no-await-in-loop
+    if (await isPortFree(port)) return port;
+  }
+  throw new Error(`No free remote debugging port found in range ${start}-${start + attempts - 1}`);
+}
+
 function waitForPort(port, timeoutMs) {
   const startedAt = Date.now();
   return new Promise((resolve, reject) => {
@@ -121,10 +130,11 @@ function spawnProcess(name, cmd, args, extraEnv = {}) {
 async function main() {
   const devPort = await choosePort(5173, 32);
   const devServerUrl = `http://localhost:${devPort}`;
-  const remoteDebugPort = Number.parseInt(process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT || "9222", 10);
-  if (!Number.isFinite(remoteDebugPort) || remoteDebugPort <= 0) {
-    throw new Error(`Invalid ADE_ELECTRON_REMOTE_DEBUGGING_PORT: ${process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT ?? ""}`);
-  }
+  const envDebugPort = Number.parseInt(process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT || "", 10);
+  const remoteDebugPort =
+    Number.isFinite(envDebugPort) && envDebugPort > 0
+      ? envDebugPort
+      : await chooseRemoteDebugPort(9222, 64);
   process.stdout.write(`[ade] dev launcher using ${devServerUrl}\n`);
   process.stdout.write(`[ade] electron CDP endpoint: http://127.0.0.1:${remoteDebugPort}/json/version\n`);
 
@@ -152,9 +162,11 @@ async function main() {
   process.on("SIGTERM", () => teardown("SIGTERM"));
   process.on("exit", () => teardown("SIGTERM"));
 
-  const vite = spawnProcess("renderer", "npx", ["vite", "--port", String(devPort), "--strictPort", "--force"]);
+  // Start the main-process bundler first and wait for an initial `main.cjs` before Vite.
+  // If Vite + tsup start together, a stale `dist/main/main.cjs` from a prior `npm run build`
+  // can satisfy `waitForStableFile` briefly; then tsup's clean step deletes it and the first
+  // Electron load races a missing module. Sequential startup removes that class of flake.
   const main = spawnProcess("main", "npx", ["tsup", "--watch"]);
-  children.add(vite);
   children.add(main);
 
   const onUnexpectedExit = (child) => (code, signal) => {
@@ -166,17 +178,24 @@ async function main() {
     process.exit(code ?? 1);
   };
 
-  vite.on("exit", onUnexpectedExit(vite));
   main.on("exit", onUnexpectedExit(main));
 
-  const [, initialMainBundleStat] = await Promise.all([
-    waitForPort(devPort, 30_000),
-    waitForStableFile(distMainFile, 30_000),
-  ]);
+  const initialMainBundleStat = await waitForStableFile(distMainFile, 120_000);
+
+  const vite = spawnProcess("renderer", "npx", ["vite", "--port", String(devPort), "--strictPort", "--force"]);
+  children.add(vite);
+  vite.on("exit", onUnexpectedExit(vite));
+
+  await waitForPort(devPort, 30_000);
 
   const electronEnv = { VITE_DEV_SERVER_URL: devServerUrl };
   const launchElectron = () => {
-    const child = spawnProcess("electron", "npx", ["electron", ".", `--remote-debugging-port=${remoteDebugPort}`], electronEnv);
+    const electronArgs = ["electron"];
+    if (process.platform === "linux" && process.env.ADE_ELECTRON_NO_SANDBOX !== "0") {
+      electronArgs.push("--no-sandbox");
+    }
+    electronArgs.push(".", `--remote-debugging-port=${remoteDebugPort}`);
+    const child = spawnProcess("electron", "npx", electronArgs, electronEnv);
     electron = child;
     children.add(child);
     child.on("exit", (code, signal) => {

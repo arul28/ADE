@@ -134,6 +134,14 @@ const disableHardwareAcceleration =
   process.env.ADE_DISABLE_HARDWARE_ACCEL === "1";
 if (disableHardwareAcceleration) {
   app.disableHardwareAcceleration();
+  // On Linux VMs/containers, disabling HW accel alone is not always enough: Chromium
+  // can still spawn a GPU process and fatal with "GPU process isn't usable".
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  app.commandLine.appendSwitch("in-process-gpu");
+  if (process.platform === "linux") {
+    app.commandLine.appendSwitch("disable-dev-shm-usage");
+  }
 }
 
 const devStabilityMode =

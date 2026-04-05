@@ -322,6 +322,7 @@ import type {
   AiSettingsStatus,
   MemoryHealthScope,
   MemoryHealthStats,
+  SyncClientStatus,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -1318,6 +1319,55 @@ function getAllowedDirs(getCtx: () => AppContext): string[] {
   ];
 }
 
+function idleSyncRoleSnapshot(): SyncRoleSnapshot {
+  const now = new Date().toISOString();
+  const placeholderDevice: SyncDeviceRecord = {
+    deviceId: "idle",
+    siteId: "idle",
+    name: "No project open",
+    platform: "unknown",
+    deviceType: "unknown",
+    createdAt: now,
+    updatedAt: now,
+    lastSeenAt: null,
+    lastHost: null,
+    lastPort: null,
+    tailscaleIp: null,
+    ipAddresses: [],
+    metadata: {},
+  };
+  const client: SyncClientStatus = {
+    state: "disconnected",
+    host: null,
+    port: null,
+    connectedAt: null,
+    lastSeenAt: null,
+    latencyMs: null,
+    syncLag: null,
+    lastRemoteDbVersion: 0,
+    brainDeviceId: null,
+    hostName: null,
+    error: null,
+    message: null,
+    savedDraft: null,
+  };
+  return {
+    mode: "standalone",
+    role: "brain",
+    localDevice: placeholderDevice,
+    currentBrain: placeholderDevice,
+    clusterState: null,
+    bootstrapToken: null,
+    pairingSession: null,
+    pairingConnectInfo: null,
+    connectedPeers: [],
+    client,
+    transferReadiness: { ready: true, blockers: [], survivableState: [] },
+    survivableStateText: "Open a project to enable sync.",
+    blockingStateText: "",
+  };
+}
+
 export function registerIpc({
   getCtx,
   switchProjectFromDialog,
@@ -2035,7 +2085,7 @@ export function registerIpc({
   ipcMain.handle(IPC.syncGetStatus, async (): Promise<SyncRoleSnapshot> => {
     const ctx = getCtx();
     if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
+      return idleSyncRoleSnapshot();
     }
     return await ctx.syncService.getStatus();
   });

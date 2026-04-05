@@ -58,7 +58,11 @@
 
 - Set `ADE_DISABLE_HARDWARE_ACCEL=1` — the VM has no real GPU, and without this the app crashes on `WebGL1 blocklisted`.
 - `node-pty` ships only macOS/Windows prebuilds. After `npm install`, run `npm --prefix apps/desktop run rebuild:native` to compile `pty.node` for Electron on Linux. Then manually compile the spawn-helper: `cd apps/desktop/node_modules/node-pty && g++ -o build/Release/spawn-helper src/unix/spawn-helper.cc`.
-- The `npm run dev` script has a race condition: `predev` clears `dist/`, then tsup + Electron start in parallel, so the first Electron launch fails with "Cannot find module main.cjs" and auto-restarts. To avoid this, pre-build first (`npm run build`) then run the dev launcher directly: `node scripts/normalize-runtime-binaries.cjs && node scripts/ensure-electron.cjs && node scripts/dev.cjs`.
+- The dev launcher (`scripts/dev.cjs`) starts **tsup first**, waits for a stable `dist/main/main.cjs`, then starts Vite and Electron so the first load does not race a missing main bundle after `predev` clears `dist/`.
+- Vite dev binds with **`server.host: true`** so both IPv4 (`127.0.0.1`) and IPv6 (`::1`) can reach the dev server on Linux VMs.
+- On Linux, Electron is launched with **`--no-sandbox`** by default (needed in many containers). Set **`ADE_ELECTRON_NO_SANDBOX=0`** to skip that flag when running on a full desktop.
+- Optional: capture a PNG of the Electron window via CDP: `node scripts/capture-dev-screenshot.mjs <remote-debug-port> /tmp/out.png` (requires dev server running with matching `--remote-debugging-port`).
+- For a one-shot VM proof (starts dev, waits for the Vite URL, captures, tears down): `bash apps/desktop/scripts/vm-dev-screenshot.sh`.
 - Alternatively, start Vite and Electron separately for more control: `npx vite --port 5173 --strictPort --force &` then `VITE_DEV_SERVER_URL=http://localhost:5173 npx electron . --no-sandbox`.
 - `cr-sqlite` extension binaries are only available for macOS. On Linux the app logs `db.crsqlite_unavailable` as a warning and continues without CRDT sync — this is non-blocking for development.
 - The `ADE_PROJECT_ROOT=/workspace` env var tells the main process to auto-open a project at startup. However, there is a timing race: the renderer's initial `getProject()` call may return null before the async project switch completes, causing the welcome screen to appear even though the backend loaded the project. A workaround is to open the project manually via the "Open a project" button in the top bar.
