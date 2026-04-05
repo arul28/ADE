@@ -15,6 +15,7 @@ import {
   type AgentChatFileRef,
   type AgentChatInteractionMode,
   type AiProviderConnectionStatus,
+  type AiRuntimeConnectionStatus,
   type AgentChatSession,
   type AgentChatUnifiedPermissionMode,
   type AgentChatSessionProfile,
@@ -24,13 +25,20 @@ import {
   type AgentChatSessionSummary,
   type ComputerUseOwnerSnapshot,
   type ComputerUsePolicy,
+  type AiSettingsStatus,
   type TerminalToolType,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
+  LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
+  getLocalModelIdTail,
+  getLocalProviderDefaultEndpoint,
   getModelById,
+  getModelDescriptorForPermissionMode,
+  parseLocalProviderFromModelId,
   resolveModelDescriptorForProvider,
+  type LocalProviderFamily,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
@@ -63,6 +71,82 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
+
+type AiStatusSnapshot = AiSettingsStatus & {
+  runtimeConnections?: Record<string, AiRuntimeConnectionStatus>;
+};
+
+function formatLocalModelLabel(modelId: string): string {
+  const provider = parseLocalProviderFromModelId(modelId);
+  if (!provider) {
+    return getModelById(modelId)?.displayName ?? modelId;
+  }
+  const tail = getLocalModelIdTail(modelId, provider);
+  return tail.length ? tail : modelId;
+}
+
+function recommendedUnifiedPermissionModeForModel(
+  descriptor: ModelDescriptor | null | undefined,
+): AgentChatUnifiedPermissionMode | null {
+  if (!descriptor?.authTypes.includes("local")) return null;
+  return descriptor.harnessProfile === "guarded" || descriptor.harnessProfile === "read_only"
+    ? "plan"
+    : null;
+}
+
+function shouldResetUnifiedPermissionForModelSwitch(
+  previous: ModelDescriptor | null | undefined,
+  next: ModelDescriptor | null | undefined,
+): boolean {
+  const prevRec = recommendedUnifiedPermissionModeForModel(previous);
+  const nextRec = recommendedUnifiedPermissionModeForModel(next);
+  if (prevRec == null && nextRec == null) return false;
+  return prevRec !== nextRec;
+}
+
+type LocalRuntimeNoticeShape = {
+  tone: "success" | "warning";
+  title: string;
+  message: string;
+};
+
+function LocalRuntimeNoticeBlock(props: {
+  notice: LocalRuntimeNoticeShape;
+  endpoint?: string | null;
+  /** `inline` = text only (inside a parent runtime card). */
+  variant?: "card" | "inline";
+}) {
+  const { notice, endpoint, variant = "card" } = props;
+  const isCard = variant === "card";
+  return (
+    <div
+      className={cn(
+        isCard && "border-b px-4 py-2.5",
+        isCard && (notice.tone === "success"
+          ? "border-emerald-500/10 bg-emerald-500/[0.04]"
+          : "border-amber-500/10 bg-amber-500/[0.04]"),
+      )}
+    >
+      <div className={cn(
+        "font-mono text-[10px] uppercase tracking-[0.16em]",
+        notice.tone === "success" ? "text-emerald-200/70" : "text-amber-200/70",
+      )}>
+        {notice.title}
+      </div>
+      <div className={cn(
+        "mt-1 text-[12px] leading-5",
+        notice.tone === "success" ? "text-emerald-100/80" : "text-amber-100/80",
+      )}>
+        {notice.message}
+      </div>
+      {endpoint ? (
+        <code className="mt-2 block rounded-md border border-white/[0.06] bg-black/10 px-2 py-1 font-mono text-[10px] text-fg/60">
+          {endpoint}
+        </code>
+      ) : null}
+    </div>
+  );
+}
 
 export function resolveChatSessionProfile(_computerUsePolicy: ComputerUsePolicy): AgentChatSessionProfile {
   return "workflow";
@@ -590,9 +674,11 @@ export function AgentChatPane({
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
   const [codexConfigSource, setCodexConfigSource] = useState<AgentChatCodexConfigSource>(initialNativeControls.codexConfigSource);
   const [unifiedPermissionMode, setUnifiedPermissionMode] = useState<AgentChatUnifiedPermissionMode>(initialNativeControls.unifiedPermissionMode);
+  const prevModelDescRef = useRef<ModelDescriptor | null | undefined>(undefined);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, string | boolean>>(initialNativeControls.cursorConfigValues);
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
+  const [aiStatus, setAiStatus] = useState<AiStatusSnapshot | null>(null);
   const [providerConnections, setProviderConnections] = useState<{
     claude: AiProviderConnectionStatus | null;
     codex: AiProviderConnectionStatus | null;
@@ -685,6 +771,126 @@ export function AgentChatPane({
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
+  const localRuntimeState = useMemo(() => {
+    const provider = selectedModelDesc?.authTypes.includes("local")
+      ? (selectedModelDesc.family as LocalProviderFamily)
+      : parseLocalProviderFromModelId(modelId);
+    if (!provider) return null;
+    const runtimeConnection = aiStatus?.runtimeConnections?.[provider] ?? null;
+    const detectedEntry = aiStatus?.detectedAuth?.find(
+      (entry): entry is { type: "local"; provider: LocalProviderFamily; endpoint: string } =>
+        entry.type === "local" && entry.provider === provider,
+    ) ?? null;
+    const modelIds = runtimeConnection?.loadedModelIds?.length
+      ? runtimeConnection.loadedModelIds.filter((id): id is string => String(id ?? "").startsWith(`${provider}/`))
+      : availableModelIds.filter((id) => id.startsWith(`${provider}/`));
+    return {
+      provider,
+      label: LOCAL_PROVIDER_LABELS[provider],
+      endpoint: runtimeConnection?.endpoint ?? detectedEntry?.endpoint ?? getLocalProviderDefaultEndpoint(provider),
+      detected: Boolean(runtimeConnection?.runtimeDetected ?? detectedEntry),
+      runtimeAvailable: runtimeConnection?.runtimeAvailable ?? false,
+      health: runtimeConnection?.health ?? null,
+      blocker: runtimeConnection?.blocker ?? null,
+      modelIds,
+      statusKnown: Boolean(aiStatus),
+    };
+  }, [aiStatus, availableModelIds, modelId, selectedModelDesc]);
+  const localRuntimeNotice = useMemo(() => {
+    if (!localRuntimeState) return null;
+    if (!localRuntimeState.statusKnown) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: `ADE could not read ${localRuntimeState.label} status right now. It will still try the unified local-model path, but refresh settings if the runtime changed.`,
+      };
+    }
+    if (localRuntimeState.blocker) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: localRuntimeState.blocker,
+      };
+    }
+    if (!localRuntimeState.detected) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: `${localRuntimeState.label} is not detected at ${localRuntimeState.endpoint}. Start it, load a model, then refresh so ADE can use the local runtime.`,
+      };
+    }
+    if (!localRuntimeState.modelIds.length) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: `${localRuntimeState.label} responded, but no loaded models were reported yet. Load a model in ${localRuntimeState.label} and refresh.`,
+      };
+    }
+    if (!localRuntimeState.modelIds.includes(modelId)) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: `${localRuntimeState.label} is running, but ${selectedModelDesc?.displayName ?? formatLocalModelLabel(modelId)} is not in the loaded model list. Choose one of the loaded models or load this model in ${localRuntimeState.label}.`,
+      };
+    }
+    return {
+      tone: "success" as const,
+      title: `${localRuntimeState.label} runtime`,
+      message: `${localRuntimeState.label} is connected with ${localRuntimeState.modelIds.length} loaded model${localRuntimeState.modelIds.length === 1 ? "" : "s"}${localRuntimeState.health ? ` (${localRuntimeState.health})` : ""}.`,
+    };
+  }, [localRuntimeState, modelId, selectedModelDesc?.displayName]);
+
+  const cliRuntimeBlocked = Boolean(
+    selectedSessionId
+    && activeProviderConnection
+    && !activeProviderConnection.runtimeAvailable
+    && (activeProviderConnection.blocker || activeProviderConnection.provider === "cursor"),
+  );
+  const cliRuntimeTitle = activeProviderConnection?.provider === "claude"
+    ? "Claude runtime"
+    : activeProviderConnection?.provider === "cursor"
+      ? "Cursor runtime"
+      : "Codex runtime";
+  const cliRuntimeBody = activeProviderConnection?.blocker
+    ?? (activeProviderConnection?.provider === "cursor"
+      ? "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."
+      : null);
+
+  const mergedRuntimeBanner = useMemo(() => {
+    if (!cliRuntimeBlocked && !localRuntimeNotice) return null;
+    if (cliRuntimeBlocked && localRuntimeNotice) {
+      return {
+        kind: "merged" as const,
+        cliTitle: cliRuntimeTitle,
+        cliBody: cliRuntimeBody ?? "",
+        localNotice: localRuntimeNotice,
+        localEndpoint: localRuntimeState?.endpoint,
+      };
+    }
+    if (cliRuntimeBlocked) {
+      return {
+        kind: "cli-only" as const,
+        cliTitle: cliRuntimeTitle,
+        cliBody: cliRuntimeBody ?? "",
+      };
+    }
+    return {
+      kind: "local-only" as const,
+      localNotice: localRuntimeNotice!,
+      localEndpoint: localRuntimeState?.endpoint,
+    };
+  }, [
+    cliRuntimeBlocked,
+    cliRuntimeBody,
+    cliRuntimeTitle,
+    localRuntimeNotice,
+    localRuntimeState?.endpoint,
+  ]);
+
+  useEffect(() => {
+    prevModelDescRef.current = getModelDescriptorForPermissionMode(modelId);
+  }, [modelId]);
+
   const surfaceMode = presentation?.mode ?? "standard";
   const identitySessionSettingsBusy = isPersistentIdentitySurface && sessionMutationKind !== null;
 
@@ -812,10 +1018,18 @@ export function AgentChatPane({
   const refreshAvailableModels = useCallback(async () => {
     try {
       const status = await window.ade.ai.getStatus();
+      setAiStatus(status);
+      setProviderConnections({
+        claude: status.providerConnections?.claude ?? null,
+        codex: status.providerConnections?.codex ?? null,
+        cursor: status.providerConnections?.cursor ?? null,
+      });
       const available = deriveConfiguredModelIds(status, { includeCursor: true });
       setAvailableModelIds(available);
       return available;
     } catch {
+      setAiStatus(null);
+      setProviderConnections(null);
       // Fall back to direct model discovery probes below.
     }
 
@@ -860,19 +1074,6 @@ export function AgentChatPane({
     } catch {
       setAvailableModelIds([]);
       return [];
-    }
-  }, []);
-
-  const refreshProviderConnections = useCallback(async () => {
-    try {
-      const status = await window.ade.ai.getStatus();
-      setProviderConnections({
-        claude: status.providerConnections?.claude ?? null,
-        codex: status.providerConnections?.codex ?? null,
-        cursor: status.providerConnections?.cursor ?? null,
-      });
-    } catch {
-      setProviderConnections(null);
     }
   }, []);
 
@@ -963,16 +1164,16 @@ export function AgentChatPane({
   }, [selectedSessionId]);
 
   useEffect(() => {
-    void refreshProviderConnections();
-  }, [refreshProviderConnections, selectedSession?.provider]);
+    void refreshAvailableModels();
+  }, [refreshAvailableModels, selectedSession?.provider]);
 
   useEffect(() => {
     if (!turnActive || !selectedSession?.provider) return;
     const timer = window.setInterval(() => {
-      void refreshProviderConnections();
+      void refreshAvailableModels();
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [refreshProviderConnections, selectedSession?.provider, turnActive]);
+  }, [refreshAvailableModels, selectedSession?.provider, turnActive]);
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
@@ -1595,27 +1796,41 @@ export function AgentChatPane({
     };
   }, [currentNativeControls]);
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
+    const previousDesc = prevModelDescRef.current;
     const nextDesc = getModelById(nextModelId);
+    const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
     const nextProvider = resolveChatRuntimeProvider(nextDesc);
     const nextModel = nextProvider === "unified" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
     const tiers = nextDesc?.reasoningTiers ?? [];
     const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
     const nextReasoningEffort = selectReasoningEffort({ tiers, preferred });
+    const nextRec = recommendedUnifiedPermissionModeForModel(nextPermissionDesc);
     return {
       nextDesc,
       nextModelId,
       nextModel,
       nextProvider,
       nextReasoningEffort,
+      nextUnifiedPermissionMode: nextRec,
+      resetUnifiedPermissionToDefault: shouldResetUnifiedPermissionForModelSwitch(previousDesc, nextPermissionDesc),
     };
   }, [laneId]);
   const applyModelSelectionSnapshot = useCallback((snapshot: {
     nextModelId: string;
     nextReasoningEffort: string | null;
+    nextUnifiedPermissionMode?: AgentChatUnifiedPermissionMode | null;
+    resetUnifiedPermissionToDefault?: boolean;
   }) => {
     setModelId(snapshot.nextModelId);
     setReasoningEffort(snapshot.nextReasoningEffort);
-  }, []);
+    const nextUnified = snapshot.nextUnifiedPermissionMode ?? null;
+    const targetUnified = snapshot.resetUnifiedPermissionToDefault
+      ? (nextUnified ?? initialNativeControls.unifiedPermissionMode)
+      : nextUnified;
+    if (targetUnified != null) {
+      setUnifiedPermissionMode(targetUnified);
+    }
+  }, [initialNativeControls.unifiedPermissionMode]);
   const notifySessionCreated = useCallback((session: AgentChatSession) => {
     if (!onSessionCreated) return;
     void Promise.resolve(onSessionCreated(session)).catch((err) => { console.error("notifySessionCreated failed:", err); });
@@ -1628,9 +1843,22 @@ export function AgentChatPane({
     if (!laneId) return null;
     const createPromise = (async () => {
       const desc = getModelById(modelId);
+      const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
       const model = provider === "unified" ? modelId : runtimeFacingModelId(desc, modelId);
       const sessionProfile = resolveChatSessionProfile(computerUsePolicy);
+      const harnessPermissionMode = provider === "unified"
+        ? recommendedUnifiedPermissionModeForModel(permissionDesc)
+        : null;
+      const nativeControlPayload = harnessPermissionMode
+        ? {
+            ...summarizeNativeControls(provider, {
+              ...currentNativeControls,
+              unifiedPermissionMode: harnessPermissionMode,
+            }),
+            ...(provider === "cursor" ? { cursorConfigValues: currentNativeControls.cursorConfigValues } : {}),
+          }
+        : buildNativeControlPayload(provider);
       const created = await window.ade.agentChat.create({
         laneId,
         provider,
@@ -1638,7 +1866,7 @@ export function AgentChatPane({
         modelId,
         sessionProfile,
         reasoningEffort,
-        ...buildNativeControlPayload(provider),
+        ...nativeControlPayload,
         computerUse: computerUsePolicy,
       });
       loadedHistoryRef.current.delete(created.id);
@@ -1665,7 +1893,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [buildNativeControlPayload, computerUsePolicy, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, computerUsePolicy, currentNativeControls, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const handoffSession = useCallback(async () => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
@@ -2313,11 +2541,22 @@ export function AgentChatPane({
               }
 
               setSessionMutationKind("model");
+              const nextUnifiedForPayload = snapshot.resetUnifiedPermissionToDefault
+                ? (snapshot.nextUnifiedPermissionMode ?? initialNativeControls.unifiedPermissionMode)
+                : snapshot.nextUnifiedPermissionMode;
+              const nextNativeControlPayload = snapshot.nextProvider === "unified" && nextUnifiedForPayload != null
+                ? {
+                    ...summarizeNativeControls("unified", {
+                      ...currentNativeControls,
+                      unifiedPermissionMode: nextUnifiedForPayload,
+                    }),
+                  }
+                : buildNativeControlPayload(snapshot.nextProvider);
               void window.ade.agentChat.updateSession({
                 sessionId: selectedSessionId,
                 modelId: nextModelId,
                 reasoningEffort: snapshot.nextReasoningEffort,
-                ...buildNativeControlPayload(snapshot.nextProvider),
+                ...nextNativeControlPayload,
                 computerUse: computerUsePolicy,
               }).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
@@ -2419,17 +2658,43 @@ export function AgentChatPane({
             {error}
           </div>
         ) : null}
-        {selectedSessionId && !activeProviderConnection?.runtimeAvailable && (activeProviderConnection?.blocker || activeProviderConnection?.provider === "cursor") ? (
+        {mergedRuntimeBanner?.kind === "cli-only" ? (
           <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-              {activeProviderConnection.provider === "claude"
-                ? "Claude runtime"
-                : activeProviderConnection.provider === "cursor"
-                  ? "Cursor runtime"
-                  : "Codex runtime"}
+              {mergedRuntimeBanner.cliTitle}
             </div>
             <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-              {activeProviderConnection.blocker || "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."}
+              {mergedRuntimeBanner.cliBody}
+            </div>
+          </div>
+        ) : null}
+        {mergedRuntimeBanner?.kind === "local-only" ? (
+          <LocalRuntimeNoticeBlock
+            notice={mergedRuntimeBanner.localNotice}
+            endpoint={mergedRuntimeBanner.localEndpoint}
+          />
+        ) : null}
+        {mergedRuntimeBanner?.kind === "merged" ? (
+          <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
+            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
+              Runtime status
+            </div>
+            <div className="mt-3 space-y-3">
+              <div>
+                <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-amber-200/55">
+                  {mergedRuntimeBanner.cliTitle}
+                </div>
+                <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
+                  {mergedRuntimeBanner.cliBody}
+                </div>
+              </div>
+              <div className="border-t border-white/[0.06] pt-3">
+                <LocalRuntimeNoticeBlock
+                  variant="inline"
+                  notice={mergedRuntimeBanner.localNotice}
+                  endpoint={mergedRuntimeBanner.localEndpoint}
+                />
+              </div>
             </div>
           </div>
         ) : null}

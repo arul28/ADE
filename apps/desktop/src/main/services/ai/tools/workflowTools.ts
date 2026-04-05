@@ -172,13 +172,13 @@ export function createWorkflowTools(
             error: "Local computer-use fallback is disabled for this chat session.",
           };
         }
+        const tmpDir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "ade-screenshot-"));
+        const tmpPath = path.join(
+          tmpDir,
+          `screenshot-${Date.now()}.png`,
+        );
         try {
           // Use macOS screencapture to grab the screen
-          const tmpPath = path.join(
-            fs.mkdtempSync(path.join(require("node:os").tmpdir(), "ade-screenshot-")),
-            `screenshot-${Date.now()}.png`,
-          );
-
           await execFileAsync("screencapture", ["-x", tmpPath], {
             timeout: 15_000,
           });
@@ -211,11 +211,17 @@ export function createWorkflowTools(
           return {
             success: true,
             artifactId: artifact?.id ?? null,
-            uri: artifact?.uri ?? tmpPath,
+            uri: artifact?.uri ?? null,
             title: artifact?.title ?? title,
           };
         } catch (err) {
           return formatToolError("Screenshot failed", err);
+        } finally {
+          try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+          } catch {
+            // Best-effort cleanup only.
+          }
         }
       },
     });

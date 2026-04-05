@@ -26,6 +26,8 @@ export type ModelCapabilities = {
   streaming: boolean;
 };
 
+export type LocalModelHarnessProfile = "verified" | "guarded" | "read_only";
+
 export type ModelDescriptor = {
   id: string;
   shortId: string;
@@ -49,6 +51,21 @@ export type ModelDescriptor = {
   outputPricePer1M?: number;
   /** Curated cost tier for UI display (missions model selector) */
   costTier?: "low" | "medium" | "high" | "very_high";
+  /** ADE-owned safety/tooling profile for local and experimental models. */
+  harnessProfile?: LocalModelHarnessProfile;
+  /** Source of runtime-discovered descriptors for debugging and UI hints. */
+  discoverySource?: "lmstudio-rest" | "lmstudio-openai" | "ollama" | "vllm";
+};
+
+export type DynamicLocalModelDescriptorOptions = {
+  displayName?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities?: Partial<ModelCapabilities>;
+  reasoningTiers?: string[];
+  aliases?: string[];
+  harnessProfile?: LocalModelHarnessProfile;
+  discoverySource?: ModelDescriptor["discoverySource"];
 };
 
 export type WorkerExecutionPath = "cli" | "api" | "local";
@@ -65,7 +82,8 @@ export function isModelProviderGroup(value: string | null | undefined): value is
 const ALL_CAPS: ModelCapabilities = { tools: true, vision: true, reasoning: true, streaming: true };
 const NO_REASONING: ModelCapabilities = { tools: true, vision: true, reasoning: false, streaming: true };
 const BASIC_CAPS: ModelCapabilities = { tools: true, vision: false, reasoning: false, streaming: true };
-const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
+/** Human-readable names for Ollama / LM Studio / vLLM (shared across main, renderer, and MCP). */
+export const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
   ollama: "Ollama",
   lmstudio: "LM Studio",
   vllm: "vLLM",
@@ -638,6 +656,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     color: "#71717A",
     sdkProvider: "@ai-sdk/openai-compatible",
     sdkModelId: "auto",
+    harnessProfile: "guarded",
     isCliWrapped: false,
   },
   {
@@ -652,6 +671,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     color: "#64748B",
     sdkProvider: "@ai-sdk/openai-compatible",
     sdkModelId: "auto",
+    harnessProfile: "guarded",
     isCliWrapped: false,
   },
   {
@@ -666,6 +686,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     color: "#475569",
     sdkProvider: "@ai-sdk/openai-compatible",
     sdkModelId: "auto",
+    harnessProfile: "guarded",
     isCliWrapped: false,
   },
 ];
@@ -678,6 +699,8 @@ let byId = new Map<string, ModelDescriptor>();
 let byShortId = new Map<string, ModelDescriptor | null>();
 let byAlias = new Map<string, ModelDescriptor>();
 let bySdkModelId = new Map<string, ModelDescriptor>();
+let dynamicLocalById = new Map<string, ModelDescriptor>();
+let dynamicLocalByAlias = new Map<string, ModelDescriptor>();
 
 function rebuildIndexes() {
   byId = new Map<string, ModelDescriptor>();
@@ -731,8 +754,36 @@ export function validateModelRegistry(models: ModelDescriptor[] = MODEL_REGISTRY
 validateModelRegistry();
 rebuildIndexes();
 
-function isLocalProviderFamily(value: string): value is LocalProviderFamily {
+export function isLocalProviderFamily(value: string): value is LocalProviderFamily {
   return value === "ollama" || value === "lmstudio" || value === "vllm";
+}
+
+/** First path segment of `provider/modelId` when it is a known local provider. */
+export function parseLocalProviderFromModelId(modelId: string): LocalProviderFamily | null {
+  const provider = String(modelId ?? "").trim().split("/", 1)[0]?.toLowerCase() ?? "";
+  return isLocalProviderFamily(provider) ? provider : null;
+}
+
+/** Model name segment after `provider/` for local refs; empty string if missing. */
+export function getLocalModelIdTail(modelId: string, provider: LocalProviderFamily): string {
+  return String(modelId ?? "").trim().slice(provider.length + 1).trim();
+}
+
+/**
+ * Descriptor for unified permission / harness decisions when the registry has no row yet.
+ * `getModelById` returns undefined for refs such as `ollama/auto`; this still returns a
+ * guarded local descriptor so the UI matches main-process harness behavior.
+ */
+export function getModelDescriptorForPermissionMode(modelId: string): ModelDescriptor | undefined {
+  const resolved = getModelById(modelId);
+  if (resolved) return resolved;
+  const provider = parseLocalProviderFromModelId(modelId);
+  if (!provider) return undefined;
+  const tail = getLocalModelIdTail(modelId, provider);
+  if (!tail.length || tail === "auto") {
+    return createDynamicLocalModelDescriptor(provider, "auto", { harnessProfile: "guarded" });
+  }
+  return createDynamicLocalModelDescriptor(provider, tail);
 }
 
 function parseDynamicLocalModelRef(modelRef: string): { provider: LocalProviderFamily; modelId: string } | null {
@@ -754,23 +805,61 @@ function toDynamicLocalDisplayName(provider: LocalProviderFamily, modelId: strin
 export function createDynamicLocalModelDescriptor(
   provider: LocalProviderFamily,
   modelId: string,
+  options?: DynamicLocalModelDescriptorOptions,
 ): ModelDescriptor {
   const normalizedModelId = modelId.trim();
+  const displayName = options?.displayName?.trim() || toDynamicLocalDisplayName(provider, normalizedModelId);
+  const capabilities: ModelCapabilities = {
+    ...BASIC_CAPS,
+    ...(options?.capabilities ?? {}),
+  };
+  const aliases = [
+    `${provider}:${normalizedModelId}`,
+    ...(options?.aliases ?? []),
+  ].filter((value, index, list) => {
+    const normalized = value.trim();
+    return normalized.length > 0 && list.findIndex((entry) => entry.trim().toLowerCase() === normalized.toLowerCase()) === index;
+  });
   return {
     id: `${provider}/${normalizedModelId}`,
     shortId: normalizedModelId,
-    displayName: toDynamicLocalDisplayName(provider, normalizedModelId),
+    displayName,
     family: provider,
     authTypes: ["local"],
-    contextWindow: 128_000,
-    maxOutputTokens: 8_192,
-    capabilities: { ...BASIC_CAPS },
+    contextWindow: options?.contextWindow ?? 128_000,
+    maxOutputTokens: options?.maxOutputTokens ?? 8_192,
+    capabilities,
     color: LOCAL_PROVIDER_COLORS[provider],
     sdkProvider: "@ai-sdk/openai-compatible",
     sdkModelId: normalizedModelId,
-    aliases: [`${provider}:${normalizedModelId}`],
+    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
+    aliases,
     isCliWrapped: false,
+    harnessProfile: options?.harnessProfile ?? "guarded",
+    ...(options?.discoverySource ? { discoverySource: options.discoverySource } : {}),
   };
+}
+
+function isDynamicLocalDescriptor(descriptor: ModelDescriptor): boolean {
+  return descriptor.authTypes.includes("local") && !byId.has(descriptor.id);
+}
+
+export function replaceDynamicLocalModelDescriptors(descriptors: ModelDescriptor[]): void {
+  dynamicLocalById = new Map<string, ModelDescriptor>();
+  dynamicLocalByAlias = new Map<string, ModelDescriptor>();
+
+  for (const descriptor of descriptors) {
+    if (!isDynamicLocalDescriptor(descriptor)) continue;
+    dynamicLocalById.set(descriptor.id, descriptor);
+    for (const alias of descriptor.aliases ?? []) {
+      const normalized = alias.trim().toLowerCase();
+      if (normalized.length) dynamicLocalByAlias.set(normalized, descriptor);
+    }
+  }
+}
+
+export function getDynamicLocalModelDescriptors(): ModelDescriptor[] {
+  return [...dynamicLocalById.values()];
 }
 
 export function getLocalProviderDefaultEndpoint(provider: LocalProviderFamily): string {
@@ -896,6 +985,8 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
 export function getModelById(id: string): ModelDescriptor | undefined {
   const cached = byId.get(id);
   if (cached) return cached;
+  const dynamic = dynamicLocalById.get(id);
+  if (dynamic) return dynamic;
   const local = parseDynamicLocalModelRef(id);
   if (local) return createDynamicLocalModelDescriptor(local.provider, local.modelId);
   const cursor = parseDynamicCursorModelRef(id);
@@ -947,12 +1038,20 @@ export function getAvailableModels(
       return false;
     });
 
-  return MODEL_REGISTRY.filter((model) => !model.deprecated && hasAuthForModel(model));
+  const staticModels = MODEL_REGISTRY.filter((model) => !model.deprecated && hasAuthForModel(model));
+  const dynamicLocalModels = getDynamicLocalModelDescriptors().filter((model) => hasAuthForModel(model));
+  if (!dynamicLocalModels.length) return staticModels;
+
+  const providersWithDynamicLocals = new Set(dynamicLocalModels.map((model) => model.family));
+  const filteredStatic = staticModels.filter(
+    (model) => !(model.authTypes.includes("local") && providersWithDynamicLocals.has(model.family)),
+  );
+  return [...filteredStatic, ...dynamicLocalModels];
 }
 
 export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
   const normalized = alias.trim().toLowerCase();
-  return byId.get(normalized) ?? byShortId.get(normalized) ?? byAlias.get(normalized) ?? undefined;
+  return byId.get(normalized) ?? byShortId.get(normalized) ?? byAlias.get(normalized) ?? dynamicLocalByAlias.get(normalized) ?? undefined;
 }
 
 export function resolveModelDescriptor(modelRef: string): ModelDescriptor | undefined {

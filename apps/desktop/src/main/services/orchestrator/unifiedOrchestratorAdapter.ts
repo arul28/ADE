@@ -9,6 +9,7 @@ import {
   resolveModelAlias,
   resolveModelDescriptor,
   resolveProviderGroupForModel,
+  type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import type {
   AgentChatExecutionMode,
@@ -81,7 +82,7 @@ export function getUnifiedUnsupportedModelReason(modelRef: string): string | nul
   const cliProvider = resolveCliProviderForModel(descriptor);
   if (cliProvider) return null;
   const executionPath = classifyWorkerExecutionPath(descriptor);
-  return `Model '${descriptor.id}' requires ${executionPath} execution (${descriptor.family}), but the unified worker adapter currently supports only Claude/Codex CLI models.`;
+  return `Model '${descriptor.id}' requires ${executionPath} in-process unified execution (${descriptor.family}), but the shell-startup fallback only supports Claude/Codex CLI models. Use the managed unified chat path for API and local models.`;
 }
 
 /**
@@ -305,6 +306,7 @@ const VALID_PERMISSION_MODES = new Set<string>(["default", "plan", "edit", "full
 
 function resolveManagedPermissionMode(args: {
   provider: "claude" | "codex" | "unified" | "cursor";
+  descriptor?: ModelDescriptor;
   permissionConfig: LegacyPermissionConfig | undefined;
   readOnlyExecution: boolean;
 }): AgentChatPermissionMode | undefined {
@@ -314,9 +316,14 @@ function resolveManagedPermissionMode(args: {
     args.provider === "cursor"
       ? ((providers?.cursor ?? providers?.unified) as string | undefined)
       : (providers?.[args.provider] as string | undefined);
-  return typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
+  const normalizedCandidate = typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
     ? candidate as AgentChatPermissionMode
     : undefined;
+  if (args.descriptor?.authTypes.includes("local")) {
+    if (args.descriptor.harnessProfile === "read_only") return "plan";
+    if (args.descriptor.harnessProfile === "guarded" && normalizedCandidate == null) return "plan";
+  }
+  return normalizedCandidate;
 }
 
 function mapPermissionModeToNativeFields(
@@ -570,9 +577,10 @@ export function createUnifiedOrchestratorAdapter(options?: {
         return startup;
       }
 
-      // Non-CLI or unknown models cannot run via this shell-based adapter.
+      // Non-CLI or unknown models can still run via the managed chat path.
+      // This shell fallback only exists for CLI-wrapped workers.
       const unsupportedReason = getUnifiedUnsupportedModelReason(model) ?? `Model '${model}' is not supported by unified adapter.`;
-      const failureMessage = `[ADE] Unified orchestrator adapter currently supports CLI-wrapped Anthropic/OpenAI models only. ${unsupportedReason} Select a CLI model for this worker.`;
+      const failureMessage = `[ADE] Shell-startup fallback for the unified orchestrator adapter only supports CLI-wrapped Anthropic/OpenAI models. ${unsupportedReason}`;
       return `printf '%s\\n' ${shellEscapeArg(failureMessage)} >&2; exit 64`;
     },
 
@@ -657,6 +665,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
           : undefined;
       const permissionMode = resolveManagedPermissionMode({
         provider,
+        descriptor,
         permissionConfig: effectivePermissionConfig,
         readOnlyExecution,
       });

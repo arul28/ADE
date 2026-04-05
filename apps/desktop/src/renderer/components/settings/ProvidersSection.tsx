@@ -1,10 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentChatEventEnvelope,
+  AiConfig,
   AiApiKeyVerificationResult,
   AiProviderConnectionStatus,
+  AiRuntimeConnectionStatus,
   AiSettingsStatus,
+  ProjectConfigSnapshot,
 } from "../../../shared/types";
+import {
+  getLocalModelIdTail,
+  getLocalProviderDefaultEndpoint,
+  getModelById,
+  LOCAL_PROVIDER_LABELS,
+  parseLocalProviderFromModelId,
+  type LocalProviderFamily,
+} from "../../../shared/modelRegistry";
 import {
   ArrowsClockwise,
   CheckCircle,
@@ -58,6 +69,16 @@ const CLI_TOOLS: Array<{
   },
 ];
 
+const LOCAL_PROVIDER_SPECS: Array<{
+  provider: LocalProviderFamily;
+  label: string;
+  description: string;
+}> = [
+  { provider: "lmstudio", label: "LM Studio", description: "OpenAI-compatible local server" },
+  { provider: "ollama", label: "Ollama", description: "OpenAI-compatible local server" },
+  { provider: "vllm", label: "vLLM", description: "OpenAI-compatible local server" },
+];
+
 const API_KEY_PROVIDERS: Array<{
   provider: string;
   label: string;
@@ -75,6 +96,13 @@ const API_KEY_PROVIDERS: Array<{
   { provider: "together", label: "Together AI", envVar: "TOGETHER_API_KEY", placeholder: "tg_...", accent: "#22C55E" },
   { provider: "openrouter", label: "OpenRouter", envVar: "OPENROUTER_API_KEY", placeholder: "sk-or-...", accent: "#A78BFA" },
 ];
+
+type LocalProviderDraft = {
+  enabled: boolean;
+  endpoint: string;
+  autoDetect: boolean;
+  preferredModelId: string;
+};
 
 const groupLabelStyle: React.CSSProperties = {
   ...LABEL_STYLE,
@@ -156,6 +184,18 @@ function buildCliMessage(tool: (typeof CLI_TOOLS)[number], connection: AiProvide
   return `CLI not found in PATH. Install: ${tool.installHint}. If already installed, ensure it is on your shell PATH and use Refresh.`;
 }
 
+function formatLocalModelLabel(modelId: string): string {
+  const descriptor = getModelById(modelId);
+  if (descriptor) return descriptor.displayName;
+  const provider = parseLocalProviderFromModelId(modelId);
+  if (provider) {
+    const tail = getLocalModelIdTail(modelId, provider);
+    const brand = LOCAL_PROVIDER_LABELS[provider];
+    return tail.length ? `${tail} (${brand})` : String(modelId ?? "").trim();
+  }
+  return String(modelId ?? "").trim();
+}
+
 const AUTH_ERROR_SIGNALS = [
   "invalid authentication credentials",
   "authentication error",
@@ -190,11 +230,40 @@ function shouldRefreshProvidersForChatEvent(envelope: AgentChatEventEnvelope): b
   return false;
 }
 
+function buildLocalProviderDrafts(
+  snapshot: ProjectConfigSnapshot | null | undefined,
+  status: (AiSettingsStatus & { runtimeConnections?: Record<string, AiRuntimeConnectionStatus> }) | null | undefined,
+): Record<LocalProviderFamily, LocalProviderDraft> {
+  const configured = snapshot?.effective.ai?.localProviders ?? {};
+  return Object.fromEntries(
+    LOCAL_PROVIDER_SPECS.map((spec) => {
+      const runtimeConnection = status?.runtimeConnections?.[spec.provider];
+      const providerConfig = configured[spec.provider];
+      return [spec.provider, {
+        enabled: providerConfig?.enabled ?? true,
+        endpoint:
+          (typeof providerConfig?.endpoint === "string" && providerConfig.endpoint.trim().length
+            ? providerConfig.endpoint.trim()
+            : runtimeConnection?.endpoint?.trim())
+          ?? getLocalProviderDefaultEndpoint(spec.provider),
+        autoDetect: providerConfig?.autoDetect ?? true,
+        preferredModelId: typeof providerConfig?.preferredModelId === "string" ? providerConfig.preferredModelId : "",
+      }];
+    }),
+  ) as Record<LocalProviderFamily, LocalProviderDraft>;
+}
+
 export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefreshOnMount?: boolean }) {
-  const [status, setStatus] = useState<AiSettingsStatus | null>(null);
+  const [status, setStatus] = useState<(AiSettingsStatus & { runtimeConnections?: Record<string, AiRuntimeConnectionStatus> }) | null>(null);
+  const [projectConfigSnapshot, setProjectConfigSnapshot] = useState<ProjectConfigSnapshot | null>(null);
   const [storedProviders, setStoredProviders] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
+  const [editingLocalProvider, setEditingLocalProvider] = useState<LocalProviderFamily | null>(null);
+  const [savingLocalProvider, setSavingLocalProvider] = useState<LocalProviderFamily | null>(null);
+  const [localProviderDrafts, setLocalProviderDrafts] = useState<Record<LocalProviderFamily, LocalProviderDraft>>(() =>
+    buildLocalProviderDrafts(null, null),
+  );
   const [editValue, setEditValue] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -208,11 +277,14 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     }
     setError(null);
     try {
-      const [nextStatus, nextStoredProviders] = await Promise.all([
+      const [nextStatus, nextStoredProviders, nextProjectConfig] = await Promise.all([
         window.ade.ai.getStatus(options?.force ? { force: true } : undefined),
         window.ade.ai.listApiKeys(),
+        window.ade.projectConfig.get(),
       ]);
       setStatus(nextStatus);
+      setProjectConfigSnapshot(nextProjectConfig);
+      setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
       setStoredProviders(nextStoredProviders.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -245,7 +317,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     };
   }, [refreshStatus]);
 
-  const detectedAuth = status?.detectedAuth ?? [];
+  const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
   const providerConnections = status?.providerConnections;
   const isInitialCheckInFlight = loading && status == null;
 
@@ -261,14 +333,30 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     return map;
   }, [detectedAuth]);
 
-  const localEndpoints = useMemo(() => {
-    const entries: Array<{ provider: string; endpoint: string }> = [];
-    for (const entry of detectedAuth) {
-      if (entry.type !== "local" || !entry.provider || !entry.endpoint) continue;
-      entries.push({ provider: entry.provider, endpoint: entry.endpoint });
-    }
-    return entries;
-  }, [detectedAuth]);
+  const localRuntimes = useMemo(() => {
+    const availableModelIds = status?.availableModelIds ?? [];
+    const runtimeConnections = status?.runtimeConnections ?? {};
+    return LOCAL_PROVIDER_SPECS.map((spec) => {
+      const runtimeConnection = runtimeConnections[spec.provider] ?? null;
+      const detected = detectedAuth.find(
+        (entry): entry is { type: "local"; provider: LocalProviderFamily; endpoint: string } =>
+          entry.type === "local" && entry.provider === spec.provider,
+      ) ?? null;
+      const modelIds = runtimeConnection?.loadedModelIds?.length
+        ? runtimeConnection.loadedModelIds.filter((rawId) => String(rawId ?? "").trim().startsWith(`${spec.provider}/`))
+        : availableModelIds.filter((rawId) => String(rawId ?? "").trim().startsWith(`${spec.provider}/`));
+      return {
+        ...spec,
+        endpoint: runtimeConnection?.endpoint ?? detected?.endpoint ?? getLocalProviderDefaultEndpoint(spec.provider),
+        health: runtimeConnection?.health ?? null,
+        blocker: runtimeConnection?.blocker ?? null,
+        runtimeAvailable: runtimeConnection?.runtimeAvailable ?? false,
+        detected,
+        modelIds,
+        hasModels: modelIds.length > 0,
+      };
+    });
+  }, [detectedAuth, status?.availableModelIds, status?.runtimeConnections]);
 
   const apiKeyStoreWarning = useMemo(() => {
     if (status?.apiKeyStore?.legacyPlaintextDetected) {
@@ -344,6 +432,57 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       setVerifyingProvider(null);
     }
   };
+
+  const updateLocalProviderDraft = useCallback((
+    provider: LocalProviderFamily,
+    patch: Partial<LocalProviderDraft>,
+  ) => {
+    setLocalProviderDrafts((prev) => ({
+      ...prev,
+      [provider]: {
+        ...prev[provider],
+        ...patch,
+      },
+    }));
+  }, []);
+
+  const beginEditingLocalRuntime = useCallback((provider: LocalProviderFamily) => {
+    setEditingLocalProvider(provider);
+    setError(null);
+    setNotice(null);
+  }, []);
+
+  const cancelEditingLocalRuntime = useCallback(() => {
+    setEditingLocalProvider(null);
+    setLocalProviderDrafts(buildLocalProviderDrafts(projectConfigSnapshot, status));
+  }, [projectConfigSnapshot, status]);
+
+  const saveLocalProvider = useCallback(async (provider: LocalProviderFamily) => {
+    const draft = localProviderDrafts[provider];
+    if (!draft) return;
+    setSavingLocalProvider(provider);
+    setError(null);
+    setNotice(null);
+    try {
+      await window.ade.ai.updateConfig({
+        localProviders: {
+          [provider]: {
+            enabled: draft.enabled,
+            endpoint: draft.endpoint.trim(),
+            autoDetect: draft.autoDetect,
+            preferredModelId: draft.preferredModelId.trim() || null,
+          },
+        } as AiConfig["localProviders"],
+      });
+      setNotice(`${LOCAL_PROVIDER_LABELS[provider]} settings saved.`);
+      setEditingLocalProvider(null);
+      await refreshStatus({ force: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingLocalProvider(null);
+    }
+  }, [localProviderDrafts, refreshStatus]);
 
   return (
     <div id="ai-providers" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -645,56 +784,303 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       </section>
 
       <section style={cardStyle()}>
-        <div style={sectionLabelStyle}>Local runtimes</div>
-        {localEndpoints.length > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {localEndpoints.map((entry) => (
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+          <div>
+            <div style={sectionLabelStyle}>Local runtimes</div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
+              LM Studio, Ollama, and vLLM become ready once at least one model is loaded and the server exposes its OpenAI-compatible `/v1/models` list.
+            </div>
+          </div>
+          <button
+            type="button"
+            style={outlineButton()}
+            disabled={loading}
+            onClick={() => void refreshStatus({ force: true })}
+          >
+            <ArrowsClockwise size={12} weight="bold" /> {loading ? "Checking..." : "Refresh"}
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 12 }}>
+          {localRuntimes.map((entry) => {
+            const isEditing = editingLocalProvider === entry.provider;
+            const isSaving = savingLocalProvider === entry.provider;
+            const draft = localProviderDrafts[entry.provider];
+            const tone = entry.blocker
+              ? { color: COLORS.warning, label: "Blocked" }
+              : entry.runtimeAvailable || (entry.detected && entry.hasModels)
+                ? { color: COLORS.success, label: entry.hasModels ? "Ready" : "Connected" }
+              : { color: COLORS.warning, label: "Not detected" };
+            const loadedModels = entry.modelIds.slice(0, 4);
+            const extraModelCount = Math.max(0, entry.modelIds.length - loadedModels.length);
+            const message = entry.blocker
+              ? entry.blocker
+              : entry.detected
+                ? entry.hasModels
+                ? `${entry.label} is reachable at ${entry.endpoint}. ADE can use ${entry.modelIds.length} loaded model${entry.modelIds.length === 1 ? "" : "s"} from this runtime${entry.health ? ` (${entry.health})` : ""}.`
+                : `${entry.label} responded, but no loaded models were reported yet. Load a model in ${entry.label} and refresh.`
+              : `${entry.label} was not detected. Start it, load at least one model, then refresh so ADE can discover its OpenAI-compatible server.`;
+
+            return (
               <div
-                key={`${entry.provider}:${entry.endpoint}`}
+                key={entry.provider}
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
                   border: `1px solid ${COLORS.border}`,
+                  borderLeft: `3px solid ${tone.color}`,
                   background: COLORS.recessedBg,
-                  padding: "10px 12px",
+                  padding: 14,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                  minWidth: 0,
                 }}
               >
-                <div>
-                  <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                    {entry.provider}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    <ProviderLogo family={entry.provider} size={22} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>
+                        {entry.label}
+                      </div>
+                      <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>
+                        {entry.description}
+                      </div>
+                    </div>
                   </div>
-                  <code style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                    {entry.endpoint}
-                  </code>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
+                    {entry.detected ? <CheckCircle size={14} weight="fill" /> : <WarningCircle size={14} weight="fill" />}
+                    <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>
+                      {tone.label}
+                    </span>
+                  </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 5, color: COLORS.success }}>
-                  <Cpu size={14} />
-                  <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>
-                    Reachable
+
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontFamily: MONO_FONT,
+                    color: COLORS.textMuted,
+                    lineHeight: 1.55,
+                    overflowWrap: "break-word",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {message}
+                </div>
+
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      padding: "3px 8px",
+                      borderRadius: 999,
+                      border: `1px solid ${COLORS.border}`,
+                      background: `${COLORS.textDim}10`,
+                      fontSize: 10,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.textSecondary,
+                    }}
+                  >
+                    {draft?.enabled === false ? "Disabled" : "Enabled"}
+                  </span>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      padding: "3px 8px",
+                      borderRadius: 999,
+                      border: `1px solid ${COLORS.border}`,
+                      background: `${COLORS.textDim}10`,
+                      fontSize: 10,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.textSecondary,
+                    }}
+                  >
+                    {draft?.autoDetect === false ? "Manual only" : "Auto-detect fallback"}
                   </span>
                 </div>
+
+                <code
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    boxSizing: "border-box",
+                    minWidth: 0,
+                    fontSize: 10,
+                    fontFamily: MONO_FONT,
+                    color: COLORS.textSecondary,
+                    background: `${COLORS.textDim}12`,
+                    border: `1px solid ${COLORS.border}`,
+                    padding: "6px 8px",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {draft?.endpoint?.trim() || entry.endpoint}
+                </code>
+
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {loadedModels.length > 0 ? (
+                    <>
+                      {loadedModels.map((modelId) => (
+                        <span
+                          key={modelId}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            padding: "3px 8px",
+                            borderRadius: 999,
+                            border: `1px solid ${COLORS.border}`,
+                            background: `${COLORS.textDim}10`,
+                            fontSize: 10,
+                            fontFamily: MONO_FONT,
+                            color: COLORS.textPrimary,
+                          }}
+                          title={modelId}
+                        >
+                          <Cpu size={11} />
+                          {formatLocalModelLabel(modelId)}
+                        </span>
+                      ))}
+                      {extraModelCount > 0 ? (
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            padding: "3px 8px",
+                            borderRadius: 999,
+                            border: `1px solid ${COLORS.border}`,
+                            background: `${COLORS.textDim}10`,
+                            fontSize: 10,
+                            fontFamily: MONO_FONT,
+                            color: COLORS.textMuted,
+                          }}
+                        >
+                          +{extraModelCount} more
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                      No loaded models reported yet.
+                    </span>
+                  )}
+                </div>
+
+                {isEditing && draft ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                      paddingTop: 4,
+                      borderTop: `1px solid ${COLORS.border}`,
+                    }}
+                  >
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textSecondary }}>
+                      <input
+                        type="checkbox"
+                        checked={draft.enabled}
+                        onChange={(event) => updateLocalProviderDraft(entry.provider, { enabled: event.target.checked })}
+                      />
+                      Enable {entry.label}
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                      <span>Endpoint</span>
+                      <input
+                        value={draft.endpoint}
+                        onChange={(event) => updateLocalProviderDraft(entry.provider, { endpoint: event.target.value })}
+                        placeholder={getLocalProviderDefaultEndpoint(entry.provider)}
+                        style={{
+                          width: "100%",
+                          border: `1px solid ${COLORS.border}`,
+                          background: COLORS.cardBgSolid,
+                          color: COLORS.textPrimary,
+                          padding: "8px 10px",
+                          fontSize: 11,
+                          fontFamily: MONO_FONT,
+                        }}
+                      />
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textSecondary }}>
+                      <input
+                        type="checkbox"
+                        checked={draft.autoDetect}
+                        onChange={(event) => updateLocalProviderDraft(entry.provider, { autoDetect: event.target.checked })}
+                      />
+                      Fall back to the default detected endpoint
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                      <span>Preferred model</span>
+                      <select
+                        value={draft.preferredModelId}
+                        onChange={(event) => updateLocalProviderDraft(entry.provider, { preferredModelId: event.target.value })}
+                        style={{
+                          width: "100%",
+                          border: `1px solid ${COLORS.border}`,
+                          background: COLORS.cardBgSolid,
+                          color: COLORS.textPrimary,
+                          padding: "8px 10px",
+                          fontSize: 11,
+                          fontFamily: MONO_FONT,
+                        }}
+                      >
+                        <option value="">Require explicit selection</option>
+                        {entry.modelIds.map((modelId) => (
+                          <option key={modelId} value={modelId}>
+                            {formatLocalModelLabel(modelId)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                ) : null}
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {isEditing ? (
+                    <>
+                      <button type="button" style={primaryButton()} disabled={isSaving} onClick={() => void saveLocalProvider(entry.provider)}>
+                        {isSaving ? "Saving..." : "Save"}
+                      </button>
+                      <button type="button" style={outlineButton()} disabled={isSaving} onClick={cancelEditingLocalRuntime}>
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" style={outlineButton()} onClick={() => beginEditingLocalRuntime(entry.provider)}>
+                        Edit
+                      </button>
+                      <button type="button" style={outlineButton()} disabled={loading} onClick={() => void refreshStatus({ force: true })}>
+                        Test
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-            ))}
-          </div>
-        ) : (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 8,
-              padding: "10px 12px",
-              background: COLORS.recessedBg,
-              border: `1px solid ${COLORS.border}`,
-              color: COLORS.textMuted,
-              fontSize: 11,
-              fontFamily: MONO_FONT,
-            }}
-          >
-            <Info size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-            No local model endpoints detected (Ollama, LM Studio, vLLM).
-          </div>
-        )}
+            );
+          })}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            padding: "10px 12px",
+            marginTop: 12,
+            background: COLORS.recessedBg,
+            border: `1px solid ${COLORS.border}`,
+            color: COLORS.textMuted,
+            fontSize: 11,
+            fontFamily: MONO_FONT,
+          }}
+        >
+          <Info size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+          If LM Studio is running but ADE does not show it, load at least one model in LM Studio, then use Refresh. ADE only marks a local runtime as ready after `/v1/models` returns loaded models.
+        </div>
       </section>
     </div>
   );

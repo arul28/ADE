@@ -1023,6 +1023,34 @@ function coerceAiTaskRoutingRule(value: unknown): AiTaskRoutingRule | null {
   return Object.keys(out).length ? out : null;
 }
 
+function coerceAiLocalProviders(value: unknown): AiConfig["localProviders"] {
+  if (!isRecord(value)) return undefined;
+
+  const providers: NonNullable<AiConfig["localProviders"]> = {};
+  for (const provider of ["ollama", "lmstudio", "vllm"] as const) {
+    const raw = isRecord(value[provider]) ? value[provider] : null;
+    if (!raw) continue;
+
+    const entry: NonNullable<NonNullable<AiConfig["localProviders"]>[typeof provider]> = {};
+    const enabled = asBool(raw.enabled);
+    if (enabled != null) entry.enabled = enabled;
+    const endpoint = asString(raw.endpoint)?.trim();
+    if (endpoint) entry.endpoint = endpoint;
+    const autoDetect = asBool(raw.autoDetect);
+    if (autoDetect != null) entry.autoDetect = autoDetect;
+    if (raw.preferredModelId === null) {
+      entry.preferredModelId = null;
+    } else {
+      const preferredModelId = asString(raw.preferredModelId)?.trim();
+      if (preferredModelId) entry.preferredModelId = preferredModelId;
+    }
+
+    if (Object.keys(entry).length) providers[provider] = entry;
+  }
+
+  return Object.keys(providers).length ? providers : undefined;
+}
+
 function coerceAiConfig(value: unknown): AiConfig | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -1237,6 +1265,9 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
 
   const apiKeys = asStringMap(value.apiKeys);
   if (apiKeys && Object.keys(apiKeys).length) out.apiKeys = apiKeys;
+
+  const localProviders = coerceAiLocalProviders(value.localProviders);
+  if (localProviders) out.localProviders = localProviders;
 
   const workerSafety = coerceWorkerSafetyPolicy(value.workerSafety);
   if (workerSafety) out.workerSafety = workerSafety;
@@ -1554,6 +1585,16 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.apiKeys ?? {}),
     ...(localAi?.apiKeys ?? {})
   };
+  const localProvidersEntries = (["ollama", "lmstudio", "vllm"] as const)
+    .map((provider) => {
+      const mergedProvider = {
+        ...(sharedAi?.localProviders?.[provider] ?? {}),
+        ...(localAi?.localProviders?.[provider] ?? {}),
+      };
+      return Object.keys(mergedProvider).length ? [provider, mergedProvider] as const : null;
+    })
+    .filter((entry): entry is readonly ["ollama" | "lmstudio" | "vllm", Record<string, unknown>] => entry != null);
+  const localProviders = Object.fromEntries(localProvidersEntries) as AiConfig["localProviders"];
   const workerSafety = mergeWorkerSafetyPolicy(sharedAi?.workerSafety, localAi?.workerSafety);
   const mcpServers = {
     ...(sharedAi?.mcpServers ?? {}),
@@ -1572,6 +1613,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(chat).length ? { chat } : {}),
     ...(Object.keys(featureModelOverrides).length ? { featureModelOverrides } : {}),
     ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
+    ...(localProvidersEntries.length ? { localProviders } : {}),
     ...(workerSafety ? { workerSafety } : {}),
     ...(Object.keys(mcpServers).length ? { mcpServers } : {})
   };

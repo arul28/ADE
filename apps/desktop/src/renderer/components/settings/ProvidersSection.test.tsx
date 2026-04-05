@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
 
-function buildStatus(claudeRuntimeAvailable: boolean): AiSettingsStatus {
+function buildStatus(claudeRuntimeAvailable: boolean, localModels: string[] = []): AiSettingsStatus {
   return {
     mode: "subscription",
     availableProviders: {
@@ -20,7 +20,16 @@ function buildStatus(claudeRuntimeAvailable: boolean): AiSettingsStatus {
       cursor: [],
     },
     features: [],
-    detectedAuth: [],
+    detectedAuth: localModels.length > 0
+      ? [
+          {
+            type: "local",
+            provider: "lmstudio",
+            endpoint: "http://localhost:1234",
+          },
+        ]
+      : [],
+    availableModelIds: localModels,
     providerConnections: {
       claude: {
         provider: "claude",
@@ -81,9 +90,17 @@ describe("ProvidersSection", () => {
     globalThis.window.ade = {
       ai: {
         getStatus: vi.fn()
-          .mockResolvedValueOnce(buildStatus(true))
-          .mockResolvedValueOnce(buildStatus(false)),
+          .mockResolvedValueOnce(buildStatus(true, ["lmstudio/meta-llama-3.1-70b-instruct", "lmstudio/qwen2.5-coder:32b"]))
+          .mockResolvedValueOnce(buildStatus(false, ["lmstudio/meta-llama-3.1-70b-instruct", "lmstudio/qwen2.5-coder:32b"])),
         listApiKeys: vi.fn().mockResolvedValue([]),
+        updateConfig: vi.fn().mockResolvedValue(undefined),
+      },
+      projectConfig: {
+        get: vi.fn().mockResolvedValue({
+          effective: {
+            ai: {},
+          },
+        }),
       },
       agentChat: {
         onEvent: vi.fn((listener: (envelope: AgentChatEventEnvelope) => void) => {
@@ -143,5 +160,20 @@ describe("ProvidersSection", () => {
 
     expect((await screen.findAllByText("Connected")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("/Users/arul/.local/bin/claude").length).toBeGreaterThan(0);
+  });
+
+  it("renders local runtime details and loaded local models", async () => {
+    render(<ProvidersSection />);
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
+    });
+
+    expect((await screen.findAllByText("LM Studio")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Ready").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("LM Studio is reachable at http://localhost:1234. ADE can use 2 loaded models from this runtime.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("meta-llama-3.1-70b-instruct (LM Studio)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("qwen2.5-coder:32b (LM Studio)").length).toBeGreaterThan(0);
   });
 });

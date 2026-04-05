@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
+  getLocalModelIdTail,
+  parseLocalProviderFromModelId,
   resolveModelDescriptor,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
@@ -16,6 +19,7 @@ import {
   createModelOrderMap,
   matchesQuery,
   PROVIDER_BADGE_COLORS,
+  providerLabel,
   subsectionKeyForModel,
   sourceSectionLabel,
   type ModelProviderBlock,
@@ -69,7 +73,7 @@ function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): s
   if (isAvailable) {
     if (model.family === "cursor" && model.isCliWrapped) return "Cursor CLI ready";
     if (model.isCliWrapped) return "Subscription ready";
-    if (model.authTypes.includes("local")) return "Local ready";
+    if (model.authTypes.includes("local")) return `${providerLabel(model.family)} ready`;
     if (model.authTypes.includes("api-key")) return "API ready";
     if (model.authTypes.includes("oauth")) return "OAuth ready";
     if (model.authTypes.includes("openrouter")) return "OpenRouter ready";
@@ -79,7 +83,7 @@ function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): s
     return "Cursor CLI · run `agent login` or set CURSOR_API_KEY / CURSOR_AUTH_TOKEN";
   }
   if (model.isCliWrapped) return "Subscription · not configured";
-  if (model.authTypes.includes("local")) return "Local · not configured";
+  if (model.authTypes.includes("local")) return `${providerLabel(model.family)} · not configured`;
   if (model.authTypes.includes("api-key")) return "API · not configured";
   if (model.authTypes.includes("oauth")) return "OAuth · not configured";
   if (model.authTypes.includes("openrouter")) return "OpenRouter · not configured";
@@ -110,6 +114,28 @@ function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
       sdkModelId: tail || modelId,
       cliCommand: "cursor",
       isCliWrapped: true,
+    };
+  }
+  const localProvider = parseLocalProviderFromModelId(modelId);
+  if (localProvider) {
+    const shortId = getLocalModelIdTail(modelId, localProvider) || modelId;
+    const brand = LOCAL_PROVIDER_LABELS[localProvider];
+    return {
+      id: modelId,
+      shortId,
+      displayName: shortId,
+      family: localProvider,
+      authTypes: ["local"],
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { tools: false, vision: false, reasoning: false, streaming: true },
+      color: PROVIDER_BADGE_COLORS[localProvider] ?? "#64748B",
+      sdkProvider: "@ai-sdk/openai-compatible",
+      sdkModelId: shortId,
+      isCliWrapped: false,
+      discoverySource: localProvider === "lmstudio" ? "lmstudio-openai" : localProvider,
+      harnessProfile: "guarded",
+      aliases: [brand],
     };
   }
   return {
