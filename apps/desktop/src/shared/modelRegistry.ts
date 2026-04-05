@@ -769,6 +769,23 @@ export function getLocalModelIdTail(modelId: string, provider: LocalProviderFami
   return String(modelId ?? "").trim().slice(provider.length + 1).trim();
 }
 
+/**
+ * Descriptor for unified permission / harness decisions when the registry has no row yet.
+ * `getModelById` returns undefined for refs such as `ollama/auto`; this still returns a
+ * guarded local descriptor so the UI matches main-process harness behavior.
+ */
+export function getModelDescriptorForPermissionMode(modelId: string): ModelDescriptor | undefined {
+  const resolved = getModelById(modelId);
+  if (resolved) return resolved;
+  const provider = parseLocalProviderFromModelId(modelId);
+  if (!provider) return undefined;
+  const tail = getLocalModelIdTail(modelId, provider);
+  if (!tail.length || tail === "auto") {
+    return createDynamicLocalModelDescriptor(provider, "auto", { harnessProfile: "guarded" });
+  }
+  return createDynamicLocalModelDescriptor(provider, tail);
+}
+
 function parseDynamicLocalModelRef(modelRef: string): { provider: LocalProviderFamily; modelId: string } | null {
   const normalized = modelRef.trim();
   if (!normalized.length) return null;

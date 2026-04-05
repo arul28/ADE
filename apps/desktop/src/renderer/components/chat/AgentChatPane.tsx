@@ -35,6 +35,7 @@ import {
   getLocalModelIdTail,
   getLocalProviderDefaultEndpoint,
   getModelById,
+  getModelDescriptorForPermissionMode,
   parseLocalProviderFromModelId,
   resolveModelDescriptorForProvider,
   type LocalProviderFamily,
@@ -887,7 +888,7 @@ export function AgentChatPane({
   ]);
 
   useEffect(() => {
-    prevModelDescRef.current = getModelById(modelId);
+    prevModelDescRef.current = getModelDescriptorForPermissionMode(modelId);
   }, [modelId]);
 
   const surfaceMode = presentation?.mode ?? "standard";
@@ -1797,12 +1798,13 @@ export function AgentChatPane({
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
     const previousDesc = prevModelDescRef.current;
     const nextDesc = getModelById(nextModelId);
+    const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
     const nextProvider = resolveChatRuntimeProvider(nextDesc);
     const nextModel = nextProvider === "unified" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
     const tiers = nextDesc?.reasoningTiers ?? [];
     const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
     const nextReasoningEffort = selectReasoningEffort({ tiers, preferred });
-    const nextRec = recommendedUnifiedPermissionModeForModel(nextDesc);
+    const nextRec = recommendedUnifiedPermissionModeForModel(nextPermissionDesc);
     return {
       nextDesc,
       nextModelId,
@@ -1810,7 +1812,7 @@ export function AgentChatPane({
       nextProvider,
       nextReasoningEffort,
       nextUnifiedPermissionMode: nextRec,
-      resetUnifiedPermissionToDefault: shouldResetUnifiedPermissionForModelSwitch(previousDesc, nextDesc),
+      resetUnifiedPermissionToDefault: shouldResetUnifiedPermissionForModelSwitch(previousDesc, nextPermissionDesc),
     };
   }, [laneId]);
   const applyModelSelectionSnapshot = useCallback((snapshot: {
@@ -1821,11 +1823,12 @@ export function AgentChatPane({
   }) => {
     setModelId(snapshot.nextModelId);
     setReasoningEffort(snapshot.nextReasoningEffort);
-    if (snapshot.resetUnifiedPermissionToDefault) {
-      setUnifiedPermissionMode(initialNativeControls.unifiedPermissionMode);
-    }
-    if (snapshot.nextUnifiedPermissionMode) {
-      setUnifiedPermissionMode(snapshot.nextUnifiedPermissionMode);
+    const nextUnified = snapshot.nextUnifiedPermissionMode ?? null;
+    const targetUnified = snapshot.resetUnifiedPermissionToDefault
+      ? (nextUnified ?? initialNativeControls.unifiedPermissionMode)
+      : nextUnified;
+    if (targetUnified != null) {
+      setUnifiedPermissionMode(targetUnified);
     }
   }, [initialNativeControls.unifiedPermissionMode]);
   const notifySessionCreated = useCallback((session: AgentChatSession) => {
@@ -1840,11 +1843,12 @@ export function AgentChatPane({
     if (!laneId) return null;
     const createPromise = (async () => {
       const desc = getModelById(modelId);
+      const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
       const model = provider === "unified" ? modelId : runtimeFacingModelId(desc, modelId);
       const sessionProfile = resolveChatSessionProfile(computerUsePolicy);
       const harnessPermissionMode = provider === "unified"
-        ? recommendedUnifiedPermissionModeForModel(desc)
+        ? recommendedUnifiedPermissionModeForModel(permissionDesc)
         : null;
       const nativeControlPayload = harnessPermissionMode
         ? {
