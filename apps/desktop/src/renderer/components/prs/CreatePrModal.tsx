@@ -796,8 +796,12 @@ export function CreatePrModal({
         });
         lastProgressLabel = "Creating integration lane";
         setIntegrationProgress("Creating integration lane...");
-        await window.ade.prs.createIntegrationLaneForProposal({
-          proposalId: proposal.proposalId,
+        await runWithDirtyWorktreeConfirmation({
+          confirmMessage: "Continue and prepare the integration lane anyway?",
+          run: async (allowDirtyWorktree) => window.ade.prs.createIntegrationLaneForProposal({
+            proposalId: proposal.proposalId,
+            ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {}),
+          }),
         });
         setIntegrationProgress(null);
         // No PR created — proposal saved for later commit from Integration tab
