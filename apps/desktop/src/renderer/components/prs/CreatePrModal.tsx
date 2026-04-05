@@ -505,6 +505,7 @@ export function CreatePrModal({
   const [integrationTitle, setIntegrationTitle] = React.useState("");
   const [integrationBody, setIntegrationBody] = React.useState("");
   const [integrationDraft, setIntegrationDraft] = React.useState(false);
+  const [integrationMergeIntoLaneId, setIntegrationMergeIntoLaneId] = React.useState("");
   const [proposal, setProposal] = React.useState<IntegrationProposal | null>(null);
   const [simulating, setSimulating] = React.useState(false);
   const [laneSyncStatusById, setLaneSyncStatusById] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
@@ -622,6 +623,7 @@ export function CreatePrModal({
       setDraftError(null);
       setIntegrationSources([]);
       setIntegrationBaseBranch("");
+      setIntegrationMergeIntoLaneId("");
       setIntegrationName("");
       setIntegrationTitle("");
       setIntegrationBody("");
@@ -715,9 +717,15 @@ export function CreatePrModal({
     try {
       const trimmedIntegrationBaseBranch = integrationBaseBranch.trim();
       const baseBranch = trimmedIntegrationBaseBranch || branchNameFromRef(primaryLane?.branchRef ?? "main");
+      const mergeInto = integrationMergeIntoLaneId.trim();
+      if (mergeInto && integrationSources.includes(mergeInto)) {
+        setExecError("Merge-into lane cannot be one of the source lanes.");
+        return;
+      }
       const result = await window.ade.prs.simulateIntegration({
         sourceLaneIds: integrationSources,
         baseBranch,
+        mergeIntoLaneId: mergeInto || null,
       });
       setProposal(result);
       // Auto-generate a name if empty
@@ -784,6 +792,7 @@ export function CreatePrModal({
           body: integrationBody,
           draft: integrationDraft,
           integrationLaneName: integrationName || `integration/${Date.now().toString(36)}`,
+          preferredIntegrationLaneId: integrationMergeIntoLaneId.trim() || null,
         });
         lastProgressLabel = "Creating integration lane";
         setIntegrationProgress("Creating integration lane...");
@@ -811,6 +820,19 @@ export function CreatePrModal({
   };
 
   const nonPrimaryLanes = React.useMemo(() => lanes.filter((l) => l.laneType !== "primary"), [lanes]);
+
+  const integrationMergeIntoOptions = React.useMemo(
+    () => [...nonPrimaryLanes].sort((a, b) => a.name.localeCompare(b.name)),
+    [nonPrimaryLanes],
+  );
+
+  React.useEffect(() => {
+    if (!integrationMergeIntoLaneId) return;
+    if (integrationSources.includes(integrationMergeIntoLaneId)) {
+      setIntegrationMergeIntoLaneId("");
+      setProposal(null);
+    }
+  }, [integrationMergeIntoLaneId, integrationSources]);
 
   const toggleQueueLane = (laneId: string) => {
     setQueueLaneIds((prev) =>
@@ -1497,6 +1519,37 @@ export function CreatePrModal({
                         rebaseLaneIds={selectedIntegrationRebaseLaneIds}
                         onOpenRebase={openRebaseTab}
                       />
+                    </div>
+
+                    <div>
+                      <span style={labelStyle}>MERGE INTO (OPTIONAL)</span>
+                      <select
+                        aria-label="Merge integration into existing lane"
+                        value={integrationMergeIntoLaneId}
+                        onChange={(e) => {
+                          setIntegrationMergeIntoLaneId(e.target.value);
+                          setProposal(null);
+                        }}
+                        style={selectStyle}
+                        onFocus={(ev) => { ev.currentTarget.style.borderColor = C.accent; }}
+                        onBlur={(ev) => { ev.currentTarget.style.borderColor = C.borderSubtle; }}
+                      >
+                        <option value="">New integration branch</option>
+                        {integrationMergeIntoOptions.map((lane) => (
+                          <option key={lane.id} value={lane.id} disabled={integrationSources.includes(lane.id)}>
+                            {lane.name}{integrationSources.includes(lane.id) ? " (source)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={{
+                        marginTop: 6,
+                        fontSize: 10,
+                        fontFamily: "var(--font-sans)",
+                        color: C.textMuted,
+                        lineHeight: "14px",
+                      }}>
+                        When set, simulation includes conflicts against that lane&apos;s current HEAD. Commit prepares merges there instead of creating a new lane.
+                      </div>
                     </div>
 
                     {/* Simulate button */}
