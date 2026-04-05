@@ -864,7 +864,19 @@ app.whenReady().then(async () => {
     if (!hadAdeDir) {
       const hasEnvCredentials =
         Boolean((process.env.GITHUB_TOKEN ?? process.env.ADE_GITHUB_TOKEN ?? "").trim()) ||
-        Boolean((process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY ?? "").trim()) ||
+        Boolean(
+          [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "MISTRAL_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "XAI_API_KEY",
+            "GROQ_API_KEY",
+            "TOGETHER_API_KEY",
+            "OPENROUTER_API_KEY",
+          ].some((v) => (process.env[v] ?? "").trim().length > 0)
+        ) ||
         Boolean((process.env.LINEAR_API_KEY ?? process.env.ADE_LINEAR_TOKEN ?? "").trim());
       if (hasEnvCredentials) {
         onboardingService.complete();
