@@ -545,6 +545,8 @@ alter table integration_proposals add column cleanup_declined_at text;
 
 alter table integration_proposals add column cleanup_completed_at text;
 
+alter table integration_proposals add column preferred_integration_lane_id text;
+
 create table if not exists queue_landing_state (
       id text primary key,
       group_id text not null,

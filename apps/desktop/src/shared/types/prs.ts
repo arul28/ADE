@@ -347,6 +347,8 @@ export type CreateIntegrationPrArgs = {
   body?: string;
   draft?: boolean;
   allowDirtyWorktree?: boolean;
+  /** When set, merges sources into this existing lane instead of creating a new child lane. */
+  existingIntegrationLaneId?: string | null;
 };
 
 export type CreateIntegrationPrResult = {
@@ -425,6 +427,8 @@ export type IntegrationProposal = {
   body?: string;
   draft?: boolean;
   integrationLaneName?: string;
+  /** Preferred integration worktree when none exists yet (merge sources here instead of a new lane). */
+  preferredIntegrationLaneId?: string | null;
   status: "proposed" | "committed";
   integrationLaneId?: string | null;
   linkedGroupId?: string | null;
@@ -452,6 +456,12 @@ export type UpdateIntegrationProposalArgs = {
   body?: string;
   draft?: boolean;
   integrationLaneName?: string;
+  preferredIntegrationLaneId?: string | null;
+  /**
+   * Clears integration_lane_id and resolution_state_json so the next prepare step can use a new or different lane.
+   * Does not delete lanes in Git.
+   */
+  clearIntegrationBinding?: boolean;
 };
 
 export type ListIntegrationWorkflowsArgs = {
@@ -462,6 +472,11 @@ export type SimulateIntegrationArgs = {
   sourceLaneIds: string[];
   baseBranch: string;
   persist?: boolean;
+  /**
+   * When set, pairwise simulation and sequential merge preview use this lane's current HEAD as the merge base
+   * (instead of only `baseBranch`), so conflicts with ongoing work on the integration/parent lane are visible.
+   */
+  mergeIntoLaneId?: string | null;
 };
 
 export type CommitIntegrationArgs = {
@@ -472,6 +487,8 @@ export type CommitIntegrationArgs = {
   draft?: boolean;
   pauseOnConflict?: boolean;
   allowDirtyWorktree?: boolean;
+  /** Override stored preference; omit to use the proposal row. */
+  preferredIntegrationLaneId?: string | null;
 };
 
 export type IntegrationStepResolution = "pending" | "merged-clean" | "resolving" | "resolved" | "failed";
@@ -569,6 +586,8 @@ export type PrAiResolutionStartArgs = {
   model: string;
   reasoning?: string | null;
   permissionMode?: AiPermissionMode;
+  /** Appended to the generated resolver prompt (integration, merge conflicts, etc.). */
+  additionalInstructions?: string | null;
 };
 
 export type PrAiResolutionStartResult = {

@@ -1161,6 +1161,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   try { db.run("alter table integration_proposals add column completed_at text"); } catch {}
   try { db.run("alter table integration_proposals add column cleanup_declined_at text"); } catch {}
   try { db.run("alter table integration_proposals add column cleanup_completed_at text"); } catch {}
+  try { db.run("alter table integration_proposals add column preferred_integration_lane_id text"); } catch {}
 
   // Queue landing state table (crash recovery for sequential landing)
   db.run(`
