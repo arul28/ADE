@@ -44,3 +44,23 @@
 - Do not reframe ADE as a docs site, Mintlify project, or generic template app.
 - Do not store secrets in plaintext project files when an encrypted store already exists.
 - Do not leave policy enforcement in prompts alone when a code path can enforce it directly.
+
+## Cursor Cloud specific instructions
+
+### Environment overview
+
+- **Node.js 22.x** is required (`node:sqlite` is used as the primary database engine).
+- Each app under `apps/` has its own independent `node_modules` and `package-lock.json` (no npm workspaces).
+- Validation commands are documented in the "Validation" section above.
+- The desktop test suite (265 test files) is large; CI shards it. For local iteration, run targeted tests (e.g. `npm --prefix apps/desktop run test:unit`) or a single file rather than the full suite.
+
+### Running the Electron desktop app on Linux
+
+- Set `ADE_DISABLE_HARDWARE_ACCEL=1` — the VM has no real GPU, and without this the app crashes on `WebGL1 blocklisted`.
+- `node-pty` ships only macOS/Windows prebuilds. After `npm install`, run `npm --prefix apps/desktop run rebuild:native` to compile `pty.node` for Electron on Linux. Then manually compile the spawn-helper: `cd apps/desktop/node_modules/node-pty && g++ -o build/Release/spawn-helper src/unix/spawn-helper.cc`.
+- The `npm run dev` script has a race condition: `predev` clears `dist/`, then tsup + Electron start in parallel, so the first Electron launch fails with "Cannot find module main.cjs" and auto-restarts. To avoid this, pre-build first (`npm run build`) then run the dev launcher directly: `node scripts/normalize-runtime-binaries.cjs && node scripts/ensure-electron.cjs && node scripts/dev.cjs`.
+- Alternatively, start Vite and Electron separately for more control: `npx vite --port 5173 --strictPort --force &` then `VITE_DEV_SERVER_URL=http://localhost:5173 npx electron . --no-sandbox`.
+- `cr-sqlite` extension binaries are only available for macOS. On Linux the app logs `db.crsqlite_unavailable` as a warning and continues without CRDT sync — this is non-blocking for development.
+- The `ADE_PROJECT_ROOT=/workspace` env var tells the main process to auto-open a project at startup. However, there is a timing race: the renderer's initial `getProject()` call may return null before the async project switch completes, causing the welcome screen to appear even though the backend loaded the project. A workaround is to open the project manually via the "Open a project" button in the top bar.
+- Computer-use features (screenshot, video capture, GUI automation) are macOS-only (`screencapture`, `osascript`). On Linux these gracefully degrade — the app returns `blocked_by_capability`.
+- `electron-builder` config only defines a `mac` target. Distributable Linux builds (deb/AppImage) are not configured, but dev mode works fine.

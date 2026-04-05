@@ -144,11 +144,30 @@ export function storeApiKey(provider: string, key: string): void {
   persist();
 }
 
+const ENV_KEY_PROVIDERS: Record<string, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GOOGLE_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+  xai: "XAI_API_KEY",
+  groq: "GROQ_API_KEY",
+  together: "TOGETHER_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+};
+
 export function getApiKey(provider: string): string | null {
   const normalizedProvider = provider.trim().toLowerCase();
   if (!normalizedProvider.length) return null;
   const store = ensureStore();
-  return store[normalizedProvider] ?? null;
+  const stored = store[normalizedProvider];
+  if (stored) return stored;
+  const envVar = ENV_KEY_PROVIDERS[normalizedProvider];
+  if (envVar) {
+    const envValue = (process.env[envVar] ?? "").trim();
+    if (envValue.length > 0) return envValue;
+  }
+  return null;
 }
 
 export function deleteApiKey(provider: string): void {

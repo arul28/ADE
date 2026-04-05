@@ -3129,17 +3129,15 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     return getRow<T>(db, sql, params);
   };
 
-  const crsqliteUnavailableError = () => new Error("cr-sqlite extension not available on this platform");
-
   const sync: AdeDbSyncApi = {
     getSiteId: () => desiredSiteId,
     getDbVersion: () => {
-      if (!hasCrsqlite) throw crsqliteUnavailableError();
+      if (!hasCrsqlite) return 0;
       const row = get<{ db_version: number }>("select crsql_db_version() as db_version");
       return Number(row?.db_version ?? 0);
     },
     exportChangesSince: (version: number) => {
-      if (!hasCrsqlite) throw crsqliteUnavailableError();
+      if (!hasCrsqlite) return [];
       const rows = allRows<{
         table_name: string;
         pk: unknown;
@@ -3180,7 +3178,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       }));
     },
     applyChanges: (changes: CrsqlChangeRow[]) => {
-      if (!hasCrsqlite) throw crsqliteUnavailableError();
+      if (!hasCrsqlite) return { appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false };
       let appliedCount = 0;
       const touchedTables = new Set<string>();
       runStatement(db, "begin");

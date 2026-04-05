@@ -146,10 +146,10 @@ export function createGithubService({
 
   const readStoredToken = (): string | null => {
     const token = migrateLegacyTokenIfNeeded();
-    if (!token) {
-      tokenDecryptionFailed = false;
-    }
-    return token;
+    if (token) return token;
+    tokenDecryptionFailed = false;
+    const envToken = (process.env.GITHUB_TOKEN ?? process.env.ADE_GITHUB_TOKEN ?? "").trim();
+    return envToken.length > 0 ? envToken : null;
   };
 
   const persistToken = (token: string | null): void => {

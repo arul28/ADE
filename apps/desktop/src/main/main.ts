@@ -650,9 +650,10 @@ app.whenReady().then(async () => {
     recordRecent?: boolean;
     userSelectedProject?: boolean;
   }): Promise<AppContext> => {
-    // Any pre-existing .ade directory, whether from the tracked shared scaffold or
-    // a prior local open, means this repo should not feel like a brand-new ADE bootstrap.
-    const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade"));
+    // The .ade directory may exist from git (shared scaffold files like ade.yaml),
+    // but the db is gitignored and machine-local. A missing db means this machine
+    // has never completed setup, so onboarding should run.
+    const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot);
@@ -859,6 +860,29 @@ app.whenReady().then(async () => {
       laneService,
       projectConfigService
     });
+
+    if (!hadAdeDir) {
+      const hasEnvCredentials =
+        Boolean((process.env.GITHUB_TOKEN ?? process.env.ADE_GITHUB_TOKEN ?? "").trim()) ||
+        Boolean(
+          [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "MISTRAL_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "XAI_API_KEY",
+            "GROQ_API_KEY",
+            "TOGETHER_API_KEY",
+            "OPENROUTER_API_KEY",
+          ].some((v) => (process.env[v] ?? "").trim().length > 0)
+        ) ||
+        Boolean((process.env.LINEAR_API_KEY ?? process.env.ADE_LINEAR_TOKEN ?? "").trim());
+      if (hasEnvCredentials) {
+        onboardingService.complete();
+        logger.info("onboarding.auto_completed", { reason: "env_credentials_detected" });
+      }
+    }
 
     rebaseSuggestionService = createRebaseSuggestionService({
       db,
