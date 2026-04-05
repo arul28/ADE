@@ -4,6 +4,7 @@ import {
   getAvailableModels,
   getDefaultModelDescriptor,
   getModelById,
+  getModelDescriptorForPermissionMode,
   getRuntimeModelRefForDescriptor,
   listModelDescriptorsForProvider,
   MODEL_REGISTRY,
@@ -74,6 +75,19 @@ describe("modelRegistry", () => {
   it("returns undefined for unknown model IDs", () => {
     expect(getModelById("openai/gpt-99")).toBeUndefined();
     expect(resolveModelDescriptor("nonexistent/model-id")).toBeUndefined();
+  });
+
+  it("getModelDescriptorForPermissionMode matches getModelById for known locals", () => {
+    const id = "ollama/qwen2.5-coder:32b";
+    expect(getModelDescriptorForPermissionMode(id)).toEqual(getModelById(id));
+  });
+
+  it("getModelDescriptorForPermissionMode yields guarded local for ollama/auto when getModelById is undefined", () => {
+    expect(getModelById("ollama/auto")).toBeUndefined();
+    const perm = getModelDescriptorForPermissionMode("ollama/auto");
+    expect(perm?.family).toBe("ollama");
+    expect(perm?.harnessProfile).toBe("guarded");
+    expect(perm?.authTypes).toContain("local");
   });
 
   it("resolves gpt-5.4 shortId to the API-key variant, not the codex variant", () => {

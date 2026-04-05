@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
+  getLocalModelIdTail,
+  parseLocalProviderFromModelId,
   resolveModelDescriptor,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
@@ -43,11 +46,6 @@ type UnifiedModelSelectorProps = {
 };
 
 const SOURCE_KEYS: SourceSectionKey[] = ["subscription", "api", "local"];
-const LOCAL_PROVIDER_LABELS: Record<string, string> = {
-  ollama: "Ollama",
-  lmstudio: "LM Studio",
-  vllm: "vLLM",
-};
 
 const selectCls = cn(
   "h-8 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 font-sans text-[11px] text-fg/70",
@@ -65,21 +63,6 @@ function rgbaFromHex(hex: string, alpha: number): string {
 
 function providerAccent(family: string, fallback?: string): string {
   return PROVIDER_BADGE_COLORS[family] ?? fallback ?? "#A78BFA";
-}
-
-function getLocalProviderFromModelId(modelId: string): "ollama" | "lmstudio" | "vllm" | null {
-  const provider = String(modelId ?? "").trim().split("/", 1)[0]?.toLowerCase();
-  if (provider === "ollama" || provider === "lmstudio" || provider === "vllm") {
-    return provider;
-  }
-  return null;
-}
-
-function getLocalModelShortLabel(modelId: string): string {
-  const provider = getLocalProviderFromModelId(modelId);
-  if (!provider) return modelId;
-  const tail = String(modelId ?? "").trim().slice(provider.length + 1).trim();
-  return tail.length ? tail : modelId;
 }
 
 function subsectionTabTitle(sub: ModelSubsection): string {
@@ -133,10 +116,10 @@ function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
       isCliWrapped: true,
     };
   }
-  const localProvider = getLocalProviderFromModelId(modelId);
+  const localProvider = parseLocalProviderFromModelId(modelId);
   if (localProvider) {
-    const providerLabel = LOCAL_PROVIDER_LABELS[localProvider];
-    const shortId = getLocalModelShortLabel(modelId);
+    const shortId = getLocalModelIdTail(modelId, localProvider) || modelId;
+    const brand = LOCAL_PROVIDER_LABELS[localProvider];
     return {
       id: modelId,
       shortId,
@@ -148,11 +131,11 @@ function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
       capabilities: { tools: false, vision: false, reasoning: false, streaming: true },
       color: PROVIDER_BADGE_COLORS[localProvider] ?? "#64748B",
       sdkProvider: "@ai-sdk/openai-compatible",
-      sdkModelId: modelId,
+      sdkModelId: shortId,
       isCliWrapped: false,
       discoverySource: localProvider === "lmstudio" ? "lmstudio-openai" : localProvider,
       harnessProfile: "guarded",
-      aliases: [providerLabel],
+      aliases: [brand],
     };
   }
   return {

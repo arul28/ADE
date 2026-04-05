@@ -8,7 +8,14 @@ import type {
   AiSettingsStatus,
   ProjectConfigSnapshot,
 } from "../../../shared/types";
-import { getLocalProviderDefaultEndpoint, getModelById, type LocalProviderFamily } from "../../../shared/modelRegistry";
+import {
+  getLocalModelIdTail,
+  getLocalProviderDefaultEndpoint,
+  getModelById,
+  LOCAL_PROVIDER_LABELS,
+  parseLocalProviderFromModelId,
+  type LocalProviderFamily,
+} from "../../../shared/modelRegistry";
 import {
   ArrowsClockwise,
   CheckCircle,
@@ -71,10 +78,6 @@ const LOCAL_PROVIDER_SPECS: Array<{
   { provider: "ollama", label: "Ollama", description: "OpenAI-compatible local server" },
   { provider: "vllm", label: "vLLM", description: "OpenAI-compatible local server" },
 ];
-
-const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = Object.fromEntries(
-  LOCAL_PROVIDER_SPECS.map((entry) => [entry.provider, entry.label]),
-) as Record<LocalProviderFamily, string>;
 
 const API_KEY_PROVIDERS: Array<{
   provider: string;
@@ -184,14 +187,13 @@ function buildCliMessage(tool: (typeof CLI_TOOLS)[number], connection: AiProvide
 function formatLocalModelLabel(modelId: string): string {
   const descriptor = getModelById(modelId);
   if (descriptor) return descriptor.displayName;
-  const raw = String(modelId ?? "").trim();
-  const prefix = raw.split("/", 1)[0]?.toLowerCase();
-  if (prefix === "ollama" || prefix === "lmstudio" || prefix === "vllm") {
-    const tail = raw.slice(prefix.length + 1).trim();
-    const providerLabel = LOCAL_PROVIDER_SPECS.find((entry) => entry.provider === prefix)?.label ?? prefix;
-    return tail.length ? `${tail} (${providerLabel})` : raw;
+  const provider = parseLocalProviderFromModelId(modelId);
+  if (provider) {
+    const tail = getLocalModelIdTail(modelId, provider);
+    const brand = LOCAL_PROVIDER_LABELS[provider];
+    return tail.length ? `${tail} (${brand})` : String(modelId ?? "").trim();
   }
-  return raw;
+  return String(modelId ?? "").trim();
 }
 
 const AUTH_ERROR_SIGNALS = [
