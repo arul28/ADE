@@ -3930,7 +3930,7 @@ export function createConflictService({
     ];
     const status: PrepareResolverSessionResult["status"] = contextGaps.length > 0 ? "blocked" : "ready";
 
-    const prompt = buildExternalResolverPrompt({
+    let prompt = buildExternalResolverPrompt({
       targetLaneId,
       sourceLaneIds,
       contexts,
@@ -3939,6 +3939,10 @@ export function createConflictService({
       integrationLaneId: integrationLane?.id ?? null,
       scenario
     });
+    const extra = typeof args.additionalInstructions === "string" ? args.additionalInstructions.trim() : "";
+    if (extra.length > 0) {
+      prompt += `\n\n---\n\n## Operator instructions\n\n${extra}\n`;
+    }
     const promptPath = path.join(runDir, "prompt.md");
     fs.writeFileSync(promptPath, prompt, "utf8");
 
