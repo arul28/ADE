@@ -151,6 +151,7 @@ type IntegrationProposalRow = {
   integration_lane_name: string | null;
   status: string;
   integration_lane_id: string | null;
+  preferred_integration_lane_id: string | null;
   resolution_state_json: string | null;
   pairwise_results_json: string | null;
   lane_summaries_json: string | null;
@@ -163,6 +164,7 @@ type IntegrationProposalRow = {
   completed_at: string | null;
   cleanup_declined_at: string | null;
   cleanup_completed_at: string | null;
+  merge_into_head_sha: string | null;
 };
 
 type PrGroupLookupRow = {
@@ -1282,6 +1284,8 @@ export function createPrService({
       body: String(row.body || ""),
       draft: Boolean(row.draft),
       integrationLaneName: String(row.integration_lane_name || ""),
+      preferredIntegrationLaneId: asString(row.preferred_integration_lane_id).trim() || null,
+      mergeIntoHeadSha: asString(row.merge_into_head_sha).trim() || null,
       status: String(row.status) as IntegrationProposal["status"],
       integrationLaneId,
       linkedGroupId: asString(row.linked_group_id).trim() || null,
@@ -2406,13 +2410,25 @@ export function createPrService({
     if (!preflight.baseLane) {
       throw new Error(`Could not map base branch "${args.baseBranch}" to an active lane. Create or attach that lane first.`);
     }
+    const existingIntegrationLaneId = asString(args.existingIntegrationLaneId).trim();
+    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+    if (existingIntegrationLaneId) {
+      if (preflight.uniqueSourceLaneIds.includes(existingIntegrationLaneId)) {
+        throw new Error("Integration lane cannot be one of the source lanes.");
+      }
+      const adoptLane = laneMap.get(existingIntegrationLaneId);
+      if (!adoptLane) {
+        throw new Error(`Integration lane not found: ${existingIntegrationLaneId}`);
+      }
+    }
     assertDirtyWorktreesAllowed({
       lanes,
-      laneIds: preflight.uniqueSourceLaneIds,
+      laneIds: existingIntegrationLaneId
+        ? [...preflight.uniqueSourceLaneIds, existingIntegrationLaneId]
+        : preflight.uniqueSourceLaneIds,
       allowDirtyWorktree: args.allowDirtyWorktree
     });
 
-    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
     const sourceLaneNames = preflight.uniqueSourceLaneIds.map((laneId) => laneMap.get(laneId)?.name ?? laneId);
     const groupId = randomUUID();
     const now = nowIso();
@@ -2420,6 +2436,7 @@ export function createPrService({
     // Track resources created during this operation for cleanup on failure.
     let groupInserted = false;
     let integrationLane: LaneSummary | null = null;
+    let createdNewIntegrationLane = false;
 
     try {
       db.run(
@@ -2428,11 +2445,17 @@ export function createPrService({
       );
       groupInserted = true;
 
-      integrationLane = await laneService.createChild({
-        parentLaneId: preflight.baseLane.id,
-        name: integrationLaneName,
-        description: `Integration lane for merging: ${sourceLaneNames.join(", ")}`
-      });
+      if (existingIntegrationLaneId) {
+        integrationLane = laneMap.get(existingIntegrationLaneId) ?? null;
+        if (!integrationLane) throw new Error(`Integration lane not found: ${existingIntegrationLaneId}`);
+      } else {
+        integrationLane = await laneService.createChild({
+          parentLaneId: preflight.baseLane.id,
+          name: integrationLaneName,
+          description: `Integration lane for merging: ${sourceLaneNames.join(", ")}`
+        });
+        createdNewIntegrationLane = true;
+      }
 
       const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
 
@@ -2510,9 +2533,8 @@ export function createPrService({
           });
         }
       }
-      // Archive the integration lane if we created one (best-effort; deletion
-      // could fail if the worktree has uncommitted state, so archive is safer).
-      if (integrationLane) {
+      // Archive the integration lane only if we created it (best-effort).
+      if (integrationLane && createdNewIntegrationLane) {
         try {
           await laneService.archive({ laneId: integrationLane.id });
         } catch (cleanupError) {
@@ -2888,11 +2910,29 @@ export function createPrService({
     const laneOrder = new Map(sourceLaneIds.map((laneId, index) => [laneId, index]));
     const zeroDiffStat: IntegrationProposalStep["diffStat"] = { insertions: 0, deletions: 0, filesChanged: 0 };
 
+    const mergeIntoLaneId = asString(args.mergeIntoLaneId).trim();
+    if (mergeIntoLaneId && sourceLaneIds.includes(mergeIntoLaneId)) {
+      throw new Error("Merge-into lane cannot be one of the source lanes.");
+    }
+    const mergeIntoLane = mergeIntoLaneId ? laneMap.get(mergeIntoLaneId) ?? null : null;
+    if (mergeIntoLaneId && !mergeIntoLane) {
+      throw new Error(`Merge-into lane not found: ${mergeIntoLaneId}`);
+    }
+
     // Resolve base branch SHA once, then compare each lane head against it.
     const baseSha = (await runGitOrThrow(
       ["rev-parse", args.baseBranch],
       { cwd: projectRoot, timeoutMs: 10_000 }
     )).trim();
+
+    let mergeIntoHeadSha: string | null = null;
+    if (mergeIntoLane) {
+      mergeIntoHeadSha = (await runGitOrThrow(
+        ["rev-parse", branchNameFromRef(mergeIntoLane.branchRef)],
+        { cwd: projectRoot, timeoutMs: 10_000 }
+      )).trim();
+    }
+    const sequentialStartSha = mergeIntoHeadSha ?? baseSha;
 
     const laneSummariesById = new Map<
       string,
@@ -3091,6 +3131,64 @@ export function createPrService({
       }))
     });
 
+    const mergeIntoConflictLaneIds = new Set<string>();
+    const mergeIntoFilesByLaneId = new Map<string, Map<string, IntegrationProposalStep["conflictingFiles"][number]>>();
+    if (mergeIntoHeadSha) {
+      for (const laneId of sourceLaneIds) {
+        const laneSummary = laneSummariesById.get(laneId);
+        if (!laneSummary?.headSha) continue;
+        const mergeTreeResult = await runGitMergeTree({
+          cwd: projectRoot,
+          mergeBase: baseSha,
+          branchA: mergeIntoHeadSha,
+          branchB: laneSummary.headSha,
+          timeoutMs: 30_000
+        });
+        if (mergeTreeResult.exitCode === 128 || (!mergeTreeResult.conflicts.length && mergeTreeResult.exitCode !== 0)) {
+          mergeIntoConflictLaneIds.add(laneId);
+          continue;
+        }
+        if (mergeTreeResult.conflicts.length === 0) continue;
+        mergeIntoConflictLaneIds.add(laneId);
+        const fileMap = mergeIntoFilesByLaneId.get(laneId) ?? new Map<string, IntegrationProposalStep["conflictingFiles"][number]>();
+        const treeOid = mergeTreeResult.treeOid;
+        for (const filePath of mergeTreeResult.conflicts.map((c) => c.path)) {
+          if (fileMap.has(filePath)) continue;
+          if (treeOid) {
+            const detail = await extractConflictDetail(treeOid, filePath, projectRoot);
+            fileMap.set(filePath, {
+              path: filePath,
+              conflictType: detail.conflictType,
+              conflictMarkers: detail.conflictMarkers,
+              oursExcerpt: detail.oursExcerpt || null,
+              theirsExcerpt: detail.theirsExcerpt || null,
+              diffHunk: detail.diffHunk || null
+            });
+          } else {
+            let oursExcerpt: string | null = null;
+            let theirsExcerpt: string | null = null;
+            try {
+              const [diffI, diffS] = await Promise.all([
+                runGit(["diff", `${baseSha}..${mergeIntoHeadSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
+                runGit(["diff", `${baseSha}..${laneSummary.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
+              ]);
+              if (diffI.exitCode === 0 && diffI.stdout.trim()) oursExcerpt = diffI.stdout.slice(0, 500);
+              if (diffS.exitCode === 0 && diffS.stdout.trim()) theirsExcerpt = diffS.stdout.slice(0, 500);
+            } catch { /* best-effort */ }
+            fileMap.set(filePath, {
+              path: filePath,
+              conflictType: null,
+              conflictMarkers: "",
+              oursExcerpt,
+              theirsExcerpt,
+              diffHunk: null
+            });
+          }
+        }
+        mergeIntoFilesByLaneId.set(laneId, fileMap);
+      }
+    }
+
     const sequentialConflictLaneIds = new Set<string>();
     const sequentialBlockedLaneIds = new Set<string>();
     const sequentialFilesByLaneId = new Map<string, Map<string, IntegrationProposalStep["conflictingFiles"][number]>>();
@@ -3098,7 +3196,7 @@ export function createPrService({
     const sequentialWorktreePath = path.join(sequentialTempRoot, "worktree");
 
     try {
-      await runGitOrThrow(["worktree", "add", "--detach", sequentialWorktreePath, baseSha], {
+      await runGitOrThrow(["worktree", "add", "--detach", sequentialWorktreePath, sequentialStartSha], {
         cwd: projectRoot,
         timeoutMs: 60_000,
       });
@@ -3192,6 +3290,14 @@ export function createPrService({
       conflictingFilesByLaneId.set(laneId, laneFiles);
     }
 
+    for (const [laneId, files] of mergeIntoFilesByLaneId.entries()) {
+      const laneFiles = conflictingFilesByLaneId.get(laneId) ?? new Map<string, IntegrationProposalStep["conflictingFiles"][number]>();
+      for (const [filePath, file] of files.entries()) {
+        if (!laneFiles.has(filePath)) laneFiles.set(filePath, file);
+      }
+      conflictingFilesByLaneId.set(laneId, laneFiles);
+    }
+
     const laneSummaries: IntegrationLaneSummary[] = sourceLaneIds.map((laneId) => {
       const laneSummary = laneSummariesById.get(laneId);
       const laneName = laneSummary?.laneName ?? laneId;
@@ -3201,7 +3307,7 @@ export function createPrService({
       let outcome: IntegrationLaneSummary["outcome"] = "clean";
       if (!laneSummary?.headSha || blockedLaneIds.has(laneId) || sequentialBlockedLaneIds.has(laneId)) {
         outcome = "blocked";
-      } else if (conflictsWith.length > 0 || sequentialConflictLaneIds.has(laneId)) {
+      } else if (conflictsWith.length > 0 || sequentialConflictLaneIds.has(laneId) || mergeIntoConflictLaneIds.has(laneId)) {
         outcome = "conflict";
       }
 
@@ -3243,6 +3349,8 @@ export function createPrService({
       overallOutcome,
       createdAt: now,
       status: "proposed",
+      preferredIntegrationLaneId: mergeIntoLaneId || null,
+      mergeIntoHeadSha: mergeIntoHeadSha ?? null,
       linkedGroupId: null,
       linkedPrId: null,
       workflowDisplayState: "active",
@@ -3256,7 +3364,7 @@ export function createPrService({
 
     if (args.persist !== false) {
       db.run(
-        `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json, lane_summaries_json, overall_outcome, created_at, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json, lane_summaries_json, overall_outcome, created_at, status, preferred_integration_lane_id, merge_into_head_sha) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           proposalId,
           projectId,
@@ -3267,7 +3375,9 @@ export function createPrService({
           JSON.stringify(laneSummaries),
           overallOutcome,
           now,
-          "proposed"
+          "proposed",
+          mergeIntoLaneId || null,
+          mergeIntoHeadSha ?? null,
         ]
       );
     }
@@ -3347,14 +3457,23 @@ export function createPrService({
       steps_json: string;
       integration_lane_id: string | null;
       integration_lane_name: string | null;
+      preferred_integration_lane_id: string | null;
     }>(
-      `select id, source_lane_ids_json, base_branch, steps_json, integration_lane_id, integration_lane_name from integration_proposals where id = ?`,
+      `select id, source_lane_ids_json, base_branch, steps_json, integration_lane_id, integration_lane_name, preferred_integration_lane_id from integration_proposals where id = ?`,
       [args.proposalId]
     );
     if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
 
     const sourceLaneIds = JSON.parse(String(proposalRow.source_lane_ids_json)) as string[];
     const existingIntegrationLaneId = asString(proposalRow.integration_lane_id).trim();
+    const preferredFromRow = asString(proposalRow.preferred_integration_lane_id).trim() || null;
+    const preferredIntegrationLaneId =
+      args.preferredIntegrationLaneId !== undefined
+        ? (asString(args.preferredIntegrationLaneId).trim() || null)
+        : preferredFromRow;
+    if (preferredIntegrationLaneId && sourceLaneIds.includes(preferredIntegrationLaneId)) {
+      throw new Error("Preferred integration lane cannot be one of the source lanes.");
+    }
 
     let result: CreateIntegrationPrResult;
     if (existingIntegrationLaneId) {
@@ -3369,9 +3488,11 @@ export function createPrService({
       });
     } else {
       const availableLanes = await laneService.list({ includeArchived: false });
+      const dirtyCheckLaneIds = [...sourceLaneIds];
+      if (preferredIntegrationLaneId) dirtyCheckLaneIds.push(preferredIntegrationLaneId);
       assertDirtyWorktreesAllowed({
         lanes: availableLanes,
-        laneIds: sourceLaneIds,
+        laneIds: dirtyCheckLaneIds,
         allowDirtyWorktree: args.allowDirtyWorktree,
       });
 
@@ -3418,6 +3539,9 @@ export function createPrService({
               || null
             )
           : null,
+      ...(args.preferredIntegrationLaneId !== undefined
+        ? { preferred_integration_lane_id: preferredIntegrationLaneId }
+        : {}),
       integration_lane_id: result.integrationLaneId,
       linked_group_id: result.groupId,
       linked_pr_id: result.pr.id,
@@ -3914,6 +4038,20 @@ export function createPrService({
     if (args.body !== undefined) { sets.push("body = ?"); params.push(args.body); }
     if (args.draft !== undefined) { sets.push("draft = ?"); params.push(args.draft ? 1 : 0); }
     if (args.integrationLaneName !== undefined) { sets.push("integration_lane_name = ?"); params.push(args.integrationLaneName); }
+    if (args.preferredIntegrationLaneId !== undefined) {
+      sets.push("preferred_integration_lane_id = ?");
+      params.push(args.preferredIntegrationLaneId?.trim() || null);
+    }
+    if (args.mergeIntoHeadSha !== undefined) {
+      sets.push("merge_into_head_sha = ?");
+      params.push(args.mergeIntoHeadSha?.trim() || null);
+    }
+    if (args.clearIntegrationBinding) {
+      sets.push("integration_lane_id = ?");
+      params.push(null);
+      sets.push("resolution_state_json = ?");
+      params.push(null);
+    }
     if (sets.length === 0) return;
     params.push(args.proposalId);
     db.run(`update integration_proposals set ${sets.join(", ")} where id = ?`, params);
@@ -3957,9 +4095,11 @@ export function createPrService({
     const proposalRow = db.get<{
       id: string; source_lane_ids_json: string; base_branch: string;
       steps_json: string; overall_outcome: string; integration_lane_name: string | null;
-      integration_lane_id: string | null; resolution_state_json: string | null; created_at: string;
+      integration_lane_id: string | null; preferred_integration_lane_id: string | null;
+      merge_into_head_sha: string | null;
+      resolution_state_json: string | null; created_at: string;
     }>(
-      `select id, source_lane_ids_json, base_branch, steps_json, overall_outcome, integration_lane_name, integration_lane_id, resolution_state_json, created_at from integration_proposals where id = ?`,
+      `select id, source_lane_ids_json, base_branch, steps_json, overall_outcome, integration_lane_name, integration_lane_id, preferred_integration_lane_id, merge_into_head_sha, resolution_state_json, created_at from integration_proposals where id = ?`,
       [args.proposalId]
     );
     if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
@@ -3975,6 +4115,17 @@ export function createPrService({
       throw new Error(`Could not map base branch "${String(proposalRow.base_branch)}" to an active lane. Create or attach that lane first.`);
     }
     const laneMap = new Map(allLanes.map((l) => [l.id, l]));
+    const preferredIntegrationLaneId = asString(proposalRow.preferred_integration_lane_id).trim();
+    if (preferredIntegrationLaneId && preflight.uniqueSourceLaneIds.includes(preferredIntegrationLaneId)) {
+      throw new Error("Preferred integration lane cannot be one of the source lanes.");
+    }
+    const dirtyCheckLaneIds = [...preflight.uniqueSourceLaneIds];
+    if (preferredIntegrationLaneId) dirtyCheckLaneIds.push(preferredIntegrationLaneId);
+    assertDirtyWorktreesAllowed({
+      lanes: allLanes,
+      laneIds: dirtyCheckLaneIds,
+      allowDirtyWorktree: args.allowDirtyWorktree,
+    });
     const existingIntegrationLaneId = asString(proposalRow.integration_lane_id).trim();
     if (existingIntegrationLaneId) {
       const existingLane = laneMap.get(existingIntegrationLaneId);
@@ -4001,11 +4152,39 @@ export function createPrService({
     }
     const shortId = args.proposalId.slice(0, 8);
     const integrationLaneName = String(proposalRow.integration_lane_name ?? "").trim() || `integration/${shortId}`;
-    const integrationLane = await laneService.createChild({
-      parentLaneId: preflight.baseLane.id,
-      name: integrationLaneName,
-      description: `Integration lane for proposal ${args.proposalId}`
-    });
+    let integrationLane: LaneSummary;
+    if (preferredIntegrationLaneId) {
+      const adopt = laneMap.get(preferredIntegrationLaneId);
+      if (!adopt) throw new Error(`Preferred integration lane not found: ${preferredIntegrationLaneId}`);
+      const storedMergeHead = asString(proposalRow.merge_into_head_sha).trim();
+      try {
+        const currentHead = (await runGitOrThrow(
+          ["rev-parse", "HEAD"],
+          { cwd: adopt.worktreePath, timeoutMs: 10_000 }
+        )).trim();
+        if (storedMergeHead && currentHead && storedMergeHead !== currentHead) {
+          logger.warn("prs.integration_merge_into_head_drift", {
+            proposalId: args.proposalId,
+            preferredIntegrationLaneId,
+            storedHead: storedMergeHead,
+            currentHead,
+          });
+        }
+      } catch (error) {
+        logger.warn("prs.integration_merge_into_head_read_failed", {
+          proposalId: args.proposalId,
+          preferredIntegrationLaneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      integrationLane = adopt;
+    } else {
+      integrationLane = await laneService.createChild({
+        parentLaneId: preflight.baseLane.id,
+        name: integrationLaneName,
+        description: `Integration lane for proposal ${args.proposalId}`
+      });
+    }
 
     const mergedCleanLanes: string[] = [];
     const conflictingLanes: string[] = [];
