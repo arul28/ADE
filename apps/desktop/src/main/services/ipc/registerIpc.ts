@@ -5307,6 +5307,9 @@ export function registerIpc({
     const reasoning = typeof arg?.reasoning === "string" && arg.reasoning.trim().length > 0
       ? arg.reasoning.trim()
       : null;
+    const additionalInstructions = typeof arg?.additionalInstructions === "string" && arg.additionalInstructions.trim().length > 0
+      ? arg.additionalInstructions.trim()
+      : null;
     let runId = "";
 
     if (!model) {
@@ -5363,6 +5366,7 @@ export function registerIpc({
         model,
         reasoningEffort: reasoning,
         permissionMode,
+        additionalInstructions,
         originSurface: context.sourceTab === "integration"
           ? "integration"
           : context.sourceTab === "rebase"
