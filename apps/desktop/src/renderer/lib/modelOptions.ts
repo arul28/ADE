@@ -1,42 +1,33 @@
 import type { AiModelDescriptor, AiRuntimeConnectionStatus, AiSettingsStatus, ModelId } from "../../shared/types";
-import { MODEL_REGISTRY, getModelById, type LocalProviderFamily, type ModelDescriptor } from "../../shared/modelRegistry";
+import {
+  LOCAL_PROVIDER_LABELS,
+  MODEL_REGISTRY,
+  getLocalModelIdTail,
+  getModelById,
+  isLocalProviderFamily,
+  parseLocalProviderFromModelId,
+  type ModelDescriptor,
+} from "../../shared/modelRegistry";
 
 function normalizeAuthProvider(provider: string | undefined): string {
   return String(provider ?? "").trim().toLowerCase();
 }
 
-const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
-  ollama: "Ollama",
-  lmstudio: "LM Studio",
-  vllm: "vLLM",
-};
-
-function getLocalProviderFromModelId(modelId: string): LocalProviderFamily | null {
-  const provider = String(modelId ?? "")
-    .trim()
-    .split("/", 1)[0]
-    ?.toLowerCase();
-  if (provider === "ollama" || provider === "lmstudio" || provider === "vllm") {
-    return provider;
-  }
-  return null;
-}
-
 function getLocalModelLabel(modelId: string): string {
-  const provider = getLocalProviderFromModelId(modelId);
+  const provider = parseLocalProviderFromModelId(modelId);
   if (!provider) return modelId;
-  const tail = String(modelId ?? "").trim().slice(provider.length + 1).trim();
+  const tail = getLocalModelIdTail(modelId, provider);
   return tail.length ? tail : modelId;
 }
 
 function buildFallbackModelOption(modelId: string): AiModelDescriptor {
-  const provider = getLocalProviderFromModelId(modelId);
+  const provider = parseLocalProviderFromModelId(modelId);
   if (provider) {
-    const providerLabel = LOCAL_PROVIDER_LABELS[provider];
+    const pLabel = LOCAL_PROVIDER_LABELS[provider];
     return {
       id: modelId,
       label: getLocalModelLabel(modelId),
-      description: `${providerLabel} local model`,
+      description: `${pLabel} local model`,
     };
   }
   return {
@@ -104,7 +95,7 @@ function hasDynamicLocalModelIdsForProvider(
   runtimeConnections: Record<string, AiRuntimeConnectionStatus> | undefined,
 ): boolean {
   const normalizedProvider = normalizeAuthProvider(provider);
-  if (normalizedProvider !== "ollama" && normalizedProvider !== "lmstudio" && normalizedProvider !== "vllm") {
+  if (!isLocalProviderFamily(normalizedProvider)) {
     return false;
   }
   const prefix = `${normalizedProvider}/`;
@@ -168,7 +159,7 @@ export function deriveConfiguredModelIds(
 
   for (const [provider, connection] of Object.entries(runtimeConnections ?? {})) {
     const normalizedProvider = normalizeAuthProvider(provider);
-    if (normalizedProvider !== "ollama" && normalizedProvider !== "lmstudio" && normalizedProvider !== "vllm") {
+    if (!isLocalProviderFamily(normalizedProvider)) {
       continue;
     }
     if (!hasDynamicLocalModelIdsForProvider(normalizedProvider, status.availableModelIds, runtimeConnections)) {
@@ -210,7 +201,7 @@ export function deriveConfiguredModelOptions(
     const descriptor = getModelById(modelId);
     return descriptor
       ? [descriptorToModelOption(descriptor)]
-      : getLocalProviderFromModelId(modelId)
+      : parseLocalProviderFromModelId(modelId)
         ? [buildFallbackModelOption(modelId)]
         : [];
   });
@@ -224,6 +215,6 @@ export function includeSelectedModelOption(
   if (!modelId.length || options.some((option) => option.id === modelId)) return options;
   const descriptor = getModelById(modelId);
   if (descriptor) return [descriptorToModelOption(descriptor), ...options];
-  if (getLocalProviderFromModelId(modelId)) return [buildFallbackModelOption(modelId), ...options];
+  if (parseLocalProviderFromModelId(modelId)) return [buildFallbackModelOption(modelId), ...options];
   return options;
 }

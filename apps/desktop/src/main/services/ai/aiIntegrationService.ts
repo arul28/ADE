@@ -17,6 +17,7 @@ import {
   getAvailableModels,
   getLocalProviderDefaultEndpoint,
   listModelDescriptorsForProvider,
+  LOCAL_PROVIDER_LABELS,
   replaceDynamicLocalModelDescriptors,
   resolveModelAlias,
   enrichModelRegistry,
@@ -379,12 +380,6 @@ function redactDetectedAuth(
 
   return redacted;
 }
-
-const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
-  ollama: "Ollama",
-  lmstudio: "LM Studio",
-  vllm: "vLLM",
-};
 
 function apiProviderLabel(provider: string): string {
   const labels: Record<string, string> = {
