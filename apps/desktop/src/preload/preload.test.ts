@@ -76,4 +76,51 @@ describe("preload OAuth bridge", () => {
     unsubscribe();
     expect(removeListener).toHaveBeenCalledWith(IPC.lanesOAuthEvent, listener);
   });
+
+  it("exposes review IPC methods and cleans up listeners", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.review.listLaunchContext();
+    await bridge.review.listRuns({ laneId: "lane-1", limit: 5 });
+    await bridge.review.getRunDetail("run-1");
+    await bridge.review.startRun({ target: { mode: "lane_diff", laneId: "lane-1" } });
+    await bridge.review.rerun("run-1");
+
+    expect(invoke).toHaveBeenCalledWith(IPC.reviewListLaunchContext);
+    expect(invoke).toHaveBeenCalledWith(IPC.reviewListRuns, { laneId: "lane-1", limit: 5 });
+    expect(invoke).toHaveBeenCalledWith(IPC.reviewGetRunDetail, { runId: "run-1" });
+    expect(invoke).toHaveBeenCalledWith(IPC.reviewStartRun, { target: { mode: "lane_diff", laneId: "lane-1" } });
+    expect(invoke).toHaveBeenCalledWith(IPC.reviewRerun, { runId: "run-1" });
+
+    const callback = vi.fn();
+    const unsubscribe = bridge.review.onEvent(callback);
+    expect(on).toHaveBeenCalledWith(IPC.reviewEvent, expect.any(Function));
+
+    const listener = on.mock.calls.at(-1)?.[1];
+    expect(typeof listener).toBe("function");
+    listener({}, { type: "runs-updated", runId: "run-1", status: "completed" });
+    expect(callback).toHaveBeenCalledWith({ type: "runs-updated", runId: "run-1", status: "completed" });
+
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(IPC.reviewEvent, listener);
+  });
 });

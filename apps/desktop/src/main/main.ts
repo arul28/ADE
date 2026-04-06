@@ -56,6 +56,7 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createAutomationIngressService } from "./services/automations/automationIngressService";
+import { createReviewService } from "./services/review/reviewService";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
@@ -1521,6 +1522,18 @@ app.whenReady().then(async () => {
       agentChatService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.automationsEvent, event)
     });
+    const reviewService = createReviewService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      projectDefaultBranch: null,
+      laneService,
+      gitService,
+      agentChatService,
+      sessionService,
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
+    });
     const automationIngressService = createAutomationIngressService({
       logger,
       automationService,
@@ -2388,6 +2401,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       queueLandingService,
       issueInventoryService,
+      reviewService,
       jobEngine,
       automationService,
       automationPlannerService,
@@ -2481,6 +2495,7 @@ app.whenReady().then(async () => {
       prPollingService: null,
       queueLandingService: null,
       issueInventoryService: null,
+      reviewService: null,
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,
