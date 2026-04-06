@@ -839,7 +839,7 @@ const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
-const CLAUDE_STREAM_IDLE_TIMEOUT_MS = 75_000;
+const CLAUDE_STREAM_IDLE_TIMEOUT_MS = 300_000;
 const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000; // check every 60 seconds
 const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
@@ -855,7 +855,6 @@ function evictOldestEntries<K, V>(map: Map<K, V>, maxSize: number): void {
     map.delete(next.value);
   }
 }
-
 const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
 Return only the title text.
 - Use 2 to 6 words.
