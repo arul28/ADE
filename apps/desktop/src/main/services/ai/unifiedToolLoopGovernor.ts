@@ -98,14 +98,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function stableStringify(value: unknown): string {
-  if (value == null) return String(value);
-  if (typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
-}
-
 function toPortablePath(value: string): string {
   return value.replace(/\\/g, "/");
 }
@@ -118,6 +110,7 @@ function normalizePathToken(value: string, cwd?: string): string {
     : path.resolve(trimmed);
   if (cwd) {
     const relative = path.relative(cwd, resolved);
+    if (!relative.length) return ".";
     if (relative.length && !relative.startsWith("..") && !path.isAbsolute(relative)) {
       return toPortablePath(relative);
     }
@@ -275,7 +268,6 @@ export class UnifiedToolLoopGovernor {
   private readonly readFiles = new Set<string>();
   private nonProgressSteps = 0;
   private meaningfulProgress = false;
-  private broadDiscoverySeen = false;
   private suppressionCount = 0;
 
   constructor(
@@ -306,7 +298,6 @@ export class UnifiedToolLoopGovernor {
       return { suppressed: false };
     }
 
-    this.broadDiscoverySeen = true;
     const exactCount = this.exactCounts.get(signature.exactKey) ?? 0;
     const familyCount = this.familyCounts.get(signature.familyKey) ?? 0;
     this.exactCounts.set(signature.exactKey, exactCount + 1);
@@ -565,7 +556,7 @@ export function wrapToolsWithUnifiedLoopGovernor(
   const wrapped: Record<string, Tool> = {};
 
   for (const [toolName, toolDef] of Object.entries(tools)) {
-    const execute = (toolDef as { execute?: ((input: unknown) => Promise<unknown>) | undefined }).execute;
+    const execute = (toolDef as { execute?: ((...args: any[]) => Promise<unknown>) | undefined }).execute;
     if (typeof execute !== "function") {
       wrapped[toolName] = toolDef;
       continue;
@@ -573,7 +564,8 @@ export function wrapToolsWithUnifiedLoopGovernor(
 
     wrapped[toolName] = {
       ...(toolDef as Record<string, unknown>),
-      execute: async (input: unknown) => {
+      execute: async (...args: any[]) => {
+        const input = args[0];
         const suppression = governor.noteToolCall(toolName, input);
         if (suppression.suppressed) {
           if (suppression.reason) {
@@ -581,7 +573,7 @@ export function wrapToolsWithUnifiedLoopGovernor(
           }
           return suppression.result;
         }
-        return execute(input);
+        return execute(...args);
       },
     } as Tool;
   }

@@ -4543,6 +4543,58 @@ describe("createAgentChatService", () => {
       })).toBe(false);
     });
 
+    it("clamps weak local unified turns to narrower active tools after repeated low-value discovery", async () => {
+      const streamCalls: Array<Record<string, unknown>> = [];
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        streamCalls.push(args);
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "",
+        modelId: "lmstudio/auto",
+        permissionMode: "edit",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Add a blank about me page to the web app.",
+      });
+
+      const streamArgs = streamCalls[0] as {
+        prepareStep?: () => Promise<Record<string, unknown>>;
+        onStepFinish?: (step: unknown) => Promise<void>;
+      } | undefined;
+      expect(streamArgs?.prepareStep).toBeTypeOf("function");
+      expect(streamArgs?.onStepFinish).toBeTypeOf("function");
+
+      const initialPolicy = await streamArgs!.prepareStep!();
+      expect(initialPolicy.activeTools).toEqual(expect.arrayContaining(["readFile", "grep"]));
+      expect(initialPolicy.activeTools).not.toContain("bash");
+
+      await streamArgs!.onStepFinish!({
+        toolCalls: [{ toolName: "grep", input: { pattern: "route" } }],
+        toolResults: [{ toolName: "grep", output: { matches: [], matchCount: 0 } }],
+      });
+      await streamArgs!.onStepFinish!({
+        toolCalls: [{ toolName: "grep", input: { pattern: "page" } }],
+        toolResults: [{ toolName: "grep", output: { matches: [], matchCount: 0 } }],
+      });
+
+      const clampedPolicy = await streamArgs!.prepareStep!();
+      expect(clampedPolicy.activeTools).toContain("readFile");
+      expect(clampedPolicy.activeTools).not.toContain("grep");
+      expect(clampedPolicy.activeTools).not.toContain("bash");
+      expect(String(clampedPolicy.system ?? "")).toContain("already searched broadly");
+    });
+
     it("preserves original attachments across local auto-continuation retries", () => {
       const resolvedPath = path.join(tmpRoot, "note.txt");
       fs.writeFileSync(resolvedPath, "remember this", "utf8");

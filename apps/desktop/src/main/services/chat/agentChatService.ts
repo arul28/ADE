@@ -839,7 +839,10 @@ const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
-const CLAUDE_STREAM_IDLE_TIMEOUT_MS = 300_000;
+// Idle stream watchdog removed — time-based idle detection produced false
+// positives during long-running tool calls (Agent, Bash, etc.) where no
+// stream events are emitted while the SDK waits for tool results. The user
+// can always interrupt manually if something is genuinely stuck.
 const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000; // check every 60 seconds
 const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
@@ -6316,9 +6319,7 @@ export function createAgentChatService(args: {
       emittedClaudeTodoIds.add(itemId);
       emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
     };
-    let idleTimeout: ReturnType<typeof setTimeout> | undefined;
     let timeoutError: Error | null = null;
-    let idleWatchdogPauseCount = 0;
     const buildDoneModelPayload = (): { model: string; modelId?: string } =>
       resolveClaudeTurnModelPayload(managed.session, [
         reportedAssistantModel,
@@ -6346,52 +6347,12 @@ export function createAgentChatService(args: {
       if (typeof contentIndex !== "number" || !Number.isFinite(contentIndex)) return undefined;
       return `claude-${kind}:${turnId}:${contentIndex}`;
     };
-    const clearClaudeTurnTimers = (): void => {
-      if (idleTimeout) {
-        clearTimeout(idleTimeout);
-        idleTimeout = undefined;
-      }
-    };
-    const pauseClaudeIdleWatchdog = (): void => {
-      idleWatchdogPauseCount += 1;
-      clearClaudeTurnTimers();
-    };
-    const resumeClaudeIdleWatchdog = (): void => {
-      idleWatchdogPauseCount = Math.max(0, idleWatchdogPauseCount - 1);
-      if (idleWatchdogPauseCount === 0 && !timeoutError && !runtime.interrupted && runtime.busy) {
-        bumpClaudeIdleDeadline();
-      }
-    };
-    const failClaudeTurn = (message: string, reason: "timeout" | "idle"): void => {
-      if (timeoutError || runtime.interrupted) return;
-      timeoutError = new Error(message);
-      logger.warn("agent_chat.claude_turn_watchdog_fired", {
-        sessionId: managed.session.id,
-        turnId,
-        reason,
-      });
-      cancelClaudeWarmup(managed, runtime, "timeout");
-      try { runtime.v2Session?.close(); } catch { /* ignore */ }
-      // Keep the persisted Claude V2 session id so the next turn can resume
-      // the same conversation after this local process is torn down.
-    };
-    const bumpClaudeIdleDeadline = (): void => {
-      if (idleWatchdogPauseCount > 0) {
-        clearClaudeTurnTimers();
-        return;
-      }
-      if (idleTimeout) {
-        clearTimeout(idleTimeout);
-      }
-      idleTimeout = setTimeout(() => {
-        failClaudeTurn(
-          `Claude stopped streaming for ${Math.round(CLAUDE_STREAM_IDLE_TIMEOUT_MS / 1000)}s. This turn was interrupted, but the chat stayed open so you can retry.`,
-          "idle",
-        );
-      }, CLAUDE_STREAM_IDLE_TIMEOUT_MS);
-    };
-    runtime.pauseIdleWatchdog = pauseClaudeIdleWatchdog;
-    runtime.resumeIdleWatchdog = resumeClaudeIdleWatchdog;
+    // Idle watchdog stubs — kept as no-ops so callers (approval flows,
+    // elicitations, etc.) don't need to be touched.
+    const clearClaudeTurnTimers = (): void => { /* no-op */ };
+    const bumpClaudeIdleDeadline = (): void => { /* no-op */ };
+    runtime.pauseIdleWatchdog = () => {};
+    runtime.resumeIdleWatchdog = () => {};
 
     try {
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
