@@ -4,6 +4,8 @@ import { EmptyState } from "../ui/EmptyState";
 import { COLORS, SANS_FONT, SPACING } from "./laneDesignTokens";
 import { WorkViewArea } from "../terminals/WorkViewArea";
 import { useLaneWorkSessions } from "./useLaneWorkSessions";
+import { useAppStore } from "../../state/appStore";
+import { useExecutionTargets } from "../../hooks/useExecutionTargets";
 
 const ENTRY_OPTIONS: Array<{
   kind: WorkDraftKind;
@@ -22,6 +24,8 @@ export function LaneWorkPane({
   laneId: string | null;
 }) {
   const work = useLaneWorkSessions(laneId);
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const { state: execTargetsState, activeProfile, activeTargetId } = useExecutionTargets(projectRoot);
   const laneList = work.lane ? [work.lane] : [];
 
   if (!laneId) {
@@ -83,6 +87,9 @@ export function LaneWorkPane({
         <WorkViewArea
           gridLayoutId={work.gridLayoutId}
           lanes={laneList}
+          workExecutionTargetProfile={activeProfile}
+          executionTargetProfiles={execTargetsState.profiles}
+          projectActiveExecutionTargetId={activeTargetId}
           sessions={work.sessions}
           visibleSessions={work.visibleSessions}
           activeItemId={work.activeItemId}

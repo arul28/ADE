@@ -95,8 +95,10 @@ export const SessionListPane = React.memo(function SessionListPane({
   workCollapsedLaneIds,
   toggleWorkLaneCollapsed,
   sessionsGroupedByLane,
+  projectActiveTargetId,
 }: {
   lanes: LaneSummary[];
+  projectActiveTargetId?: string | null;
   runningFiltered: TerminalSessionSummary[];
   awaitingInputFiltered: TerminalSessionSummary[];
   endedFiltered: TerminalSessionSummary[];
@@ -143,6 +145,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       <SessionCard
         key={session.id}
         session={session}
+        projectActiveTargetId={projectActiveTargetId}
         isSelected={selectedSessionId === session.id}
         onSelect={onSelectSession}
         onResume={() => onResume(session)}

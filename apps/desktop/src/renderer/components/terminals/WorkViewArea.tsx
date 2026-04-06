@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { GridFour, List, Plus, X } from "@phosphor-icons/react";
-import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AdeExecutionTargetProfile, AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
@@ -32,12 +32,18 @@ function SessionSurface({
   layoutVariant = "standard",
   terminalVisible = isActive,
   onOpenChatSession,
+  workExecutionTargetProfile,
+  executionTargetProfiles,
+  projectActiveExecutionTargetId,
 }: {
   session: TerminalSessionSummary;
   isActive: boolean;
   layoutVariant?: "standard" | "grid-tile";
   terminalVisible?: boolean;
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
+  workExecutionTargetProfile?: AdeExecutionTargetProfile;
+  executionTargetProfiles?: AdeExecutionTargetProfile[];
+  projectActiveExecutionTargetId?: string | null;
 }) {
   const isChat = isChatToolType(session.toolType);
   if (isChat) {
@@ -48,6 +54,9 @@ function SessionSurface({
         lockSessionId={session.id}
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
+        workExecutionTargetProfile={workExecutionTargetProfile}
+        executionTargetProfiles={executionTargetProfiles}
+        projectActiveExecutionTargetId={projectActiveExecutionTargetId}
       />
     );
   }
@@ -114,6 +123,9 @@ function ModeSwitcherPills({
 export function WorkViewArea({
   gridLayoutId,
   lanes,
+  workExecutionTargetProfile,
+  executionTargetProfiles,
+  projectActiveExecutionTargetId,
   sessions,
   visibleSessions,
   activeItemId,
@@ -130,6 +142,9 @@ export function WorkViewArea({
 }: {
   gridLayoutId: string;
   lanes: LaneSummary[];
+  workExecutionTargetProfile?: AdeExecutionTargetProfile;
+  executionTargetProfiles?: AdeExecutionTargetProfile[];
+  projectActiveExecutionTargetId?: string | null;
   sessions: TerminalSessionSummary[];
   visibleSessions: TerminalSessionSummary[];
   activeItemId: string | null;
@@ -193,6 +208,9 @@ export function WorkViewArea({
                 lanes={lanes}
                 onOpenChatSession={onOpenChatSession}
                 onLaunchPtySession={onLaunchPtySession}
+                workExecutionTargetProfile={workExecutionTargetProfile}
+                executionTargetProfiles={executionTargetProfiles}
+                projectActiveExecutionTargetId={projectActiveExecutionTargetId}
               />
             </div>
           </div>
@@ -275,6 +293,9 @@ export function WorkViewArea({
                       terminalVisible
                       layoutVariant="grid-tile"
                       onOpenChatSession={onOpenChatSession}
+                      workExecutionTargetProfile={workExecutionTargetProfile}
+                      executionTargetProfiles={executionTargetProfiles}
+                      projectActiveExecutionTargetId={projectActiveExecutionTargetId}
                     />
                   </div>
                 ),
@@ -402,7 +423,15 @@ export function WorkViewArea({
         {activeSession ? (
           activeRunningTerminalSession ? null : (
             <div className="absolute inset-0">
-              <SessionSurface session={activeSession} isActive terminalVisible onOpenChatSession={onOpenChatSession} />
+              <SessionSurface
+                session={activeSession}
+                isActive
+                terminalVisible
+                onOpenChatSession={onOpenChatSession}
+                workExecutionTargetProfile={workExecutionTargetProfile}
+                executionTargetProfiles={executionTargetProfiles}
+                projectActiveExecutionTargetId={projectActiveExecutionTargetId}
+              />
             </div>
           )
         ) : (
@@ -417,6 +446,9 @@ export function WorkViewArea({
                 lanes={lanes}
                 onOpenChatSession={onOpenChatSession}
                 onLaunchPtySession={onLaunchPtySession}
+                workExecutionTargetProfile={workExecutionTargetProfile}
+                executionTargetProfiles={executionTargetProfiles}
+                projectActiveExecutionTargetId={projectActiveExecutionTargetId}
               />
             </div>
           </div>

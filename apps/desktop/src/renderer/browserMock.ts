@@ -828,6 +828,14 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onMissing: noop,
       onStateEvent: noop,
     },
+    executionTargets: {
+      get: resolved({
+        version: 1,
+        profiles: [{ id: "local", kind: "local" as const, label: "This computer" }],
+        activeTargetId: "local",
+      }),
+      set: async (state: any) => state,
+    },
     keybindings: {
       get: resolved({ definitions: [], overrides: [] }),
       set: resolvedArg({ definitions: [], overrides: [] }),
