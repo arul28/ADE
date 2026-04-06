@@ -36,6 +36,7 @@ import type {
   RebasePushArgs,
   PushMode,
   StackChainItem,
+  UnregisteredWorktree,
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -1126,6 +1127,42 @@ export function createLaneService({
 
     async list(args: ListLanesArgs = {}): Promise<LaneSummary[]> {
       return await listLanes(args);
+    },
+
+    async listUnregisteredWorktrees(): Promise<UnregisteredWorktree[]> {
+      const stdout = await runGitOrThrow(
+        ["worktree", "list", "--porcelain"],
+        { cwd: projectRoot, timeoutMs: 15_000 }
+      );
+
+      const blocks = stdout.split(/\n\n+/).filter(Boolean);
+      const worktrees: UnregisteredWorktree[] = [];
+
+      for (const block of blocks) {
+        const lines = block.split(/\r?\n/);
+        let wtPath = "";
+        let branch = "";
+        let isBare = false;
+        for (const line of lines) {
+          if (line.startsWith("worktree ")) wtPath = line.slice("worktree ".length).trim();
+          if (line.startsWith("branch ")) branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+          if (line === "bare") isBare = true;
+        }
+        if (!wtPath || isBare) continue;
+        worktrees.push({ path: normAbs(wtPath), branch });
+      }
+
+      // Filter out primary worktree and worktrees already tracked as lanes
+      const registeredPaths = new Set(
+        db.all<{ worktree_path: string }>(
+          "select worktree_path from lanes where project_id = ?",
+          [projectId]
+        ).map((row) => normAbs(row.worktree_path))
+      );
+
+      return worktrees.filter(
+        (wt) => wt.path !== normalizedProjectRoot && !registeredPaths.has(wt.path)
+      );
     },
 
     getStateSnapshot(laneId: string): LaneStateSnapshotSummary | null {

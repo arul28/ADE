@@ -33,6 +33,7 @@ export const IPC = {
   lanesCreateFromUnstaged: "ade.lanes.createFromUnstaged",
   lanesImportBranch: "ade.lanes.importBranch",
   lanesAttach: "ade.lanes.attach",
+  lanesListUnregisteredWorktrees: "ade.lanes.listUnregisteredWorktrees",
   lanesAdoptAttached: "ade.lanes.adoptAttached",
   lanesRename: "ade.lanes.rename",
   lanesReparent: "ade.lanes.reparent",

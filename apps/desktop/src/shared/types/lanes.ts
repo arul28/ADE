@@ -141,6 +141,11 @@ export type AttachLaneArgs = {
   description?: string;
 };
 
+export type UnregisteredWorktree = {
+  path: string;
+  branch: string;
+};
+
 export type AdoptAttachedLaneArgs = {
   laneId: string;
 };
