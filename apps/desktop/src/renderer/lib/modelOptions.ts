@@ -162,6 +162,9 @@ export function deriveConfiguredModelIds(
     if (!isLocalProviderFamily(normalizedProvider)) {
       continue;
     }
+    if (connection == null || connection.runtimeAvailable !== true) {
+      continue;
+    }
     if (!hasDynamicLocalModelIdsForProvider(normalizedProvider, status.availableModelIds, runtimeConnections)) {
       addKnownModelIds(ids, normalizedProvider, false);
     }

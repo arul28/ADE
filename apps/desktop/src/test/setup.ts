@@ -33,10 +33,10 @@ function shouldTrackTempDir(dirPath: string): boolean {
 function cleanupTrackedTempDirs(): void {
   const state = getTestTempTrackerState();
   const targets = [...state.trackedDirs].sort((left, right) => right.length - left.length);
-  state.trackedDirs.clear();
   for (const target of targets) {
     try {
       fs.rmSync(target, { recursive: true, force: true });
+      state.trackedDirs.delete(target);
     } catch {
       // Best-effort cleanup only for test temp roots.
     }

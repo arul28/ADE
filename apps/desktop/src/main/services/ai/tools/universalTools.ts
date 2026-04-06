@@ -20,6 +20,42 @@ const execFileAsync = promisify(execFile);
 
 export type PermissionMode = "plan" | "edit" | "full-auto";
 
+export type AskUserToolOption = {
+  label: string;
+  value?: string;
+  description?: string;
+  recommended?: boolean;
+  preview?: string;
+  previewFormat?: "markdown" | "html";
+};
+
+export type AskUserToolQuestion = {
+  id?: string;
+  header?: string;
+  question: string;
+  options?: AskUserToolOption[];
+  multiSelect?: boolean;
+  allowsFreeform?: boolean;
+  isSecret?: boolean;
+  defaultAssumption?: string | null;
+  impact?: string | null;
+};
+
+export type AskUserToolInput = {
+  question?: string;
+  title?: string;
+  body?: string;
+  questions?: AskUserToolQuestion[];
+};
+
+export type AskUserToolResult = {
+  answer: string;
+  answers?: Record<string, string[]>;
+  responseText?: string | null;
+  decision?: string;
+  error?: string;
+};
+
 export interface UniversalToolSetOptions {
   permissionMode: PermissionMode;
   memoryService?: ReturnType<typeof createUnifiedMemoryService>;
@@ -35,7 +71,7 @@ export interface UniversalToolSetOptions {
     updatedAt: string;
   };
   /** Callback invoked when askUser tool is called; must return the user's response */
-  onAskUser?: (question: string) => Promise<string>;
+  onAskUser?: (input: AskUserToolInput) => Promise<string | AskUserToolResult>;
   /** Optional callback for ADE-managed tool approvals in interactive chat sessions. */
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>;
   /** Sandbox config for API-model workers. CLI models skip this check. */
@@ -907,21 +943,63 @@ function createGitLogTool(cwd: string) {
   });
 }
 
-function createAskUserTool(onAskUser?: (question: string) => Promise<string>) {
+const askUserToolOptionSchema = z.object({
+  label: z.string().describe("User-facing option label"),
+  value: z.string().optional().describe("Optional stable value to return for this option"),
+  description: z.string().optional().describe("Optional short sentence explaining the option"),
+  recommended: z.boolean().optional().describe("Whether this option should be highlighted as recommended"),
+  preview: z.string().optional().describe("Optional preview content shown alongside the option"),
+  previewFormat: z.enum(["markdown", "html"]).optional().describe("Preview rendering format"),
+});
+
+const askUserToolQuestionSchema = z.object({
+  id: z.string().optional().describe("Optional stable identifier for this question"),
+  header: z.string().optional().describe("Short question header shown in the UI"),
+  question: z.string().describe("The question to ask the user"),
+  options: z.array(askUserToolOptionSchema).optional().describe("Optional multiple-choice options"),
+  multiSelect: z.boolean().optional().describe("Allow selecting more than one option"),
+  allowsFreeform: z.boolean().optional().describe("Allow typing a custom answer"),
+  isSecret: z.boolean().optional().describe("Hide typed input while the user answers"),
+  defaultAssumption: z.string().nullable().optional().describe("Default assumption if the user skips this question"),
+  impact: z.string().nullable().optional().describe("Why this question matters"),
+});
+
+function createAskUserTool(
+  onAskUser?: (input: AskUserToolInput) => Promise<string | AskUserToolResult>,
+) {
   return tool({
     description:
       "Ask the user a clarifying question when you need more information to proceed. " +
       "Use sparingly — only when truly blocked.",
     inputSchema: z.object({
-      question: z.string().describe("The question to ask the user"),
-    }),
-    execute: async ({ question }) => {
+      question: z.string().optional().describe("Simple text question to ask the user"),
+      title: z.string().optional().describe("Optional modal title for a richer prompt"),
+      body: z.string().optional().describe("Optional supporting context shown above the question list"),
+      questions: z.array(askUserToolQuestionSchema).optional().describe("Optional structured questions with choices"),
+    }).refine(
+      (value) => {
+        const question = typeof value.question === "string" ? value.question.trim() : "";
+        const body = typeof value.body === "string" ? value.body.trim() : "";
+        return question.length > 0 || body.length > 0 || Boolean(value.questions?.length);
+      },
+      { message: "Provide question, body, or questions." },
+    ),
+    execute: async (input) => {
       if (!onAskUser) {
         return { answer: "", error: "askUser callback not configured" };
       }
       try {
-        const answer = await onAskUser(question);
-        return { answer };
+        const response = await onAskUser(input);
+        if (typeof response === "string") {
+          return { answer: response };
+        }
+        return {
+          answer: response.answer ?? "",
+          ...(response.answers ? { answers: response.answers } : {}),
+          ...(response.responseText !== undefined ? { responseText: response.responseText } : {}),
+          ...(response.decision !== undefined ? { decision: response.decision } : {}),
+          ...(response.error !== undefined ? { error: response.error } : {}),
+        };
       } catch (err) {
         return {
           answer: "",

@@ -30,6 +30,22 @@ function buildStatus(claudeRuntimeAvailable: boolean, localModels: string[] = []
         ]
       : [],
     availableModelIds: localModels,
+    runtimeConnections: {
+      lmstudio: {
+        provider: "lmstudio",
+        label: "LM Studio",
+        kind: "local",
+        endpoint: "http://localhost:1234",
+        configured: true,
+        authAvailable: false,
+        runtimeDetected: localModels.length > 0,
+        runtimeAvailable: localModels.length > 0,
+        health: localModels.length > 0 ? "ready" : "unreachable",
+        blocker: localModels.length > 0 ? null : "No lmstudio runtime with loaded models was detected.",
+        loadedModelIds: localModels,
+        lastCheckedAt: "2026-03-17T19:00:00.000Z",
+      },
+    },
     providerConnections: {
       claude: {
         provider: "claude",
@@ -172,7 +188,7 @@ describe("ProvidersSection", () => {
 
     expect((await screen.findAllByText("LM Studio")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Ready").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("LM Studio is reachable at http://localhost:1234. ADE can use 2 loaded models from this runtime.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("LM Studio is reachable at http://localhost:1234. ADE can use 2 loaded models from this runtime (ready).").length).toBeGreaterThan(0);
     expect(screen.getAllByText("meta-llama-3.1-70b-instruct (LM Studio)").length).toBeGreaterThan(0);
     expect(screen.getAllByText("qwen2.5-coder:32b (LM Studio)").length).toBeGreaterThan(0);
   });

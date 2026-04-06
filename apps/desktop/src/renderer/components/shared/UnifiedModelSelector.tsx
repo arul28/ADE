@@ -135,7 +135,7 @@ function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
       isCliWrapped: false,
       discoverySource: localProvider === "lmstudio" ? "lmstudio-openai" : localProvider,
       harnessProfile: "guarded",
-      aliases: [brand],
+      aliases: brand ? [brand] : [],
     };
   }
   return {

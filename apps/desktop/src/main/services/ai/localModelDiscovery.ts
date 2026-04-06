@@ -27,14 +27,16 @@ export type LocalProviderInspection = {
 };
 
 const CACHE_TTL_MS = 30_000;
+let inspectionCacheGeneration = 0;
 
 let discoverCache: {
   key: string;
+  generation: number;
   cachedAt: number;
   models: DiscoveredLocalModel[];
 } | null = null;
 
-let inspectionCache = new Map<string, { cachedAt: number; inspection: LocalProviderInspection }>();
+let inspectionCache = new Map<string, { generation: number; cachedAt: number; inspection: LocalProviderInspection }>();
 
 function buildCacheKey(auth: DetectedAuth[]): string {
   return auth
@@ -334,9 +336,10 @@ export async function inspectLocalProvider(
   timeoutMs = 2_000,
 ): Promise<LocalProviderInspection> {
   const key = buildInspectionKey(provider, endpoint);
+  const generation = inspectionCacheGeneration;
   const cached = inspectionCache.get(key);
   const now = Date.now();
-  if (cached && now - cached.cachedAt < CACHE_TTL_MS) {
+  if (cached && cached.generation === generation && now - cached.cachedAt < CACHE_TTL_MS) {
     return cached.inspection;
   }
 
@@ -344,19 +347,28 @@ export async function inspectLocalProvider(
     ? await inspectLmStudioProvider(endpoint, timeoutMs)
     : await inspectOpenAiCompatibleProvider(provider, endpoint, timeoutMs);
 
-  inspectionCache.set(key, { cachedAt: now, inspection });
+  if (generation === inspectionCacheGeneration) {
+    inspectionCache.set(key, { generation, cachedAt: now, inspection });
+  }
   return inspection;
 }
 
 export function clearLocalProviderInspectionCache(): void {
-  inspectionCache = new Map<string, { cachedAt: number; inspection: LocalProviderInspection }>();
+  inspectionCacheGeneration += 1;
+  inspectionCache = new Map<string, { generation: number; cachedAt: number; inspection: LocalProviderInspection }>();
   discoverCache = null;
 }
 
 export async function discoverLocalModels(auth: DetectedAuth[]): Promise<DiscoveredLocalModel[]> {
   const key = buildCacheKey(auth);
+  const generation = inspectionCacheGeneration;
   const now = Date.now();
-  if (discoverCache && discoverCache.key === key && now - discoverCache.cachedAt < CACHE_TTL_MS) {
+  if (
+    discoverCache
+    && discoverCache.generation === generation
+    && discoverCache.key === key
+    && now - discoverCache.cachedAt < CACHE_TTL_MS
+  ) {
     return discoverCache.models;
   }
 
@@ -380,6 +392,8 @@ export async function discoverLocalModels(auth: DetectedAuth[]): Promise<Discove
     return left.modelId.localeCompare(right.modelId);
   });
 
-  discoverCache = { key, cachedAt: now, models };
+  if (generation === inspectionCacheGeneration) {
+    discoverCache = { key, generation, cachedAt: now, models };
+  }
   return models;
 }

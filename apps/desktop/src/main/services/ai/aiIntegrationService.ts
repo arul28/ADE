@@ -539,6 +539,21 @@ async function buildLocalRuntimeConnection(args: {
         });
       }
     }
+
+    return {
+      provider: args.provider,
+      label,
+      kind: "local",
+      configured: true,
+      authAvailable: false,
+      runtimeDetected: false,
+      runtimeAvailable: false,
+      health: "unreachable",
+      source: "config",
+      endpoint: configuredEndpoint,
+      blocker: `${label} is configured for ${configuredEndpoint}, but the runtime did not respond.`,
+      lastCheckedAt: args.checkedAt,
+    };
   }
 
   return {
