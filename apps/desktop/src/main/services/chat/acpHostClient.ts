@@ -228,24 +228,27 @@ export function createAcpHostClient(
         return { exitCode: -1, signal: null };
       }
       if (!t.exited) {
-        await Promise.race([
-          new Promise<void>((resolve) => {
-            t.proc.once("close", resolve);
-          }),
-          new Promise<void>((resolve) => {
-            setTimeout(() => {
-              try {
-                if (!t.exited) t.proc.kill("SIGKILL");
-              } catch {
-                // ignore
-              }
-              console.warn(
-                `${logPrefix} waitForTerminalExit exceeded ${WAIT_FOR_TERMINAL_EXIT_MAX_MS}ms; sent SIGKILL`,
-              );
-              resolve();
-            }, WAIT_FOR_TERMINAL_EXIT_MAX_MS);
-          }),
-        ]);
+        let killTimer: ReturnType<typeof setTimeout> | undefined;
+        const closed = new Promise<void>((resolve) => {
+          t.proc.once("close", () => {
+            if (killTimer !== undefined) clearTimeout(killTimer);
+            resolve();
+          });
+        });
+        const timedOut = new Promise<void>((resolve) => {
+          killTimer = setTimeout(() => {
+            try {
+              if (!t.exited) t.proc.kill("SIGKILL");
+            } catch {
+              // ignore
+            }
+            console.warn(
+              `${logPrefix} waitForTerminalExit exceeded ${WAIT_FOR_TERMINAL_EXIT_MAX_MS}ms; sent SIGKILL`,
+            );
+            resolve();
+          }, WAIT_FOR_TERMINAL_EXIT_MAX_MS);
+        });
+        await Promise.race([closed, timedOut]);
         if (!t.exited) {
           await new Promise<void>((resolve) => {
             const tmo = setTimeout(resolve, 15_000);
