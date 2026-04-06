@@ -18,6 +18,7 @@ import { LaneDiffPane } from "./LaneDiffPane";
 import { LaneWorkPane } from "./LaneWorkPane";
 import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
 import { AttachLaneDialog } from "./AttachLaneDialog";
+import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
 import { ManageLaneDialog } from "./ManageLaneDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
@@ -157,6 +158,7 @@ export function LanesPage() {
   const createBaseBranchUserPickedRef = useRef(false);
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [multiAttachOpen, setMultiAttachOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
   const [attachPath, setAttachPath] = useState("");
@@ -1560,19 +1562,15 @@ export function LanesPage() {
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
                 onClick={() => {
                   setAddLaneDropdownOpen(false);
-                  setAttachName("");
-                  setAttachPath("");
-                  setAttachBusy(false);
-                  setAttachError(null);
-                  setAttachOpen(true);
+                  setMultiAttachOpen(true);
                 }}
               >
                 <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-info">
                   <Link size={14} />
                 </span>
                 <span>
-                  <span className="block font-medium">Add existing worktree as lane</span>
-                  <span className="block text-xs text-muted-fg/70">Track a worktree that already exists on disk.</span>
+                  <span className="block font-medium">Add existing worktrees as lanes</span>
+                  <span className="block text-xs text-muted-fg/70">Select from worktrees that already exist on disk.</span>
                 </span>
               </button>
             </div>
@@ -2067,6 +2065,23 @@ export function LanesPage() {
         busy={attachBusy}
         error={attachError}
         onSubmit={handleAttachSubmit}
+      />
+
+      <MultiAttachWorktreeDialog
+        open={multiAttachOpen}
+        onOpenChange={setMultiAttachOpen}
+        onFallbackToManual={() => {
+          setMultiAttachOpen(false);
+          setAttachName("");
+          setAttachPath("");
+          setAttachDescription("");
+          setAttachBusy(false);
+          setAttachError(null);
+          setAttachOpen(true);
+        }}
+        onComplete={() => {
+          refreshLanes();
+        }}
       />
 
       {adoptConfirmOpen ? (
