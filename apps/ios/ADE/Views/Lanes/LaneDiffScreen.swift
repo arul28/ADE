@@ -113,7 +113,7 @@ struct LaneDiffScreen: View {
           Button("Done") { dismiss() }
         }
         ToolbarItem(placement: .confirmationAction) {
-          if request.mode == "unstaged", let path = request.path, side == "modified", diff?.isBinary != true {
+          if request.mode == "unstaged", let path = request.path, side == "modified", let d = diff, d.isBinary != true {
             Button {
               Task { await saveEditedFile(path: path) }
             } label: {
@@ -183,7 +183,7 @@ struct LaneDiffScreen: View {
 
   @MainActor
   private func saveEditedFile(path: String) async {
-    guard diff?.isBinary != true else { return }
+    guard let d = diff, d.isBinary != true else { return }
     isSaving = true
     defer { isSaving = false }
 

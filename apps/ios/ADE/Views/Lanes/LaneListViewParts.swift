@@ -59,8 +59,8 @@ extension LanesTabView {
           if syncService.activeHostProfile == nil {
             syncService.settingsPresented = true
           } else {
-            Task {
-              await syncService.reconnectIfPossible()
+            Task { [weak syncService] in
+              await syncService?.reconnectIfPossible()
               await reload(refreshRemote: true)
             }
           }

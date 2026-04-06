@@ -166,7 +166,23 @@ struct LaneChatLaunchSheet: View {
           .disabled(busy || selectedModelId.isEmpty)
         }
       }
+      .onChange(of: selectedModelId) { _, _ in
+        // Reset reasoning effort when the model changes so a stale value
+        // for a model that doesn't support it is never submitted.
+        if let efforts = selectedModel?.reasoningEfforts, !efforts.isEmpty {
+          if !efforts.contains(where: { $0.effort == selectedReasoningEffort }) {
+            selectedReasoningEffort = ""
+          }
+        } else {
+          selectedReasoningEffort = ""
+        }
+      }
       .task(id: provider) {
+        // Clear state immediately so the UI doesn't show stale models
+        // from the previous provider while the async load is in-flight.
+        models = []
+        selectedModelId = ""
+        selectedReasoningEffort = ""
         await loadModels(resetSelection: true)
       }
     }
@@ -174,8 +190,11 @@ struct LaneChatLaunchSheet: View {
 
   @MainActor
   private func loadModels(resetSelection: Bool) async {
+    let requestedProvider = provider
     do {
-      let loadedModels = try await syncService.listChatModels(provider: provider)
+      let loadedModels = try await syncService.listChatModels(provider: requestedProvider)
+      // Ignore stale results if provider changed while loading.
+      guard provider == requestedProvider else { return }
       models = loadedModels
       if resetSelection || loadedModels.contains(where: { $0.id == selectedModelId }) == false {
         if let preferred = loadedModels.first(where: \.isDefault) ?? loadedModels.first {
@@ -204,7 +223,11 @@ struct LaneChatLaunchSheet: View {
         laneId: laneId,
         provider: provider,
         model: selectedModelId,
-        reasoningEffort: selectedReasoningEffort.isEmpty ? nil : selectedReasoningEffort
+        reasoningEffort: {
+          guard !selectedReasoningEffort.isEmpty else { return nil }
+          guard selectedModel?.reasoningEfforts?.contains(where: { $0.effort == selectedReasoningEffort }) == true else { return nil }
+          return selectedReasoningEffort
+        }()
       )
       await onComplete(session)
       dismiss()

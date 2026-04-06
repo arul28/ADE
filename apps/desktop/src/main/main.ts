@@ -2295,7 +2295,12 @@ app.whenReady().then(async () => {
       dispose: () => {} // desktop manages service lifecycle
     };
 
-    const mcpSocketPath = process.env.ADE_MCP_SOCKET_PATH?.trim() || adePaths.socketPath;
+    // Only honour the env override for the first project context to avoid
+    // EADDRINUSE when multiple projects share a single socket path.
+    const envSocketOverride = process.env.ADE_MCP_SOCKET_PATH?.trim();
+    const mcpSocketPath = (envSocketOverride && projectContexts.size === 0)
+      ? envSocketOverride
+      : adePaths.socketPath;
     const activeMcpConnections = new Set<net.Socket>();
 
     const destroyActiveMcpConnections = (): void => {

@@ -42,6 +42,7 @@ function readAdeLaneCount(projectRoot: string): number | null {
   let db: DatabaseSyncType | null = null;
   try {
     db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA busy_timeout = 5000");
     const hasLanesTable = Boolean(
       db.prepare("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1")
         .get<{ present?: number }>("lanes")?.present,

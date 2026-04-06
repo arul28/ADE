@@ -1563,10 +1563,18 @@ export function createLaneService({
             if (bestLaneId) {
               let mainScore = Infinity;
               try {
-                const mainShaRes = await runGit(
-                  ["rev-parse", defaultBaseRef],
+                // Prefer the remote-tracking ref so the comparison uses the
+                // latest fetched state rather than a potentially stale local tip.
+                let mainShaRes = await runGit(
+                  ["rev-parse", `origin/${defaultBaseRef}`],
                   { cwd: projectRoot, timeoutMs: 10_000 },
                 );
+                if (mainShaRes.exitCode !== 0) {
+                  mainShaRes = await runGit(
+                    ["rev-parse", defaultBaseRef],
+                    { cwd: projectRoot, timeoutMs: 10_000 },
+                  );
+                }
                 const mainSha = mainShaRes.exitCode === 0 ? mainShaRes.stdout.trim() : null;
                 if (mainSha) {
                   const mbRes = await runGit(

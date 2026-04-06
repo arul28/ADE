@@ -84,7 +84,7 @@ function ToolCard({ tool, platform, loading }: { tool: DevToolStatus | null; pla
   const installed = tool.installed;
   const statusColor = installed ? COLORS.success : tool.required ? COLORS.danger : COLORS.warning;
   const statusLabel = installed ? "Installed" : "Not found";
-  const requirementLabel = "Required to continue setup.";
+  const requirementLabel = tool.required ? "Required to continue setup." : "Optional";
 
   return (
     <div style={cardStyle(accentColor)}>

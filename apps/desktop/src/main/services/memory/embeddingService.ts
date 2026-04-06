@@ -566,9 +566,12 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     // Capture the pending load promise before dispose() nulls it out.
     const pendingLoad = extractorPromise;
     await dispose();
-    // Await any in-flight load so we don't race against it writing files.
+    // Let the in-flight load settle in the background — dispose() already
+    // incremented loadAttemptId so the load will see it is stale and reject.
+    // We must not await it synchronously because the pipeline may be blocked
+    // on an external resource, which would deadlock clearCache.
     if (pendingLoad) {
-      try { await pendingLoad; } catch { /* swallow – dispose already invalidated it */ }
+      void pendingLoad.catch(() => {});
     }
     cache.clear();
     try {

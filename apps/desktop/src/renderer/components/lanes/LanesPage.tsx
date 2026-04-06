@@ -260,8 +260,8 @@ export function LanesPage() {
 
   const filteredLanes = useMemo(() => {
     const bucketRank: Record<LaneListSnapshot["runtime"]["bucket"], number> = {
-      running: 0,
-      "awaiting-input": 1,
+      "awaiting-input": 0,
+      running: 1,
       ended: 2,
       none: 3,
     };

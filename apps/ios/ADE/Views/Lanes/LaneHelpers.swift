@@ -251,10 +251,16 @@ private let cachedRelativeDateFormatter: RelativeDateTimeFormatter = {
   return f
 }()
 
+private let cachedISO8601FormatterNoFractional: ISO8601DateFormatter = {
+  let f = ISO8601DateFormatter()
+  f.formatOptions = [.withInternetDateTime]
+  return f
+}()
+
 func relativeTimestamp(_ timestamp: String?) -> String {
   guard let timestamp else { return "Unknown" }
   guard let date = cachedISO8601Formatter.date(from: timestamp)
-          ?? ISO8601DateFormatter().date(from: timestamp) else {
+          ?? cachedISO8601FormatterNoFractional.date(from: timestamp) else {
     return "Unknown"
   }
   return cachedRelativeDateFormatter.localizedString(for: date, relativeTo: Date())

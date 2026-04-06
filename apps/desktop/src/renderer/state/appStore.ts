@@ -351,10 +351,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   openRepo: async () => {
+    // Invalidate in-flight lane refreshes before the async open so stale
+    // responses from the previous project are discarded immediately.
+    ++laneRefreshVersion;
     const project = await window.ade.project.openRepo();
     if (!project) return null;
-    // Invalidate any in-flight lane refreshes from the previous project
-    ++laneRefreshVersion;
     set({
       project,
       projectHydrated: true,
@@ -377,9 +378,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   switchProjectToPath: async (rootPath: string) => {
-    const project = await window.ade.project.switchToPath(rootPath);
-    // Invalidate any in-flight lane refreshes from the previous project
+    // Invalidate in-flight lane refreshes before the async switch so stale
+    // responses from the previous project are discarded immediately.
     ++laneRefreshVersion;
+    const project = await window.ade.project.switchToPath(rootPath);
     set({
       project,
       projectHydrated: true,

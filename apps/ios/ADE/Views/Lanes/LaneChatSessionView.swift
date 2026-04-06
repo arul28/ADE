@@ -10,6 +10,7 @@ struct LaneChatSessionView: View {
   @State private var composer = ""
   @State private var errorMessage: String?
   @State private var sending = false
+  @State private var transcriptRequestId: UInt64 = 0
 
   var body: some View {
     ScrollViewReader { proxy in
@@ -84,8 +85,12 @@ struct LaneChatSessionView: View {
               .adeInsetField(cornerRadius: 12, padding: 10)
 
             Button {
+              let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
+              guard !text.isEmpty, !sending else { return }
+              sending = true
+              composer = ""
               Task {
-                await sendMessage()
+                await sendMessage(text: text)
                 withAnimation(.snappy) {
                   proxy.scrollTo("lane-chat-end", anchor: .bottom)
                 }
@@ -123,35 +128,40 @@ struct LaneChatSessionView: View {
 
   @MainActor
   private func loadTranscript() async {
+    transcriptRequestId &+= 1
+    let myId = transcriptRequestId
     do {
-      transcript = try await syncService.fetchChatTranscript(sessionId: summary.sessionId)
+      let result = try await syncService.fetchChatTranscript(sessionId: summary.sessionId)
+      guard myId == transcriptRequestId else { return }
+      transcript = result
       errorMessage = nil
     } catch {
+      guard myId == transcriptRequestId else { return }
       errorMessage = error.localizedDescription
     }
   }
 
   @MainActor
-  private func sendMessage() async {
-    let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty else { return }
-
-    sending = true
+  private func sendMessage(text: String) async {
     defer { sending = false }
 
     do {
       try await syncService.sendChatMessage(sessionId: summary.sessionId, text: text)
-      composer = ""
       errorMessage = nil
     } catch {
       errorMessage = "Message not sent. \(error.localizedDescription)"
       return
     }
 
+    transcriptRequestId &+= 1
+    let myId = transcriptRequestId
     do {
-      transcript = try await syncService.fetchChatTranscript(sessionId: summary.sessionId)
+      let result = try await syncService.fetchChatTranscript(sessionId: summary.sessionId)
+      guard myId == transcriptRequestId else { return }
+      transcript = result
       errorMessage = nil
     } catch {
+      guard myId == transcriptRequestId else { return }
       errorMessage = "Message sent, but the transcript did not refresh. \(error.localizedDescription)"
     }
   }

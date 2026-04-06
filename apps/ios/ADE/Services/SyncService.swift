@@ -957,9 +957,9 @@ final class SyncService: ObservableObject {
 
   func reparentLane(_ laneId: String, newParentLaneId: String?) async throws {
     var args: [String: Any] = ["laneId": laneId]
-    if let newParentLaneId, !newParentLaneId.isEmpty {
-      args["newParentLaneId"] = newParentLaneId
-    }
+    // Always include the key so the server receives a defined value.
+    // "ROOT" signals detachment from any parent lane.
+    args["newParentLaneId"] = (newParentLaneId?.isEmpty == false) ? newParentLaneId! : "ROOT"
     _ = try await sendCommand(action: "lanes.reparent", args: args)
   }
 
