@@ -866,11 +866,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         profiles: [{ id: "local", kind: "local" as const, label: "This computer" }],
         activeTargetId: "local",
       }),
-      set: resolvedArg({
-        version: 1,
-        profiles: [{ id: "local", kind: "local" as const, label: "This computer" }],
-        activeTargetId: "local",
-      }),
+      set: async (state: any) => state,
     },
     keybindings: {
       get: resolved({ definitions: [], overrides: [] }),
