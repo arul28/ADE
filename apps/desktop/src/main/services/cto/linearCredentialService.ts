@@ -21,6 +21,7 @@ const OAUTH_CONFIG_FILES = [
   "linear-oauth.yaml",
   "linear-oauth.yml",
 ] as const;
+const ENV_LINEAR_TOKEN_KEYS = ["ADE_LINEAR_API", "LINEAR_API_KEY", "ADE_LINEAR_TOKEN", "LINEAR_TOKEN"] as const;
 
 type LinearCredentialServiceArgs = {
   adeDir: string;
@@ -62,6 +63,14 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const tokenPath = path.join(secretsDir, TOKEN_FILE);
   const oauthClientPath = path.join(secretsDir, OAUTH_CLIENT_FILE);
   const importSentinelPath = path.join(secretsDir, IMPORT_SENTINEL);
+
+  const readEnvToken = (): string | null => {
+    for (const key of ENV_LINEAR_TOKEN_KEYS) {
+      const value = (process.env[key] ?? "").trim();
+      if (value.length > 0) return value;
+    }
+    return null;
+  };
 
   const normalizeStoredToken = (value: unknown): StoredLinearToken | null => {
     if (!isRecord(value)) return null;
@@ -247,8 +256,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     importLegacyTokenIfNeeded();
     cachedToken = readEncryptedToken();
     if (!cachedToken) {
-      const envToken = (process.env.LINEAR_API_KEY ?? process.env.ADE_LINEAR_TOKEN ?? "").trim();
-      if (envToken.length > 0) {
+      const envToken = readEnvToken();
+      if (envToken) {
         cachedToken = { token: envToken, authMode: "manual" };
       }
     }

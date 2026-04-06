@@ -57,6 +57,38 @@ describe("linearCredentialService", () => {
     expect(onDisk.toString("utf8")).toMatch(/^enc:/);
   });
 
+  it("reads ADE_LINEAR_API from env as a manual token", () => {
+    const previousAdeLinearApi = process.env.ADE_LINEAR_API;
+    const previousLinearApiKey = process.env.LINEAR_API_KEY;
+    const previousAdeLinearToken = process.env.ADE_LINEAR_TOKEN;
+    const previousLinearToken = process.env.LINEAR_TOKEN;
+    try {
+      process.env.ADE_LINEAR_API = "lin_env_123";
+      delete process.env.LINEAR_API_KEY;
+      delete process.env.ADE_LINEAR_TOKEN;
+      delete process.env.LINEAR_TOKEN;
+
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-env-"));
+      const adeDir = path.join(root, ".ade");
+      const service = createLinearCredentialService({
+        adeDir,
+        logger: createLogger(),
+      });
+
+      expect(service.getToken()).toBe("lin_env_123");
+      expect(service.getStatus().authMode).toBe("manual");
+    } finally {
+      if (previousAdeLinearApi === undefined) delete process.env.ADE_LINEAR_API;
+      else process.env.ADE_LINEAR_API = previousAdeLinearApi;
+      if (previousLinearApiKey === undefined) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = previousLinearApiKey;
+      if (previousAdeLinearToken === undefined) delete process.env.ADE_LINEAR_TOKEN;
+      else process.env.ADE_LINEAR_TOKEN = previousAdeLinearToken;
+      if (previousLinearToken === undefined) delete process.env.LINEAR_TOKEN;
+      else process.env.LINEAR_TOKEN = previousLinearToken;
+    }
+  });
+
   it("imports token once from legacy local.secret.yaml when encrypted store is empty", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-legacy-"));
     const adeDir = path.join(root, ".ade");

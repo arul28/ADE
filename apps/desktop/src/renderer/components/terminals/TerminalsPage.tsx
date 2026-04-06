@@ -8,6 +8,7 @@ import { SessionContextMenu, type SessionContextMenuState } from "./SessionConte
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import { sortLanesForTabs } from "../lanes/laneUtils";
+import { invalidateSessionListCache } from "../../lib/sessionListCache";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -50,6 +51,9 @@ export function TerminalsPage() {
 
   const handleOpenChatSession = useCallback(
     (session: AgentChatSession) => {
+      // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
+      // the new session on their next refresh.
+      invalidateSessionListCache();
       work.selectLane(session.laneId);
       work.upsertOptimisticChatSession(session);
       work.focusSession(session.id);

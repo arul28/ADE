@@ -1032,11 +1032,12 @@ app.whenReady().then(async () => {
           ].some((v) => (process.env[v] ?? "").trim().length > 0),
         ) ||
         Boolean(
-          (
-            process.env.LINEAR_API_KEY ??
-            process.env.ADE_LINEAR_TOKEN ??
-            ""
-          ).trim(),
+          [
+            "ADE_LINEAR_API",
+            "LINEAR_API_KEY",
+            "ADE_LINEAR_TOKEN",
+            "LINEAR_TOKEN",
+          ].some((v) => (process.env[v] ?? "").trim().length > 0)
         );
       if (hasEnvCredentials) {
         onboardingService.complete();

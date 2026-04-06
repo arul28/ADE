@@ -141,6 +141,7 @@ import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
+import { createUnifiedToolLoopGovernor, wrapToolsWithUnifiedLoopGovernor } from "../ai/unifiedToolLoopGovernor";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   getProviderRuntimeHealth,
@@ -7655,26 +7656,45 @@ export function createAgentChatService(args: {
         }
       }
 
+      const loopGovernor = createUnifiedToolLoopGovernor({
+        cwd: managed.laneWorktreePath,
+        modelDescriptor: runtime.modelDescriptor,
+        permissionMode: runtime.permissionMode,
+      });
+      const governedTools = loopGovernor.shouldApply()
+        ? wrapToolsWithUnifiedLoopGovernor(tools, loopGovernor, ({ toolName, reason }) => {
+            logger.info("agent_chat.unified_loop_guard_tool_suppressed", {
+              sessionId: managed.session.id,
+              turnId,
+              toolName,
+              reason,
+            });
+          })
+        : tools;
+      const allToolNames = Object.keys(governedTools);
+
+      const buildUnifiedHarnessPrompt = (toolNames: string[], hiddenSteer?: string): string | undefined => {
+        if (lightweight) return undefined;
+
+        const sections: string[] = [];
+        sections.push(buildCodingAgentSystemPrompt({
+          cwd: managed.laneWorktreePath,
+          mode: "chat",
+          permissionMode: runtime.permissionMode,
+          toolNames,
+        }));
+        if (managed.session.identityKey === "cto" && ctoStateService) {
+          sections.push(`## CTO Identity\n${ctoStateService.previewSystemPrompt().prompt}`);
+        }
+        if (typeof hiddenSteer === "string" && hiddenSteer.trim().length) {
+          sections.push(`## ADE step steer\n${hiddenSteer.trim()}`);
+        }
+        return sections.join("\n\n");
+      };
+
       const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
       const providerOptions = providerResolver.buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
-      const baseHarnessPrompt = lightweight
-        ? undefined
-        : buildCodingAgentSystemPrompt({
-            cwd: managed.laneWorktreePath,
-            mode: "chat",
-            permissionMode: runtime.permissionMode,
-            toolNames: Object.keys(tools),
-          });
-      // For CTO sessions, compose the CTO's identity prompt into the system
-      // prompt so it survives compaction (system prompt is never compacted).
-      const harnessPrompt = (() => {
-        if (!baseHarnessPrompt) return undefined;
-        if (managed.session.identityKey === "cto" && ctoStateService) {
-          const ctoPrompt = ctoStateService.previewSystemPrompt().prompt;
-          return `${baseHarnessPrompt}\n\n## CTO Identity\n${ctoPrompt}`;
-        }
-        return baseHarnessPrompt;
-      })();
+      const harnessPrompt = buildUnifiedHarnessPrompt(allToolNames);
 
       let shouldAutoContinue = false;
       const baseTurnMessages = runtime.messages.slice();
@@ -7698,10 +7718,38 @@ export function createAgentChatService(args: {
           model: runtime.resolvedModel,
           ...(harnessPrompt ? { system: harnessPrompt } : {}),
           messages: streamMessages,
-          ...(Object.keys(tools).length ? { tools } : {}),
+          ...(allToolNames.length ? { tools: governedTools } : {}),
           providerOptions: providerOptions as any,
           ...(!lightweight ? { stopWhen: stepCountIs(20) } : {}),
           abortSignal: abortController.signal,
+          ...(loopGovernor.shouldApply()
+            ? {
+                prepareStep: async () => {
+                  const policy = loopGovernor.buildStepPolicy(allToolNames);
+                  const stepPrompt = buildUnifiedHarnessPrompt(policy.activeTools ?? allToolNames, policy.hiddenSteer);
+                  return {
+                    ...(policy.activeTools?.length ? { activeTools: policy.activeTools } : {}),
+                    ...(policy.toolChoice ? { toolChoice: policy.toolChoice as any } : {}),
+                    ...(stepPrompt ? { system: stepPrompt } : {}),
+                  };
+                },
+                onStepFinish: async (step: any) => {
+                  const summary = loopGovernor.recordStep({
+                    toolCalls: Array.isArray(step?.toolCalls) ? step.toolCalls : [],
+                    toolResults: Array.isArray(step?.toolResults) ? step.toolResults : [],
+                  });
+                  logger.info("agent_chat.unified_loop_guard_step", {
+                    sessionId: managed.session.id,
+                    turnId,
+                    progress: summary.progress,
+                    score: summary.score,
+                    candidateFiles: summary.candidateFiles,
+                    narrowedDirectories: summary.narrowedDirectories,
+                    reasons: summary.reasons,
+                  });
+                },
+              }
+            : {}),
           onError({ error }) {
             logger.warn("agent_chat.unified_stream_error", {
               sessionId: managed.session.id,

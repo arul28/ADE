@@ -9,7 +9,7 @@ import {
   type WorkStatusFilter,
   type WorkViewMode,
 } from "../../state/appStore";
-import { listSessionsCached } from "../../lib/sessionListCache";
+import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { buildOptimisticChatSessionSummary, isChatToolType, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
@@ -709,6 +709,9 @@ export function useWorkSessions() {
         startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
       });
       selectLane(args.laneId);
+      // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
+      // the new session on their next refresh.
+      invalidateSessionListCache();
       // Refresh the session list before activating the tab so the new
       // session is in sessionsById when the UI resolves activeSession.
       try {

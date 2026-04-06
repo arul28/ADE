@@ -13,6 +13,66 @@ function makeTmpDir(prefix: string): string {
   return dir;
 }
 
+function writeFixtureFile(root: string, relativePath: string, content: string): void {
+  const filePath = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content, "utf-8");
+}
+
+function createFrontendFixtureRepo(): string {
+  const cwd = makeTmpDir("ade-tools-frontend-fixture-");
+  writeFixtureFile(cwd, "src/main.tsx", `
+    import { createRoot } from "react-dom/client";
+    import { RouterProvider } from "react-router-dom";
+    import { router } from "./router";
+
+    createRoot(document.getElementById("root")!).render(<RouterProvider router={router} />);
+  `);
+  writeFixtureFile(cwd, "src/router.tsx", `
+    import { createBrowserRouter } from "react-router-dom";
+    import HomePage from "./pages/HomePage";
+
+    export const router = createBrowserRouter([{ path: "/", element: <HomePage /> }]);
+  `);
+  writeFixtureFile(cwd, "src/pages/HomePage.tsx", `
+    export default function HomePage() {
+      return <main>Home</main>;
+    }
+  `);
+  writeFixtureFile(cwd, "src/screens/SettingsScreen.tsx", `
+    export function SettingsScreen() {
+      return <section>Settings</section>;
+    }
+  `);
+  writeFixtureFile(cwd, "src/components/Button.tsx", `
+    export function Button() {
+      return <button type="button">Click</button>;
+    }
+  `);
+  writeFixtureFile(cwd, "app/layout.tsx", `
+    export default function RootLayout({ children }: { children: React.ReactNode }) {
+      return <html><body>{children}</body></html>;
+    }
+  `);
+  writeFixtureFile(cwd, "app/dashboard/page.tsx", `
+    export default function DashboardPage() {
+      return <main>Dashboard</main>;
+    }
+  `);
+  writeFixtureFile(cwd, "pages/_app.tsx", `
+    export default function App({ Component, pageProps }: any) {
+      return <Component {...pageProps} />;
+    }
+  `);
+  writeFixtureFile(cwd, "node_modules/fake-router/router.tsx", `
+    export const router = createBrowserRouter([]);
+  `);
+  writeFixtureFile(cwd, "dist/router.tsx", `
+    export const router = createBrowserRouter([]);
+  `);
+  return cwd;
+}
+
 afterEach(() => {
   for (const dir of tmpDirs) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -193,6 +253,10 @@ describe("createUniversalToolSet", () => {
     expect(tools.grep).toBeDefined();
     expect(tools.glob).toBeDefined();
     expect(tools.listDir).toBeDefined();
+    expect(tools.findRoutingFiles).toBeDefined();
+    expect(tools.findPageComponents).toBeDefined();
+    expect(tools.findAppEntryPoints).toBeDefined();
+    expect(tools.summarizeFrontendStructure).toBeDefined();
     expect(tools.gitStatus).toBeDefined();
     expect(tools.gitDiff).toBeDefined();
     expect(tools.gitLog).toBeDefined();
@@ -210,6 +274,69 @@ describe("createUniversalToolSet", () => {
 
     expect(tools.memorySearch).toBeUndefined();
     expect(tools.memoryAdd).toBeUndefined();
+  });
+
+  it("finds routing files with repo-aware filesystem heuristics", async () => {
+    const cwd = createFrontendFixtureRepo();
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const result = await (tools.findRoutingFiles as any).execute({ limit: 10 });
+    const paths = result.matches.map((match: { path: string }) => match.path);
+
+    expect(paths).toEqual(expect.arrayContaining([
+      "src/router.tsx",
+      "app/layout.tsx",
+      "app/dashboard/page.tsx",
+      "pages/_app.tsx",
+    ]));
+    expect(paths).not.toContain("node_modules/fake-router/router.tsx");
+    expect(paths).not.toContain("dist/router.tsx");
+    expect(result.frameworkSignals).toEqual(expect.arrayContaining(["Next.js", "React Router"]));
+  });
+
+  it("finds page-like components without pulling in generic shared components", async () => {
+    const cwd = createFrontendFixtureRepo();
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const result = await (tools.findPageComponents as any).execute({ limit: 10 });
+    const paths = result.matches.map((match: { path: string }) => match.path);
+
+    expect(paths).toEqual(expect.arrayContaining([
+      "src/pages/HomePage.tsx",
+      "src/screens/SettingsScreen.tsx",
+      "app/dashboard/page.tsx",
+    ]));
+    expect(paths).not.toContain("src/components/Button.tsx");
+  });
+
+  it("finds likely app entry points and framework roots", async () => {
+    const cwd = createFrontendFixtureRepo();
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const result = await (tools.findAppEntryPoints as any).execute({ limit: 10 });
+    const paths = result.matches.map((match: { path: string }) => match.path);
+
+    expect(paths).toEqual(expect.arrayContaining([
+      "src/main.tsx",
+      "app/layout.tsx",
+      "pages/_app.tsx",
+    ]));
+    expect(result.matches.some((match: { kind: string; path: string }) =>
+      match.path === "src/main.tsx" && match.kind === "bootstrap-entry"
+    )).toBe(true);
+  });
+
+  it("summarizes frontend structure with framework and source-root hints", async () => {
+    const cwd = createFrontendFixtureRepo();
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const result = await (tools.summarizeFrontendStructure as any).execute({ sampleSize: 3 });
+
+    expect(result.frameworkSignals).toEqual(expect.arrayContaining(["Next.js", "React", "React Router"]));
+    expect(result.likelySourceRoots).toEqual(expect.arrayContaining(["src", "app", "pages"]));
+    expect(result.topLevelDirectories).toEqual(expect.arrayContaining(["app", "pages", "src"]));
+    expect(result.summary).toContain("Likely entry points");
+    expect(result.summary).toContain("Routing surfaces");
   });
 
   it("includes memoryUpdateCore tool when onMemoryUpdateCore is provided", () => {

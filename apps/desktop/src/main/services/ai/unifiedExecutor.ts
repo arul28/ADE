@@ -11,6 +11,7 @@ import { resolveModel } from "./providerResolver";
 import { createCodingToolSet, createUniversalToolSet } from "./tools";
 import { createMemoryTools } from "./tools/memoryTools";
 import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "./tools/systemPrompt";
+import { createUnifiedToolLoopGovernor, wrapToolsWithUnifiedLoopGovernor } from "./unifiedToolLoopGovernor";
 import type { AgentEvent } from "./agentExecutor";
 import {
   createCompactionMonitor,
@@ -111,18 +112,36 @@ export async function* executeUnified(
   }
 
   // Planning mode caps tool-use rounds so the planner doesn't explore forever
+  const governorPermissionMode = opts.tools === "planning" ? "plan" : "edit";
+  const loopGovernor = tools
+    ? createUnifiedToolLoopGovernor({
+        cwd: opts.cwd ?? process.cwd(),
+        modelDescriptor: model,
+        permissionMode: governorPermissionMode,
+      })
+    : null;
+  const governedTools = tools && loopGovernor?.shouldApply()
+    ? wrapToolsWithUnifiedLoopGovernor(tools, loopGovernor)
+    : tools;
+  const governedToolNames = Object.keys(governedTools ?? {});
+
   const stopCondition = opts.tools === "planning" ? stepCountIs(10) : undefined;
   const harnessMode = opts.tools === "planning" ? "planning" : "coding";
-  const system = composeSystemPrompt(
-    opts.system,
-    buildCodingAgentSystemPrompt({
-      cwd: opts.cwd ?? process.cwd(),
-      mode: harnessMode,
-      permissionMode: opts.tools === "planning" ? "plan" : "edit",
-      toolNames: Object.keys(tools ?? {}),
-      interactive: false,
-    }),
-  );
+  const buildLoopSystemPrompt = (toolNames: string[], hiddenSteer?: string): string => {
+    const prompt = composeSystemPrompt(
+      opts.system,
+      buildCodingAgentSystemPrompt({
+        cwd: opts.cwd ?? process.cwd(),
+        mode: harnessMode,
+        permissionMode: governorPermissionMode,
+        toolNames,
+        interactive: false,
+      }),
+    );
+    if (!hiddenSteer?.trim().length) return prompt;
+    return `${prompt}\n\n## ADE step steer\n${hiddenSteer.trim()}`;
+  };
+  const system = buildLoopSystemPrompt(governedToolNames);
 
   const abortController = new AbortController();
   if (opts.abortSignal) {
@@ -146,9 +165,32 @@ export async function* executeUnified(
       model: sdkModel,
       system,
       prompt: opts.prompt,
-      tools: tools as any,
+      tools: governedTools as any,
       ...(stopCondition ? { stopWhen: stopCondition } : {}),
       abortSignal: abortController.signal,
+      ...(loopGovernor?.shouldApply()
+        ? {
+            prepareStep: async () => {
+              const policy = loopGovernor.buildStepPolicy(governedToolNames);
+              return {
+                ...(policy.activeTools?.length ? { activeTools: policy.activeTools } : {}),
+                ...(policy.toolChoice ? { toolChoice: policy.toolChoice as any } : {}),
+                system: buildLoopSystemPrompt(policy.activeTools ?? governedToolNames, policy.hiddenSteer),
+              };
+            },
+            onStepFinish: async (step: unknown) => {
+              const record = step as { toolCalls?: unknown[]; toolResults?: unknown[] } | null;
+              loopGovernor.recordStep({
+                toolCalls: Array.isArray(record?.toolCalls) ? record.toolCalls as any[] : [],
+                toolResults: Array.isArray(record?.toolResults) ? record.toolResults as any[] : [],
+              });
+              opts.onStepFinish?.(step);
+            },
+          }
+        : opts.onStepFinish
+          ? { onStepFinish: opts.onStepFinish }
+          : {}),
+      ...(opts.onFinish ? { onFinish: opts.onFinish } : {}),
     });
 
     let finalText = "";
