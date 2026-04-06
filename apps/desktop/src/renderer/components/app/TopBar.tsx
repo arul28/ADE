@@ -12,6 +12,7 @@ import {
   getStoredZoomLevel,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
+import { TopBarExecutionTargetSelect } from "../executionTargets/TopBarExecutionTargetSelect";
 import type { ProcessRuntime, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
@@ -433,6 +434,8 @@ export function TopBar() {
         >
           <Plus size={12} weight="regular" />
         </button>
+
+        <TopBarExecutionTargetSelect projectRoot={project?.rootPath ?? null} />
       </div>
 
       {syncSnapshot && syncLabel ? (
