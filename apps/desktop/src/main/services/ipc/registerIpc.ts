@@ -17,6 +17,7 @@ import type {
   BatchAssessmentResult,
   AttachLaneArgs,
   AdoptAttachedLaneArgs,
+  UnregisteredLaneCandidate,
   AppInfo,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -3305,6 +3306,11 @@ export function registerIpc({
       reason: `lanes_attach:${lane.id}`,
     });
     return lane;
+  });
+
+  ipcMain.handle(IPC.lanesListUnregisteredWorktrees, async (): Promise<UnregisteredLaneCandidate[]> => {
+    const ctx = getCtx();
+    return ctx.laneService.listUnregisteredWorktrees();
   });
 
   ipcMain.handle(IPC.lanesAdoptAttached, async (_event, arg: AdoptAttachedLaneArgs): Promise<LaneSummary> => {
