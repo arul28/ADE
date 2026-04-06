@@ -107,6 +107,7 @@ import type {
   AgentChatUnifiedPermissionMode,
   PendingInputQuestion,
   PendingInputRequest,
+  PendingInputSource,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
   ComputerUsePolicy,
@@ -135,7 +136,7 @@ import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
 import * as providerResolver from "../ai/providerResolver";
 import { buildCodexAppServerMcpConfigOverrides } from "../ai/codexAppServerConfig";
-import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
+import { createUniversalToolSet, type AskUserToolInput, type PermissionMode } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
@@ -969,6 +970,56 @@ function normalizeUsagePayload(
   return { inputTokens, outputTokens };
 }
 
+function mergeUsagePayloads(
+  left: { inputTokens?: number | null; outputTokens?: number | null } | undefined,
+  right: { inputTokens?: number | null; outputTokens?: number | null } | undefined,
+): { inputTokens?: number | null; outputTokens?: number | null } | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  const inputTokens = (left.inputTokens ?? 0) + (right.inputTokens ?? 0);
+  const outputTokens = (left.outputTokens ?? 0) + (right.outputTokens ?? 0);
+  if (!inputTokens && !outputTokens) return undefined;
+  return { inputTokens, outputTokens };
+}
+
+const MAX_UNIFIED_LOCAL_AUTO_CONTINUATIONS = 1;
+const UNIFIED_LOCAL_AUTO_CONTINUE_PROMPT =
+  "Continue from your last step. Do not restate that you will inspect, explore, or review the codebase. " +
+  "Take the next concrete action now, using tools if needed. Only stop when you have completed the request or are truly blocked.";
+
+export function shouldAutoContinueUnifiedLocalTurn(args: {
+  modelDescriptor: Pick<ModelDescriptor, "authTypes">;
+  permissionMode: PermissionMode;
+  assistantText: string;
+  toolCallCount: number;
+  toolResultCount: number;
+  continuationCount: number;
+  pendingApprovalCount?: number;
+}): boolean {
+  if (!args.modelDescriptor.authTypes.includes("local")) return false;
+  if (args.permissionMode === "plan") return false;
+  if (args.continuationCount >= MAX_UNIFIED_LOCAL_AUTO_CONTINUATIONS) return false;
+  if ((args.pendingApprovalCount ?? 0) > 0) return false;
+  if (args.toolCallCount < 1 || args.toolResultCount < 1) return false;
+
+  const normalized = args.assistantText.trim().replace(/\s+/g, " ");
+  if (!normalized.length || normalized.length > 280) return false;
+
+  const lower = normalized.toLowerCase();
+  if (lower.includes("?")) return false;
+  if (
+    /\b(done|completed|complete|implemented|created|updated|finished|fixed|here('| i)?s|i found|i added|i changed|i created|i updated|i implemented|blocked)\b/i.test(lower)
+  ) {
+    return false;
+  }
+
+  const narratedIntentPattern =
+    /^(?:ok[, ]+|alright[, ]+|next[, ]+|now[, ]+)?(?:i(?:'ll| will| am going to|'m going to)|let me)\b/i;
+  const nextActionPattern =
+    /\b(explore|inspect|check|look at|search|review|read|analy[sz]e|identify|open|scan|trace|browse)\b/i;
+  return narratedIntentPattern.test(normalized) && nextActionPattern.test(normalized);
+}
+
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
 
 const EFFORT_ALIASES: Record<string, Record<string, string>> = {
@@ -1405,6 +1456,35 @@ function buildStreamingUserContent(
   }
 
   return parts;
+}
+
+export function buildUnifiedStreamMessages(args: {
+  messages: Array<{ role: string; content: string }>;
+  persistedTurnUserMessageIndex: number;
+  resolvedAttachments: ResolvedAgentChatFileRef[];
+  modelDescriptor: ModelDescriptor;
+  logger?: Logger;
+}): ModelMessage[] {
+  return args.messages.map((message, index): ModelMessage => {
+    const isPersistedTurnUserMessage = index === args.persistedTurnUserMessageIndex && message.role === "user";
+    if (!isPersistedTurnUserMessage) {
+      return {
+        role: message.role === "user" ? "user" : "assistant",
+        content: message.content,
+      };
+    }
+
+    return {
+      role: "user",
+      content: buildStreamingUserContent({
+        baseText: message.content,
+        attachments: args.resolvedAttachments,
+        runtimeKind: "unified",
+        modelDescriptor: args.modelDescriptor,
+        logger: args.logger,
+      }),
+    };
+  });
 }
 
 function buildExecutionModeDirective(
@@ -2027,6 +2107,19 @@ function applyLocalHarnessPermissionMode(args: {
     requestedPermissionMode: args.requestedPermissionMode,
     requestedUnifiedPermissionMode: args.requestedUnifiedPermissionMode,
   };
+}
+
+function enforceManagedLocalHarnessPermissionMode(
+  managed: ManagedChatSession,
+  descriptor?: ModelDescriptor | null,
+): void {
+  const harnessPermissions = applyLocalHarnessPermissionMode({
+    descriptor: descriptor ?? resolveSessionModelDescriptor(managed.session) ?? undefined,
+    requestedPermissionMode: managed.session.permissionMode,
+    requestedUnifiedPermissionMode: managed.session.unifiedPermissionMode,
+  });
+  managed.session.permissionMode = harnessPermissions.requestedPermissionMode ?? managed.session.permissionMode;
+  managed.session.unifiedPermissionMode = harnessPermissions.requestedUnifiedPermissionMode ?? managed.session.unifiedPermissionMode;
 }
 
 function resolveCursorSessionModeId(
@@ -4310,8 +4403,17 @@ export function createAgentChatService(args: {
     auth: Awaited<ReturnType<typeof detectAuth>>,
   ): Promise<ModelDescriptor[]> => {
     if (auth.some((entry) => entry.type === "local")) {
-      const discovered = await discoverLocalModels(auth);
-      replaceDynamicLocalModelDescriptors(discovered.map(discoveredLocalModelToDescriptor));
+      try {
+        const discovered = await discoverLocalModels(auth);
+        replaceDynamicLocalModelDescriptors(discovered.map(discoveredLocalModelToDescriptor));
+      } catch (err) {
+        replaceDynamicLocalModelDescriptors([]);
+        logger.warn("agent_chat.local_model_discovery_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    } else {
+      replaceDynamicLocalModelDescriptors([]);
     }
     return getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
   };
@@ -4329,8 +4431,19 @@ export function createAgentChatService(args: {
     }
 
     const localProvider = descriptor.family as LocalProviderFamily;
-    const discovered = (await discoverLocalModels(auth)).filter((model) => model.provider === localProvider);
-    replaceDynamicLocalModelDescriptors(discovered.map(discoveredLocalModelToDescriptor));
+    let discovered: DiscoveredLocalModel[] = [];
+    try {
+      discovered = (await discoverLocalModels(auth)).filter((model) => model.provider === localProvider);
+      replaceDynamicLocalModelDescriptors(discovered.map(discoveredLocalModelToDescriptor));
+    } catch (err) {
+      replaceDynamicLocalModelDescriptors([]);
+      logger.warn("agent_chat.local_model_resolution_failed", {
+        sessionId: managed.session.id,
+        modelId: descriptor.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return descriptor;
+    }
 
     const preferred = auth.find(
       (entry): entry is Extract<Awaited<ReturnType<typeof detectAuth>>[number], { type: "local" }> =>
@@ -4345,8 +4458,6 @@ export function createAgentChatService(args: {
 
     if (discovered.length === 1) {
       const onlyDescriptor = getModelById(`${localProvider}/${discovered[0]!.modelId}`) ?? discoveredLocalModelToDescriptor(discovered[0]!);
-      managed.session.modelId = onlyDescriptor.id;
-      managed.session.model = onlyDescriptor.id;
       return onlyDescriptor;
     }
 
@@ -4377,13 +4488,7 @@ export function createAgentChatService(args: {
 
     const auth = await detectAuth();
     descriptor = await resolveUnifiedLocalDescriptor(managed, descriptor, auth);
-    const harnessPermissions = applyLocalHarnessPermissionMode({
-      descriptor,
-      requestedPermissionMode: managed.session.permissionMode,
-      requestedUnifiedPermissionMode: managed.session.unifiedPermissionMode,
-    });
-    managed.session.permissionMode = harnessPermissions.requestedPermissionMode ?? managed.session.permissionMode;
-    managed.session.unifiedPermissionMode = harnessPermissions.requestedUnifiedPermissionMode ?? managed.session.unifiedPermissionMode;
+    enforceManagedLocalHarnessPermissionMode(managed, descriptor);
     const resolvedModel = await providerResolver.resolveModel(descriptor.id, auth, {
       cwd: managed.laneWorktreePath,
     });
@@ -4443,6 +4548,7 @@ export function createAgentChatService(args: {
     managed.session.provider = "unified";
     managed.session.unifiedPermissionMode = permMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+    enforceManagedLocalHarnessPermissionMode(managed, descriptor);
     managed.session.capabilityMode = mcpClient ? "full_mcp" : "fallback";
     return "handled";
   };
@@ -7154,6 +7260,8 @@ export function createAgentChatService(args: {
 
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
+    let finalAssistantText = "";
+    let autoContinuationCount = 0;
     let streamedStepCount = 0;
     const turnStartedAt = Date.now();
     let firstStreamEventLogged = false;
@@ -7204,30 +7312,11 @@ export function createAgentChatService(args: {
       applyReconstructionContextToStreamingRuntime(managed, runtime);
 
       runtime.messages.push({ role: "user", content: userContent });
+      const persistedTurnUserMessageIndex = runtime.messages.length - 1;
 
       const abortController = new AbortController();
       runtime.abortController = abortController;
 
-      const streamMessages = runtime.messages.map((message, index): ModelMessage => {
-        const isCurrentUserMessage = index === runtime.messages.length - 1 && message.role === "user";
-        if (!isCurrentUserMessage) {
-          return {
-            role: message.role as "user" | "assistant",
-            content: message.content,
-          };
-        }
-
-        return {
-          role: "user",
-          content: buildStreamingUserContent({
-            baseText: streamingBaseText,
-            attachments: resolvedAttachments,
-            runtimeKind: "unified",
-            modelDescriptor: runtime.modelDescriptor,
-            logger,
-          }),
-        };
-      });
       const lightweight = isLightweightSession(managed.session);
       const executionLaneId = resolveManagedExecutionLaneId(managed);
       const tools = lightweight
@@ -7343,47 +7432,39 @@ export function createAgentChatService(args: {
                     : "User denied the action.",
               };
             },
-            onAskUser: async (question) => {
-              const askItemId = randomUUID();
-              const request: PendingInputRequest = {
-                requestId: askItemId,
-                itemId: askItemId,
+            onAskUser: async (input: AskUserToolInput) => {
+              const normalizedQuestion = typeof input.question === "string" ? input.question.trim() : "";
+              const normalizedBody = typeof input.body === "string" ? input.body.trim() : "";
+              const response = await requestChatInput({
+                chatSessionId: managed.session.id,
+                title: typeof input.title === "string" && input.title.trim().length
+                  ? input.title.trim()
+                  : "Question from agent",
+                body: normalizedBody || normalizedQuestion,
+                questions: input.questions,
                 source: "unified",
-                kind: "question",
-                description: question,
-                questions: [
-                  {
-                    id: "response",
-                    header: "Question",
-                    question,
-                    allowsFreeform: true,
-                  },
-                ],
-                allowsFreeform: true,
-                blocking: true,
-                canProceedWithoutAnswer: false,
                 providerMetadata: {
                   tool: "askUser",
-                  inputType: "text",
+                  inputType: input.questions?.length ? "structured" : "text",
                 },
-                turnId,
+                eventDescription: normalizedBody || normalizedQuestion,
+                eventDetail: {
+                  tool: "askUser",
+                  ...(normalizedQuestion ? { question: normalizedQuestion } : {}),
+                  inputType: input.questions?.length ? "structured" : "text",
+                },
+              });
+              const primaryQuestionId = input.questions?.[0]?.id ?? "response";
+              const answer = response.answers[primaryQuestionId]?.[0]
+                ?? Object.values(response.answers)[0]?.[0]
+                ?? response.responseText
+                ?? "";
+              return {
+                answer,
+                answers: response.answers,
+                responseText: response.responseText,
+                decision: response.decision,
               };
-              emitPendingInputRequest(managed, request, {
-                kind: "tool_call",
-                description: question,
-                detail: { tool: "askUser", question, inputType: "text" },
-              });
-
-              const response = await new Promise<{ decision?: AgentChatApprovalDecision; responseText?: string | null; answers?: Record<string, string | string[]> }>((resolve) => {
-                runtime.pendingApprovals.set(askItemId, { category: "askUser", request, resolve });
-              });
-              runtime.pendingApprovals.delete(askItemId);
-              const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
-              const answer = normalizedAnswers.response?.[0] ?? "";
-              if (answer.length) return answer;
-              if (response.decision === "accept") return "yes";
-              if (response.decision === "decline") return "no";
-              return String(response.decision);
             },
           });
 
@@ -7567,186 +7648,230 @@ export function createAgentChatService(args: {
         return baseHarnessPrompt;
       })();
 
-      const stream = streamText({
-        model: runtime.resolvedModel,
-        ...(harnessPrompt ? { system: harnessPrompt } : {}),
-        messages: streamMessages,
-        ...(Object.keys(tools).length ? { tools } : {}),
-        providerOptions: providerOptions as any,
-        ...(!lightweight ? { stopWhen: stepCountIs(20) } : {}),
-        abortSignal: abortController.signal,
-        onError({ error }) {
-          logger.warn("agent_chat.unified_stream_error", {
-            sessionId: managed.session.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-      });
+      let shouldAutoContinue = false;
+      const baseTurnMessages = runtime.messages.slice();
+      do {
+        assistantText = "";
+        let iterationUsage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
+        let iterationToolCallCount = 0;
+        let iterationToolResultCount = 0;
+        shouldAutoContinue = false;
 
-      // ── Stream processing loop ──
-      const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
-      for await (const part of stream.fullStream as AsyncIterable<any>) {
-        if (runtime.interrupted) break;
-        if (!part || typeof part !== "object") continue;
-        markFirstStreamEvent(String(part.type ?? "unknown"));
+        const currentIterationMessages = baseTurnMessages;
+        const streamMessages = buildUnifiedStreamMessages({
+          messages: currentIterationMessages,
+          persistedTurnUserMessageIndex,
+          resolvedAttachments,
+          modelDescriptor: runtime.modelDescriptor,
+          logger,
+        });
 
-        if (part.type === "start-step") {
-          streamedStepCount += 1;
-          emitChatEvent(managed, {
-            type: "step_boundary",
-            stepNumber: typeof part.stepNumber === "number" ? part.stepNumber + 1 : streamedStepCount,
-            turnId,
-          });
-          if (!streamSupportsReasoning && streamedStepCount === 1) {
+        const stream = streamText({
+          model: runtime.resolvedModel,
+          ...(harnessPrompt ? { system: harnessPrompt } : {}),
+          messages: streamMessages,
+          ...(Object.keys(tools).length ? { tools } : {}),
+          providerOptions: providerOptions as any,
+          ...(!lightweight ? { stopWhen: stepCountIs(20) } : {}),
+          abortSignal: abortController.signal,
+          onError({ error }) {
+            logger.warn("agent_chat.unified_stream_error", {
+              sessionId: managed.session.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+        });
+
+        // ── Stream processing loop ──
+        const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
+        for await (const part of stream.fullStream as AsyncIterable<any>) {
+          if (runtime.interrupted) break;
+          if (!part || typeof part !== "object") continue;
+          markFirstStreamEvent(String(part.type ?? "unknown"));
+
+          if (part.type === "start-step") {
+            streamedStepCount += 1;
             emitChatEvent(managed, {
-              type: "activity",
-              activity: "working",
-              detail: WORKING_ACTIVITY_DETAIL,
+              type: "step_boundary",
+              stepNumber: typeof part.stepNumber === "number" ? part.stepNumber + 1 : streamedStepCount,
               turnId,
             });
+            if (!streamSupportsReasoning && streamedStepCount === 1) {
+              emitChatEvent(managed, {
+                type: "activity",
+                activity: "working",
+                detail: WORKING_ACTIVITY_DETAIL,
+                turnId,
+              });
+            }
+            continue;
           }
-          continue;
-        }
 
-        if (part.type === "source") {
-          emitChatEvent(managed, {
-            type: "activity",
-            activity: "searching",
-            detail:
-              typeof part.title === "string" && part.title.trim().length
-                ? part.title
-                : typeof part.url === "string" && part.url.trim().length
-                  ? part.url
-                  : "Gathering sources",
-            turnId,
-          });
-          continue;
-        }
-
-        if (part.type === "text-delta") {
-          const delta = String(part.text ?? part.textDelta ?? "");
-          if (!delta.length) continue;
-          assistantText += delta;
-          emitChatEvent(managed, {
-            type: "text",
-            text: delta,
-            turnId,
-            itemId: typeof part.id === "string" ? part.id : undefined
-          });
-          continue;
-        }
-
-        if (part.type === "reasoning-start") {
-          emitChatEvent(managed, {
-            type: "activity",
-            activity: streamSupportsReasoning ? "thinking" : "working",
-            detail: streamSupportsReasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
-            turnId,
-          });
-          continue;
-        }
-
-        if (part.type === "reasoning" || part.type === "reasoning-delta") {
-          const delta = String(part.text ?? part.textDelta ?? part.delta ?? "");
-          if (!delta.length) continue;
-          if (!streamSupportsReasoning) {
+          if (part.type === "source") {
             emitChatEvent(managed, {
               type: "activity",
-              activity: "working",
-              detail: WORKING_ACTIVITY_DETAIL,
+              activity: "searching",
+              detail:
+                typeof part.title === "string" && part.title.trim().length
+                  ? part.title
+                  : typeof part.url === "string" && part.url.trim().length
+                    ? part.url
+                    : "Gathering sources",
               turnId,
             });
             continue;
           }
-          emitChatEvent(managed, {
-            type: "activity",
-            activity: "thinking",
-            detail: REASONING_ACTIVITY_DETAIL,
+
+          if (part.type === "text-delta") {
+            const delta = String(part.text ?? part.textDelta ?? "");
+            if (!delta.length) continue;
+            assistantText += delta;
+            emitChatEvent(managed, {
+              type: "text",
+              text: delta,
+              turnId,
+              itemId: typeof part.id === "string" ? part.id : undefined
+            });
+            continue;
+          }
+
+          if (part.type === "reasoning-start") {
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: streamSupportsReasoning ? "thinking" : "working",
+              detail: streamSupportsReasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
+              turnId,
+            });
+            continue;
+          }
+
+          if (part.type === "reasoning" || part.type === "reasoning-delta") {
+            const delta = String(part.text ?? part.textDelta ?? part.delta ?? "");
+            if (!delta.length) continue;
+            if (!streamSupportsReasoning) {
+              emitChatEvent(managed, {
+                type: "activity",
+                activity: "working",
+                detail: WORKING_ACTIVITY_DETAIL,
+                turnId,
+              });
+              continue;
+            }
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: "thinking",
+              detail: REASONING_ACTIVITY_DETAIL,
+              turnId,
+            });
+            emitChatEvent(managed, {
+              type: "reasoning",
+              text: delta,
+              turnId,
+              itemId: typeof part.id === "string" ? part.id : undefined
+            });
+            continue;
+          }
+
+          if (part.type === "reasoning-end") {
+            flushBufferedReasoning(managed);
+            continue;
+          }
+
+          if (part.type === "tool-call") {
+            iterationToolCallCount += 1;
+            const nextActivity = activityForToolName(String(part.toolName ?? "tool"));
+            const parentItemId = readProviderParentItemId((part as { providerMetadata?: unknown }).providerMetadata);
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: nextActivity.activity,
+              detail: nextActivity.detail,
+              turnId,
+            });
+            emitChatEvent(managed, {
+              type: "tool_call",
+              tool: String(part.toolName ?? "tool"),
+              args: part.input ?? part.args ?? part.arguments,
+              itemId: String(part.toolCallId ?? randomUUID()),
+              ...(parentItemId ? { parentItemId } : {}),
+              turnId
+            });
+            continue;
+          }
+
+          if (part.type === "tool-result") {
+            iterationToolResultCount += 1;
+            const parentItemId = readProviderParentItemId((part as { providerMetadata?: unknown }).providerMetadata);
+            emitChatEvent(managed, {
+              type: "tool_result",
+              tool: String(part.toolName ?? "tool"),
+              result: part.output ?? part.result,
+              itemId: String(part.toolCallId ?? randomUUID()),
+              ...(parentItemId ? { parentItemId } : {}),
+              turnId,
+              status: part.preliminary ? "running" : "completed"
+            });
+            continue;
+          }
+
+          if (part.type === "tool-error") {
+            emitChatEvent(managed, {
+              type: "error",
+              message: `Tool '${String(part.toolName ?? "tool")}' failed: ${String(part.error ?? "unknown error")}`,
+              turnId,
+              itemId: String(part.toolCallId ?? randomUUID())
+            });
+            continue;
+          }
+
+          if (part.type === "tool-approval-request") {
+            const toolName = String(part.toolCall?.toolName ?? "tool");
+            emitChatEvent(managed, {
+              type: "error",
+              message: isPlanningApprovalGuarded(managed)
+                ? buildPlanningApprovalViolation(toolName)
+                : `Unexpected SDK approval request for '${toolName}'. This tool should use ADE-managed approvals instead.`,
+              turnId
+            });
+            continue;
+          }
+
+          if (part.type === "finish") {
+            iterationUsage = normalizeUsagePayload(part.totalUsage ?? part.usage);
+            continue;
+          }
+
+          if (part.type === "error") {
+            emitChatEvent(managed, {
+              type: "error",
+              message: String(part.error ?? "Stream error."),
+              turnId
+            });
+          }
+        }
+
+        usage = mergeUsagePayloads(usage, iterationUsage);
+        finalAssistantText += assistantText;
+        shouldAutoContinue = shouldAutoContinueUnifiedLocalTurn({
+          modelDescriptor: runtime.modelDescriptor,
+          permissionMode: runtime.permissionMode,
+          assistantText,
+          toolCallCount: iterationToolCallCount,
+          toolResultCount: iterationToolResultCount,
+          continuationCount: autoContinuationCount,
+          pendingApprovalCount: runtime.pendingApprovals.size,
+        });
+        if (shouldAutoContinue && !runtime.interrupted) {
+          logger.info("agent_chat.unified_local_auto_continue", {
+            sessionId: managed.session.id,
             turnId,
+            modelId: runtime.modelDescriptor.id,
+            continuationCount: autoContinuationCount + 1,
           });
-          emitChatEvent(managed, {
-            type: "reasoning",
-            text: delta,
-            turnId,
-            itemId: typeof part.id === "string" ? part.id : undefined
-          });
-          continue;
+          baseTurnMessages.push({ role: "assistant", content: assistantText });
+          baseTurnMessages.push({ role: "user", content: UNIFIED_LOCAL_AUTO_CONTINUE_PROMPT });
+          autoContinuationCount += 1;
         }
-
-        if (part.type === "reasoning-end") {
-          flushBufferedReasoning(managed);
-          continue;
-        }
-
-        if (part.type === "tool-call") {
-          const nextActivity = activityForToolName(String(part.toolName ?? "tool"));
-          const parentItemId = readProviderParentItemId((part as { providerMetadata?: unknown }).providerMetadata);
-          emitChatEvent(managed, {
-            type: "activity",
-            activity: nextActivity.activity,
-            detail: nextActivity.detail,
-            turnId,
-          });
-          emitChatEvent(managed, {
-            type: "tool_call",
-            tool: String(part.toolName ?? "tool"),
-            args: part.input ?? part.args ?? part.arguments,
-            itemId: String(part.toolCallId ?? randomUUID()),
-            ...(parentItemId ? { parentItemId } : {}),
-            turnId
-          });
-          continue;
-        }
-
-        if (part.type === "tool-result") {
-          const parentItemId = readProviderParentItemId((part as { providerMetadata?: unknown }).providerMetadata);
-          emitChatEvent(managed, {
-            type: "tool_result",
-            tool: String(part.toolName ?? "tool"),
-            result: part.output ?? part.result,
-            itemId: String(part.toolCallId ?? randomUUID()),
-            ...(parentItemId ? { parentItemId } : {}),
-            turnId,
-            status: part.preliminary ? "running" : "completed"
-          });
-          continue;
-        }
-
-        if (part.type === "tool-error") {
-          emitChatEvent(managed, {
-            type: "error",
-            message: `Tool '${String(part.toolName ?? "tool")}' failed: ${String(part.error ?? "unknown error")}`,
-            turnId,
-            itemId: String(part.toolCallId ?? randomUUID())
-          });
-          continue;
-        }
-
-        if (part.type === "tool-approval-request") {
-          const toolName = String(part.toolCall?.toolName ?? "tool");
-          emitChatEvent(managed, {
-            type: "error",
-            message: isPlanningApprovalGuarded(managed)
-              ? buildPlanningApprovalViolation(toolName)
-              : `Unexpected SDK approval request for '${toolName}'. This tool should use ADE-managed approvals instead.`,
-            turnId
-          });
-          continue;
-        }
-
-        if (part.type === "finish") {
-          usage = normalizeUsagePayload(part.totalUsage ?? part.usage);
-          continue;
-        }
-
-        if (part.type === "error") {
-          emitChatEvent(managed, {
-            type: "error",
-            message: String(part.error ?? "Stream error."),
-            turnId
-          });
-        }
-      }
+      } while (shouldAutoContinue && !runtime.interrupted);
 
       // ── Shared turn completion ──
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
@@ -7765,8 +7890,8 @@ export function createAgentChatService(args: {
         });
         persistChatState(managed);
       } else {
-        if (assistantText.trim().length) {
-          runtime.messages.push({ role: "assistant", content: assistantText });
+        if (finalAssistantText.trim().length) {
+          runtime.messages.push({ role: "assistant", content: finalAssistantText });
         }
 
         runtime.busy = false;
@@ -7784,10 +7909,10 @@ export function createAgentChatService(args: {
           ...(usage ? { usage } : {})
         });
 
-        if (assistantText.trim().length > 0) {
+        if (finalAssistantText.trim().length > 0) {
           appendWorkerActivityToCto(managed, {
             activityType: "chat_turn",
-            summary: assistantText,
+            summary: finalAssistantText,
           });
         }
 
@@ -12224,6 +12349,7 @@ export function createAgentChatService(args: {
       await ensureCursorRuntime(managed);
       managed.session.unifiedPermissionMode = persisted?.unifiedPermissionMode ?? managed.session.unifiedPermissionMode;
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      enforceManagedLocalHarnessPermissionMode(managed);
       sessionService.setResumeCommand(sessionId, `chat:cursor:${sessionId}`);
     } else if (managed.runtime?.kind === "unified" || (managed.session.modelId && !providerResolver.isModelCliWrapped(managed.session.modelId))) {
       // Unified runtime resume — re-resolve the model
@@ -12236,6 +12362,7 @@ export function createAgentChatService(args: {
         }
         managed.session.unifiedPermissionMode = persisted?.unifiedPermissionMode ?? managed.session.unifiedPermissionMode;
         managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+        enforceManagedLocalHarnessPermissionMode(managed, managed.runtime.modelDescriptor);
         managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
           managed.session,
           resolveChatConfig().unifiedPermissionMode,
@@ -12430,6 +12557,7 @@ export function createAgentChatService(args: {
         managed.session.provider,
       );
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
+      enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
       managed.selectedExecutionLaneId = selectedExecutionLaneId ?? managed.selectedExecutionLaneId;
       refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
@@ -12701,6 +12829,11 @@ export function createAgentChatService(args: {
         managed.session.unifiedPermissionMode = "edit";
       }
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      enforceManagedLocalHarnessPermissionMode(managed, managed.runtime.modelDescriptor);
+      managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
+        managed.session,
+        resolveChatConfig().unifiedPermissionMode,
+      );
       managed.runtime.pendingApprovals.delete(itemId);
       pending.resolve({ decision: resolvedDecision, answers, responseText });
       emitPendingInputResolved(managed, {
@@ -12972,6 +13105,7 @@ export function createAgentChatService(args: {
         );
         applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       }
+      enforceManagedLocalHarnessPermissionMode(managed, descriptor);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
 
       // Apply reasoningEffort BEFORE pre-warming so the V2 session is created
@@ -13078,6 +13212,7 @@ export function createAgentChatService(args: {
       || cursorModeId !== undefined
       || cursorConfigValues !== undefined
     ) {
+      enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
       if (managed.runtime?.kind === "unified") {
         managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
@@ -13430,6 +13565,10 @@ export function createAgentChatService(args: {
     chatSessionId: string;
     title: string;
     body: string;
+    source?: PendingInputSource;
+    providerMetadata?: Record<string, unknown>;
+    eventDescription?: string;
+    eventDetail?: Record<string, unknown>;
     questions?: Array<{
       id?: string;
       header?: string;
@@ -13552,7 +13691,7 @@ export function createAgentChatService(args: {
     const request: PendingInputRequest = {
       requestId: itemId,
       itemId,
-      source: "ade",
+      source: args.source ?? "ade",
       kind: questions.some((q) => q.options?.length) ? "structured_question" : "question",
       title: args.title,
       description: questions[0]?.question ?? args.body,
@@ -13560,6 +13699,7 @@ export function createAgentChatService(args: {
       allowsFreeform: true,
       blocking: true,
       canProceedWithoutAnswer: false,
+      ...(args.providerMetadata ? { providerMetadata: args.providerMetadata } : {}),
       turnId: managed.runtime?.activeTurnId ?? null,
     };
 
@@ -13571,7 +13711,8 @@ export function createAgentChatService(args: {
       managed.localPendingInputs.set(itemId, { request, resolve });
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
-        description: request.description ?? args.body,
+        description: args.eventDescription ?? request.description ?? args.body,
+        ...(args.eventDetail !== undefined ? { detail: args.eventDetail } : {}),
       });
     });
 

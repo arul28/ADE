@@ -206,6 +206,10 @@ vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => []),
 }));
 
+vi.mock("../ai/localModelDiscovery", () => ({
+  discoverLocalModels: vi.fn(async () => []),
+}));
+
 vi.mock("../git/git", () => ({
   runGit: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
 }));
@@ -285,11 +289,14 @@ vi.mock("./cursorAcpPool", () => ({
 // Import system under test (after mocks)
 // ---------------------------------------------------------------------------
 import {
+  buildUnifiedStreamMessages,
   buildComputerUseDirective,
   createAgentChatService,
+  shouldAutoContinueUnifiedLocalTurn,
 } from "./agentChatService";
 import { spawn } from "node:child_process";
 import { detectAllAuth } from "../ai/authDetector";
+import { discoverLocalModels } from "../ai/localModelDiscovery";
 import * as providerResolver from "../ai/providerResolver";
 import { createUniversalToolSet } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
@@ -626,6 +633,8 @@ beforeEach(() => {
   vi.mocked(generateText).mockReset();
   vi.mocked(unstable_v2_createSession).mockReset();
   vi.mocked(detectAllAuth).mockResolvedValue([]);
+  vi.mocked(discoverLocalModels).mockReset();
+  vi.mocked(discoverLocalModels).mockResolvedValue([]);
   vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
 });
@@ -4503,6 +4512,89 @@ describe("createAgentChatService", () => {
       const updated = await service.getSessionSummary(session.id);
       expect(updated?.permissionMode).toBe("edit");
       expect(updated?.unifiedPermissionMode).toBe("edit");
+    });
+
+    it("detects narrated next-step early stops for local unified turns", () => {
+      expect(shouldAutoContinueUnifiedLocalTurn({
+        modelDescriptor: { authTypes: ["local"] },
+        permissionMode: "edit",
+        assistantText: "I will explore the src directory to identify where pages and routing are defined in the application.",
+        toolCallCount: 1,
+        toolResultCount: 1,
+        continuationCount: 0,
+      })).toBe(true);
+
+      expect(shouldAutoContinueUnifiedLocalTurn({
+        modelDescriptor: { authTypes: ["local"] },
+        permissionMode: "plan",
+        assistantText: "I will explore the src directory to identify where pages and routing are defined in the application.",
+        toolCallCount: 1,
+        toolResultCount: 1,
+        continuationCount: 0,
+      })).toBe(false);
+
+      expect(shouldAutoContinueUnifiedLocalTurn({
+        modelDescriptor: { authTypes: ["local"] },
+        permissionMode: "edit",
+        assistantText: "I found the routing file and can add the blank about page next.",
+        toolCallCount: 1,
+        toolResultCount: 1,
+        continuationCount: 0,
+      })).toBe(false);
+    });
+
+    it("preserves original attachments across local auto-continuation retries", () => {
+      const resolvedPath = path.join(tmpRoot, "note.txt");
+      fs.writeFileSync(resolvedPath, "remember this", "utf8");
+
+      const streamMessages = buildUnifiedStreamMessages({
+        messages: [
+          {
+            role: "user",
+            content: "Add an about me page.\n\nAttached context:\n- file: note.txt",
+          },
+          {
+            role: "assistant",
+            content: "I will explore the src directory to identify where pages and routing are defined in the application.",
+          },
+          {
+            role: "user",
+            content: "Continue from your last step.",
+          },
+        ],
+        persistedTurnUserMessageIndex: 0,
+        resolvedAttachments: [{
+          path: "note.txt",
+          type: "file",
+          _rootPath: tmpRoot,
+          _resolvedPath: resolvedPath,
+        }],
+        modelDescriptor: {
+          id: "lmstudio/qwen2.5-coder:32b",
+          displayName: "qwen2.5-coder:32b",
+          family: "lmstudio",
+          authTypes: ["local"],
+          contextWindow: 0,
+          maxOutputTokens: 0,
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          color: "#64748B",
+          sdkProvider: "@ai-sdk/openai-compatible",
+          sdkModelId: "qwen2.5-coder:32b",
+          isCliWrapped: false,
+          harnessProfile: "verified",
+        } as any,
+        logger: createLogger() as any,
+      });
+
+      expect(streamMessages).toHaveLength(3);
+      expect(streamMessages[0]?.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "text" }),
+        expect.objectContaining({ type: "file", filename: "note.txt" }),
+      ]));
+      expect(streamMessages[2]).toEqual({
+        role: "user",
+        content: "Continue from your last step.",
+      });
     });
   });
 

@@ -732,6 +732,63 @@ describe("createUniversalToolSet", () => {
     expect(result.answer).toBe("user answer");
   });
 
+  it("accepts structured askUser prompts and returns normalized answers", async () => {
+    const cwd = makeTmpDir("ade-tools-askuser-structured-");
+    const onAskUser = vi.fn().mockResolvedValue({
+      answer: "auth-refactor",
+      answers: {
+        roadmap: ["auth-refactor", "bug-fixes"],
+      },
+      responseText: null,
+      decision: "accept",
+    });
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "plan",
+      onAskUser,
+    });
+
+    const result = await (tools.askUser as any).execute({
+      title: "Mock plan question",
+      body: "Choose the most important sprint goals.",
+      questions: [
+        {
+          id: "roadmap",
+          header: "Sprint scope",
+          question: "Which items should we prioritize?",
+          multiSelect: true,
+          options: [
+            { label: "Auth refactor", value: "auth-refactor", recommended: true },
+            { label: "Bug fixes", value: "bug-fixes" },
+          ],
+        },
+      ],
+    });
+
+    expect(onAskUser).toHaveBeenCalledWith({
+      title: "Mock plan question",
+      body: "Choose the most important sprint goals.",
+      questions: [
+        {
+          id: "roadmap",
+          header: "Sprint scope",
+          question: "Which items should we prioritize?",
+          multiSelect: true,
+          options: [
+            { label: "Auth refactor", value: "auth-refactor", recommended: true },
+            { label: "Bug fixes", value: "bug-fixes" },
+          ],
+        },
+      ],
+    });
+    expect(result).toMatchObject({
+      answer: "auth-refactor",
+      answers: {
+        roadmap: ["auth-refactor", "bug-fixes"],
+      },
+      decision: "accept",
+    });
+  });
+
   // ── exitPlanMode tool ───────────────────────────────────────────
 
   it("does not expose exitPlanMode in non-plan permission modes", async () => {

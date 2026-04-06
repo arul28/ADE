@@ -781,7 +781,7 @@ export function AgentChatPane({
       (entry): entry is { type: "local"; provider: LocalProviderFamily; endpoint: string } =>
         entry.type === "local" && entry.provider === provider,
     ) ?? null;
-    const modelIds = runtimeConnection?.loadedModelIds?.length
+    const modelIds = runtimeConnection?.loadedModelIds !== undefined && runtimeConnection.loadedModelIds !== null
       ? runtimeConnection.loadedModelIds.filter((id): id is string => String(id ?? "").startsWith(`${provider}/`))
       : availableModelIds.filter((id) => id.startsWith(`${provider}/`));
     return {
@@ -1056,7 +1056,11 @@ export function AgentChatPane({
       }
       for (const model of unifiedModels) {
         const resolved = resolveRegistryModelId(model.id);
-        if (resolved) available.add(resolved);
+        if (resolved) {
+          available.add(resolved);
+        } else {
+          available.add(model.id);
+        }
       }
 
       const ordered = MODEL_REGISTRY

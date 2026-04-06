@@ -284,7 +284,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       ]);
       setStatus(nextStatus);
       setProjectConfigSnapshot(nextProjectConfig);
-      setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
+      if (editingLocalProvider == null && savingLocalProvider == null) {
+        setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
+      }
       setStoredProviders(nextStoredProviders.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -293,7 +295,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         setLoading(false);
       }
     }
-  }, []);
+  }, [editingLocalProvider, savingLocalProvider]);
 
   useEffect(() => {
     void refreshStatus(forceRefreshOnMount ? { force: true } : undefined);

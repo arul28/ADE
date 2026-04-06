@@ -1455,7 +1455,15 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
-    agentChatService.cleanupStaleAttachments();
+    setImmediate(() => {
+      void Promise.resolve()
+        .then(() => agentChatService.cleanupStaleAttachments())
+        .catch((err) => {
+          logger.warn("agent_chat.cleanup_stale_attachments_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+    });
 
     // Wire agentChatService into prService for integration resolution
     prService.setAgentChatService(agentChatService);

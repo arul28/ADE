@@ -321,7 +321,7 @@ function resolveManagedPermissionMode(args: {
     : undefined;
   if (args.descriptor?.authTypes.includes("local")) {
     if (args.descriptor.harnessProfile === "read_only") return "plan";
-    if (args.descriptor.harnessProfile === "guarded" && normalizedCandidate == null) return "plan";
+    if (args.descriptor.harnessProfile === "guarded") return "plan";
   }
   return normalizedCandidate;
 }
