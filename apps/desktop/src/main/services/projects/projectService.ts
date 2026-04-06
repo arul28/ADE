@@ -57,6 +57,11 @@ export function upsertProjectRow({
   return { projectId: id };
 }
 
-export function toProjectInfo(repoRoot: string, baseRef: string): ProjectInfo {
-  return { rootPath: repoRoot, displayName: path.basename(repoRoot), baseRef };
+export function toProjectInfo(repoRoot: string, baseRef: string, projectId?: string): ProjectInfo {
+  return {
+    rootPath: repoRoot,
+    displayName: path.basename(repoRoot),
+    baseRef,
+    ...(projectId?.trim() ? { projectId: projectId.trim() } : {}),
+  };
 }

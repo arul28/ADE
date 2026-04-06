@@ -279,6 +279,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  AdeExecutionTargetsState,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -595,6 +596,11 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.projectStateEvent, listener);
       return () => ipcRenderer.removeListener(IPC.projectStateEvent, listener);
     }
+  },
+  executionTargets: {
+    get: async (): Promise<AdeExecutionTargetsState> => ipcRenderer.invoke(IPC.executionTargetsGet),
+    set: async (state: AdeExecutionTargetsState): Promise<AdeExecutionTargetsState> =>
+      ipcRenderer.invoke(IPC.executionTargetsSet, state),
   },
   keybindings: {
     get: async (): Promise<KeybindingsSnapshot> => ipcRenderer.invoke(IPC.keybindingsGet),

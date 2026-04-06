@@ -666,8 +666,8 @@ app.whenReady().then(async () => {
     const agentToolsService = createAgentToolsService({ logger });
     const devToolsService = createDevToolsService({ logger });
 
-    const project = toProjectInfo(projectRoot, baseRef);
-    const { projectId } = upsertProjectRow({ db, repoRoot: projectRoot, displayName: project.displayName, baseRef });
+    const { projectId } = upsertProjectRow({ db, repoRoot: projectRoot, displayName: path.basename(projectRoot), baseRef });
+    const project = toProjectInfo(projectRoot, baseRef, projectId);
 
     const operationService = createOperationService({ db, projectId });
 
