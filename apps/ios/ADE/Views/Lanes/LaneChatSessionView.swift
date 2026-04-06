@@ -131,20 +131,26 @@ struct LaneChatSessionView: View {
 
   @MainActor
   private func sendMessage() async {
+    let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return }
+
+    sending = true
+    defer { sending = false }
+
     do {
-      sending = true
-      let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !text.isEmpty else {
-        sending = false
-        return
-      }
       try await syncService.sendChatMessage(sessionId: summary.sessionId, text: text)
       composer = ""
+      errorMessage = nil
+    } catch {
+      errorMessage = "Message not sent. \(error.localizedDescription)"
+      return
+    }
+
+    do {
       transcript = try await syncService.fetchChatTranscript(sessionId: summary.sessionId)
       errorMessage = nil
     } catch {
-      errorMessage = error.localizedDescription
+      errorMessage = "Message sent, but the transcript did not refresh. Pull to retry. \(error.localizedDescription)"
     }
-    sending = false
   }
 }

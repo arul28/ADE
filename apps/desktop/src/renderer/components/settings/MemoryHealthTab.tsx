@@ -28,6 +28,7 @@ import {
 
 const DEFAULT_CONSOLIDATION_MODEL = "anthropic/claude-haiku-4-5";
 const EMBEDDING_POLL_MS = 10_000;
+const EMBEDDING_DOWNLOAD_POLL_MS = 1_500;
 const CONTENT_TRUNCATE_LENGTH = 200;
 
 const SECTION_LABEL: React.CSSProperties = {
@@ -725,7 +726,9 @@ export function MemoryHealthTab() {
   /* ── Embedding polling ── */
   React.useEffect(() => {
     if (!memoryApi?.getHealthStats || loadError || !shouldPollEmbeddings(stats)) return undefined;
-    const timer = window.setTimeout(() => { void loadDashboard({ quiet: true }); }, EMBEDDING_POLL_MS);
+    const isDownloading = stats.embeddings.model.state === "loading" && stats.embeddings.model.activity === "downloading";
+    const interval = isDownloading ? EMBEDDING_DOWNLOAD_POLL_MS : EMBEDDING_POLL_MS;
+    const timer = window.setTimeout(() => { void loadDashboard({ quiet: true }); }, interval);
     return () => window.clearTimeout(timer);
   }, [loadDashboard, loadError, memoryApi, stats]);
 

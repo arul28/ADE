@@ -12,10 +12,12 @@ struct LanesTabView: View {
   @State var scope: LaneListScope = .active
   @State var runtimeFilter: LaneRuntimeFilter = .all
   @State var createPresented = false
+  @State var createMode: LaneCreateMode = .primary
   @State var attachPresented = false
   @State var openLaneIds: [String] = []
   @State var pinnedLaneIds = Set<String>()
   @State var primaryBranches: [GitBranchSummary] = []
+  @State var primaryBranchLaneId: String?
   @State var primaryBranchError: String?
   @State var detailSheetTarget: LaneDetailSheetTarget?
   @State var batchManageLaneIds: [String] = []
@@ -41,6 +43,7 @@ struct LanesTabView: View {
                 removal: .opacity
               ))
           }
+          quickActionsRow
           if let errorMessage, laneStatus.phase == .ready {
             ADENoticeCard(
               title: "Lane view error",
@@ -72,11 +75,10 @@ struct LanesTabView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .animation(.smooth, value: filteredSnapshots.count)
-        .animation(.smooth, value: openLaneSnapshots.count)
       }
       .adeScreenBackground()
       .adeNavigationGlass()
+      .scrollBounceBehavior(.basedOnSize)
       .searchable(text: $searchText, prompt: "Filter by lane, branch, is:dirty...")
       .navigationTitle("Lanes")
       .navigationBarTitleDisplayMode(.inline)
@@ -84,12 +86,15 @@ struct LanesTabView: View {
       .refreshable { await refreshFromPullGesture() }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task { await reload(refreshRemote: true) }
+      .task(id: primaryLane?.id) {
+        await refreshPrimaryBranches(force: true)
+      }
       .task(id: syncService.localStateRevision) {
         guard laneStatus.phase == .ready else { return }
-        await reload()
+        await reload(refreshRemote: false)
       }
       .sheet(isPresented: $createPresented) {
-        LaneCreateSheet(primaryLane: primaryLane, lanes: laneSnapshots.map(\.lane)) { createdLaneId in
+        LaneCreateSheet(primaryLane: primaryLane, lanes: laneSnapshots.map(\.lane), initialMode: createMode) { createdLaneId in
           createPresented = false
           if !openLaneIds.contains(createdLaneId) {
             openLaneIds.insert(createdLaneId, at: 0)
@@ -121,7 +126,6 @@ struct LanesTabView: View {
         LaneBatchManageSheet(
           snapshots: laneSnapshots.filter { batchManageLaneIds.contains($0.lane.id) }
         ) {
-          batchManagePresented = false
           await reload(refreshRemote: true)
         }
       }
@@ -175,8 +179,8 @@ struct LanesTabView: View {
                 Task {
                   do {
                     try await syncService.checkoutPrimaryBranch(laneId: primaryLane.id, branchName: branch.name)
-                    try await syncService.refreshLaneSnapshots()
-                    await reload()
+                    await reload(refreshRemote: true)
+                    await refreshPrimaryBranches(force: true)
                   } catch {
                     primaryBranchError = error.localizedDescription
                   }
@@ -194,9 +198,28 @@ struct LanesTabView: View {
 
       Menu {
         Button {
+          createMode = .primary
           createPresented = true
         } label: {
           Label("New lane", systemImage: "plus.square")
+        }
+        Button {
+          createMode = .child
+          createPresented = true
+        } label: {
+          Label("Child lane", systemImage: "arrow.turn.up.right")
+        }
+        Button {
+          createMode = .importBranch
+          createPresented = true
+        } label: {
+          Label("Import branch", systemImage: "arrow.down.square")
+        }
+        Button {
+          createMode = .rescueUnstaged
+          createPresented = true
+        } label: {
+          Label("Rescue unstaged", systemImage: "bandage")
         }
         Button {
           attachPresented = true
@@ -208,6 +231,30 @@ struct LanesTabView: View {
           .symbolRenderingMode(.hierarchical)
       }
       .accessibilityLabel("Create or attach lane")
+    }
+  }
+
+  @ViewBuilder
+  private var quickActionsRow: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
+        LaneQuickAction(title: "New", symbol: "plus", tint: ADEColor.accent) {
+          createMode = .primary
+          createPresented = true
+        }
+        LaneQuickAction(title: "Import", symbol: "arrow.down.square", tint: ADEColor.accent) {
+          createMode = .importBranch
+          createPresented = true
+        }
+        LaneQuickAction(title: "Rescue", symbol: "bandage", tint: ADEColor.warning) {
+          createMode = .rescueUnstaged
+          createPresented = true
+        }
+        LaneQuickAction(title: "Attach", symbol: "link", tint: ADEColor.textSecondary) {
+          attachPresented = true
+        }
+      }
+      .padding(.vertical, 2)
     }
   }
 }

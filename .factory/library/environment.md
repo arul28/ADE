@@ -17,9 +17,9 @@ Environment variables, external dependencies, and setup notes.
 ## Simulators
 - Required: iOS 26.3.1 simulators
 - Recommended: iPhone 17 Pro
-- iOS 18.x simulators cannot be used (deployment target is 26.0)
+- iOS 18.x simulators are older than the minimum deployment target (26.0), so they are incompatible.
 
 ## Build Notes
-- Development team: VQ372F39G6
+- Development team: configured in Xcode project settings
 - Code signing disabled for tests (CODE_SIGNING_ALLOWED = NO)
 - Asset catalog warning: BrandMark.imageset references missing logo.png (cosmetic only)

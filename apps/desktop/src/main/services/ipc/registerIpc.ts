@@ -199,6 +199,8 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  LaneListSnapshot,
+  LaneRuntimeSummary,
   LaneSummary,
   ListOperationsArgs,
   ListOverlapsArgs,
@@ -689,6 +691,93 @@ function sanitizeExternalMcpSnapshot(
 function escapeCsvCell(value: string | null | undefined): string {
   const input = value ?? "";
   return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, "\"\"")}"` : input;
+}
+
+function sessionStatusBucket(args: {
+  status: string;
+  lastOutputPreview: string | null | undefined;
+  runtimeState?: string | null;
+}): "running" | "awaiting-input" | "ended" {
+  if (args.status === "running") {
+    if (args.runtimeState === "waiting-input") return "awaiting-input";
+    const preview = args.lastOutputPreview ?? "";
+    if (/\b(?:waiting|awaiting)\b.{0,28}\b(?:input|confirmation|response|prompt)\b/i.test(preview)) {
+      return "awaiting-input";
+    }
+    if (/\((?:y\/n|yes\/no)\)/i.test(preview) || /\[(?:y\/n|yes\/no)\]/i.test(preview)) {
+      return "awaiting-input";
+    }
+    return "running";
+  }
+  return "ended";
+}
+
+function summarizeLaneRuntime(
+  laneId: string,
+  sessions: Array<{
+    laneId: string;
+    status: string;
+    lastOutputPreview: string | null;
+    runtimeState?: string | null;
+  }>,
+): LaneRuntimeSummary {
+  let runningCount = 0;
+  let awaitingInputCount = 0;
+  let endedCount = 0;
+  let sessionCount = 0;
+
+  for (const session of sessions) {
+    if (session.laneId !== laneId) continue;
+    sessionCount += 1;
+    const bucket = sessionStatusBucket(session);
+    if (bucket === "running") runningCount += 1;
+    else if (bucket === "awaiting-input") awaitingInputCount += 1;
+    else endedCount += 1;
+  }
+
+  const bucket = runningCount > 0
+    ? "running"
+    : awaitingInputCount > 0
+      ? "awaiting-input"
+      : endedCount > 0
+        ? "ended"
+        : "none";
+
+  return {
+    bucket,
+    runningCount,
+    awaitingInputCount,
+    endedCount,
+    sessionCount,
+  };
+}
+
+async function buildLaneListSnapshots(
+  args: Pick<AppContext, "laneService" | "sessionService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService">,
+  lanes: LaneSummary[],
+): Promise<LaneListSnapshot[]> {
+  const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
+    Promise.resolve(args.sessionService.list({ limit: 500 })),
+    Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []),
+    Promise.resolve(args.autoRebaseService?.listStatuses() ?? []),
+    Promise.resolve(args.laneService.listStateSnapshots()),
+    args.conflictService?.getBatchAssessment().catch(() => null) ?? Promise.resolve(null),
+  ]);
+
+  const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
+  const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
+  const stateByLaneId = new Map(stateSnapshots.map((entry) => [entry.laneId, entry] as const));
+  const conflictByLaneId = new Map((batchAssessment?.lanes ?? []).map((entry) => [entry.laneId, entry] as const));
+
+  return lanes.map((lane) => ({
+    lane,
+    runtime: summarizeLaneRuntime(lane.id, sessions),
+    rebaseSuggestion: rebaseByLaneId.get(lane.id) ?? null,
+    autoRebaseStatus: autoRebaseByLaneId.get(lane.id) ?? null,
+    conflictStatus: conflictByLaneId.get(lane.id) ?? null,
+    stateSnapshot: stateByLaneId.get(lane.id) ?? null,
+    adoptableAttached: lane.laneType === "attached" && lane.archivedAt == null,
+  }));
 }
 
 const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
@@ -3102,6 +3191,25 @@ export function registerIpc({
       {
         includeArchived: Boolean(arg?.includeArchived),
         includeStatus: arg?.includeStatus !== false
+      }
+    );
+  });
+
+  ipcMain.handle(IPC.lanesListSnapshots, async (_event, arg: ListLanesArgs): Promise<LaneListSnapshot[]> => {
+    const ctx = getCtx();
+    return await withIpcTiming(
+      ctx,
+      "lanes.listSnapshots",
+      async () => {
+        const lanes = await ctx.laneService.list({
+          includeArchived: Boolean(arg?.includeArchived),
+          includeStatus: arg?.includeStatus !== false,
+        });
+        return await buildLaneListSnapshots(ctx, lanes);
+      },
+      {
+        includeArchived: Boolean(arg?.includeArchived),
+        includeStatus: arg?.includeStatus !== false,
       }
     );
   });
@@ -5669,6 +5777,16 @@ export function registerIpc({
     }
     const embeddingStatus = ctx.embeddingService.getStatus();
     const localFilesOnly = embeddingStatus.installState === "installed" && embeddingStatus.state !== "unavailable";
+    // When we're about to attempt a remote download and stale/corrupted files
+    // exist on disk, clear them first so transformers.js re-downloads fresh
+    // files instead of reloading the same broken artifacts from its FS cache.
+    if (!localFilesOnly && embeddingStatus.installState !== "missing") {
+      ctx.logger.info("memory.embedding.clearing_cache_for_repair", {
+        installState: embeddingStatus.installState,
+        state: embeddingStatus.state,
+      });
+      await ctx.embeddingService.clearCache();
+    }
     void ctx.embeddingService.preload({ forceRetry: true, localFilesOnly }).catch(() => {
       // Health polling will pick up the unavailable state; the click itself should remain responsive.
     });

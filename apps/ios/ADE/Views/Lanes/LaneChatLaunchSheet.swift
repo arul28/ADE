@@ -180,7 +180,7 @@ struct LaneChatLaunchSheet: View {
       if resetSelection || loadedModels.contains(where: { $0.id == selectedModelId }) == false {
         if let preferred = loadedModels.first(where: \.isDefault) ?? loadedModels.first {
           selectedModelId = preferred.id
-          selectedReasoningEffort = preferred.reasoningEfforts?.first?.effort ?? ""
+          selectedReasoningEffort = ""
         } else {
           selectedModelId = ""
           selectedReasoningEffort = ""

@@ -169,8 +169,8 @@ func summarizeState(_ summary: [String: RemoteJSONValue]?) -> String? {
       return value
     }
   }
-  for value in summary.values {
-    if let flattened = flattenedString(value) {
+  for key in summary.keys.sorted() {
+    if let flattened = flattenedString(summary[key]) {
       return flattened
     }
   }

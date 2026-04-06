@@ -137,6 +137,65 @@ struct LaneActionButton: View {
   }
 }
 
+// MARK: - Hold-to-confirm action
+
+struct LaneHoldToConfirmButton: View {
+  let title: String
+  let symbol: String
+  let tint: Color
+  let holdHint: String
+  let minimumDuration: Double
+  let action: () -> Void
+
+  @State private var isPressing = false
+
+  init(
+    title: String,
+    symbol: String,
+    tint: Color = ADEColor.danger,
+    holdHint: String = "Hold to confirm",
+    minimumDuration: Double = 0.5,
+    action: @escaping () -> Void
+  ) {
+    self.title = title
+    self.symbol = symbol
+    self.tint = tint
+    self.holdHint = holdHint
+    self.minimumDuration = minimumDuration
+    self.action = action
+  }
+
+  var body: some View {
+    HStack(spacing: 5) {
+      Image(systemName: symbol)
+        .font(.system(size: 11, weight: .semibold))
+      Text(isPressing ? holdHint : title)
+        .font(.caption.weight(.medium))
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background((isPressing ? tint.opacity(0.18) : tint.opacity(0.1)), in: Capsule())
+    .glassEffect()
+    .overlay(
+      Capsule()
+        .stroke(tint.opacity(isPressing ? 0.36 : 0.14), lineWidth: 0.5)
+    )
+    .contentShape(Capsule())
+    .onLongPressGesture(
+      minimumDuration: minimumDuration,
+      maximumDistance: 24,
+      pressing: { pressing in
+        withAnimation(.easeOut(duration: 0.15)) {
+          isPressing = pressing
+        }
+      },
+      perform: action
+    )
+    .accessibilityLabel("\(title). Hold to confirm.")
+  }
+}
+
 // MARK: - Quick action
 
 struct LaneQuickAction: View {
@@ -277,7 +336,9 @@ struct LaneSessionCard: View {
           .lineLimit(2)
       }
     }
-    .adeGlassCard(cornerRadius: 10, padding: 10)
+    .adeGlassCard(cornerRadius: 12, padding: 12)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(session.title), \(session.status)")
   }
 }
 
@@ -305,7 +366,9 @@ struct LaneChatCard: View {
           .lineLimit(2)
       }
     }
-    .adeGlassCard(cornerRadius: 10, padding: 10)
+    .adeGlassCard(cornerRadius: 12, padding: 12)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(chat.title ?? chat.provider) chat, \(chat.status)")
   }
 }
 
@@ -362,31 +425,47 @@ struct ADEScaleButtonStyle: ButtonStyle {
 
 // MARK: - Lane list row
 
-struct LaneListRow: View {
+struct LaneListRow: View, Equatable {
   let snapshot: LaneListSnapshot
   let isPinned: Bool
   let isOpen: Bool
 
   var body: some View {
-    HStack(spacing: 14) {
-      LaneStatusIndicator(bucket: snapshot.runtime.bucket)
-      VStack(alignment: .leading, spacing: 5) {
-        HStack(spacing: 8) {
+    HStack(alignment: .top, spacing: 12) {
+      LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 9)
+        .padding(.top, 5)
+
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
           Text(snapshot.lane.name)
-            .font(.body.weight(.semibold))
+            .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
-          if snapshot.lane.laneType == "primary" {
-            LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
-          } else if snapshot.lane.laneType == "attached" {
-            LaneTypeBadge(text: "Attached", tint: ADEColor.textMuted)
-          }
+          laneRoleBadge
+          Spacer(minLength: 0)
         }
-        Text(snapshot.lane.branchRef)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
+
         HStack(spacing: 6) {
+          Text(snapshot.lane.branchRef)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+          if let activity = laneActivitySummary(snapshot) {
+            Circle()
+              .fill(ADEColor.border.opacity(0.6))
+              .frame(width: 3, height: 3)
+            Text(activity)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+          Spacer(minLength: 0)
+        }
+
+        HStack(spacing: 6) {
+          if snapshot.lane.status.dirty {
+            LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
+          }
           if snapshot.lane.status.ahead > 0 {
             LaneMicroChip(icon: "arrow.up", text: "\(snapshot.lane.status.ahead)", tint: ADEColor.success)
           }
@@ -404,37 +483,52 @@ struct LaneListRow: View {
             LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEColor.textMuted)
           }
           if isPinned {
-            Image(systemName: "pin.fill")
-              .font(.system(size: 9))
-              .foregroundStyle(ADEColor.accent)
+            LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
           }
         }
-        if let activity = laneActivitySummary(snapshot) {
-          Text(activity)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
       }
+
       Spacer(minLength: 8)
+
       VStack(alignment: .trailing, spacing: 6) {
         lanePriorityBadge(snapshot: snapshot)
+        if isOpen {
+          LaneMicroChip(icon: "rectangle.portrait.and.arrow.right", text: "open", tint: ADEColor.accent)
+        }
       }
+
       Image(systemName: "chevron.right")
         .font(.caption2.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
     }
-    .adeGlassCard(cornerRadius: 16, padding: 14)
+    .adeGlassCard(cornerRadius: 14, padding: 12)
     .overlay(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(isOpen ? ADEColor.accent.opacity(0.35) : ADEColor.border.opacity(0.14), lineWidth: isOpen ? 1 : 0.75)
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel(laneRowAccessibilityLabel)
   }
 
+  @ViewBuilder
+  private var laneRoleBadge: some View {
+    if snapshot.lane.laneType == "primary" {
+      LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
+    } else if snapshot.lane.laneType == "attached" {
+      LaneTypeBadge(text: "Attached", tint: ADEColor.textMuted)
+    } else if snapshot.lane.archivedAt != nil {
+      LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+    } else {
+      EmptyView()
+    }
+  }
+
   private var laneRowAccessibilityLabel: String {
     var parts = [snapshot.lane.name, snapshot.lane.branchRef]
+    if snapshot.lane.laneType == "primary" { parts.append("primary") }
+    if snapshot.lane.archivedAt != nil { parts.append("archived") }
+    if snapshot.runtime.bucket == "running" { parts.append("running") }
+    if snapshot.runtime.bucket == "awaiting-input" { parts.append("awaiting input") }
     if snapshot.lane.status.dirty { parts.append("dirty") }
     if isPinned { parts.append("pinned") }
     if isOpen { parts.append("open") }

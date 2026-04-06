@@ -21,7 +21,7 @@ const mockLocalStorage = {
   clearTimeout: globalThis.clearTimeout,
   ade: {
     app: { getProject: vi.fn(async () => null) },
-    lanes: { list: vi.fn(async () => []) },
+    lanes: { list: vi.fn(async () => []), listSnapshots: vi.fn(async () => []) },
     projectConfig: { get: vi.fn(async () => ({ effective: {} })) },
     ai: { getStatus: vi.fn(async () => null) },
     keybindings: { get: vi.fn(async () => null) },
@@ -47,6 +47,7 @@ function resetStore() {
     project: null,
     projectHydrated: false,
     showWelcome: true,
+    laneSnapshots: [],
     lanes: [],
     selectedLaneId: null,
     runLaneId: null,
@@ -117,6 +118,45 @@ describe("appStore", () => {
       const lanes = [{ id: "lane-1", name: "test" }] as any[];
       useAppStore.getState().setLanes(lanes);
       expect(useAppStore.getState().lanes).toBe(lanes);
+    });
+
+    it("refreshLanes hydrates lane snapshots and derives lanes", async () => {
+      const snapshots = [
+        {
+          lane: { id: "lane-1", name: "Lane 1" },
+          runtime: {
+            bucket: "running",
+            runningCount: 1,
+            awaitingInputCount: 0,
+            endedCount: 0,
+            sessionCount: 1,
+          },
+          rebaseSuggestion: null,
+          autoRebaseStatus: null,
+          conflictStatus: null,
+          stateSnapshot: null,
+          adoptableAttached: false,
+        },
+      ] as any[];
+      (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce(snapshots);
+
+      await useAppStore.getState().refreshLanes();
+
+      expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: true,
+      });
+      expect(useAppStore.getState().laneSnapshots).toEqual(snapshots);
+      expect(useAppStore.getState().lanes).toEqual([snapshots[0].lane]);
+    });
+
+    it("refreshLanes can request the cheaper snapshot bootstrap path", async () => {
+      await useAppStore.getState().refreshLanes({ includeStatus: false });
+
+      expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: false,
+      });
     });
 
     it("selectLane updates selectedLaneId", () => {

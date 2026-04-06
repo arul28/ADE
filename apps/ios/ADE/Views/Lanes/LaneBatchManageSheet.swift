@@ -134,24 +134,45 @@ struct LaneBatchManageSheet: View {
 
   @MainActor
   private func archiveSelected() async {
-    do {
-      busy = true
-      for laneId in laneIds {
+    busy = true
+    errorMessage = nil
+    defer { busy = false }
+
+    var archivedLaneIds: [String] = []
+    var failures: [String] = []
+
+    for laneId in laneIds {
+      do {
         try await syncService.archiveLane(laneId)
+        archivedLaneIds.append(laneId)
+      } catch {
+        failures.append("\(laneId) (\(error.localizedDescription))")
       }
-      await onComplete()
-      dismiss()
-    } catch {
-      errorMessage = error.localizedDescription
     }
-    busy = false
+
+    if !archivedLaneIds.isEmpty {
+      await onComplete()
+    }
+
+    if failures.isEmpty {
+      dismiss()
+      return
+    }
+
+    errorMessage = "Archived \(archivedLaneIds.count)/\(laneIds.count) lanes. Failed: \(failures.joined(separator: "; "))"
   }
 
   @MainActor
   private func deleteSelected() async {
-    do {
-      busy = true
-      for laneId in laneIds {
+    busy = true
+    errorMessage = nil
+    defer { busy = false }
+
+    var deletedLaneIds: [String] = []
+    var failures: [String] = []
+
+    for laneId in laneIds {
+      do {
         try await syncService.deleteLane(
           laneId,
           deleteBranch: deleteMode != .worktree,
@@ -159,12 +180,21 @@ struct LaneBatchManageSheet: View {
           remoteName: deleteRemoteName,
           force: deleteForce
         )
+        deletedLaneIds.append(laneId)
+      } catch {
+        failures.append("\(laneId) (\(error.localizedDescription))")
       }
-      await onComplete()
-      dismiss()
-    } catch {
-      errorMessage = error.localizedDescription
     }
-    busy = false
+
+    if !deletedLaneIds.isEmpty {
+      await onComplete()
+    }
+
+    if failures.isEmpty {
+      dismiss()
+      return
+    }
+
+    errorMessage = "Deleted \(deletedLaneIds.count)/\(laneIds.count) lanes. Failed: \(failures.joined(separator: "; "))"
   }
 }

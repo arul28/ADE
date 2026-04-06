@@ -562,11 +562,26 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     }
   }
 
+  async function clearCache(): Promise<void> {
+    await dispose();
+    try {
+      await fs.promises.rm(installPath, { recursive: true, force: true });
+    } catch (clearError) {
+      logger.warn("memory.embedding.cache_clear_failed", {
+        modelId,
+        installPath,
+        error: getErrorMessage(clearError),
+      });
+    }
+    refreshCachedInstall();
+  }
+
   return {
     embed: trackedEmbed,
     dispose,
     preload,
     probeCache,
+    clearCache,
     getModelId: () => modelId,
     getStatus,
     hashContent: hashEmbeddingContent,

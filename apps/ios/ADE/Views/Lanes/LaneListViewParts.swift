@@ -106,13 +106,39 @@ extension LanesTabView {
       icon: "exclamationmark.triangle.fill",
       tint: ADEColor.danger,
       actionTitle: "Retry",
-      action: { Task { await reload(refreshRemote: false) } }
+      action: {
+        Task {
+          await refreshPrimaryBranches(force: true)
+        }
+      }
     )
+  }
+
+  @MainActor
+  func refreshPrimaryBranches(force: Bool = false) async {
+    guard let primaryLane else {
+      primaryBranches = []
+      primaryBranchLaneId = nil
+      primaryBranchError = nil
+      return
+    }
+    if !force, primaryBranchLaneId == primaryLane.id, !primaryBranches.isEmpty {
+      return
+    }
+    do {
+      primaryBranches = try await syncService.listBranches(laneId: primaryLane.id)
+      primaryBranchLaneId = primaryLane.id
+      primaryBranchError = nil
+    } catch {
+      primaryBranches = []
+      primaryBranchLaneId = primaryLane.id
+      primaryBranchError = error.localizedDescription
+    }
   }
 
   @ViewBuilder
   var openLanesTray: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 12) {
       HStack {
         Label("Open lanes", systemImage: "square.stack.3d.up.fill")
           .font(.caption.weight(.semibold))
@@ -127,6 +153,7 @@ extension LanesTabView {
             .font(.caption.weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
         }
+        .accessibilityLabel("Clear open lanes")
       }
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
@@ -169,7 +196,7 @@ extension LanesTabView {
 
   @ViewBuilder
   var attentionSection: some View {
-    VStack(spacing: 10) {
+    VStack(spacing: 12) {
       ForEach(visibleSuggestions.prefix(3)) { snapshot in
         HStack(spacing: 12) {
           Image(systemName: "arrow.triangle.2.circlepath")
@@ -291,6 +318,7 @@ extension LanesTabView {
             isPinned: pinnedLaneIds.contains(snapshot.lane.id),
             isOpen: openLaneIds.contains(snapshot.lane.id)
           )
+          .equatable()
         }
         .buttonStyle(ADEScaleButtonStyle())
         .contextMenu {
@@ -370,22 +398,19 @@ extension LanesTabView {
         try await syncService.refreshLaneSnapshots()
       }
       let loadedSnapshots = try await syncService.fetchLaneListSnapshots(includeArchived: true)
-      laneSnapshots = loadedSnapshots
-      let visibleIds = Set(loadedSnapshots.map(\.lane.id))
-      openLaneIds = openLaneIds.filter { visibleIds.contains($0) }
-      pinnedLaneIds = Set(pinnedLaneIds.filter { visibleIds.contains($0) })
-      errorMessage = nil
-      primaryBranchError = nil
-      if let primaryLane, canRunLiveActions {
-        do {
-          primaryBranches = try await syncService.listBranches(laneId: primaryLane.id)
-        } catch {
-          primaryBranches = []
-          primaryBranchError = error.localizedDescription
-        }
-      } else {
-        primaryBranches = []
+      if laneSnapshots != loadedSnapshots {
+        laneSnapshots = loadedSnapshots
       }
+      let visibleIds = Set(loadedSnapshots.map(\.lane.id))
+      let nextOpenLaneIds = openLaneIds.filter { visibleIds.contains($0) }
+      if nextOpenLaneIds != openLaneIds {
+        openLaneIds = nextOpenLaneIds
+      }
+      let nextPinnedLaneIds = Set(pinnedLaneIds.filter { visibleIds.contains($0) })
+      if nextPinnedLaneIds != pinnedLaneIds {
+        pinnedLaneIds = nextPinnedLaneIds
+      }
+      errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
     }

@@ -1,4 +1,3 @@
-import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../logging/logger";
 import type * as SharedUtilsModule from "../shared/utils";
@@ -44,28 +43,37 @@ describe("devToolsService", () => {
     resolveExecutableFromKnownLocationsMock.mockReset();
   });
 
-  it("detects GitHub CLI from known install locations and reads version via the resolved path", async () => {
+  it("detects git from known install locations and reads version via the resolved path", async () => {
     resolveExecutableFromKnownLocationsMock.mockImplementation((command: string) => {
       if (command === "git") return { path: "/usr/bin/git", source: "path" };
-      if (command === "gh") return { path: "/opt/homebrew/bin/gh", source: "known-dir" };
       return null;
     });
-    spawnAsyncMock.mockImplementation(async (command: string) => ({
+    spawnAsyncMock.mockImplementation(async () => ({
       status: 0,
-      stdout: `${path.basename(command)} version 1.0.0\n`,
+      stdout: "git version 2.50.1\n",
       stderr: "",
     }));
 
     const service = createDevToolsService({ logger: createLogger() });
     const result = await service.detect(true);
-    const gh = result.tools.find((tool) => tool.id === "gh");
+    const git = result.tools.find((tool) => tool.id === "git");
 
-    expect(gh).toMatchObject({
+    expect(git).toMatchObject({
       installed: true,
-      detectedPath: "/opt/homebrew/bin/gh",
-      detectedVersion: "gh version 1.0.0",
+      detectedPath: "/usr/bin/git",
+      detectedVersion: "git version 2.50.1",
     });
-    expect(spawnAsyncMock).toHaveBeenCalledWith("/opt/homebrew/bin/gh", ["--version"]);
-    expect(whichCommandMock).not.toHaveBeenCalledWith("gh");
+    expect(spawnAsyncMock).toHaveBeenCalledWith("/usr/bin/git", ["--version"]);
+  });
+
+  it("only checks for git (no gh)", async () => {
+    resolveExecutableFromKnownLocationsMock.mockReturnValue(null);
+    whichCommandMock.mockResolvedValue(null);
+
+    const service = createDevToolsService({ logger: createLogger() });
+    const result = await service.detect(true);
+
+    expect(result.tools).toHaveLength(1);
+    expect(result.tools[0].id).toBe("git");
   });
 });

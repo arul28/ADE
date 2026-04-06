@@ -509,6 +509,7 @@ import type {
   LaneEnvInitEvent,
   LaneOverlayOverrides,
   LaneTemplate,
+  LaneListSnapshot,
   GetLaneTemplateArgs,
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
@@ -754,6 +755,7 @@ declare global {
       };
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
+        listSnapshots: (args?: ListLanesArgs) => Promise<LaneListSnapshot[]>;
         create: (args: CreateLaneArgs) => Promise<LaneSummary>;
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
         createFromUnstaged: (args: CreateLaneFromUnstagedArgs) => Promise<LaneSummary>;

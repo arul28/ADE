@@ -18,7 +18,6 @@ struct LaneManageSheet: View {
   @State private var deleteMode: LaneDeleteMode
   @State private var deleteRemoteName = "origin"
   @State private var deleteForce = false
-  @State private var deleteConfirmText = ""
   @State private var busyAction: String?
   @State private var errorMessage: String?
 
@@ -150,9 +149,11 @@ struct LaneManageSheet: View {
                   .font(.subheadline)
                   .foregroundStyle(ADEColor.textSecondary)
 
-                LaneTextField("Type delete \(snapshot.lane.name) to confirm", text: $deleteConfirmText)
+                Text("Hold to confirm deletion of \(snapshot.lane.name).")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
 
-                LaneActionButton(title: "Delete lane", symbol: "trash", tint: ADEColor.danger) {
+                LaneHoldToConfirmButton(title: "Delete lane", symbol: "trash", tint: ADEColor.danger) {
                   Task {
                     await performAction("delete lane") {
                       try await syncService.deleteLane(
@@ -165,9 +166,7 @@ struct LaneManageSheet: View {
                     }
                   }
                 }
-                .disabled(deleteConfirmText.trimmingCharacters(in: .whitespaces).lowercased() != "delete \(snapshot.lane.name)".lowercased())
               }
-              .padding(.top, 12)
             }
           }
         }

@@ -9,16 +9,21 @@ Architectural decisions, patterns discovered, and conventions.
 ## iOS App Structure
 - Entry: `ADEApp.swift` → creates SyncService → passes to ContentView
 - ContentView: TabView with 5 tabs (Lanes, Files, Work, PRs, Settings)
-- SyncService: @MainActor ObservableObject, WebSocket to desktop host, CRDT sync via cr-sqlite
+- SyncService: `@MainActor` `ObservableObject`, Bonjour discovery + pairing + `ws://` socket transport to the desktop host, CRDT sync via cr-sqlite
 - Database: SQLite with cr-sqlite for local caching
 - Models: RemoteModels.swift (Codable structs for all API types)
+- Host discovery: Bonjour browser maintains discovered LAN hosts, while Settings also supports manual host/port entry and QR pairing payloads with candidate addresses
+- Authentication: pairing exchanges a short-lived host code for a shared secret, stores that secret in Keychain, and persists host identity/device metadata in `HostConnectionProfile`
+- Transport security: the current implementation uses plain `ws://` on the trusted local network or saved address set; host trust is enforced by the pairing secret plus host-identity checks, not TLS or certificate pinning
 
 ## Data Flow
-1. SyncService connects to desktop ADE host via WebSocket
-2. Commands sent (e.g., `lanes.refreshSnapshots`) → responses decoded
-3. Data cached in SQLite (lane_list_snapshots, lane_detail_snapshots tables)
-4. Views observe `syncService.localStateRevision` via `.task(id:)` for reactive updates
-5. Pull-to-refresh triggers `reload(refreshRemote: true)`
+1. `SyncService` discovers or reuses the host address, opens a `ws://` socket, and sends `hello` with either bootstrap auth or paired-device auth
+2. Commands sent (for example `lanes.refreshSnapshots`) are decoded into local models, while `changeset_batch` payloads are applied into the SQLite cache
+3. Data is cached in SQLite tables including `lane_list_snapshots` and `lane_detail_snapshots`, and cached rows remain readable when the host is offline
+4. Views observe `syncService.localStateRevision` via `.task(id:)`; when live refresh fails they keep the last cached state visible and surface a user-facing error banner or reconnect CTA instead of blanking the screen
+5. Pull-to-refresh triggers `reload(refreshRemote: true)`: the remote refresh runs first, then the view reloads from SQLite; on failure the view keeps cached rows, records the localized `SyncUserFacingError`, and offers retry/reconnect UI
+6. Disconnects and send/receive failures tear down the active socket, fail pending requests, and schedule automatic reconnect with exponential backoff (1s, 2s, 4s, 8s, 16s; immediate retry for heartbeat close code `4001`)
+7. Session lifecycle is stateful: a successful `hello` refreshes the saved host profile and starts relay/hydration tasks, `auth_failed` invalidates the saved pairing, and manual disconnect stops reconnect attempts until the user reconnects or pairs again
 
 ## Design System (ADEDesignSystem.swift)
 - Colors: ADEColor (pageBackground, surfaceBackground, accent, success, warning, danger, etc.)

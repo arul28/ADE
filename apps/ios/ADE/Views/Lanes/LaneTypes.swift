@@ -46,9 +46,9 @@ enum LaneRuntimeFilter: String, CaseIterable, Identifiable {
 }
 
 enum LaneDetailSection: String, CaseIterable, Identifiable {
-  case git
-  case work
   case overview
+  case work
+  case git
   case manage
 
   var id: String { rawValue }
@@ -63,6 +63,43 @@ enum LaneDetailSection: String, CaseIterable, Identifiable {
     case .git: return "arrow.triangle.branch"
     case .work: return "terminal"
     case .manage: return "slider.horizontal.3"
+    }
+  }
+}
+
+enum LaneCreateMode: String, CaseIterable, Identifiable {
+  case primary
+  case child
+  case importBranch
+  case rescueUnstaged
+
+  var id: String { rawValue }
+
+  /// Short label for segmented pickers on phone screens.
+  var title: String {
+    switch self {
+    case .primary:
+      return "Primary"
+    case .child:
+      return "Child"
+    case .importBranch:
+      return "Import"
+    case .rescueUnstaged:
+      return "Rescue"
+    }
+  }
+
+  /// Full description for accessibility and subtitles.
+  var fullTitle: String {
+    switch self {
+    case .primary:
+      return "Primary lane"
+    case .child:
+      return "Child lane"
+    case .importBranch:
+      return "Import existing branch"
+    case .rescueUnstaged:
+      return "Rescue unstaged work"
     }
   }
 }

@@ -158,6 +158,38 @@ const MOCK_LANES: any[] = [
   makeLane("lane-a11y", "feature/accessibility", "refs/heads/feature/accessibility"),
 ];
 
+function makeLaneSnapshot(lane: any): any {
+  const runtimeBucket = lane.id === "lane-auth" || lane.id === "lane-checkout"
+    ? "running"
+    : lane.id === "lane-dashboard" || lane.id === "lane-api"
+      ? "awaiting-input"
+      : lane.id === "lane-perf"
+        ? "ended"
+        : "none";
+  const runtime = {
+    bucket: runtimeBucket,
+    runningCount: runtimeBucket === "running" ? 1 : 0,
+    awaitingInputCount: runtimeBucket === "awaiting-input" ? 1 : 0,
+    endedCount: runtimeBucket === "ended" ? 1 : 0,
+    sessionCount: runtimeBucket === "none" ? 0 : 1,
+  };
+  return {
+    lane,
+    runtime,
+    rebaseSuggestion: lane.id === "lane-dashboard" || lane.id === "lane-onboard"
+      ? { laneId: lane.id, parentLaneId: "lane-main", parentHeadSha: "mock", behindCount: 2, lastSuggestedAt: now, deferredUntil: null, dismissedAt: null, hasPr: true }
+      : null,
+    autoRebaseStatus: lane.id === "lane-perf"
+      ? { laneId: lane.id, parentLaneId: "lane-main", parentHeadSha: "mock", state: "autoRebased", updatedAt: now, conflictCount: 0, message: "Mock auto-rebase" }
+      : null,
+    conflictStatus: lane.id === "lane-dashboard" || lane.id === "lane-search"
+      ? { laneId: lane.id, status: "conflict-active", conflictCount: 2, warningCount: 0, updatedAt: now, summary: "Mock conflict" }
+      : null,
+    stateSnapshot: null,
+    adoptableAttached: lane.laneType === "attached" && lane.archivedAt == null,
+  };
+}
+
 // ── Helper for PrWithConflicts ────────────────────────────────
 function makePr(id: string, laneId: string, num: number, title: string, opts: Partial<any> = {}): any {
   return {
@@ -1095,6 +1127,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     },
     lanes: {
       list: resolved(MOCK_LANES),
+      listSnapshots: resolved(MOCK_LANES.map((lane) => makeLaneSnapshot(lane))),
       create: resolvedArg({ id: "mock", name: "mock" }),
       createChild: resolvedArg({ id: "mock", name: "mock" }),
       importBranch: resolvedArg({ id: "mock", name: "mock" }),

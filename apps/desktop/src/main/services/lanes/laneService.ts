@@ -1552,14 +1552,46 @@ export function createLaneService({
               }
             }
 
+            // Also score against defaultBaseRef (main) directly — if main is
+            // equally good or better, there is no real parent lane.
             if (bestLaneId) {
-              if (explicitParentLaneId && explicitParentLaneId !== bestLaneId) {
-                console.warn(
-                  `[laneService] importBranch: explicit parentLaneId '${explicitParentLaneId}' differs from ` +
-                  `git-detected parent '${bestLaneId}' — using detected parent`,
+              let mainScore = Infinity;
+              try {
+                const mainShaRes = await runGit(
+                  ["rev-parse", defaultBaseRef],
+                  { cwd: projectRoot, timeoutMs: 10_000 },
                 );
+                const mainSha = mainShaRes.exitCode === 0 ? mainShaRes.stdout.trim() : null;
+                if (mainSha) {
+                  const mbRes = await runGit(
+                    ["merge-base", mainSha, importedHeadSha],
+                    { cwd: projectRoot, timeoutMs: 10_000 },
+                  );
+                  if (mbRes.exitCode === 0 && mbRes.stdout.trim()) {
+                    const mb = mbRes.stdout.trim();
+                    const d1 = await runGit(["rev-list", "--count", `${mb}..${importedHeadSha}`], { cwd: projectRoot, timeoutMs: 10_000 });
+                    const d2 = await runGit(["rev-list", "--count", `${mb}..${mainSha}`], { cwd: projectRoot, timeoutMs: 10_000 });
+                    if (d1.exitCode === 0 && d2.exitCode === 0) {
+                      mainScore = parseInt(d1.stdout.trim(), 10) + parseInt(d2.stdout.trim(), 10);
+                    }
+                  }
+                }
+              } catch {
+                // If main scoring fails, fall through to lane-based parent.
               }
-              parentLaneId = bestLaneId;
+
+              if (mainScore <= bestScore) {
+                // The branch is based on main (or closer to it), no parent lane.
+                parentLaneId = null;
+              } else {
+                if (explicitParentLaneId && explicitParentLaneId !== bestLaneId) {
+                  console.warn(
+                    `[laneService] importBranch: explicit parentLaneId '${explicitParentLaneId}' differs from ` +
+                    `git-detected parent '${bestLaneId}' — using detected parent`,
+                  );
+                }
+                parentLaneId = bestLaneId;
+              }
             }
           }
         } catch (err) {

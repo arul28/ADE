@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { KeybindingsSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
+import type { KeybindingsSnapshot, LaneListSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 
 export type ThemeId = "dark" | "light";
@@ -103,6 +103,7 @@ type AppState = {
   projectHydrated: boolean;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
   showWelcome: boolean;
+  laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   runLaneId: string | null;
@@ -119,6 +120,7 @@ type AppState = {
   setProject: (project: ProjectInfo | null) => void;
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
+  setLaneSnapshots: (snapshots: LaneListSnapshot[]) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   selectLane: (laneId: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
@@ -180,6 +182,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   project: null,
   projectHydrated: false,
   showWelcome: true,
+  laneSnapshots: [],
   lanes: [],
   selectedLaneId: null,
   runLaneId: null,
@@ -196,6 +199,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setProject: (project) => set({ project }),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
+  setLaneSnapshots: (laneSnapshots) => set({ laneSnapshots }),
   setLanes: (lanes) => set({ lanes }),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
   setLaneInspectorTab: (laneId, tab) =>
@@ -275,10 +279,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   refreshLanes: async (options) => {
     const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
-    const lanes = await window.ade.lanes.list({
+    const laneSnapshots = await window.ade.lanes.listSnapshots({
       includeArchived: false,
       includeStatus: options?.includeStatus ?? true,
     });
+    const lanes = laneSnapshots.map((snapshot) => snapshot.lane);
     const projectKey = normalizeProjectKey(get().project?.rootPath);
     if (projectKey !== requestedProjectKey) {
       return;
@@ -305,6 +310,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       return {
+        laneSnapshots,
         lanes,
         selectedLaneId: nextSelected,
         runLaneId: nextRunLane,
@@ -345,6 +351,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       project,
       projectHydrated: true,
       showWelcome: false,
+      laneSnapshots: [],
       lanes: [],
       selectedLaneId: null,
       runLaneId: null,
@@ -367,6 +374,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       project,
       projectHydrated: true,
       showWelcome: false,
+      laneSnapshots: [],
       lanes: [],
       selectedLaneId: null,
       runLaneId: null,
@@ -388,6 +396,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       project: null,
       projectHydrated: true,
       showWelcome: true,
+      laneSnapshots: [],
       lanes: [],
       selectedLaneId: null,
       runLaneId: null,

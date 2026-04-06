@@ -236,7 +236,7 @@ struct LaneDetailHeaderCard: View {
       pieces.append("\(snapshot.lane.status.behind) behind")
     }
     if snapshot.lane.childCount > 0 {
-      pieces.append("\(snapshot.lane.childCount) children")
+      pieces.append("\(snapshot.lane.childCount) child\(snapshot.lane.childCount == 1 ? "" : "ren")")
     }
     if !linkedPullRequests.isEmpty {
       pieces.append("\(linkedPullRequests.count) linked pull request\(linkedPullRequests.count == 1 ? "" : "s")")

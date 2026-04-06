@@ -11,6 +11,7 @@ struct LaneDiffScreen: View {
   @State private var diff: FileDiff?
   @State private var editedText = ""
   @State private var errorMessage: String?
+  @State private var isSaving = false
   @State private var side = "modified"
 
   var body: some View {
@@ -112,16 +113,17 @@ struct LaneDiffScreen: View {
         }
         ToolbarItem(placement: .confirmationAction) {
           if request.mode == "unstaged", let path = request.path, side == "modified" {
-            Button("Save") {
-              Task {
-                do {
-                  try await syncService.writeLaneFileText(laneId: request.laneId, path: path, text: editedText)
-                  try await load()
-                } catch {
-                  errorMessage = error.localizedDescription
-                }
+            Button {
+              Task { await saveEditedFile(path: path) }
+            } label: {
+              if isSaving {
+                ProgressView()
+                  .tint(ADEColor.accent)
+              } else {
+                Text("Save")
               }
             }
+            .disabled(isSaving)
           }
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -130,7 +132,10 @@ struct LaneDiffScreen: View {
               Task {
                 do {
                   let workspaces = try await syncService.listWorkspaces()
-                  guard let workspace = workspaces.first(where: { $0.laneId == request.laneId }) else { return }
+                  guard let workspace = workspaces.first(where: { $0.laneId == request.laneId }) else {
+                    errorMessage = "Workspace not found for lane \(request.laneId)."
+                    return
+                  }
                   syncService.requestedFilesNavigation = FilesNavigationRequest(
                     workspaceId: workspace.id,
                     relativePath: path
@@ -166,5 +171,19 @@ struct LaneDiffScreen: View {
     )
     diff = loaded
     editedText = loaded.modified.text
+  }
+
+  @MainActor
+  private func saveEditedFile(path: String) async {
+    isSaving = true
+    defer { isSaving = false }
+
+    do {
+      try await syncService.writeLaneFileText(laneId: request.laneId, path: path, text: editedText)
+      try await load()
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
   }
 }

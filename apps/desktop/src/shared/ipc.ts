@@ -27,6 +27,7 @@ export const IPC = {
   onboardingSetDismissed: "ade.onboarding.setDismissed",
   onboardingComplete: "ade.onboarding.complete",
   lanesList: "ade.lanes.list",
+  lanesListSnapshots: "ade.lanes.listSnapshots",
   lanesCreate: "ade.lanes.create",
   lanesCreateChild: "ade.lanes.createChild",
   lanesCreateFromUnstaged: "ade.lanes.createFromUnstaged",

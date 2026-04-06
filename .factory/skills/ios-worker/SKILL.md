@@ -62,11 +62,16 @@ When creating new Swift files, you MUST add them to the Xcode project:
 Run these commands and fix any issues:
 
 ```bash
+# Pick an available simulator pair on the current machine first.
+xcrun simctl list runtimes
+xcrun simctl list devices available
+DESTINATION="platform=iOS Simulator,name=<available iPhone>,OS=<available iOS runtime>"
+
 # Build
-xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
+xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination "$DESTINATION" -quiet
 
 # Test
-xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
+xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination "$DESTINATION" -quiet
 
 # Check file sizes (no file should exceed 500 lines)
 find apps/ios/ADE -name '*.swift' -exec wc -l {} + | sort -rn | head -20

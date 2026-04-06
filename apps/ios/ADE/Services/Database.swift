@@ -23,7 +23,11 @@ final class DatabaseService {
     let columns: [SyncColumnInfo]
 
     var primaryKeyColumn: String? {
-      columns.sorted { $0.pkIndex < $1.pkIndex }.first(where: { $0.pkIndex > 0 })?.name
+      primaryKeyColumns.first
+    }
+
+    var primaryKeyColumns: [String] {
+      columns.filter { $0.pkIndex > 0 }.sorted { $0.pkIndex < $1.pkIndex }.map(\.name)
     }
   }
 
@@ -1031,6 +1035,10 @@ final class DatabaseService {
   }
 
   func fetchPullRequestListItems() -> [PullRequestListItem] {
+    fetchPullRequestListItems(forLane: nil)
+  }
+
+  func fetchPullRequestListItems(forLane laneId: String?) -> [PullRequestListItem] {
     let sql = """
       select pr.id,
              pr.lane_id,
@@ -1069,10 +1077,19 @@ final class DatabaseService {
            group by group_id
         ) group_counts on group_counts.group_id = gm.group_id
         left join integration_proposals ip on ip.linked_pr_id = pr.id
-       order by pr.updated_at desc
     """
+    let filteredSQL: String
+    if laneId == nil {
+      filteredSQL = sql + " order by pr.updated_at desc"
+    } else {
+      filteredSQL = sql + " where pr.lane_id = ? order by pr.updated_at desc"
+    }
 
-    return query(sql) { statement in
+    let bindFn: ((OpaquePointer) throws -> Void)? = laneId.map { id in
+      { statement in try self.bindText(id, to: statement, index: 1) }
+    }
+
+    return query(filteredSQL, bind: bindFn) { statement in
       let row = PullRequestListItemRow(
         id: stringValue(statement, index: 0) ?? "",
         laneId: stringValue(statement, index: 1) ?? "",
@@ -2220,10 +2237,21 @@ final class DatabaseService {
             let primaryKeyColumn = tableInfo.primaryKeyColumn
       else { continue }
 
-      let existingRow = try fetchRow(in: tableInfo, pk: first.pk)
+      let pkColumns = tableInfo.primaryKeyColumns
+      let decodedPkValues: [SyncScalarValue]
+      if pkColumns.count == 1 {
+        decodedPkValues = [decodeCrsqlPk(first.pk)]
+      } else if let multi = decodeCrsqlPkColumns(first.pk), multi.count == pkColumns.count {
+        decodedPkValues = multi
+      } else {
+        continue // can't decode pk — skip
+      }
+      let pkPairs = Array(zip(pkColumns, decodedPkValues))
+
+      let existingRow = try fetchRow(in: tableInfo, pkPairs: pkPairs)
       if rowChangesRepresentDeletedRow(rowChanges, in: tableInfo, primaryKeyColumn: primaryKeyColumn) {
         if existingRow != nil {
-          try deleteRow(in: tableInfo, pk: first.pk)
+          try deleteRow(in: tableInfo, pkPairs: pkPairs)
         }
         continue
       }
@@ -2238,21 +2266,25 @@ final class DatabaseService {
           continue
         }
         if finalRow == nil {
-          finalRow = [primaryKeyColumn: change.pk]
+          var seed: [String: SyncScalarValue] = [:]
+          for (col, val) in pkPairs {
+            seed[col] = val
+          }
+          finalRow = seed
         }
         finalRow?[change.cid] = change.val
       }
 
       if finalRow == nil {
         if existingRow != nil {
-          try deleteRow(in: tableInfo, pk: first.pk)
+          try deleteRow(in: tableInfo, pkPairs: pkPairs)
         }
         continue
       }
 
       if existingRow == nil || sawDelete {
         if existingRow != nil {
-          try deleteRow(in: tableInfo, pk: first.pk)
+          try deleteRow(in: tableInfo, pkPairs: pkPairs)
         }
         try insertRow(finalRow!, in: tableInfo)
       } else {
@@ -2277,6 +2309,82 @@ final class DatabaseService {
 
   private func isDeleteColumnId(_ cid: String) -> Bool {
     cid == localDeleteColumnId || cid == legacyDeleteColumnId
+  }
+
+  /// Decode a cr-sqlite packed primary key blob into actual column values.
+  /// Format: [num_columns: 1 byte] then per column [type_tag: 1 byte] [data...].
+  /// For text (type 0x0b): [0x0b] [length_byte] [utf8_bytes].
+  /// For int types: size determined by type tag per SQLite serial type spec.
+  /// Returns an array of decoded values, one per pk column.
+  private func decodeCrsqlPkColumns(_ pk: SyncScalarValue) -> [SyncScalarValue]? {
+    guard case .bytes(let bytesValue) = pk,
+          let data = Data(base64Encoded: bytesValue.base64),
+          data.count >= 3
+    else { return nil }
+
+    let numCols = Int(data[0])
+    guard numCols > 0 else { return nil }
+
+    var pos = 1
+    var values: [SyncScalarValue] = []
+
+    for _ in 0..<numCols {
+      guard pos < data.count else { return nil }
+      let typeTag = data[pos]
+      pos += 1
+
+      switch typeTag {
+      case 0x0b: // text: [length_byte] [utf8_bytes]
+        guard pos < data.count else { return nil }
+        let length = Int(data[pos])
+        pos += 1
+        let end = pos + length
+        guard end <= data.count else { return nil }
+        if let text = String(data: data[pos..<end], encoding: .utf8) {
+          values.append(.string(text))
+        } else {
+          return nil
+        }
+        pos = end
+
+      case 0x01: // 1-byte signed int
+        guard pos < data.count else { return nil }
+        values.append(.number(Double(Int8(bitPattern: data[pos]))))
+        pos += 1
+      case 0x02: // 2-byte BE signed int
+        guard pos + 2 <= data.count else { return nil }
+        let val = Int16(data[pos]) << 8 | Int16(data[pos + 1])
+        values.append(.number(Double(val)))
+        pos += 2
+      case 0x04: // 4-byte BE signed int
+        guard pos + 4 <= data.count else { return nil }
+        var val: Int32 = 0
+        for i in 0..<4 { val = val << 8 | Int32(data[pos + i]) }
+        values.append(.number(Double(val)))
+        pos += 4
+      case 0x06: // 8-byte BE signed int
+        guard pos + 8 <= data.count else { return nil }
+        var val: Int64 = 0
+        for i in 0..<8 { val = val << 8 | Int64(data[pos + i]) }
+        values.append(.number(Double(val)))
+        pos += 8
+      case 0x08: // integer constant 0
+        values.append(.number(0))
+      case 0x09: // integer constant 1
+        values.append(.number(1))
+
+      default:
+        return nil // unknown type — bail
+      }
+    }
+
+    return values
+  }
+
+  /// Convenience: decode single-column pk to a single value.
+  private func decodeCrsqlPk(_ pk: SyncScalarValue) -> SyncScalarValue {
+    guard let cols = decodeCrsqlPkColumns(pk), cols.count == 1 else { return pk }
+    return cols[0]
   }
 
   private func rowChangesRepresentDeletedRow(
@@ -2368,16 +2476,23 @@ final class DatabaseService {
   }
 
   private func fetchRow(in tableInfo: SyncTableInfo, pk: SyncScalarValue) throws -> [String: SyncScalarValue]? {
-    guard let primaryKeyColumn = tableInfo.primaryKeyColumn else { return nil }
+    try fetchRow(in: tableInfo, pkPairs: tableInfo.primaryKeyColumns.map { ($0, pk) }.prefix(1).map { $0 })
+  }
+
+  private func fetchRow(in tableInfo: SyncTableInfo, pkPairs: [(String, SyncScalarValue)]) throws -> [String: SyncScalarValue]? {
+    guard !pkPairs.isEmpty else { return nil }
     let selectColumns = tableInfo.columns.map { quoteIdentifier($0.name) }.joined(separator: ", ")
+    let whereClause = pkPairs.map { "\(quoteIdentifier($0.0)) = ?" }.joined(separator: " and ")
     let sql = """
       select \(selectColumns)
         from \(quoteIdentifier(tableInfo.name))
-       where \(quoteIdentifier(primaryKeyColumn)) = ?
+       where \(whereClause)
        limit 1
     """
     return try querySingleThrowing(sql, bind: { [self] statement in
-      try self.bindScalar(pk, to: statement, index: 1)
+      for (i, pair) in pkPairs.enumerated() {
+        try self.bindScalar(pair.1, to: statement, index: Int32(i + 1))
+      }
     }) { statement in
       var row: [String: SyncScalarValue] = [:]
       for (index, column) in tableInfo.columns.enumerated() {
@@ -2402,30 +2517,44 @@ final class DatabaseService {
   }
 
   private func updateRow(_ row: [String: SyncScalarValue], in tableInfo: SyncTableInfo) throws {
-    guard let primaryKeyColumn = tableInfo.primaryKeyColumn else { return }
-    let orderedColumns = tableInfo.columns.map(\.name).filter { $0 != primaryKeyColumn && row[$0] != nil }
+    let pkCols = Set(tableInfo.primaryKeyColumns)
+    let orderedColumns = tableInfo.columns.map(\.name).filter { !pkCols.contains($0) && row[$0] != nil }
+    guard !orderedColumns.isEmpty else { return }
     let assignments = orderedColumns.map { "\(quoteIdentifier($0)) = ?" }.joined(separator: ", ")
+    let whereClause = tableInfo.primaryKeyColumns.map { "\(quoteIdentifier($0)) = ?" }.joined(separator: " and ")
     let sql = """
       update \(quoteIdentifier(tableInfo.name))
          set \(assignments)
-       where \(quoteIdentifier(primaryKeyColumn)) = ?
+       where \(whereClause)
     """
     _ = try execute(sql) { statement in
-      for (offset, column) in orderedColumns.enumerated() {
-        try bindScalar(row[column] ?? .null, to: statement, index: Int32(offset + 1))
+      var idx: Int32 = 1
+      for column in orderedColumns {
+        try bindScalar(row[column] ?? .null, to: statement, index: idx)
+        idx += 1
       }
-      try bindScalar(row[primaryKeyColumn] ?? .null, to: statement, index: Int32(orderedColumns.count + 1))
+      for pkCol in tableInfo.primaryKeyColumns {
+        try bindScalar(row[pkCol] ?? .null, to: statement, index: idx)
+        idx += 1
+      }
     }
   }
 
   private func deleteRow(in tableInfo: SyncTableInfo, pk: SyncScalarValue) throws {
-    guard let primaryKeyColumn = tableInfo.primaryKeyColumn else { return }
+    try deleteRow(in: tableInfo, pkPairs: tableInfo.primaryKeyColumns.map { ($0, pk) }.prefix(1).map { $0 })
+  }
+
+  private func deleteRow(in tableInfo: SyncTableInfo, pkPairs: [(String, SyncScalarValue)]) throws {
+    guard !pkPairs.isEmpty else { return }
+    let whereClause = pkPairs.map { "\(quoteIdentifier($0.0)) = ?" }.joined(separator: " and ")
     let sql = """
       delete from \(quoteIdentifier(tableInfo.name))
-       where \(quoteIdentifier(primaryKeyColumn)) = ?
+       where \(whereClause)
     """
     _ = try execute(sql) { statement in
-      try bindScalar(pk, to: statement, index: 1)
+      for (i, pair) in pkPairs.enumerated() {
+        try bindScalar(pair.1, to: statement, index: Int32(i + 1))
+      }
     }
   }
 

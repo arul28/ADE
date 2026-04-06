@@ -15,34 +15,45 @@ struct LaneDetailScreen: View {
   @State var errorMessage: String?
   @State var busyAction: String?
   @State var selectedDiffRequest: LaneDiffRequest?
-  @State var showStackGraph = false
-  @State var managePresented = false
-  @State var chatLaunchTarget: LaneChatLaunchTarget?
-  @State var lanePullRequests: [PullRequestListItem] = []
-  @State var headerExpanded = true
-  @State var presentManageOnLoad = false
+  @State private var showStackGraph = false
+  @State private var managePresented = false
+  @State private var chatLaunchTarget: LaneChatLaunchTarget?
+  @State private var lanePullRequests: [PullRequestListItem] = []
+  @State private var headerExpanded = true
+  @State private var selectedSection: LaneDetailSection
   @State var commitMessage = ""
   @State var amendCommit = false
   @State var stashMessage = ""
-  @State var confirmForcePush = false
   @State var confirmDiscardFile: FileChange?
+  @State private var filesWorkspaceId: String?
 
   init(
     laneId: String,
     initialSnapshot: LaneListSnapshot,
     allLaneSnapshots: [LaneListSnapshot],
-    initialSection: LaneDetailSection = .git,
+    initialSection: LaneDetailSection = .overview,
     onRefreshRoot: @escaping @MainActor () async -> Void
   ) {
     self.laneId = laneId
     self.initialSnapshot = initialSnapshot
     self.allLaneSnapshots = allLaneSnapshots
     self.onRefreshRoot = onRefreshRoot
-    _presentManageOnLoad = State(initialValue: initialSection == .manage)
+    _selectedSection = State(initialValue: initialSection)
   }
 
   var currentSnapshot: LaneListSnapshot {
-    allLaneSnapshots.first(where: { $0.lane.id == laneId }) ?? initialSnapshot
+    if let detail {
+      return LaneListSnapshot(
+        lane: detail.lane,
+        runtime: detail.runtime,
+        rebaseSuggestion: detail.rebaseSuggestion,
+        autoRebaseStatus: detail.autoRebaseStatus,
+        conflictStatus: detail.conflictStatus,
+        stateSnapshot: detail.stateSnapshot,
+        adoptableAttached: detail.lane.laneType == "attached" && detail.lane.archivedAt == nil
+      )
+    }
+    return allLaneSnapshots.first(where: { $0.lane.id == laneId }) ?? initialSnapshot
   }
 
   var body: some View {
@@ -80,16 +91,24 @@ struct LaneDetailScreen: View {
         }
 
         detailHeader
-        gitSections
+        sectionContent
       }
       .padding(.horizontal, 16)
       .padding(.vertical, 8)
     }
     .adeScreenBackground()
     .adeNavigationGlass()
+    .scrollBounceBehavior(.basedOnSize)
     .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
     .navigationBarTitleDisplayMode(.inline)
+    .safeAreaInset(edge: .top, spacing: 0) {
+      stickySectionBar
+    }
     .task { await loadDetail(refreshRemote: true) }
+    .task(id: syncService.localStateRevision) {
+      guard busyAction == nil else { return }
+      await loadDetail(refreshRemote: false)
+    }
     .refreshable { await loadDetail(refreshRemote: true) }
     .sheet(item: $selectedDiffRequest) { request in
       LaneDiffScreen(request: request)
@@ -100,15 +119,8 @@ struct LaneDetailScreen: View {
     .sheet(item: $chatLaunchTarget) { target in
       LaneChatLaunchSheet(laneId: laneId, provider: target.provider) { _ in
         await loadDetail(refreshRemote: true)
+        await onRefreshRoot()
       }
-    }
-    .alert("Force push?", isPresented: $confirmForcePush) {
-      Button("Force push", role: .destructive) {
-        Task { await performAction("force push") { try await syncService.pushGit(laneId: laneId, forceWithLease: true) } }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("This rewrites remote history. Other collaborators may lose work.")
     }
     .alert("Discard changes?", isPresented: Binding(
       get: { confirmDiscardFile != nil },
@@ -116,7 +128,11 @@ struct LaneDetailScreen: View {
     )) {
       Button("Discard", role: .destructive) {
         if let file = confirmDiscardFile {
-          Task { await performAction("discard file") { try await syncService.discardFile(laneId: laneId, path: file.path) } }
+          Task {
+            await performAction("discard file", refreshRoot: true) {
+              try await syncService.discardFile(laneId: laneId, path: file.path)
+            }
+          }
         }
       }
       Button("Cancel", role: .cancel) {}
@@ -129,11 +145,10 @@ struct LaneDetailScreen: View {
         allLaneSnapshots: allLaneSnapshots
       ) {
         await loadDetail(refreshRemote: true)
+        await onRefreshRoot()
       }
     }
   }
-
-  // MARK: - Detail helpers
 
   @ViewBuilder
   var detailHeader: some View {
@@ -147,69 +162,479 @@ struct LaneDetailScreen: View {
           headerExpanded.toggle()
         }
       },
-      onManageTapped: { managePresented = true },
+      onManageTapped: {
+        selectedSection = .manage
+        managePresented = true
+      },
       onStackTapped: { showStackGraph = true },
       onOpenLinkedPullRequest: { pr in
-        openPullRequest(pr.id)
+        openPullRequest(pr)
       }
     )
   }
 
-  var connectionBanner: ADENoticeCard? {
-    guard !canRunLiveActions else { return nil }
-    return ADENoticeCard(
-      title: "Offline — cached data",
-      message: "Reconnect to refresh git state and lane actions.",
-      icon: "icloud.slash",
-      tint: ADEColor.warning,
-      actionTitle: syncService.activeHostProfile == nil ? "Pair again" : "Reconnect",
-      action: {
-        if syncService.activeHostProfile == nil {
-          syncService.settingsPresented = true
-        } else {
-          Task {
-            await syncService.reconnectIfPossible()
-            await loadDetail(refreshRemote: true)
+  @ViewBuilder
+  var sectionPicker: some View {
+    Picker("Lane section", selection: $selectedSection) {
+      ForEach(LaneDetailSection.allCases) { section in
+        Label(section.title, systemImage: section.symbol)
+          .labelStyle(.titleOnly)
+          .tag(section)
+          .accessibilityLabel("\(section.title) section")
+      }
+    }
+    .pickerStyle(.segmented)
+  }
+
+  @ViewBuilder
+  var stickySectionBar: some View {
+    VStack(spacing: 0) {
+      sectionPicker
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+    }
+    .background(.ultraThinMaterial)
+    .overlay(alignment: .bottom) {
+      Rectangle()
+        .fill(ADEColor.border.opacity(0.16))
+        .frame(height: 0.5)
+    }
+  }
+
+  @ViewBuilder
+  var sectionContent: some View {
+    switch selectedSection {
+    case .overview:
+      overviewSection
+    case .work:
+      workSection
+    case .git:
+      gitSections
+    case .manage:
+      manageSection
+    }
+  }
+
+  @ViewBuilder
+  var overviewSection: some View {
+    VStack(spacing: 14) {
+      GlassSection(title: "Overview", subtitle: overviewSubtitle) {
+        VStack(alignment: .leading, spacing: 12) {
+          HStack(alignment: .top, spacing: 10) {
+            LaneTypeBadge(text: statusInfo.label, tint: statusInfo.tint)
+            Spacer(minLength: 8)
+            Text(currentSnapshot.lane.branchRef)
+              .font(.system(.caption, design: .monospaced))
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(1)
+          }
+
+          LaneInfoRow(label: "Host", value: canRunLiveActions ? "Live connection" : "Offline cached")
+          LaneInfoRow(label: "Lane type", value: currentSnapshot.lane.laneType.capitalized)
+          LaneInfoRow(label: "Path", value: currentSnapshot.lane.worktreePath, isMonospaced: true)
+        }
+      }
+
+      GlassSection(title: "Quick actions") {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            LaneActionButton(title: "Files", symbol: "folder", tint: ADEColor.accent) {
+              Task { await openFiles() }
+            }
+            LaneActionButton(title: "Stack", symbol: "square.stack.3d.up") {
+              showStackGraph = true
+            }
+            LaneActionButton(title: "PRs", symbol: "arrow.triangle.pull", tint: ADEColor.accent) {
+              openFirstPullRequest()
+            }
+            .disabled(lanePullRequests.isEmpty)
+            LaneActionButton(title: "Manage", symbol: "slider.horizontal.3") {
+              selectedSection = .manage
+              managePresented = true
+            }
           }
         }
       }
-    )
+
+      if let detail {
+        if !detail.stackChain.isEmpty {
+          GlassSection(title: "Stack chain") {
+            VStack(alignment: .leading, spacing: 8) {
+              ForEach(detail.stackChain.prefix(5)) { item in
+                HStack(spacing: 8) {
+                  Circle()
+                    .fill(item.laneId == laneId ? ADEColor.accent : runtimeTint(bucket: detail.runtime.bucket))
+                    .frame(width: 6, height: 6)
+                    .padding(.leading, CGFloat(item.depth) * 8)
+                  VStack(alignment: .leading, spacing: 2) {
+                    Text(item.laneName)
+                      .font(.caption.weight(.medium))
+                      .foregroundStyle(ADEColor.textPrimary)
+                    Text(item.branchRef)
+                      .font(.caption2)
+                      .foregroundStyle(ADEColor.textSecondary)
+                      .lineLimit(1)
+                  }
+                  Spacer(minLength: 8)
+                }
+              }
+            }
+          }
+        }
+
+        if let suggestion = detail.rebaseSuggestion, suggestion.dismissedAt == nil {
+          GlassSection(title: "Rebase attention") {
+            VStack(alignment: .leading, spacing: 12) {
+              Text("Behind parent by \(suggestion.behindCount) commit\(suggestion.behindCount == 1 ? "" : "s").")
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+              HStack(spacing: 8) {
+                LaneActionButton(title: "Rebase", symbol: "arrow.triangle.2.circlepath", tint: ADEColor.warning) {
+                  Task {
+                    await performAction("rebase lane") {
+                      try await syncService.startLaneRebase(laneId: laneId)
+                    }
+                  }
+                }
+                LaneActionButton(title: "Defer", symbol: "clock.arrow.circlepath") {
+                  Task {
+                    await performAction("defer rebase") {
+                      try await syncService.deferRebaseSuggestion(laneId: laneId)
+                    }
+                  }
+                }
+                LaneActionButton(title: "Dismiss", symbol: "xmark.circle", tint: ADEColor.textSecondary) {
+                  Task {
+                    await performAction("dismiss rebase") {
+                      try await syncService.dismissRebaseSuggestion(laneId: laneId)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if let conflictStatus = detail.conflictStatus, conflictStatus.status == "conflict-active" {
+          GlassSection(title: "Conflict attention") {
+            VStack(alignment: .leading, spacing: 12) {
+              Text(conflictSummary(conflictStatus))
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+              HStack(spacing: 8) {
+                if let conflictState = detail.conflictState, conflictState.inProgress {
+                  LaneActionButton(title: "Continue", symbol: "play.fill", tint: ADEColor.accent) {
+                    Task {
+                      await performAction("rebase continue") {
+                        try await syncService.rebaseContinueGit(laneId: laneId)
+                      }
+                    }
+                  }
+                  .disabled(!conflictState.canContinue)
+                }
+                if !lanePullRequests.isEmpty {
+                  LaneActionButton(title: "Review in PRs", symbol: "arrow.triangle.pull", tint: ADEColor.accent) {
+                    openFirstPullRequest()
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if !lanePullRequests.isEmpty {
+          GlassSection(title: "Linked pull requests") {
+            VStack(alignment: .leading, spacing: 12) {
+              ForEach(lanePullRequests) { pr in
+                Button {
+                  openPullRequest(pr)
+                } label: {
+                  HStack(alignment: .top, spacing: 10) {
+                    LaneTypeBadge(text: pr.state.uppercased(), tint: lanePullRequestTint(pr.state))
+                    VStack(alignment: .leading, spacing: 3) {
+                      Text(pr.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ADEColor.textPrimary)
+                        .lineLimit(2)
+                      Text("\(pr.repoOwner)/\(pr.repoName) #\(pr.githubPrNumber)")
+                        .font(.caption2)
+                        .foregroundStyle(ADEColor.textSecondary)
+                    }
+                    Spacer(minLength: 0)
+                  }
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+              }
+            }
+          }
+        }
+
+        if let envInitProgress = detail.envInitProgress {
+          GlassSection(title: "Environment", subtitle: envInitProgress.overallStatus.capitalized) {
+            VStack(alignment: .leading, spacing: 8) {
+              ForEach(envInitProgress.steps) { step in
+                HStack(spacing: 10) {
+                  Text(step.label)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textPrimary)
+                  Spacer()
+                  Text(step.status)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  var workSection: some View {
+    VStack(spacing: 14) {
+      GlassSection(title: "Launch", subtitle: "Work stays lane-scoped on this phone.") {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            LaneActionButton(title: "Files", symbol: "folder", tint: ADEColor.accent) {
+              Task { await openFiles() }
+            }
+            LaneActionButton(title: "Shell", symbol: "terminal") {
+              Task {
+                await performAction("launch shell") {
+                  try await syncService.runQuickCommand(laneId: laneId, title: "Shell", toolType: "shell", tracked: true)
+                }
+              }
+            }
+            LaneActionButton(title: "Codex", symbol: "sparkle", tint: ADEColor.accent) {
+              chatLaunchTarget = LaneChatLaunchTarget(provider: "codex")
+            }
+            LaneActionButton(title: "Claude", symbol: "brain.head.profile", tint: ADEColor.warning) {
+              chatLaunchTarget = LaneChatLaunchTarget(provider: "claude")
+            }
+          }
+        }
+      }
+
+      if !sessions.isEmpty {
+        GlassSection(title: "Terminal sessions") {
+          VStack(alignment: .leading, spacing: 12) {
+            ForEach(sessions) { session in
+              NavigationLink {
+                LaneSessionTranscriptView(session: session)
+              } label: {
+                LaneSessionCard(session: session)
+              }
+              .buttonStyle(.plain)
+            }
+          }
+        }
+      }
+
+      if !chatSessions.isEmpty {
+        GlassSection(title: "Chat sessions") {
+          VStack(alignment: .leading, spacing: 12) {
+            ForEach(chatSessions) { chat in
+              NavigationLink {
+                LaneChatSessionView(summary: chat)
+              } label: {
+                LaneChatCard(chat: chat)
+              }
+              .buttonStyle(.plain)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  var manageSection: some View {
+    VStack(spacing: 14) {
+      GlassSection(title: "Manage", subtitle: "Use the manage sheet for rename, appearance, reparenting, and delete.") {
+        VStack(alignment: .leading, spacing: 12) {
+          LaneInfoRow(label: "Name", value: currentSnapshot.lane.name)
+          LaneInfoRow(label: "Branch", value: currentSnapshot.lane.branchRef, isMonospaced: true)
+          LaneInfoRow(label: "Path", value: currentSnapshot.lane.worktreePath, isMonospaced: true)
+          LaneInfoRow(label: "Type", value: currentSnapshot.lane.laneType.capitalized)
+          LaneInfoRow(label: "State", value: currentSnapshot.lane.archivedAt == nil ? "Active" : "Archived")
+          if currentSnapshot.adoptableAttached {
+            LaneInfoRow(label: "Attach state", value: "Can adopt attached worktree")
+          }
+          if !currentSnapshot.lane.tags.isEmpty {
+            LaneInfoRow(label: "Tags", value: currentSnapshot.lane.tags.joined(separator: ", "))
+          }
+        }
+      }
+
+      GlassSection(title: "Actions") {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            LaneActionButton(title: "Open manage sheet", symbol: "slider.horizontal.3", tint: ADEColor.accent) {
+              managePresented = true
+            }
+            if currentSnapshot.lane.archivedAt == nil {
+              LaneActionButton(title: "Archive", symbol: "archivebox", tint: ADEColor.warning) {
+                Task {
+                  await performAction("archive lane") {
+                    try await syncService.archiveLane(laneId)
+                  }
+                }
+              }
+            } else {
+              LaneActionButton(title: "Restore", symbol: "tray.and.arrow.up", tint: ADEColor.accent) {
+                Task {
+                  await performAction("restore lane") {
+                    try await syncService.unarchiveLane(laneId)
+                  }
+                }
+              }
+            }
+            if currentSnapshot.adoptableAttached {
+              LaneActionButton(title: "Adopt attached", symbol: "link.circle", tint: ADEColor.accent) {
+                Task {
+                  await performAction("adopt attached lane") {
+                    _ = try await syncService.adoptAttachedLane(laneId)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private var overviewSubtitle: String? {
+    guard let detail else { return currentSnapshot.lane.description }
+    if let conflictStatus = detail.conflictStatus, conflictStatus.status == "conflict-active" {
+      return conflictSummary(conflictStatus)
+    }
+    if let autoRebaseStatus = detail.autoRebaseStatus, autoRebaseStatus.state != "autoRebased" {
+      return autoRebaseStatus.message ?? "Rebase attention required."
+    }
+    if let rebaseSuggestion = detail.rebaseSuggestion {
+      return "Behind parent by \(rebaseSuggestion.behindCount) commit\(rebaseSuggestion.behindCount == 1 ? "" : "s")."
+    }
+    return currentSnapshot.lane.description
+  }
+
+  private var sessions: [TerminalSessionSummary] {
+    detail?.sessions ?? []
+  }
+
+  private var chatSessions: [AgentChatSessionSummary] {
+    detail?.chatSessions ?? []
   }
 
   var canRunLiveActions: Bool {
     syncService.connectionState == .connected || syncService.connectionState == .syncing
   }
 
-  @MainActor
-  func loadDetail(refreshRemote: Bool) async {
-    let shouldPresentManageSheet = presentManageOnLoad && !managePresented
-    do {
-      if let cached = try await syncService.fetchLaneDetail(laneId: laneId) {
-        detail = cached
-      }
-      if refreshRemote {
-        let refreshed = try await syncService.refreshLaneDetail(laneId: laneId)
-        detail = refreshed
-        await onRefreshRoot()
-      }
-      lanePullRequests = (try? await syncService.fetchPullRequestListItems().filter { $0.laneId == laneId }) ?? []
-      errorMessage = nil
-    } catch {
-      errorMessage = error.localizedDescription
+  private var statusInfo: (label: String, tint: Color) {
+    if let conflictStatus = detail?.conflictStatus, conflictStatus.status == "conflict-active" {
+      return ("Conflict", ADEColor.danger)
     }
-    if shouldPresentManageSheet {
-      managePresented = true
-      presentManageOnLoad = false
+    if let autoRebaseStatus = detail?.autoRebaseStatus, autoRebaseStatus.state != "autoRebased" {
+      return ("Rebase attention", ADEColor.warning)
+    }
+    if currentSnapshot.lane.archivedAt != nil {
+      return ("Archived", ADEColor.textMuted)
+    }
+    if currentSnapshot.lane.status.dirty {
+      return ("Dirty", ADEColor.warning)
+    }
+    if currentSnapshot.runtime.bucket == "running" {
+      return ("Running", ADEColor.success)
+    }
+    if currentSnapshot.runtime.bucket == "awaiting-input" {
+      return ("Awaiting input", ADEColor.warning)
+    }
+    return ("Clean", ADEColor.success)
+  }
+
+  private var connectionBanner: ADENoticeCard? {
+    let lanesStatus = syncService.status(for: .lanes)
+    switch syncService.connectionState {
+    case .connected:
+      if lanesStatus.phase == .ready {
+        return nil // Suppress banner when everything is nominal
+      }
+      return ADENoticeCard(
+        title: "Hydrating",
+        message: "Lane data is still loading from the host.",
+        icon: "arrow.trianglehead.2.clockwise.rotate.90",
+        tint: ADEColor.warning,
+        actionTitle: nil,
+        action: nil
+      )
+    case .syncing, .connecting:
+      return ADENoticeCard(
+        title: "Syncing",
+        message: "Actions will run when sync settles.",
+        icon: "arrow.trianglehead.2.clockwise.rotate.90",
+        tint: ADEColor.warning,
+        actionTitle: nil,
+        action: nil
+      )
+    case .disconnected, .error:
+      return ADENoticeCard(
+        title: "Offline",
+        message: "Showing last cached lane state.",
+        icon: "icloud.slash",
+        tint: ADEColor.textSecondary,
+        actionTitle: nil,
+        action: nil
+      )
     }
   }
 
   @MainActor
-  func performAction(_ label: String, operation: () async throws -> Void) async {
+  private func loadDetail(refreshRemote: Bool) async {
+    do {
+      async let cachedDetailTask = syncService.fetchLaneDetail(laneId: laneId)
+      async let pullRequestsTask = syncService.fetchPullRequestListItems(laneId: laneId)
+
+      if let cachedDetail = try await cachedDetailTask {
+        if detail != cachedDetail {
+          detail = cachedDetail
+        }
+      }
+
+      let cachedPullRequests = try await pullRequestsTask
+      if lanePullRequests != cachedPullRequests {
+        lanePullRequests = cachedPullRequests
+      }
+
+      if refreshRemote, canRunLiveActions {
+        let refreshedDetail = try await syncService.refreshLaneDetail(laneId: laneId)
+        if detail != refreshedDetail {
+          detail = refreshedDetail
+        }
+        let refreshedPullRequests = try await syncService.fetchPullRequestListItems(laneId: laneId)
+        if lanePullRequests != refreshedPullRequests {
+          lanePullRequests = refreshedPullRequests
+        }
+      }
+
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func performAction(_ label: String, refreshRoot: Bool = true, operation: () async throws -> Void) async {
     do {
       busyAction = label
+      errorMessage = nil
       try await operation()
       await loadDetail(refreshRemote: true)
-      errorMessage = nil
+      if refreshRoot {
+        await onRefreshRoot()
+      }
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -233,23 +658,36 @@ struct LaneDetailScreen: View {
     }
   }
 
-  func openPullRequest(_ prId: String) {
-    syncService.requestedPrNavigation = PrNavigationRequest(prId: prId)
+  private func openPullRequest(_ pr: PullRequestListItem) {
+    syncService.requestedPrNavigation = PrNavigationRequest(prId: pr.id, laneId: pr.laneId)
+  }
+
+  private func openFirstPullRequest() {
+    guard let pr = lanePullRequests.first else { return }
+    openPullRequest(pr)
   }
 
   @MainActor
   func openFiles(path: String? = nil) async {
     do {
-      let workspaces = try await syncService.listWorkspaces()
-      guard let workspace = workspaces.first(where: { $0.laneId == laneId }) else {
-        errorMessage = "No Files workspace for this lane."
-        return
+      let workspaceId: String
+      if let filesWorkspaceId {
+        workspaceId = filesWorkspaceId
+      } else {
+        let workspaces = try await syncService.listWorkspaces()
+        guard let workspace = workspaces.first(where: { $0.laneId == laneId }) else {
+          errorMessage = "No Files workspace for this lane."
+          return
+        }
+        filesWorkspaceId = workspace.id
+        workspaceId = workspace.id
       }
       syncService.requestedFilesNavigation = FilesNavigationRequest(
-        workspaceId: workspace.id,
+        workspaceId: workspaceId,
         relativePath: path
       )
     } catch {
+      filesWorkspaceId = nil
       errorMessage = error.localizedDescription
     }
   }

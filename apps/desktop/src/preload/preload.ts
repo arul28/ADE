@@ -257,6 +257,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  LaneListSnapshot,
   LaneSummary,
   ListOverlapsArgs,
   ListLanesArgs,
@@ -962,6 +963,8 @@ contextBridge.exposeInMainWorld("ade", {
   },
   lanes: {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesList, args),
+    listSnapshots: async (args: ListLanesArgs = {}): Promise<LaneListSnapshot[]> =>
+      ipcRenderer.invoke(IPC.lanesListSnapshots, args),
     create: async (args: CreateLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreate, args),
     createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreateChild, args),
     createFromUnstaged: async (args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> =>

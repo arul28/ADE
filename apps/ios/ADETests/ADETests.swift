@@ -220,6 +220,65 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseFetchPullRequestListItemsCanFilterByLane() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-03-17T00:00:00.000Z', '2026-03-17T00:00:00.000Z'
+      );
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+        status, created_at, archived_at
+      ) values (
+        'lane-a', 'project-1', 'Lane A', null, 'worktree', 'main', 'feature/a', '/tmp/project/a',
+        null, 0, null, null, null, null, null,
+        'active', '2026-03-17T00:00:00.000Z', null
+      );
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+        status, created_at, archived_at
+      ) values (
+        'lane-b', 'project-1', 'Lane B', null, 'worktree', 'main', 'feature/b', '/tmp/project/b',
+        null, 0, null, null, null, null, null,
+        'active', '2026-03-17T00:00:00.000Z', null
+      );
+      insert into pull_requests (
+        id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
+        title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
+        last_synced_at, created_at, updated_at
+      ) values (
+        'pr-a', 'project-1', 'lane-a', 'ade', 'repo', 101, 'https://github.com/ade/repo/pull/101',
+        null, 'Lane A PR', 'open', 'main', 'feature/a', 'success', 'approved', 10, 2,
+        '2026-03-17T00:10:00.000Z', '2026-03-17T00:00:00.000Z', '2026-03-17T00:10:00.000Z'
+      );
+      insert into pull_requests (
+        id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
+        title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
+        last_synced_at, created_at, updated_at
+      ) values (
+        'pr-b', 'project-1', 'lane-b', 'ade', 'repo', 102, 'https://github.com/ade/repo/pull/102',
+        null, 'Lane B PR', 'open', 'main', 'feature/b', 'success', 'approved', 4, 1,
+        '2026-03-17T00:11:00.000Z', '2026-03-17T00:00:00.000Z', '2026-03-17T00:11:00.000Z'
+      );
+    """)
+
+    let allPullRequests = database.fetchPullRequestListItems()
+    let laneAPullRequests = database.fetchPullRequestListItems(forLane: "lane-a")
+
+    XCTAssertEqual(allPullRequests.map(\.id).sorted(), ["pr-a", "pr-b"])
+    XCTAssertEqual(laneAPullRequests.map(\.id), ["pr-a"])
+    XCTAssertEqual(laneAPullRequests.first?.laneName, "Lane A")
+
+    database.close()
+  }
+
   func testConnectionDraftRoundTrip() throws {
     let draft = ConnectionDraft(
       host: "127.0.0.1",

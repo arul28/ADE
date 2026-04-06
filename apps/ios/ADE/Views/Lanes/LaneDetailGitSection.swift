@@ -8,29 +8,6 @@ extension LaneDetailScreen {
   var gitSections: some View {
     if let detail {
       VStack(spacing: 14) {
-        GlassSection(title: "Launch") {
-          ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-              LaneActionButton(title: "Files", symbol: "folder", tint: ADEColor.accent) {
-                Task { await openFiles() }
-              }
-              LaneActionButton(title: "Shell", symbol: "terminal") {
-                Task {
-                  await performAction("launch shell") {
-                    try await syncService.runQuickCommand(laneId: laneId, title: "Shell", toolType: "shell", tracked: true)
-                  }
-                }
-              }
-              LaneActionButton(title: "Codex", symbol: "sparkle", tint: ADEColor.accent) {
-                chatLaunchTarget = LaneChatLaunchTarget(provider: "codex")
-              }
-              LaneActionButton(title: "Claude", symbol: "brain.head.profile", tint: ADEColor.warning) {
-                chatLaunchTarget = LaneChatLaunchTarget(provider: "claude")
-              }
-            }
-          }
-        }
-
         GlassSection(title: "Sync", subtitle: detail.syncStatus.map(syncSummary)) {
           VStack(alignment: .leading, spacing: 12) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -55,11 +32,10 @@ extension LaneDetailScreen {
                 ) {
                   Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
                 }
+                LaneHoldToConfirmButton(title: "Force push", symbol: "arrow.up.circle.fill", tint: ADEColor.danger) {
+                  Task { await performAction("force push") { try await syncService.pushGit(laneId: laneId, forceWithLease: true) } }
+                }
                 Menu {
-                  Button("Force push") {
-                    confirmForcePush = true
-                  }
-                  Divider()
                   Button("Rebase lane only") {
                     Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
                   }

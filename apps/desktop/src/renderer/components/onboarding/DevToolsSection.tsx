@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { ArrowsClockwise, GitBranch, Terminal } from "@phosphor-icons/react";
+import { ArrowsClockwise, GitBranch } from "@phosphor-icons/react";
 import type { DevToolsCheckResult, DevToolStatus } from "../../../shared/types";
 import { COLORS, SANS_FONT, MONO_FONT, inlineBadge } from "../lanes/laneDesignTokens";
 import { Button } from "../ui/Button";
@@ -29,7 +29,6 @@ export function DevToolsSection({ onStatusChange }: Props) {
   useEffect(() => { void detect(); }, [detect]);
 
   const git = result?.tools.find((t) => t.id === "git") ?? null;
-  const gh = result?.tools.find((t) => t.id === "gh") ?? null;
   const platform = result?.platform ?? "darwin";
 
   return (
@@ -53,15 +52,10 @@ export function DevToolsSection({ onStatusChange }: Props) {
             <GitBranch size={12} weight="bold" style={{ color: COLORS.success, flexShrink: 0 }} />
             <span><strong style={{ color: COLORS.textSecondary }}>git</strong> — version control, branching, and lane isolation</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <Terminal size={12} weight="bold" style={{ color: COLORS.info, flexShrink: 0 }} />
-            <span><strong style={{ color: COLORS.textSecondary }}>gh</strong> — PR creation, review, and GitHub workflows</span>
-          </div>
         </div>
       </div>
 
       <ToolCard tool={git} platform={platform} loading={loading && !result} toolId="git" />
-      <ToolCard tool={gh} platform={platform} loading={loading && !result} toolId="gh" />
 
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <Button size="sm" variant="outline" disabled={loading} onClick={() => void detect(true)}>
@@ -76,9 +70,8 @@ export function DevToolsSection({ onStatusChange }: Props) {
 }
 
 function ToolCard({ tool, platform, loading, toolId }: { tool: DevToolStatus | null; platform: NodeJS.Platform; loading: boolean; toolId: string }) {
-  const isGit = toolId === "git";
-  const accentColor = isGit ? COLORS.success : COLORS.info;
-  const Icon = isGit ? GitBranch : Terminal;
+  const accentColor = COLORS.success;
+  const Icon = GitBranch;
 
   if (loading || !tool) {
     return (
@@ -91,9 +84,7 @@ function ToolCard({ tool, platform, loading, toolId }: { tool: DevToolStatus | n
   const installed = tool.installed;
   const statusColor = installed ? COLORS.success : tool.required ? COLORS.danger : COLORS.warning;
   const statusLabel = installed ? "Installed" : "Not found";
-  const requirementLabel = tool.required
-    ? "Required to continue setup."
-    : "Optional, but recommended for PR workflows.";
+  const requirementLabel = "Required to continue setup.";
 
   return (
     <div style={cardStyle(accentColor)}>
@@ -142,7 +133,7 @@ function ToolCard({ tool, platform, loading, toolId }: { tool: DevToolStatus | n
             color: COLORS.textMuted,
             lineHeight: "22px",
           }}>
-            {tool.id === "git" ? gitInstallHelp(platform) : ghInstallHelp(platform)}
+            {gitInstallHelp(platform)}
           </div>
           <div style={{ marginTop: 8, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.5 }}>
             After installing, click <strong style={{ color: COLORS.textPrimary }}>Scan again</strong>. Restart ADE only if the tool still does not appear.
@@ -171,24 +162,6 @@ function gitInstallHelp(platform: NodeJS.Platform): React.ReactNode {
       <code style={codeStyle()}>sudo dnf install git</code>
     </>
   );
-}
-
-function ghInstallHelp(platform: NodeJS.Platform): React.ReactNode {
-  if (platform === "darwin") {
-    return (
-      <>
-        Install with <code style={codeStyle()}>brew install gh</code>
-      </>
-    );
-  }
-  if (platform === "win32") {
-    return (
-      <>
-        Install with <code style={codeStyle()}>winget install GitHub.cli</code>
-      </>
-    );
-  }
-  return <>Install from cli.github.com</>;
 }
 
 function cardStyle(accentColor: string): React.CSSProperties {
