@@ -2,6 +2,9 @@
 // Auth Detector — discovers available authentication methods
 // ---------------------------------------------------------------------------
 
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { homedir } from "node:os";
 import { spawnAsync } from "../shared/utils";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -10,6 +13,7 @@ import {
 import { getLocalProviderDefaultEndpoint, type LocalProviderFamily } from "../../../shared/modelRegistry";
 import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
+import { resolveDroidExecutable } from "./droidExecutable";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
 
@@ -71,11 +75,7 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
     ["status", "--json"],
     ["status"],
   ],
-  droid: [
-    ["--version"],
-    ["-V"],
-    ["version"],
-  ],
+  droid: [["--version"], ["-V"], ["version"]],
 };
 
 function cliSpawnCommand(cli: CliName): string {
@@ -370,25 +370,72 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
 }
 
 async function inspectDroidCliPresence(command: string): Promise<{
+  installed: boolean;
   authenticated: boolean;
   verified: boolean;
 }> {
   const probes = CLI_AUTH_PROBES.droid ?? [];
+  let sawVersionOk = false;
   for (const args of probes) {
     try {
       const result = await spawnAsync(command, args, { timeout: 8_000 });
       const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       if (result.status === 0 && combined.length > 0) {
-        return { authenticated: true, verified: true };
+        sawVersionOk = true;
+        break;
       }
       if (result.status === 0) {
-        return { authenticated: true, verified: false };
+        sawVersionOk = true;
+        break;
       }
     } catch {
       // try next probe
     }
   }
-  return { authenticated: false, verified: false };
+  if (!sawVersionOk) {
+    return { installed: false, authenticated: false, verified: false };
+  }
+
+  if (process.env.FACTORY_API_KEY?.trim()) {
+    return { installed: true, authenticated: true, verified: true };
+  }
+
+  const settingsPath = path.join(homedir(), ".factory", "settings.json");
+  try {
+    const raw = await readFile(settingsPath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const tokenLike =
+      typeof parsed.accessToken === "string" && parsed.accessToken.trim().length > 0
+        ? parsed.accessToken
+        : typeof parsed.token === "string" && parsed.token.trim().length > 0
+          ? parsed.token
+          : null;
+    if (tokenLike) {
+      return { installed: true, authenticated: true, verified: true };
+    }
+  } catch {
+    // missing or unreadable settings — not authenticated via file
+  }
+
+  const authProbes: string[][] = [
+    ["account", "status"],
+    ["whoami"],
+  ];
+  for (const args of authProbes) {
+    try {
+      const result = await spawnAsync(command, args, { timeout: 12_000 });
+      const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+      if (result.status !== 0) continue;
+      if (hasPattern(combined, STRONG_UNAUTH_INDICATORS)) continue;
+      if (hasPattern(combined, AUTH_INDICATORS)) {
+        return { installed: true, authenticated: true, verified: true };
+      }
+    } catch {
+      // try next probe
+    }
+  }
+
+  return { installed: true, authenticated: false, verified: true };
 }
 
 const ENV_KEY_MAP: Record<string, string> = {
@@ -973,7 +1020,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
         const auth = await inspectDroidCliPresence(cmd);
         return {
           cli,
-          installed,
+          installed: auth.installed,
           path,
           authenticated: auth.authenticated,
           verified: auth.verified,
@@ -1036,14 +1083,16 @@ export async function detectAllAuth(
   if (factoryKey) {
     const hasDroidCli = results.some((r) => r.type === "cli-subscription" && r.cli === "droid");
     if (!hasDroidCli) {
-      const resolved = resolveExecutableFromKnownLocations("droid");
-      results.push({
-        type: "cli-subscription",
-        cli: "droid",
-        path: resolved?.path ?? "droid",
-        authenticated: true,
-        verified: true,
-      });
+      const resolved = resolveDroidExecutable({ env: process.env, auth: results });
+      if (resolved.source !== "fallback-command") {
+        results.push({
+          type: "cli-subscription",
+          cli: "droid",
+          path: resolved.path,
+          authenticated: true,
+          verified: true,
+        });
+      }
     }
   }
 

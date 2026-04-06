@@ -243,7 +243,8 @@ export async function buildProviderConnections(
   if (!droidFlags.authAvailable && !droidFlags.runtimeDetected) {
     droidBlocker = "No Factory Droid CLI (`droid`) or FACTORY_API_KEY was found locally.";
   } else if (!droidFlags.authAvailable) {
-    droidBlocker = "Droid CLI is installed but ADE could not verify it. Set FACTORY_API_KEY or run `droid --version` to confirm install.";
+    droidBlocker =
+      "Droid CLI is installed but no credentials were detected. Set FACTORY_API_KEY or sign in with the Factory CLI (`droid`).";
   } else if (!droidFlags.runtimeDetected) {
     droidBlocker =
       "FACTORY_API_KEY is set, but ADE could not find the `droid` binary. Add Factory CLI to your PATH and refresh.";

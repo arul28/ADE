@@ -21,14 +21,15 @@ export function resolveDroidExecutable(args?: {
   env?: NodeJS.ProcessEnv;
 }): DroidExecutableResolution {
   const env = args?.env ?? process.env;
-  const authPath = findDroidAuthPath(args?.auth);
-  if (authPath) {
-    return { path: authPath, source: "auth" };
-  }
 
   const envPath = env.DROID_EXECUTABLE?.trim() || env.FACTORY_DROID_EXECUTABLE?.trim();
   if (envPath) {
     return { path: envPath, source: "path" };
+  }
+
+  const authPath = findDroidAuthPath(args?.auth);
+  if (authPath) {
+    return { path: authPath, source: "auth" };
   }
 
   const resolved = resolveExecutableFromKnownLocations("droid", env);
