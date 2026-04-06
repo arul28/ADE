@@ -1,6 +1,6 @@
 import type { ClientSideConnection, InitializeResponse } from "@agentclientprotocol/sdk";
 import type { AcpHostBridge, AcpHostTermState } from "./acpHostClient";
-import { acquireAcpCliConnection, releaseAcpCliConnection } from "./acpCliPool";
+import { acquireAcpCliConnection, hasActiveAcpCliPoolEntry, releaseAcpCliConnection } from "./acpCliPool";
 
 export type CursorAcpBridge = AcpHostBridge;
 
@@ -90,9 +90,12 @@ export async function acquireCursorAcpConnection(args: {
 
   const existing = cursorPools.get(args.poolKey);
   if (existing) {
-    existing.ref += 1;
-    await acquireAcpCliConnection(acpOptions);
-    return existing.pooled;
+    const innerKey = internalPoolKey(args.poolKey);
+    if (hasActiveAcpCliPoolEntry(innerKey)) {
+      existing.ref += 1;
+      return existing.pooled;
+    }
+    cursorPools.delete(args.poolKey);
   }
 
   const base = await acquireAcpCliConnection(acpOptions);
