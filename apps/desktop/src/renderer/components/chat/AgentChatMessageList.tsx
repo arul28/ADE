@@ -875,10 +875,11 @@ function resolveModelMeta(modelId?: string, model?: string): { label: string | n
   const descriptor = key ? (getModelById(key) ?? resolveModelDescriptor(key)) : undefined;
   const idHint = String(modelId ?? model ?? "").trim();
   const inferredCursor = !descriptor && idHint.startsWith("cursor/");
+  const inferredDroid = !descriptor && idHint.startsWith("droid/");
   return {
     label: resolveModelLabel(modelId, model),
-    family: descriptor?.family ?? (inferredCursor ? "cursor" : null),
-    cliCommand: descriptor?.cliCommand ?? (inferredCursor ? "cursor" : null),
+    family: descriptor?.family ?? (inferredCursor ? "cursor" : inferredDroid ? "factory" : null),
+    cliCommand: descriptor?.cliCommand ?? (inferredCursor ? "cursor" : inferredDroid ? "droid" : null),
   };
 }
 
@@ -946,6 +947,9 @@ function ModelGlyph({
   if (meta.family === "cursor" || meta.cliCommand === "cursor") {
     return <CursorAgentLogo size={size} className={className} />;
   }
+  if (meta.family === "factory" || meta.cliCommand === "droid") {
+    return <Robot size={size} weight="bold" className={className} />;
+  }
   if (meta.family === "anthropic" || meta.cliCommand === "claude") {
     return <ClaudeLogo size={size} className={className} />;
   }
@@ -960,13 +964,14 @@ type AssistantPresentation = {
   glyph: React.ReactNode;
 };
 
-const KNOWN_PROVIDER_LABELS = new Set(["Claude", "Codex", "Cursor"]);
+const KNOWN_PROVIDER_LABELS = new Set(["Claude", "Codex", "Cursor", "Droid"]);
 const GENERIC_ASSISTANT_LABELS = new Set(["Agent", "Assistant", ...KNOWN_PROVIDER_LABELS]);
 
 function inferProviderLabel(meta: { family: string | null; cliCommand: string | null }): string | null {
   if (meta.family === "anthropic" || meta.cliCommand === "claude") return "Claude";
   if (meta.cliCommand === "codex") return "Codex";
   if (meta.family === "cursor" || meta.cliCommand === "cursor") return "Cursor";
+  if (meta.family === "factory" || meta.cliCommand === "droid") return "Droid";
   return null;
 }
 
@@ -975,6 +980,7 @@ function providerGlyph(provider: string | null): React.ReactNode {
     case "Claude": return <ClaudeLogo size={10} className="text-fg/70" />;
     case "Codex": return <CodexLogo size={10} className="text-fg/70" />;
     case "Cursor": return <CursorAgentLogo size={10} className="text-fg/70" />;
+    case "Droid": return <Robot size={10} weight="bold" className="text-fg/70" />;
     default: return <Robot size={10} weight="bold" className="text-fg/70" />;
   }
 }

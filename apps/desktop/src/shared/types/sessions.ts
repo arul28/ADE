@@ -16,6 +16,7 @@ export type TerminalToolType =
   | "claude-chat"
   | "ai-chat"
   | "cursor"
+  | "droid-chat"
   | "aider"
   | "continue"
   | "other";

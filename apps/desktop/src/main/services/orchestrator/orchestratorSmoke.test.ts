@@ -133,7 +133,7 @@ function buildDecisionStructuredOutput(prompt: string): Record<string, unknown> 
 
 function createMockAiIntegrationService() {
   return {
-    getAvailability: () => ({ claude: true, codex: true, cursor: false }),
+    getAvailability: () => ({ claude: true, codex: true, cursor: false, droid: false }),
     getMode: () => "subscription",
     getFeatureFlag: () => true,
     getDailyBudgetLimit: () => null,
@@ -888,7 +888,7 @@ describe("orchestrator smoke", () => {
     };
 
     const aiIntegrationService = {
-      getAvailability: () => ({ claude: true, codex: true, cursor: false }),
+      getAvailability: () => ({ claude: true, codex: true, cursor: false, droid: false }),
       getMode: () => "subscription",
       getFeatureFlag: () => true,
       getDailyBudgetLimit: () => null,

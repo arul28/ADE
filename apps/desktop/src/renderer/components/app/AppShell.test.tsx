@@ -234,11 +234,13 @@ describe("AppShell", () => {
           claude: { authAvailable: false },
           codex: { authAvailable: false },
           cursor: { authAvailable: false },
+          droid: { authAvailable: false },
         },
         availableProviders: {
           claude: false,
           codex: false,
           cursor: false,
+          droid: false,
         },
       })) as any;
 

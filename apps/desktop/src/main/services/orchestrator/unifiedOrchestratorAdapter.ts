@@ -304,15 +304,19 @@ function cleanupStaleMcpConfigFiles(projectRoot: string): void {
 const VALID_PERMISSION_MODES = new Set<string>(["default", "plan", "edit", "full-auto", "config-toml"]);
 
 function resolveManagedPermissionMode(args: {
-  provider: "claude" | "codex" | "unified" | "cursor";
+  provider: "claude" | "codex" | "unified" | "cursor" | "droid";
   permissionConfig: LegacyPermissionConfig | undefined;
   readOnlyExecution: boolean;
 }): AgentChatPermissionMode | undefined {
   if (args.readOnlyExecution) return "plan";
   const providers = args.permissionConfig?._providers;
   const candidate =
-    args.provider === "cursor"
-      ? ((providers?.cursor ?? providers?.unified) as string | undefined)
+    args.provider === "cursor" || args.provider === "droid"
+      ? ((
+          args.provider === "droid"
+            ? (providers?.droid ?? providers?.cursor ?? providers?.unified)
+            : (providers?.cursor ?? providers?.unified)
+        ) as string | undefined)
       : (providers?.[args.provider] as string | undefined);
   return typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
     ? candidate as AgentChatPermissionMode
@@ -320,7 +324,7 @@ function resolveManagedPermissionMode(args: {
 }
 
 function mapPermissionModeToNativeFields(
-  provider: "claude" | "codex" | "unified" | "cursor",
+  provider: "claude" | "codex" | "unified" | "cursor" | "droid",
   mode: AgentChatPermissionMode | undefined,
 ): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "unifiedPermissionMode">> {
   if (!mode) return {};
@@ -352,10 +356,10 @@ function mapPermissionModeToNativeFields(
 }
 
 function resolveManagedExecutionMode(args: {
-  provider: "claude" | "codex" | "unified" | "cursor";
+  provider: "claude" | "codex" | "unified" | "cursor" | "droid";
   teamRuntime?: TeamRuntimeConfig;
 }): AgentChatExecutionMode {
-  if (args.provider === "cursor") {
+  if (args.provider === "cursor" || args.provider === "droid") {
     return "focused";
   }
   if (args.provider === "claude") {

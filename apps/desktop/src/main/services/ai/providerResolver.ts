@@ -311,6 +311,12 @@ async function resolveCliWrapped(
     );
   }
 
+  if (cli === "droid") {
+    throw new Error(
+      "Droid models run in the work chat via the Factory CLI (ACP), not through this API path. Pick Droid in the work tab chat provider.",
+    );
+  }
+
   throw new Error(`Unknown CLI command "${cli}" for model "${descriptor.id}".`);
 }
 

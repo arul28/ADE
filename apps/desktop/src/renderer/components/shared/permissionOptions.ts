@@ -167,6 +167,39 @@ export function getPermissionOptions(opts: {
     ];
   }
 
+  // Factory Droid CLI — unified-style modes map to Droid exec `--auto` (see agent chat).
+  if (opts.isCliWrapped && opts.family === "factory") {
+    return [
+      {
+        value: "plan",
+        label: "Read-only",
+        shortDesc: "Droid exec without --auto (spec / read-only)",
+        detail: "Maps to Droid autonomy none — safest for review and planning without file writes or shell commands.",
+        allows: ["File reads", "Code search", "Plan generation"],
+        gates: ["File writes", "Shell commands"],
+        safety: "safe",
+      },
+      {
+        value: "edit",
+        label: "Low autonomy",
+        shortDesc: "Droid --auto low",
+        detail: "Enables basic file operations with Droid's low-risk autonomy tier.",
+        allows: ["File reads", "File writes in project scope"],
+        gates: ["Higher-risk operations per Droid policy"],
+        safety: "semi-auto",
+      },
+      {
+        value: "full-auto",
+        label: "High autonomy",
+        shortDesc: "Droid --auto high",
+        detail: "Highest Droid exec autonomy tier. Use only in trusted workspaces.",
+        allows: ["Broader tool and command access per Droid"],
+        warning: "\u26a0 Review Droid permission prompts and Factory docs before enabling.",
+        safety: "danger",
+      },
+    ];
+  }
+
   // API and local models
   return [
     {
@@ -262,21 +295,23 @@ export function safetyColors(safety: SafetyLevel) {
  * Only CLI-wrapped anthropic → "claude" and CLI-wrapped openai → "codex".
  * All API / local models (even anthropic-api or openai-api) use "unified".
  */
-export function familyToPermissionKey(family: string, isCliWrapped: boolean): "claude" | "codex" | "unified" | "cursor" {
+export function familyToPermissionKey(family: string, isCliWrapped: boolean): "claude" | "codex" | "unified" | "cursor" | "droid" {
   if (isCliWrapped) {
     if (family === "anthropic") return "claude";
     if (family === "openai") return "codex";
     if (family === "cursor") return "cursor";
+    if (family === "factory") return "droid";
   }
   return "unified";
 }
 
 /** Human-readable label for a permission family key */
-export function permissionFamilyLabel(key: "claude" | "codex" | "cursor" | "unified"): string {
+export function permissionFamilyLabel(key: "claude" | "codex" | "cursor" | "droid" | "unified"): string {
   switch (key) {
     case "claude": return "Claude Code workers";
     case "codex": return "Codex workers";
     case "cursor": return "Cursor workers";
+    case "droid": return "Droid workers";
     case "unified": return "API / Local model workers";
   }
 }

@@ -9,7 +9,7 @@ import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { nowIso } from "../shared/utils";
 
 function createUnavailableStatus(
-  provider: "claude" | "codex" | "cursor",
+  provider: "claude" | "codex" | "cursor" | "droid",
   checkedAt: string,
 ): AiProviderConnectionStatus {
   return {
@@ -104,7 +104,7 @@ export async function buildProviderConnections(
   }
 
   function buildStatus(args: {
-    provider: "claude" | "codex" | "cursor";
+    provider: "claude" | "codex" | "cursor" | "droid";
     flags: ReturnType<typeof deriveProviderFlags>;
     usageAvailable: boolean;
     cli: CliAuthStatus | null;
@@ -221,5 +221,58 @@ export async function buildProviderConnections(
   };
   // Cursor has no runtime-health probe yet.
 
-  return { claude, codex, cursor };
+  const droidCli = cliStatuses.find((entry) => entry.cli === "droid") ?? null;
+  const factoryEnvAuth = Boolean(process.env.FACTORY_API_KEY?.trim());
+  const droidRuntimeDetected = Boolean(droidCli?.installed);
+  const droidCliOk = Boolean(droidCli?.installed && droidCli.authenticated);
+  const droidExplicitlyBad = Boolean(droidCli?.installed && droidCli.verified && !droidCli.authenticated);
+  const droidAuthAvailable = Boolean(droidCliOk || factoryEnvAuth);
+  const droidRuntimeAvailable = Boolean(
+    droidAuthAvailable && droidRuntimeDetected && !(droidExplicitlyBad && !factoryEnvAuth),
+  );
+  const droidFlags = {
+    runtimeDetected: droidRuntimeDetected,
+    cliAuthenticated: droidCliOk,
+    cliExplicitlyUnauthenticated: droidExplicitlyBad,
+    localCredsDetected: factoryEnvAuth,
+    authAvailable: droidAuthAvailable,
+    runtimeAvailable: droidRuntimeAvailable,
+  };
+
+  let droidBlocker: string | null = null;
+  if (!droidFlags.authAvailable && !droidFlags.runtimeDetected) {
+    droidBlocker = "No Factory Droid CLI (`droid`) or FACTORY_API_KEY was found locally.";
+  } else if (!droidFlags.authAvailable) {
+    droidBlocker =
+      "Droid CLI is installed but no credentials were detected. Set FACTORY_API_KEY or sign in with the Factory CLI (`droid`).";
+  } else if (!droidFlags.runtimeDetected) {
+    droidBlocker =
+      "FACTORY_API_KEY is set, but ADE could not find the `droid` binary. Add Factory CLI to your PATH and refresh.";
+  }
+
+  const droid: AiProviderConnectionStatus = {
+    ...createUnavailableStatus("droid", checkedAt),
+    authAvailable: droidFlags.authAvailable,
+    runtimeDetected: droidFlags.runtimeDetected,
+    runtimeAvailable: droidFlags.runtimeAvailable,
+    usageAvailable: droidRuntimeAvailable,
+    path: droidCli?.path ?? null,
+    sources: [
+      {
+        kind: "local-credentials",
+        detected: factoryEnvAuth,
+        source: factoryEnvAuth ? "factory-env" : undefined,
+      },
+      {
+        kind: "cli",
+        detected: Boolean(droidCli?.installed),
+        authenticated: droidCli?.authenticated,
+        verified: droidCli?.verified,
+        path: droidCli?.path ?? null,
+      },
+    ],
+    blocker: droidBlocker,
+  };
+
+  return { claude, codex, cursor, droid };
 }

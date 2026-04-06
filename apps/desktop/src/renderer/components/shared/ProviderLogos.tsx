@@ -113,6 +113,8 @@ export function ProviderLogo({
       return <OpenAI size={size} className={c} />;
     case "cursor":
       return <Cursor.Avatar size={size} className={c} />;
+    case "factory":
+      return <FallbackInitialLogo family="droid" size={size} className={className} />;
     case "xai":
       return <XAI.Avatar size={size} className={c} />;
     case "groq":
@@ -150,6 +152,10 @@ export function ModelRowLogo({
   const fam = String(modelFamily ?? "").toLowerCase();
   const cli = String(cliCommand ?? "").toLowerCase();
   const c = lobeMarkClass(className);
+
+  if (fam === "factory" || cli === "droid") {
+    return <FallbackInitialLogo family="droid" size={size} className={className} />;
+  }
 
   if (fam === "cursor" || cli === "cursor") {
     const sdk = resolveCursorSdkId(modelId, sdkModelId);
