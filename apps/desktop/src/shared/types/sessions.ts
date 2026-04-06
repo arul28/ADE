@@ -43,6 +43,9 @@ export type TerminalSessionSummary = {
   summary: string | null;
   runtimeState: TerminalRuntimeState;
   resumeCommand: string | null;
+  /** Agent chat: intended execution target (local id or SSH profile id). */
+  executionTargetId?: string | null;
+  executionTargetLabel?: string | null;
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {

@@ -17,6 +17,8 @@ export const IPC = {
   projectForgetRecent: "ade.project.forgetRecent",
   projectReorderRecent: "ade.project.reorderRecent",
   projectMissing: "ade.project.missing",
+  executionTargetsGet: "ade.executionTargets.get",
+  executionTargetsSet: "ade.executionTargets.set",
   projectStateGetSnapshot: "ade.project.state.getSnapshot",
   projectStateInitializeOrRepair: "ade.project.state.initializeOrRepair",
   projectStateRunIntegrityCheck: "ade.project.state.runIntegrityCheck",

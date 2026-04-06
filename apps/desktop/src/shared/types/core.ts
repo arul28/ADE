@@ -43,6 +43,8 @@ export type ProjectInfo = {
   rootPath: string;
   displayName: string;
   baseRef: string;
+  /** Stable id for project-scoped KV (SQLite); empty when project context is dormant. */
+  projectId?: string;
 };
 
 export type ClearLocalAdeDataArgs = {

@@ -477,6 +477,12 @@ export type AgentChatSession = {
   threadId?: string;
   /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
   requestedCwd?: string | null;
+  /**
+   * Intended execution environment for this chat (`local` = this computer).
+   * Remote SSH targets are metadata until runner/SSH execution is wired.
+   */
+  executionTargetId?: string | null;
+  executionTargetLabel?: string | null;
   createdAt: string;
   lastActivityAt: string;
 };
@@ -516,6 +522,8 @@ export type AgentChatSessionSummary = {
   summary: string | null;
   awaitingInput?: boolean;
   threadId?: string;
+  executionTargetId?: string | null;
+  executionTargetLabel?: string | null;
 };
 
 export type AgentChatTranscriptEntry = {
@@ -592,6 +600,8 @@ export type AgentChatCreateArgs = {
   automationRunId?: string | null;
   computerUse?: ComputerUsePolicy | null;
   requestedCwd?: string;
+  executionTargetId?: string | null;
+  executionTargetLabel?: string | null;
 };
 
 export type AgentChatHandoffArgs = {
@@ -691,6 +701,8 @@ export type AgentChatUpdateSessionArgs = {
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   computerUse?: ComputerUsePolicy | null;
+  executionTargetId?: string | null;
+  executionTargetLabel?: string | null;
 };
 
 export type AgentChatSlashCommand = {
