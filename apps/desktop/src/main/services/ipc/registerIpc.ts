@@ -229,6 +229,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  AdeExecutionTargetsState,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -3262,6 +3263,21 @@ export function registerIpc({
     ctx.db.setJson(key, arg.state);
   });
 
+  ipcMain.handle(IPC.executionTargetsGet, async (): Promise<AdeExecutionTargetsState> => {
+    const ctx = getCtx();
+    const { getExecutionTargetsState } = await import("../executionTargets/executionTargetsStateService");
+    return getExecutionTargetsState(ctx.db, ctx.projectId);
+  });
+
+  ipcMain.handle(
+    IPC.executionTargetsSet,
+    async (_event, arg: AdeExecutionTargetsState): Promise<AdeExecutionTargetsState> => {
+      const ctx = getCtx();
+      const { setExecutionTargetsState } = await import("../executionTargets/executionTargetsStateService");
+      return setExecutionTargetsState(ctx.db, ctx.projectId, arg);
+    },
+  );
+
   ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
     const ctx = getCtx();
     return await withIpcTiming(
@@ -3937,13 +3953,27 @@ export function registerIpc({
         const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
         return sessions.map((session) => {
           if (!isChatToolType(session.toolType)) return session;
-          if (session.status !== "running") return session;
           const chat = chatSummaryBySessionId.get(session.id);
-          if (!chat) return session;
-          if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };
-          if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
-          if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
-          return session;
+          const withTarget =
+            chat
+            && (chat.executionTargetId != null && String(chat.executionTargetId).trim().length > 0
+              || chat.executionTargetLabel != null && String(chat.executionTargetLabel).trim().length > 0)
+              ? {
+                  ...session,
+                  ...(chat.executionTargetId != null && String(chat.executionTargetId).trim().length
+                    ? { executionTargetId: String(chat.executionTargetId).trim() }
+                    : {}),
+                  ...(chat.executionTargetLabel != null && String(chat.executionTargetLabel).trim().length
+                    ? { executionTargetLabel: String(chat.executionTargetLabel).trim() }
+                    : {}),
+                }
+              : session;
+          if (session.status !== "running") return withTarget;
+          if (!chat) return withTarget;
+          if (chat.awaitingInput) return { ...withTarget, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };
+          if (chat.status === "active") return { ...withTarget, runtimeState: "running" as const, chatIdleSinceAt: null };
+          if (chat.status === "idle") return { ...withTarget, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+          return withTarget;
         });
       },
       {

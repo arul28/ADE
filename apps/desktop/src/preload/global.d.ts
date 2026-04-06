@@ -354,6 +354,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  AdeExecutionTargetsState,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -614,6 +615,10 @@ declare global {
         runIntegrityCheck: () => Promise<AdeCleanupResult>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
+      };
+      executionTargets: {
+        get: () => Promise<AdeExecutionTargetsState>;
+        set: (state: AdeExecutionTargetsState) => Promise<AdeExecutionTargetsState>;
       };
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;

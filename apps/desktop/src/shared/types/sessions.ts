@@ -79,6 +79,9 @@ export type TerminalSessionSummary = {
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
   chatIdleSinceAt?: string | null;
+  /** Agent chat: intended execution target (local id or SSH profile id). */
+  executionTargetId?: string | null;
+  executionTargetLabel?: string | null;
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {
