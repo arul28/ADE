@@ -18,7 +18,12 @@ import {
   type WriteTextFileResponse,
   type Client,
 } from "@agentclientprotocol/sdk";
-import { hasNullByte, readFileWithinRootSecure, secureWriteTextAtomicWithinRoot } from "../shared/utils";
+import {
+  hasNullByte,
+  readFileWithinRootSecure,
+  resolvePathWithinRoot,
+  secureWriteTextAtomicWithinRoot,
+} from "../shared/utils";
 
 /** Bridge hooks for an ACP host (Cursor agent, Droid exec, etc.). */
 export type AcpHostBridge = {
@@ -87,6 +92,8 @@ export type CreateAcpHostClientOptions = {
   logPrefix: string;
 };
 
+const WAIT_FOR_TERMINAL_EXIT_MAX_MS = 5 * 60_000;
+
 /**
  * ACP `Client` implementation shared by Cursor (`agent acp`) and Factory Droid (`droid exec --output-format acp`).
  */
@@ -146,7 +153,14 @@ export function createAcpHostClient(
     },
 
     async createTerminal(params: CreateTerminalRequest): Promise<{ terminalId: string }> {
-      const cwd = (params.cwd && params.cwd.trim()) || bridge.getRootPath();
+      const root = bridge.getRootPath();
+      const requested = (params.cwd && params.cwd.trim()) || root;
+      let cwd = root;
+      try {
+        cwd = resolvePathWithinRoot(root, requested, { allowMissing: true });
+      } catch (e) {
+        console.warn(`${logPrefix} terminal cwd rejected (outside lane root), using root:`, e);
+      }
       const termId = randomUUID();
       const limit = typeof params.outputByteLimit === "number" && params.outputByteLimit > 0
         ? params.outputByteLimit
@@ -214,10 +228,33 @@ export function createAcpHostClient(
         return { exitCode: -1, signal: null };
       }
       if (!t.exited) {
-        await new Promise<void>((resolve) => {
-          const done = () => resolve();
-          t.proc.once("close", done);
-        });
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            t.proc.once("close", resolve);
+          }),
+          new Promise<void>((resolve) => {
+            setTimeout(() => {
+              try {
+                if (!t.exited) t.proc.kill("SIGKILL");
+              } catch {
+                // ignore
+              }
+              console.warn(
+                `${logPrefix} waitForTerminalExit exceeded ${WAIT_FOR_TERMINAL_EXIT_MAX_MS}ms; sent SIGKILL`,
+              );
+              resolve();
+            }, WAIT_FOR_TERMINAL_EXIT_MAX_MS);
+          }),
+        ]);
+        if (!t.exited) {
+          await new Promise<void>((resolve) => {
+            const tmo = setTimeout(resolve, 15_000);
+            t.proc.once("close", () => {
+              clearTimeout(tmo);
+              resolve();
+            });
+          });
+        }
       }
       return { exitCode: t.exitCode ?? -1, signal: t.exitSignal };
     },
