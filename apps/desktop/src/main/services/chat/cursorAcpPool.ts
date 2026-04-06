@@ -28,7 +28,8 @@ export type CursorAcpLaunchSettings = {
   approveMcps: boolean;
 };
 
-const cursorPools = new Map<string, { ref: number; pooled: CursorAcpPooled }>();
+let cursorGenCounter = 0;
+const cursorPools = new Map<string, { ref: number; generation: number; pooled: CursorAcpPooled }>();
 const pendingCursorInit = new Map<string, Promise<CursorAcpPooled>>();
 
 function internalPoolKey(poolKey: string): string {
@@ -49,7 +50,7 @@ export async function acquireCursorAcpConnection(args: {
   modelSdkId: string;
   launchSettings: CursorAcpLaunchSettings;
   appVersion: string;
-}): Promise<CursorAcpPooled> {
+}): Promise<{ pooled: CursorAcpPooled; generation: number }> {
   const spawnArgs = [
     "acp",
     "--workspace",
@@ -103,10 +104,15 @@ export async function acquireCursorAcpConnection(args: {
   }
 
   const existing = cursorPools.get(args.poolKey);
-  if (existing) {
+  if (existing && hasActiveAcpCliPoolEntry(innerKey)) {
     await acquireAcpCliConnection(acpOptions);
     existing.ref += 1;
-    return existing.pooled;
+    return { pooled: existing.pooled, generation: existing.generation };
+  }
+
+  // Existing entry is stale — clean it up before creating a new one
+  if (existing) {
+    cursorPools.delete(args.poolKey);
   }
 
   let initOwner = false;
@@ -128,7 +134,8 @@ export async function acquireCursorAcpConnection(args: {
         dispose: base.dispose,
       };
 
-      cursorPools.set(args.poolKey, { ref: 1, pooled });
+      const generation = ++cursorGenCounter;
+      cursorPools.set(args.poolKey, { ref: 1, generation, pooled });
       return pooled;
     })().finally(() => {
       pendingCursorInit.delete(args.poolKey);
@@ -142,12 +149,14 @@ export async function acquireCursorAcpConnection(args: {
     const entry = cursorPools.get(args.poolKey);
     if (entry) entry.ref += 1;
   }
-  return pooled;
+  const entry = cursorPools.get(args.poolKey);
+  return { pooled, generation: entry?.generation ?? 0 };
 }
 
-export function releaseCursorAcpConnection(poolKey: string): void {
+export function releaseCursorAcpConnection(poolKey: string, generation?: number): void {
   const entry = cursorPools.get(poolKey);
   if (!entry) return;
+  if (generation !== undefined && entry.generation !== generation) return;
   entry.ref -= 1;
   if (entry.ref < 0) entry.ref = 0;
   releaseAcpCliConnection(internalPoolKey(poolKey));
