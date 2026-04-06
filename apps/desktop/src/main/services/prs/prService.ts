@@ -2696,8 +2696,8 @@ export function createPrService({
       groupInserted = true;
 
       if (existingIntegrationLaneId) {
-        integrationLane = laneMap.get(existingIntegrationLaneId) ?? null;
-        if (!integrationLane) throw new Error(`Integration lane not found: ${existingIntegrationLaneId}`);
+        // Already validated in the guard above; safe to assert non-null.
+        integrationLane = laneMap.get(existingIntegrationLaneId)!;
       } else {
         integrationLane = await laneService.createChild({
           parentLaneId: preflight.baseLane.id,

@@ -2568,6 +2568,8 @@ struct IntegrationProposal: Codable, Identifiable, Equatable {
   var completedAt: String?
   var cleanupDeclinedAt: String?
   var cleanupCompletedAt: String?
+  var preferredIntegrationLaneId: String?
+  var mergeIntoHeadSha: String?
   var resolutionState: IntegrationResolutionState?
 }
 

@@ -305,16 +305,8 @@ function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registry
 }
 
 function nativeControlSliceFromParallelSlot(slot: ParallelModelRowState): NativeControlState {
-  return {
-    interactionMode: slot.interactionMode,
-    claudePermissionMode: slot.claudePermissionMode,
-    codexApprovalPolicy: slot.codexApprovalPolicy,
-    codexSandbox: slot.codexSandbox,
-    codexConfigSource: slot.codexConfigSource,
-    opencodePermissionMode: slot.opencodePermissionMode,
-    cursorModeId: slot.cursorModeId,
-    cursorConfigValues: slot.cursorConfigValues,
-  };
+  const { modelId: _, reasoningEffort: _re, executionMode: _em, ...native } = slot;
+  return native;
 }
 
 function cloneParallelSlotFromComposer(args: {
@@ -324,13 +316,7 @@ function cloneParallelSlotFromComposer(args: {
   executionMode: AgentChatExecutionMode;
 }): ParallelModelRowState {
   return {
-    interactionMode: args.native.interactionMode,
-    claudePermissionMode: args.native.claudePermissionMode,
-    codexApprovalPolicy: args.native.codexApprovalPolicy,
-    codexSandbox: args.native.codexSandbox,
-    codexConfigSource: args.native.codexConfigSource,
-    opencodePermissionMode: args.native.opencodePermissionMode,
-    cursorModeId: args.native.cursorModeId,
+    ...args.native,
     cursorConfigValues: { ...args.native.cursorConfigValues },
     modelId: args.modelId,
     reasoningEffort: args.reasoningEffort,
@@ -1167,7 +1153,10 @@ export function AgentChatPane({
       opencodePermissionMode: row.opencodePermissionMode,
       cursorModeSnapshot: parallelSlotCursorSnapshot,
       onInteractionModeChange: (mode) => patchParallelSlot(idx, { interactionMode: mode }),
-      onClaudeModeChange: (mode) => patchParallelSlot(idx, { claudePermissionMode: mode }),
+      onClaudeModeChange: (mode) => patchParallelSlot(idx, {
+        claudePermissionMode: mode,
+        interactionMode: mode === 'plan' ? 'plan' : 'default',
+      }),
       onClaudePermissionModeChange: (mode) => patchParallelSlot(idx, { claudePermissionMode: mode }),
       onCodexPresetChange: (next) => patchParallelSlot(idx, {
         codexApprovalPolicy: next.codexApprovalPolicy,
@@ -2225,7 +2214,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!parallelChatMode) return;
-    if (parallelModelSlots.length >= 2) return;
+    if (parallelModelSlots.length > 0) return;
     setParallelModelSlots([
       cloneParallelSlotFromComposer({
         native: currentNativeControls,
@@ -2454,6 +2443,11 @@ export function AgentChatPane({
         setError("Add at least two models for a parallel launch.");
         return;
       }
+      const emptySlot = parallelModelSlots.find(s => !s.modelId?.trim());
+      if (emptySlot) {
+        setError("All parallel lanes must have a model selected.");
+        return;
+      }
       const modelKeys = parallelModelSlots.map((s) => s.modelId);
       if (new Set(modelKeys).size !== modelKeys.length) {
         setError("Each parallel lane needs a different model.");
@@ -2471,27 +2465,25 @@ export function AgentChatPane({
       setParallelLaunchBusy(true);
       setParallelLaunchStatus("Naming lanes…");
       setError(null);
+      const createdLaneIds: string[] = [];
+      const sessionByLane = new Map<string, string>();
       try {
-        const imageCount = attachmentsSnapshot.filter((a) => a.type === "image").length;
-        const fileCount = attachmentsSnapshot.filter((a) => a.type === "file").length;
-        const namingSeed =
-          text.trim().length > 0
-            ? text
-            : attachmentsSnapshot.length
-              ? [
-                  "Parallel attachment task",
-                  imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : null,
-                  fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
-                ].filter(Boolean).join(" · ")
-              : text;
+        let namingSeed = text;
+        if (!text.length && attachmentsSnapshot.length) {
+          const imageCount = attachmentsSnapshot.filter((a) => a.type === "image").length;
+          const fileCount = attachmentsSnapshot.filter((a) => a.type === "file").length;
+          namingSeed = [
+            "Parallel attachment task",
+            imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : null,
+            fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
+          ].filter(Boolean).join(" · ");
+        }
         const baseName = await window.ade.agentChat.suggestLaneName({
           laneId,
           prompt: namingSeed,
           modelId: parallelModelSlots[0]!.modelId,
         });
         setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
-        const createdLaneIds: string[] = [];
-        const sessionByLane = new Map<string, string>();
 
         for (const slot of parallelModelSlots) {
           const desc = getModelById(slot.modelId);
@@ -2526,13 +2518,12 @@ export function AgentChatPane({
           ].join("\n");
           finalText = `${docNote}\n\n---\n\n${finalText}`;
         }
-        const sendText =
-          finalText.trim().length > 0
-            ? finalText
-            : attachmentsSnapshot.length
-              ? "Please review the attached files."
-              : finalText;
-        const displayForSend = text.trim().length > 0 ? text : sendText;
+        const sendText = finalText.length > 0
+          ? finalText
+          : attachmentsSnapshot.length
+            ? "Please review the attached files."
+            : finalText;
+        const displayForSend = text.length > 0 ? text : sendText;
 
         setParallelLaunchStatus("Sending prompt to each lane…");
         for (let idx = 0; idx < parallelModelSlots.length; idx += 1) {
@@ -2597,6 +2588,10 @@ export function AgentChatPane({
         q.set("workFocus", "1");
         navigate(`/lanes?${q.toString()}`);
       } catch (submitError) {
+        // Best-effort cleanup of orphan child lanes
+        for (const orphanLaneId of createdLaneIds) {
+          try { await window.ade.lanes.delete({ laneId: orphanLaneId }); } catch { /* logged elsewhere */ }
+        }
         const message = submitError instanceof Error ? submitError.message : String(submitError);
         setDraft((current) => (current.trim().length ? current : draftSnapshot));
         setAttachments((current) => (current.length ? current : attachmentsSnapshot));
@@ -3372,10 +3367,12 @@ export function AgentChatPane({
             )}
             parallelChatMode={parallelChatMode}
             onParallelChatModeChange={(enabled) => {
-              setParallelChatMode(enabled);
-              if (enabled) {
+              if (enabled && attachments.length > PARALLEL_CHAT_MAX_ATTACHMENTS) {
+                setError(`Parallel mode supports up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments. ${attachments.length - PARALLEL_CHAT_MAX_ATTACHMENTS} attachment(s) were removed.`);
                 setAttachments((prev) => prev.slice(0, PARALLEL_CHAT_MAX_ATTACHMENTS));
-              } else {
+              }
+              setParallelChatMode(enabled);
+              if (!enabled) {
                 setParallelModelSlots([]);
                 setParallelConfiguringIndex(null);
               }

@@ -1393,6 +1393,23 @@ export function AgentChatComposer({
   const composerBeamDuration = turnActive ? 20 : 5;
   const composerBeamStrength = turnActive ? 0.26 : 0.44;
 
+  const parallelReady =
+    parallelChatMode
+    && parallelModelSlots.length >= 2
+    && (draft.trim().length > 0 || attachments.length > 0);
+  const singleReady = !parallelChatMode && Boolean(modelId) && draft.trim().length > 0;
+  const sendEnabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
+
+  function sendButtonTitle(): string {
+    if (parallelChatMode) {
+      if (parallelModelSlots.length < 2) return "Add at least two models";
+      if (draft.trim().length === 0 && attachments.length === 0) return "Add a message or at least one attachment";
+      return "Send to all lanes";
+    }
+    if (!modelId) return "Select a model first";
+    return "Send";
+  }
+
   return (
     <>
       <BorderBeam
@@ -1704,11 +1721,9 @@ export function AgentChatComposer({
           <div className="flex flex-wrap items-center gap-2">
           {/* Left: permission + model controls */}
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            {parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex]
+            {(!parallelChatMode || (parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex]))
               ? nativeControlPanel
-              : !parallelChatMode
-                ? nativeControlPanel
-                : null}
+              : null}
             {parallelChatMode && parallelConfiguringIndex != null && parallelSlotExecutionModeOptions.length > 0 ? (
               <div className="flex flex-wrap items-center gap-px rounded-md border border-white/[0.06] bg-[#1a1a22] p-0.5">
                 {parallelSlotExecutionModeOptions.map((option) => {
@@ -1875,37 +1890,13 @@ export function AgentChatComposer({
                 type="button"
                 className={cn(
                   "inline-flex h-8 items-center justify-center rounded-lg border px-4 transition-all",
-                  (() => {
-                    const parallelReady =
-                      parallelChatMode
-                      && parallelModelSlots.length >= 2
-                      && (draft.trim().length > 0 || attachments.length > 0);
-                    const singleReady = !parallelChatMode && Boolean(modelId) && draft.trim().length > 0;
-                    const enabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
-                    return enabled
-                      ? "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]"
-                      : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15";
-                  })(),
+                  sendEnabled
+                    ? "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]"
+                    : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
                 )}
-                disabled={
-                  busy
-                  || parallelLaunchBusy
-                  || (parallelChatMode
-                    ? parallelModelSlots.length < 2 || (draft.trim().length === 0 && attachments.length === 0)
-                    : !modelId || !draft.trim().length)
-                }
+                disabled={!sendEnabled}
                 onClick={submitComposerDraft}
-                title={
-                  parallelChatMode
-                    ? parallelModelSlots.length < 2
-                      ? "Add at least two models"
-                      : draft.trim().length === 0 && attachments.length === 0
-                        ? "Add a message or at least one attachment"
-                        : "Send to all lanes"
-                    : !modelId
-                      ? "Select a model first"
-                      : "Send"
-                }
+                title={sendButtonTitle()}
               >
                 <PaperPlaneTilt size={10} weight="fill" />
                 <span className="ml-1 font-sans text-[10px]">

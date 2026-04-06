@@ -521,6 +521,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const [resolutionPanelDismissed, setResolutionPanelDismissed] = React.useState(false);
   const [mergeIntoLaneDraft, setMergeIntoLaneDraft] = React.useState("");
   const [mergeIntoLaneBusy, setMergeIntoLaneBusy] = React.useState(false);
+  const proposalBusy = simulateBusy || commitBusy || resimBusy || deleteProposalBusy || createLaneBusy || mergeIntoLaneBusy;
 
   const loadProposals = React.useCallback(async () => {
     try {
@@ -1310,6 +1311,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       setMergeIntoLaneBusy(false);
     }
   }, [loadProposals, mergeIntoLaneDraft, selectedProposal]);
+
   const selectedProposalRebaseLaneIds = React.useMemo(
     () => (selectedProposal?.sourceLaneIds ?? []).filter((laneId) => rebaseNeedByLaneId.has(laneId)),
     [rebaseNeedByLaneId, selectedProposal?.sourceLaneIds],
@@ -2106,7 +2108,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               <select
                 value={mergeIntoLaneDraft}
                 onChange={(e) => setMergeIntoLaneDraft(e.target.value)}
-                disabled={mergeIntoLaneBusy || resimBusy || commitBusy}
+                disabled={proposalBusy}
                 className="font-mono w-full"
                 style={{
                   fontSize: 11,
@@ -2127,16 +2129,16 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             </div>
             <button
               type="button"
-              disabled={mergeIntoLaneBusy || resimBusy || commitBusy}
+              disabled={proposalBusy}
               className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
               style={{
                 fontSize: 10,
                 height: 36,
                 padding: "0 14px",
-                background: mergeIntoLaneBusy || resimBusy || commitBusy ? "#27272A" : "#A78BFA",
-                color: mergeIntoLaneBusy || resimBusy || commitBusy ? "#71717A" : "#0F0D14",
+                background: proposalBusy ? "#27272A" : "#A78BFA",
+                color: proposalBusy ? "#71717A" : "#0F0D14",
                 border: "none",
-                cursor: mergeIntoLaneBusy || resimBusy || commitBusy ? "not-allowed" : "pointer",
+                cursor: proposalBusy ? "not-allowed" : "pointer",
               }}
               onClick={() => void handleApplyMergeIntoTarget()}
             >
@@ -2896,7 +2898,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             {/* Create PR on GitHub */}
             {(() => {
               const hasUnresolved = selectedProposal.overallOutcome !== "clean" && !allStepsResolved;
-              const isDisabled = commitBusy || mergeIntoLaneBusy || selectedProposal.overallOutcome === "blocked" || hasUnresolved || !selectedProposalTargetLaneId;
+              const isDisabled = commitBusy || mergeIntoLaneBusy || resimBusy || selectedProposal.overallOutcome === "blocked" || hasUnresolved || !selectedProposalTargetLaneId;
               return (
                 <button
                   type="button"
@@ -3168,7 +3170,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       children: detailPane,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, liveSimulationKey, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, mergeIntoLaneBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, liveSimulationKey, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, mergeIntoLaneBusy, mergeIntoLaneDraft, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
 
   return <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

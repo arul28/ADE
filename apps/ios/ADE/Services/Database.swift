@@ -199,6 +199,8 @@ final class DatabaseService {
     let completedAt: String?
     let cleanupDeclinedAt: String?
     let cleanupCompletedAt: String?
+    let preferredIntegrationLaneId: String?
+    let mergeIntoHeadSha: String?
     let resolutionStateJson: String?
   }
 
@@ -1853,6 +1855,8 @@ final class DatabaseService {
              completed_at,
              cleanup_declined_at,
              cleanup_completed_at,
+             preferred_integration_lane_id,
+             merge_into_head_sha,
              resolution_state_json
         from integration_proposals
        where project_id = ?
@@ -1886,7 +1890,9 @@ final class DatabaseService {
         completedAt: stringValue(statement, index: 20),
         cleanupDeclinedAt: stringValue(statement, index: 21),
         cleanupCompletedAt: stringValue(statement, index: 22),
-        resolutionStateJson: stringValue(statement, index: 23)
+        preferredIntegrationLaneId: stringValue(statement, index: 23),
+        mergeIntoHeadSha: stringValue(statement, index: 24),
+        resolutionStateJson: stringValue(statement, index: 25)
       )
     }).map { row in
       IntegrationProposal(
@@ -1913,6 +1919,8 @@ final class DatabaseService {
         completedAt: row.completedAt,
         cleanupDeclinedAt: row.cleanupDeclinedAt,
         cleanupCompletedAt: row.cleanupCompletedAt,
+        preferredIntegrationLaneId: row.preferredIntegrationLaneId,
+        mergeIntoHeadSha: row.mergeIntoHeadSha,
         resolutionState: decodeJson(row.resolutionStateJson, as: IntegrationResolutionState.self)
       )
     }

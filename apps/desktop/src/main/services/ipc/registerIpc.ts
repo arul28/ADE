@@ -4035,6 +4035,24 @@ export function registerIpc({
     return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), text: record.text };
   };
 
+  const parseAgentChatSuggestLaneNameArgs = (value: unknown): AgentChatSuggestLaneNameArgs => {
+    const record = requireRecord(value, "Agent chat suggest lane name request");
+    if (typeof record.prompt !== "string" || !record.prompt.trim()) {
+      throw new Error("Agent chat suggest lane name prompt must be a non-empty string");
+    }
+    if (typeof record.modelId !== "string" || !record.modelId.trim()) {
+      throw new Error("Agent chat suggest lane name model ID must be a non-empty string");
+    }
+    if (typeof record.laneId !== "string" || !record.laneId.trim()) {
+      throw new Error("Agent chat suggest lane name lane ID must be a non-empty string");
+    }
+    return {
+      prompt: record.prompt.trim(),
+      modelId: record.modelId.trim(),
+      laneId: record.laneId.trim(),
+    };
+  };
+
   ipcMain.handle(IPC.lanesOAuthGetStatus, async () => {
     const ctx = getCtx();
     return ctx.oauthRedirectService?.getStatus() ?? {
@@ -4272,9 +4290,9 @@ export function registerIpc({
     return await ctx.agentChatService.createSession(arg);
   });
 
-  ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: AgentChatSuggestLaneNameArgs): Promise<string> => {
+  ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {
     const ctx = getCtx();
-    return await ctx.agentChatService.suggestLaneNameFromPrompt(arg);
+    return await ctx.agentChatService.suggestLaneNameFromPrompt(parseAgentChatSuggestLaneNameArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
@@ -5367,15 +5385,10 @@ export function registerIpc({
         reasoningEffort: reasoning,
         permissionMode,
         additionalInstructions,
-        originSurface: context.sourceTab === "integration"
-          ? "integration"
-          : context.sourceTab === "rebase"
-            ? "rebase"
-            : context.sourceTab === "queue"
-              ? "manual"
-            : context.sourceTab === "normal"
-              ? "manual"
-              : "manual",
+        originSurface:
+          context.sourceTab === "integration" ? "integration"
+          : context.sourceTab === "rebase" ? "rebase"
+          : "manual",
       });
       runId = prep.runId;
       if (prep.status === "blocked") {

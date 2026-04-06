@@ -1543,7 +1543,7 @@ export function CreatePrModal({
                         onFocus={(ev) => { ev.currentTarget.style.borderColor = C.accent; }}
                         onBlur={(ev) => { ev.currentTarget.style.borderColor = C.borderSubtle; }}
                       >
-                        <option value="">New integration branch</option>
+                        <option value="">New integration lane</option>
                         {integrationMergeIntoOptions.map((lane) => (
                           <option key={lane.id} value={lane.id} disabled={integrationSources.includes(lane.id)}>
                             {lane.name}{integrationSources.includes(lane.id) ? " (source)" : ""}
@@ -1557,7 +1557,7 @@ export function CreatePrModal({
                         color: C.textMuted,
                         lineHeight: "14px",
                       }}>
-                        When set, simulation includes conflicts against that lane&apos;s current HEAD. Commit prepares merges there instead of creating a new lane.
+                        Creates a new integration lane and prepares merge commits there. When an existing lane is selected, simulation includes conflicts against that lane&apos;s current HEAD.
                       </div>
                     </div>
 
