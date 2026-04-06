@@ -32,6 +32,12 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  ReviewEventPayload,
+  ReviewLaunchContext,
+  ReviewListRunsArgs,
+  ReviewRun,
+  ReviewRunDetail,
+  ReviewStartRunArgs,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -854,6 +860,23 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.automationsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.automationsEvent, listener);
     },
+  },
+  review: {
+    listLaunchContext: async (): Promise<ReviewLaunchContext> =>
+      ipcRenderer.invoke(IPC.reviewListLaunchContext),
+    listRuns: async (args: ReviewListRunsArgs = {}): Promise<ReviewRun[]> =>
+      ipcRenderer.invoke(IPC.reviewListRuns, args),
+    getRunDetail: async (runId: string): Promise<ReviewRunDetail | null> =>
+      ipcRenderer.invoke(IPC.reviewGetRunDetail, { runId }),
+    startRun: async (args: ReviewStartRunArgs): Promise<ReviewRun> =>
+      ipcRenderer.invoke(IPC.reviewStartRun, args),
+    rerun: async (runId: string): Promise<ReviewRun> =>
+      ipcRenderer.invoke(IPC.reviewRerun, { runId }),
+    onEvent: (cb: (ev: ReviewEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ReviewEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.reviewEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.reviewEvent, listener);
+    }
   },
   usage: {
     getSnapshot: async (): Promise<UsageSnapshot | null> =>

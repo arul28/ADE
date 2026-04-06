@@ -2959,6 +2959,69 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   db.run("create index if not exists idx_budget_usage_records_week on budget_usage_records(week_key)");
   db.run("create index if not exists idx_budget_usage_records_provider_week on budget_usage_records(provider, week_key)");
 
+  // Local review history for Review tab runs.
+  db.run(`
+    create table if not exists review_runs (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      target_json text not null,
+      config_json text not null,
+      target_label text not null,
+      compare_target_json text,
+      status text not null,
+      summary text,
+      error_message text,
+      finding_count integer not null default 0,
+      severity_summary_json text,
+      chat_session_id text,
+      created_at text not null,
+      started_at text not null,
+      ended_at text,
+      updated_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_review_runs_project_created on review_runs(project_id, created_at desc)");
+  db.run("create index if not exists idx_review_runs_lane_created on review_runs(lane_id, created_at desc)");
+  db.run("create index if not exists idx_review_runs_project_status on review_runs(project_id, status)");
+
+  db.run(`
+    create table if not exists review_findings (
+      id text primary key,
+      run_id text not null,
+      title text not null,
+      severity text not null,
+      body text not null,
+      confidence real not null default 0.5,
+      evidence_json text,
+      file_path text,
+      line integer,
+      anchor_state text not null,
+      source_pass text not null,
+      publication_state text not null,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_findings_run on review_findings(run_id)");
+  db.run("create index if not exists idx_review_findings_run_file on review_findings(run_id, file_path, line)");
+
+  db.run(`
+    create table if not exists review_run_artifacts (
+      id text primary key,
+      run_id text not null,
+      artifact_type text not null,
+      title text not null,
+      mime_type text not null,
+      content_text text,
+      metadata_json text,
+      created_at text not null,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_run_artifacts_run on review_run_artifacts(run_id, created_at)");
+
   // PR convergence loop: issue inventory tracking
   db.run(`
     create table if not exists pr_issue_inventory (

@@ -106,6 +106,12 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  ReviewEventPayload,
+  ReviewLaunchContext,
+  ReviewListRunsArgs,
+  ReviewRun,
+  ReviewRunDetail,
+  ReviewStartRunArgs,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -743,6 +749,14 @@ declare global {
           req: AutomationSimulateRequest,
         ) => Promise<AutomationSimulateResult>;
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
+      };
+      review: {
+        listLaunchContext: () => Promise<ReviewLaunchContext>;
+        listRuns: (args?: ReviewListRunsArgs) => Promise<ReviewRun[]>;
+        getRunDetail: (runId: string) => Promise<ReviewRunDetail | null>;
+        startRun: (args: ReviewStartRunArgs) => Promise<ReviewRun>;
+        rerun: (runId: string) => Promise<ReviewRun>;
+        onEvent: (cb: (ev: ReviewEventPayload) => void) => () => void;
       };
       usage: {
         getSnapshot: () => Promise<UsageSnapshot | null>;

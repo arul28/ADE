@@ -2501,6 +2501,9 @@ export function createLaneService({
       db.run("delete from pr_pipeline_settings where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
       db.run("delete from pr_issue_inventory where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
       db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
+      db.run("delete from review_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+      db.run("delete from review_run_artifacts where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+      db.run("delete from review_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
       db.run("delete from session_deltas where lane_id = ?", [laneId]);
       db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
       db.run("delete from operations where lane_id = ?", [laneId]);
