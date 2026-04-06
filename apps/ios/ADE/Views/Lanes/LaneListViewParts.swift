@@ -235,6 +235,7 @@ extension LanesTabView {
                 }
               }
             }
+            .disabled(!canRunLiveActions)
             Button("Dismiss") {
               Task {
                 do {
@@ -245,6 +246,7 @@ extension LanesTabView {
                 }
               }
             }
+            .disabled(!canRunLiveActions)
           } label: {
             Image(systemName: "ellipsis.circle")
               .font(.caption)
@@ -430,6 +432,7 @@ extension LanesTabView {
     }
   }
 
+  /// Pinned lanes cannot be closed; they stay in the open-lanes tray until explicitly unpinned.
   func closeLaneChip(_ laneId: String) {
     if pinnedLaneIds.contains(laneId) {
       return

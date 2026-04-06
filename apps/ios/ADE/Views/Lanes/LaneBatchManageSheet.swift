@@ -171,7 +171,12 @@ struct LaneBatchManageSheet: View {
     var deletedLaneIds: [String] = []
     var failures: [String] = []
 
-    for laneId in laneIds {
+    // Sort descendant-first so children are deleted before parents.
+    let sortedIds = laneIds.sorted { lhs, rhs in
+      lhs.components(separatedBy: "/").count > rhs.components(separatedBy: "/").count
+    }
+
+    for laneId in sortedIds {
       do {
         try await syncService.deleteLane(
           laneId,

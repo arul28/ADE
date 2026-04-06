@@ -22,6 +22,5 @@ Testing surface, tools, setup steps, isolation notes, known quirks.
 - Line count check: `find apps/ios/ADE -name '*.swift' -exec wc -l {} + | sort -rn | head -20`
 
 ## Test Coverage
-- 50 existing unit tests in ADETests.swift
-- Tests cover: sync protocol, database CRDT, lane hydration, PR workflows, syntax highlighting, work tab, utilities
+- Unit tests in ADETests.swift cover: sync protocol, database CRDT, lane hydration, PR workflows, syntax highlighting, work tab, utilities
 - Tests use @testable import ADE

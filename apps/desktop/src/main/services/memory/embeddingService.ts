@@ -563,7 +563,14 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   }
 
   async function clearCache(): Promise<void> {
+    // Capture the pending load promise before dispose() nulls it out.
+    const pendingLoad = extractorPromise;
     await dispose();
+    // Await any in-flight load so we don't race against it writing files.
+    if (pendingLoad) {
+      try { await pendingLoad; } catch { /* swallow – dispose already invalidated it */ }
+    }
+    cache.clear();
     try {
       await fs.promises.rm(installPath, { recursive: true, force: true });
     } catch (clearError) {
@@ -574,6 +581,7 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
       });
     }
     refreshCachedInstall();
+    emitStatus();
   }
 
   return {

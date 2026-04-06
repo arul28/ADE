@@ -220,14 +220,22 @@ struct LaneCreateSheet: View {
           baseBranch: selectedBaseBranch
         )
       case .rescueUnstaged:
-        created = try await syncService.createFromUnstaged(sourceLaneId: selectedRescueLaneId, name: name)
+        created = try await syncService.createFromUnstaged(sourceLaneId: selectedRescueLaneId, name: name, description: description)
       }
-      let progress = selectedTemplateId.isEmpty
-        ? try await syncService.initializeLaneEnvironment(laneId: created.id)
-        : try await syncService.applyLaneTemplate(laneId: created.id, templateId: selectedTemplateId)
-      envProgress = progress
       await onComplete(created.id)
       dismiss()
+
+      // Run post-create env setup after dismiss so errors don't block the sheet.
+      do {
+        let progress = selectedTemplateId.isEmpty
+          ? try await syncService.initializeLaneEnvironment(laneId: created.id)
+          : try await syncService.applyLaneTemplate(laneId: created.id, templateId: selectedTemplateId)
+        envProgress = progress
+      } catch let queuedError as QueuedRemoteCommandError {
+        queuedNotice = queuedError.errorDescription
+      } catch {
+        errorMessage = error.localizedDescription
+      }
     } catch let queuedError as QueuedRemoteCommandError {
       queuedNotice = queuedError.errorDescription
     } catch {

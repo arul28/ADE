@@ -68,7 +68,11 @@ function ensureParentDir(filePath: string) {
 
 function openRawDatabase(dbPath: string): DatabaseSyncType {
   ensureParentDir(dbPath);
-  return new DatabaseSync(dbPath, { allowExtension: true });
+  const db = new DatabaseSync(dbPath, { allowExtension: true });
+  // Allow concurrent access from multiple ADE processes (e.g. dogfooding).
+  // Without this, a second instance gets SQLITE_BUSY immediately on writes.
+  db.exec("PRAGMA busy_timeout = 5000");
+  return db;
 }
 
 function toDbValue(value: SqlValue | SyncScalar): string | number | null | Uint8Array {

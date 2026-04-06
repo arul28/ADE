@@ -67,7 +67,10 @@ struct LaneAttachSheet: View {
     do {
       busy = true
       errorMessage = nil
-      let lane = try await syncService.attachLane(name: name, attachedPath: attachedPath, description: description)
+      let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+      let trimmedPath = attachedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+      let trimmedDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
+      let lane = try await syncService.attachLane(name: trimmedName, attachedPath: trimmedPath, description: trimmedDescription)
       await onComplete(lane.id)
       dismiss()
     } catch {

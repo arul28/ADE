@@ -178,6 +178,8 @@ export function LanesPage() {
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [branchCheckoutBusy, setBranchCheckoutBusy] = useState(false);
   const [branchCheckoutError, setBranchCheckoutError] = useState<string | null>(null);
+  const [branchSearchQuery, setBranchSearchQuery] = useState("");
+  const branchSearchInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
 
   const [addLaneDropdownOpen, setAddLaneDropdownOpen] = useState(false);
@@ -348,6 +350,12 @@ export function LanesPage() {
     refreshLanes().catch(() => {});
   }, [primaryBranches, primaryLane?.id, primaryLane?.branchRef, refreshLanes]);
 
+  useEffect(() => {
+    if (branchDropdownOpen) {
+      setBranchSearchQuery("");
+      setTimeout(() => branchSearchInputRef.current?.focus(), 0);
+    }
+  }, [branchDropdownOpen]);
   useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
   useClickOutside(addLaneDropdownRef, () => setAddLaneDropdownOpen(false), addLaneDropdownOpen);
 
@@ -409,11 +417,25 @@ export function LanesPage() {
   useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
       if (event.type !== "prediction-complete") return;
-      void refreshLanes();
+      // Only refresh conflict statuses — avoid a full refreshLanes() which fires
+      // five parallel queries via buildLaneListSnapshots.
+      void window.ade.conflicts.getBatchAssessment().then((assessment) => {
+        const conflictByLaneId = new Map(
+          assessment.lanes.map((entry) => [entry.laneId, entry] as const),
+        );
+        const prev = useAppStore.getState().laneSnapshots;
+        const next = prev.map((snapshot) => {
+          const updated = conflictByLaneId.get(snapshot.lane.id) ?? null;
+          return updated !== snapshot.conflictStatus
+            ? { ...snapshot, conflictStatus: updated }
+            : snapshot;
+        });
+        useAppStore.setState({ laneSnapshots: next });
+      }).catch(() => {});
       pushConflictChips(event.chips);
     });
     return unsubscribe;
-  }, [pushConflictChips, refreshLanes]);
+  }, [pushConflictChips]);
 
   useEffect(() => {
     const unsubscribe = window.ade.lanes.onRebaseSuggestionsEvent((event) => {
@@ -649,14 +671,14 @@ export function LanesPage() {
     () => primaryBranches.find((branch) => branch.isCurrent)?.name ?? primaryLane?.branchRef ?? "",
     [primaryBranches, primaryLane?.branchRef]
   );
-  const localPrimaryBranches = useMemo(
-    () => primaryBranches.filter((branch) => !branch.isRemote),
-    [primaryBranches]
-  );
-  const remotePrimaryBranches = useMemo(
-    () => primaryBranches.filter((branch) => branch.isRemote),
-    [primaryBranches]
-  );
+  const localPrimaryBranches = useMemo(() => {
+    const q = branchSearchQuery.toLowerCase();
+    return primaryBranches.filter((branch) => !branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
+  }, [primaryBranches, branchSearchQuery]);
+  const remotePrimaryBranches = useMemo(() => {
+    const q = branchSearchQuery.toLowerCase();
+    return primaryBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
+  }, [primaryBranches, branchSearchQuery]);
 
   const runLaneAction = async (fn: () => Promise<void>) => {
     setLaneActionBusy(true);
@@ -1284,7 +1306,7 @@ export function LanesPage() {
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
-      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}`, position: "relative", zIndex: 10, overflow: "visible" }}>
+      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}`, position: "relative", zIndex: 50, overflow: "visible" }}>
         {/* Numbered title group */}
         <div className="flex items-center gap-2 shrink-0">
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>05</span>
@@ -1312,7 +1334,25 @@ export function LanesPage() {
               <CaretDown size={12} style={{ opacity: 0.6 }} />
             </button>
             {branchDropdownOpen ? (
-              <div className="absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-auto" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
+              <div className="absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-hidden flex flex-col" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
+                <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
+                  <MagnifyingGlass size={13} className="pointer-events-none absolute" style={{ left: 16, top: "50%", transform: "translateY(-50%)", color: COLORS.textDim }} />
+                  <input
+                    ref={branchSearchInputRef}
+                    type="text"
+                    placeholder="Search branches…"
+                    value={branchSearchQuery}
+                    onChange={(e) => setBranchSearchQuery(e.target.value)}
+                    style={{
+                      width: "100%", padding: "5px 8px 5px 28px", fontSize: 12, fontFamily: MONO_FONT,
+                      color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                      border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, outline: "none",
+                    }}
+                    onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
+                    onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
+                  />
+                </div>
+                <div className="overflow-auto flex-1" style={{ padding: "2px 0" }}>
                 <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>LOCAL BRANCHES</div>
                 {localPrimaryBranches.map((branch) => (
                   <button
@@ -1364,11 +1404,12 @@ export function LanesPage() {
                   </>
                 ) : null}
                 {localPrimaryBranches.length === 0 && remotePrimaryBranches.length === 0 ? (
-                  <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>No branches found.</div>
+                  <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>{branchSearchQuery ? "No matching branches." : "No branches found."}</div>
                 ) : null}
                 {branchCheckoutError ? (
                   <div style={{ padding: "6px 12px", fontSize: 11, color: COLORS.danger }}>{branchCheckoutError}</div>
                 ) : null}
+                </div>
               </div>
             ) : null}
           </div>

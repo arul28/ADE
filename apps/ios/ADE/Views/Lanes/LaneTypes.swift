@@ -130,7 +130,7 @@ struct LaneDetailSheetTarget: Identifiable {
 }
 
 struct LaneDiffRequest: Identifiable {
-  var id: String { "\(laneId):\(mode):\(path ?? "none"):\(compareRef ?? "none")" }
+  var id: String { "\(laneId):\(mode):\(path ?? "none"):\(compareRef ?? "none"):\(compareTo ?? "none")" }
   let laneId: String
   let path: String?
   let mode: String

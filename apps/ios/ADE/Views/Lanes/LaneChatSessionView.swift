@@ -75,6 +75,7 @@ struct LaneChatSessionView: View {
         }
         .padding(16)
       }
+      .refreshable { await loadTranscript() }
       .safeAreaInset(edge: .bottom) {
         VStack(spacing: 10) {
           HStack(spacing: 10) {
@@ -96,6 +97,7 @@ struct LaneChatSessionView: View {
                 .frame(width: 40, height: 40)
                 .background(ADEColor.accent.opacity(0.15), in: Circle())
             }
+            .accessibilityLabel("Send message")
             .disabled(composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
           }
         }
@@ -150,7 +152,7 @@ struct LaneChatSessionView: View {
       transcript = try await syncService.fetchChatTranscript(sessionId: summary.sessionId)
       errorMessage = nil
     } catch {
-      errorMessage = "Message sent, but the transcript did not refresh. Pull to retry. \(error.localizedDescription)"
+      errorMessage = "Message sent, but the transcript did not refresh. \(error.localizedDescription)"
     }
   }
 }

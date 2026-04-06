@@ -2243,6 +2243,27 @@ final class DatabaseService {
         decodedPkValues = [decodeCrsqlPk(first.pk)]
       } else if let multi = decodeCrsqlPkColumns(first.pk), multi.count == pkColumns.count {
         decodedPkValues = multi
+      } else if pkColumns.count > 1 {
+        // Only a single PK value was recorded (e.g. the sender used a
+        // single-column encoding for a composite-key table).  Try to
+        // recover the full primary key by:
+        //   1. Decode the single value via decodeCrsqlPk.
+        //   2. Map it to the column indicated by primaryKeyColumn.
+        //   3. Fill the remaining PK columns from rowChanges whose cid
+        //      matches the column name.
+        let singleVal = decodeCrsqlPk(first.pk)
+        guard let knownIdx = pkColumns.firstIndex(of: primaryKeyColumn) else { continue }
+        var assembled = [SyncScalarValue](repeating: .null, count: pkColumns.count)
+        assembled[knownIdx] = singleVal
+        for (i, col) in pkColumns.enumerated() where i != knownIdx {
+          if let match = rowChanges.first(where: { $0.cid == col }) {
+            assembled[i] = match.val
+          } else {
+            break
+          }
+        }
+        guard !assembled.contains(.null) else { continue }
+        decodedPkValues = assembled
       } else {
         continue // can't decode pk — skip
       }
@@ -2400,8 +2421,9 @@ final class DatabaseService {
     guard !materializedChanges.isEmpty else { return false }
     guard materializedChanges.allSatisfy({ $0.val == .null }) else { return false }
 
+    let pkColumnSet = Set(tableInfo.primaryKeyColumns)
     let changedColumns = Set(materializedChanges.map(\.cid))
-    let nonPrimaryColumns = Set(tableInfo.columns.map(\.name).filter { $0 != primaryKeyColumn })
+    let nonPrimaryColumns = Set(tableInfo.columns.map(\.name).filter { !pkColumnSet.contains($0) })
     return changedColumns == nonPrimaryColumns
   }
 

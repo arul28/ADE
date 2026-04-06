@@ -26,8 +26,15 @@ struct LaneStackGraphSheet: View {
 
     let primaryBranch = primaryId.flatMap { id in snapshots.first(where: { $0.lane.id == id }) }.map { [$0] + visit(parentId: $0.lane.id) } ?? []
     let seen = Set(primaryBranch.map(\.lane.id))
-    let remaining = snapshots.filter { !seen.contains($0.lane.id) }.sorted { $0.lane.createdAt < $1.lane.createdAt }
-    return primaryBranch + remaining
+    let remaining = snapshots.filter { !seen.contains($0.lane.id) }
+    let remainingIds = Set(remaining.map(\.lane.id))
+    let roots = remaining
+      .filter { ($0.lane.parentLaneId == nil) || !remainingIds.contains($0.lane.parentLaneId!) }
+      .sorted { $0.lane.createdAt < $1.lane.createdAt }
+    let groupedRemaining = roots.flatMap { root in
+      [root] + visit(parentId: root.lane.id).filter { remainingIds.contains($0.lane.id) }
+    }
+    return primaryBranch + groupedRemaining
   }
 
   var body: some View {

@@ -893,11 +893,15 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(action: "lanes.create", args: args, as: LaneSummary.self)
   }
 
-  func createFromUnstaged(sourceLaneId: String, name: String) async throws -> LaneSummary {
-    try await sendDecodableCommand(action: "lanes.createFromUnstaged", args: [
+  func createFromUnstaged(sourceLaneId: String, name: String, description: String = "") async throws -> LaneSummary {
+    var args: [String: Any] = [
       "sourceLaneId": sourceLaneId,
       "name": name,
-    ], as: LaneSummary.self)
+    ]
+    if !description.isEmpty {
+      args["description"] = description
+    }
+    return try await sendDecodableCommand(action: "lanes.createFromUnstaged", args: args, as: LaneSummary.self)
   }
 
   func importBranch(
@@ -951,8 +955,12 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "lanes.rename", args: ["laneId": laneId, "name": name])
   }
 
-  func reparentLane(_ laneId: String, newParentLaneId: String) async throws {
-    _ = try await sendCommand(action: "lanes.reparent", args: ["laneId": laneId, "newParentLaneId": newParentLaneId])
+  func reparentLane(_ laneId: String, newParentLaneId: String?) async throws {
+    var args: [String: Any] = ["laneId": laneId]
+    if let newParentLaneId, !newParentLaneId.isEmpty {
+      args["newParentLaneId"] = newParentLaneId
+    }
+    _ = try await sendCommand(action: "lanes.reparent", args: args)
   }
 
   func updateLaneAppearance(_ laneId: String, color: String? = nil, icon: String? = nil, tags: [String]? = nil) async throws {

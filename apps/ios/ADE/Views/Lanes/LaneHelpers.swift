@@ -64,7 +64,10 @@ func laneListSortSnapshots(_ lhs: LaneListSnapshot, _ rhs: LaneListSnapshot) -> 
   if lhs.lane.createdAt != rhs.lane.createdAt {
     return lhs.lane.createdAt > rhs.lane.createdAt
   }
-  return lhs.lane.name.localizedCaseInsensitiveCompare(rhs.lane.name) == .orderedAscending
+  if lhs.lane.name.localizedCaseInsensitiveCompare(rhs.lane.name) != .orderedSame {
+    return lhs.lane.name.localizedCaseInsensitiveCompare(rhs.lane.name) == .orderedAscending
+  }
+  return lhs.lane.id < rhs.lane.id
 }
 
 func laneScopeCount(_ snapshots: [LaneListSnapshot], scope: LaneListScope) -> Int {

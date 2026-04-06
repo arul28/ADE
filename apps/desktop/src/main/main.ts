@@ -750,7 +750,8 @@ app.whenReady().then(async () => {
             });
           });
         }
-      }
+      },
+      logger,
     });
     await laneService.ensurePrimaryLane();
 
@@ -2294,7 +2295,7 @@ app.whenReady().then(async () => {
       dispose: () => {} // desktop manages service lifecycle
     };
 
-    const mcpSocketPath = adePaths.socketPath;
+    const mcpSocketPath = process.env.ADE_MCP_SOCKET_PATH?.trim() || adePaths.socketPath;
     const activeMcpConnections = new Set<net.Socket>();
 
     const destroyActiveMcpConnections = (): void => {

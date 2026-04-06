@@ -31,7 +31,7 @@ struct LaneDetailHeaderCard: View {
       }
     }
     .adeGlassCard(cornerRadius: 18, padding: 16)
-    .accessibilityElement(children: .combine)
+    .accessibilityElement(children: .contain)
     .accessibilityLabel(headerAccessibilityLabel)
   }
 

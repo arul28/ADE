@@ -11,9 +11,9 @@ struct LaneDetailScreen: View {
   let allLaneSnapshots: [LaneListSnapshot]
   let onRefreshRoot: @MainActor () async -> Void
 
-  @State var detail: LaneDetailPayload?
+  @State private(set) var detail: LaneDetailPayload?
   @State var errorMessage: String?
-  @State var busyAction: String?
+  @State private(set) var busyAction: String?
   @State var selectedDiffRequest: LaneDiffRequest?
   @State private var showStackGraph = false
   @State private var managePresented = false

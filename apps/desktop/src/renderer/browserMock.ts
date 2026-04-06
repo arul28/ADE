@@ -158,6 +158,7 @@ const MOCK_LANES: any[] = [
   makeLane("lane-a11y", "feature/accessibility", "refs/heads/feature/accessibility"),
 ];
 
+/** Returns a fresh snapshot object on every call to avoid shared-state leakage. */
 function makeLaneSnapshot(lane: any): any {
   const runtimeBucket = lane.id === "lane-auth" || lane.id === "lane-checkout"
     ? "running"
@@ -166,16 +167,15 @@ function makeLaneSnapshot(lane: any): any {
       : lane.id === "lane-perf"
         ? "ended"
         : "none";
-  const runtime = {
-    bucket: runtimeBucket,
-    runningCount: runtimeBucket === "running" ? 1 : 0,
-    awaitingInputCount: runtimeBucket === "awaiting-input" ? 1 : 0,
-    endedCount: runtimeBucket === "ended" ? 1 : 0,
-    sessionCount: runtimeBucket === "none" ? 0 : 1,
-  };
   return {
-    lane,
-    runtime,
+    lane: { ...lane },
+    runtime: {
+      bucket: runtimeBucket,
+      runningCount: runtimeBucket === "running" ? 1 : 0,
+      awaitingInputCount: runtimeBucket === "awaiting-input" ? 1 : 0,
+      endedCount: runtimeBucket === "ended" ? 1 : 0,
+      sessionCount: runtimeBucket === "none" ? 0 : 1,
+    },
     rebaseSuggestion: lane.id === "lane-dashboard" || lane.id === "lane-onboard"
       ? { laneId: lane.id, parentLaneId: "lane-main", parentHeadSha: "mock", behindCount: 2, lastSuggestedAt: now, deferredUntil: null, dismissedAt: null, hasPr: true }
       : null,
@@ -1127,7 +1127,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     },
     lanes: {
       list: resolved(MOCK_LANES),
-      listSnapshots: resolved(MOCK_LANES.map((lane) => makeLaneSnapshot(lane))),
+      listSnapshots: async () => MOCK_LANES.map((lane) => makeLaneSnapshot(lane)),
       create: resolvedArg({ id: "mock", name: "mock" }),
       createChild: resolvedArg({ id: "mock", name: "mock" }),
       importBranch: resolvedArg({ id: "mock", name: "mock" }),

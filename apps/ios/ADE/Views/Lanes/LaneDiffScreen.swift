@@ -11,6 +11,7 @@ struct LaneDiffScreen: View {
   @State private var diff: FileDiff?
   @State private var editedText = ""
   @State private var errorMessage: String?
+  @State private var isLoading = false
   @State private var isSaving = false
   @State private var side = "modified"
 
@@ -96,7 +97,7 @@ struct LaneDiffScreen: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 16)
           }
-        } else {
+        } else if isLoading {
           Spacer()
           ProgressView()
             .tint(ADEColor.accent)
@@ -112,7 +113,7 @@ struct LaneDiffScreen: View {
           Button("Done") { dismiss() }
         }
         ToolbarItem(placement: .confirmationAction) {
-          if request.mode == "unstaged", let path = request.path, side == "modified" {
+          if request.mode == "unstaged", let path = request.path, side == "modified", diff?.isBinary != true {
             Button {
               Task { await saveEditedFile(path: path) }
             } label: {
@@ -162,19 +163,27 @@ struct LaneDiffScreen: View {
   @MainActor
   private func load() async throws {
     guard let path = request.path else { return }
-    let loaded = try await syncService.fetchFileDiff(
-      laneId: request.laneId,
-      path: path,
-      mode: request.mode,
-      compareRef: request.compareRef,
-      compareTo: request.compareTo
-    )
-    diff = loaded
-    editedText = loaded.modified.text
+    isLoading = true
+    defer { isLoading = false }
+    do {
+      let loaded = try await syncService.fetchFileDiff(
+        laneId: request.laneId,
+        path: path,
+        mode: request.mode,
+        compareRef: request.compareRef,
+        compareTo: request.compareTo
+      )
+      diff = loaded
+      editedText = loaded.modified.text
+    } catch {
+      diff = nil
+      throw error
+    }
   }
 
   @MainActor
   private func saveEditedFile(path: String) async {
+    guard diff?.isBinary != true else { return }
     isSaving = true
     defer { isSaving = false }
 

@@ -25,7 +25,7 @@ struct LaneFileTreeSection: View {
 
   var body: some View {
     GlassSection(title: title, subtitle: subtitle) {
-      VStack(alignment: .leading, spacing: 12) {
+      LazyVStack(alignment: .leading, spacing: 12) {
         if let bulkActionTitle, let onBulkAction, changes.count > 1 {
           LaneActionButton(title: bulkActionTitle, symbol: bulkActionSymbol, tint: bulkActionTint) {
             onBulkAction()
@@ -133,7 +133,7 @@ private struct LaneFileTreeNodeView: View {
   let secondaryActionTint: Color
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    LazyVStack(alignment: .leading, spacing: 8) {
       if !node.files.isEmpty {
         ForEach(node.files) { file in
           let openFilesAction: (() -> Void)? = onOpenFiles.map { handler in

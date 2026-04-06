@@ -120,7 +120,6 @@ type AppState = {
   setProject: (project: ProjectInfo | null) => void;
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
-  setLaneSnapshots: (snapshots: LaneListSnapshot[]) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   selectLane: (laneId: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
@@ -158,6 +157,9 @@ export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
 
 let warmLaneStatusTimer: number | null = null;
 let warmProviderModeTimer: number | null = null;
+/** Monotonic counter incremented before each lane refresh request.
+ *  Slower responses whose token doesn't match the latest value are discarded. */
+let laneRefreshVersion = 0;
 
 function scheduleProjectHydration(get: () => AppState) {
   if (warmLaneStatusTimer != null) {
@@ -199,7 +201,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setProject: (project) => set({ project }),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
-  setLaneSnapshots: (laneSnapshots) => set({ laneSnapshots }),
   setLanes: (lanes) => set({ lanes }),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
   setLaneInspectorTab: (laneId, tab) =>
@@ -279,10 +280,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   refreshLanes: async (options) => {
     const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
+    const token = ++laneRefreshVersion;
     const laneSnapshots = await window.ade.lanes.listSnapshots({
       includeArchived: false,
       includeStatus: options?.includeStatus ?? true,
     });
+    // Discard stale response: a newer refresh was issued while this one was in-flight
+    if (token !== laneRefreshVersion) {
+      return;
+    }
     const lanes = laneSnapshots.map((snapshot) => snapshot.lane);
     const projectKey = normalizeProjectKey(get().project?.rootPath);
     if (projectKey !== requestedProjectKey) {
@@ -347,6 +353,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   openRepo: async () => {
     const project = await window.ade.project.openRepo();
     if (!project) return null;
+    // Invalidate any in-flight lane refreshes from the previous project
+    ++laneRefreshVersion;
     set({
       project,
       projectHydrated: true,
@@ -370,6 +378,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   switchProjectToPath: async (rootPath: string) => {
     const project = await window.ade.project.switchToPath(rootPath);
+    // Invalidate any in-flight lane refreshes from the previous project
+    ++laneRefreshVersion;
     set({
       project,
       projectHydrated: true,

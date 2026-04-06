@@ -37,10 +37,24 @@ struct LaneManageSheet: View {
     _deleteMode = State(initialValue: .worktree)
   }
 
+  private var descendantIds: Set<String> {
+    var result = Set<String>()
+    func collectDescendants(of parentId: String) {
+      for s in allLaneSnapshots where s.lane.parentLaneId == parentId {
+        if result.insert(s.lane.id).inserted {
+          collectDescendants(of: s.lane.id)
+        }
+      }
+    }
+    collectDescendants(of: snapshot.lane.id)
+    return result
+  }
+
   private var reparentCandidates: [LaneSummary] {
-    allLaneSnapshots
+    let excluded = descendantIds
+    return allLaneSnapshots
       .map(\.lane)
-      .filter { $0.id != snapshot.lane.id && $0.archivedAt == nil }
+      .filter { $0.id != snapshot.lane.id && $0.archivedAt == nil && !excluded.contains($0.id) }
       .sorted { lhs, rhs in
         if lhs.laneType == "primary" && rhs.laneType != "primary" { return true }
         if lhs.laneType != "primary" && rhs.laneType == "primary" { return false }
@@ -99,7 +113,7 @@ struct LaneManageSheet: View {
             GlassSection(title: "Reparent") {
               VStack(alignment: .leading, spacing: 12) {
                 Picker("Parent lane", selection: $selectedParentLaneId) {
-                  Text("Select parent").tag("")
+                  Text("No parent").tag("")
                   ForEach(reparentCandidates) { lane in
                     Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
                   }
@@ -109,11 +123,11 @@ struct LaneManageSheet: View {
                 LaneActionButton(title: "Save parent", symbol: "arrow.triangle.swap", tint: ADEColor.accent) {
                   Task {
                     await performAction("reparent lane") {
-                      try await syncService.reparentLane(snapshot.lane.id, newParentLaneId: selectedParentLaneId)
+                      try await syncService.reparentLane(snapshot.lane.id, newParentLaneId: selectedParentLaneId.isEmpty ? nil : selectedParentLaneId)
                     }
                   }
                 }
-                .disabled(selectedParentLaneId.isEmpty)
+                .disabled(selectedParentLaneId == (snapshot.lane.parentLaneId ?? ""))
               }
             }
           }

@@ -735,10 +735,10 @@ function summarizeLaneRuntime(
     else endedCount += 1;
   }
 
-  const bucket = runningCount > 0
-    ? "running"
-    : awaitingInputCount > 0
-      ? "awaiting-input"
+  const bucket = awaitingInputCount > 0
+    ? "awaiting-input"
+    : runningCount > 0
+      ? "running"
       : endedCount > 0
         ? "ended"
         : "none";
@@ -752,15 +752,48 @@ function summarizeLaneRuntime(
   };
 }
 
+async function enrichSessionsForLaneList(
+  args: Pick<AppContext, "sessionService" | "ptyService" | "agentChatService">,
+): Promise<TerminalSessionSummary[]> {
+  let sessions = args.ptyService.enrichSessions(args.sessionService.list({}));
+  let allChats: AgentChatSessionSummary[] = [];
+  try {
+    allChats = await args.agentChatService.listSessions(undefined, { includeIdentity: true });
+  } catch {
+    allChats = [];
+  }
+  const identitySessionIds = new Set(
+    allChats
+      .filter((chat) => Boolean(chat.identityKey))
+      .map((chat) => chat.sessionId),
+  );
+  if (identitySessionIds.size > 0) {
+    sessions = sessions.filter((session) => !identitySessionIds.has(session.id));
+  }
+  const chats = allChats.filter((chat) => !chat.identityKey);
+  if (chats.length === 0) return sessions;
+  const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
+  return sessions.map((session) => {
+    if (!isChatToolType(session.toolType)) return session;
+    if (session.status !== "running") return session;
+    const chat = chatSummaryBySessionId.get(session.id);
+    if (!chat) return session;
+    if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const };
+    if (chat.status === "active") return { ...session, runtimeState: "running" as const };
+    if (chat.status === "idle") return { ...session, runtimeState: "idle" as const };
+    return session;
+  });
+}
+
 async function buildLaneListSnapshots(
-  args: Pick<AppContext, "laneService" | "sessionService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService">,
+  args: Pick<AppContext, "laneService" | "sessionService" | "ptyService" | "agentChatService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService">,
   lanes: LaneSummary[],
 ): Promise<LaneListSnapshot[]> {
   const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
-    Promise.resolve(args.sessionService.list({ limit: 500 })),
-    Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []),
-    Promise.resolve(args.autoRebaseService?.listStatuses() ?? []),
-    Promise.resolve(args.laneService.listStateSnapshots()),
+    enrichSessionsForLaneList(args),
+    Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []).catch(() => []),
+    Promise.resolve(args.autoRebaseService?.listStatuses() ?? []).catch(() => []),
+    Promise.resolve(args.laneService.listStateSnapshots()).catch(() => []),
     args.conflictService?.getBatchAssessment().catch(() => null) ?? Promise.resolve(null),
   ]);
 

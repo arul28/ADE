@@ -55,7 +55,7 @@ export function DevToolsSection({ onStatusChange }: Props) {
         </div>
       </div>
 
-      <ToolCard tool={git} platform={platform} loading={loading && !result} toolId="git" />
+      <ToolCard tool={git} platform={platform} loading={loading && !result} />
 
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <Button size="sm" variant="outline" disabled={loading} onClick={() => void detect(true)}>
@@ -69,7 +69,7 @@ export function DevToolsSection({ onStatusChange }: Props) {
   );
 }
 
-function ToolCard({ tool, platform, loading, toolId }: { tool: DevToolStatus | null; platform: NodeJS.Platform; loading: boolean; toolId: string }) {
+function ToolCard({ tool, platform, loading }: { tool: DevToolStatus | null; platform: NodeJS.Platform; loading: boolean }) {
   const accentColor = COLORS.success;
   const Icon = GitBranch;
 

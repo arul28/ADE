@@ -163,7 +163,7 @@ struct LaneChatLaunchSheet: View {
           Button("Launch") {
             Task { await submit() }
           }
-          .disabled(busy || (models.isEmpty == false && selectedModelId.isEmpty))
+          .disabled(busy || selectedModelId.isEmpty)
         }
       }
       .task(id: provider) {
@@ -194,6 +194,10 @@ struct LaneChatLaunchSheet: View {
 
   @MainActor
   private func submit() async {
+    guard !selectedModelId.isEmpty, models.contains(where: { $0.id == selectedModelId }) else {
+      errorMessage = "Please select a valid model."
+      return
+    }
     do {
       busy = true
       let session = try await syncService.createChatSession(
