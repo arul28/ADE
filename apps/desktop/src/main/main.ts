@@ -2797,15 +2797,14 @@ app.whenReady().then(async () => {
 
   // --- Auto-update service (global, not per-project) ---
   const updateLogger = createFileLogger(path.join(app.getPath("userData"), "ade-update.jsonl"));
-  const autoUpdateService = createAutoUpdateService(updateLogger);
-  autoUpdateService.onUpdateAvailable((info) => {
-    BrowserWindow.getAllWindows().forEach((win) => {
-      win.webContents.send(IPC.updateEvent, { type: "available", version: info.version });
-    });
+  const autoUpdateService = createAutoUpdateService({
+    logger: updateLogger,
+    currentVersion: app.getVersion(),
+    globalStatePath,
   });
-  autoUpdateService.onUpdateDownloaded((info) => {
+  autoUpdateService.onStateChange((snapshot) => {
     BrowserWindow.getAllWindows().forEach((win) => {
-      win.webContents.send(IPC.updateEvent, { type: "downloaded", version: info.version });
+      win.webContents.send(IPC.updateEvent, snapshot);
     });
   });
 

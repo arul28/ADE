@@ -543,7 +543,9 @@ export const IPC = {
   ctoGetLinearOAuthSession: "ade.cto.getLinearOAuthSession",
   ctoRunProjectScan: "ade.cto.runProjectScan",
   updateCheckForUpdates: "ade.update.checkForUpdates",
+  updateGetState: "ade.update.getState",
   updateQuitAndInstall: "ade.update.quitAndInstall",
+  updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
   updateEvent: "ade.update.event",
 } as const;
 

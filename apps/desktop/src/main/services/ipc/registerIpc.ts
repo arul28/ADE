@@ -6324,7 +6324,25 @@ export function registerIpc({
     getCtx().autoUpdateService?.checkForUpdates();
   });
 
+  ipcMain.handle(IPC.updateGetState, () => {
+    return getCtx().autoUpdateService?.getSnapshot() ?? {
+      status: "idle",
+      version: null,
+      progressPercent: null,
+      bytesPerSecond: null,
+      transferredBytes: null,
+      totalBytes: null,
+      releaseNotesUrl: null,
+      error: null,
+      recentlyInstalled: null,
+    };
+  });
+
   ipcMain.handle(IPC.updateQuitAndInstall, () => {
     getCtx().autoUpdateService?.quitAndInstall();
+  });
+
+  ipcMain.handle(IPC.updateDismissInstalledNotice, () => {
+    getCtx().autoUpdateService?.dismissInstalledNotice();
   });
 }

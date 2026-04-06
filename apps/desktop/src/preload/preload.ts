@@ -7,6 +7,7 @@ import type {
   AttachLaneArgs,
   AdoptAttachedLaneArgs,
   AppInfo,
+  AutoUpdateSnapshot,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
@@ -1772,9 +1773,11 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoRunProjectScan),
   },
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
+  updateGetState: (): Promise<AutoUpdateSnapshot> => ipcRenderer.invoke(IPC.updateGetState),
   updateQuitAndInstall: () => ipcRenderer.invoke(IPC.updateQuitAndInstall),
-  onUpdateEvent: (cb: (data: { type: string; version?: string }) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, payload: { type: string; version?: string }) => cb(payload);
+  updateDismissInstalledNotice: () => ipcRenderer.invoke(IPC.updateDismissInstalledNotice),
+  onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: AutoUpdateSnapshot) => cb(payload);
     ipcRenderer.on(IPC.updateEvent, listener);
     return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
   },

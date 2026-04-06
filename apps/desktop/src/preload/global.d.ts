@@ -7,6 +7,7 @@ import type {
   AttachLaneArgs,
   AdoptAttachedLaneArgs,
   AppInfo,
+  AutoUpdateSnapshot,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
@@ -1215,8 +1216,10 @@ declare global {
         runProjectScan: () => Promise<CtoRunProjectScanResult>;
       };
       updateCheckForUpdates: () => Promise<void>;
+      updateGetState: () => Promise<AutoUpdateSnapshot>;
       updateQuitAndInstall: () => Promise<void>;
-      onUpdateEvent: (cb: (data: { type: string; version?: string }) => void) => () => void;
+      updateDismissInstalledNotice: () => Promise<void>;
+      onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
     };
   }
 }

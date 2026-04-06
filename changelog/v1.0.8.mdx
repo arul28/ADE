@@ -1,0 +1,40 @@
+---
+title: "v1.0.8"
+description: "Release notes for ADE v1.0.8 — March 26, 2026"
+---
+
+## Added
+
+- **Code syntax highlighting** — Chat code blocks now use Shiki for language-aware syntax highlighting
+- **Chat context meter** — New `ChatContextMeter` component showing context window usage during agent sessions
+- **Chat turn divider** — Visual separator between conversation turns for easier readability
+- **Chat surface theming** — New theme token system for chat UI surfaces
+- **Chat hooks extraction** — Six dedicated hooks extracted from the monolithic `AgentChatPane`: composer state, events, sessions, draft persistence, draft store, and runtime state derivation
+- **Session recovery** — New module handling agent chat session recovery with cooldown logic
+- **Project memory files service** — New service that syncs project memory files at startup with debounced write-back, wired into startup, memory briefing, and worker services
+- **Gitleaks secret scanning** — Added to CI pipeline with custom config, preventing accidental secret commits
+- **Auto-rebase service tests** — New 699-line test suite for comprehensive rebase coverage
+
+## Changed
+
+- **AgentChatPane overhaul** — Reduced from a monolith to a leaner orchestrator (-1,200+ lines) with logic extracted into the six new hooks
+- **Chat composer** — Added 10 MB attachment size limit with user-facing error UI
+- **Agent chat service** — Improved memory bootstrap, auto-memory capture with secret/PII rejection (regex filter for API keys, tokens, passwords), and graceful error handling on `writeMemory` failures
+- **Model registry** — Substantial refactor for improved model resolution and metadata handling
+- **Run page** — Fixed duplicate inspector terminal creation when starting multiple targets simultaneously
+- **IPC security hardening** — `path.reveal` handler now only allows a small set of safe directories (project, downloads, documents, temp), blocking arbitrary filesystem traversal
+- **Lane delete labels** — Improved button labels for mixed attached/non-attached lane selections in `ManageLaneDialog`
+
+## Fixed
+
+- **Secret/PII leakage in auto-memory** — Auto-captured memory is now rejected if it matches patterns for likely secrets or PII
+- **Stale model metadata** — Model resolution falls back to the hydrated model ID when the persisted ID is missing
+- **Session recovery cooldown** — Cooldown enforced only after max recovery attempts, preventing premature blocking
+- **Startup crash on memory sync failure** — `memoryFilesService.sync()` is now wrapped in try/catch at startup
+- **Duplicate inspector terminals** — Run page no longer creates duplicate terminals for already-running processes
+- **Hidden advanced fields** — `AddCommandDialog` only populates advanced fields when the advanced section is visible
+
+## Removed
+
+- **Deprecated `permissionMode` parameter** — Removed from CTO operator tools; all callers now use `unifiedPermissionMode`
+- **Unused IPC/preload exports** — Removed unused channel and bridge entries

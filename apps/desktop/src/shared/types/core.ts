@@ -19,6 +19,26 @@ export type AppInfo = {
   };
 };
 
+export type RecentlyInstalledUpdate = {
+  version: string;
+  installedAt: string;
+  releaseNotesUrl: string | null;
+};
+
+export type AutoUpdateStatus = "idle" | "checking" | "downloading" | "ready" | "error";
+
+export type AutoUpdateSnapshot = {
+  status: AutoUpdateStatus;
+  version: string | null;
+  progressPercent: number | null;
+  bytesPerSecond: number | null;
+  transferredBytes: number | null;
+  totalBytes: number | null;
+  releaseNotesUrl: string | null;
+  error: string | null;
+  recentlyInstalled: RecentlyInstalledUpdate | null;
+};
+
 export type ProjectInfo = {
   rootPath: string;
   displayName: string;

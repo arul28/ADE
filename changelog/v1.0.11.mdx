@@ -1,0 +1,60 @@
+---
+title: "v1.0.11"
+description: "Release notes for ADE v1.0.11 — April 1, 2026"
+---
+
+Largest release to date — 102 commits across 12 merged PRs.
+
+## Added
+
+- **Cursor ACP provider** — Cursor is now a first-class Agent Control Protocol provider with connection pooling, event mapping, config state tracking, model discovery, and provider logo. Model picker shows all registered models (greyed out when provider is unconfigured)
+- **PR convergence runtime** — New `issueInventoryService` scans PRs for review comments, CI failures, and merge conflicts to build an actionable issue inventory. "Path to Merge" tab made permanent in PR detail view with `PrConvergencePanel` (round timeline, issue cards, resolution status, pipeline controls) and `PrPipelineSettings` for configuring max rounds and auto-resolve policies
+- **CTO convergence tools** — Five new operator tools: `readConvergenceRuntime`, `updateConvergenceRuntime`, `startConvergenceRound`, `stopConvergenceRound`, `readInventorySummary`
+- **Agent session binding** — Chat sessions are now bound to the selected lane's worktree directory with the binding persisted across restarts. ADE launch directive injected into initial turns so agents know which lane/worktree they operate in
+- **Chat interrupt & subagent cancellation** — Interrupt signal cancels all active subagents spawned by the interrupted session. Queued steers cancelled on error/interrupt. Pending elicitations and approval promises drained on interrupt
+- **Claude tool approvals** — Per-session approval overrides for Claude tool calls with "Allow for Session" option. `canUseTool` blocks mutating calls unless explicitly approved
+- **MCP elicitation handler** — Supports URL and form-based auth flows with pending resolvers and UI requests
+- **Chat tool calling with lane navigation** — Lane navigation integrated directly into the chat pane with `chatDraftStore` preserving unsent drafts per lane/session
+- **Chat title summaries** — Automatic AI-generated title summaries with manual naming support (`manuallyNamed` flag persisted across rehydration)
+- **Session resumption** — Resume previous chat sessions instead of always starting fresh, with per-session model tracking
+- **Plan mode auto-approval** — `ExitPlanMode` tool calls automatically approved when a session is in "plan" interaction mode
+- **Synthetic tool results** — `syntheticToolResult` module scans tool arguments for file paths and generates synthetic `tool_result` events for proof observer ingestion
+- **`ade-artifact://` protocol** — Custom protocol registered in the main process with MIME detection and HTTP Range support for video seeking
+- **MCP tools in unified chat sessions** — Unified sessions now spawn the ADE MCP server via stdio and bridge tools through the AI SDK `tool()` wrapper with approval guards
+- **CLI executable resolver** — Cross-platform support (Windows PATHEXT, POSIX shell lookups) for Claude and Codex CLI detection
+- **Onboarding improvements** — Refactored `DevToolsSection` and `EmbeddingsSection` with improved UX, GitHub scope parsing with classic vs fine-grained permission normalization
+- **Auto-rebase engine overhaul** — `RebaseNeed` types with explicit `kind` field, root sweeping with debounce, auto-push after successful rebase with rollback on failure, chain-resolution for stacked lane hierarchies
+
+## Changed
+
+- **UI overhaul** — Redesigned chat composer footer, message list, session cards, and session list pane. Reordered tab navigation to prioritize Work and Lanes tabs. Work log blocks show only the latest tool call by default (expandable "Show N more")
+- **Agent chat service** — Expanded by +3,848 lines with Cursor ACP, unified MCP bridging, convergence runtime, approval/elicitation flows, and initial turn activity centralization
+- **Rebase flow** — Runtime lifecycle cleanup on worktree switch, `getRebaseNeed` throws on lookup errors (instead of returning null), rebase attention states preserved across emits
+- **Lane import logic** — Detects and reuses existing local branches, only creates tracking branches when needed, attempts parent lane detection via merge-base
+- **PR service** — Expanded with retarget error tracking, auto-rebase land support, and convergence state management
+- **Missions & orchestrator** — Improved lifecycle management, convergence pipeline integration in the phase engine
+- **Embedding service** — Cached install inspection, `loadAttemptId` to ignore stale results, hardened install path resolution
+- **Model selector** — Completely reworked with provider grouping and availability indicators
+- **Marketing site** — New `ProductShowcase` component with real screenshot PNGs for all feature areas
+
+## Fixed
+
+- **Blank chat** — Fixed by awaiting session refresh before rendering
+- **Warmup cancellation** — Guard after stream loop prevents marking cancelled warmup as ready
+- **Message refresh loop** — Removed `messages` from `refreshMessages` dependency array in `AgentChannels`
+- **Steer operations** — `parseAgentChatCancelSteerArgs` and `parseAgentChatEditSteerArgs` now include required `steerId` field
+- **Plan mode exit** — Fixed transition for bypass/full-auto paths
+- **Stale FilesPage closure** — Fixed stale closure in tree refresh drain loop
+- **PR retarget** — Always tracks lane as failed when `retargetError` is truthy
+- **Existing-branch import** — Excludes stale `baseBranch`
+- **Rewritten history detection** — Reflog heuristic recommends force push correctly
+- **Stale embedding loads** — Fixed race conditions in embedding service
+- **Chat title race** — Re-checks `manuallyNamed` after async title generation
+- **MCP role escalation** — Headless MCP now guards `electron.safeStorage` access
+- **kvDb CRR operations** — Added `crsqliteLoaded` guard for CRR alter operations
+
+## Removed
+
+- Tracked database backup files (`.ade/db.sqlite`, `.ade/state.sqlite`) — added `*.bak` to `.gitignore`
+- Old feature SVGs from marketing site — replaced with real screenshot PNGs
+- Fragile UI tests causing CI flakiness

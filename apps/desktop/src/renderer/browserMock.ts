@@ -1800,7 +1800,19 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       getFactor: () => 1,
     },
     updateCheckForUpdates: resolved(undefined),
+    updateGetState: resolved({
+      status: "idle",
+      version: null,
+      progressPercent: null,
+      bytesPerSecond: null,
+      transferredBytes: null,
+      totalBytes: null,
+      releaseNotesUrl: null,
+      error: null,
+      recentlyInstalled: null,
+    }),
     updateQuitAndInstall: resolved(undefined),
+    updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,
   };
 }

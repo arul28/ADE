@@ -1,0 +1,47 @@
+---
+title: "v1.0.12"
+description: "Release notes for ADE v1.0.12 — April 2, 2026"
+---
+
+## Added
+
+- **Inline AskUserQuestion UI** — Agent questions now render inline in the chat transcript with option buttons instead of a screen-blocking modal overlay. Supports both single-select and multi-select answers with Markdown preview
+- **Multi-select agent questions** — `AgentQuestionModal` supports toggling multiple predefined options per question, with a Markdown/HTML preview pane via `ReactMarkdown` + `rehype-sanitize`
+- **Claude tool-use lifecycle tracking** — Per-invocation tracking using `toolUseID` with `tool_use_start` and `tool_use_complete` events driving per-tool status indicators in the work log
+- **Standalone chat `ask_user` MCP tool** — The `ask_user` tool no longer requires a `missionId`, making it usable in standalone chat sessions with structured `questions` array parameter (up to 3 questions with options, multi-select, preview content, freeform toggle)
+- **Packed session grid** — Resizable tile layout for the Work view with per-session column/row spans, drag-handle resizing on all edges and corners, and a bin-packing algorithm for compact arrangement
+- **Turn recap** — Summary row at the end of each turn showing tool invocation counts and task progress
+- **MCP initialize probe** — Full MCP initialize JSON-RPC round-trip check in the runtime smoke test, catching regressions where the proxy starts but fails the initialize handshake
+- **Recent project summary** — New service computing per-project lane counts from the SQLite database with worktree detection, wired into the project selection UI
+- **CTO operator tools (major expansion)** — `getPullRequestDiff`, `approvePullRequest`, `requestPrChanges`, comprehensive git operations (commit, push, pull, fetch, branches, stash), conflict resolution tools, context doc export, chat steering/handoff APIs, computer-use artifact management, and budget tools
+- **Computer use policy on proxy identity** — New `computerUsePolicy` field with mode, allowLocalFallback, retainArtifacts, and preferredBackend settings parsed from environment variables
+- **New chat quick-create** — Optimistic session opening from the Work view with immediate tab activation before the backend session is ready
+- **GitHub tab enhancements** — Labels, bot indicators, comment counts, scope filter (All/ADE/External), and luminance-aware text color contrast for label rendering
+
+## Changed
+
+- **Default app route** — Startup, error boundary, and fallback routes now navigate to `/work` instead of `/project`, making the Work view the primary landing page
+- **Terminal renderer** — Simplified from three tiers (WebGL/Canvas/DOM) to two (WebGL-first with DOM fallback) with fit recovery on invalid dimensions
+- **Work log headings** — Human-readable labels ("Read utils.ts", "Run shell", "Write index.ts") replace generic tool identifiers; default visible entries increased to 4
+- **Model catalog filtering** — `UnifiedModelSelector` now accepts `catalogMode: "available-only"` to restrict the picker to only configured providers
+- **Git stash actions** — Pop, drop, and clear now refresh workspace metadata after completion
+- **Composer sizing** — New compact and grid-tile sizing modes
+- **Stale session detection** — Session expiry checks now also match "session expired" error strings, preventing zombie sessions from blocking new agent launches
+- **Chat Markdown rendering** — Improved prose styling, overhauled GFM table rendering with rounded container and proper alignment
+- **GitHub tab** — Repo and external PR lists merged into a unified list sorted by creation date with scope filtering
+- **CTO identity** — Bumped identity version and onboarding state with new `knowledge` section in system prompt preview
+
+## Fixed
+
+- **AskUserQuestion re-asking bug** — After answering a Claude question, no `tool_result` event was emitted, causing the stale pending input to re-derive on every event flush. Now emits `tool_result` immediately and tracks resolved SDK tool_use IDs
+- **MCP role escalation vulnerability** — Untrusted MCP clients could previously claim privileged roles via the identity payload. Now only the `ADE_DEFAULT_ROLE` environment variable is trusted for role assignment
+- **MCP proxy initialize regression** — Removed forced `preferBundledProxy=false` that prevented packaged apps from using the standard proxy flow
+- **Work log summary absorption** — `tool_use_summary` events now only absorbed into the immediately preceding `work_log_group`, preventing misattribution
+- **PackedSessionGrid resize handles** — Lower z-index and pointer-events gating prevent resize handles from interfering with tile content
+- **Agent count copy** — Background agent count now correctly distinguishes active vs. completed sessions
+
+## Removed
+
+- 6 pure design-token/visual test files (-872 lines) that provided no behavioral coverage and broke on every UI change
+- Canvas renderer tier from `TerminalView` (WebGL + DOM only)
+- Old splash images from the web marketing site
