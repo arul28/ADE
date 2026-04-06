@@ -426,7 +426,9 @@ async function inspectDroidCliPresence(command: string): Promise<{
       const result = await spawnAsync(command, args, { timeout: 12_000 });
       const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       if (result.status !== 0) continue;
-      if (hasPattern(combined, STRONG_UNAUTH_INDICATORS)) continue;
+      if (hasPattern(combined, STRONG_UNAUTH_INDICATORS)) {
+        return { installed: true, authenticated: false, verified: true };
+      }
       if (hasPattern(combined, AUTH_INDICATORS)) {
         return { installed: true, authenticated: true, verified: true };
       }
@@ -435,7 +437,7 @@ async function inspectDroidCliPresence(command: string): Promise<{
     }
   }
 
-  return { installed: true, authenticated: false, verified: true };
+  return { installed: true, authenticated: false, verified: false };
 }
 
 const ENV_KEY_MAP: Record<string, string> = {
@@ -1017,11 +1019,21 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
         };
       }
       if (cli === "droid") {
-        const auth = await inspectDroidCliPresence(cmd);
+        const resolved = resolveDroidExecutable({ env: process.env });
+        if (resolved.source === "fallback-command") {
+          return {
+            cli,
+            installed: false,
+            path: null,
+            authenticated: false,
+            verified: false,
+          };
+        }
+        const auth = await inspectDroidCliPresence(resolved.path);
         return {
           cli,
           installed: auth.installed,
-          path,
+          path: resolved.path,
           authenticated: auth.authenticated,
           verified: auth.verified,
         };

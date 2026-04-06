@@ -29,9 +29,17 @@ export type CursorAcpLaunchSettings = {
 };
 
 const cursorPools = new Map<string, { ref: number; pooled: CursorAcpPooled }>();
+const pendingCursorInit = new Map<string, Promise<CursorAcpPooled>>();
 
 function internalPoolKey(poolKey: string): string {
   return `cursor:${poolKey}`;
+}
+
+function clearCursorTerminalTimers(pooled: CursorAcpPooled): void {
+  for (const h of pooled.terminalOutputTimers.values()) {
+    clearTimeout(h);
+  }
+  pooled.terminalOutputTimers.clear();
 }
 
 export async function acquireCursorAcpConnection(args: {
@@ -88,31 +96,52 @@ export async function acquireCursorAcpConnection(args: {
     },
   };
 
-  const existing = cursorPools.get(args.poolKey);
-  if (existing) {
-    const innerKey = internalPoolKey(args.poolKey);
-    if (hasActiveAcpCliPoolEntry(innerKey)) {
-      existing.ref += 1;
-      return existing.pooled;
-    }
+  const innerKey = internalPoolKey(args.poolKey);
+  const staleOuter = cursorPools.get(args.poolKey);
+  if (staleOuter && !hasActiveAcpCliPoolEntry(innerKey)) {
     cursorPools.delete(args.poolKey);
   }
 
-  const base = await acquireAcpCliConnection(acpOptions);
+  const existing = cursorPools.get(args.poolKey);
+  if (existing) {
+    await acquireAcpCliConnection(acpOptions);
+    existing.ref += 1;
+    return existing.pooled;
+  }
 
-  const terminalWorkLogBindings = new Map<string, CursorTerminalWorkLogBinding>();
-  const terminalOutputTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  let initOwner = false;
+  let init = pendingCursorInit.get(args.poolKey);
+  if (!init) {
+    initOwner = true;
+    init = (async () => {
+      const base = await acquireAcpCliConnection(acpOptions);
 
-  const pooled: CursorAcpPooled = {
-    connection: base.connection,
-    bridge: base.bridge,
-    terminals: base.terminals,
-    terminalWorkLogBindings,
-    terminalOutputTimers,
-    dispose: base.dispose,
-  };
+      const terminalWorkLogBindings = new Map<string, CursorTerminalWorkLogBinding>();
+      const terminalOutputTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  cursorPools.set(args.poolKey, { ref: 1, pooled });
+      const pooled: CursorAcpPooled = {
+        connection: base.connection,
+        bridge: base.bridge,
+        terminals: base.terminals,
+        terminalWorkLogBindings,
+        terminalOutputTimers,
+        dispose: base.dispose,
+      };
+
+      cursorPools.set(args.poolKey, { ref: 1, pooled });
+      return pooled;
+    })().finally(() => {
+      pendingCursorInit.delete(args.poolKey);
+    });
+    pendingCursorInit.set(args.poolKey, init);
+  }
+
+  const pooled = await init;
+  if (!initOwner) {
+    await acquireAcpCliConnection(acpOptions);
+    const entry = cursorPools.get(args.poolKey);
+    if (entry) entry.ref += 1;
+  }
   return pooled;
 }
 
@@ -120,8 +149,10 @@ export function releaseCursorAcpConnection(poolKey: string): void {
   const entry = cursorPools.get(poolKey);
   if (!entry) return;
   entry.ref -= 1;
+  if (entry.ref < 0) entry.ref = 0;
   releaseAcpCliConnection(internalPoolKey(poolKey));
   if (entry.ref <= 0) {
+    clearCursorTerminalTimers(entry.pooled);
     cursorPools.delete(poolKey);
   }
 }

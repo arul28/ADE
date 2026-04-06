@@ -12007,7 +12007,6 @@ export function createAgentChatService(args: {
         pendingSteers: [],
         permissionWaiters: new Map(),
       };
-      managed.runtime = rt;
 
       const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
       if (persistedAcp && typeof pooled.connection.unstable_resumeSession === "function") {
@@ -12025,6 +12024,12 @@ export function createAgentChatService(args: {
       }
 
       throwIfDroidSetupInterrupted();
+      if (managed.closed) {
+        releaseDroidAcpConnection(poolKey);
+        droidRuntimeSetupInterruptRequested.delete(managed);
+        throw new Error("Droid session closed during setup.");
+      }
+      managed.runtime = rt;
       droidRuntimeSetupInterruptRequested.delete(managed);
       return rt;
     } catch (err) {
@@ -12049,13 +12054,23 @@ export function createAgentChatService(args: {
       onDispatched?: () => void;
     },
   ): Promise<void> => {
+    const turnId = args.turnId ?? randomUUID();
     let runtime: DroidRuntime;
     try {
       runtime = await ensureDroidRuntime(managed);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg === "Droid session interrupted.") {
+      if (msg === "Droid session interrupted." || msg === "Droid session closed during setup.") {
         managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        for (const ev of mapStopReasonToTerminalEvents({
+          stopReason: "cancelled",
+          turnId,
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        })) {
+          emitChatEvent(managed, ev);
+        }
         persistChatState(managed);
         return;
       }
@@ -12065,8 +12080,6 @@ export function createAgentChatService(args: {
     if (!validation.ready) {
       throw new Error(validation.reason);
     }
-
-    const turnId = args.turnId ?? randomUUID();
     runtime.interrupted = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
@@ -12122,6 +12135,15 @@ export function createAgentChatService(args: {
 
       if (runtime.interrupted) {
         managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        for (const ev of mapStopReasonToTerminalEvents({
+          stopReason: "cancelled",
+          turnId,
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        })) {
+          emitChatEvent(managed, ev);
+        }
         persistChatState(managed);
         return;
       }
@@ -12143,6 +12165,15 @@ export function createAgentChatService(args: {
       await ensureDroidSessionState(managed, runtime);
       if (runtime.interrupted) {
         managed.session.status = "idle";
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        for (const ev of mapStopReasonToTerminalEvents({
+          stopReason: "cancelled",
+          turnId,
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        })) {
+          emitChatEvent(managed, ev);
+        }
         persistChatState(managed);
         return;
       }
@@ -12220,16 +12251,18 @@ export function createAgentChatService(args: {
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
       const msg = error instanceof Error ? error.message : String(error);
+      const treatAsInterrupt =
+        runtime.interrupted || msg === "Droid session closed during setup.";
 
       for (const [, w] of runtime.permissionWaiters) {
         w.resolve({ outcome: { outcome: "cancelled" } });
       }
       runtime.permissionWaiters.clear();
 
-      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+      cancelQueuedSteers(managed, runtime, treatAsInterrupt ? "interrupted" : "failed");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
-      if (runtime.interrupted) {
+      if (treatAsInterrupt) {
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: "cancelled",
