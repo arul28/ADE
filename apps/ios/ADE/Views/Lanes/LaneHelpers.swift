@@ -58,9 +58,20 @@ func laneListFilteredSnapshots(
     .sorted(by: laneListSortSnapshots)
 }
 
+private func parseLaneTimestamp(_ rawValue: String) -> Date? {
+  cachedISO8601Formatter.date(from: rawValue) ?? cachedISO8601FormatterNoFractional.date(from: rawValue)
+}
+
 func laneListSortSnapshots(_ lhs: LaneListSnapshot, _ rhs: LaneListSnapshot) -> Bool {
   if lhs.lane.laneType == "primary" && rhs.lane.laneType != "primary" { return true }
   if lhs.lane.laneType != "primary" && rhs.lane.laneType == "primary" { return false }
+  let lhsAwaiting = lhs.runtime.bucket == "awaiting-input"
+  let rhsAwaiting = rhs.runtime.bucket == "awaiting-input"
+  if lhsAwaiting && !rhsAwaiting { return true }
+  if !lhsAwaiting && rhsAwaiting { return false }
+  if let ld = parseLaneTimestamp(lhs.lane.createdAt), let rd = parseLaneTimestamp(rhs.lane.createdAt), ld != rd {
+    return ld > rd
+  }
   if lhs.lane.createdAt != rhs.lane.createdAt {
     return lhs.lane.createdAt > rhs.lane.createdAt
   }
@@ -99,7 +110,7 @@ func laneListEmptyStateTitle(scope: LaneListScope) -> String {
 }
 
 func laneListEmptyStateMessage(scope: LaneListScope, searchText: String, hasFilters: Bool) -> String {
-  if !searchText.isEmpty {
+  if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
     return "Try a different search or clear the filter."
   }
   if hasFilters {

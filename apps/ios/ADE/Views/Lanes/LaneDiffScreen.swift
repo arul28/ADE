@@ -162,7 +162,11 @@ struct LaneDiffScreen: View {
 
   @MainActor
   private func load() async throws {
-    guard let path = request.path else { return }
+    guard let path = request.path else {
+      diff = nil
+      editedText = ""
+      return
+    }
     isLoading = true
     defer { isLoading = false }
     do {

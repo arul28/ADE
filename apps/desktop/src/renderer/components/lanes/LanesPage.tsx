@@ -431,7 +431,7 @@ export function LanesPage() {
             : snapshot;
         });
         useAppStore.setState({ laneSnapshots: next });
-      }).catch(() => {});
+      }).catch((err) => { console.error("getBatchAssessment failed:", err); });
       pushConflictChips(event.chips);
     });
     return unsubscribe;
@@ -924,11 +924,10 @@ export function LanesPage() {
         }
       }
 
-      const results = await Promise.allSettled([refreshLanes()]);
-      for (const r of results) {
-        if (r.status === "rejected") {
-          console.error("Lane refresh partially failed:", r.reason);
-        }
+      try {
+        await refreshLanes();
+      } catch (refreshErr) {
+        console.error("Lane refresh failed:", refreshErr);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

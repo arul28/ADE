@@ -18,7 +18,13 @@ SOCKET_PATH="/tmp/ade-dogfood-mcp.sock"
 if [ -n "${1:-}" ]; then
   # Find the lane worktree by name/slug match
   LANE_NAME="$1"
-  WORKTREE_DIR=$(find "$MAIN_ROOT/.ade/worktrees" -maxdepth 1 -type d -name "*${LANE_NAME}*" | head -1)
+  if [ ! -d "$MAIN_ROOT/.ade/worktrees" ]; then
+    echo "No worktree found matching '$LANE_NAME' in .ade/worktrees/"
+    echo "Available:"
+    echo "  (none)"
+    exit 1
+  fi
+  WORKTREE_DIR=$(find "$MAIN_ROOT/.ade/worktrees" -maxdepth 1 -type d -name "*${LANE_NAME}*" -print -quit)
   if [ -z "$WORKTREE_DIR" ]; then
     echo "No worktree found matching '$LANE_NAME' in .ade/worktrees/"
     echo "Available:"

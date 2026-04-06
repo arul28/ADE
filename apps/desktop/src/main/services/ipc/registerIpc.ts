@@ -1,5 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
-import type { createAutoUpdateService } from "../updates/autoUpdateService";
+import { createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -6325,17 +6325,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.updateGetState, () => {
-    return getCtx().autoUpdateService?.getSnapshot() ?? {
-      status: "idle",
-      version: null,
-      progressPercent: null,
-      bytesPerSecond: null,
-      transferredBytes: null,
-      totalBytes: null,
-      releaseNotesUrl: null,
-      error: null,
-      recentlyInstalled: null,
-    };
+    return getCtx().autoUpdateService?.getSnapshot() ?? createEmptyAutoUpdateSnapshot();
   });
 
   ipcMain.handle(IPC.updateQuitAndInstall, () => {

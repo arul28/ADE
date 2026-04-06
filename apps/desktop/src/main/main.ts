@@ -2295,11 +2295,15 @@ app.whenReady().then(async () => {
       dispose: () => {} // desktop manages service lifecycle
     };
 
-    // Only honour the env override for the first project context to avoid
-    // EADDRINUSE when multiple projects share a single socket path.
+    // When ADE_MCP_SOCKET_PATH is set, derive a per-project socket path from
+    // the override so each project context gets its own socket and avoids
+    // EADDRINUSE. The first context uses the env path as-is for compatibility;
+    // subsequent contexts append a project-root hash suffix.
     const envSocketOverride = process.env.ADE_MCP_SOCKET_PATH?.trim();
-    const mcpSocketPath = (envSocketOverride && projectContexts.size === 0)
-      ? envSocketOverride
+    const mcpSocketPath = envSocketOverride
+      ? (projectContexts.size === 0
+        ? envSocketOverride
+        : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`)
       : adePaths.socketPath;
     const activeMcpConnections = new Set<net.Socket>();
 
