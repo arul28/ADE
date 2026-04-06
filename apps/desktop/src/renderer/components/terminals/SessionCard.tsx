@@ -1,6 +1,7 @@
 import React from "react";
 import { Info, Play } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
+import { ADE_LOCAL_EXECUTION_TARGET_ID } from "../../../shared/types";
 import { sessionStatusDot } from "../../lib/terminalAttention";
 import { primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
 import { useSessionDelta } from "./useSessionDelta";
@@ -38,8 +39,10 @@ export const SessionCard = React.memo(function SessionCard({
   onInfoClick,
   onContextMenu,
   resumingSessionId,
+  projectActiveTargetId,
 }: {
   session: TerminalSessionSummary;
+  projectActiveTargetId?: string | null;
   isSelected: boolean;
   onSelect: (id: string) => void;
   onResume: () => void;
@@ -53,6 +56,11 @@ export const SessionCard = React.memo(function SessionCard({
   const delta = useSessionDelta(session.id, true);
   const primaryText = primarySessionLabel(session);
   const secondaryText = truncateSummary(secondarySessionLabel(session), 20);
+  const chatTargetId = session.executionTargetId?.trim() || ADE_LOCAL_EXECUTION_TARGET_ID;
+  const projectTarget = (projectActiveTargetId ?? ADE_LOCAL_EXECUTION_TARGET_ID).trim() || ADE_LOCAL_EXECUTION_TARGET_ID;
+  const showOtherTargetBadge =
+    Boolean(session.executionTargetId || session.executionTargetLabel)
+    && chatTargetId !== projectTarget;
 
   return (
     <div className="group relative" onContextMenu={onContextMenu}>
@@ -89,6 +97,14 @@ export const SessionCard = React.memo(function SessionCard({
               >
                 {primaryText}
               </span>
+              {showOtherTargetBadge ? (
+                <span
+                  className="shrink-0 rounded border border-sky-500/25 bg-sky-500/10 px-1 py-0.5 font-mono text-[8px] font-semibold uppercase tracking-wide text-sky-200/85"
+                  title={session.executionTargetLabel ?? session.executionTargetId ?? "Other target"}
+                >
+                  {session.executionTargetLabel ? session.executionTargetLabel.slice(0, 12) : "Remote"}
+                </span>
+              ) : null}
             </div>
 
             {/* Meta row */}

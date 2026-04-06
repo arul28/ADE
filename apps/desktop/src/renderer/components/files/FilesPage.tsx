@@ -35,6 +35,8 @@ import type {
 import { MonacoDiffView } from "../lanes/MonacoDiffView";
 import { LaneTerminalsPanel } from "../lanes/LaneTerminalsPanel";
 import { useAppStore } from "../../state/appStore";
+import { useExecutionTargets } from "../../hooks/useExecutionTargets";
+import { ExecutionTargetContextBanner } from "../executionTargets/ExecutionTargetContextBanner";
 import { replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { revealLabel } from "../../lib/platform";
@@ -343,6 +345,8 @@ export function FilesPage() {
   const location = useLocation();
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const projectRootPath = useAppStore((s) => s.project?.rootPath ?? "__unknown_project__");
+  const projectRootForTargets = useAppStore((s) => s.project?.rootPath ?? null);
+  const { activeProfile } = useExecutionTargets(projectRootForTargets);
   const sessionKey = filesSessionKey(projectRootPath, selectedLaneId);
   const initialSession = filesPageSessionByScope.get(sessionKey);
 
@@ -1751,6 +1755,7 @@ export function FilesPage() {
 
   return (
     <div className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
+      <ExecutionTargetContextBanner profile={activeProfile} />
       {/* Header bar */}
       <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: "transparent", borderBottom: `1px solid ${COLORS.border}` }}>
         {/* Numbered title group */}
