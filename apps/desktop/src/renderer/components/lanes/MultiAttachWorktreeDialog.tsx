@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, WarningCircle, CircleNotch, TextAlignLeft } from "@phosphor-icons/react";
 import type { UnregisteredWorktree } from "../../../shared/types/lanes";
 import { Button } from "../ui/Button";
@@ -44,6 +44,14 @@ export function MultiAttachWorktreeDialog({
   }, [open]);
 
   const allSelected = selected.size === worktrees.length && worktrees.length > 0;
+  const someSelected = selected.size > 0 && selected.size < worktrees.length;
+
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someSelected;
+    }
+  }, [someSelected]);
 
   const toggleAll = () => {
     if (allSelected) setSelected(new Set());
@@ -83,12 +91,21 @@ export function MultiAttachWorktreeDialog({
       onComplete();
       onOpenChange(false);
     } else {
-      // Partial success — refresh the list to remove successfully attached items
+      // Partial success — refresh the list to remove successfully attached items,
+      // then pre-select the ones that failed so the user can retry them.
+      const failedPaths = new Set(
+        toAttach
+          .filter((wt) => {
+            const prefix = wt.branch || wt.path;
+            return collectedErrors.some((e) => e.startsWith(prefix + ":"));
+          })
+          .map((wt) => wt.path)
+      );
       onComplete();
       try {
         const refreshed = await window.ade.lanes.listUnregisteredWorktrees();
         setWorktrees(refreshed);
-        setSelected(new Set());
+        setSelected(new Set(refreshed.filter((wt) => failedPaths.has(wt.path)).map((wt) => wt.path)));
       } catch {
         // non-fatal
       }
@@ -146,6 +163,7 @@ export function MultiAttachWorktreeDialog({
               <div className="flex items-center justify-between mb-3">
                 <label className="flex items-center gap-2 text-xs text-muted-fg cursor-pointer select-none">
                   <input
+                    ref={selectAllRef}
                     type="checkbox"
                     checked={allSelected}
                     onChange={toggleAll}
